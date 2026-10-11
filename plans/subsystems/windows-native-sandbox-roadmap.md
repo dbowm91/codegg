@@ -97,8 +97,8 @@ Class: infrastructure. Objective: non-production comparison of Microsoft MXC Rus
 
 M004 is **blocked**, with its historical failure recorded immutably at `plans/closure/windows-native-sandbox/004-status.md`. Rather than changing or pretending to close that record, four bounded corrective plans are now registered:
 
-- **C008 (active):** `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` — fix the Windows `UpdateProcThreadAttribute` `SECURITY_CAPABILITIES` backing-lifetime violation and obtain a same-revision Rust token/Job launch proof. Hosted Windows runner sufficient.
-- **C009 (blocked on C008):** `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` — integrate restricted child/stdio/status/cancellation into `ManagedProcessService` in a safely gated test path. Hosted runner sufficient. This is *not* file containment activation.
+- **C008 (closed):** `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` — owned stable `SECURITY_CAPABILITIES` and profile SID lifetime; native Windows Server 2025 token/Job launch and suspended-failure tests passed in `plans/closure/windows-native-sandbox/008-status.md` (workflow `38178437505`).
+- **C009 (ready):** `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` — integrate restricted child/stdio/status/cancellation into `ManagedProcessService` in a safely gated test path. Hosted runner sufficient. This is *not* file containment activation.
 - **C010 (blocked on C009):** `plans/implementation/windows-native-sandbox/010-windows-acl-leases-and-recovery.md` — journaled ACL lease, restore/restart/concurrency and synthetic denied/allowed operations on disposable hosted-runner roots. Hosted runner sufficient. A passing fixture still cannot close M004.
 - **C011 (blocked on C010 and a privileged disposable Windows VM):** `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` — actual existing-path, credentials, privileged daemon IPC, symlink/hardlink/ADS, crash recovery and backend admission. Full strict M004 requalification and M005/M006 unblocking require this evidence.
 
@@ -160,7 +160,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
 | M007 | blocked/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | `plans/closure/windows-native-sandbox/007-status.md` | No qualifying Windows 11 SDK build/runtime matrix; defer with no security conclusion |
-| C008 | active | `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` | `plans/closure/windows-native-sandbox/008-status.md` | The FFI lifetime fix is implemented; hosted Windows Rust proof is pending |
-| C009 | blocked | `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` | — | C008 strict closure |
+| C008 | closed | `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` | `plans/closure/windows-native-sandbox/008-status.md` | Workflow `38178437505`; Windows Server 2025 Rust ABI/token/Job proof and Unix quick verification passed; C009 unblocked |
+| C009 | ready | `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` | — | C008 strict closure satisfied; production constrained requests remain unavailable |
 | C010 | blocked | `plans/implementation/windows-native-sandbox/010-windows-acl-leases-and-recovery.md` | — | C009 strict closure |
 | C011 | blocked | `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` | — | C010 strict closure + privileged isolated Windows VM |

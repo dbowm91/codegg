@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C008 — AppContainer FFI Attribute Lifetime and Host Proof
 
-Status: active
+Status: closed
 
 Repository baseline: `9a0657d8713507c5e667d2fcd77d3ca761784760` on rebased branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 

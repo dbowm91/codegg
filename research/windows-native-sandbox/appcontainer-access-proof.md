@@ -117,6 +117,36 @@ The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
 suite (all selected tests passed) in run `38158022356`.
 
+## C008 Rust/C# launch-parameter comparison
+
+The hosted workflow runs the unchanged C# proof before the Rust launch tests,
+so both implementations execute on the same Windows Server 2025 revision.
+Their security-capabilities inputs are equivalent: both use the created
+package SID, a null capability-array pointer, capability count zero, and
+reserved zero. Both request one `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`
+attribute (`0x00020009`), set `STARTUPINFOEXW.StartupInfo.cb` from the extended
+structure size, and create a suspended, no-window process with extended startup
+information. The C# fixture obtains structure sizes with
+`Marshal.SizeOf`; Rust uses `size_of` and the C008 layout test checks the
+Windows ABI sizes and attribute constant.
+
+The lifetime difference under investigation was in Rust's value storage. Rust
+previously passed `UpdateProcThreadAttribute` a pointer to a stack-local
+`SECURITY_CAPABILITIES`, then returned before `CreateProcessW`. C# allocates
+the struct with `Marshal.AllocHGlobal` and retains that allocation through
+`CreateProcess`, then frees it before deleting the attribute list. It is a
+parameter/result comparator, not proof of lifetime compliance: Microsoft's
+contract requires the pointer through list deletion. C008 changes Rust to own
+a boxed value and borrow the profile for the entire attribute-list lifetime;
+`DeleteProcThreadAttributeList` runs before those owners are released. The C#
+fixture remains unchanged. Its current-directory behavior differs from Rust's
+inherited current directory, so a result is attributed to the lifetime repair
+only if the native Rust test passes without another parameter change.
+
+Microsoft's `UpdateProcThreadAttribute` contract says `lpValue` must remain
+valid until `DeleteProcThreadAttributeList` destroys the list:
+[UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+
 Microsoft documents AppContainer access as the intersection of traditional
 user/group grants and AppContainer package/capability SID grants, with the
 package SID required for protected resource access. The observed fixture is
