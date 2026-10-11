@@ -84,7 +84,9 @@ to a private Job Object with kill-on-last-handle-close, and resumes it only
 after assignment succeeds. Cancellation and timeout terminate the Job; closing
 the Job after the root exits also terminates any descendants before output
 pipes are joined. `CleanupDiagnostics::job_object_established` reports this
-process-tree ownership fact. This is process supervision only: Windows
+process-tree ownership fact. Sanitized Windows children retain the system
+runtime and temporary-directory variables (`SystemRoot`, `WINDIR`, `TEMP`,
+`TMP`) needed by native applications. This is process supervision only: Windows
 filesystem-constrained requests still fail before launch, and Job Objects do
 not provide filesystem or network containment. Native behavior is exercised
 by `tests/windows_process_launcher.rs` and the focused Windows workflow.
