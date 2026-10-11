@@ -118,11 +118,7 @@ async fn restricted_service_timeout_closes_the_job_and_reaps_the_child() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let marker = directory.path().join("child-started.txt");
-    let marker_literal = format!("'{}'", marker.to_string_lossy().replace('\'', "''"));
-    let script =
-        format!("[IO.File]::WriteAllText({marker_literal}, 'started'); Start-Sleep -Seconds 60");
+    let script = "[Console]::Out.Write('child-started'); Start-Sleep -Seconds 60";
     let mut request = restricted_request(vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),
@@ -134,14 +130,21 @@ async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
     request.cancellation = cancellation.clone();
     request.timeout = Some(Duration::from_secs(30));
 
-    let mut run = tokio::spawn(ManagedProcessService::run(request));
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(4);
+    let run = tokio::spawn(ManagedProcessService::run_streaming(request, output_tx));
     tokio::time::timeout(Duration::from_secs(15), async {
-        while !marker.exists() {
+        let mut output = Vec::new();
+        while !output
+            .windows(b"child-started".len())
+            .any(|window| window == b"child-started")
+        {
             assert!(
                 !run.is_finished(),
                 "restricted child exited before cancellation"
             );
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            if let Some(chunk) = output_rx.recv().await {
+                output.extend_from_slice(&chunk.bytes);
+            }
         }
     })
     .await

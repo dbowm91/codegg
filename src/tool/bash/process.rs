@@ -451,6 +451,15 @@ impl BashTool {
                      filesystem containment]\n\n"
                 ));
             }
+            #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+            crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer {
+                status,
+                ..
+            } => {
+                result.push_str(&format!(
+                    "[sandbox: TEST-ONLY AppContainer process control; filesystem rights are not enforced ({status})]\n\n"
+                ));
+            }
             crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
             | crate::managed_process::SandboxExecutionOutcome::Disabled => {}
         }

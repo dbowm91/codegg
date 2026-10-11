@@ -917,8 +917,8 @@ async fn run_windows_test_restricted(
             "restricted launch status exceeded its private channel bound".into(),
         ));
     }
-    let (status_reader, mut status_writer) =
-        windows::create_test_status_pipe().map_err(ManagedProcessError::SandboxFailed)?;
+    let (status_reader, mut status_writer) = windows::create_test_status_pipe()
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
     status_writer
         .write_all(&status_bytes)
         .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;

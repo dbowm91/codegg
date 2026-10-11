@@ -48,6 +48,11 @@ pub(super) struct WindowsAppContainerProfile {
     sid: windows_sys::Win32::Security::PSID,
 }
 
+// The profile owns its SID allocation and moves with the managed-process
+// future; Win32 profile/SID operations do not depend on the creating thread.
+// No shared access is exposed, and Drop remains the sole owner of FreeSid.
+unsafe impl Send for WindowsAppContainerProfile {}
+
 impl WindowsAppContainerProfile {
     pub(super) fn create() -> io::Result<Self> {
         let profile_name = format!("Codegg-{}", uuid::Uuid::new_v4());
@@ -592,7 +597,7 @@ impl WindowsTestRestrictedProcess {
                 {
                     return Err(last_error());
                 }
-                return Ok(std::process::ExitStatus::from_raw(exit_code as i32));
+                return Ok(std::process::ExitStatus::from_raw(exit_code));
             }
             if result == u32::MAX {
                 return Err(last_error());
