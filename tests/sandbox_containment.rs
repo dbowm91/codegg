@@ -115,7 +115,11 @@ fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
 /// calls this out as a limit; this fixture proves the behavior without
 /// touching any real user data.
 #[cfg(target_os = "macos")]
-fn launch_helper_with_inherited_fd(helper: PathBuf, spec: &Path, source_fd: RawFd) -> Run {
+fn launch_helper_with_inherited_fd(
+    helper: PathBuf,
+    spec: &SandboxLaunchSpec,
+    source_fd: RawFd,
+) -> Run {
     const INHERITED_FD: RawFd = 42;
     let spec_file = tempfile::NamedTempFile::new().expect("sandbox spec file");
     serde_json::to_writer(spec_file.as_file(), spec).expect("sandbox spec encoding");
@@ -646,7 +650,7 @@ fn seatbelt_preserves_and_reports_preopened_denied_file_descriptors() {
     require_backend!();
     assert_eq!(
         platform_sandbox_capability().backend_id(),
-        Some(BackendId::SEATBELT)
+        BackendId::SEATBELT
     );
 
     let workspace = tempfile::tempdir().expect("workspace");
