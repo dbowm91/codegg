@@ -34,6 +34,10 @@ jobs:
         run: cargo test -p codegg --lib python_script::executor::tests -- --test-threads=1 --nocapture
       - name: Qualify managed scratch lifecycle
         run: cargo test -p codegg --lib managed_process::tests::constrained_launch_gets_private_tmpdir_removed_after_reap -- --test-threads=1 --nocapture
+      - name: Qualify fail-closed private status handling
+        run: cargo test -p codegg --lib managed_process::tests::missing_private_status_fails_closed_with_test_only_helper_injection -- --test-threads=1 --nocapture
+      - name: Qualify hardlink deny preflight
+        run: cargo test -p codegg --lib managed_process::tests::hardlinked_denied_path_fails_before_target_launch -- --test-threads=1 --nocapture
       - name: Run sandbox contract guards
         run: |
           python3 scripts/check_sandbox_contract.py

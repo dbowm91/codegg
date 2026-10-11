@@ -167,7 +167,7 @@ def check_backend_registry() -> list[str]:
 
     managed = managed_process.read_text()
     if not re.search(
-        r"tempdir\(\)[\s\S]{0,500}spec\.write_paths\.push\(scratch_path\.clone\(\)\)[\s\S]{0,300}with_var\(\"TMPDIR\"",
+        r"tempdir\(\)[\s\S]{0,900}spec\.write_paths\.push\(scratch_path\.clone\(\)\)[\s\S]{0,300}with_var\(\"TMPDIR\"",
         managed,
     ):
         errors.append("managed_process.rs: constrained launches must receive private scoped TMPDIR")

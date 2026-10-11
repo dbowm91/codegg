@@ -1,8 +1,8 @@
 # Python Scripting
 
 First-class Python script execution with AST-first risk analysis, three execution
-modes, OS-level sandbox enforcement (Landlock on Linux), and managed-process
-subprocess management.
+modes, OS-level sandbox enforcement (Landlock on Linux, Seatbelt on macOS), and
+managed-process subprocess management.
 
 ## Purpose
 
