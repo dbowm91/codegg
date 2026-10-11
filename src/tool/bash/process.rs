@@ -1537,7 +1537,7 @@ mod tests {
             .expect("valid cmd shell argv")
             .expect("cmd uses raw command channel");
         assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/S", "/C"]);
-        assert_eq!(raw.to_string_lossy(), format!("\"{command}\""));
+        assert_eq!(raw.to_string_lossy(), format!(" \"{command}\""));
     }
 
     #[test]
