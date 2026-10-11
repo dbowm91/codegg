@@ -144,4 +144,4 @@ Codegg on a documented Windows version supports constrained local tool execution
 | M004 | active | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 strict closure satisfied; behavioral enforcement and privileged isolated-VM evidence remain required |
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
-| M007 | ready/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | — | non-release-critical |
+| M007 | blocked/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | `plans/closure/windows-native-sandbox/007-status.md` | No qualifying Windows 11 SDK build/runtime matrix; defer with no security conclusion |

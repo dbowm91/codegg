@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 007 — MXC Feasibility Spike
 
-Status: ready for handoff (optional)
+Status: blocked
 
 Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
 
@@ -106,4 +106,7 @@ Reference: https://github.com/microsoft/mxc and https://github.com/microsoft/mxc
 
 ## 16. Handoff notes
 
-undefined
+Research disposition is recorded in `architecture/windows-mxc-feasibility.md`
+and `plans/closure/windows-native-sandbox/007-status.md`. Resume only when an
+isolated Windows 11 host meeting the pinned ProcessContainer floor and a toolchain
+that can build the pinned SDK are available. No security conclusion is made.
