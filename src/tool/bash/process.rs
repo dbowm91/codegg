@@ -1426,9 +1426,19 @@ mod tests {
             let argv = shell_argv("echo test", Some(shell)).expect("system shell");
             assert!(Path::new(&argv[0]).is_absolute());
             if matches!(shell, crate::config::schema::WindowsShellKind::GitBash) {
-                assert!(argv[0]
-                    .to_ascii_lowercase()
-                    .contains("\\git\\bin\\bash.exe"));
+                let git_bash_candidates = ["ProgramFiles", "ProgramFiles(x86)"]
+                    .into_iter()
+                    .filter_map(std::env::var_os)
+                    .filter(|value| !value.is_empty())
+                    .map(PathBuf::from)
+                    .map(|root| root.join("Git/bin/bash.exe"));
+                assert!(
+                    git_bash_candidates
+                        .into_iter()
+                        .any(|candidate| Path::new(&argv[0]) == candidate),
+                    "unexpected Git Bash path: {}",
+                    argv[0]
+                );
             } else if matches!(shell, crate::config::schema::WindowsShellKind::PowerShell) {
                 assert_eq!(
                     Path::new(&argv[0]),
@@ -1444,7 +1454,7 @@ mod tests {
         ) {
             Ok(argv) => {
                 assert!(Path::new(&argv[0]).is_absolute());
-                assert!(argv[0].to_ascii_lowercase().contains("\\system32\\wsl.exe"));
+                assert_eq!(Path::new(&argv[0]), system_root.join("System32/wsl.exe"));
                 assert_eq!(&argv[1..4], &["--exec", "sh", "-c"]);
             }
             Err(error) => assert!(
