@@ -39,6 +39,24 @@ fn request(script: impl Into<OsString>) -> ManagedProcessRequest {
     )
 }
 
+fn request_script(path: &Path, script: &str, args: &[OsString]) -> ManagedProcessRequest {
+    std::fs::write(path, script).expect("write PowerShell fixture");
+    let mut argv = vec![
+        powershell().into_os_string(),
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-File"),
+        path.as_os_str().to_owned(),
+    ];
+    argv.extend(args.iter().cloned());
+    ManagedProcessRequest::new(
+        argv,
+        std::env::current_dir().expect("current directory"),
+        ProcessProvenance::new("windows-process-launcher-test", "attempt"),
+    )
+}
+
 fn powershell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "''"))
 }
@@ -60,13 +78,22 @@ fn process_signaled(pid: u32) -> bool {
     result == WAIT_OBJECT_0
 }
 
-async fn wait_for_pid_file(path: &Path) -> u32 {
+async fn wait_for_pid_file(
+    path: &Path,
+    process: &mut tokio::task::JoinHandle<
+        Result<codegg::managed_process::ManagedProcessResult, ManagedProcessError>,
+    >,
+) -> u32 {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(value) = tokio::fs::read_to_string(path).await {
                 if let Ok(pid) = value.trim().parse() {
                     return pid;
                 }
+            }
+            if process.is_finished() {
+                let result = (&mut *process).await;
+                panic!("managed process exited before publishing its PID: {result:?}");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -90,11 +117,15 @@ async fn wait_for_process_exit(pid: u32) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn launches_unicode_argv_and_reports_job_ownership() {
+    let directory = tempfile::tempdir().expect("temporary directory");
     let sentinel = "CodeGG snowman ☃ — こんにちは";
     let script =
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::Write($args[0])";
-    let mut process = request(script);
-    process.argv.push(OsString::from(sentinel));
+    let process = request_script(
+        &directory.path().join("echo-argv.ps1"),
+        script,
+        &[OsString::from(sentinel)],
+    );
 
     let result = ManagedProcessService::run(process)
         .await
@@ -149,22 +180,24 @@ async fn cancelling_one_run_does_not_terminate_a_sibling_job() {
     let first_marker = directory.path().join("first-pid.txt");
     let sibling_marker = directory.path().join("sibling-pid.txt");
     let cancellation = CancellationToken::new();
-    let mut first = request(format!(
-        "[IO.File]::WriteAllText({}, $PID.ToString()); Start-Sleep -Seconds 60",
-        powershell_quote(&first_marker)
-    ));
+    let mut first = request_script(
+        &directory.path().join("first.ps1"),
+        "[IO.File]::WriteAllText($args[0], $PID.ToString()); Start-Sleep -Seconds 60",
+        &[first_marker.clone().into_os_string()],
+    );
     first.cancellation = cancellation.clone();
     first.timeout = Some(Duration::from_secs(30));
-    let first = tokio::spawn(ManagedProcessService::run(first));
-    let _first_pid = wait_for_pid_file(&first_marker).await;
+    let mut first = tokio::spawn(ManagedProcessService::run(first));
+    let _first_pid = wait_for_pid_file(&first_marker, &mut first).await;
 
-    let mut sibling = request(format!(
-        "[IO.File]::WriteAllText({}, $PID.ToString()); Start-Sleep -Milliseconds 500; [Console]::Write('sibling survived')",
-        powershell_quote(&sibling_marker)
-    ));
+    let mut sibling = request_script(
+        &directory.path().join("sibling.ps1"),
+        "[IO.File]::WriteAllText($args[0], $PID.ToString()); Start-Sleep -Milliseconds 500; [Console]::Write('sibling survived')",
+        &[sibling_marker.clone().into_os_string()],
+    );
     sibling.timeout = Some(Duration::from_secs(10));
-    let sibling = tokio::spawn(ManagedProcessService::run(sibling));
-    let _sibling_pid = wait_for_pid_file(&sibling_marker).await;
+    let mut sibling = tokio::spawn(ManagedProcessService::run(sibling));
+    let _sibling_pid = wait_for_pid_file(&sibling_marker, &mut sibling).await;
     cancellation.cancel();
 
     let cancelled = first
@@ -176,7 +209,13 @@ async fn cancelling_one_run_does_not_terminate_a_sibling_job() {
         .expect("sibling managed process task")
         .expect("sibling process should be unaffected");
     assert_eq!(cancelled.termination, TerminationReason::Cancelled);
-    assert!(survived.exit_status.success());
+    assert!(
+        survived.exit_status.success(),
+        "sibling exited {:?}; stdout={:?} stderr={:?}",
+        survived.exit_status,
+        survived.stdout.to_string_lossy(),
+        survived.stderr.to_string_lossy()
+    );
     assert_eq!(survived.stdout.to_string_lossy(), "sibling survived");
 }
 
@@ -184,20 +223,21 @@ async fn cancelling_one_run_does_not_terminate_a_sibling_job() {
 async fn cancellation_terminates_root_and_job_owned_descendants() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let pid_file = directory.path().join("child-pid.txt");
-    let system_root = std::env::var("SystemRoot").expect("SystemRoot is set");
-    let cmd = PathBuf::from(&system_root).join("System32").join("cmd.exe");
-    let script = format!(
-        "$child = Start-Process -FilePath {} -ArgumentList @('/d', '/c', 'timeout /t 60 /nobreak > nul') -PassThru -WindowStyle Hidden; [IO.File]::WriteAllText({}, $child.Id.ToString()); Start-Sleep -Seconds 60",
-        powershell_quote(&cmd),
-        powershell_quote(&pid_file),
-    );
+    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+        .join("System32")
+        .join("PING.EXE");
+    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-n 60 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString()); Start-Sleep -Seconds 60";
     let cancellation = CancellationToken::new();
-    let mut process = request(script);
+    let mut process = request_script(
+        &directory.path().join("spawn-child.ps1"),
+        script,
+        &[pid_file.clone().into_os_string(), ping.into_os_string()],
+    );
     process.cancellation = cancellation.clone();
     process.timeout = Some(Duration::from_secs(30));
 
-    let run = tokio::spawn(ManagedProcessService::run(process));
-    let child_pid = wait_for_pid_file(&pid_file).await;
+    let mut run = tokio::spawn(ManagedProcessService::run(process));
+    let child_pid = wait_for_pid_file(&pid_file, &mut run).await;
     cancellation.cancel();
     let result = run
         .await
@@ -214,17 +254,23 @@ async fn cancellation_terminates_root_and_job_owned_descendants() {
 async fn root_exit_closes_the_job_before_waiting_for_inherited_pipe_eof() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let pid_file = directory.path().join("child-pid.txt");
-    let system_root = std::env::var("SystemRoot").expect("SystemRoot is set");
-    let cmd = PathBuf::from(&system_root).join("System32").join("cmd.exe");
-    let script = format!(
-        "$null = Start-Process -FilePath {} -ArgumentList @('/d', '/c', 'timeout /t 60 /nobreak > nul') -PassThru -WindowStyle Hidden; [IO.File]::WriteAllText({}, $null.Id.ToString())",
-        powershell_quote(&cmd),
-        powershell_quote(&pid_file),
-    );
-    let result = ManagedProcessService::run(request(script))
+    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+        .join("System32")
+        .join("PING.EXE");
+    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-n 60 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString())";
+    let result = ManagedProcessService::run(request_script(
+        &directory.path().join("root-exits.ps1"),
+        script,
+        &[pid_file.clone().into_os_string(), ping.into_os_string()],
+    ))
+    .await
+    .expect("root exit should close its Job before joining inherited pipes");
+    let child_pid = tokio::fs::read_to_string(&pid_file)
         .await
-        .expect("root exit should close its Job before joining inherited pipes");
-    let child_pid = wait_for_pid_file(&pid_file).await;
+        .expect("PowerShell child PID file")
+        .trim()
+        .parse::<u32>()
+        .expect("PowerShell child PID");
 
     assert!(result.exit_status.success());
     assert!(result.cleanup.job_object_established);
