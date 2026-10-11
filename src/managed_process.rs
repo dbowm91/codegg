@@ -1213,7 +1213,11 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("helper fixture directory");
         let helper = directory.path().join("fake-helper");
-        std::fs::write(&helper, b"#!/bin/sh\nexit 0\n").expect("fake helper");
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\nprintf 'CODEGG_SANDBOX_ENFORCED abi=9\\n' >&2\nexit 0\n",
+        )
+        .expect("fake helper");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
             .expect("fake helper executable permissions");
         let marker = directory.path().join("target-ran");
