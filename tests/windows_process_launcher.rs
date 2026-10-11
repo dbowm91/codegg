@@ -1,12 +1,13 @@
 #![cfg(windows)]
 
 use codegg::managed_process::{
-    ManagedProcessError, ManagedProcessRequest, ManagedProcessService, OutputPolicy,
-    ProcessProvenance, TerminationReason,
+    EnvironmentPolicy, ManagedProcessError, ManagedProcessRequest, ManagedProcessService,
+    OutputPolicy, ProcessProvenance, TerminationReason,
 };
 use std::ffi::OsString;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Path, PathBuf};
+use std::process::Command as StdCommand;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::{GetLastError, WAIT_OBJECT_0};
@@ -57,6 +58,40 @@ fn request_script(path: &Path, script: &str, args: &[OsString]) -> ManagedProces
     )
 }
 
+fn process_fixture_request(
+    mode: &str,
+    pid_file: &Path,
+    child_pid_file: Option<&Path>,
+) -> ManagedProcessRequest {
+    let argv = vec![
+        std::env::current_exe()
+            .expect("Windows process test executable")
+            .into_os_string(),
+        OsString::from("--exact"),
+        OsString::from("windows_process_fixture"),
+        OsString::from("--nocapture"),
+    ];
+    let mut request = ManagedProcessRequest::new(
+        argv,
+        std::env::current_dir().expect("current directory"),
+        ProcessProvenance::new("windows-process-launcher-fixture", mode),
+    );
+    let mut environment = EnvironmentPolicy::sanitized()
+        .with_var("CODEGG_WINDOWS_FIXTURE_MODE", OsString::from(mode))
+        .with_var(
+            "CODEGG_WINDOWS_FIXTURE_PID_FILE",
+            pid_file.as_os_str().to_owned(),
+        );
+    if let Some(child_pid_file) = child_pid_file {
+        environment = environment.with_var(
+            "CODEGG_WINDOWS_FIXTURE_CHILD_PID_FILE",
+            child_pid_file.as_os_str().to_owned(),
+        );
+    }
+    request.environment_policy = environment;
+    request
+}
+
 fn powershell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "''"))
 }
@@ -99,7 +134,7 @@ async fn wait_for_pid_file(
         }
     })
     .await
-    .expect("PowerShell child did not publish its PID")
+    .expect("fixture process did not publish its PID")
 }
 
 async fn wait_for_process_exit(pid: u32) {
@@ -113,6 +148,44 @@ async fn wait_for_process_exit(pid: u32) {
     })
     .await
     .unwrap_or_else(|_| panic!("Job Object left descendant process {pid} alive"));
+}
+
+#[test]
+fn windows_process_fixture() {
+    let Ok(mode) = std::env::var("CODEGG_WINDOWS_FIXTURE_MODE") else {
+        return;
+    };
+    let pid_file = std::env::var_os("CODEGG_WINDOWS_FIXTURE_PID_FILE")
+        .map(PathBuf::from)
+        .expect("fixture PID file");
+
+    if mode == "spawn-child-and-wait" || mode == "spawn-child-and-exit" {
+        std::fs::write(&pid_file, std::process::id().to_string()).expect("write fixture PID");
+        let child_pid_file = std::env::var_os("CODEGG_WINDOWS_FIXTURE_CHILD_PID_FILE")
+            .map(PathBuf::from)
+            .expect("fixture child PID file");
+        let child =
+            StdCommand::new(std::env::current_exe().expect("Windows process test executable"))
+                .args(["--exact", "windows_process_fixture", "--nocapture"])
+                .env("CODEGG_WINDOWS_FIXTURE_MODE", "wait")
+                .env("CODEGG_WINDOWS_FIXTURE_PID_FILE", &child_pid_file)
+                .spawn()
+                .expect("spawn Job-owned fixture descendant");
+        std::fs::write(&child_pid_file, child.id().to_string()).expect("write fixture child PID");
+        if mode == "spawn-child-and-exit" {
+            return;
+        }
+    } else {
+        std::fs::write(&pid_file, std::process::id().to_string()).expect("write fixture PID");
+        if mode == "sibling" {
+            std::thread::sleep(Duration::from_millis(500));
+            return;
+        }
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -180,21 +253,13 @@ async fn cancelling_one_run_does_not_terminate_a_sibling_job() {
     let first_marker = directory.path().join("first-pid.txt");
     let sibling_marker = directory.path().join("sibling-pid.txt");
     let cancellation = CancellationToken::new();
-    let mut first = request_script(
-        &directory.path().join("first.ps1"),
-        "[IO.File]::WriteAllText($args[0], $PID.ToString()); Start-Sleep -Seconds 60",
-        &[first_marker.clone().into_os_string()],
-    );
+    let mut first = process_fixture_request("wait", &first_marker, None);
     first.cancellation = cancellation.clone();
     first.timeout = Some(Duration::from_secs(30));
     let mut first = tokio::spawn(ManagedProcessService::run(first));
     let _first_pid = wait_for_pid_file(&first_marker, &mut first).await;
 
-    let mut sibling = request_script(
-        &directory.path().join("sibling.ps1"),
-        "[IO.File]::WriteAllText($args[0], $PID.ToString()); Start-Sleep -Milliseconds 500; [Console]::Write('sibling survived')",
-        &[sibling_marker.clone().into_os_string()],
-    );
+    let mut sibling = process_fixture_request("sibling", &sibling_marker, None);
     sibling.timeout = Some(Duration::from_secs(10));
     let mut sibling = tokio::spawn(ManagedProcessService::run(sibling));
     let _sibling_pid = wait_for_pid_file(&sibling_marker, &mut sibling).await;
@@ -209,30 +274,25 @@ async fn cancelling_one_run_does_not_terminate_a_sibling_job() {
         .expect("sibling managed process task")
         .expect("sibling process should be unaffected");
     assert_eq!(cancelled.termination, TerminationReason::Cancelled);
+    assert_eq!(survived.termination, TerminationReason::Exited);
     assert!(
         survived.exit_status.success(),
-        "sibling exited {:?}; stdout={:?} stderr={:?}",
+        "sibling exited {:?}; termination={:?}; cleanup={:?}; duration={:?}",
         survived.exit_status,
-        survived.stdout.to_string_lossy(),
-        survived.stderr.to_string_lossy()
+        survived.termination,
+        survived.cleanup,
+        survived.duration
     );
-    assert_eq!(survived.stdout.to_string_lossy(), "sibling survived");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_terminates_root_and_job_owned_descendants() {
     let directory = tempfile::tempdir().expect("temporary directory");
+    let root_pid_file = directory.path().join("root-pid.txt");
     let pid_file = directory.path().join("child-pid.txt");
-    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
-        .join("System32")
-        .join("PING.EXE");
-    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-t 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString()); Start-Sleep -Seconds 60";
     let cancellation = CancellationToken::new();
-    let mut process = request_script(
-        &directory.path().join("spawn-child.ps1"),
-        script,
-        &[pid_file.clone().into_os_string(), ping.into_os_string()],
-    );
+    let mut process =
+        process_fixture_request("spawn-child-and-wait", &root_pid_file, Some(&pid_file));
     process.cancellation = cancellation.clone();
     process.timeout = Some(Duration::from_secs(30));
 
@@ -253,15 +313,12 @@ async fn cancellation_terminates_root_and_job_owned_descendants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn root_exit_closes_the_job_before_waiting_for_inherited_pipe_eof() {
     let directory = tempfile::tempdir().expect("temporary directory");
+    let root_pid_file = directory.path().join("root-pid.txt");
     let pid_file = directory.path().join("child-pid.txt");
-    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
-        .join("System32")
-        .join("PING.EXE");
-    let script = "$child = Start-Process -FilePath $args[1] -ArgumentList '-t 127.0.0.1' -PassThru -NoNewWindow; [IO.File]::WriteAllText($args[0], $child.Id.ToString())";
-    let result = ManagedProcessService::run(request_script(
-        &directory.path().join("root-exits.ps1"),
-        script,
-        &[pid_file.clone().into_os_string(), ping.into_os_string()],
+    let result = ManagedProcessService::run(process_fixture_request(
+        "spawn-child-and-exit",
+        &root_pid_file,
+        Some(&pid_file),
     ))
     .await
     .expect("root exit should close its Job before joining inherited pipes");
