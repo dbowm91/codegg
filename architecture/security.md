@@ -89,8 +89,8 @@ Linux enforcement uses the maintained `landlock` crate.
   running binary (inherited env/PATH/cwd cannot select it)
 - Parent serializes a bounded `SandboxLaunchSpec` to an owner-only
   ephemeral file in the system temp directory
-- Helper adds every Landlock rule, requires `FullyEnforced` +
-  `no_new_privs`, writes a versioned typed status frame to a private
+- Helper adds every Landlock rule, requires ABI 3+ and `no_new_privs`, writes
+  a versioned typed status frame to a private
   pipe
 - Helper marks the status writer close-on-exec before exec'ing the
   target
@@ -157,9 +157,9 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 - Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
 - Any host with no registered backend: constrained requests report
-  `FilesystemEnforcement::Unavailable` (fail closed, never `FullHost`);
-  Python portable fallback with sanitized environment,
-  workspace-contained cwd, snapshot-based post-exec checks
+  `FilesystemEnforcement::Unavailable` and are refused before launching
+  constrained Bash or Python (never `FullHost`). Portable post-execution
+  snapshots are defense in depth, not a substitute for OS containment.
 
 `SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
 the backend id. Those lists are the honest boundary of each mechanism and
@@ -168,7 +168,7 @@ read as stronger than it is:
 
 | Backend | Guarantees | Limits |
 |---|---|---|
-| landlock | deny-first allowlist, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
+| landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
 | seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; pre-open fds remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
 
 **Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
@@ -457,8 +457,11 @@ fallback_to_native = true  # only for mcp backend
    Enforced` carries the backend id plus `guarantees`/`limits`. Seatbelt
    cannot claim Landlock's `no_new_privs` drop, and does not. A backend with
    an empty `limits` list fails `tests/sandbox_containment.rs`.
-8. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
-   `no_new_privs`; partial enforcement is rejected.
+8. **Landlock ABI V3 minimum.** The helper hard-requires write/truncate
+   rights from ABI 3 and refer rights from ABI 2, then requests newer rights
+   best-effort. A partial status is accepted only when the effective ABI is
+   at least 3 and `no_new_privs` is set; older kernels fail before target
+   execution.
 9. **Local daemon endpoints are not principals.** Unix socket permissions and
    the Windows pipe DACL restrict transport admission; endpoint names do not
    authorize CoreFrame requests. The Windows pipe uses an explicit protected

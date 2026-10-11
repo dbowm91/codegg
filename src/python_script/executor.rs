@@ -188,6 +188,34 @@ pub async fn execute_python_script_with_cancellation(
         );
     }
 
+    if policy.profile.sandbox_requirement != super::types::SandboxRequirement::None
+        && !matches!(policy.enforcement_backend, SandboxBackend::Os { .. })
+    {
+        let mut result = make_result(
+            PythonRunStatus::SpawnError,
+            String::new(),
+            "required OS filesystem containment is unavailable; Python was not launched"
+                .to_string(),
+            start.elapsed(),
+            request.mode,
+            request.code.len(),
+            risk,
+            capabilities,
+            script_body_hash,
+        );
+        let mut failed_policy = policy;
+        let reason = crate::security::sandbox::platform_sandbox_capability()
+            .reason()
+            .unwrap_or("no OS sandbox backend is available")
+            .to_string();
+        failed_policy.outcome = Some(SandboxOutcome::Failed {
+            kind: SandboxFailureKind::Unavailable,
+            reason,
+        });
+        result.policy_decision = Some(failed_policy);
+        return result;
+    }
+
     // Materialize script to temp file BEFORE snapshot so the script file
     // itself is not detected as a workspace change.
     let tmp_dir = cwd.join(".codegg").join("python_runs");
@@ -391,19 +419,6 @@ pub async fn execute_python_script_with_cancellation(
         policy.outcome = Some(SandboxOutcome::Enforced {
             backend: SandboxBackend::Os { backend },
             abi,
-        });
-    } else if policy.enforcement_backend == SandboxBackend::PortableFallback {
-        // Use the platform capability's own reason rather than a
-        // CodeGG-local string, so the python fallback reports exactly
-        // why this host cannot contain, matching the bash tool's
-        // degraded path.
-        let reason = crate::security::sandbox::platform_sandbox_capability()
-            .reason()
-            .unwrap_or("OS-level sandboxing unavailable")
-            .to_string();
-        policy.outcome = Some(SandboxOutcome::Fallback {
-            backend: SandboxBackend::PortableFallback,
-            reason,
         });
     } else {
         policy.outcome = Some(SandboxOutcome::Disabled);

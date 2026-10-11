@@ -214,10 +214,9 @@ impl BashTool {
         let cwd = cwd_owned.clone().ok_or_else(|| {
             ToolError::Execution("managed shell cwd could not be resolved".into())
         })?;
-        // One place decides contained vs degraded vs unconstrained, from the
-        // real host capability. A constrained request on a host without OS
-        // containment must not fail every command, and must never be
-        // silently reported as containment or as FullHost.
+        // One place decides contained vs unavailable vs unconstrained, from
+        // the real host capability. A constrained command never launches
+        // through a raw shell when the helper cannot enforce its policy.
         let sandbox_path =
             crate::security::sandbox::sandbox_execution_path(self.landlock_sandbox.as_ref());
         let sandbox = match &sandbox_path {
@@ -236,17 +235,10 @@ impl BashTool {
                     Some(&cwd),
                 )?)
             }
-            crate::security::sandbox::SandboxExecutionPath::DegradedUncontained { reason } => {
-                tracing::warn!(
-                    target: "codegg::security::sandbox",
-                    reason = %reason,
-                    command_len = command.len(),
-                    "requested sandbox containment is unavailable on this host; \
-                     running the shell command through the degraded uncontained path"
-                );
-                crate::managed_process::SandboxRequest::DegradedUncontained {
-                    reason: reason.clone(),
-                }
+            crate::security::sandbox::SandboxExecutionPath::Unavailable { reason } => {
+                return Err(ToolError::Execution(format!(
+                    "requested sandbox containment is unavailable; command refused: {reason}"
+                )));
             }
         };
         let mut request = crate::managed_process::ManagedProcessRequest::new(
@@ -290,17 +282,7 @@ impl BashTool {
         let stdout = managed.stdout.to_string_lossy();
         let stderr = managed.stderr.to_string_lossy();
         let mut result = String::new();
-        // Operator-visible sandbox report. A degraded (uncontained) run must
-        // say so in the transcript, not just in tracing: this text is what the
-        // reviewer reads next to the command output.
         match &managed.sandbox {
-            crate::managed_process::SandboxExecutionOutcome::Uncontained { reason } => {
-                result.push_str(&format!(
-                    "[sandbox: UNCONTAINED - filesystem containment was requested but is \
-                     unavailable on this host ({reason}); this command ran without OS \
-                     filesystem containment]\n\n"
-                ));
-            }
             crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
             | crate::managed_process::SandboxExecutionOutcome::Disabled => {}
         }

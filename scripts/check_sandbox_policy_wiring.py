@@ -95,6 +95,29 @@ def check_backend_registry() -> list[str]:
     errors: list[str] = []
     sandbox_dir = ROOT / "src/security/sandbox"
 
+    # Required constrained commands cannot be routed around the helper when
+    # a capability probe fails. Python uses the same backend registry on macOS
+    # and Linux; portable post-run checks are not an execution boundary.
+    managed_process = ROOT / "src/managed_process.rs"
+    if "DegradedUncontained" in managed_process.read_text():
+        errors.append("managed_process.rs: degraded uncontained launch path is forbidden")
+    bash_process = ROOT / "src/tool/bash/process.rs"
+    if not re.search(r"SandboxExecutionPath::Unavailable\s*\{\s*reason\s*\}[^}]*return Err", bash_process.read_text(), re.DOTALL):
+        errors.append("bash/process.rs: unavailable containment must refuse before launch")
+    python_sandbox = ROOT / "src/python_script/sandbox.rs"
+    python_text = python_sandbox.read_text()
+    if re.search(r"#\[cfg\(target_os\s*=\s*\"linux\"\)\]\s*\{\s*let capability", python_text):
+        errors.append("python_script/sandbox.rs: backend negotiation must not be Linux-only")
+    if "SandboxBackend::Unavailable" not in python_text:
+        errors.append("python_script/sandbox.rs: missing unavailable containment disposition")
+    python_executor = ROOT / "src/python_script/executor.rs"
+    if not re.search(
+        r"sandbox_requirement\s*!=\s*super::types::SandboxRequirement::None"
+        r"[\s\S]{0,180}!matches!\(policy\.enforcement_backend,\s*SandboxBackend::Os",
+        python_executor.read_text(),
+    ):
+        errors.append("python_script/executor.rs: unavailable containment must refuse Python")
+
     registry = sandbox_dir / "backend.rs"
     for pattern, what in [
         (r"pub const BACKENDS:\s*&\[SandboxBackend\]", "backend registry table"),

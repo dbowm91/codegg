@@ -64,7 +64,10 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 | `--standalone` | Run the core in-process, without the singleton daemon. |
 
 Approval mode and sandbox are orthogonal: an automatic approval mode never
-implies host-level filesystem access. See `docs/tui.md`.
+implies host-level filesystem access. A constrained Bash or Python command is
+refused when the host cannot apply its OS filesystem sandbox; it is not run
+without containment. Use `full-host` only when you intend to opt out of CodeGG
+filesystem containment. See `docs/tui.md`.
 
 ## Sessions
 
