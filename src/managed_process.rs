@@ -65,16 +65,20 @@ impl Default for EnvironmentPolicy {
 impl EnvironmentPolicy {
     /// Construct the default sanitized environment policy.
     pub fn sanitized() -> Self {
-        let mut inherited = codegg_git::ALLOWED_ENV_VARS
+        let inherited: BTreeSet<OsString> = codegg_git::ALLOWED_ENV_VARS
             .iter()
             .map(OsString::from)
             .collect();
         #[cfg(windows)]
-        inherited.extend(
-            ["SystemRoot", "WINDIR", "TEMP", "TMP"]
-                .into_iter()
-                .map(OsString::from),
-        );
+        let inherited = {
+            let mut inherited = inherited;
+            inherited.extend(
+                ["SystemRoot", "WINDIR", "TEMP", "TMP"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            inherited
+        };
         let denied = codegg_git::ALWAYS_STRIPPED_ENV_VARS
             .iter()
             .map(OsString::from)
