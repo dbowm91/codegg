@@ -327,6 +327,10 @@ try {
     Protect-DisposableAclLeaseBase $readRoot
     Protect-DisposableAclLeaseBase $writeRoot
     [IO.File]::WriteAllText($secret, 'synthetic-secret-marker')
+    if ([IO.File]::ReadAllText($secret) -ne 'synthetic-secret-marker') {
+        throw 'The ordinary runner principal could not read the synthetic secret control fixture.'
+    }
+    'ordinary runner principal can read the synthetic secret control fixture: passed'
 
     $status = [AppContainerProofNative]::CreateAppContainerProfile(
         $name, $name, 'Disposable CodeGG M004 ACL access proof', [IntPtr]::Zero, 0, [ref]$sid)

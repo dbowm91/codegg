@@ -70,15 +70,17 @@ impl WindowsJob {
             return Err(last_error());
         }
         let thread = unsafe { OwnedHandle::from_raw_handle(thread as RawHandle) };
-        self.assign_raw_and_resume(process, thread.as_raw_handle() as _)
+        self.assign_raw_and_resume(process, thread.as_raw_handle() as _, |_| Ok(()))
     }
 
     fn assign_raw_and_resume(
         &mut self,
         process: windows_sys::Win32::Foundation::HANDLE,
         thread: windows_sys::Win32::Foundation::HANDLE,
+        verify_before_resume: impl FnOnce(windows_sys::Win32::Foundation::HANDLE) -> io::Result<()>,
     ) -> io::Result<()> {
         self.assign_suspended(process)?;
+        verify_before_resume(process)?;
         Self::resume_suspended(thread)
     }
 
@@ -439,20 +441,23 @@ mod tests {
             ));
         }
 
-        job.assign_suspended(process.process.as_raw_handle() as HANDLE)?;
-        let mut in_job = 0;
-        if unsafe {
-            IsProcessInJob(
-                process.process.as_raw_handle() as HANDLE,
-                job.handle.as_raw_handle() as _,
-                &mut in_job,
-            )
-        } == 0
-            || in_job == 0
-        {
-            return Err(last_error());
-        }
-        WindowsJob::resume_suspended(process.thread.as_raw_handle() as HANDLE)?;
+        let job_handle = job.handle.as_raw_handle() as _;
+        job.assign_raw_and_resume(
+            process.process.as_raw_handle() as HANDLE,
+            process.thread.as_raw_handle() as HANDLE,
+            |process_handle| {
+                let mut in_job = 0;
+                if unsafe { IsProcessInJob(process_handle, job_handle, &mut in_job) } == 0 {
+                    return Err(last_error());
+                }
+                if in_job == 0 {
+                    return Err(io::Error::other(
+                        "AppContainer target was not in its owner Job before resume",
+                    ));
+                }
+                Ok(())
+            },
+        )?;
         process.resumed = true;
         if unsafe { WaitForSingleObject(process.process.as_raw_handle() as HANDLE, 30_000) }
             != WAIT_OBJECT_0
