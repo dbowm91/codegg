@@ -112,6 +112,8 @@ pub enum InputAction {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    /// Open the side-panel switcher (`Ctrl+Shift+W`).
+    TogglePanelSelector,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -186,6 +188,8 @@ pub enum ActionKey {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    /// Open the side-panel switcher (`Ctrl+Shift+W`).
+    TogglePanelSelector,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -253,6 +257,7 @@ impl ActionKey {
             Self::NewSession,
             Self::ToggleSidebar,
             Self::FocusSidebar,
+            Self::TogglePanelSelector,
             Self::ToggleSection,
             Self::CloseSession,
             Self::Help,
@@ -309,6 +314,7 @@ impl ActionKey {
             Self::NewSession => InputAction::NewSession,
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
+            Self::TogglePanelSelector => InputAction::TogglePanelSelector,
             Self::ToggleSection => InputAction::ToggleSection,
             Self::CloseSession => InputAction::CloseSession,
             Self::Help => InputAction::Help,
@@ -365,6 +371,7 @@ impl ActionKey {
             Self::NewSession => "New session",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
+            Self::TogglePanelSelector => "Switch side panel",
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
@@ -508,6 +515,16 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
             KeyCode::Char('S'),
         ),
         InputAction::FocusSidebar,
+    );
+    // Side-panel switcher. Same `Ctrl+Shift+<letter>` convention as sidebar
+    // focus above, and bound in every map so the panel picker is reachable
+    // regardless of whether vim mode is on.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('W'),
+        ),
+        InputAction::TogglePanelSelector,
     );
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
@@ -731,6 +748,16 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         ),
         InputAction::FocusSidebar,
     );
+    // Side-panel switcher. Same `Ctrl+Shift+<letter>` convention as sidebar
+    // focus above, and bound in every map so the panel picker is reachable
+    // regardless of whether vim mode is on.
+    map.insert(
+        (
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('W'),
+        ),
+        InputAction::TogglePanelSelector,
+    );
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,
@@ -946,6 +973,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+B",
             action: "Toggle sidebar",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Ctrl+Shift+W",
+            action: "Switch side panel",
             condition: None,
         },
         HelpEntry {
@@ -1700,7 +1733,7 @@ fn is_text_modifier(modifiers: KeyModifiers) -> bool {
     modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT
 }
 
-fn handle_key_with_bindings(
+pub(crate) fn handle_key_with_bindings(
     key: KeyEvent,
     bindings: Option<&HashMap<(KeyModifiers, KeyCode), InputAction>>,
     mode: InputMode,

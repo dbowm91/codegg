@@ -111,11 +111,26 @@ root and lifecycle modules.
   entries winning. `ActionKey::all()` is the exhaustive configurable action
   list; `Char` is the explicit non-configurable input exception.
 
+- **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
+  owns which `SidePanelId` is active, whether it holds focus, and the
+  `Ctrl+Shift+W` selector. To add a panel: an enum variant, an entry in
+  `SidePanelId::ALL`, and one `SidePanel` impl. Do not add a per-panel `if`
+  to the render path. A focused panel consumes *every* key — an unbound key
+  that fell through to the prompt would submit an agent turn — so
+  `PanelKey` has no "unhandled" variant; `Esc`/`q` are the only exits and
+  go through the host. Panels get named borrows via `PanelCtx` (never
+  `&App`) and express every mutation as a `TuiMsg` routed into an existing
+  command seam. Project binding is resolved by `commands/panels.rs`, not by
+  the panel. Key precedence in `App::on_key`: modals → timeline → command
+  mode → completions → change review → **side panel** → Workspace → Editor →
+  composer.
 - **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
   shared by keyboard navigation and mouse hit testing. Selection is cleared on
   project-scope changes, and the bounded `agent_tree` is joined to durable
   runs only by exact canonical task IDs. Enter opens the existing lazy run
   detail surface; it never copies transcripts or logs into sidebar state.
+  The Session panel (`panels/session.rs`) delegates to `SidebarWidget`
+  unchanged, so its binding-resolved behavior is whatever `handle_key` says.
 - **Git sidebar is cached**: `GitSidebarState` caches git info; stale
   generations are dropped silently. Do not render git state live per frame.
 - **Remote protocol is event/state-driven**: the `/tui` WebSocket speaks the

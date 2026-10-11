@@ -1414,19 +1414,39 @@ impl App {
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
-        // M005: when the Workspace primary view is active, the normal
-        // sidebar region shows project chat for the selected project
-        // (existing `ChatState` projection, no second cache). Narrow
-        // terminals hide the sidebar entirely via layout bounds; that is
-        // the clean degrade (no panic, viewport still shows Workspace).
-        if matches!(
-            self.ui_state.routes.current(),
-            crate::tui::route::Route::Workspace
-        ) {
-            self.render_workspace_chat_panel(frame, area);
-            return;
-        }
-        self.sidebar.set_theme(&self.ui_state.theme);
+        // The side column is a panel host now: whichever panel is active
+        // renders here. Everything below only *populates* the projections
+        // the panels read (sidebar widget, chat state); it never decides
+        // which panel shows.
+        self.populate_session_panel();
+        let mut ctx = crate::tui::panels::PanelCtx {
+            theme: Arc::clone(&self.ui_state.theme),
+            // `now_ms` is display-only (composing expiry); no I/O.
+            now_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            session: &mut self.sidebar,
+            chat: &mut self.chat,
+            chat_project: self.chat_panel_project.as_deref(),
+            area,
+            focused: self.panel_host.is_focused(),
+        };
+        // `Clear` first: the previous panel's pixels must not show through
+        // a narrower panel (the chat panel is shorter than the sidebar).
+        frame.render_widget(Clear, area);
+        self.panel_host.render(&mut ctx, frame.buffer_mut(), area);
+    }
+
+    /// Push session projection into the Session panel's widget.
+    ///
+    /// Split out of `render_sidebar` so the sidebar's field population is
+    /// readable on its own; it performs no I/O and reads only cached state.
+    fn populate_session_panel(&mut self) {
+        // The Workspace route no longer forces this panel. It selects the
+        // Chat panel through the host instead (see
+        // `workspace_dashboard::open_workspace`), which keeps the previous
+        // behaviour while leaving the choice switchable on every route.
         let project_scope = self.active_project_id().map(str::to_string);
         self.sidebar.set_project_scope(project_scope.as_deref());
         if let Some(ref sess) = self.session_state.session {
@@ -1564,72 +1584,6 @@ impl App {
             self.sidebar.set_agent_tree(Vec::new());
             self.sidebar.set_convergences(Vec::new());
         }
-
-        frame.render_widget(&self.sidebar, area);
-    }
-
-    /// M005: dedicated project-chat side panel for the Workspace-selected
-    /// project. Routes history/draft through `ChatState[selected]` and the
-    /// existing `chat.v1` operations; selection changes switch projection
-    /// via `sync_workspace_chat_panel`. Render performs no I/O and stays
-    /// bounded through `panel_lines`. Denied/unsupported chat renders the
-    /// generic unavailable state (never another project's data).
-    fn render_workspace_chat_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let theme = Arc::clone(&self.ui_state.theme);
-        let selected = self
-            .dialog_state
-            .workspace_dashboard
-            .as_ref()
-            .and_then(|dashboard| dashboard.selected())
-            .map(|row| {
-                (
-                    row.summary.project_id.clone(),
-                    row.summary.display_name.clone(),
-                )
-            });
-        let Some((project_id, display_name)) = selected else {
-            let block = Block::default()
-                .title(" Project chat ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .style(Style::default().bg(theme.background));
-            let paragraph = Paragraph::new("No project selected")
-                .block(block)
-                .style(Style::default().fg(theme.muted))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
-            return;
-        };
-        // `now_ms` is display-only (composing expiry); no I/O.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        let mut panel = self.chat.panel_lines(&project_id, now_ms);
-        // Append the editable draft + focus hint (bounded display only;
-        // the durable draft lives in `ChatState` per project).
-        let draft = self.chat.draft_for(&project_id).to_string();
-        let focused = self.workspace_focus == crate::tui::app::state::WorkspaceFocus::Chat;
-        if focused {
-            panel.push(format!("> {draft}▌ (Enter sends, Esc returns)"));
-        } else if !draft.is_empty() {
-            let preview: String = draft.chars().take(80).collect();
-            panel.push(format!("draft: {preview}"));
-        } else {
-            panel.push("/chat focuses panel · Space expands tasks".to_string());
-        }
-        let title = format!(" Chat: {display_name} ");
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
-            .style(Style::default().bg(theme.background));
-        let text: Vec<Line> = panel
-            .into_iter()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
-            .collect();
-        let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {

@@ -129,6 +129,11 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     }
     start_dashboard_refresh(app);
     sync_workspace_chat_panel(app);
+    // Entering Workspace still auto-selects the chat panel, as it did when
+    // the render path hard-coded it for this route. The choice stays the
+    // user's afterwards: `Ctrl+Shift+W` can switch away and back without
+    // re-entering the view.
+    crate::tui::commands::panels::select_panel(app, crate::tui::panels::SidePanelId::Chat);
     app.messages_state.toasts.info(
         "Workspace — Session/Task composer for the selected project; side panel is project chat (Esc leaves)",
     );
@@ -149,8 +154,12 @@ pub(crate) fn leave_workspace_view(app: &mut App) {
     app.dialog_state.workspace_dashboard = None;
     app.workspace_focus = WorkspaceFocus::Composer;
     // Clear the Workspace-driven chat panel binding; per-project drafts
-    // stay in `ChatState` and are not deleted.
+    // stay in `ChatState` and are not deleted. The panel is unbound too —
+    // leaving the view must not leave keys aimed at a project locator that
+    // no longer has a dashboard selection behind it.
     app.chat_panel_project = None;
+    crate::tui::commands::panels::blur_panel(app);
+    crate::tui::commands::panels::sync_chat_panel_project(app);
     if !app.ui_state.routes.back() {
         app.ui_state.routes.navigate_to(Route::Home);
     }
@@ -631,6 +640,7 @@ pub(crate) fn sync_workspace_chat_panel(app: &mut App) {
     // Track the visible panel project so existing `refresh_chat_panel`
     // completions also update a modal opened above the view.
     app.chat_panel_project = Some(selected.clone());
+    crate::tui::commands::panels::sync_chat_panel_project(app);
     if app.chat.needs_refresh(&selected) {
         crate::tui::commands::chat::start_chat_history(app, selected);
     }
@@ -647,74 +657,39 @@ pub(crate) fn clear_workspace_revoked(app: &mut App, project_id: &str) {
     if app.chat_panel_project.as_deref() == Some(project_id) {
         app.chat_panel_project = None;
     }
+    crate::tui::commands::panels::reset_chat_panel(app);
     sync_workspace_chat_panel(app);
 }
 
-/// M005: focus the side-panel chat draft for the selected project.
-/// Printable keys + Enter then edit/send chat; the main prompt stays
-/// intact but does not receive keys until focus returns.
+/// Focus the chat side panel for the selected project.
+///
+/// Selecting the panel and focusing the host are two deliberate steps: this
+/// entry point means "I want to chat here", so it selects Chat rather than
+/// assuming the column already shows it. The ordinary draft-editing helpers
+/// this used to own are gone — the panel now drives the composer through
+/// the same `start_chat_*` seams the `/chat` window uses, so there is one
+/// code path for sending rather than two that could disagree.
 pub(crate) fn focus_workspace_chat(app: &mut App) {
     if app.dialog_state.workspace_dashboard.is_none() {
         return;
     }
-    let Some(selected) = workspace_selected_project_id(app) else {
+    if workspace_selected_project_id(app).is_none() {
         app.messages_state
             .toasts
             .info("No project selected — select a project before chatting");
         return;
-    };
-    app.workspace_focus = WorkspaceFocus::Chat;
-    sync_workspace_chat_panel(app);
-    let draft_len = app.chat.draft_for(&selected).len();
-    app.messages_state.toasts.info(&format!(
-        "Chat: {selected} — type to edit draft ({draft_len} chars), Enter sends, Esc returns to composer"
-    ));
+    }
+    crate::tui::commands::panels::select_panel(app, crate::tui::panels::SidePanelId::Chat);
+    if !crate::tui::commands::panels::focus_panel(app) {
+        app.messages_state
+            .toasts
+            .info("Chat panel cannot take focus for this project");
+    }
 }
 
-/// M005: return focus to the ordinary Session/Task composer.
+/// Return focus to the ordinary Session/Task composer.
 pub(crate) fn focus_workspace_composer(app: &mut App) {
-    app.workspace_focus = WorkspaceFocus::Composer;
-}
-
-/// M005: edit the selected project's chat draft (per-project, bounded).
-pub(crate) fn push_workspace_chat_char(app: &mut App, ch: char) {
-    let Some(selected) = workspace_selected_project_id(app) else {
-        return;
-    };
-    let mut draft = app.chat.draft_for(&selected).to_string();
-    if draft.chars().count() >= crate::tui::app::state::chat::MAX_CHAT_DRAFT_LEN {
-        return;
-    }
-    draft.push(ch);
-    app.chat.set_draft(&selected, draft);
-}
-
-/// M005: backspace the selected project's chat draft.
-pub(crate) fn pop_workspace_chat_char(app: &mut App) {
-    let Some(selected) = workspace_selected_project_id(app) else {
-        return;
-    };
-    let mut draft = app.chat.draft_for(&selected).to_string();
-    draft.pop();
-    app.chat.set_draft(&selected, draft);
-}
-
-/// M005: send the selected project's chat draft via the existing
-/// `chat.v1` path. Failures retain the draft; empty drafts are ignored.
-pub(crate) fn send_workspace_chat(app: &mut App) {
-    let Some(selected) = workspace_selected_project_id(app) else {
-        app.messages_state.toasts.info("No project selected");
-        return;
-    };
-    let draft = app.chat.draft_for(&selected).to_string();
-    let trimmed = draft.trim().to_string();
-    if trimmed.is_empty() {
-        return;
-    }
-    // Clear the editable draft optimistically; `note_failed_send`
-    // restores it when the daemon denies.
-    app.chat.set_draft(&selected, String::new());
-    crate::tui::commands::chat::start_chat_send(app, selected, trimmed, None);
+    crate::tui::commands::panels::blur_panel(app);
 }
 
 // ── Key handling ─────────────────────────────────────────────────────
@@ -818,45 +793,6 @@ pub(crate) fn handle_workspace_view_key(app: &mut App, key: crossterm::event::Ke
     use crossterm::event::{KeyCode, KeyModifiers};
     if app.dialog_state.workspace_dashboard.is_none() {
         return false;
-    }
-    // Chat-panel focus owns printable input + Enter/Backspace.
-    if app.workspace_focus == WorkspaceFocus::Chat {
-        match key.code {
-            KeyCode::Esc => {
-                focus_workspace_composer(app);
-                return true;
-            }
-            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
-                send_workspace_chat(app);
-                return true;
-            }
-            KeyCode::Backspace if key.modifiers == KeyModifiers::NONE => {
-                pop_workspace_chat_char(app);
-                return true;
-            }
-            KeyCode::Char(ch)
-                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                // Navigation aliases still move selection even when the
-                // chat draft is focused; all other text edits the draft.
-                match ch {
-                    'j' => {
-                        move_dashboard_selection(app, 1);
-                        return true;
-                    }
-                    'k' => {
-                        move_dashboard_selection(app, -1);
-                        return true;
-                    }
-                    _ => {
-                        push_workspace_chat_char(app, ch);
-                        return true;
-                    }
-                }
-            }
-            _ => {}
-        }
-        // Navigation keys fall through to list handling below.
     }
     let actioned = match key.code {
         KeyCode::Esc => {

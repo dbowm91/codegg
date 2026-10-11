@@ -111,6 +111,7 @@ pub mod file_diff;
 pub mod input;
 pub mod interactive_terminal;
 pub mod layout;
+pub mod panels;
 pub mod route;
 pub(crate) mod runtime;
 pub mod selection;

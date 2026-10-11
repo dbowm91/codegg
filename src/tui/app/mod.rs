@@ -251,6 +251,14 @@ pub struct App {
     /// project's explicit workspace root.
     pub command_registry: crate::tui::command::CommandRegistry,
     pub sidebar: SidebarWidget,
+    /// Which panel occupies the side column, whether it holds keyboard
+    /// focus, and the `Ctrl+Shift+W` switcher.
+    ///
+    /// The host is the single focus authority for the side column: both
+    /// panels it owns route every key through it, so a focused panel can
+    /// never leak input to the composer. `sidebar` remains the Session
+    /// panel's projection, not the region's owner.
+    pub panel_host: crate::tui::panels::SidePanelHost,
     pub status_bar: StatusBarWidget,
     /// M007 frontend-local cache of the daemon-resolved runtime policy
     /// (approval mode / sandbox profile / enforcement / reviewer
@@ -891,6 +899,7 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            panel_host: crate::tui::panels::SidePanelHost::new(),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -1444,6 +1453,7 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
+            panel_host: crate::tui::panels::SidePanelHost::new(),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -2816,12 +2826,33 @@ impl App {
             return;
         }
 
-        let sidebar_focused = self.ui_state.sidebar_visible && self.sidebar.is_focused();
+        // The host takes keys when a panel holds focus *or* when its overlay is
+        // up; the overlay must answer its own `Esc`/`Enter` without a panel
+        // owning the keyboard first.
+        let panel_active = self.ui_state.sidebar_visible
+            && (self.panel_host.is_focused() || self.panel_host.selector_open());
         // M006-E: an open change review claims a strict subset of keys, and
         // only while it is focused. Anything unclaimed falls through, so a
         // review never silently swallows editor or composer input.
         if crate::tui::commands::change_review::is_active(self)
             && crate::tui::commands::change_review::handle_key(self, key)
+        {
+            return;
+        }
+        // A focused side panel owns every key it is shown, and is consulted
+        // before the non-modal primary views. Ordering matters: those views
+        // also claim printable keys, and a chat panel in Compose mode needs
+        // to see them as text rather than as dashboard navigation.
+        if panel_active
+            && crate::tui::commands::panels::handle_panel_key(
+                self,
+                key,
+                crate::tui::input::handle_key_with_bindings(
+                    key,
+                    Some(&self.ui_state.bindings),
+                    InputMode::Normal,
+                ),
+            )
         {
             return;
         }
@@ -2852,17 +2883,11 @@ impl App {
         let action = handle_event_with_bindings_moded(
             crossterm::event::Event::Key(key),
             Some(&self.ui_state.bindings),
-            if sidebar_focused {
-                InputMode::Normal
-            } else {
-                self.ui_state.input_mode
-            },
+            // A focused panel already returned above, so this is always the
+            // ordinary composer mode here.
+            self.ui_state.input_mode,
         );
         debug_log!("action from bindings: {:?}", action);
-        if sidebar_focused {
-            self.handle_sidebar_action(action, key);
-            return;
-        }
         // M005: Normal-mode filter text for the Workspace view. Only
         // unbound keys reach the dashboard query; Insert-mode text stays
         // in the composer and bound keys (j/k/Space/etc.) were already
@@ -2933,14 +2958,17 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::TogglePanelSelector) => {
+                crate::tui::commands::panels::toggle_panel_selector(self);
+            }
             Some(InputAction::ToggleTodoList) => {
                 self.toggle_todo_list();
             }
             Some(InputAction::FocusSidebar) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::focus_workspace_chat(self);
-                } else if self.ui_state.sidebar_visible {
-                    self.sidebar.focus_sidebar();
+                } else {
+                    crate::tui::commands::panels::focus_panel(self);
                 }
             }
             Some(InputAction::ToggleSection) => {
@@ -8899,8 +8927,15 @@ impl App {
     fn toggle_sidebar(&mut self) {
         self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
         if self.ui_state.sidebar_visible {
-            self.sidebar.focus_sidebar();
+            // Focus the active panel, not the session sidebar: the column
+            // may be showing chat, and focusing a panel the user cannot see
+            // would strand every key in an invisible surface.
+            crate::tui::commands::panels::focus_panel(self);
+            if self.panel_host.active() == crate::tui::panels::SidePanelId::Session {
+                self.sidebar.focus_sidebar();
+            }
         } else {
+            crate::tui::commands::panels::blur_panel(self);
             self.sidebar.blur_sidebar();
         }
     }

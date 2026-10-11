@@ -651,6 +651,7 @@ pub struct App {
     pub dialog_state: DialogState,
     pub agent_state: AgentState,
     pub sidebar: SidebarWidget,
+    pub panel_host: crate::tui::panels::SidePanelHost,
     pub status_bar: StatusBarWidget,
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
@@ -725,6 +726,120 @@ identity, agent, branch/worktree, result commit, and attention state without
 loading transcripts or logs. Reconnect and resync replace the same projection
 state, so the TUI does not maintain a second run tree. Detailed worktree
 inspection and cleanup continue through the existing authorized commands.
+
+### Swappable side panel (`src/tui/panels/`)
+
+The right-hand column is a **panel host**, not a widget chosen by an `if` in
+`render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns three pieces
+of state: which `SidePanelId` is active, whether it holds keyboard focus, and
+the `Ctrl+Shift+W` selector overlay. Two panels ship: `Session` (the
+`SidebarWidget` projection) and `Chat` (interactive project chat).
+
+Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, and one
+`SidePanel` impl. There is no per-panel branch left in the render path or the
+key handler.
+
+**A focused panel consumes every key.** This is the property that makes the
+column usable: in the chat panel a printable character means "insert into the
+composer", so an unbound key that fell through to the prompt would submit an
+agent turn. `PanelKey` therefore has no "unhandled" variant; `Esc` and `q`
+are the only exits, handled by the host. A panel with an input mode claims
+the exit first via `SidePanel::owns_exit_key`, so chat returns to Normal with
+its buffer intact before focus leaves — and `q` stays a letter while
+composing instead of yanking the keyboard away mid-word.
+
+**Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
+timeline → command mode → completions → change review → **side panel** →
+Workspace view → Editor view → composer. The panel sits above the non-modal
+primary views because those also claim printable keys, and a chat panel in
+Compose mode must see them as text rather than as dashboard navigation.
+
+**Panels are presentation plus intent**, exactly like `Component` dialogs.
+`PanelCtx` grants named borrows only — theme, clock, the sidebar widget, the
+chat state, and a resolved `chat_project`. There is deliberately no `&App`,
+so a panel cannot reach a locator or a client. Every mutation is an emitted
+`TuiMsg` routed by `App::process_msg` into an existing command seam; the chat
+panel uses the same `start_chat_*` seams as the `/chat` window, so there is
+one send path rather than two that could disagree.
+
+**Project binding** is resolved by `commands/panels.rs`, never by a panel:
+the Workspace dashboard's selected row when that view is open, otherwise the
+active tab's explicit project id. `App::chat_panel_project` stays the single
+field the chat commands read; the panel's `bound` flag is kept in step with
+it so `SidePanelHost::focus` (which has no app access) can refuse focus to an
+unbound chat panel. Changing the binding drops the panel's per-view state, so
+a composer buffer cannot survive into a different project's channel list.
+
+**Selector overlay** (`Ctrl+Shift+W`): a two-column grid drawn *inside* the
+side column, not centred over the viewport — it describes the region it is
+switching, and staying in-column means the panel it will reveal is never
+covered. `h`/`l` move by column, `j`/`k` by row, both clamped rather than
+wrapped so a press at the grid edge is inert rather than teleporting the
+highlight. `Enter` commits, `Esc` cancels, and the selector is consulted
+before the active panel so the panel never sees a key aimed at the overlay.
+Opening is refused while the column is hidden.
+
+Two ordering rules the host owns, both load-bearing:
+
+- **The switcher hotkey is answered by the host, not by the panel.** If a
+  focused panel got first refusal it would swallow `Ctrl+Shift+W` — the only
+  way back to the switcher — and the user would be stuck inside the panel
+  they opened it to leave. The host matches the resolved
+  `InputAction::TogglePanelSelector` before delegating.
+- **Opening the overlay does not take focus; committing to one does.** If
+  opening stole the keyboard, a user who pressed it from the composer and
+  then cancelled would find their next keystroke going to a panel they never
+  chose. `App::on_key` therefore routes to the host when a panel is focused
+  *or* the overlay is up, and `SidePanelHost::handle_key` checks the overlay
+  before the focus gate.
+
+Committing to Chat also re-resolves the project binding first: the host has
+no app access, so it would otherwise find the panel unbound and refuse to
+focus it, leaving the selection looking inert.
+
+`Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Shift+S`
+enters sidebar focus; `Ctrl+Shift+W` opens the selector. Both chords use
+`Ctrl+Shift+<letter>` rather than a bare `Ctrl+<letter>` because every free
+bare Ctrl letter is a terminal control character (Ctrl+H backspace, Ctrl+I
+tab, Ctrl+J newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend).
+
+Entering `Route::Workspace` still auto-selects the Chat panel, preserving the
+M005 behaviour, but the choice is the user's afterwards: `Ctrl+Shift+W` can
+switch away and back without re-entering the view.
+
+### Chat side panel (`src/tui/panels/chat.rs`)
+
+A peer of the `/chat` window (`components/dialogs/chat.rs`), not a
+replacement — the slash commands stay available so the two can be compared.
+Both read the same `ChatState` projection, share the two-mode Normal /
+Compose / Edit keymap and key meanings (`j`/`k` move, `g`/`G`/`Home`/`End` jump,
+PageUp/PageDown and `Ctrl+U`/`Ctrl+D` page, `i`/`a`/`Enter` compose, `r` reply,
+`e` edit, `X` redact, `m` mark-read, `u` load older, `R` refresh, `[`/`]`
+switch channel), and emit the same `TuiMsg` intents.
+
+The difference is presentation. At 30 columns there is a single composer row
+instead of a bordered three-row editor, message bodies hard-wrap through
+`wrap::wrap_to_strings` with continuation lines indented under the first body
+column, and the keybar is one line of hints shown only while focused.
+
+Two invariants carried over from the window:
+
+- **The composer buffer lives in the panel, not in `ChatState`.** It is
+  mirrored into the per-project draft on every edit so `/chat-send` from the
+  command line sees the same text and a failed send keeps what was typed.
+  Opening the composer never clears it.
+- **Paging anchors on the selected message's last wrapped line.** A long
+  message can span more rows than the body has, so anchoring on its first
+  line would scroll the selection off-screen entirely.
+
+Two deliberate divergences from the `/chat` window:
+
+- **Enter on an empty composer emits nothing.** `start_chat_send` rejects an
+  empty body with a warning toast, so forwarding it would make a stray Enter
+  on an untouched composer shout about a message the user never wrote.
+- **The status row leads with `✗` and no "send failed:" label.** At 28 inner
+  columns the label would push the reason — the part the user needs — off the
+  end of the row.
 
 ### Keyboard sidebar and agent-tree inspection (M009)
 
@@ -1437,7 +1552,7 @@ tui/
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
 │       └── workspace_dashboard.rs # M005 Workspace primary-view cache
-├── commands/               # 33 command handler submodules + mod.rs
+├── commands/               # 35 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
 │   ├── change_review.rs    # M006-E review commands
@@ -1543,6 +1658,10 @@ tui/
 │   └── tool_output.rs      # ToolOutput
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
+├── panels/                 # Swappable side-panel host (Ctrl+Shift+W switcher)
+│   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost, selector
+│   ├── chat.rs             # Interactive project-chat panel
+│   └── session.rs          # Session panel (delegates to SidebarWidget)
 ├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
 ├── selection.rs            # Terminal text selection over the rendered frame buffer
 ├── theme.rs                # TUI-local Theme (ratatui projection)

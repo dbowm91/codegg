@@ -318,7 +318,8 @@ async fn workspace_owned_work_cancelled_and_completion_stale_dropped() {
     let _ = old_generation;
 }
 
-/// Leaving Workspace clears only the panel binding/focus: per-project
+/// Leaving Workspace drops the dashboard-derived panel binding and focus:
+/// the chat panel falls back to the active tab's project, and per-project
 /// chat drafts and cached chat state survive the close.
 #[tokio::test(flavor = "current_thread")]
 async fn chat_drafts_survive_workspace_close() {
@@ -341,9 +342,19 @@ async fn chat_drafts_survive_workspace_close() {
 
     press_esc(&mut app);
     assert!(app.dialog_state.workspace_dashboard.is_none());
-    assert!(
-        app.chat_panel_project.is_none(),
-        "panel binding must clear on close"
+    // The panel binding no longer resolves through the dashboard selection,
+    // which is closed and gone. Chat is a global side panel, so the binding
+    // falls back to the active tab's explicit execution context — never a
+    // dashboard locator that no longer exists, and never the cwd.
+    assert_eq!(
+        app.chat_panel_project.as_deref(),
+        app.active_project_id(),
+        "the panel must fall back to the active tab's project when Workspace closes"
+    );
+    assert_ne!(
+        app.chat_panel_project.as_deref(),
+        Some("project-b"),
+        "the closed view must not leave its selection bound to the panel"
     );
     assert_eq!(
         app.chat.draft_for("project-a"),
