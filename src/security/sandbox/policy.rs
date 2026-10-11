@@ -627,6 +627,7 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_policy_tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn windows_roots_use_known_folders_and_retain_credential_denies() {
@@ -636,7 +637,7 @@ mod windows_policy_tests {
         assert!(reads.iter().any(|path| path.starts_with(&home)));
         let writes = tool_write_allowances();
         assert!(writes.iter().any(|path| {
-            std::env::var_os("TEMP").is_some_and(|temp| path == PathBuf::from(temp))
+            std::env::var_os("TEMP").is_some_and(|temp| path.as_os_str() == temp.as_os_str())
         }));
         let denies = sensitive_deny_paths();
         assert!(denies.contains(&home.join(".ssh")));
