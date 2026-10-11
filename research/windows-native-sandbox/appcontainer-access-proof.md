@@ -140,6 +140,15 @@ policy against real sensitive-path fixtures. The full adversarial VM matrix is
 still required. If these steps cannot preserve preexisting security
 descriptors and fail closed on cleanup, stop before backend registration.
 
+## Evidence-record follow-up
+
+`https://github.com/dbowm91/codegg/actions/runs/38165081918`
+The same proof fixture and selected Windows suite passed again in 11m 17s.
+The workflow completed the 8 launcher tests, suspended-target failure
+injection, Rust AppContainer token/Job proof, and selected shell/policy tests.
+This rerun validates the recorded evidence state; it adds no production
+launcher or ACL-lease coverage.
+
 References:
 
 - [Microsoft: Launch an AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)

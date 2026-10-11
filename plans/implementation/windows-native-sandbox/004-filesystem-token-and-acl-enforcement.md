@@ -72,6 +72,10 @@ shell/policy tests passed. It remains a test-only launch proof; production
 AppContainer launch, ACL lease/recovery, credential/IPC denial, and the
 adversarial VM matrix are unimplemented.
 
+The evidence-record follow-up `38165081918` also passed the same Windows
+fixture and selected suite in 11m 17s. This rerun confirms the recorded
+evidence state; it does not change the production implementation gaps above.
+
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
 sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn
