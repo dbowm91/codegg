@@ -8,6 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, Notify};
 
@@ -129,6 +130,7 @@ impl IdeServer {
         }
     }
 
+    #[cfg(unix)]
     #[allow(dead_code)]
     async fn handle_connection(&self, mut stream: UnixStream) -> Result<(), McpError> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};

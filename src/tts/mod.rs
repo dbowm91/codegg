@@ -4,8 +4,11 @@
 
 use crate::error::AppError;
 use async_trait::async_trait;
+#[cfg(unix)]
 use nix::sys::signal::{self, killpg, Signal};
+#[cfg(unix)]
 use nix::unistd::Pid;
+#[cfg(unix)]
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -83,6 +86,7 @@ impl Tts {
         // Own process group so `stop()` signals only this speech, never a
         // `say` the user started elsewhere. Failure to establish the group is
         // not fatal: `stop()` falls back to signalling the bare pid.
+        #[cfg(unix)]
         command.process_group(0);
         let child = command.spawn().map_err(|e| {
             self.speaking.store(false, Ordering::SeqCst);
@@ -113,37 +117,45 @@ impl Tts {
     }
 
     pub async fn stop(&self) -> Result<(), AppError> {
-        if !self.is_speaking() {
+        #[cfg(not(unix))]
+        {
+            self.speaking.store(false, Ordering::SeqCst);
             return Ok(());
         }
-        self.speaking.store(false, Ordering::SeqCst);
-        // Take and clear the PID under the lock so a concurrent stop() cannot
-        // signal the same child twice.
-        let pid = self.pid.lock().ok().and_then(|mut guard| guard.take());
-        let Some(pid) = pid else {
-            // No child of ours is tracked (already reaped, or spawned before
-            // this instance took ownership). Never fall back to a
-            // pattern-kill: that would terminate unrelated `say` processes
-            // belonging to the user.
-            return Ok(());
-        };
-        // `say` runs in its own process group, so signalling the group cannot
-        // reach an unrelated `say`. If grouping was not established, fall back
-        // to signalling the bare pid.
-        let target = Pid::from_raw(pid as i32);
-        let result =
-            killpg(target, Signal::SIGTERM).or_else(|_| signal::kill(target, Signal::SIGTERM));
-        match result {
-            Ok(()) => Ok(()),
-            // ESRCH means the child already exited, which is the desired
-            // end state for stop().
-            Err(nix::errno::Errno::ESRCH) => Ok(()),
-            Err(err) => {
-                let err: io::Error = io::Error::from_raw_os_error(err as i32);
-                tracing::warn!("stop say pid {pid} failed: {err}");
-                Err(AppError::Io(io::Error::other(format!(
-                    "stop say pid {pid} failed: {err}"
-                ))))
+        #[cfg(unix)]
+        {
+            if !self.is_speaking() {
+                return Ok(());
+            }
+            self.speaking.store(false, Ordering::SeqCst);
+            // Take and clear the PID under the lock so a concurrent stop() cannot
+            // signal the same child twice.
+            let pid = self.pid.lock().ok().and_then(|mut guard| guard.take());
+            let Some(pid) = pid else {
+                // No child of ours is tracked (already reaped, or spawned before
+                // this instance took ownership). Never fall back to a
+                // pattern-kill: that would terminate unrelated `say` processes
+                // belonging to the user.
+                return Ok(());
+            };
+            // `say` runs in its own process group, so signalling the group cannot
+            // reach an unrelated `say`. If grouping was not established, fall back
+            // to signalling the bare pid.
+            let target = Pid::from_raw(pid as i32);
+            let result =
+                killpg(target, Signal::SIGTERM).or_else(|_| signal::kill(target, Signal::SIGTERM));
+            match result {
+                Ok(()) => Ok(()),
+                // ESRCH means the child already exited, which is the desired
+                // end state for stop().
+                Err(nix::errno::Errno::ESRCH) => Ok(()),
+                Err(err) => {
+                    let err: io::Error = io::Error::from_raw_os_error(err as i32);
+                    tracing::warn!("stop say pid {pid} failed: {err}");
+                    Err(AppError::Io(io::Error::other(format!(
+                        "stop say pid {pid} failed: {err}"
+                    ))))
+                }
             }
         }
     }

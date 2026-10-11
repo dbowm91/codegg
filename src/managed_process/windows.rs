@@ -65,7 +65,10 @@ impl WindowsJob {
         let pid = child
             .id()
             .ok_or_else(|| io::Error::other("suspended child process has no PID"))?;
-        let process = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| io::Error::other("suspended child process handle is unavailable"))?
+            as windows_sys::Win32::Foundation::HANDLE;
         let assigned =
             unsafe { AssignProcessToJobObject(self.handle.as_raw_handle() as _, process) };
         if assigned == 0 {
