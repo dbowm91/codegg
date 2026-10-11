@@ -19,8 +19,9 @@ ACL-restoration run result: successful; the workflow completed in 13m 30s.
 
 Suspended-launch/Job proof: `https://github.com/dbowm91/codegg/actions/runs/38156232045`
 The AppContainer proof step passed in 4s, including assignment of the suspended
-target to its Job before resume; the remaining workflow tests were still running
-when this report was updated.
+target to its Job before resume. The full Windows workflow completed successfully
+in 12m 56s: all 8 process launcher tests passed, suspended-target failure
+injection passed, and all selected shell/policy tests passed.
 
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
@@ -80,7 +81,7 @@ version `10.0.26100`, build `26100`:
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
-suite (all selected tests passed) in run `38155073513`.
+suite (all selected tests passed) in run `38156232045`.
 
 Microsoft documents AppContainer access as the intersection of traditional
 user/group grants and AppContainer package/capability SID grants, with the
