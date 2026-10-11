@@ -257,6 +257,12 @@ pub fn validate_denied_paths(denied: &[PathBuf]) -> Result<(), String> {
             let metadata = match std::fs::metadata(path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                // The process cannot traverse this host-protected path, so
+                // its ordinary filesystem permissions already deny the same
+                // child. This commonly covers `/root/.ssh` for a non-root
+                // daemon; do not make unrelated constrained launches fail
+                // because the host has an inaccessible account directory.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
                 Err(error) => {
                     return Err(format!(
                         "cannot inspect denied sandbox path {}: {error}",
@@ -567,6 +573,33 @@ mod tests {
         std::fs::hard_link(&denied, &alias).expect("hardlink alias");
         let error = validate_denied_paths(&[denied]).expect_err("hardlink must fail closed");
         assert!(error.contains("hardlinked denied file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_inaccessible_deny_path_does_not_block_preflight() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("fixture root");
+        let protected = dir.path().join("protected");
+        std::fs::create_dir(&protected).expect("protected fixture");
+        let secret = protected.join("secret");
+        std::fs::write(&secret, "host-protected").expect("secret fixture");
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
+            .expect("remove traversal permission");
+
+        let metadata = std::fs::metadata(&secret);
+        let validation = validate_denied_paths(std::slice::from_ref(&secret));
+        std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700))
+            .expect("restore fixture permissions");
+        if metadata.is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied) {
+            assert!(
+                validation.is_ok(),
+                "host DAC already blocks the path: {validation:?}"
+            );
+        } else {
+            eprintln!("skipped: test process can traverse mode-000 fixture directory");
+        }
     }
 
     #[cfg(unix)]

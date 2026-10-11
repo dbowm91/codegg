@@ -17,7 +17,9 @@ use codegg::security::sandbox::{
     SandboxConfig, SandboxLaunchOutcome, SandboxLaunchSpec, SandboxMode, SANDBOX_STATUS_FD,
 };
 use std::io::Read;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "macos")]
+use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -244,9 +246,11 @@ fn denied_credential_nested_under_workspace_is_not_read_or_written() {
     .expect("backend enforced containment");
     assert!(
         !read.stdout.contains("secret-value"),
-        "a workspace allowance must not expose a nested credential: {:?}",
+        "a workspace allowance or symlink alias must not expose a nested credential: {:?}",
         read.stdout
     );
+    #[cfg(target_os = "macos")]
+    assert_eq!(read.backend(), Some(BackendId::SEATBELT));
 
     let marker = workspace.path().join("target-ran");
     let mut write_spec = spec_for(
@@ -330,10 +334,10 @@ fn helper_reports_enforcement_with_a_real_backend_identity() {
     );
     match outcome {
         SandboxLaunchOutcome::Enforced {
+            backend,
             abi,
             guarantees,
             limits,
-            ..
         } => {
             if backend == BackendId::LANDLOCK {
                 eprintln!("sandbox qualification: kernel Landlock ABI {abi:?}");
@@ -357,6 +361,21 @@ fn helper_reports_enforcement_with_a_real_backend_identity() {
                 "an enforced run must state its escapes; a backend with no \
                  limits is a backend nobody has audited"
             );
+            if backend == BackendId::SEATBELT {
+                assert_eq!(abi, None, "Seatbelt has no versioned ABI");
+                for reported in [
+                    "no network isolation",
+                    "no_new_privs equivalent",
+                    "open file descriptors",
+                    "Apple Events and Launch Services",
+                    "reads are broadly allowed",
+                ] {
+                    assert!(
+                        limits.iter().any(|limit| limit.contains(reported)),
+                        "Seatbelt must report {reported:?}: {limits:?}"
+                    );
+                }
+            }
         }
         other => panic!("expected enforcement, got {other:?}"),
     }
@@ -534,8 +553,13 @@ fn workspace_write_allows_workspace_and_refuses_everything_else() {
     // Reads are deliberately broad (tool compatibility), so an outside read
     // succeeding is expected and pinned here to keep the trade-off visible.
     assert!(
-        stdout.contains("READ-OUTSIDE-LEAK") || stdout.contains("READ-OUTSIDE-DENIED"),
-        "the read probe must report a definite outcome: {stdout}"
+        match run.backend() {
+            Some(BackendId::SEATBELT) => stdout.contains("READ-OUTSIDE-LEAK"),
+            Some(BackendId::LANDLOCK) => stdout.contains("READ-OUTSIDE-DENIED"),
+            _ => false,
+        },
+        "outside read outcome must match the reported backend ({:?}): {stdout}",
+        run.backend()
     );
 }
 
@@ -658,6 +682,73 @@ fn seatbelt_preserves_and_reports_preopened_denied_file_descriptors() {
         }
         other => panic!("expected Seatbelt enforcement, got {other:?}"),
     }
+}
+
+/// Seatbelt's filesystem profile deliberately leaves network operations open.
+/// Prove that limit with a loopback-only fixture and require the status frame
+/// to disclose it; no external host or service is contacted.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_loopback_is_reachable_and_reported_as_unrestricted() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .expect("loopback fixture listener");
+    let port = listener.local_addr().expect("listener address").port();
+    let accept = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("loopback client");
+        let mut byte = [0];
+        std::io::Read::read_exact(&mut stream, &mut byte).expect("loopback probe byte");
+        byte[0]
+    });
+
+    let config = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::ReadOnly)
+        .with_allowed_paths(vec![workspace.path().to_string_lossy().into_owned()]);
+    let mut spec = config
+        .launch_spec("python3", &[], Some(workspace.path()))
+        .expect("Python loopback launch spec");
+    spec.args = vec![
+        "-c".to_string(),
+        format!(
+            "import socket; s=socket.create_connection(('127.0.0.1',{port}), timeout=5); s.sendall(b'x'); s.close(); print('LOOPBACK-REACHED')"
+        ),
+    ];
+    let run = run_helper(&spec);
+    assert!(run.success, "loopback probe failed: {}", run.stderr);
+    assert!(run.stdout.contains("LOOPBACK-REACHED"), "{}", run.stdout);
+    assert_eq!(accept.join().expect("listener thread"), b'x');
+    match run.outcome().expect("helper status frame") {
+        SandboxLaunchOutcome::Enforced {
+            backend, limits, ..
+        } => {
+            assert_eq!(backend, BackendId::SEATBELT);
+            assert!(limits
+                .iter()
+                .any(|limit| limit.contains("no network isolation")));
+        }
+        other => panic!("expected Seatbelt enforcement, got {other:?}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rejected_seatbelt_profile_does_not_execute_the_target() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("seatbelt-target-ran");
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.args = vec!["-c".to_string(), format!("touch {}", sh_quote(&marker))];
+    // A NUL cannot cross sandbox_init's C-string API. The helper must report
+    // setup failure before exec and must not fall back to the unsandboxed shell.
+    spec.deny_paths.push(PathBuf::from("\0"));
+    let run = run_helper(&spec);
+    assert!(!marker.exists(), "target ran after invalid Seatbelt setup");
+    assert!(matches!(
+        run.outcome(),
+        Some(SandboxLaunchOutcome::SetupError { .. })
+    ));
 }
 
 // ── Tool compatibility ───────────────────────────────────────────────────

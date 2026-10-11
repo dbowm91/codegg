@@ -1157,6 +1157,37 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hardlinked_denied_path_fails_before_target_launch() {
+        let directory = tempfile::tempdir().expect("hardlink fixture directory");
+        let denied = directory.path().join("credential");
+        let alias = directory.path().join("workspace-alias");
+        std::fs::write(&denied, "secret").expect("credential fixture");
+        std::fs::hard_link(&denied, &alias).expect("credential hardlink alias");
+        let marker = directory.path().join("target-ran");
+        let mut request = request("true");
+        request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), format!("touch {}", marker.display())],
+            read_paths: vec![directory.path().to_path_buf()],
+            write_paths: vec![directory.path().to_path_buf()],
+            deny_paths: vec![denied],
+        });
+
+        let error = run(request)
+            .await
+            .expect_err("path-based policy cannot safely exclude a hardlinked file");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("hardlinked denied file")),
+            "unexpected hardlink policy result: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran despite hardlink preflight refusal"
+        );
+    }
+
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
         // A `Required` request that loses containment mid-flight must fail.
