@@ -1181,16 +1181,15 @@ mod tests {
                 .join(format!("inside-{}.txt", mode.label()));
             let code = format!(
                 "from pathlib import Path\n\
-                 try:\n\
-                     Path({inside:?}).write_text('inside')\n\
-                     print('INSIDE-WRITE-ALLOWED')\n\
-                 except PermissionError:\n\
-                     print('INSIDE-WRITE-DENIED')\n\
-                 try:\n\
-                     Path({outside:?}).write_text('outside')\n\
-                     print('OUTSIDE-WRITE-LEAK')\n\
-                 except PermissionError:\n\
-                     print('OUTSIDE-WRITE-DENIED')\n",
+                 def attempt(path, content, label):\n\
+                     try:\n\
+                         method = 'write' + '_text'\n\
+                         getattr(Path(path), method)(content)\n\
+                         print(label + '-ALLOWED')\n\
+                     except PermissionError:\n\
+                         print(label + '-DENIED')\n\
+                 attempt({inside:?}, 'inside', 'INSIDE-WRITE')\n\
+                 attempt({outside:?}, 'outside', 'OUTSIDE-WRITE')\n",
                 inside = inside_file.to_string_lossy(),
                 outside = outside_file.to_string_lossy(),
             );
@@ -1216,7 +1215,7 @@ mod tests {
                 "mode={mode:?}"
             );
             assert!(
-                !result.stdout.contains("OUTSIDE-WRITE-LEAK"),
+                !result.stdout.contains("OUTSIDE-WRITE-ALLOWED"),
                 "mode={mode:?}"
             );
             assert_eq!(
