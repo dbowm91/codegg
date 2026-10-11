@@ -716,6 +716,12 @@ fn seatbelt_loopback_is_reachable_and_reported_as_unrestricted() {
                 Err(error) => panic!("loopback probe did not connect: {error}"),
             }
         };
+        stream
+            .set_nonblocking(false)
+            .expect("accepted fixture socket is blocking");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("bound the fixture read");
         let mut byte = [0];
         std::io::Read::read_exact(&mut stream, &mut byte).expect("loopback probe byte");
         byte[0]
