@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C009 — Restricted Launch Through ManagedProcessService
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
@@ -27,7 +27,7 @@ Integrate a **restricted** AppContainer process into the existing managed-proces
 
 ## 2. Why this milestone is ready / dependency gate
 
-Hard dependency: C008 accepted closure with successful hosted Rust token/Job launch and verified FFI lifetime. M001–M003 already closed. No privileged VM is needed to implement and test the process-control integration using disposable per-run fixture roots.
+Hard dependency: C008 accepted closure with successful hosted Rust token/Job launch and verified FFI lifetime. M001–M003 already closed. No privileged VM is needed to implement and test process-control integration on the hosted runner. ACL preparation and filesystem-rights assertions belong to C010's lease-owned fixture; C009 must not add ad hoc ACL mutation ahead of that ownership boundary.
 
 ## 3. Current implementation evidence and failed predecessor coverage
 
@@ -49,7 +49,7 @@ This is a corrective of the **blocked M004**, not a claim that `004-status.md` c
 ### In scope
 
 - Refactor `ManagedProcessService` private child abstraction for two Windows launch paths: existing Tokio `Disabled/FullHost` and restricted `CreateProcessW(STARTUPINFOEXW)`, both owned by the service with explicit process/Job handles.
-- Allow isolated **test-only** constrained execution against prepared disposable roots, while production remains disabled until C010 proves policy/ACL setup; feature-gate or typed capability-gate this carefully.
+- Allow isolated **test-only** process-control execution with an empty filesystem-root policy; production remains disabled until C010 proves policy/ACL setup. Feature-gate or typed capability-gate this carefully.
 - Implement bounded UTF-16 argv, cwd/env, stdio handle-list inheritance, controlled pipes, status frame, capture/output supervision, cancellation and exit accounting for restricted children.
 
 ### Explicitly out of scope
@@ -81,8 +81,8 @@ Use the repaired C008 attributes to create target suspended; query token and att
 ### WP-C — Failure-injection matrix
 Inject malformed status, failed Job assignment, pipe setup, token mismatch, duplicate handle inheritance, resume failure, cancellation before/during launch. Assert marker absence or controlled cleanup and no process tree leak.
 
-### WP-D — End-to-end disposable fixture
-Route a safe command via `ManagedProcessService` against test-owned AppContainer scratch/read/deny roots; observe permitted output, denied synthetic read/outside write, exit code and process tree. Do **not** set global Windows backend availability based on fixture.
+### WP-D — End-to-end process-control fixture
+Route a safe command via `ManagedProcessService` with no filesystem roots and observe real stdio, environment filtering, exit status, timeout, cancellation, and the explicit non-enforcement outcome. Do **not** mutate ACLs or set global Windows backend availability based on this fixture. C010 WP-D owns the follow-up fixture that combines this service path with journaled ACL leases and allowed/denied roots.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -94,7 +94,7 @@ No persistent migration. Unix helper transport and inherited file-descriptor sta
 
 ## 10. Required tests
 
-- Native hosted integration: test-only restricted `ManagedProcessService` command reads/writes permitted disposable roots and receives real stderr, stdout, exit status.
+- Native hosted integration: test-only restricted `ManagedProcessService` command receives real stdin/stderr/stdout and exit status with an empty filesystem-root policy; timeout and cancellation terminate the owned Job.
 - Security negative: arbitrary handle inheritance, daemon pipe, job escape attempt, forged/missing status, token mismatch, credential env leaks, indirect child command.
 - Timeout/cancellation: child/grandchild terminated, no Job handle inherited, runner remains usable.
 - Regression: `WindowsJob` unconstrained suite unchanged, Unix sandbox tests/guards unaffected.
@@ -123,7 +123,7 @@ The closure must record exact versions, run IDs, skipped coverage and failures. 
 
 ## 13. Acceptance criteria
 
-- Production code has one integrated restricted child-process lifecycle; a test-only prepared policy executes end-to-end through canonical service.
+- Production code has one integrated restricted child-process lifecycle; a test-only process policy with no filesystem roots executes end-to-end through canonical service. C010 must exercise allowed/denied roots under lease ownership before any filesystem guarantee is considered.
 - Token SID and Job verified before resume; stdout/stderr and exit/cancellation match managed-process semantics.
 - Constrained production `ReadOnly`/`WorkspaceWrite` remain unavailable until C010/C011 complete ACL and read-denial proof; no backend falsely advertises Enforced.
 

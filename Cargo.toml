@@ -338,6 +338,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Isolation",
+    "Win32_System_Pipes",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
@@ -345,6 +346,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [features]
 default = ["arboard"]
+windows-sandbox-test-support = []
 arboard = ["dep:arboard"]
 plugins = ["wasmtime"]
 debug-logging = []
@@ -395,6 +397,11 @@ required-features = ["server"]
 name = "team_collaboration_postclosure_m001_registration_auth"
 path = "tests/team_collaboration_postclosure_m001_registration_auth.rs"
 required-features = ["server"]
+
+[[test]]
+name = "windows_restricted_managed_process"
+path = "tests/windows_restricted_managed_process.rs"
+required-features = ["windows-sandbox-test-support"]
 
 # M003 pilot: consolidate the 11 `projection_replay_*` integration
 # targets into one. Cargo does not auto-discover `tests/<dir>/mod.rs`

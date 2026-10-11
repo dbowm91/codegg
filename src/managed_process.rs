@@ -132,30 +132,39 @@ impl EnvironmentPolicy {
 
     pub(crate) fn apply(&self, command: &mut Command) {
         command.env_clear();
+        for (name, value) in self.entries() {
+            command.env(name, value);
+        }
+    }
 
+    fn entries(&self) -> BTreeMap<OsString, OsString> {
+        let mut entries = BTreeMap::new();
         for name in &self.inherited {
             if self.denied.contains(name) {
                 continue;
             }
             if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
+                entries.insert(name.clone(), value);
             }
         }
         for (name, value) in &self.overrides {
             if !self.denied.contains(name) {
-                command.env(name, value);
+                entries.insert(name.clone(), value.clone());
             }
         }
-
         // Keep managed jobs noninteractive and deterministic. These are
         // applied after caller variables so the service owns these invariants.
-        command
-            .env("CI", "1")
-            .env("NO_COLOR", "1")
-            .env("TERM", "dumb")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("PAGER", "cat");
+        for (name, value) in [
+            ("CI", "1"),
+            ("NO_COLOR", "1"),
+            ("TERM", "dumb"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_PAGER", "cat"),
+            ("PAGER", "cat"),
+        ] {
+            entries.insert(name.into(), value.into());
+        }
+        entries
     }
 }
 
@@ -339,6 +348,22 @@ impl ProcessProvenance {
         }
         command.env("CODEGG_MANAGED_PROCESS", "1");
     }
+
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    fn apply_environment(&self, environment: &mut BTreeMap<OsString, OsString>) {
+        if !self.job_id.is_empty() {
+            environment.insert("CODEGG_JOB_ID".into(), self.job_id.clone().into());
+            environment.insert("CODEGG_SCHEDULER_JOB_ID".into(), self.job_id.clone().into());
+        }
+        if !self.attempt_id.is_empty() {
+            environment.insert("CODEGG_ATTEMPT_ID".into(), self.attempt_id.clone().into());
+            environment.insert(
+                "CODEGG_SCHEDULER_ATTEMPT_ID".into(),
+                self.attempt_id.clone().into(),
+            );
+        }
+        environment.insert("CODEGG_MANAGED_PROCESS".into(), "1".into());
+    }
 }
 
 /// Request to run one managed process. `argv` is passed directly to the child;
@@ -422,6 +447,15 @@ pub enum SandboxExecutionOutcome {
     Uncontained {
         reason: String,
     },
+    /// A debug-only native AppContainer exercise. This proves process identity
+    /// and Job ownership for tests, but deliberately carries no filesystem
+    /// enforcement claim and is unavailable in release builds.
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    TestOnlyAppContainer {
+        token_verified: bool,
+        job_verified: bool,
+        status: String,
+    },
 }
 
 impl SandboxExecutionOutcome {
@@ -442,6 +476,8 @@ impl SandboxExecutionOutcome {
             Self::Disabled => "sandbox_disabled",
             Self::Enforced { .. } => "sandbox_enforced",
             Self::Uncontained { .. } => "sandbox_uncontained_degraded",
+            #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+            Self::TestOnlyAppContainer { .. } => "sandbox_test_only_appcontainer",
         }
     }
 }
@@ -552,6 +588,11 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    if matches!(&request.sandbox, SandboxRequest::Required(_)) {
+        return run_windows_test_restricted(request, output_tx).await;
+    }
+
     let ManagedProcessRequest {
         executable,
         argv,
@@ -767,6 +808,270 @@ async fn run_inner(
         sandbox,
         cleanup,
     })
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn run_windows_test_restricted(
+    request: ManagedProcessRequest,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let ManagedProcessRequest {
+        executable,
+        argv,
+        raw_command,
+        cwd,
+        environment_policy,
+        stdin,
+        timeout: process_timeout,
+        cancellation,
+        output_policy,
+        sandbox,
+        provenance,
+    } = request;
+    if executable.is_empty() {
+        return Err(ManagedProcessError::EmptyArgv);
+    }
+    if cancellation.is_cancelled() {
+        return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+    if raw_command.is_some()
+        || executable.to_string_lossy().contains('\0')
+        || argv.iter().any(|arg| arg.to_string_lossy().contains('\0'))
+    {
+        return Err(ManagedProcessError::InvalidArgument(
+            "restricted AppContainer launch requires NUL-free argv without raw shell text".into(),
+        ));
+    }
+    let SandboxRequest::Required(spec) = sandbox else {
+        return Err(ManagedProcessError::SandboxFailed(
+            "test-only restricted launcher requires an explicit sandbox specification".into(),
+        ));
+    };
+    let encoded_spec = serde_json::to_vec(&spec)
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    if encoded_spec.len() > MAX_SANDBOX_SPEC_BYTES {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted sandbox specification exceeds 64 KiB".into(),
+        ));
+    }
+    if !spec.read_paths.is_empty() || !spec.write_paths.is_empty() || !spec.deny_paths.is_empty() {
+        return Err(ManagedProcessError::SandboxFailed(
+            "test-only AppContainer process proof does not apply filesystem roots; ACL policy is not qualified".into(),
+        ));
+    }
+    let requested_args = spec
+        .args
+        .iter()
+        .map(|value| OsString::from(value.as_str()))
+        .collect::<Vec<_>>();
+    if spec.target.as_os_str() != Path::new(&executable).as_os_str()
+        || requested_args != argv
+        || !spec.target.is_absolute()
+        || !cwd.is_absolute()
+        || cwd.as_os_str().encode_wide().any(|unit| unit == 0)
+    {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted launch executable, argv, and cwd must match the immutable request".into(),
+        ));
+    }
+
+    let started = Instant::now();
+    let profile =
+        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let mut environment = environment_policy.entries();
+    provenance.apply_environment(&mut environment);
+    let mut environment_block = windows_environment_block(environment)?;
+    let mut child = windows::WindowsTestRestrictedProcess::launch(
+        &spec.target,
+        &requested_args,
+        &profile,
+        &cwd,
+        &mut environment_block,
+        &cancellation,
+    )
+    .map_err(ManagedProcessError::Spawn)?;
+    let job_verified = child.job_established();
+    if !job_verified {
+        let _ = child.terminate(1);
+        let _ = child.wait().await;
+        child.close_job();
+        return Err(ManagedProcessError::Spawn(io::Error::other(
+            "restricted child Job membership verification failed",
+        )));
+    }
+
+    // The status pipe is private to the service. The target cannot forge its
+    // contents through stdout/stderr, and this fixture reports SetupError so
+    // no code path can misread the identity/Job proof as filesystem Enforced.
+    let status_text =
+        "debug-only AppContainer token and Job verified; filesystem rights are unqualified";
+    let status_bytes =
+        crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: status_text.to_string(),
+        })
+        .map_err(ManagedProcessError::SandboxFailed)?;
+    if status_bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted launch status exceeded its private channel bound".into(),
+        ));
+    }
+    let (status_reader, mut status_writer) =
+        windows::create_test_status_pipe().map_err(ManagedProcessError::SandboxFailed)?;
+    status_writer
+        .write_all(&status_bytes)
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    drop(status_writer);
+
+    let (overflow_tx, mut overflow_rx) = mpsc::channel(2);
+    let stdout_task = tokio::spawn(read_bounded(
+        child.stdout.take().expect("stdout pipe is present"),
+        output_policy.stdout_limit,
+        OutputStream::Stdout,
+        overflow_tx.clone(),
+        output_policy.overflow,
+        output_tx.clone(),
+    ));
+    let stderr_task = tokio::spawn(read_bounded(
+        child.stderr.take().expect("stderr pipe is present"),
+        output_policy.stderr_limit,
+        OutputStream::Stderr,
+        overflow_tx,
+        output_policy.overflow,
+        output_tx,
+    ));
+    let status_task = tokio::spawn(read_status(status_reader));
+    let stdin_task = match stdin {
+        StdinPolicy::Null => {
+            child.stdin.take();
+            None
+        }
+        StdinPolicy::Bytes(bytes) => child.stdin.take().map(|mut writer| {
+            tokio::spawn(async move {
+                let result = writer.write_all(&bytes).await;
+                drop(writer);
+                result
+            })
+        }),
+    };
+    let (exit_status, termination, mut cleanup) = wait_for_test_restricted_child(
+        &child,
+        &cancellation,
+        process_timeout,
+        &mut overflow_rx,
+        output_policy.overflow,
+    )
+    .await?;
+    cleanup.job_object_established = true;
+    child.close_job();
+    drop(child.stdin.take());
+
+    let stdout = join_output(stdout_task).await?;
+    let stderr = join_output(stderr_task).await?;
+    if let Some(task) = stdin_task {
+        if let Err(error) = tokio::time::timeout(TERMINATION_GRACE, task).await {
+            tracing::debug!(
+                "restricted stdin task did not finish in grace period: {}",
+                error
+            );
+        }
+    }
+    let status = tokio::time::timeout(STATUS_READ_TIMEOUT, status_task)
+        .await
+        .map_err(|_| {
+            ManagedProcessError::SandboxFailed("private status channel did not close".into())
+        })?
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    let status = decode_sandbox_status(&status).map_err(ManagedProcessError::SandboxFailed)?;
+    let SandboxLaunchOutcome::SetupError { reason } = status else {
+        return Err(ManagedProcessError::SandboxFailed(
+            "test-only status channel reported an unexpected enforcement outcome".into(),
+        ));
+    };
+    drop(profile);
+
+    Ok(ManagedProcessResult {
+        exit_status,
+        stdout,
+        stderr,
+        duration: started.elapsed(),
+        termination,
+        sandbox: SandboxExecutionOutcome::TestOnlyAppContainer {
+            token_verified: true,
+            job_verified,
+            status: reason,
+        },
+        cleanup,
+    })
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+fn windows_environment_block(
+    environment: BTreeMap<OsString, OsString>,
+) -> Result<Vec<u16>, ManagedProcessError> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut environment = environment.into_iter().collect::<Vec<_>>();
+    environment.sort_by_key(|(name, _)| name.to_string_lossy().to_ascii_uppercase());
+    let mut block = Vec::new();
+    for (name, value) in environment {
+        if name
+            .to_string_lossy()
+            .chars()
+            .any(|c| c == '=' || c == '\0')
+            || value.to_string_lossy().contains('\0')
+        {
+            return Err(ManagedProcessError::SandboxFailed(
+                "restricted launch environment contains an invalid name or value".into(),
+            ));
+        }
+        block.extend(name.encode_wide());
+        block.push(b'=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() == 1 {
+        block.push(0);
+    }
+    Ok(block)
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn wait_for_test_restricted_child(
+    child: &windows::WindowsTestRestrictedProcess,
+    cancellation: &CancellationToken,
+    process_timeout: Option<Duration>,
+    overflow_rx: &mut mpsc::Receiver<OutputStream>,
+    overflow_policy: OverflowPolicy,
+) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
+    let timeout_future = async move {
+        match process_timeout {
+            Some(duration) => sleep(duration).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout_future);
+    tokio::select! {
+        status = child.wait() => Ok((status.map_err(ManagedProcessError::Wait)?, TerminationReason::Exited, CleanupDiagnostics::default())),
+        _ = cancellation.cancelled() => {
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::Cancelled, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+        _ = &mut timeout_future => {
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::TimedOut, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+        stream = overflow_rx.recv(), if overflow_policy == OverflowPolicy::Terminate => {
+            let stream = stream.unwrap_or(OutputStream::Stdout);
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::OutputLimitExceeded { stream }, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+    }
 }
 
 type PreparedLaunchArgv = (

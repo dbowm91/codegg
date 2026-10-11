@@ -16,6 +16,7 @@ use std::ptr;
 
 use tokio::process::Child;
 use windows_sys::Win32::Foundation::{GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile,
 };
@@ -28,11 +29,14 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, OpenThread,
     ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    THREAD_SUSPEND_RESUME,
 };
 
 /// A uniquely named AppContainer package SID whose lifetime is tied to the
@@ -103,6 +107,7 @@ pub(super) struct WindowsProcessAttributes<'profile> {
     // list is deleted. Keep the package profile alive for the same interval.
     _profile: Option<&'profile WindowsAppContainerProfile>,
     security_capabilities: Option<Box<SECURITY_CAPABILITIES>>,
+    inherited_handles: Option<Box<[HANDLE]>>,
 }
 
 impl<'profile> WindowsProcessAttributes<'profile> {
@@ -127,6 +132,7 @@ impl<'profile> WindowsProcessAttributes<'profile> {
             raw,
             _profile: None,
             security_capabilities: None,
+            inherited_handles: None,
         })
     }
 
@@ -175,6 +181,40 @@ impl<'profile> WindowsProcessAttributes<'profile> {
         }
         Ok(())
     }
+
+    pub(super) fn set_handle_list(&mut self, handles: &[HANDLE]) -> io::Result<()> {
+        if self.inherited_handles.is_some()
+            || handles.is_empty()
+            || handles.iter().any(|h| h.is_null())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "inherited handle list must be non-empty, valid, and set once",
+            ));
+        }
+        let owned = handles.to_vec().into_boxed_slice();
+        let byte_len = std::mem::size_of_val(&*owned);
+        self.inherited_handles = Some(owned);
+        let handles = self
+            .inherited_handles
+            .as_deref()
+            .expect("handle list was stored");
+        if unsafe {
+            UpdateProcThreadAttribute(
+                self.raw,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                handles.as_ptr().cast_mut().cast(),
+                byte_len,
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        Ok(())
+    }
 }
 
 impl Drop for WindowsProcessAttributes<'_> {
@@ -194,11 +234,163 @@ pub(super) struct WindowsSuspendedAppContainerProcess {
     resumed: bool,
 }
 
+/// Pipe ends for one restricted child. Only the three `child_*` handles are
+/// placed in the explicit process attribute handle list; the service retains
+/// the other ends and drops child ends immediately after creation.
+pub(super) struct WindowsStdioPipes {
+    pub(super) stdin_writer: Option<OwnedHandle>,
+    pub(super) stdout_reader: OwnedHandle,
+    pub(super) stderr_reader: OwnedHandle,
+    pub(super) child_stdin: OwnedHandle,
+    pub(super) child_stdout: OwnedHandle,
+    pub(super) child_stderr: OwnedHandle,
+}
+
+impl WindowsStdioPipes {
+    pub(super) fn create() -> io::Result<Self> {
+        let (child_stdin, stdin_writer) = create_pipe_ends()?;
+        let (stdout_reader, child_stdout) = create_pipe_ends()?;
+        let (stderr_reader, child_stderr) = create_pipe_ends()?;
+        clear_inherit(&stdin_writer)?;
+        clear_inherit(&stdout_reader)?;
+        clear_inherit(&stderr_reader)?;
+        Ok(Self {
+            stdin_writer: Some(stdin_writer),
+            stdout_reader,
+            stderr_reader,
+            child_stdin,
+            child_stdout,
+            child_stderr,
+        })
+    }
+}
+
+fn create_pipe_ends() -> io::Result<(OwnedHandle, OwnedHandle)> {
+    let mut read = ptr::null_mut();
+    let mut write = ptr::null_mut();
+    let mut security = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: ptr::null_mut(),
+        bInheritHandle: 1,
+    };
+    if unsafe { CreatePipe(&mut read, &mut write, &mut security, 0) } == 0 {
+        return Err(last_error());
+    }
+    Ok(unsafe {
+        (
+            OwnedHandle::from_raw_handle(read as RawHandle),
+            OwnedHandle::from_raw_handle(write as RawHandle),
+        )
+    })
+}
+
+fn clear_inherit(handle: &OwnedHandle) -> io::Result<()> {
+    if unsafe { SetHandleInformation(handle.as_raw_handle() as HANDLE, HANDLE_FLAG_INHERIT, 0) }
+        == 0
+    {
+        Err(last_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+pub(super) fn create_test_status_pipe() -> io::Result<(tokio::fs::File, std::fs::File)> {
+    use std::os::windows::io::IntoRawHandle;
+    let (reader, writer) = create_pipe_ends()?;
+    clear_inherit(&reader)?;
+    clear_inherit(&writer)?;
+    let reader = unsafe { std::fs::File::from_raw_handle(reader.into_raw_handle()) };
+    let writer = unsafe { std::fs::File::from_raw_handle(writer.into_raw_handle()) };
+    Ok((tokio::fs::File::from_std(reader), writer))
+}
+
+pub(super) fn verify_appcontainer_token(
+    process: HANDLE,
+    expected_sid: windows_sys::Win32::Security::PSID,
+) -> io::Result<()> {
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, OpenProcessToken, TokenAppContainerSid,
+        TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY,
+    };
+    let mut token = ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
+    let mut bytes = 0u32;
+    unsafe {
+        let _ = GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenAppContainerSid,
+            ptr::null_mut(),
+            0,
+            &mut bytes,
+        );
+    }
+    if bytes < std::mem::size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32 {
+        return Err(io::Error::other(
+            "AppContainer token information size was invalid",
+        ));
+    }
+    let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenAppContainerSid,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(last_error());
+    }
+    let info = unsafe { &*storage.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>() };
+    if info.TokenAppContainer.is_null()
+        || unsafe { EqualSid(info.TokenAppContainer, expected_sid) } == 0
+    {
+        return Err(io::Error::other(
+            "created process token AppContainer SID did not match",
+        ));
+    }
+    Ok(())
+}
+
 impl WindowsSuspendedAppContainerProcess {
     pub(super) fn create(
         application: &Path,
         command_line: &mut [u16],
         attributes: &WindowsProcessAttributes,
+    ) -> io::Result<Self> {
+        Self::create_inner(application, command_line, attributes, None, None)
+    }
+
+    pub(super) fn create_with_stdio(
+        application: &Path,
+        command_line: &mut [u16],
+        attributes: &WindowsProcessAttributes,
+        stdin: HANDLE,
+        stdout: HANDLE,
+        stderr: HANDLE,
+        cwd: &Path,
+        environment: &mut [u16],
+    ) -> io::Result<Self> {
+        Self::create_inner(
+            application,
+            command_line,
+            attributes,
+            Some((stdin, stdout, stderr)),
+            Some((cwd, environment)),
+        )
+    }
+
+    fn create_inner(
+        application: &Path,
+        command_line: &mut [u16],
+        attributes: &WindowsProcessAttributes,
+        stdio: Option<(HANDLE, HANDLE, HANDLE)>,
+        startup: Option<(&Path, &mut [u16])>,
     ) -> io::Result<Self> {
         if !application.is_absolute() {
             return Err(io::Error::new(
@@ -222,9 +414,31 @@ impl WindowsSuspendedAppContainerProcess {
             ));
         }
         let application = wide_os(application.as_os_str());
-        let mut startup = STARTUPINFOEXW::default();
-        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        startup.lpAttributeList = attributes.raw;
+        let mut startup_info = STARTUPINFOEXW::default();
+        startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup_info.lpAttributeList = attributes.raw;
+        if let Some((stdin, stdout, stderr)) = stdio {
+            startup_info.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+            startup_info.StartupInfo.hStdInput = stdin;
+            startup_info.StartupInfo.hStdOutput = stdout;
+            startup_info.StartupInfo.hStdError = stderr;
+        }
+        let has_startup = startup.is_some();
+        let (cwd, environment) = if let Some((cwd, environment)) = startup {
+            if !cwd.is_absolute()
+                || cwd.as_os_str().encode_wide().any(|unit| unit == 0)
+                || environment.len() < 2
+                || environment[environment.len() - 2..] != [0, 0]
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid restricted startup cwd or environment block",
+                ));
+            }
+            (wide_os(cwd.as_os_str()), environment.as_mut_ptr())
+        } else {
+            (Vec::new(), ptr::null_mut())
+        };
         let mut process_info = PROCESS_INFORMATION::default();
         let created = unsafe {
             CreateProcessW(
@@ -232,15 +446,22 @@ impl WindowsSuspendedAppContainerProcess {
                 command_line.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
-                0,
-                CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                ptr::null(),
-                // Explicit working directories returned ERROR_INVALID_PARAMETER
-                // on the hosted Windows runner. Inherit the parent directory
-                // until the production ACL lease can establish and verify an
-                // approved working root before launch.
-                ptr::null(),
-                &mut startup.StartupInfo,
+                i32::from(stdio.is_some()),
+                CREATE_NO_WINDOW
+                    | CREATE_SUSPENDED
+                    | EXTENDED_STARTUPINFO_PRESENT
+                    | if has_startup {
+                        CREATE_UNICODE_ENVIRONMENT
+                    } else {
+                        0
+                    },
+                environment.cast(),
+                if has_startup {
+                    cwd.as_ptr()
+                } else {
+                    ptr::null()
+                },
+                &mut startup_info.StartupInfo,
                 &mut process_info,
             )
         };
@@ -265,6 +486,186 @@ impl WindowsSuspendedAppContainerProcess {
     pub(super) fn mark_resumed(&mut self) {
         self.resumed = true;
     }
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+pub(super) struct WindowsTestRestrictedProcess {
+    process: WindowsSuspendedAppContainerProcess,
+    job: Option<WindowsJob>,
+    pub(super) stdin: Option<tokio::fs::File>,
+    pub(super) stdout: Option<tokio::fs::File>,
+    pub(super) stderr: Option<tokio::fs::File>,
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+impl WindowsTestRestrictedProcess {
+    pub(super) fn launch(
+        application: &Path,
+        argv: &[std::ffi::OsString],
+        profile: &WindowsAppContainerProfile,
+        cwd: &Path,
+        environment: &mut [u16],
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> io::Result<Self> {
+        use std::os::windows::io::IntoRawHandle;
+
+        let pipes = WindowsStdioPipes::create()?;
+        let mut attributes = WindowsProcessAttributes::new(2)?;
+        attributes.set_appcontainer(profile)?;
+        attributes.set_handle_list(&[
+            pipes.child_stdin.as_raw_handle() as HANDLE,
+            pipes.child_stdout.as_raw_handle() as HANDLE,
+            pipes.child_stderr.as_raw_handle() as HANDLE,
+        ])?;
+        let mut command_line = windows_command_line(application, argv)?;
+        let mut child = WindowsSuspendedAppContainerProcess::create_with_stdio(
+            application,
+            &mut command_line,
+            &attributes,
+            pipes.child_stdin.as_raw_handle() as HANDLE,
+            pipes.child_stdout.as_raw_handle() as HANDLE,
+            pipes.child_stderr.as_raw_handle() as HANDLE,
+            cwd,
+            environment,
+        )?;
+        drop(attributes);
+        drop((pipes.child_stdin, pipes.child_stdout, pipes.child_stderr));
+
+        let mut job = WindowsJob::create()?;
+        job.assign_appcontainer_and_resume(&mut child, |process| {
+            verify_appcontainer_token(process, profile.sid())?;
+            if cancellation.is_cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "restricted launch cancelled before target resume",
+                ));
+            }
+            Ok(())
+        })?;
+
+        let stdin = unsafe {
+            std::fs::File::from_raw_handle(
+                pipes
+                    .stdin_writer
+                    .expect("stdin writer is present")
+                    .into_raw_handle(),
+            )
+        };
+        let stdout =
+            unsafe { std::fs::File::from_raw_handle(pipes.stdout_reader.into_raw_handle()) };
+        let stderr =
+            unsafe { std::fs::File::from_raw_handle(pipes.stderr_reader.into_raw_handle()) };
+        Ok(Self {
+            process: child,
+            job: Some(job),
+            stdin: Some(tokio::fs::File::from_std(stdin)),
+            stdout: Some(tokio::fs::File::from_std(stdout)),
+            stderr: Some(tokio::fs::File::from_std(stderr)),
+        })
+    }
+
+    pub(super) fn job_established(&self) -> bool {
+        let mut in_job = 0;
+        self.job.as_ref().is_some_and(|job| unsafe {
+            windows_sys::Win32::System::JobObjects::IsProcessInJob(
+                self.process.process_handle(),
+                job.handle.as_raw_handle() as _,
+                &mut in_job,
+            ) != 0
+                && in_job != 0
+        })
+    }
+
+    pub(super) async fn wait(&self) -> io::Result<std::process::ExitStatus> {
+        use std::os::windows::process::ExitStatusExt;
+        loop {
+            let result = unsafe { WaitForSingleObject(self.process.process_handle(), 0) };
+            if result == windows_sys::Win32::Foundation::WAIT_OBJECT_0 {
+                let mut exit_code = 0;
+                if unsafe {
+                    windows_sys::Win32::System::Threading::GetExitCodeProcess(
+                        self.process.process_handle(),
+                        &mut exit_code,
+                    )
+                } == 0
+                {
+                    return Err(last_error());
+                }
+                return Ok(std::process::ExitStatus::from_raw(exit_code as i32));
+            }
+            if result == u32::MAX {
+                return Err(last_error());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    pub(super) fn terminate(&self, exit_code: u32) -> io::Result<()> {
+        self.job
+            .as_ref()
+            .ok_or_else(|| io::Error::other("restricted process Job Object already closed"))?
+            .terminate(exit_code)
+    }
+
+    pub(super) fn close_job(&mut self) {
+        self.job.take();
+    }
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+impl Drop for WindowsTestRestrictedProcess {
+    fn drop(&mut self) {
+        self.job.take();
+        unsafe {
+            let _ = WaitForSingleObject(self.process.process_handle(), u32::MAX);
+        }
+    }
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+fn windows_command_line(application: &Path, argv: &[std::ffi::OsString]) -> io::Result<Vec<u16>> {
+    let mut values = Vec::with_capacity(argv.len() + 1);
+    values.push(application.as_os_str());
+    values.extend(argv.iter().map(std::ffi::OsString::as_os_str));
+    let mut command = Vec::new();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            command.push(b' ' as u16);
+        }
+        command.extend(quote_windows_argument(value));
+    }
+    if command.len() + 1 > 32_767 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows command line exceeds 32,767 UTF-16 code units",
+        ));
+    }
+    command.push(0);
+    Ok(command)
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
+fn quote_windows_argument(argument: &std::ffi::OsStr) -> Vec<u16> {
+    let input = argument.encode_wide().collect::<Vec<_>>();
+    let mut output = vec![b'"' as u16];
+    let mut slashes = 0usize;
+    for unit in input {
+        if unit == b'\\' as u16 {
+            slashes += 1;
+            continue;
+        }
+        if unit == b'"' as u16 {
+            output.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2 + 1));
+            output.push(unit);
+        } else {
+            output.extend(std::iter::repeat_n(b'\\' as u16, slashes));
+            output.push(unit);
+        }
+        slashes = 0;
+    }
+    output.extend(std::iter::repeat_n(b'\\' as u16, slashes * 2));
+    output.push(b'"' as u16);
+    output
 }
 
 impl Drop for WindowsSuspendedAppContainerProcess {
@@ -358,6 +759,20 @@ impl WindowsJob {
         verify_before_resume: impl FnOnce(windows_sys::Win32::Foundation::HANDLE) -> io::Result<()>,
     ) -> io::Result<()> {
         self.assign_suspended(process)?;
+        let mut in_job = 0;
+        if unsafe {
+            windows_sys::Win32::System::JobObjects::IsProcessInJob(
+                process,
+                self.handle.as_raw_handle() as _,
+                &mut in_job,
+            )
+        } == 0
+            || in_job == 0
+        {
+            return Err(io::Error::other(
+                "suspended child was not verified in its owned Job Object",
+            ));
+        }
         verify_before_resume(process)?;
         Self::resume_suspended(thread)
     }
@@ -506,6 +921,77 @@ mod tests {
             if size_of::<usize>() == 8 { 112 } else { 72 }
         );
         Ok(())
+    }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
+    #[test]
+    fn restricted_attribute_list_contains_only_three_standard_handles() -> io::Result<()> {
+        let profile = WindowsAppContainerProfile::create()?;
+        let pipes = super::WindowsStdioPipes::create()?;
+        let mut attributes = WindowsProcessAttributes::new(2)?;
+        attributes.set_appcontainer(&profile)?;
+        attributes.set_handle_list(&[
+            pipes.child_stdin.as_raw_handle() as HANDLE,
+            pipes.child_stdout.as_raw_handle() as HANDLE,
+            pipes.child_stderr.as_raw_handle() as HANDLE,
+        ])?;
+        let handles = attributes
+            .inherited_handles
+            .as_deref()
+            .expect("the handle-list owner retains its array");
+        assert_eq!(handles.len(), 3);
+        assert_ne!(handles[0], handles[1]);
+        assert_ne!(handles[0], handles[2]);
+        assert_ne!(handles[1], handles[2]);
+        Ok(())
+    }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
+    #[tokio::test]
+    async fn restricted_job_assignment_failure_never_runs_the_target() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let marker = directory.path().join("restricted-target-ran.txt");
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        let marker_text = marker.to_string_lossy().replace('\'', "''");
+        let args = vec![
+            OsString::from("-NoLogo"),
+            OsString::from("-NoProfile"),
+            OsString::from("-NonInteractive"),
+            OsString::from("-Command"),
+            OsString::from(format!(
+                "Set-Content -LiteralPath '{marker_text}' -Value ran"
+            )),
+        ];
+        let mut request = ManagedProcessRequest::new(
+            std::iter::once(executable.clone().into_os_string())
+                .chain(args.iter().cloned())
+                .collect(),
+            PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot")).join("System32"),
+            ProcessProvenance::new("restricted-failure-test", "attempt"),
+        );
+        request.sandbox = crate::managed_process::SandboxRequest::Required(
+            crate::security::sandbox::SandboxLaunchSpec {
+                target: executable,
+                args: args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect(),
+                read_paths: Vec::new(),
+                write_paths: Vec::new(),
+                deny_paths: Vec::new(),
+            },
+        );
+        FAIL_NEXT_JOB_ASSIGNMENT.with(|fail| fail.set(true));
+        let result = ManagedProcessService::run(request).await;
+        assert!(matches!(result, Err(ManagedProcessError::Spawn(_))));
+        assert!(
+            !marker.exists(),
+            "restricted target ran before Job assignment"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

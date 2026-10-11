@@ -90,6 +90,12 @@ runtime and temporary-directory variables (`SystemRoot`, `WINDIR`, `TEMP`,
 filesystem-constrained requests still fail before launch, and Job Objects do
 not provide filesystem or network containment. Native behavior is exercised
 by `tests/windows_process_launcher.rs` and the focused Windows workflow.
+The debug-only `windows-sandbox-test-support` feature also routes an explicit
+`Required` request through this same service using an owned `CreateProcessW`
+child, a three-handle stdio allowlist, token SID and Job verification before
+resume, and bounded output/status handling. Its result is explicitly
+`TestOnlyAppContainer`, never `Enforced`; release builds reject the feature.
+This test seam does not activate a production Windows sandbox backend.
 
 Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
 while Windows defaults to the inbox Windows PowerShell executable and can opt

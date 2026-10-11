@@ -161,6 +161,6 @@ Codegg on a documented Windows version supports constrained local tool execution
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
 | M007 | blocked/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | `plans/closure/windows-native-sandbox/007-status.md` | No qualifying Windows 11 SDK build/runtime matrix; defer with no security conclusion |
 | C008 | closed | `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` | `plans/closure/windows-native-sandbox/008-status.md` | Workflow `38178437505`; Windows Server 2025 Rust ABI/token/Job proof and Unix quick verification passed; C009 unblocked |
-| C009 | ready | `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` | — | C008 strict closure satisfied; production constrained requests remain unavailable |
+| C009 | active | `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` | — | Integrating restricted child stdio/status/cancellation through `ManagedProcessService`; production constrained requests remain unavailable |
 | C010 | blocked | `plans/implementation/windows-native-sandbox/010-windows-acl-leases-and-recovery.md` | — | C009 strict closure |
 | C011 | blocked | `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` | — | C010 strict closure + privileged isolated Windows VM |

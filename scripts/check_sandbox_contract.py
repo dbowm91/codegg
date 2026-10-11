@@ -49,6 +49,15 @@ def violations(path: Path, content: str) -> list[str]:
             "decode_sandbox_status" not in content or "SandboxFailed" not in content
         ):
             found.append("required sandbox execution must fail closed without a typed status")
+        if "windows-sandbox-test-support" in content:
+            library = (ROOT / "src/lib.rs").read_text()
+            if not re.search(
+                r'cfg\(all\(feature\s*=\s*"windows-sandbox-test-support",\s*not\(debug_assertions\)\)\)',
+                library,
+            ) or "compile_error!" not in library:
+                found.append(
+                    "test-only Windows AppContainer support must fail compilation in release builds"
+                )
         compact = re.sub(r"\s+", "", content)
         if "SandboxRequest::DegradedUncontained{..}=>Ok((full_argv" in compact:
             found.append("constrained sandbox-unavailable requests must not spawn uncontained")

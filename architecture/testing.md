@@ -221,6 +221,14 @@ cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
 dispatch. These tests qualify process ownership only; they do not qualify
 filesystem ACL or network enforcement.
 
+The same Windows workflow also builds the restricted service path with the
+release-disabled `windows-sandbox-test-support` feature and runs
+`tests/windows_restricted_managed_process.rs`. That target verifies owned
+stdin/stdout/stderr, private status despite forged stdout markers, token and Job
+checks before resume, timeout cleanup, and a non-`Enforced` test-only result.
+It does not qualify ACL lease recovery or full M004 security; those remain
+separate milestones.
+
 The same workflow exercises the native shell argv builder and Windows policy
 input fixtures for system roots, profile credential denies, PATH-independent
 shell resolution, case normalization, alternate data streams, UNC/device

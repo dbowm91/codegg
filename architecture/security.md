@@ -171,6 +171,13 @@ components before canonicalization. These checks are pre-launch diagnostics;
 they do not bind a later filesystem operation to the checked identity, prevent
 hardlink aliases, or close a replacement race. Windows constrained execution
 remains unavailable until M004 supplies and qualifies enforcement.
+The debug-only `windows-sandbox-test-support` feature exercises the AppContainer
+process lifecycle through `ManagedProcessService` with a restricted three-handle
+stdio list, pre-resume token/Job verification, bounded output, cancellation, and
+a private status pipe. It returns a distinct `TestOnlyAppContainer` result and
+never `Enforced`; release builds fail compilation if this feature is enabled.
+It does not grant or recover filesystem ACLs and does not change production
+backend availability. See `tests/windows_restricted_managed_process.rs`.
 - Any host with no registered backend: constrained Bash requests report
   `FilesystemEnforcement::Unavailable` and fail before process creation
   (never `FullHost` or an uncontained fallback). Python's separately
