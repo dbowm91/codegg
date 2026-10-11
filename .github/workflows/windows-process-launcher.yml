@@ -48,7 +48,22 @@ jobs:
 
       - name: AppContainer filesystem access proof
         shell: pwsh
-        run: ./research/windows-native-sandbox/appcontainer-access-proof.ps1
+        run: |
+          $proofOutput = @()
+          try {
+            ./research/windows-native-sandbox/appcontainer-access-proof.ps1 *>&1 |
+              Tee-Object -Variable proofOutput
+          } catch {
+            @(
+              '### AppContainer filesystem access proof failure'
+              ''
+              '```text'
+              ($proofOutput | Out-String)
+              ($_ | Format-List * -Force | Out-String)
+              '```'
+            ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
 
       - name: Windows managed process launcher tests
         run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1

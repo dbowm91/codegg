@@ -20,6 +20,14 @@ it was replaced with a direct `OpenProcessToken` /
 `GetTokenInformation(TokenAppContainerSid)` query, which passed in the
 follow-up run above.
 
+Two later workflow runs, `38153289874` and `38153623828`, failed in the
+filesystem proof step after adding disposable ACL restoration checks. The
+public run summaries identify the failed step but do not expose its diagnostic
+output, and the GitHub API was rate-limited while retrieving logs. The
+before-image restoration is therefore **not yet verified**. The workflow now
+copies captured proof output and exception details into the run summary so the
+next failure can be diagnosed without relying on log access.
+
 ## Question
 
 Can a per-run AppContainer package SID provide a second DACL access check that
