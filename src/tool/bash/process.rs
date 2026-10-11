@@ -1413,6 +1413,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn configured_windows_shells_resolve_outside_path() {
+        let system_root = PathBuf::from(
+            std::env::var_os("SystemRoot")
+                .or_else(|| std::env::var_os("WINDIR"))
+                .expect("Windows system root"),
+        );
         for shell in [
             crate::config::schema::WindowsShellKind::PowerShell,
             crate::config::schema::WindowsShellKind::Cmd,
@@ -1424,8 +1429,13 @@ mod tests {
                 assert!(argv[0]
                     .to_ascii_lowercase()
                     .contains("\\git\\bin\\bash.exe"));
+            } else if matches!(shell, crate::config::schema::WindowsShellKind::PowerShell) {
+                assert_eq!(
+                    Path::new(&argv[0]),
+                    system_root.join("System32/WindowsPowerShell/v1.0/powershell.exe")
+                );
             } else {
-                assert!(argv[0].to_ascii_lowercase().contains("\\system32\\"));
+                assert_eq!(Path::new(&argv[0]), system_root.join("System32/cmd.exe"));
             }
         }
         match shell_argv(
