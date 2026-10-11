@@ -72,17 +72,23 @@ shell/policy tests passed. It remains a test-only launch proof; production
 AppContainer launch, ACL lease/recovery, credential/IPC denial, and the
 adversarial VM matrix are unimplemented.
 
-The evidence-record follow-up `38165081918` also passed the same Windows
-fixture and selected suite in 11m 17s. This rerun confirms the recorded
-evidence state; it does not change the production implementation gaps above.
+The evidence-record follow-up `38165081918` passed the same Windows fixture
+and selected suite in 11m 17s. Its serial follow-up `38166050591` also passed
+in 13m 06s, including the launcher suite, suspended-target failure injection,
+Rust AppContainer/Job proof, and selected shell/policy checks. These reruns
+confirm the recorded evidence state; they do not change the production
+implementation gaps above.
 
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
-sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn
-path has no CodeGG-owned `STARTUPINFOEX` attribute-list setup. Production work
-must introduce and own that Windows creation path while preserving the
-existing suspend-before-Job-assignment ordering. Because approved roots may be
-existing directories, ACE cleanup also needs a crash-recoverable ownership
+sandbox request on non-Unix, and `ManagedProcessService` still launches through
+`tokio::process::Command`. `src/managed_process/windows.rs` now owns reusable
+AppContainer profile, `STARTUPINFOEXW` attribute-list, and suspended
+`CreateProcessW` helpers; the Rust token/Job proof exercises those helpers.
+This is launch groundwork only. Production work must connect the helpers to the
+process-service path, preserve inherited output handling, and establish ACLs
+before resume while verifying token and Job facts. Because approved roots may
+be existing directories, ACE cleanup also needs a crash-recoverable ownership
 record; an in-memory guard alone cannot satisfy WP-C after daemon/helper loss.
 
 ## 4. Invariants that must not regress
