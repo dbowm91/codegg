@@ -937,6 +937,7 @@ dialogs.
 | Group | Variants |
 |---|---|
 | Prompt/navigation | `SubmitPrompt`, `NavigateUp`/`Down`/`Left`/`Right`, `PageUp`, `PageDown`, `Search`, `SearchNext`, `SearchPrev`, `ClearSearch`, `FocusPrompt`, `StashPrompt`, `RestorePrompt` |
+| Exit | `Quit` (`q` in Normal mode, `/exit`, Ctrl+Q), `ForceQuit` (Ctrl+C) |
 | Text editing | `CharInput`, `Backspace`, `Delete`, `CursorLeft`/`Right`/`Home`/`End` |
 | Dialog opening | `OpenModelDialog`, `OpenAgentDialog`, `OpenSessionDialog`, `OpenHelpDialog`, `OpenTreeDialog`, `OpenThemeDialog`, `OpenShareDialog`, `OpenImportDialog`, `OpenDiffDialog`, `OpenSourcePreview`, `OpenRunDetail`, `OpenProjectPicker`, `OpenWorkspaceDashboard`, `CloseDialog` |
 | Dialog selection | `SelectModel`, `SelectAgent`, `SelectSession`, `SelectTheme`, `ThemePreviewChanged`, `ThemeCommit`, `ThemeRevert`, `KeybindChanged`, `SelectTemplate`, `GotoMessage`, `CopyShareUrl`, `McpAction`, `ConnectionLifecycle`, `ProviderConnectionsUpdated`, `ProviderConnectionModelsUpdated`, `OpenConnectionRotation` |
@@ -950,6 +951,28 @@ dialogs.
 | Task schedule / triggers | `TaskScheduleConfirm`, `TaskScheduleMove`, `TaskTriggerSetup`, `TaskTriggerRevoke`, `TaskTriggerRotate`, `TaskTriggerRefresh`, `TriggerSecretClose`, `TeamTokenSecretClose` |
 
 ### TuiCommand (`src/tui/app/commands.rs:15`)
+
+### Esc never quits; exiting is explicit
+
+`Esc` is `InputAction::Cancel`, and `App::cancel()` unwinds exactly one
+layer — close the top dialog, else dismiss the completion popup, else
+Insert → Normal, else discard a non-empty draft — and then stops. It has
+no exit branch. That is deliberate: `Esc` is the reflexive "get me out
+of this" key, and binding the last layer to program exit meant one stray
+press in Normal mode tore down the whole session and its scrollback.
+
+Exiting is a separate, explicit action with its own binding:
+
+| Key | Action | Notes |
+|---|---|---|
+| `q` | `Quit` | Normal mode only; Insert mode skips bare-char bindings so `q` still types |
+| `/exit` | `Quit` | `command.rs:488`; `quit` and `q` are aliases |
+| `Ctrl+C` | `ForceQuit` | Unwinds the same layers as `Esc`, then exits |
+
+`Ctrl+C` and `Esc` are distinct `InputAction`s (`ForceQuit` was added
+for this) so the back-out key and the terminate key cannot drift into
+the same behavior again. Like `Esc`, `Ctrl+C` dismisses an open dialog
+before it exits, so a dialog needs two presses to leave.
 
 ### Model selection is durable
 
@@ -1225,12 +1248,13 @@ root routing.
 
 ### InputAction
 
-51 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
+52 variants (`src/tui/input.rs:102`): `Send`, `Newline`, `Cancel`,
 `NavigateUp`, `NavigateDown`, `SwitchAgent`, `SelectModel`, `ClearSession`,
 `NewSession`, `ToggleSidebar`, `FocusSidebar`, `ToggleTodoList`, `ToggleSection`,
 `CloseSession`, `Help`, `FocusPrompt`, `StashPrompt`, `RestorePrompt`,
 `CopyMessage`, `CycleModelForward`, `CycleModelBackward`, `ToggleReasoning`,
-`Quit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`, `Left`, `Right`,
+`Quit`, `ForceQuit`, `ExternalEditor`, `Char`, `Backspace`, `Delete`,
+`Left`, `Right`,
 `Home`, `End`, `PageUp`, `PageDown`, `Search`, `SearchNext`, `SearchPrev`,
 `ClearSearch`, `Command`, `ToggleTts`, `StopTts`, `ToggleFullscreen`,
 `TogglePermissionMode`, `OpenDiff`, `GoToTop`, `GoToBottom`,

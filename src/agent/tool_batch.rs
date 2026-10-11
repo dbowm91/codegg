@@ -187,6 +187,37 @@ impl<'a> ToolBatchExecutor<'a> {
 }
 
 impl AgentLoop {
+    /// Build the router for one tool batch, carrying the operator's
+    /// human-wait bound.
+    ///
+    /// `permission.approval_timeout_secs` is absent by default, and an absent
+    /// value means *wait indefinitely* — the approval dialog stays up and the
+    /// turn stays parked until the user decides.
+    ///
+    /// The registry's leak guard is moved in lockstep: it is only ever a
+    /// backstop for a waiter dropped mid-await (a cancelled turn), and it
+    /// must never evict a request this router is still waiting on. When a
+    /// timeout is configured the guard sits one grace period above it, so the
+    /// router's own deadline wins and the waiter unregisters itself cleanly.
+    fn new_approval_router(&self, snapshot: ExecutionPolicySnapshot) -> ApprovalRouter {
+        const REGISTRY_GRACE: Duration = Duration::from_secs(60);
+
+        let timeout = self
+            .services
+            .config
+            .permission
+            .as_ref()
+            .and_then(|p| p.approval_timeout_secs)
+            .filter(|secs| *secs > 0)
+            .map(Duration::from_secs);
+
+        codegg_core::bus::PermissionRegistry::set_pending_ttl(
+            timeout.map(|t| t.saturating_add(REGISTRY_GRACE)),
+        );
+
+        ApprovalRouter::new(snapshot).with_approval_timeout(timeout)
+    }
+
     pub(super) fn get_tool_timeout(&self, tool_name: &str) -> Duration {
         let cfg = ToolTimeoutConfig::default();
         match tool_name {
@@ -475,7 +506,7 @@ impl AgentLoop {
         });
 
         let policy_revision = Some(format!("config:{:016x}", self.permission_version()));
-        let router = ApprovalRouter::new(snapshot.clone());
+        let router = self.new_approval_router(snapshot.clone());
 
         // ── Normalize deterministic policy + security into one verdict ──
         // Hard deny and authority ceilings precede routing: Deny never
@@ -734,9 +765,10 @@ impl AgentLoop {
                 receipt: self.accepted_permission_receipt(receipt_source.as_str()),
             },
             ApprovalDecision::Deny { reason, source } => {
-                // Human timeout vs explicit deny already distinguished by
-                // the router source (`timeout_deny` vs `user_choice`).
-                let _ = source;
+                // Human timeout vs explicit deny vs abandoned request are
+                // already distinguished by the router source
+                // (`timeout_deny` / `user_choice` / `channel_closed_deny`);
+                // the messages below just have to match them.
                 if reason.contains("timeout") {
                     ToolPermissionOutcome::Denied {
                         tool_id: tc.id.to_string(),
@@ -762,6 +794,18 @@ impl AgentLoop {
                     ToolPermissionOutcome::Denied {
                         tool_id: tc.id.to_string(),
                         message: format!("Tool '{}' denied by user (security escalation)", tc.name),
+                    }
+                } else if source == approval_source::CHANNEL_CLOSED_DENY {
+                    // Nobody decided. Say so rather than blaming the user for
+                    // a request that was abandoned (cancelled turn, dropped
+                    // responder) — the ambiguity is what made these denials
+                    // look arbitrary.
+                    ToolPermissionOutcome::Denied {
+                        tool_id: tc.id.to_string(),
+                        message: format!(
+                            "Tool '{}' denied: approval request closed before a decision",
+                            tc.name
+                        ),
                     }
                 } else {
                     ToolPermissionOutcome::Denied {

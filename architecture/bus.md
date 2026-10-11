@@ -205,10 +205,14 @@ is also a constant.
    `*_scoped` methods for atomic check-and-remove via
    `DashMap::remove_if`.
 
-4. **Timeout handling**: The agent loop waits up to 300 seconds for
-   a response. On timeout, the operation defaults to deny/empty. The
-   registry TTL is 310 seconds (slightly longer to avoid stale
-   entries outliving the waiting loop).
+4. **Timeout handling**: The agent loop waits for a response with **no
+   deadline by default** — `permission.approval_timeout_secs` is absent
+   unless the operator opts in. On timeout the operation defaults to
+   deny/empty, recorded as `timeout_deny`. The registry's age-based
+   sweep is disabled by default (`PermissionRegistry::set_pending_ttl(None)`)
+   and, when a timeout *is* configured, is set to that timeout plus a
+   60s grace margin so it stays a leak guard for a waiter dropped
+   mid-await and never evicts a request the loop is still waiting on.
 
 5. **Unregister after response**: Always call `unregister()` after
    receiving a response or after a timeout to prevent memory leaks.
@@ -243,8 +247,8 @@ AgentLoop                  PermissionRegistry         GlobalEventBus         TUI
 
 ### Question Flow
 
-Same pattern: register BEFORE publish, wait on oneshot with 300 s
-timeout, unregister after completion.
+Same pattern: register BEFORE publish, wait on the oneshot, unregister
+after completion. The question registry keeps its own fixed TTL.
 
 ## Testing
 

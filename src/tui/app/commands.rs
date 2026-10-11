@@ -585,7 +585,10 @@ pub enum TuiCommand {
     },
     /// Completion: session state (todos + active goal) refreshed.
     SessionStateRefreshed {
-        todos: Vec<TodoEntry>,
+        /// `Some` when the core produced an authoritative todo list. `None`
+        /// means the read failed and the caller must leave the visible list
+        /// untouched — conflating that with "empty" blanked the todo strip.
+        todos: Option<Vec<TodoEntry>>,
         active_goal: Option<crate::bus::events::GoalSnapshot>,
         error: Option<String>,
     },

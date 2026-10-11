@@ -288,6 +288,13 @@ pub struct App {
     /// Held on `App` as well because the strip drawn directly above the input
     /// is rendered by the app, not by the sidebar widget.
     pub todos: Vec<TodoEntry>,
+    /// Highest `CoreEvent::TodoListUpdated` revision already applied.
+    ///
+    /// The daemon's event stream is ordered per subscriber, but a refresh
+    /// dispatched across the command channel can complete after a newer live
+    /// envelope has landed. Tracking the revision keeps the visible list
+    /// monotonic instead of letting the stale snapshot win.
+    pub todo_revision: u64,
     /// Whether the above-input todo strip shows the full list or only the
     /// one-line `n/m completed` summary. Toggled with Ctrl+T.
     pub todo_expanded: bool,
@@ -884,6 +891,7 @@ impl App {
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
             todos: Vec::new(),
+            todo_revision: 0,
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
@@ -1408,6 +1416,7 @@ impl App {
             completion_visible_rows: 0,
             completion_scroll_offset: 0,
             todos: Vec::new(),
+            todo_revision: 0,
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
@@ -1663,7 +1672,27 @@ impl App {
                     .error(&format!("{code}: {message}"));
                 true
             }
-            E::TodoListUpdated { items, .. } => {
+            E::TodoListUpdated {
+                session_id,
+                revision,
+                items,
+            } => {
+                // Session-scope it. The daemon broadcasts to every attached
+                // frontend, so without this an update for a different session
+                // overwrote the list of the session actually on screen. The
+                // in-process handler (`runtime/app_events.rs`) already made
+                // this check; the core-event arm had to match it.
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                // Monotonic guard: a late envelope from a superseded revision
+                // must not roll the list backwards.
+                if revision < self.todo_revision {
+                    return false;
+                }
+                self.todo_revision = revision;
                 // Items cross the wire as opaque JSON, so decode defensively:
                 // a malformed entry is skipped rather than discarding the
                 // whole list.
@@ -1904,7 +1933,11 @@ impl App {
         theme_cfg.name = Some(theme_id.to_string());
         config.theme = Some(theme_cfg);
 
-        if let Err(e) = config.save() {
+        // Write the user preference to the *global* config. `Config::save()`
+        // prefers the nearest project config, which confined the choice to
+        // one checkout (and could land it in a tracked file); a theme is a
+        // per-user choice and must come back for every project.
+        if let Err(e) = config.save_global() {
             self.messages_state
                 .toasts
                 .error(&format!("Theme applied, but failed to save config: {}", e));
@@ -2779,6 +2812,7 @@ impl App {
                 });
             }
             Some(InputAction::Quit) => self.process_msg(TuiMsg::Quit),
+            Some(InputAction::ForceQuit) => self.force_quit(),
             Some(InputAction::ExternalEditor) => self.process_msg(TuiMsg::ExternalEditor),
             Some(InputAction::Char(c)) => self.process_msg(TuiMsg::CharInput(c)),
             Some(InputAction::Backspace) => self.process_msg(TuiMsg::Backspace),
@@ -7737,6 +7771,13 @@ impl App {
         false
     }
 
+    /// `Esc`: back out of whatever is on screen, one layer at a time.
+    ///
+    /// This never exits the application. `Esc` is the reflexive "get me out"
+    /// key, and binding it to quit meant one stray press in Normal mode
+    /// ended the session — losing an in-flight turn's scrollback and any
+    /// half-written prompt. Exiting is `q` in Normal mode, `/exit`, or
+    /// `Ctrl+C`; see [`Self::force_quit`].
     fn cancel(&mut self) {
         if self.ui_state.dialog.is_open() {
             self.close_dialog();
@@ -7747,23 +7788,40 @@ impl App {
             return;
         }
 
-        // If in Insert mode, switch to Normal mode instead of canceling
+        // If in Insert mode, switch to Normal mode instead of clearing.
         if self.ui_state.input_mode == InputMode::Insert {
             self.ui_state.input_mode = InputMode::Normal;
             return;
         }
 
-        // Ctrl+C semantics: clear input if text exists, otherwise exit
+        // Nothing is layered over the prompt: discard a draft rather than
+        // acting on it. Stop here — the app keeps running.
         let text = self.prompt_state.prompt.get_text();
         if !text.trim().is_empty() {
-            // Clear the input
             self.prompt_state.prompt.clear();
             self.prompt_state.show_completions = false;
-        } else {
-            // Exit the program
-            self.ui_state.running = false;
-            let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
         }
+    }
+
+    /// `Ctrl+C`: unwind the same layers as `Esc`, then exit.
+    ///
+    /// The explicit-exit path. Kept separate from [`Self::cancel`] so the
+    /// back-out key and the terminate key can never drift into the same
+    /// behavior again.
+    fn force_quit(&mut self) {
+        self.cancel();
+        // A dialog or popup still open means the first press only dismissed
+        // it; a second press is needed to actually leave.
+        if self.ui_state.dialog.is_open() || self.prompt_state.show_completions {
+            return;
+        }
+        self.shutdown_app();
+    }
+
+    /// Terminate the TUI: stop the render loop and mark the app not running.
+    fn shutdown_app(&mut self) {
+        self.ui_state.running = false;
+        let _ = self.ui_state.shutdown_tx.take().map(|tx| tx.send(()));
     }
 
     fn navigate_up(&mut self) {

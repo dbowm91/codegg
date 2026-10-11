@@ -105,6 +105,12 @@ A few commonly used entries:
 | `/reload` | Refresh project runtime assets — `/reload skills`, `/reload agents` |
 | `/exit` | Quit (`quit` and `q` are aliases) |
 
+To leave CodeGG: `q` in Normal mode, `/exit`, or `Ctrl+C`. **`Esc` never
+quits.** It backs out one layer at a time — close a dialog, dismiss the
+completion popup, return from Insert to Normal mode, or discard a half-written
+prompt — and then stops. `Ctrl+C` unwinds the same layers before it exits, so a
+dialog needs a second press.
+
 Registry metadata — domain, scope, source, keywords — exists for palette and
 help presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
@@ -129,6 +135,11 @@ default id, used when no `[theme].name` is configured.
 If `/theme reload` drops a theme you were using, CodeGG falls back to the
 default theme id. Around 50 Halloy-format themes ship in `assets/themes/halloy/`;
 see `docs/themes.md` for the format and authoring details.
+
+Your selection is written to `[theme].name` in your **global** config (the
+per-user file, not the project's `.codegg/` config), so it applies to every
+project and comes back on the next launch. Setting `theme.name` by hand has the
+same effect.
 
 ## Human shell
 
@@ -196,6 +207,28 @@ selection lands, frontends must not re-prompt per action.
 
 Each confirmation is a separate dialog, and the second is only shown after the
 first is accepted.
+
+### Approval timeouts
+
+When a tool needs your approval, CodeGG **waits until you answer**. There is no
+timeout by default: the dialog stays up and the turn stays parked until you
+decide, so a request can never be denied just because you had not looked at it
+yet.
+
+To bound the wait — only worth doing if CodeGG has to fail closed unattended —
+set a limit in your config:
+
+```jsonc
+{
+  "permission": {
+    "approval_timeout_secs": 900
+  }
+}
+```
+
+An unanswered request is then denied after that many seconds. The denial is
+recorded as `timeout_deny`, deliberately distinct from a `no` you gave yourself,
+so `/logs` can tell the two apart. Without this key the wait is unbounded.
 
 ### Persistence and ceilings
 

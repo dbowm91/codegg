@@ -124,6 +124,13 @@ pub enum InputAction {
     CycleModelBackward,
     ToggleReasoning,
     Quit,
+    /// Explicit, unconditional exit (Ctrl+C).
+    ///
+    /// Separate from [`InputAction::Cancel`] because `Esc` must never quit:
+    /// it is the reflex key for "get me out of whatever is on screen", and
+    /// binding it to exit meant an extra keypress in a dialog — or a stray
+    /// `Esc` after a turn finished — tore down the whole session.
+    ForceQuit,
     ExternalEditor,
     Char(char),
     Backspace,
@@ -191,6 +198,7 @@ pub enum ActionKey {
     CycleModelBackward,
     ToggleReasoning,
     Quit,
+    ForceQuit,
     ExternalEditor,
     Backspace,
     Delete,
@@ -256,6 +264,7 @@ impl ActionKey {
             Self::CycleModelBackward,
             Self::ToggleReasoning,
             Self::Quit,
+            Self::ForceQuit,
             Self::ExternalEditor,
             Self::Backspace,
             Self::Delete,
@@ -311,6 +320,7 @@ impl ActionKey {
             Self::CycleModelBackward => InputAction::CycleModelBackward,
             Self::ToggleReasoning => InputAction::ToggleReasoning,
             Self::Quit => InputAction::Quit,
+            Self::ForceQuit => InputAction::ForceQuit,
             Self::ExternalEditor => InputAction::ExternalEditor,
             Self::Backspace => InputAction::Backspace,
             Self::Delete => InputAction::Delete,
@@ -366,6 +376,7 @@ impl ActionKey {
             Self::CycleModelBackward => "Cycle model backward",
             Self::ToggleReasoning => "Toggle reasoning",
             Self::Quit => "Quit",
+            Self::ForceQuit => "Force quit",
             Self::ExternalEditor => "External editor",
             Self::Backspace => "Backspace",
             Self::Delete => "Delete",
@@ -429,11 +440,16 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     let mut map = HashMap::new();
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
+    // Ctrl+C is the unconditional exit; Esc only backs out of whatever is on
+    // screen and never terminates the app.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('c')),
-        InputAction::Cancel,
+        InputAction::ForceQuit,
     );
     map.insert((KeyModifiers::NONE, KeyCode::Esc), InputAction::Cancel);
+    // `q` quits from Normal mode. Insert mode skips bare-char bindings, so
+    // this costs nothing while typing.
+    map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
     map.insert((KeyModifiers::NONE, KeyCode::Up), InputAction::NavigateUp);
     map.insert(
         (KeyModifiers::NONE, KeyCode::Down),
@@ -665,9 +681,10 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Esc), InputAction::Cancel);
+    // Ctrl+C exits; Esc never does. See `default_bindings_internal`.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('c')),
-        InputAction::Cancel,
+        InputAction::ForceQuit,
     );
 
     map.insert(
@@ -1011,6 +1028,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
+            key: "Ctrl+C",
+            action: "Quit",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
             key: "Ctrl+Q",
             action: "Quit",
             condition: None,
@@ -1235,7 +1258,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Esc",
-            action: "Cancel / exit",
+            action: "Clear draft / close popup (never exits)",
             condition: None,
         },
         HelpEntry {

@@ -98,7 +98,8 @@ AgentLoop::check_tool_permission()
     │
     ├──► GlobalEventBus::publish(PermissionPending { ... })
     │
-    ├──► Wait for response (300s timeout)
+    ├──► Wait for response (unbounded by default; see
+    │     permission.approval_timeout_secs to bound it)
     │
     ├──► User responds → PermissionRegistry::respond(perm_id, choice)
     │

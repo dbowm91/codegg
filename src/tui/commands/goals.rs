@@ -311,12 +311,14 @@ pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
         async move {
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::SessionStateRefreshed {
-                    todos: Vec::new(),
+                    todos: None,
                     active_goal: None,
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            // Hydrate the todo list.
+            // Hydrate the todo list. A reply that is not a `Json` payload is a
+            // *failed* read, not an empty list: reporting it as `Some(vec![])`
+            // made the strip blank out on a transient core error.
             let todos = match core_client
                 .request(crate::core::new_request(
                     format!("todo-list-{}", uuid::Uuid::new_v4()),
@@ -326,23 +328,44 @@ pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
                 ))
                 .await
             {
-                Ok(CoreResponse::Json { data }) => {
-                    if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
-                        items
-                            .iter()
-                            .filter_map(|v| {
-                                Some(crate::tui::app::TodoEntry {
-                                    content: v.get("content")?.as_str()?.to_string(),
-                                    status: v.get("status")?.as_str()?.to_string(),
-                                    priority: v.get("priority")?.as_str()?.to_string(),
+                Ok(CoreResponse::Json { data }) => Some(
+                    data.get("items")
+                        .and_then(|v| v.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|v| {
+                                    Some(crate::tui::app::TodoEntry {
+                                        content: v.get("content")?.as_str()?.to_string(),
+                                        status: v.get("status")?.as_str()?.to_string(),
+                                        priority: v.get("priority")?.as_str()?.to_string(),
+                                    })
                                 })
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    }
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                ),
+                Ok(CoreResponse::Error { code, message }) => {
+                    return Some(TuiCommand::SessionStateRefreshed {
+                        todos: None,
+                        active_goal: None,
+                        error: Some(format!("todo list unavailable ({code}): {message}")),
+                    });
                 }
-                _ => Vec::new(),
+                Ok(_) => {
+                    return Some(TuiCommand::SessionStateRefreshed {
+                        todos: None,
+                        active_goal: None,
+                        error: Some("todo list returned an unexpected response".to_string()),
+                    });
+                }
+                Err(e) => {
+                    return Some(TuiCommand::SessionStateRefreshed {
+                        todos: None,
+                        active_goal: None,
+                        error: Some(format!("todo list request failed: {e}")),
+                    });
+                }
             };
             // Hydrate the active goal.
             let active_goal = match core_client
@@ -381,15 +404,20 @@ pub(crate) fn start_refresh_session_state(app: &mut App, session_id: String) {
 
 pub(crate) fn apply_session_state_refreshed(
     app: &mut App,
-    todos: Vec<crate::tui::app::TodoEntry>,
+    todos: Option<Vec<crate::tui::app::TodoEntry>>,
     active_goal: Option<crate::bus::events::GoalSnapshot>,
     error: Option<String>,
 ) {
     if let Some(err) = error {
         tracing::warn!("Session state refresh failed: {}", err);
+        // Leave whatever is on screen alone. A failed read is not evidence
+        // that the user has no todos.
         return;
     }
-    app.set_todos(todos);
+    // `None` means the read never produced an authoritative list.
+    if let Some(todos) = todos {
+        app.set_todos(todos);
+    }
     app.set_active_goal(active_goal);
 }
 

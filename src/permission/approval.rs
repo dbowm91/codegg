@@ -42,6 +42,10 @@ pub mod source {
     pub const PERMISSION_DENY: &str = "permission_deny";
     pub const SENSITIVE_DENY: &str = "sensitive_deny";
     pub const TIMEOUT_DENY: &str = "timeout_deny";
+    /// The responder vanished before answering. Distinguished from
+    /// `timeout_deny` so an audit reader is not told the user ran out of
+    /// patience when the wait was actually abandoned.
+    pub const CHANNEL_CLOSED_DENY: &str = "channel_closed_deny";
     /// M006 reviewer verdict sources. The reviewer is an authorization
     /// helper: it only resolves `Escalate` in `Automatic` mode and can never
     /// override a deterministic `Deny` or widen the sandbox ceiling.
@@ -186,6 +190,16 @@ pub struct ApprovalRouter {
     /// means `Automatic` safely defers to the human; `true` is reserved
     /// for the reviewer implementation and must never auto-allow in M003.
     automatic_rollout: bool,
+    /// Upper bound on the human wait. `None` (the default) waits until the
+    /// user actually answers.
+    ///
+    /// There was a hardcoded 300s bound here. Combined with the registry's
+    /// own 310s sweep it meant a permission the user had merely not looked
+    /// at yet was denied out from under them, with no dialog and no error —
+    /// the tool simply failed. Blocking by default is the honest contract:
+    /// the request stays pending until the user decides, the turn stays
+    /// parked, and the wait is only bounded when the operator opts in.
+    approval_timeout: Option<Duration>,
 }
 
 impl ApprovalRouter {
@@ -193,6 +207,7 @@ impl ApprovalRouter {
         Self {
             snapshot,
             automatic_rollout: false,
+            approval_timeout: None,
         }
     }
 
@@ -200,6 +215,22 @@ impl ApprovalRouter {
     pub fn with_automatic_rollout(mut self, enabled: bool) -> Self {
         self.automatic_rollout = enabled;
         self
+    }
+
+    /// Bound the human wait. `None` (the default) waits indefinitely.
+    ///
+    /// A caller that sets this must also raise
+    /// [`PermissionRegistry::set_pending_ttl`] above the same duration (plus a
+    /// grace margin) so the registry's leak guard cannot evict a request this
+    /// router is still waiting on.
+    pub fn with_approval_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.approval_timeout = timeout;
+        self
+    }
+
+    /// The configured human-wait bound, or `None` when unbounded.
+    pub fn approval_timeout(&self) -> Option<Duration> {
+        self.approval_timeout
     }
 
     pub fn snapshot(&self) -> &ExecutionPolicySnapshot {
@@ -266,8 +297,15 @@ impl ApprovalRouter {
     }
 
     /// The single production human-wait owner. Registers before publishing,
-    /// waits with a bounded 300s timeout, and unregisters. Timeout is
-    /// recorded distinctly from explicit user deny (`timeout_deny`).
+    /// waits for the human, and unregisters.
+    ///
+    /// The wait is unbounded unless [`Self::with_approval_timeout`] supplied a
+    /// bound. A timeout is recorded distinctly from an explicit user deny
+    /// (`timeout_deny`); a responder channel that closes without a decision is
+    /// also a deny, but reported as a closed channel rather than a timeout so
+    /// an operator reading the audit trail is not told the user ran out of
+    /// patience when the waiter actually went away.
+    ///
     /// Returns the normalized decision plus whether the human chose an
     /// `Always` persistence style and whether the outcome allows execution.
     pub async fn request_human_approval(
@@ -294,11 +332,15 @@ impl ApprovalRouter {
             path: request.path.clone(),
             args,
         });
-        let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
-            Ok(Ok(choice)) => Some(choice),
-            _ => None,
-        };
+        // `None` => no deadline: `timeout` is never armed, so the future
+        // resolves only on a real response.
+        let received: Option<Result<PermissionDecision, tokio::sync::oneshot::error::RecvError>> =
+            match self.approval_timeout {
+                None => Some(resp_rx.await),
+                Some(limit) => tokio::time::timeout(limit, resp_rx).await.ok(),
+            };
         PermissionRegistry::unregister_scoped(&request.session_id, perm_id);
+        let choice = received.and_then(Result::ok);
         match choice {
             Some(PermissionDecision::AllowOnce) => HumanApprovalOutcome {
                 decision: ApprovalDecision::allow(source::USER_CHOICE, "human approved"),
@@ -320,8 +362,19 @@ impl ApprovalRouter {
                 persist: true,
                 allow: false,
             },
-            None => HumanApprovalOutcome {
+            // The configured deadline elapsed with no answer.
+            None if self.approval_timeout.is_some() => HumanApprovalOutcome {
                 decision: ApprovalDecision::deny(source::TIMEOUT_DENY, "approval timeout"),
+                persist: false,
+                allow: false,
+            },
+            // The responder went away without answering (cancelled turn,
+            // registry sweep). Still a deny, but not the user's timeout.
+            None => HumanApprovalOutcome {
+                decision: ApprovalDecision::deny(
+                    source::CHANNEL_CLOSED_DENY,
+                    "approval request closed before a decision",
+                ),
                 persist: false,
                 allow: false,
             },
@@ -390,6 +443,79 @@ mod tests {
             Some("config:1".into()),
             None,
         )
+    }
+
+    #[test]
+    fn human_wait_is_unbounded_by_default() {
+        // A permission the user has not looked at yet must never expire on
+        // its own. Previously a hardcoded 300s bound denied the tool with no
+        // dialog and no error.
+        let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive));
+        assert_eq!(
+            router.approval_timeout(),
+            None,
+            "router must wait indefinitely unless a timeout is configured"
+        );
+
+        // Opt-in bound is carried through.
+        let bounded = router
+            .clone()
+            .with_approval_timeout(Some(Duration::from_secs(900)));
+        assert_eq!(bounded.approval_timeout(), Some(Duration::from_secs(900)));
+
+        // `with_approval_timeout(None)` restores the unbounded default.
+        assert_eq!(bounded.with_approval_timeout(None).approval_timeout(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_wait_denies_with_timeout_source() {
+        let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive))
+            .with_approval_timeout(Some(Duration::from_millis(60)));
+        let req = request();
+
+        // Nobody answers: the wait ends on the configured deadline and is
+        // recorded as a timeout, not as a user deny.
+        let outcome = router.request_human_approval("perm-1", &req, None).await;
+        assert!(!outcome.allow);
+        assert_eq!(outcome.decision.source(), source::TIMEOUT_DENY);
+        assert!(
+            outcome.decision.reason().contains("timeout"),
+            "tool_batch keys its timeout-specific message off `timeout`, got {:?}",
+            outcome.decision.reason()
+        );
+        // A timeout must never be cached as an `Always` preference.
+        assert!(!outcome.persist);
+    }
+
+    #[tokio::test]
+    async fn unbounded_wait_survives_past_the_old_deadline() {
+        // Regression: the hardcoded 300s bound is gone, so a waiter is not
+        // resolved by age. We cannot wait 300s here, so we assert the
+        // contract that matters -- the future is *still pending* well past
+        // the old registry sweep window -- then answer it normally.
+        let router = ApprovalRouter::new(snapshot_for(ApprovalMode::Interactive));
+        let req = request();
+
+        let mut fut = Box::pin(router.request_human_approval("perm-late", &req, None));
+
+        // Elapsing the wrapper must leave the underlying wait untouched --
+        // i.e. there is no deadline armed.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(120), fut.as_mut())
+                .await
+                .is_err(),
+            "unbounded approval wait must not resolve without a response"
+        );
+
+        // A late answer still lands and is honoured.
+        assert!(codegg_core::bus::PermissionRegistry::respond_scoped(
+            "session-1",
+            "perm-late",
+            codegg_core::bus::PermissionDecision::AllowOnce
+        ));
+        let outcome = fut.await;
+        assert!(outcome.allow);
+        assert!(!outcome.persist);
     }
 
     #[test]

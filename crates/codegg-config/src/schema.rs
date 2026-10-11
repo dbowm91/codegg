@@ -1277,6 +1277,14 @@ pub struct PermissionConfig {
     pub paths: Option<Vec<String>>,
     pub doomloop_threshold: Option<usize>,
     pub sandbox_mode: Option<String>,
+    /// Seconds to wait for a human decision on an approval request before
+    /// denying it. Omit (the default) to wait indefinitely.
+    ///
+    /// Absent means the request stays pending — with its dialog up and the
+    /// turn parked — until the user answers. Set this only if unattended
+    /// runs must fail closed on their own; the turn is denied with
+    /// `timeout_deny`, which is deliberately distinct from a user deny.
+    pub approval_timeout_secs: Option<u64>,
 }
 
 /// M006 automatic approval reviewer preferences.
@@ -2595,6 +2603,28 @@ impl Config {
                 crate::error::ConfigError::Invalid("Could not determine config path to save".into())
             })?;
 
+        self.save_to(&path)
+    }
+
+    /// Write to the **global** (per-user) config, never the project config.
+    ///
+    /// A user preference — theme choice, last model — belongs to the account,
+    /// not to whichever repository happened to be open. `save()` prefers
+    /// `find_project_config()`, so mirroring a preference through it dropped
+    /// the choice into the first `.codegg/codegg.json(c)` above the cwd: the
+    /// setting then applied to that one checkout, and vanished everywhere
+    /// else. It also risked writing user state into a tracked repository file.
+    pub fn save_global(&self) -> Result<(), crate::error::ConfigError> {
+        let path = crate::paths::global_config_path().ok_or_else(|| {
+            crate::error::ConfigError::Invalid(
+                "Could not determine global config path to save".into(),
+            )
+        })?;
+
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &std::path::Path) -> Result<(), crate::error::ConfigError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 crate::error::ConfigError::Invalid(format!("Failed to create config dir: {}", e))
@@ -2612,7 +2642,7 @@ impl Config {
             crate::error::ConfigError::Parse(format!("Failed to serialize config: {}", e))
         })?;
 
-        std::fs::write(&path, content).map_err(|e| {
+        std::fs::write(path, content).map_err(|e| {
             crate::error::ConfigError::Invalid(format!("Failed to write config file: {}", e))
         })?;
 

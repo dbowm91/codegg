@@ -113,6 +113,15 @@ pub async fn project_plan_to_session_todos(
         })
         .collect();
     let count = inputs.len();
+    // An empty projection means "every plan item is terminal", not "the user
+    // has no todos". `TodoStore::set` is delete-then-insert, so writing the
+    // empty vector here wiped the whole per-session todo table — the strip
+    // disappeared the next time anything rehydrated from it. Skip the write so
+    // the last known list survives; the plan itself stays the authority on
+    // completion.
+    if inputs.is_empty() {
+        return Ok(0);
+    }
     codegg_core::session::store::TodoStore::new(pool.clone())
         .set(session_id, inputs)
         .await

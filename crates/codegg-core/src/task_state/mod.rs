@@ -136,14 +136,37 @@ impl TodoState {
         Self::default()
     }
 
+    /// Rehydrate from the durable per-session todo rows.
+    ///
+    /// An **empty** store is treated as "nothing persisted", not as "the list
+    /// is now empty". This is the only rehydration path for the per-turn
+    /// `TodoState`, so clearing on an empty read wiped the live list whenever a
+    /// turn boundary coincided with a store that had not been written yet —
+    /// the user saw the todo list vanish on resume/pause. Callers that
+    /// genuinely mean "clear the list" set it explicitly instead.
+    ///
+    /// `revision` is deliberately left monotonic rather than reset to 0:
+    /// consumers compare revisions across turn boundaries, and a restarted
+    /// counter makes a fresh write look stale.
     pub fn load_from_session(&mut self, session_items: Vec<crate::session::models::TodoItem>) {
+        if session_items.is_empty() {
+            return;
+        }
         self.items = session_items
             .iter()
             .map(TodoItem::from_session_model)
             .collect();
-        self.revision = 0;
         let all_done = self.is_all_done();
         self.reminder_pending = !all_done && !self.items.is_empty();
+        self.tool_calls_since_injection = 0;
+    }
+
+    /// Explicitly clear the todo list. Separate from
+    /// [`Self::load_from_session`] precisely so an empty *read* cannot be
+    /// mistaken for a clear.
+    pub fn clear(&mut self) {
+        self.items.clear();
+        self.reminder_pending = false;
         self.tool_calls_since_injection = 0;
     }
 
@@ -366,6 +389,59 @@ pub fn build_todo_reminder(todo: &TodoState, policy: &TaskStatePolicy) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn session_todo(content: &str) -> crate::session::models::TodoItem {
+        crate::session::models::TodoItem {
+            session_id: "s1".into(),
+            content: content.into(),
+            status: "pending".into(),
+            priority: "medium".into(),
+            position: 0,
+            time_created: 0,
+            time_updated: 0,
+        }
+    }
+
+    #[test]
+    fn empty_rehydration_preserves_the_live_list() {
+        // Regression: `load_from_session` used to overwrite unconditionally, so
+        // a turn boundary that rehydrated from a not-yet-written store wiped
+        // the todo list the user was looking at (the visible symptom of
+        // "todos vanish when the agent pauses").
+        let mut state = TodoState::new();
+        state.load_from_session(vec![session_todo("keep me"), session_todo("and me")]);
+        assert_eq!(state.items.len(), 2);
+
+        state.load_from_session(Vec::new());
+        assert_eq!(
+            state.items.len(),
+            2,
+            "an empty read must not be treated as a clear"
+        );
+
+        // A genuine clear is explicit, and only explicit.
+        state.clear();
+        assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn rehydration_replaces_content_and_keeps_revision_monotonic() {
+        let mut state = TodoState::new();
+        state.load_from_session(vec![session_todo("old")]);
+        let baseline = state.revision;
+
+        state.load_from_session(vec![session_todo("new-a"), session_todo("new-b")]);
+        assert_eq!(state.items.len(), 2);
+        assert!(
+            !state.items.iter().any(|i| i.content == "old"),
+            "a non-empty read must replace the list"
+        );
+
+        // Revision is never rewound by a rehydration; a restarted counter
+        // makes a subsequent write look stale to revision-gating consumers.
+        state.load_from_session(vec![]);
+        assert_eq!(state.revision, baseline);
+    }
 
     fn make_policy() -> TaskStatePolicy {
         TaskStatePolicy::explicit_todo()

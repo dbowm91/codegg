@@ -138,6 +138,99 @@ fn todo_bubble_distinguishes_every_status() {
     assert_eq!(App::todo_bubble("something-new"), "\u{25cb}");
 }
 
+/// A todo update for a *different* session must not overwrite the list of
+/// the session on screen, and a stale revision must not roll it backwards.
+///
+/// The daemon broadcasts to every attached frontend, so the core-event arm
+/// needs the same session check the in-process handler already performed.
+#[test]
+fn todo_updates_are_session_scoped_and_revision_monotonic() {
+    use codegg::protocol::core::CoreEvent;
+
+    fn event(session: &str, revision: u64, content: &str) -> CoreEvent {
+        CoreEvent::TodoListUpdated {
+            session_id: session.into(),
+            revision,
+            items: vec![serde_json::json!({
+                "content": content,
+                "status": "pending",
+                "priority": "medium",
+            })],
+        }
+    }
+
+    // With no active session, an update is accepted (nothing to conflict with).
+    let mut app = App::new_for_testing("/tmp/codegg-regression-todo-scope".to_string());
+    assert!(app.apply_core_event(event("s-1", 5, "first")));
+    assert_eq!(app.todos[0].content, "first");
+    assert_eq!(app.todos.len(), 1);
+    assert_eq!(app.todos[0].content, "first");
+    assert_eq!(app.todo_revision, 5);
+
+    // A newer revision applies.
+    assert!(app.apply_core_event(event("s-1", 9, "second")));
+    assert_eq!(app.todos[0].content, "second");
+    assert_eq!(app.todo_revision, 9);
+
+    // A stale revision from the same session is dropped, leaving the newer
+    // list in place.
+    assert!(
+        !app.apply_core_event(event("s-1", 3, "stale")),
+        "a superseded revision must not request a redraw"
+    );
+    assert_eq!(app.todos[0].content, "second");
+
+    // Bind a session, then prove a foreign session's update is ignored.
+    app.session_state.session = Some(bound_session("s-1"));
+    assert!(app.apply_core_event(event("s-1", 10, "third")));
+    assert_eq!(app.todos[0].content, "third");
+
+    assert!(
+        !app.apply_core_event(event("other-session", 99, "not mine")),
+        "a foreign session's todos must not be adopted"
+    );
+    assert_eq!(
+        app.todos[0].content, "third",
+        "the on-screen session's list must survive a foreign update"
+    );
+    assert_eq!(
+        app.todo_revision, 10,
+        "a dropped event must not advance the revision"
+    );
+}
+
+fn bound_session(id: &str) -> codegg::session::Session {
+    codegg::session::Session {
+        id: id.into(),
+        project_id: String::new(),
+        workspace_id: None,
+        parent_id: None,
+        slug: String::new(),
+        directory: String::new(),
+        title: String::new(),
+        version: String::new(),
+        share_url: None,
+        summary_additions: None,
+        summary_deletions: None,
+        summary_files: None,
+        summary_diffs: None,
+        revert: None,
+        permission: None,
+        tags: Vec::new(),
+        provider_connection_id: None,
+        provider_connection_revision: None,
+        model_catalog_revision: None,
+        selected_model_id: None,
+        agent: None,
+        model: None,
+        time_created: 0,
+        time_updated: 0,
+        time_compacting: None,
+        time_archived: None,
+        time_deleted: None,
+    }
+}
+
 /// `AppEvent::TodoUpdated` is published on the process-local bus, so before
 /// this was forwarded as a `CoreEvent` a daemon-connected TUI never saw a
 /// todo list change after startup.
@@ -232,4 +325,129 @@ fn narrow_terminal_never_reserves_a_starved_sidebar() {
     let chunks = app.ui_state.layout.split(area, true);
     assert_eq!(chunks.len(), 1, "too-narrow frames get no sidebar split");
     assert_eq!(chunks[0], area);
+}
+
+// -------------------------------------------------------------- quit / Esc
+
+/// `Esc` must never terminate the app.
+///
+/// Regression: `cancel()` ended in `self.ui_state.running = false` once the
+/// prompt was empty, so a stray `Esc` in Normal mode tore down the whole
+/// session. Exiting is `q`, `/exit`, or Ctrl+C.
+#[test]
+fn esc_never_quits_in_any_mode() {
+    use crossterm::event::KeyEvent;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+    // Normal mode, empty prompt: the old exit branch lived exactly here.
+    let mut app = App::new_for_testing("/tmp/codegg-regression-esc-normal".to_string());
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(esc);
+    assert!(
+        app.ui_state.running,
+        "Esc in Normal mode with an empty prompt must not quit"
+    );
+
+    // Repeated presses must stay harmless.
+    for _ in 0..5 {
+        app.on_key(esc);
+    }
+    assert!(app.ui_state.running, "repeated Esc must not quit");
+
+    // Insert mode: Esc returns to Normal, and still does not quit.
+    let mut app = App::new_for_testing("/tmp/codegg-regression-esc-insert".to_string());
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Insert;
+    app.on_key(esc);
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Normal
+    );
+    assert!(
+        app.ui_state.running,
+        "Esc must not quit while leaving Insert mode"
+    );
+
+    // A half-written draft is discarded, and the app survives it.
+    let mut app = App::new_for_testing("/tmp/codegg-regression-esc-draft".to_string());
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.prompt_state
+        .prompt
+        .set_text("half-written prompt".to_string());
+    app.on_key(esc);
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "",
+        "Esc discards a draft"
+    );
+    assert!(
+        app.ui_state.running,
+        "Esc must not quit after discarding a draft"
+    );
+}
+
+/// Ctrl+C is the explicit exit, kept as its own action so it cannot drift
+/// back into sharing Esc's behavior.
+#[test]
+fn ctrl_c_is_a_separate_exit_action() {
+    use codegg::tui::input::{default_bindings, vim_bindings, InputAction};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    for bindings in [default_bindings(), vim_bindings()] {
+        let esc = bindings.get(&(KeyModifiers::NONE, KeyCode::Esc));
+        let ctrl_c = bindings.get(&(KeyModifiers::CONTROL, KeyCode::Char('c')));
+        assert_eq!(esc, Some(&InputAction::Cancel), "Esc must be Cancel");
+        assert_eq!(
+            ctrl_c,
+            Some(&InputAction::ForceQuit),
+            "Ctrl+C must be the distinct ForceQuit action"
+        );
+    }
+
+    // `q` quits from Normal mode in both binding sets.
+    for bindings in [default_bindings(), vim_bindings()] {
+        assert_eq!(
+            bindings.get(&(KeyModifiers::NONE, KeyCode::Char('q'))),
+            Some(&InputAction::Quit),
+            "bare `q` must quit from Normal mode"
+        );
+    }
+}
+
+// ------------------------------------------------------------------- theme
+
+/// A theme configured in the config file must survive a fresh launch.
+///
+/// Regression: production startup called `App::new(project_dir)`, which
+/// forwards `None` for the config. `ThemeRegistry::load_with_config(None)`
+/// plus `ThemeResolutionConfig::default()` therefore always resolved to
+/// `cyber-red`, so a theme picked in the UI came back as the default next
+/// session even though `theme.name` had been written correctly.
+#[tokio::test]
+async fn configured_theme_is_applied_at_startup() {
+    use codegg::config::schema::Config;
+
+    let mut config = Config::default();
+    config.theme = Some(codegg::config::schema::ThemeConfig {
+        name: Some("cyberpunk".to_string()),
+        ..Default::default()
+    });
+
+    let app = App::with_config("/tmp/codegg-regression-theme".to_string(), Some(&config));
+    assert_eq!(
+        app.ui_state.theme.id, "cyberpunk",
+        "theme.name from config must drive the startup theme"
+    );
+
+    // With no `theme.name`, the same production path resolves to the
+    // documented default id (`DEFAULT_THEME_ID`).
+    let app = App::with_config(
+        "/tmp/codegg-regression-theme-default".to_string(),
+        Some(&Config::default()),
+    );
+    assert_eq!(
+        app.ui_state.theme.id, "cyber-red",
+        "no theme.name must resolve to DEFAULT_THEME_ID"
+    );
 }

@@ -88,13 +88,55 @@ static PERMISSION_REGISTRY: Lazy<PermissionRegistry> = Lazy::new(PermissionRegis
 pub struct PermissionRegistry {
     senders: DashMap<String, PendingPermission>,
     last_cleanup_ms: AtomicU64,
+    /// Upper bound on how long an unanswered request may sit in the map.
+    ///
+    /// `None` (the default) means entries never expire on age alone. The
+    /// waiter unregisters on every exit path, so age-based eviction is only a
+    /// leak guard for a waiter that was dropped mid-await (a cancelled turn).
+    /// A fixed 310s TTL was previously the *only* expiry, which silently
+    /// denied any approval the user simply had not answered yet — including
+    /// with the router configured to wait indefinitely.
+    ///
+    /// When the caller sets a real approval timeout it must also raise this
+    /// above that timeout, so the router's own timeout wins and unregisters
+    /// cleanly rather than the map dropping the sender out from under it.
+    pending_ttl: AtomicU64,
 }
+
+/// Sentinel for [`PermissionRegistry::pending_ttl`]: no age-based expiry.
+const PENDING_TTL_UNBOUNDED: u64 = u64::MAX;
 
 impl PermissionRegistry {
     pub fn new() -> Self {
         Self {
             senders: DashMap::new(),
             last_cleanup_ms: AtomicU64::new(0),
+            pending_ttl: AtomicU64::new(PENDING_TTL_UNBOUNDED),
+        }
+    }
+
+    /// Bound how long an unanswered request survives in the registry.
+    ///
+    /// `None` disables age-based eviction entirely. Call this once per
+    /// process with the configured approval timeout plus a grace margin, so
+    /// the router's timeout fires first and the waiter unregisters itself.
+    pub fn set_pending_ttl(ttl: Option<std::time::Duration>) {
+        let encoded = match ttl {
+            Some(d) => d.as_millis().min(u128::from(u64::MAX - 1)) as u64,
+            None => PENDING_TTL_UNBOUNDED,
+        };
+        PERMISSION_REGISTRY
+            .pending_ttl
+            .store(encoded, Ordering::Release);
+    }
+
+    /// The currently configured age bound, or `None` when unbounded.
+    pub fn pending_ttl() -> Option<std::time::Duration> {
+        let encoded = PERMISSION_REGISTRY.pending_ttl.load(Ordering::Acquire);
+        if encoded == PENDING_TTL_UNBOUNDED {
+            None
+        } else {
+            Some(std::time::Duration::from_millis(encoded))
         }
     }
 
@@ -215,7 +257,9 @@ impl PermissionRegistry {
     }
 
     fn cleanup_if_due() {
-        let ttl = Duration::from_secs(310);
+        let Some(ttl) = PermissionRegistry::pending_ttl() else {
+            return;
+        };
         let now = monotonic_millis();
         let last = PERMISSION_REGISTRY.last_cleanup_ms.load(Ordering::Relaxed);
         if now.saturating_sub(last) < CLEANUP_THROTTLE_MS
@@ -231,13 +275,19 @@ impl PermissionRegistry {
             .retain(|_, pending| pending.created_at.elapsed() < ttl);
     }
 
+    /// Sweep expired entries immediately, ignoring the 30s throttle.
+    ///
+    /// A no-op while the TTL is unbounded.
     pub fn cleanup_now() {
+        let Some(ttl) = PermissionRegistry::pending_ttl() else {
+            return;
+        };
         PERMISSION_REGISTRY
             .last_cleanup_ms
             .store(monotonic_millis(), Ordering::Release);
         PERMISSION_REGISTRY
             .senders
-            .retain(|_, pending| pending.created_at.elapsed() < Duration::from_secs(310));
+            .retain(|_, pending| pending.created_at.elapsed() < ttl);
     }
 }
 
@@ -416,5 +466,55 @@ fn monotonic_millis() -> u64 {
 impl Default for QuestionRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The permission registry is a process global, so this restores whatever
+    /// it found. Runs in one process alongside other bus tests under
+    /// `cargo test --lib`.
+    struct TtlGuard(Option<Duration>);
+
+    impl Drop for TtlGuard {
+        fn drop(&mut self) {
+            PermissionRegistry::set_pending_ttl(self.0);
+        }
+    }
+
+    #[test]
+    fn pending_ttl_is_unbounded_by_default() {
+        let _guard = TtlGuard(PermissionRegistry::pending_ttl());
+        PermissionRegistry::set_pending_ttl(None);
+
+        // A pending approval must survive indefinitely on age alone. The old
+        // fixed 310s sweep evicted live requests, so a user who simply had
+        // not answered yet saw the tool denied.
+        assert_eq!(PermissionRegistry::pending_ttl(), None);
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        PermissionRegistry::register_with_session("ttl-s".into(), None, "ttl-p".into(), tx);
+        PermissionRegistry::cleanup_now();
+        assert!(
+            PermissionRegistry::respond_scoped("ttl-s", "ttl-p", PermissionDecision::AllowOnce),
+            "unbounded registry must not evict a pending request"
+        );
+        assert_eq!(rx.try_recv().ok(), Some(PermissionDecision::AllowOnce));
+    }
+
+    #[test]
+    fn pending_ttl_round_trips_a_configured_bound() {
+        let _guard = TtlGuard(PermissionRegistry::pending_ttl());
+
+        PermissionRegistry::set_pending_ttl(Some(Duration::from_secs(960)));
+        assert_eq!(
+            PermissionRegistry::pending_ttl(),
+            Some(Duration::from_secs(960))
+        );
+
+        PermissionRegistry::set_pending_ttl(None);
+        assert_eq!(PermissionRegistry::pending_ttl(), None);
     }
 }

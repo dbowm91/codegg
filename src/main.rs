@@ -3188,7 +3188,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             )
         };
 
-    let mut app = tui::App::new(project_dir.clone());
+    // The config must be threaded in, not re-derived: `App::with_config(.., None)`
+    // leaves `cfg` empty, and every field it seeds from `cfg` — most visibly
+    // `theme.name` — then silently falls back to a hardcoded default. That is
+    // why a theme change applied in the UI came back as `cyber-red` on the next
+    // launch even though `persist_theme_selection` had correctly written
+    // `theme.name` into the config file. This also makes `vim_mode`,
+    // `keybinds`, `watcher` and the shell settings honour the config instead of
+    // their defaults.
+    let mut app = tui::App::with_config(project_dir.clone(), Some(&config));
     if let Some(ref ss) = session_store {
         app.set_session_store(Arc::clone(ss));
     }
