@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 007 — MXC Feasibility Spike
 
-Status: blocked/optional (M001 contract required)
+Status: ready for handoff (optional)
 
 Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
 

@@ -138,10 +138,10 @@ Codegg on a documented Windows version supports constrained local tool execution
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | active | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | — | none |
-| M002 | blocked | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | — | M001 |
+| M001 | closed | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | `plans/closure/windows-native-sandbox/001-status.md` | none |
+| M002 | ready | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | — | none |
 | M003 | blocked | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 |
 | M004 | blocked | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 |
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
-| M007 | blocked/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | — | M001 contract; non-release-critical |
+| M007 | ready/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | — | non-release-critical |

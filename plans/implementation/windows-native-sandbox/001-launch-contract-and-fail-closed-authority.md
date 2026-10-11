@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 001 — Launch Contract and Fail-Closed Authority
 
-Status: active
+Status: implemented
 
 Repository baseline: `a02cd9ade7ffca775efc1567669aae728ad9ff72`
 

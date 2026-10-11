@@ -1,6 +1,6 @@
 # Windows Native Sandbox Milestone 002 — Win32 Launch and Job Ownership
 
-Status: blocked (M001 closure required)
+Status: ready for handoff
 
 Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
 
