@@ -310,9 +310,10 @@ pub(super) fn verify_appcontainer_token(
     expected_sid: windows_sys::Win32::Security::PSID,
 ) -> io::Result<()> {
     use windows_sys::Win32::Security::{
-        EqualSid, GetTokenInformation, OpenProcessToken, TokenAppContainerSid,
-        TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY,
+        EqualSid, GetTokenInformation, TokenAppContainerSid, TOKEN_APPCONTAINER_INFORMATION,
+        TOKEN_QUERY,
     };
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
     let mut token = ptr::null_mut();
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
         return Err(last_error());
