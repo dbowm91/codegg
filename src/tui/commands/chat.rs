@@ -30,6 +30,7 @@ use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
+use std::sync::Arc;
 
 /// Maximum body bytes accepted by the composer (matches the daemon
 /// bound; oversized input fails fast with a typed error and the draft
@@ -89,32 +90,9 @@ fn active_channel_for(app: &App, project_id: &str) -> Option<String> {
         .and_then(|e| e.active_channel_id.clone())
 }
 
-/// Refresh the open chat panel (when one is showing) from the reducer so
-/// completions and live events update the visible window without a new
-/// fetch.
-fn refresh_chat_panel(app: &mut App) {
-    let showing_chat = app
-        .focus_manager
-        .with_dialog(
-            crate::tui::components::component::DialogType::ProjectChat,
-            |dialog: &crate::tui::components::dialogs::info::InfoDialog| {
-                dialog.info_type() == crate::tui::components::dialogs::info::InfoType::ProjectChat
-            },
-        )
-        .unwrap_or(false);
-    if !showing_chat {
-        return;
-    }
-    if let Some(project_id) = app.chat_panel_project.clone() {
-        let lines = app.chat.panel_lines(&project_id, now_ms());
-        let _ = app.focus_manager.with_dialog_mut(
-            crate::tui::components::component::DialogType::ProjectChat,
-            |dialog: &mut crate::tui::components::dialogs::info::InfoDialog| {
-                dialog.set_content(lines);
-            },
-        );
-    }
-}
+// Refresh the open chat panel (when one is showing) from the reducer so
+// completions and live events update the visible window without a new
+// fetch. Defined next to the window lifecycle helpers below.
 
 // ── History / sync ───────────────────────────────────────────────────────
 
@@ -165,6 +143,7 @@ pub(crate) fn start_chat_history(app: &mut App, project_id: String) {
         return;
     };
     let reconnect_epoch = app.chat.reconnect_epoch;
+    let backward_paging = app.chat.backward_paging;
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     let pid = project_id.clone();
@@ -225,6 +204,72 @@ pub(crate) fn start_chat_history(app: &mut App, project_id: String) {
                     }
                 },
             };
+            // Prefer the newest window. `ChatHistory` only pages forward
+            // from `seq >= from_seq`, so an unanchored forward request
+            // returns the OLDEST page — which meant opening `/chat` on a
+            // busy channel showed ancient messages and the newest ones
+            // were unreachable without a manual `/chat-sync`. Backward
+            // paging with no anchor is the "newest N" query the window
+            // actually wants. Older daemons keep the forward path.
+            if backward_paging {
+                let req = crate::core::new_request(
+                    format!("chat-history-newest-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::ChatHistoryOlder {
+                        channel_id: channel_id.clone(),
+                        before_seq: None,
+                        limit: None,
+                    },
+                );
+                return match core_client.request(req).await {
+                    Ok(CoreResponse::ChatHistoryOlder {
+                        messages,
+                        has_older,
+                        retention_floor_seq,
+                        ..
+                    }) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages,
+                        has_older,
+                        retention_floor_seq,
+                        error: None,
+                        reconnect_epoch,
+                    }),
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::ChatHistoryOlderLoaded {
+                            request_id,
+                            project_id: pid,
+                            channel_id,
+                            messages: Vec::new(),
+                            has_older: false,
+                            retention_floor_seq: 0,
+                            error: Some(format!("{code}: {message}")),
+                            reconnect_epoch,
+                        })
+                    }
+                    Err(e) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("Chat history request failed: {e}")),
+                        reconnect_epoch,
+                    }),
+                    Ok(other) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("Unexpected core response: {other:?}")),
+                        reconnect_epoch,
+                    }),
+                };
+            }
             let req = crate::core::new_request(
                 format!("chat-history-{}", uuid::Uuid::new_v4()),
                 CoreRequest::ChatHistory {
@@ -1364,11 +1409,225 @@ pub(crate) fn show_chat(app: &mut App) {
         start_chat_history(app, project_id.clone());
     }
     app.chat_panel_project = Some(project_id.clone());
-    let lines = app.chat.panel_lines(&project_id, now_ms());
-    app.open_info_dialog(
-        crate::tui::components::dialogs::info::InfoType::ProjectChat,
-        lines,
+    open_chat_window(app, &project_id);
+}
+
+/// Mount (or refresh) the interactive chat window for `project_id`.
+///
+/// The window owns browsing, composing, and editing; this only hands it a
+/// bounded snapshot and records which project it shows. Re-opening an
+/// already-mounted window updates it in place rather than stacking a
+/// second copy, so `/chat` twice never leaves two chat windows behind.
+pub(crate) fn open_chat_window(app: &mut App, project_id: &str) {
+    use crate::tui::components::dialogs::chat::ChatDialog;
+    let snapshot = app.chat.snapshot(project_id, now_ms());
+    if app.focus_manager.has_component::<ChatDialog>() {
+        let _ = app
+            .focus_manager
+            .with_component_mut::<ChatDialog, _>(|dialog| dialog.apply_snapshot(snapshot));
+    } else {
+        let mut dialog = ChatDialog::new(Arc::clone(&app.ui_state.theme), project_id.to_string());
+        dialog.apply_snapshot(snapshot);
+        app.push_dialog(crate::tui::app::Dialog::ProjectChat, Box::new(dialog));
+    }
+}
+
+/// Push the current reducer state into the open chat window.
+///
+/// Called from every completion and live-event path, so the window tracks
+/// the projection without refetching. Returns early when no window is
+/// mounted: chat must keep working from the command line with the window
+/// closed.
+pub(crate) fn refresh_chat_panel(app: &mut App) {
+    use crate::tui::components::dialogs::chat::ChatDialog;
+    if !app.focus_manager.has_component::<ChatDialog>() {
+        return;
+    }
+    let Some(project_id) = app.chat_panel_project.clone() else {
+        return;
+    };
+    let snapshot = app.chat.snapshot(&project_id, now_ms());
+    let _ = app
+        .focus_manager
+        .with_component_mut::<ChatDialog, _>(|dialog| dialog.apply_snapshot(snapshot));
+}
+
+/// Switch the chat window to `channel_id` and load its newest window.
+///
+/// The reducer only retains the active channel's message window — caching
+/// every channel would multiply the documented memory bound by the channel
+/// count — so a switch refetches rather than restoring from a local copy.
+/// The channel pointer moves before the fetch so a message typed right
+/// after switching targets the channel the user is actually looking at.
+pub(crate) fn start_chat_switch_channel(app: &mut App, project_id: String, channel_id: String) {
+    if !app.chat.set_active_channel(&project_id, &channel_id) {
+        // Unknown channel, or already active: nothing to fetch.
+        refresh_chat_panel(app);
+        return;
+    }
+    refresh_chat_panel(app);
+    start_chat_history(app, project_id);
+}
+
+/// Page one window of messages older than the current one.
+///
+/// Gated on the negotiated `backward_paging` capability: an older daemon
+/// cannot decode the request, so this reports that plainly instead of
+/// issuing a round-trip that would fail opaquely.
+pub(crate) fn start_chat_load_older(app: &mut App, project_id: String) {
+    if !app.chat.backward_paging {
+        app.messages_state.toasts.warning(
+            "This daemon does not support loading older chat history — it must be restarted or upgraded",
+        );
+        return;
+    }
+    let Some(channel_id) = active_channel_for(app, &project_id) else {
+        app.messages_state
+            .toasts
+            .warning("No chat channel loaded — nothing older to fetch");
+        return;
+    };
+    // Anchor strictly before the oldest retained message so the page
+    // cannot overlap what the window already holds.
+    let before_seq = app
+        .chat
+        .get(&project_id)
+        .and_then(|entry| entry.messages.front().map(|m| m.seq));
+    let Some(request_id) = app.chat.begin_history_older(&project_id, &channel_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid channel locator — older history not loaded");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let Some(core_client) = app.core_client.clone() else {
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+            false,
+            false,
+            reconnect_epoch,
+        );
+        refresh_chat_panel(app);
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_history_older",
+        async move {
+            let req = crate::core::new_request(
+                format!("chat-history-older-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatHistoryOlder {
+                    channel_id: channel_id.clone(),
+                    before_seq,
+                    limit: None,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatHistoryOlder {
+                    messages,
+                    has_older,
+                    retention_floor_seq,
+                    // `older_cursor` is intentionally unused: the next
+                    // page is anchored from the window's own oldest
+                    // message, which stays authoritative once the merge
+                    // has applied the retention bound. Trusting a cursor
+                    // from a page that got trimmed would re-fetch rows the
+                    // window already holds.
+                    older_cursor: _,
+                    ..
+                }) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages,
+                    has_older,
+                    retention_floor_seq,
+                    error: None,
+                    reconnect_epoch,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ChatHistoryOlderLoaded {
+                        request_id,
+                        project_id: pid,
+                        channel_id,
+                        messages: Vec::new(),
+                        has_older: false,
+                        retention_floor_seq: 0,
+                        error: Some(format!("{code}: {message}")),
+                        reconnect_epoch,
+                    })
+                }
+                Ok(other) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    has_older: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Unexpected core response: {other:?}")),
+                    reconnect_epoch,
+                }),
+                Err(e) => Some(TuiCommand::ChatHistoryOlderLoaded {
+                    request_id,
+                    project_id: pid,
+                    channel_id,
+                    messages: Vec::new(),
+                    has_older: false,
+                    retention_floor_seq: 0,
+                    error: Some(format!("Older history request failed: {e}")),
+                    reconnect_epoch,
+                }),
+            }
+        },
     );
+}
+
+/// Apply a backward-page completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_history_older_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    messages: Vec<ChatMessageDto>,
+    has_older: bool,
+    retention_floor_seq: u64,
+    error: Option<String>,
+    reconnect_epoch: u64,
+) {
+    if let Some(error) = error {
+        // `apply_error` clears `current_request_id`; a transient failure
+        // keeps the visible window and asks for a retry.
+        let _ = app.chat.apply_error(
+            request_id,
+            &project_id,
+            error.clone(),
+            false,
+            false,
+            reconnect_epoch,
+        );
+        app.messages_state
+            .toasts
+            .warning(&format!("Could not load older messages: {error}"));
+        refresh_chat_panel(app);
+        return;
+    }
+    let _ = app.chat.apply_history_older(
+        request_id,
+        &project_id,
+        &channel_id,
+        messages,
+        has_older,
+        retention_floor_seq,
+        reconnect_epoch,
+    );
+    refresh_chat_panel(app);
 }
 
 // ── Observer insert routing ──────────────────────────────────────────────

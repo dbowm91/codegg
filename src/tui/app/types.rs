@@ -280,6 +280,45 @@ pub enum TuiMsg {
         line: Option<u32>,
         origin_label: Option<String>,
     },
+    // ── Project chat window (`ChatDialog`) ────────────────────────────
+    //
+    // Pure intents. The dialog owns presentation and local view state
+    // only; every variant below is routed by `App::process_msg` into the
+    // existing `commands/chat.rs` `start_chat_*` seams, which own the
+    // daemon round-trip, authorization, and stale-completion guards. None
+    // of these carries an authority decision — the daemon still decides
+    // whether a send, edit, or redact is allowed.
+    /// Send a composed message, optionally as a reply.
+    ChatSend {
+        body: String,
+        reply_to: Option<String>,
+    },
+    /// Replace one message body. The daemon resolves the expected
+    /// revision and reports conflicts; the client never guesses one.
+    ChatEdit {
+        message_id: String,
+        body: String,
+    },
+    /// Redact one message body irreversibly.
+    ChatRedact {
+        message_id: String,
+    },
+    /// Advance the read marker to the newest retained message.
+    ChatMarkRead,
+    /// Page backward from the current window (daemon-side backward
+    /// paging; gated on the negotiated capability).
+    ChatLoadOlder,
+    /// Reload the active channel.
+    ChatRefresh,
+    /// Move the window to another channel of the same project. The
+    /// reducer validates the channel against the daemon's own listing
+    /// before switching, so an unknown id is rejected client-side too.
+    ChatSwitchChannel {
+        channel_id: String,
+    },
+    /// The daemon does not advertise backward paging, so `u` cannot be
+    /// served. Surfaced as a hint rather than a silent no-op.
+    ChatPagingUnsupported,
     OpenRunDetail {
         run_id: String,
     },

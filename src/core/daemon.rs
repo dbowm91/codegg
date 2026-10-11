@@ -546,6 +546,7 @@ impl CoreDaemon {
             CoreRequest::ChatChannelEnsure { .. }
                 | CoreRequest::ChatChannelList { .. }
                 | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatHistoryOlder { .. }
                 | CoreRequest::ChatSend { .. }
                 | CoreRequest::ChatEdit { .. }
                 | CoreRequest::ChatRedact { .. }
@@ -722,6 +723,7 @@ impl CoreDaemon {
             CoreRequest::ChatChannelEnsure { .. } => "chat_channel_ensure",
             CoreRequest::ChatChannelList { .. } => "chat_channel_list",
             CoreRequest::ChatHistory { .. } => "chat_history",
+            CoreRequest::ChatHistoryOlder { .. } => "chat_history_older",
             CoreRequest::ChatSend { .. } => "chat_send",
             CoreRequest::ChatEdit { .. } => "chat_edit",
             CoreRequest::ChatRedact { .. } => "chat_redact",
@@ -897,6 +899,7 @@ impl CoreDaemon {
             CoreRequest::ChatChannelEnsure { .. }
                 | CoreRequest::ChatChannelList { .. }
                 | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatHistoryOlder { .. }
                 | CoreRequest::ChatSend { .. }
                 | CoreRequest::ChatEdit { .. }
                 | CoreRequest::ChatRedact { .. }
@@ -1046,6 +1049,7 @@ impl CoreDaemon {
     fn chat_channel_id_for_request(request: &CoreRequest) -> Option<&str> {
         match request {
             CoreRequest::ChatHistory { channel_id, .. }
+            | CoreRequest::ChatHistoryOlder { channel_id, .. }
             | CoreRequest::ChatSend { channel_id, .. }
             | CoreRequest::ChatEdit { channel_id, .. }
             | CoreRequest::ChatRedact { channel_id, .. }
@@ -1093,6 +1097,7 @@ impl CoreDaemon {
                 | CoreRequest::ChatChannelEnsure { .. }
                 | CoreRequest::ChatChannelList { .. }
                 | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatHistoryOlder { .. }
                 | CoreRequest::ChatSend { .. }
                 | CoreRequest::ChatEdit { .. }
                 | CoreRequest::ChatRedact { .. }
@@ -1319,6 +1324,37 @@ impl CoreDaemon {
                         messages: page.messages.iter().map(|m| m.to_dto()).collect(),
                         next_cursor: page.next_cursor,
                         truncated: page.truncated,
+                        retention_floor_seq: page.retention_floor_seq,
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatHistoryOlder {
+                channel_id,
+                before_seq,
+                limit,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                if !self
+                    .chat_access_allows(&project, Some(&channel), authority.principal())
+                    .await
+                {
+                    return Ok(Self::chat_policy_denied());
+                }
+                match self
+                    .collaboration
+                    .history_older(&project, &channel, before_seq, limit)
+                    .await
+                {
+                    Ok(page) => Ok(CoreResponse::ChatHistoryOlder {
+                        channel_id: channel.as_str().to_owned(),
+                        messages: page.messages.iter().map(|m| m.to_dto()).collect(),
+                        older_cursor: page.older_cursor,
+                        has_older: page.has_older,
                         retention_floor_seq: page.retention_floor_seq,
                     }),
                     Err(error) => Ok(chat_error(error)),

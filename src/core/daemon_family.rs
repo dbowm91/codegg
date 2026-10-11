@@ -243,7 +243,7 @@ impl DaemonRequestFamily {
             CoreRequest::ChatComposingList { .. } => Self::Chat,
             CoreRequest::ChatComposingSet { .. } => Self::Chat,
             CoreRequest::ChatEdit { .. } => Self::Chat,
-            CoreRequest::ChatHistory { .. } => Self::Chat,
+            CoreRequest::ChatHistory { .. } | CoreRequest::ChatHistoryOlder { .. } => Self::Chat,
             CoreRequest::ChatPolicyGet { .. } => Self::Chat,
             CoreRequest::ChatPolicyList { .. } => Self::Chat,
             CoreRequest::ChatProjectPolicySet { .. } => Self::Chat,

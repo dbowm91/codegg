@@ -393,16 +393,67 @@ no durable messages. Full contract in `architecture/collaboration.md`.
   payloads merge into the cached active channel; composing hints only
   re-fetch the snapshot while the panel is showing.
 - **Surface**: header shows `💬 N` (plus unread) only for authorized
-  data; `/chat` opens a scrollable `InfoType::ProjectChat` dialog
-  (`j`/`k` scroll, `Esc`/`Enter` close). Commands: `/chat-send`,
-  `/chat-reply`, `/chat-history`, `/chat-sync`, `/chat-read`,
-  `/chat-edit`, `/chat-redact`, `/chat-composing`. M003 adds explicit
-  `/chat-action-task`, `/chat-action-review`, `/chat-action-list`
+  data. `/chat` opens the interactive `ChatDialog`
+  (`components/dialogs/chat.rs`) — a self-contained window, not the
+  read-only `InfoType::ProjectChat` panel it replaces. It is two-modal,
+  following the `Route::Workspace` normal-mode convention:
+  - **Normal** — `j`/`k`/`↑`/`↓` move the message cursor, `g`/`G` and
+    `Home`/`End` jump to first/last, `PgUp`/`PgDn` (and `Ctrl+U`/`Ctrl+D`)
+    page; `i`/`a`/`Enter` open the composer, `r` replies to the selected
+    message (prefills `@author `), `e` edits it, `X` redacts it (two
+    presses — the first arms, the second confirms, because redaction is
+    irreversible); `m` marks read, `u` loads older, `R` reloads the
+    channel, `[`/`]` switch channels, `?` expands the key bar, `Esc`
+    closes, `q` also closes. No unbound character falls through to the
+    main input.
+  - **Compose/Edit** — printable keys, `Backspace`/`Delete`, and
+    `←`/`→`/`Home`/`End` edit the buffer; `Enter` submits, `Esc`
+    cancels with the buffer intact. `Ctrl+C` closes from any mode.
+
+  The commands remain the supported surface and are the way to compare
+  behavior: `/chat-send`, `/chat-reply`, `/chat-history`, `/chat-sync`,
+  `/chat-read`, `/chat-edit`, `/chat-redact`, `/chat-composing`, plus
+  M003's `/chat-action-task`, `/chat-action-review`, `/chat-action-list`
   (structured actions only; free text never becomes an action). While
   observing, `/chat*` commands are allowlisted and bare insert-mode
   text routes to the observed project's chat; observer-target
   disconnect leaves chat usable. Action submits while observing go
   through the same daemon gate plus the semantic capability check.
+- **Intent boundary**: the dialog owns presentation and local view state
+  only — mode, message cursor, channel highlight, composer buffer. Every
+  action is a `TuiMsg` intent (`ChatSend`/`ChatEdit`/`ChatRedact`/
+  `ChatMarkRead`/`ChatLoadOlder`/`ChatRefresh`/`ChatSwitchChannel`) that
+  `App::process_msg` routes into the same `start_chat_*` functions the
+  commands call, so the daemon round-trip, the authorization decision,
+  and the request-id/reconnect-epoch guards exist in exactly one place.
+  The dialog never reaches `CoreClient` and never mutates chat state.
+- **Authorship**: the window offers edit/redact on the selected row
+  regardless of author. The TUI never learns its own principal (the
+  daemon binds it per connection), so gating the affordance on a
+  client-side guess would hide actions the daemon would allow and imply a
+  check the client is not performing.
+- **Buffer ownership**: the composer buffer lives in the window and is
+  mirrored from the per-project draft on every snapshot. `apply_snapshot`
+  never overwrites the buffer while the user is typing, so a live event
+  landing mid-sentence cannot destroy it. Opening the composer does not
+  clear it either — that is what makes a draft retained by a failed send
+  recoverable from the one place the user can fix it. Cursor position is
+  deliberately *not* in `ChatState`: it is meaningless once the window
+  closes.
+- **Paging**: `u` is gated on `ChatCapabilitiesDto::backward_paging`;
+  against an older daemon it reports that plainly rather than issuing a
+  request the daemon cannot decode. The initial load prefers the
+  unanchored backward query, which returns the **newest** page — the
+  forward `ChatHistory` with no cursor returns the *oldest* page, which
+  made `/chat` open on ancient messages. Because the window retains only
+  100 messages, paging backward trims the newest end; `R` re-fetches the
+  live head.
+- **Channels**: only the active channel's message window is retained —
+  caching every channel would multiply the documented memory bound by the
+  channel count. A switch therefore refetches rather than restoring from
+  a local copy. The channel pointer moves *before* the fetch, so a
+  message typed immediately after switching targets the channel the user
+  is looking at; only daemon-listed channels are selectable.
 - **Lifecycle**: tab switch refreshes the new active project when stale;
   `App::on_projection_reconnect` resumes the M001 cursor or resyncs the
   bounded window. Failed sends retain the editable draft with the typed

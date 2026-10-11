@@ -830,6 +830,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "chat_channel_ensure",
     "chat_channel_list",
     "chat_history",
+    "chat_history_older",
     "chat_send",
     "chat_edit",
     "chat_redact",

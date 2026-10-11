@@ -412,6 +412,28 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 reconnect_epoch,
             );
         }
+        TuiCommand::ChatHistoryOlderLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            has_older,
+            retention_floor_seq,
+            error,
+            reconnect_epoch,
+        } => {
+            crate::tui::commands::chat::apply_chat_history_older_loaded(
+                app,
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                has_older,
+                retention_floor_seq,
+                error,
+                reconnect_epoch,
+            );
+        }
         TuiCommand::ChatSyncLoaded {
             request_id,
             project_id,

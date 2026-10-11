@@ -361,6 +361,7 @@ not a Core operation):
 | `chat_composing_set` | direct_project | `project.chat` |
 | `chat_edit` | direct_project | `project.chat` |
 | `chat_history` | direct_project | `project.chat` |
+| `chat_history_older` | direct_project | `project.chat` |
 | `chat_policy_get` | direct_project | `member.manage` |
 | `chat_policy_list` | direct_project | `member.manage` |
 | `chat_project_policy_set` | direct_project | `member.manage` |

@@ -458,6 +458,12 @@ pub struct ChatCapabilitiesDto {
     /// M003: maximum prompt bytes accepted for agent-task actions.
     #[serde(default)]
     pub max_action_prompt_bytes: usize,
+    /// True when the daemon serves `ChatHistoryOlder` (backward paging).
+    /// Older daemons omit this field and decode as `false`, so a client
+    /// must gate every backward request on it rather than sending the
+    /// variant blindly into a daemon that cannot answer it.
+    #[serde(default)]
+    pub backward_paging: bool,
 }
 
 /// One ephemeral composing entry. Carries identity and expiry only, never
@@ -1630,6 +1636,24 @@ pub enum CoreResponse {
         truncated: bool,
         retention_floor_seq: u64,
     },
+    /// Bounded message history page walking *backwards* from
+    /// `older_cursor` — the ascending page of messages strictly older
+    /// than the client's current window. `has_older` reports that older
+    /// messages remain past this page. `older_cursor` is the anchor for
+    /// the next call, and is `None` only when the page is empty.
+    ///
+    /// Older daemons never send this variant; a client must confirm
+    /// [`ChatCapabilitiesDto::backward_paging`] before requesting it.
+    ChatHistoryOlder {
+        channel_id: String,
+        messages: Vec<ChatMessageDto>,
+        #[serde(default)]
+        older_cursor: Option<u64>,
+        #[serde(default)]
+        has_older: bool,
+        #[serde(default)]
+        retention_floor_seq: u64,
+    },
     /// One durable message. `duplicate` is true when a retry converged
     /// on an already-stored idempotency key.
     ChatMessage {
@@ -2720,6 +2744,25 @@ pub enum CoreRequest {
         channel_id: String,
         #[serde(default)]
         from_seq: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Bounded message history for one channel walking *backwards*.
+    ///
+    /// [`ChatHistory`](Self::ChatHistory) only pages forward
+    /// (`seq >= from_seq`), so a client holding the newest messages could
+    /// not reach anything before them. This returns the newest `limit`
+    /// messages strictly older than `before_seq`. `before_seq = None`
+    /// anchors at the newest retained message, which is what a client
+    /// opening the window wants.
+    ///
+    /// Requires a daemon advertising
+    /// [`ChatCapabilitiesDto::backward_paging`]; older daemons cannot
+    /// serve it and the client must not send it blindly.
+    ChatHistoryOlder {
+        channel_id: String,
+        #[serde(default)]
+        before_seq: Option<u64>,
         #[serde(default)]
         limit: Option<u32>,
     },

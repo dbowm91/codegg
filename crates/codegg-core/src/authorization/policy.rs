@@ -891,6 +891,14 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectChat),
         ),
+        // Backward paging is the same read over the same channel, so it
+        // carries the identical descriptor — only the cursor direction
+        // differs, and that is not an authority distinction.
+        R::ChatHistoryOlder { .. } => OperationDescriptor::new(
+            "chat_history_older",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
         R::ChatSend { .. } => OperationDescriptor::new(
             "chat_send",
             ScopeKind::DirectProject,
@@ -1859,6 +1867,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::ChatHistory {
             channel_id: String::new(),
             from_seq: None,
+            limit: None,
+        },
+        R::ChatHistoryOlder {
+            channel_id: String::new(),
+            before_seq: None,
             limit: None,
         },
         R::ChatSend {

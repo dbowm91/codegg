@@ -26,7 +26,6 @@ pub enum InfoType {
     Collaborators,
     Team,
     Control,
-    ProjectChat,
     /// `/logs`: recent daemon log tail plus the in-memory toast history.
     Logs,
     ProjectInit,
@@ -90,7 +89,6 @@ impl InfoDialog {
             InfoType::Collaborators => " Collaborators ",
             InfoType::Team => " Team ",
             InfoType::Control => " Control ",
-            InfoType::ProjectChat => " Project Chat ",
             InfoType::Logs => " Logs ",
             InfoType::ProjectInit => " Initialize Project ",
         }
@@ -116,7 +114,6 @@ impl InfoDialog {
             // instance; last writer wins). Control output never
             // carries secrets, so sharing the slot is safe.
             InfoType::Control => DialogType::Team,
-            InfoType::ProjectChat => DialogType::ProjectChat,
             InfoType::Logs => DialogType::Logs,
             InfoType::ProjectInit => DialogType::Team,
         }

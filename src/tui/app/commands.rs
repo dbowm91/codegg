@@ -1003,6 +1003,19 @@ pub enum TuiCommand {
         unsupported: bool,
         reconnect_epoch: u64,
     },
+    /// Backward-page completion. Serves both the window's initial
+    /// newest-first load (`before_seq = None`) and its `u` paging, since
+    /// both ask for "the page just older than what I hold".
+    ChatHistoryOlderLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        has_older: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        reconnect_epoch: u64,
+    },
     /// Project Collaboration M002: incremental-sync completion from the
     /// cached M001 cursor (or a bounded resync page).
     ChatSyncLoaded {

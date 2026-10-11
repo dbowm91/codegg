@@ -149,6 +149,56 @@ impl App {
                 }
                 self.close_dialog();
             }
+            // ── Project chat window intents ──────────────────────────
+            //
+            // The dialog emits these; every one routes into the existing
+            // `commands/chat.rs` seam so the daemon round-trip, the
+            // authorization decision, and the stale-completion guards
+            // stay in one place. Nothing here writes chat state directly.
+            TuiMsg::ChatSend { body, reply_to } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_send(self, project_id, body, reply_to);
+                }
+            }
+            TuiMsg::ChatEdit { message_id, body } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_edit(self, project_id, message_id, body);
+                }
+            }
+            TuiMsg::ChatRedact { message_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_redact(
+                        self, project_id, message_id, None,
+                    );
+                }
+            }
+            TuiMsg::ChatMarkRead => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_read(self, project_id);
+                }
+            }
+            TuiMsg::ChatLoadOlder => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_load_older(self, project_id);
+                }
+            }
+            TuiMsg::ChatRefresh => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_history(self, project_id);
+                }
+            }
+            TuiMsg::ChatSwitchChannel { channel_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_switch_channel(
+                        self, project_id, channel_id,
+                    );
+                }
+            }
+            TuiMsg::ChatPagingUnsupported => {
+                self.messages_state.toasts.warning(
+                    "This daemon does not support loading older chat history — restart or upgrade the daemon",
+                );
+            }
             TuiMsg::ProjectInitApprove => {
                 let Some(draft) = self.dialog_state.project_init_draft.take() else {
                     return;

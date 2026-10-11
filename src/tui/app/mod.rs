@@ -520,9 +520,9 @@ pub struct App {
     /// TUI owns no chat truth; every entry is derived from an authorized
     /// `chat.v1` round-trip through `CoreClient`.
     pub chat: crate::tui::app::state::ChatState,
-    /// Project shown in the open chat panel, if any. Tracks which
-    /// project's lines the `InfoType::ProjectChat` dialog displays so
-    /// completions refresh the visible window without a new fetch.
+    /// Project shown in the open chat window, if any. Chat intents from
+    /// `ChatDialog` resolve against this project, and completions push a
+    /// fresh snapshot into the window without a new fetch.
     pub chat_panel_project: Option<String>,
     /// M005: explicit input focus while `Route::Workspace` is active.
     /// `Composer` (default) keeps the ordinary Session/Task prompt

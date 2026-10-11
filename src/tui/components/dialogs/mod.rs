@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod chat;
 pub mod command;
 pub mod confirm;
 pub mod connect;
