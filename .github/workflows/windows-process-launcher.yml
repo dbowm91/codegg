@@ -172,6 +172,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib configured_windows_shells_resolve_outside_path -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib cmd_shell_text_moves_to_the_unescaped_command_channel -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib native_shell_receives_a_private_per_run_temp_directory -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib native_shell_can_run_common_toolchain_smoke_commands -- --nocapture
