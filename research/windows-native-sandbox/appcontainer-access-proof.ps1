@@ -170,14 +170,18 @@ function Restore-DisposableAclLease([string]$path, [string]$beforeSddl, [string]
     $ownedRules = @($acl.Access | Where-Object {
         $_.IdentityReference.Value -eq $packageSid
     })
+    if ($ownedRules.Count -eq 0) {
+        throw "No package-SID ACE was found to roll back on $path (current SDDL: $($acl.Sddl))."
+    }
     foreach ($rule in $ownedRules) {
         $acl.RemoveAccessRuleSpecific($rule)
     }
     Set-Acl -LiteralPath $path -AclObject $acl
     $afterSddl = (Get-Acl -LiteralPath $path).Sddl
     if ($afterSddl -ne $beforeSddl) {
-        throw "ACL rollback did not restore the exact before-image for $path."
+        throw "ACL rollback did not restore the exact before-image for $path. Expected SDDL: $beforeSddl; actual SDDL: $afterSddl."
     }
+    "ACL lease restored: $path ($($ownedRules.Count) exact package-SID ACE(s) removed)"
 }
 
 $name = 'CodeggM004-' + [Guid]::NewGuid().ToString('N')
