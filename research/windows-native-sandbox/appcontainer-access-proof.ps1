@@ -72,7 +72,7 @@ public static class AppContainerProofNative {
     public static extern bool CloseHandle(IntPtr handle);
 
     public static uint Run(string executable, string arguments, IntPtr appContainerSid) {
-        const IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
+        IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
         const uint ExtendedStartupInfoPresent = 0x00080000;
         const uint CreateNoWindow = 0x08000000;
         IntPtr size = IntPtr.Zero;
