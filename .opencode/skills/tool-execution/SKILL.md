@@ -40,6 +40,13 @@ shells. Windows raw-shell calls get a unique temporary directory through
 access. Shell selection and policy path checks must not be described as Windows
 enforcement.
 
+Raw model-shell text is compiled to platform-specific argv (`sh -c` on Unix;
+an absolute Windows PowerShell or `cmd.exe` path on Windows). Structured argv
+continues to bypass shells. Windows raw-shell calls get a unique temporary
+directory through `TEMP`/`TMP`, cleaned after completion; that does not restrict
+filesystem access. Shell selection and policy path checks must not be described
+as Windows enforcement.
+
 Before editing, read:
 
 - `architecture/agent.md` for tool dispatch and broker ownership.
