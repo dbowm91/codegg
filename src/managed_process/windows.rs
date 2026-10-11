@@ -96,12 +96,16 @@ impl Drop for WindowsAppContainerProfile {
 
 /// Owns the aligned storage required by `STARTUPINFOEXW`'s attribute list.
 /// Keep this value alive through `CreateProcessW`.
-pub(super) struct WindowsProcessAttributes {
+pub(super) struct WindowsProcessAttributes<'profile> {
     _storage: Vec<usize>,
     raw: *mut std::ffi::c_void,
+    // `UpdateProcThreadAttribute` retains this pointer until the attribute
+    // list is deleted. Keep the package profile alive for the same interval.
+    _profile: Option<&'profile WindowsAppContainerProfile>,
+    security_capabilities: Option<Box<SECURITY_CAPABILITIES>>,
 }
 
-impl WindowsProcessAttributes {
+impl<'profile> WindowsProcessAttributes<'profile> {
     pub(super) fn new(attribute_count: u32) -> io::Result<Self> {
         let mut bytes = 0usize;
         unsafe {
@@ -121,23 +125,46 @@ impl WindowsProcessAttributes {
         Ok(Self {
             _storage: storage,
             raw,
+            _profile: None,
+            security_capabilities: None,
         })
     }
 
     pub(super) fn set_appcontainer(
         &mut self,
-        sid: windows_sys::Win32::Security::PSID,
+        profile: &'profile WindowsAppContainerProfile,
     ) -> io::Result<()> {
-        let capabilities = SECURITY_CAPABILITIES {
-            AppContainerSid: sid,
-            ..SECURITY_CAPABILITIES::default()
-        };
+        if self.security_capabilities.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "AppContainer security capabilities are already set",
+            ));
+        }
+
+        // The attribute list borrows lpValue until DeleteProcThreadAttributeList,
+        // which happens in Drop below. Keep both the struct allocation and the
+        // profile owning AppContainerSid in this owner for that full interval.
+        // There are no capabilities in this proof: null pointer and zero count.
+        let capabilities = Box::new(SECURITY_CAPABILITIES {
+            AppContainerSid: profile.sid(),
+            Capabilities: ptr::null_mut(),
+            CapabilityCount: 0,
+            Reserved: 0,
+        });
+        self._profile = Some(profile);
+        self.security_capabilities = Some(capabilities);
+        let capabilities = self
+            .security_capabilities
+            .as_deref()
+            .expect("AppContainer capabilities were just stored");
         if unsafe {
             UpdateProcThreadAttribute(
                 self.raw,
                 0,
                 PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-                (&capabilities as *const SECURITY_CAPABILITIES).cast(),
+                (capabilities as *const SECURITY_CAPABILITIES)
+                    .cast_mut()
+                    .cast(),
                 std::mem::size_of::<SECURITY_CAPABILITIES>(),
                 ptr::null_mut(),
                 ptr::null(),
@@ -150,8 +177,10 @@ impl WindowsProcessAttributes {
     }
 }
 
-impl Drop for WindowsProcessAttributes {
+impl Drop for WindowsProcessAttributes<'_> {
     fn drop(&mut self) {
+        // This must happen before the owned SECURITY_CAPABILITIES and profile
+        // reference are released; the attribute list may still dereference them.
         unsafe { DeleteProcThreadAttributeList(self.raw) };
     }
 }
@@ -440,6 +469,45 @@ mod tests {
         GetExitCodeProcess, OpenProcessToken, WaitForSingleObject,
     };
 
+    #[inline(never)]
+    fn churn_stack() {
+        let mut scratch = [0x5au8; 32 * 1024];
+        for (index, byte) in scratch.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        std::hint::black_box(scratch);
+    }
+
+    #[test]
+    fn appcontainer_attribute_owns_abi_value_and_profile_sid() -> io::Result<()> {
+        let profile = WindowsAppContainerProfile::create()?;
+        let mut attributes = WindowsProcessAttributes::new(1)?;
+        attributes.set_appcontainer(&profile)?;
+
+        let capabilities = attributes
+            .security_capabilities
+            .as_deref()
+            .expect("the attribute owner retains its security capabilities");
+        assert_eq!(capabilities.AppContainerSid, profile.sid());
+        assert!(capabilities.Capabilities.is_null());
+        assert_eq!(capabilities.CapabilityCount, 0);
+        assert_eq!(capabilities.Reserved, 0);
+        assert!(attributes._profile.is_some());
+        assert_eq!(
+            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+            0x0002_0009
+        );
+        assert_eq!(
+            size_of::<windows_sys::Win32::Security::SECURITY_CAPABILITIES>(),
+            if size_of::<usize>() == 8 { 24 } else { 16 }
+        );
+        assert_eq!(
+            size_of::<windows_sys::Win32::System::Threading::STARTUPINFOEXW>(),
+            if size_of::<usize>() == 8 { 112 } else { 72 }
+        );
+        Ok(())
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_job_assignment_never_runs_the_suspended_target() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -476,7 +544,11 @@ mod tests {
         let profile = WindowsAppContainerProfile::create()?;
         let mut job = WindowsJob::create()?;
         let mut attributes = WindowsProcessAttributes::new(1)?;
-        attributes.set_appcontainer(profile.sid())?;
+        attributes.set_appcontainer(&profile)?;
+        // The previous implementation passed a stack-local capabilities
+        // struct. Clobber stack storage before CreateProcessW to exercise the
+        // regression while the owner must keep the attribute value stable.
+        churn_stack();
 
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
@@ -574,7 +646,7 @@ mod tests {
         let profile = WindowsAppContainerProfile::create()?;
         let mut job = WindowsJob::create()?;
         let mut attributes = WindowsProcessAttributes::new(1)?;
-        attributes.set_appcontainer(profile.sid())?;
+        attributes.set_appcontainer(&profile)?;
 
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
