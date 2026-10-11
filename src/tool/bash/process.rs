@@ -255,10 +255,10 @@ pub(crate) fn extract_cmd_raw_command(
         return Err("cmd shell payload is missing its raw command argument");
     }
     argv.pop();
-    // `CommandExt::raw_arg` appends literal text and does not add an argument
-    // separator. Keep one before the `/C` payload so cmd.exe receives the
-    // original shell string without standard Windows argv quoting.
-    Ok(Some(OsString::from(format!(" {command}"))))
+    // Rust's Windows raw-argument API appends this as one literal command-line
+    // segment. cmd.exe /C requires the command text surrounded by an extra
+    // quote pair; do not pass it through the standard argv quoting rules.
+    Ok(Some(OsString::from(format!("\"{command}\""))))
 }
 
 #[cfg(windows)]
@@ -1529,7 +1529,7 @@ mod tests {
             .expect("valid cmd shell argv")
             .expect("cmd uses raw command channel");
         assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/C"]);
-        assert_eq!(raw.to_string_lossy(), format!(" {command}"));
+        assert_eq!(raw.to_string_lossy(), format!("\"{command}\""));
     }
 
     #[test]
