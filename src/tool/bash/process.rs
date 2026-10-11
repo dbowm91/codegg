@@ -256,9 +256,9 @@ pub(crate) fn extract_cmd_raw_command(
     }
     argv.pop();
     // Rust's Windows raw-argument API appends this as one literal command-line
-    // segment. cmd.exe /C requires the command text surrounded by an extra
-    // quote pair; do not pass it through the standard argv quoting rules.
-    Ok(Some(OsString::from(format!("\"{command}\""))))
+    // segment. cmd.exe has its own /C quote-stripping rules, so preserve the
+    // shell text exactly instead of adding an argv-style quote pair here.
+    Ok(Some(OsString::from(command)))
 }
 
 #[cfg(windows)]
