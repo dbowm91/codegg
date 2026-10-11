@@ -163,6 +163,9 @@ jobs:
       - name: Windows suspended-target failure injection
         run: cargo test --locked -p codegg --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture
 
+      - name: Rust AppContainer launch and Job proof
+        run: cargo test --locked -p codegg --lib managed_process::windows::tests::appcontainer_target_is_in_job_and_has_package_sid_before_resume -- --nocapture
+
       - name: Windows native shell and policy inputs
         shell: pwsh
         run: |
