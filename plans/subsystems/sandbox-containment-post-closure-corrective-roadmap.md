@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective Roadmap
 
-Status: active (new corrective workstream; planning only)
+Status: conditionally closed (C001-C003 closed; C004 residual IPC/privilege evidence is explicit)
 
 Repository baseline reviewed: `main` at `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
@@ -36,10 +36,10 @@ No sandbox daemon, replacement process supervisor, containers, VMs, namespace/se
 
 ## 4. Current source evidence and defects
 
-- C001 is conditionally closed at `plans/closure/sandbox-containment-post-closure-corrective/001-status.md`: Python selection is platform-neutral and required constrained launches fail closed. Native Darwin helper qualification remains outstanding.
+- C001 is closed at `plans/closure/sandbox-containment-post-closure-corrective/001-status.md`: Python selection is platform-neutral, required constrained launches fail closed, and native Darwin helper/Python mode qualification passed on Apple Silicon.
 - C002 is closed at `plans/closure/sandbox-containment-post-closure-corrective/002-status.md`: Linux kernel `6.8.0-146-generic`, effective Landlock ABI 4, real-helper mutation probes passed.
-- C003 is conditionally closed at `plans/closure/sandbox-containment-post-closure-corrective/003-status.md`: overlapping Linux Landlock grants are carved around credential denials, Seatbelt emits final denials after re-allowances, broad persistent write roots are removed, and private 0700 per-launch scratch is reaped after the process tree exits.
-- Real-helper Linux probes now cover nested and future-created credentials, aliases, workspace writes, truncation, rename/link, scoped scratch, and offline Cargo metadata. Native Darwin C001/C003 qualification remains outstanding and gates C004.
+- C003 is closed at `plans/closure/sandbox-containment-post-closure-corrective/003-status.md`: overlapping Linux Landlock grants are carved around credential denials, Seatbelt emits final denials after re-allowances, broad persistent write roots are removed, and private 0700 per-launch scratch is reaped after the process tree exits. Native Darwin helper and lifecycle probes passed.
+- Real-helper Linux probes cover nested and future-created credentials, aliases, workspace writes, truncation, rename/link, scoped scratch, and offline Cargo metadata. Native Darwin C001/C003 qualification passed in hosted run `38166386985` on `macos-15-arm64`; C004's residual IPC/privilege probes remain named and unqualified.
 
 Source references:
 - `src/security/sandbox.rs`, `src/security/sandbox/policy.rs`, `src/security/sandbox/landlock.rs`, `src/security/sandbox/seatbelt.rs`
@@ -68,10 +68,10 @@ C002 (Landlock ABI/truncate correction; independent) ──> C003  |
                                                        boundary + qualification)
 ```
 
-- C001: conditionally closed; backend-neutral selection and required-failure contract are stable. Native macOS evidence remains a C004 qualification gate.
+- C001: closed; backend-neutral selection and required-failure contract are qualified on Linux and native Apple Silicon.
 - C002: closed; ABI >=3 is the required guarantee tier for preventing truncation; older kernels are rejected for strict requests.
-- C003: conditionally closed; Linux ABI 4 evidence and quick verification passed. Native Darwin qualification remains outstanding.
-- C004: blocked by native Darwin qualification from C001/C003. Limited macOS read/IPC hardening and honest cross-platform qualification; no claim of complete parity.
+- C003: closed; Linux ABI 4 and native Apple Silicon effective deny/write/scratch evidence passed.
+- C004: conditionally closed; effective read/write/network/FD contract and tool compatibility are measured and documented. Apple Events/Launch Services reachability, XPC/Mach reachability, and setuid transitions remain unqualified; no claim of full parity or complete IPC isolation.
 
 All four plan documents may be read in parallel, but hand off only dependency-ready ones for production changes.
 
@@ -79,10 +79,10 @@ All four plan documents may be read in parallel, but hand off only dependency-re
 
 | Milestone | Class | Implementation plan | Status | Exit |
 |---|---|---|---|---|
-| C001 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/001-macos-python-and-strict-launch-contract.md` | conditionally closed | strict constrained launch; native Darwin qualification remains outstanding |
+| C001 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/001-macos-python-and-strict-launch-contract.md` | closed | strict constrained launch and Python mode behavior qualified on Linux and native Apple Silicon |
 | C002 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/002-landlock-abi-and-mutation-rights.md` | closed | Linux ABI>=3 protects truncation; older kernels receive truthful and safe disposition |
-| C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | conditionally closed | Linux overlapping credential exclusions hold and persistent tool state is not globally mutable; native Darwin qualification remains outstanding |
-| C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | blocked on native Darwin qualification from C001/C003 | actual macOS leakage boundary measured; safe profile selected, tests and documentation qualified |
+| C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | closed | Linux ABI 4 and native Apple Silicon credential deny, scoped write, and scratch lifecycle evidence passed |
+| C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | conditionally closed | actual macOS read/write/network/FD limits and tooling compatibility qualified; IPC and privilege residuals remain explicit |
 
 Closure record for each: `plans/closure/sandbox-containment-post-closure-corrective/00N-status.md`.
 
