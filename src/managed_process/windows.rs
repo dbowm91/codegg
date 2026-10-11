@@ -30,9 +30,9 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, OpenThread,
-    ResumeThread, TerminateProcess, UpdateProcThreadAttribute, CREATE_SUSPENDED,
-    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
+    ResumeThread, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME,
 };
 
 /// A uniquely named AppContainer package SID whose lifetime is tied to the
@@ -178,6 +178,17 @@ impl WindowsSuspendedAppContainerProcess {
                 "AppContainer executable and working directory must be absolute paths",
             ));
         }
+        if application.as_os_str().encode_wide().any(|unit| unit == 0)
+            || current_directory
+                .as_os_str()
+                .encode_wide()
+                .any(|unit| unit == 0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AppContainer executable and working directory cannot contain NULs",
+            ));
+        }
         if command_line.len() < 2
             || command_line.last() != Some(&0)
             || command_line[..command_line.len() - 1].contains(&0)
@@ -235,6 +246,9 @@ impl Drop for WindowsSuspendedAppContainerProcess {
         if !self.resumed {
             unsafe {
                 let _ = TerminateProcess(self.process_handle(), 1);
+                // Do not let the AppContainer profile be deleted while the
+                // failed, unresumed process is still tearing down.
+                let _ = WaitForSingleObject(self.process_handle(), u32::MAX);
             }
         }
     }
@@ -476,7 +490,8 @@ mod tests {
             &mut command_line,
             &std::env::current_dir().map_err(|error| io::Error::other(error.to_string()))?,
             &attributes,
-        )?;
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("CreateProcessW failed: {error}")))?;
 
         let mut token = ptr::null_mut();
         if unsafe { OpenProcessToken(process.process_handle(), TOKEN_QUERY, &mut token) } == 0 {
@@ -537,6 +552,12 @@ mod tests {
                 ));
             }
             Ok(())
+        })
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("Job assignment, verification, or resume failed: {error}"),
+            )
         })?;
         if unsafe { WaitForSingleObject(process.process_handle(), 30_000) } != WAIT_OBJECT_0 {
             return Err(last_error());
@@ -550,6 +571,48 @@ mod tests {
                 "AppContainer target exited with code {exit_code}"
             )));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn appcontainer_verification_failure_keeps_target_suspended() -> io::Result<()> {
+        let profile = WindowsAppContainerProfile::create()?;
+        let mut job = WindowsJob::create()?;
+        let mut attributes = WindowsProcessAttributes::new(1)?;
+        attributes.set_appcontainer(profile.sid())?;
+
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
+        let executable = PathBuf::from(system_root).join("System32").join("cmd.exe");
+        let mut command_line = wide(&format!("\"{}\" /D /C exit 0", executable.display()));
+        let mut process = WindowsSuspendedAppContainerProcess::create(
+            &executable,
+            &mut command_line,
+            &std::env::current_dir().map_err(|error| io::Error::other(error.to_string()))?,
+            &attributes,
+        )?;
+        let process_handle = process.process_handle();
+
+        let error = job
+            .assign_appcontainer_and_resume(&mut process, |_| {
+                Err(io::Error::other("injected token verification failure"))
+            })
+            .expect_err("verification failure must prevent resume");
+        assert!(error
+            .to_string()
+            .contains("injected token verification failure"));
+        assert_eq!(
+            unsafe { WaitForSingleObject(process_handle, 0) },
+            windows_sys::Win32::Foundation::WAIT_TIMEOUT,
+            "verification failure must leave the target suspended until cleanup"
+        );
+
+        // Dropping the suspended process synchronously terminates it before
+        // the profile and its package SID are released.
+        drop(process);
+        drop(attributes);
+        drop(job);
+        drop(profile);
         Ok(())
     }
 }

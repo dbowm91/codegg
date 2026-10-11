@@ -186,6 +186,11 @@ STOP if Windows token/ACL mechanism cannot enforce denied reads and workspace re
 
 Observed child filesystem probe matrix with Windows build, token SID/access check and ACL evidence, cleanup/repair traces, credential/named-pipe denial, failure-injection results, supported host matrix, Unix regressions, named gaps and exact unblocking decision for M006.
 
+The available qualification environment currently provides only a hosted
+Windows runner. The privileged isolated-VM ACL recovery and adversarial matrix
+has not been run, so M004 remains active and dependent milestones remain
+blocked.
+
 ## 16. Handoff notes
 
 Relevant references: https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken and https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens. Using `WRITE_RESTRICTED` as the whole backend is specifically prohibited.
