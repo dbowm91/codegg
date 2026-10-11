@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C003 closed; C001 corrective pass required; C002 blocked on C001)
+Status: active (C003 closed; C001 corrective pass required; C002 blocked on C001; C004 active)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -48,7 +48,7 @@ The TUI remains a view and human-intent adapter. Human finite execution receives
 
 ## 6. Dependency graph
 
-`C001` (promotion and redaction) is ready. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and is blocked until C001 closes. `C003` (PTY keyboard and VT presentation) is ready independently because original interactive-process M001–M003 are closed.
+`C001` (promotion and redaction) requires its registered C004 authoritative-staging corrective. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and is blocked until C001 closes. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
 
 ## 7. Milestones
 
@@ -84,4 +84,4 @@ C001–C003 each need an independent closure record including user-visible end-t
 | C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
 | C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending; C001 authoritative staging contract is incomplete |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | ready | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Corrective follow-up for C001; C002 remains blocked until C004 closes and C001 is accepted |
+| C004 | active | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Corrective follow-up for C001; C002 remains blocked until C004 closes and C001 is accepted |

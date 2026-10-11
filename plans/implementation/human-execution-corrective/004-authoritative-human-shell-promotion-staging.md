@@ -1,6 +1,6 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
@@ -97,6 +97,25 @@ Update `architecture/human_shell.md`, `architecture/session.md` or the actual au
 ### Work package A — Ownership and API audit
 
 Trace authoritative context persistence, request authentication, admission transactions, capabilities and migrations. Produce a state transition/compatibility matrix before changing DTOs.
+
+#### A.1 Current owner and transition audit (2026-10-11)
+
+| Concern | Current source of truth | Finding / transition requirement |
+|---|---|---|
+| Raw command output | `ShellOutputStore` in the TUI | Frontend-only bounded head/tail remains private and is not session persistence. It cannot recover a selected output after the TUI exits. |
+| Redacted projection | `src/tui/commands/shell.rs::project_for_model` | The canonical redactor runs before insertion, but the returned text and its promotion identity currently stay in `App::pending_shell_promotions`. Persist only this bounded projection, never the raw stores. |
+| Session identity | `CoreDaemon::bind_runtime_for_session` plus authenticated `RequestAuthorityContext` | Session is a locator; project/workspace are derived from the bound runtime. Principal and client identity come from transport authentication, never the request body. |
+| Authorization | `TurnSubmit` and `SessionPromptSubmit` in `codegg-core::authorization::policy` | Both are session-scoped and require `AgentInvoke`; use the same capability for stage/query and explicitly reject observer/non-human authority. |
+| Durable storage | Core SQLite `session` row and `message` history; schema currently has migrations through v70 | `message` stores accepted chat history and has no pending/expiry/idempotency lifecycle. A narrow session-owned table is required; it must FK to `session`, bind project/workspace/principal, and store only the redacted projection. |
+| Turn acceptance | `src/core/daemon_turns.rs::handle_turns_request` | Runtime busy check and controller acquisition happen before `TurnRuntime::run_turn`; rejected/busy requests must leave promotion rows pending. Inclusion and consumption must be tied to this accepted boundary. |
+| Local include | `App::pending_shell_promotions` then `TurnSubmit` | Stage acknowledgement must precede a visible staged state; accepted turn consumes exactly the submitted opaque IDs. Error/busy keeps them pending. |
+| Shell ask | `SessionPromptSubmit` | Use one idempotent session-owner operation carrying a stable promotion ID; preserve the staged row on busy/rejected admission and submit question plus projection in the same provider-facing turn. |
+| Remote composer | `/tui` `TuiMessage::Input` | Composer insertion is a draft only. The client must show it as unsubmitted and must not mark it staged/promoted unless the daemon acknowledges the canonical stage request. |
+| Restart/old daemon | Existing protocol-family/capability request patterns | Query pending rows after attach/reconnect; expired rows are removed/reported. Negotiate a versioned human-shell capability and treat old-daemon support as explicitly unavailable. |
+
+State transitions: `local projection -> stage request -> durable Pending acknowledgement -> pending query/reconnect -> accepted turn admission -> Consumed(turn_id)`; duplicate stage with identical identity/payload returns Duplicate; conflicting identity, stale binding, observer, unsupported capability, or oversized projection returns a typed refusal. Busy/rejected admission leaves Pending; expiry returns Expired and cannot be consumed. Ask stages idempotently and submits in the same request path, with a rejected attempt retaining the staged projection.
+
+Compatibility: the new Core capability is additive; older daemons return explicit unsupported/unrecognized capability and the TUI reports unavailable without showing a staged state. Existing `TurnSubmit`/`SessionPromptSubmit` callers that omit promotion IDs retain their current behavior. No raw output or new provider-visible source field is introduced.
 
 ### Work package B — Durable stage and idempotent consume
 
