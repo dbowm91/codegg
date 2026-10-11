@@ -61,6 +61,17 @@ all 8 managed-process launcher tests, failure injection, filesystem/ACL
 fixtures, and selected shell/policy tests. This still does not connect
 AppContainer creation or ACL leases to production `ManagedProcessService`.
 
+Run `38164279173` strengthened that test evidence. The disposable fixture
+proved the ordinary runner principal could read the synthetic secret that its
+AppContainer child was denied. The Rust test now checks Job membership through
+the same assignment/resume helper used by the managed-process path, inside a
+callback that runs after assignment and before `ResumeThread`. The full Windows
+workflow succeeded in 9m 59s: all 8 launcher tests, failure injection, the
+AppContainer token/Job proof, the filesystem/ACL fixture, and selected
+shell/policy tests passed. It remains a test-only launch proof; production
+AppContainer launch, ACL lease/recovery, credential/IPC denial, and the
+adversarial VM matrix are unimplemented.
+
 Code inspection also confirms that the current process-service seam is not
 yet an AppContainer launch path: `prepare_launch_argv` rejects every required
 sandbox request on non-Unix, and the Windows `tokio::process::Command` spawn

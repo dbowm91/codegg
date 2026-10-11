@@ -41,6 +41,17 @@ AppContainer token/Job proof, the disposable filesystem/ACL fixture, and the
 selected shell/policy tests passed. The run used Windows Server 2025
 Datacenter, version `10.0.26100`, build `26100`.
 
+Access-control and shared Job-ordering proof:
+`https://github.com/dbowm91/codegg/actions/runs/38164279173`
+The fixture first read its synthetic secret from the ordinary runner principal,
+then confirmed the AppContainer child could not read that same file. The Rust
+AppContainer test exercised the same Job assignment/resume helper used by the
+managed process path and verified `IsProcessInJob` inside the callback that
+runs after assignment and before `ResumeThread`. The full Windows workflow
+succeeded in 9m 59s: the fixture, all 8 process launcher tests, failure
+injection, Rust AppContainer token/Job proof, and selected shell/policy tests
+passed.
+
 The first token-inspection attempt invoked `whoami` inside the AppContainer and
 failed with exit 1 (`38152089849`). That method did not provide token evidence;
 it was replaced with a direct `OpenProcessToken` /
@@ -99,6 +110,8 @@ version `10.0.26100`, build `26100`:
 | Preserve Job membership through a spawned AppContainer descendant | passed in run `38158022356`; the child remained in the owner Job after root exit and was terminated by `TerminateJobObject` |
 | Rust `ManagedProcessService` suspended-target failure injection remains fail-closed | passed in run `38162151380`; injected Job assignment failure prevented the marker-writing target from running |
 | Rust test-only AppContainer token has the exact package SID before resume | passed in run `38162151380`; the test queried the required token-information buffer size, compared `TokenAppContainerSid`, assigned the process to a Job, confirmed membership, and only then resumed it |
+| Ordinary runner principal and AppContainer have different access to the same synthetic secret | passed in run `38164279173`; the runner principal read it, while the AppContainer child was denied |
+| Rust AppContainer proof checks Job membership through the shared production assignment/resume helper | passed in run `38164279173`; `IsProcessInJob` ran after Job assignment and before `ResumeThread` |
 
 The same Windows workflow completed its existing process launcher suite
 (8 passed), suspended-target failure injection (1 passed), and shell/policy
