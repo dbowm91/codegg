@@ -14,6 +14,12 @@ Token-query follow-up revision: `d3ef73d`
 Token-query run: `https://github.com/dbowm91/codegg/actions/runs/38152215289`
 Token-query run result: successful; Windows workflow completed all selected steps in 12m 18s.
 
+The first token-inspection attempt invoked `whoami` inside the AppContainer and
+failed with exit 1 (`38152089849`). That method did not provide token evidence;
+it was replaced with a direct `OpenProcessToken` /
+`GetTokenInformation(TokenAppContainerSid)` query, which passed in the
+follow-up run above.
+
 ## Question
 
 Can a per-run AppContainer package SID provide a second DACL access check that
