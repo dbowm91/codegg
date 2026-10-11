@@ -75,8 +75,8 @@ Existing ADR-0004, canonical managed-process ownership, and durable policy snaps
 ### M001 — Launcher contract, policy capability and failure gating
 Class: invariant. Objective: make restricted Windows launch expressible without Unix `exec` assumptions. Deliverable: typed process-launch seam, truthful per-dimension guarantee requirements and consent-aware unavailable behavior. Exit: static/contract tests and unchanged Unix tests. Non-goal: executable Windows containment.
 
-### M002 — Win32 supervised launcher and private status handoff
-Class: infrastructure. Objective: process control and trustworthy launch lifecycle, but no filesystem-enforced claim. Deliverable: suspended child creation, Jobs, inherited-handle isolation, secure status, cancellation/reap and output limits. Exit: Windows live process-tree, timeout and status tests. Non-goal: mark SandboxProfile enforced.
+### M002 — Win32 supervised launcher and Job ownership
+Class: infrastructure. Objective: process control and trustworthy launch lifecycle, but no filesystem-enforced claim. Deliverable: suspended unconstrained child creation, Jobs, explicit stdio inheritance, cancellation/reap and output limits; constrained Windows requests remain unavailable before spawn. Restricted-token launch and a protected enforcement-status channel are owned by M004, when a consumer and truthful status exist. Exit: Windows live process-tree, timeout and fail-closed request tests. Non-goal: mark SandboxProfile enforced.
 
 ### M003 — Native shell dispatch and platform policy inputs
 Class: infrastructure. Objective: reliable Windows-native command construction and runtime/credential path classifications. Deliverable: direct argv, cmd/PowerShell opt-in shell selection, path, env and allowances tests. Exit: Windows command/reparse-path fixtures; clear FullHost vs constrained behavior. Non-goal: filesystem enforcement itself.
@@ -139,7 +139,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/windows-native-sandbox/001-launch-contract-and-fail-closed-authority.md` | `plans/closure/windows-native-sandbox/001-status.md` | none |
-| M002 | ready | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | — | none |
+| M002 | active | `plans/implementation/windows-native-sandbox/002-win32-launch-and-job-ownership.md` | — | none |
 | M003 | blocked | `plans/implementation/windows-native-sandbox/003-native-shell-and-windows-policy-inputs.md` | — | M002 |
 | M004 | blocked | `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md` | — | M003 |
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |

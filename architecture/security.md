@@ -156,6 +156,9 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 **Platform outcomes:**
 - Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
+- Windows: managed finite processes receive Job Object lifecycle
+  supervision, but no filesystem or network enforcement backend is registered;
+  constrained requests fail before launch.
 - Any host with no registered backend: constrained Bash requests report
   `FilesystemEnforcement::Unavailable` and fail before process creation
   (never `FullHost` or an uncontained fallback). Python's separately

@@ -16,6 +16,13 @@ Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.
 
+`ManagedProcessService` remains the sole finite-process owner on every host.
+Its Windows adapter starts unconstrained children suspended, assigns a
+kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
+for the whole process tree. Job ownership is process supervision only; Windows
+constrained requests remain unavailable until a separate backend proves
+filesystem enforcement and installs any required token/status controls.
+
 Before editing, read:
 
 - `architecture/agent.md` for tool dispatch and broker ownership.
@@ -23,6 +30,8 @@ Before editing, read:
   and execution.
 - `docs/execution-ownership.md` and `docs/execution-ownership.toml` for the
   process-spawning inventory and guard.
+- `architecture/process-tool-execution-ownership.md` for the managed-process
+  lifecycle, including the Windows Job Object boundary.
 
 Verify process-spawning changes with `python3 scripts/check_execution_ownership.py`; scheduler changes also require
 `python3 scripts/check_scheduler_bypass.py`. Keep the ownership manifest in

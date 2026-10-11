@@ -30,6 +30,10 @@ use tokio_util::sync::CancellationToken;
 #[cfg(unix)]
 use nix::unistd::setsid;
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
+
 use crate::security::sandbox::{
     decode_sandbox_status, SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
     MAX_SANDBOX_STATUS_BYTES,
@@ -148,7 +152,7 @@ impl EnvironmentPolicy {
 pub enum OverflowPolicy {
     /// Keep draining the pipe, retaining only the configured head/tail.
     ContinueDrain,
-    /// Terminate the process group as soon as either stream exceeds its cap.
+    /// Terminate the owned process tree as soon as either stream exceeds its cap.
     Terminate,
 }
 
@@ -418,11 +422,12 @@ impl SandboxExecutionOutcome {
     }
 }
 
-/// Diagnostics from process-group cleanup. Errors are retained on the result
+/// Diagnostics from process-tree cleanup. Errors are retained on the result
 /// so a target exit is never confused with cleanup failure.
 #[derive(Debug, Clone, Default)]
 pub struct CleanupDiagnostics {
     pub process_group_established: bool,
+    pub job_object_established: bool,
     pub graceful_signal_sent: bool,
     pub forced_signal_sent: bool,
     pub errors: Vec<String>,
@@ -589,8 +594,29 @@ async fn run_inner(
         configure_status_writer(&mut command, writer.as_raw_fd());
     }
 
+    #[cfg(windows)]
+    let mut process_job = Some(windows::WindowsJob::create().map_err(ManagedProcessError::Spawn)?);
+
     let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
     drop(status_writer);
+
+    #[cfg(windows)]
+    if let Err(error) = process_job
+        .as_mut()
+        .expect("Windows launches always own a Job Object")
+        .assign_and_resume(&child)
+    {
+        // The target's primary thread is still suspended on setup failure.
+        // Close the Job first (which kills an assigned tree), then request a
+        // direct kill as well in case assignment itself failed. Child has
+        // kill_on_drop enabled, so dropping its owned process handle remains
+        // a final cleanup path if Windows reports a transient kill failure.
+        drop(process_job.take());
+        let _ = child.start_kill();
+        drop(child);
+        return Err(ManagedProcessError::Spawn(error));
+    }
+
     let stdout = child
         .stdout
         .take()
@@ -637,8 +663,15 @@ async fn run_inner(
         process_timeout,
         &mut overflow_rx,
         output_policy.overflow,
+        #[cfg(windows)]
+        process_job.as_ref(),
     )
     .await?;
+    // A root process may exit while descendants remain. Closing this
+    // kill-on-close Job before joining pipes terminates them and releases
+    // inherited writers.
+    #[cfg(windows)]
+    drop(process_job.take());
     let stdout = join_output(stdout_task).await?;
     let stderr = join_output(stderr_task).await?;
     if let Some(task) = stdin_task {
@@ -898,6 +931,7 @@ async fn wait_for_child(
     process_timeout: Option<Duration>,
     overflow_rx: &mut mpsc::Receiver<OutputStream>,
     overflow_policy: OverflowPolicy,
+    #[cfg(windows)] process_job: Option<&windows::WindowsJob>,
 ) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
     let timeout_future = async move {
         match process_timeout {
@@ -910,20 +944,41 @@ async fn wait_for_child(
     tokio::select! {
         status = child.wait() => {
             status
-                .map(|status| (status, TerminationReason::Exited, CleanupDiagnostics::default()))
+                .map(|status| {
+                    let cleanup = CleanupDiagnostics::default();
+                    #[cfg(windows)]
+                    let cleanup = {
+                        let mut cleanup = cleanup;
+                        cleanup.job_object_established = process_job.is_some();
+                        cleanup
+                    };
+                    (status, TerminationReason::Exited, cleanup)
+                })
                 .map_err(ManagedProcessError::Wait)
         }
         _ = cancellation.cancelled() => {
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::Cancelled, cleanup))
         }
         _ = &mut timeout_future => {
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::TimedOut, cleanup))
         }
         stream = overflow_rx.recv(), if overflow_policy == OverflowPolicy::Terminate => {
             let stream = stream.unwrap_or(OutputStream::Stdout);
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::OutputLimitExceeded { stream }, cleanup))
         }
     }
@@ -944,7 +999,17 @@ fn configure_process_session(command: &mut Command) {
 }
 
 #[cfg(not(unix))]
-fn configure_process_session(_command: &mut Command) {}
+fn configure_process_session(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command
+            .as_std_mut()
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
@@ -1015,12 +1080,28 @@ fn signal_process_group(pid: u32, signal: libc::c_int, cleanup: &mut CleanupDiag
 }
 
 #[cfg(not(unix))]
-async fn terminate_child(child: &mut Child) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
-    child.kill().await?;
-    child
-        .wait()
-        .await
-        .map(|status| (status, CleanupDiagnostics::default()))
+async fn terminate_child(
+    child: &mut Child,
+    #[cfg(windows)] process_job: Option<&windows::WindowsJob>,
+) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
+    #[cfg(windows)]
+    let cleanup = if let Some(job) = process_job {
+        job.terminate(1)?;
+        CleanupDiagnostics {
+            job_object_established: true,
+            forced_signal_sent: true,
+            ..CleanupDiagnostics::default()
+        }
+    } else {
+        child.kill().await?;
+        CleanupDiagnostics::default()
+    };
+    #[cfg(not(windows))]
+    let cleanup = {
+        child.kill().await?;
+        CleanupDiagnostics::default()
+    };
+    child.wait().await.map(|status| (status, cleanup))
 }
 
 fn interpret_sandbox_status(

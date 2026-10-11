@@ -1,0 +1,31 @@
+name: Windows process launcher
+
+on:
+  push:
+    branches: [work/windows-native-sandbox-foundation]
+    paths:
+      - '.github/workflows/windows-process-launcher.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/managed_process.rs'
+      - 'src/managed_process/**'
+      - 'tests/windows_process_launcher.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Windows managed process launcher tests
+        run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
+
