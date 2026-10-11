@@ -99,7 +99,13 @@ async fn launches_unicode_argv_and_reports_job_ownership() {
     let result = ManagedProcessService::run(process)
         .await
         .expect("PowerShell should launch through ManagedProcessService");
-    assert!(result.exit_status.success());
+    assert!(
+        result.exit_status.success(),
+        "PowerShell exited {:?}; stdout={:?} stderr={:?}",
+        result.exit_status,
+        result.stdout.to_string_lossy(),
+        result.stderr.to_string_lossy()
+    );
     assert_eq!(result.stdout.as_bytes().as_slice(), sentinel.as_bytes());
     assert!(result.cleanup.job_object_established);
 }
@@ -125,7 +131,13 @@ async fn output_capture_remains_bounded_on_windows() {
     let result = ManagedProcessService::run(process)
         .await
         .expect("PowerShell should exit after bounded output");
-    assert!(result.exit_status.success());
+    assert!(
+        result.exit_status.success(),
+        "PowerShell exited {:?}; stdout={:?} stderr={:?}",
+        result.exit_status,
+        result.stdout.to_string_lossy(),
+        result.stderr.to_string_lossy()
+    );
     assert_eq!(result.stdout.total_bytes, 4096);
     assert!(result.stdout.retained_bytes() <= 64);
     assert!(result.stdout.is_truncated());
