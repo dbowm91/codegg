@@ -260,7 +260,10 @@ pub(crate) fn extract_cmd_raw_command(
         return Err("cmd shell payload is missing its raw command argument");
     }
     argv.pop();
-    Ok(Some(OsString::from(format!("\"{command}\""))))
+    // `CommandExt::raw_arg` appends literal text and does not add an argument
+    // separator. Keep one before the `/C` payload so cmd.exe receives it as
+    // the command string rather than as part of the preceding switch.
+    Ok(Some(OsString::from(format!(" \"{command}\""))))
 }
 
 #[cfg(windows)]
@@ -1532,7 +1535,7 @@ mod tests {
             .expect("valid cmd shell argv")
             .expect("cmd uses raw command channel");
         assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/S", "/C"]);
-        assert_eq!(raw.to_string_lossy(), format!("\"{command}\""));
+        assert_eq!(raw.to_string_lossy(), format!(" \"{command}\""));
     }
 
     #[test]
