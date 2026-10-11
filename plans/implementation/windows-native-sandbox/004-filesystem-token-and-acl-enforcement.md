@@ -91,6 +91,14 @@ before resume while verifying token and Job facts. Because approved roots may
 be existing directories, ACE cleanup also needs a crash-recoverable ownership
 record; an in-memory guard alone cannot satisfy WP-C after daemon/helper loss.
 
+Hosted Windows runs `38168149973` and `38168868303` both failed the Rust
+AppContainer launch proof with `ERROR_INVALID_PARAMETER` from `CreateProcessW`
+when an explicit current directory was supplied (first the checkout, then
+`System32`). The helper now passes a null current-directory pointer, matching
+the earlier successful fixture. This inherits the parent process directory;
+it does not yet establish an approved workspace directory or production ACL
+lease, and requires another hosted run for confirmation.
+
 ## 4. Invariants that must not regress
 
 - No backend registered available until read AND write requirements can be demonstrated on target Windows version.

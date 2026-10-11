@@ -169,24 +169,18 @@ impl WindowsSuspendedAppContainerProcess {
     pub(super) fn create(
         application: &Path,
         command_line: &mut [u16],
-        current_directory: &Path,
         attributes: &WindowsProcessAttributes,
     ) -> io::Result<Self> {
-        if !application.is_absolute() || !current_directory.is_absolute() {
+        if !application.is_absolute() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "AppContainer executable and working directory must be absolute paths",
+                "AppContainer executable must be an absolute path",
             ));
         }
-        if application.as_os_str().encode_wide().any(|unit| unit == 0)
-            || current_directory
-                .as_os_str()
-                .encode_wide()
-                .any(|unit| unit == 0)
-        {
+        if application.as_os_str().encode_wide().any(|unit| unit == 0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "AppContainer executable and working directory cannot contain NULs",
+                "AppContainer executable cannot contain NULs",
             ));
         }
         if command_line.len() < 2
@@ -199,7 +193,6 @@ impl WindowsSuspendedAppContainerProcess {
             ));
         }
         let application = wide_os(application.as_os_str());
-        let current_directory = wide_os(current_directory.as_os_str());
         let mut startup = STARTUPINFOEXW::default();
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
         startup.lpAttributeList = attributes.raw;
@@ -213,7 +206,11 @@ impl WindowsSuspendedAppContainerProcess {
                 0,
                 CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
                 ptr::null(),
-                current_directory.as_ptr(),
+                // Explicit working directories returned ERROR_INVALID_PARAMETER
+                // on the hosted Windows runner. Inherit the parent directory
+                // until the production ACL lease can establish and verify an
+                // approved working root before launch.
+                ptr::null(),
                 &mut startup.StartupInfo,
                 &mut process_info,
             )
@@ -484,17 +481,12 @@ mod tests {
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let cmd = PathBuf::from(system_root).join("System32").join("cmd.exe");
-        let working_directory = cmd
-            .parent()
-            .ok_or_else(|| io::Error::other("cmd.exe path has no parent directory"))?;
         let mut command_line = wide(&format!("\"{}\" /D /C exit 0", cmd.display()));
-        let mut process = WindowsSuspendedAppContainerProcess::create(
-            &cmd,
-            &mut command_line,
-            working_directory,
-            &attributes,
-        )
-        .map_err(|error| io::Error::new(error.kind(), format!("CreateProcessW failed: {error}")))?;
+        let mut process =
+            WindowsSuspendedAppContainerProcess::create(&cmd, &mut command_line, &attributes)
+                .map_err(|error| {
+                    io::Error::new(error.kind(), format!("CreateProcessW failed: {error}"))
+                })?;
 
         let mut token = ptr::null_mut();
         if unsafe { OpenProcessToken(process.process_handle(), TOKEN_QUERY, &mut token) } == 0 {
@@ -587,14 +579,10 @@ mod tests {
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let executable = PathBuf::from(system_root).join("System32").join("cmd.exe");
-        let working_directory = executable
-            .parent()
-            .ok_or_else(|| io::Error::other("cmd.exe path has no parent directory"))?;
         let mut command_line = wide(&format!("\"{}\" /D /C exit 0", executable.display()));
         let mut process = WindowsSuspendedAppContainerProcess::create(
             &executable,
             &mut command_line,
-            working_directory,
             &attributes,
         )?;
         let process_handle = process.process_handle();
