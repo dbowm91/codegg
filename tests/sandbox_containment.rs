@@ -698,9 +698,24 @@ fn seatbelt_loopback_is_reachable_and_reported_as_unrestricted() {
     let workspace = tempfile::tempdir().expect("workspace");
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .expect("loopback fixture listener");
+    listener
+        .set_nonblocking(true)
+        .expect("bound the fixture wait");
     let port = listener.local_addr().expect("listener address").port();
     let accept = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("loopback client");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(connection) => break connection,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => panic!("loopback probe did not connect: {error}"),
+            }
+        };
         let mut byte = [0];
         std::io::Read::read_exact(&mut stream, &mut byte).expect("loopback probe byte");
         byte[0]
