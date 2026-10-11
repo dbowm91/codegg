@@ -11,6 +11,7 @@ using System.Text;
 
 public static class AppContainerProofNative {
     public static string ObservedAppContainerSid = "";
+    public static bool ObservedInJob = false;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct StartupInfo {
@@ -73,6 +74,16 @@ public static class AppContainerProofNative {
         ref StartupInfoEx startupInfo, out ProcessInformation processInformation);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -110,15 +121,23 @@ public static class AppContainerProofNative {
     public static uint Run(string executable, string arguments, IntPtr appContainerSid) {
         IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
         const uint ExtendedStartupInfoPresent = 0x00080000;
+        const uint CreateSuspended = 0x00000004;
         const uint CreateNoWindow = 0x08000000;
         IntPtr size = IntPtr.Zero;
         InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
         if (size == IntPtr.Zero) throw new InvalidOperationException("Could not size attribute list.");
         IntPtr attributes = Marshal.AllocHGlobal(size);
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) {
+            Marshal.FreeHGlobal(attributes);
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        bool attributesInitialized = false;
         ProcessInformation process = new ProcessInformation();
         try {
             if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref size))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            attributesInitialized = true;
             SecurityCapabilities capabilities = new SecurityCapabilities {
                 AppContainerSid = appContainerSid,
                 Capabilities = IntPtr.Zero,
@@ -137,10 +156,22 @@ public static class AppContainerProofNative {
                 startup.lpAttributeList = attributes;
                 StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
                 if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
-                        ExtendedStartupInfoPresent | CreateNoWindow, IntPtr.Zero,
+                        ExtendedStartupInfoPresent | CreateSuspended | CreateNoWindow, IntPtr.Zero,
                         System.IO.Path.GetDirectoryName(executable), ref startup, out process))
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (!AssignProcessToJobObject(job, process.hProcess))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                bool inJob;
+                if (!IsProcessInJob(process.hProcess, job, out inJob))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                ObservedInJob = inJob;
+                if (!inJob) throw new InvalidOperationException("AppContainer target was not assigned to its owner Job.");
                 ObservedAppContainerSid = GetAppContainerSid(process.hProcess);
+                uint previousSuspendCount = ResumeThread(process.hThread);
+                if (previousSuspendCount == 0xffffffff)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (previousSuspendCount != 1)
+                    throw new InvalidOperationException("AppContainer target had unexpected suspend count " + previousSuspendCount + ".");
             } finally {
                 Marshal.FreeHGlobal(capabilitiesPtr);
             }
@@ -154,9 +185,13 @@ public static class AppContainerProofNative {
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
             return exitCode;
         } finally {
+            if (process.hProcess != IntPtr.Zero && WaitForSingleObject(process.hProcess, 0) != 0 &&
+                !TerminateJobObject(job, 0xdead))
+                TerminateProcess(process.hProcess, 0xdead);
             if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
             if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
-            DeleteProcThreadAttributeList(attributes);
+            CloseHandle(job);
+            if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
             Marshal.FreeHGlobal(attributes);
         }
     }
@@ -262,6 +297,10 @@ try {
         throw "Child token package SID mismatch: expected $sidText, observed $([AppContainerProofNative]::ObservedAppContainerSid)."
     }
     'package SID present in child token: passed'
+    if (-not [AppContainerProofNative]::ObservedInJob) {
+        throw 'AppContainer target was not observed in the Job assigned before resume.'
+    }
+    'suspended AppContainer target assigned to Job before resume: passed'
     'allowed workspace read: passed'
 
     $writeCode = [AppContainerProofNative]::Run($cmd,
