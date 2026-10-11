@@ -1160,6 +1160,18 @@ filesystem access, no path resolution; containment, `file.read`
 authorization, and symlink policy remain the daemon's decision in
 `DocumentOpen`.
 
+**LSP presentation (M006-C).** Opening, saving, or reloading a document pulls
+the daemon's bounded diagnostics snapshot through `CoreRequest`. A missing or
+unavailable snapshot is shown as pending/unavailable, never as a clean file.
+Severity markers use the line gutter; the status area shows a diagnostic on
+the cursor line. Local edits clear the snapshot until the next save so stale
+markers are not attached to changed text. Visible lines use bounded `syntect`
+syntax highlighting. In normal mode, `Ctrl+]` requests a definition and
+`Ctrl+Shift+]` cycles references. Point results carry workspace-relative paths;
+navigation opens a result only when that exact path is present in the active
+workspace's bounded file tree, through the existing `open_editor` path. The
+renderer performs no LSP or filesystem I/O.
+
 ### Project-scoped file tree (M006-D)
 
 `Route::Editor` renders a workspace file tree in a pane to the left of the

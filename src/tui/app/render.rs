@@ -766,6 +766,8 @@ impl App {
             .map(|notice| notice.message());
         let writable = self.editor_state.is_writer();
         let busy = self.editor_state.is_busy();
+        let diagnostics = self.editor_state.diagnostics.clone();
+        let diagnostics_notice = self.editor_state.diagnostics_notice.clone();
         self.render_file_tree_pane(frame, tree_area);
         if let Some(session) = self.editor_state.session.as_mut() {
             crate::tui::components::editor::EditorWidget {
@@ -779,6 +781,8 @@ impl App {
                 writable,
                 busy,
                 snapshot: &snapshot,
+                diagnostics: diagnostics.as_deref(),
+                diagnostics_notice: diagnostics_notice.as_deref(),
                 presentation: session.presentation_mut(),
                 theme,
             }

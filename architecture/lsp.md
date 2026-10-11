@@ -872,6 +872,11 @@ arms of identical policy and six chances to drift.
 `CoreRequest::LspDiagnosticsGet` stays separate because its scope genuinely
 differs: `direct_project`, matching the project stream it backs.
 
+Definition and reference locations expose normalized workspace-relative paths
+only. Results outside the session's daemon-resolved root are omitted, so a
+frontend can safely compare a target against its project file tree without
+receiving another workspace's path.
+
 #### Warm-only reads
 
 A read calls `find_existing_client_for_root_hint`, which resolves an existing
@@ -914,6 +919,12 @@ replayed or reordered envelope is refused rather than moving the client
 backwards, and a client with no baseline — the post-restart state, since
 diagnostics are not persisted — is told to pull rather than to trust what it
 has.
+
+`LspDiagnosticsGet` also verifies that its `project_id` matches the session row
+and that a warm daemon-owned client exists. It runs one bounded publisher pass,
+then returns the tracker's complete snapshot. A cold client is an error rather
+than an empty success. The TUI invokes this pull when a document opens, saves,
+or reloads; the 750 ms publisher interval is not a daemon background task.
 
 #### Two traps recorded, because both fail silently
 

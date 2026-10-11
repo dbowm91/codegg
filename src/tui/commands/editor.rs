@@ -28,6 +28,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
 
+use crate::protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_scoped_registered_tui_task;
@@ -148,6 +149,7 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
         );
         return;
     };
+    let session_id = context.session_id;
 
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
@@ -168,10 +170,13 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
     app.editor_state.status = EditorStatus::Opening;
     app.editor_state.clear_notice();
     app.editor_state.path = Some(path.clone());
+    app.editor_state.project_id = Some(project_id.clone());
+    app.editor_state.session_id = session_id.clone();
 
     let wants_writer = true;
     app.editor_state.wants_writer = wants_writer;
 
+    let diagnostics_client = core_client.clone();
     let session = TuiDocumentSession::new(core_client);
     app.editor_state.session = Some(session);
     if !matches!(
@@ -189,6 +194,8 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
         .as_ref()
         .expect("session was just installed")
         .controller();
+    let diagnostics_project_id = project_id.clone();
+    let diagnostics_path = path.clone();
     let tx = app.tui_cmd_tx.clone();
     let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
     let task_id = spawn_scoped_registered_tui_task(
@@ -203,6 +210,28 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
             let result = controller
                 .open(project_id, workspace_id, path, wants_writer)
                 .await;
+            let (diagnostics, diagnostics_error) = if result.is_ok() {
+                match session_id {
+                    Some(session_id) => match fetch_editor_diagnostics(
+                        diagnostics_client.as_ref(),
+                        diagnostics_project_id,
+                        session_id,
+                        diagnostics_path,
+                    )
+                    .await
+                    {
+                        Ok(Some(diagnostics)) => (Some(diagnostics), None),
+                        Ok(None) => (
+                            None,
+                            Some("LSP has not published diagnostics for this file yet".into()),
+                        ),
+                        Err(error) => (None, Some(error)),
+                    },
+                    None => (None, Some("LSP diagnostics need a bound session".into())),
+                }
+            } else {
+                (None, None)
+            };
             Some(TuiCommand::EditorOpened {
                 request_id,
                 generation,
@@ -211,6 +240,8 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
                     Err(error) => Some(describe_error(&error)),
                 },
                 state: controller.state().await,
+                diagnostics,
+                diagnostics_error,
             })
         },
     );
@@ -239,6 +270,8 @@ pub(crate) fn apply_editor_opened(
     generation: u64,
     error: Option<String>,
     state: DocumentState,
+    diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+    diagnostics_error: Option<String>,
 ) {
     if app.editor_state.generation != generation {
         return;
@@ -261,10 +294,55 @@ pub(crate) fn apply_editor_opened(
     }
     app.editor_state.operation = None;
     app.editor_state.status = EditorStatus::from_state(&state);
+    app.editor_state.diagnostics = diagnostics;
+    app.editor_state.diagnostics_notice = diagnostics_error;
     if let Some(session) = app.editor_state.session.as_mut() {
         session.presentation_mut().reset_for_open();
+        if let Some(line) = app.editor_state.pending_jump_line.take() {
+            if let Some(snapshot) = session.try_snapshot() {
+                session.presentation_mut().cursor_byte =
+                    editor::line_start(&snapshot, line).unwrap_or(0);
+            }
+        }
     }
     app.editor_state.clear_notice();
+}
+
+async fn fetch_editor_diagnostics(
+    client: &dyn crate::core::CoreClient,
+    project_id: String,
+    session_id: String,
+    path: String,
+) -> Result<Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>, String> {
+    let response = client
+        .request(RequestEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            payload: CoreRequest::LspDiagnosticsGet {
+                request: crate::protocol::lsp::LspDiagnosticsGetRequestDto {
+                    project_id: project_id.clone(),
+                    session_id,
+                },
+            },
+        })
+        .await
+        .map_err(|error| format!("LSP diagnostics unavailable: {error}"))?;
+    match response {
+        CoreResponse::LspDiagnosticsGetResult { result } if result.project_id == project_id => {
+            Ok(result
+                .files
+                .into_iter()
+                .find(|file| file.path == path)
+                .map(|file| file.diagnostics))
+        }
+        CoreResponse::LspDiagnosticsGetResult { .. } => {
+            Err("LSP diagnostics returned for another project".into())
+        }
+        CoreResponse::Error { message, .. } => {
+            Err(format!("LSP diagnostics unavailable: {message}"))
+        }
+        other => Err(format!("unexpected LSP diagnostics response: {other:?}")),
+    }
 }
 
 /// Close the attachment and leave the editor view.
@@ -399,6 +477,10 @@ where
         .controller();
     let request_id = app.editor_state.request.begin();
     let generation = app.editor_state.generation;
+    let diagnostics_project_id = app.editor_state.project_id.clone();
+    let diagnostics_session_id = app.editor_state.session_id.clone();
+    let diagnostics_path = app.editor_state.path.clone();
+    let diagnostics_client = app.core_client.clone();
     app.editor_state.operation = Some(operation);
     if operation == EditorOperation::Save {
         app.editor_state.status = EditorStatus::Flushing;
@@ -417,12 +499,45 @@ where
         None,
         async move {
             let (result, state) = run(controller).await;
+            let (diagnostics, diagnostics_error) = if result.is_ok()
+                && matches!(operation, EditorOperation::Save | EditorOperation::Reload)
+            {
+                match (
+                    diagnostics_client,
+                    diagnostics_project_id,
+                    diagnostics_session_id,
+                    diagnostics_path,
+                ) {
+                    (Some(client), Some(project_id), Some(session_id), Some(path)) => {
+                        match fetch_editor_diagnostics(
+                            client.as_ref(),
+                            project_id,
+                            session_id,
+                            path,
+                        )
+                        .await
+                        {
+                            Ok(Some(diagnostics)) => (Some(diagnostics), None),
+                            Ok(None) => (
+                                None,
+                                Some("LSP has not published diagnostics for this file yet".into()),
+                            ),
+                            Err(error) => (None, Some(error)),
+                        }
+                    }
+                    _ => (None, Some("LSP diagnostics need a bound session".into())),
+                }
+            } else {
+                (None, None)
+            };
             Some(TuiCommand::EditorOperationFinished {
                 request_id,
                 generation,
                 operation,
                 error: result.as_ref().err().map(describe_error),
                 state,
+                diagnostics,
+                diagnostics_error,
             })
         },
     );
@@ -446,6 +561,8 @@ pub(crate) fn apply_editor_operation_finished(
     operation: EditorOperation,
     error: Option<String>,
     state: DocumentState,
+    diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+    diagnostics_error: Option<String>,
 ) {
     if app.editor_state.generation != generation {
         return;
@@ -466,6 +583,10 @@ pub(crate) fn apply_editor_operation_finished(
     }
     app.editor_state.operation = None;
     app.editor_state.status = EditorStatus::from_state(&state);
+    if matches!(operation, EditorOperation::Save | EditorOperation::Reload) {
+        app.editor_state.diagnostics = diagnostics;
+        app.editor_state.diagnostics_notice = diagnostics_error;
+    }
     if operation.clears_undo_history() {
         if let Some(session) = app.editor_state.session.as_mut() {
             editor::clear_history(session.presentation_mut());
@@ -535,6 +656,7 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 cursor_before,
                 anchor_before,
             );
+            clear_stale_diagnostics(state);
             state.status = EditorStatus::DirtyLocal;
             state.clear_notice();
         }
@@ -554,6 +676,8 @@ fn editable(state: &EditorState) -> bool {
 
 /// Apply one motion command. Never touches text.
 pub(crate) fn editor_motion(state: &mut EditorState, command: EditorCommand, visible_lines: usize) {
+    state.navigation_generation = state.navigation_generation.wrapping_add(1);
+    state.navigation_pending = false;
     let Some(session) = state.session.as_ref() else {
         return;
     };
@@ -629,6 +753,7 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     // position the user is leaving, so redoing returns to where the edit
     // left the cursor rather than to the undo point.
     editor::record_redo(presentation, entry.rebased(cursor_leaving, None));
+    clear_stale_diagnostics(state);
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
 }
@@ -667,8 +792,18 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
         None => presentation.cursor_byte = entry.cursor_before,
     }
     editor::restore_undo(presentation, entry.rebased(cursor_leaving, None));
+    clear_stale_diagnostics(state);
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
+}
+
+fn clear_stale_diagnostics(state: &mut EditorState) {
+    state.navigation_generation = state.navigation_generation.wrapping_add(1);
+    state.navigation_pending = false;
+    state.reference_locations.clear();
+    state.reference_index = 0;
+    state.diagnostics = None;
+    state.diagnostics_notice = Some("Save the document to refresh diagnostics".into());
 }
 
 /// Insert literal text at the cursor in insert mode.
@@ -793,6 +928,22 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         super::file_tree::toggle_tree(app);
         return true;
     }
+    if key.code == KeyCode::Char(']')
+        && app.editor_state.buffer_focused()
+        && app.editor_state.mode() == EditorMode::Normal
+    {
+        match key.modifiers {
+            KeyModifiers::CONTROL => {
+                request_navigation(app, crate::protocol::lsp::LspReadOperation::Definition);
+                return true;
+            }
+            modifiers if modifiers == (KeyModifiers::CONTROL | KeyModifiers::SHIFT) => {
+                request_navigation(app, crate::protocol::lsp::LspReadOperation::References);
+                return true;
+            }
+            _ => {}
+        }
+    }
     // With the composer focused, Esc leaves the view. With the buffer
     // focused, Esc is handled by the buffer key handler so the step from
     // insert mode to focus stays explicit.
@@ -832,6 +983,221 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         BufferKey::RequestLeaveBuffer => {
             leave_editor_buffer(&mut app.editor_state);
             true
+        }
+    }
+}
+
+fn request_navigation(app: &mut App, operation: crate::protocol::lsp::LspReadOperation) {
+    if operation == crate::protocol::lsp::LspReadOperation::References
+        && !app.editor_state.reference_locations.is_empty()
+    {
+        app.editor_state.reference_index =
+            (app.editor_state.reference_index + 1) % app.editor_state.reference_locations.len();
+        let location =
+            app.editor_state.reference_locations[app.editor_state.reference_index].clone();
+        navigate_to_location(app, location);
+        return;
+    }
+    let (Some(client), Some(session_id), Some(path)) = (
+        app.core_client.clone(),
+        app.editor_state.session_id.clone(),
+        app.editor_state.path.clone(),
+    ) else {
+        app.messages_state
+            .toasts
+            .warning("LSP navigation needs an open project document");
+        return;
+    };
+    let Some(session) = app.editor_state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let cursor = session.presentation().cursor_byte;
+    let line = editor::cursor_line(&snapshot, cursor);
+    let column = utf16_column(&snapshot, cursor, line);
+    if app.editor_state.navigation_pending {
+        return;
+    }
+    app.editor_state.navigation_pending = true;
+    app.editor_state.navigation_generation = app.editor_state.navigation_generation.wrapping_add(1);
+    let navigation_generation = app.editor_state.navigation_generation;
+    let editor_generation = app.editor_state.generation;
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|id| id.to_string());
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_lsp_navigation",
+        tab_id,
+        None,
+        None,
+        async move {
+            let request = CoreRequest::LspReadGet {
+                request: crate::protocol::lsp::LspReadRequestDto {
+                    operation,
+                    session_id,
+                    path,
+                    line: Some(line as u32),
+                    column: Some(column as u32),
+                    query: None,
+                },
+            };
+            let result = client
+                .request(RequestEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    payload: request,
+                })
+                .await;
+            let (result, error) = match result {
+                Ok(CoreResponse::LspReadResult { result })
+                    if result.operation == operation
+                        && result.status == crate::protocol::lsp::LspReadStatus::Ready =>
+                {
+                    match result.payload {
+                        Some(crate::protocol::lsp::LspReadPayloadDto::Locations {
+                            locations,
+                            ..
+                        }) => (locations, None),
+                        _ => (
+                            Vec::new(),
+                            Some("LSP navigation response had an unexpected shape".into()),
+                        ),
+                    }
+                }
+                Ok(CoreResponse::LspReadResult { result })
+                    if result.status == crate::protocol::lsp::LspReadStatus::NotReady =>
+                {
+                    (
+                        Vec::new(),
+                        Some("LSP is still starting for this workspace".into()),
+                    )
+                }
+                Ok(CoreResponse::Error { message, .. }) => (Vec::new(), Some(message)),
+                Ok(other) => (
+                    Vec::new(),
+                    Some(format!("unexpected LSP response: {other:?}")),
+                ),
+                Err(error) => (
+                    Vec::new(),
+                    Some(format!("LSP navigation lookup failed: {error}")),
+                ),
+            };
+            Some(TuiCommand::EditorNavigationResolved {
+                editor_generation,
+                navigation_generation,
+                operation,
+                results: result,
+                error,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.navigation_pending = false;
+        app.messages_state
+            .toasts
+            .warning("Definition lookup could not start: TUI task channel unavailable");
+    }
+}
+
+fn utf16_column(snapshot: &codegg_document::DocumentSnapshot, cursor: usize, line: usize) -> usize {
+    let start = editor::line_start(snapshot, line).unwrap_or(0);
+    let end = cursor
+        .max(start)
+        .min(editor::line_content_end(snapshot, line).unwrap_or(start));
+    snapshot
+        .read_bytes(start, end)
+        .map(|prefix| prefix.encode_utf16().count())
+        .unwrap_or_default()
+}
+
+pub(crate) fn apply_editor_navigation_resolved(
+    app: &mut App,
+    editor_generation: u64,
+    navigation_generation: u64,
+    operation: crate::protocol::lsp::LspReadOperation,
+    results: Vec<crate::protocol::lsp::LspRangeDto>,
+    error: Option<String>,
+) {
+    if app.editor_state.generation != editor_generation
+        || app.editor_state.navigation_generation != navigation_generation
+    {
+        return;
+    }
+    app.editor_state.navigation_pending = false;
+    if let Some(error) = error {
+        app.editor_state.diagnostics_notice = Some(error.clone());
+        app.messages_state.toasts.warning(&error);
+        return;
+    }
+    let Some(result) = results.first().cloned() else {
+        app.messages_state.toasts.info(
+            if operation == crate::protocol::lsp::LspReadOperation::Definition {
+                "No definition found at the cursor"
+            } else {
+                "No references found at the cursor"
+            },
+        );
+        return;
+    };
+    if operation == crate::protocol::lsp::LspReadOperation::References {
+        app.editor_state.reference_locations = results;
+        app.editor_state.reference_index = 0;
+    }
+    navigate_to_location(app, result);
+}
+
+fn navigate_to_location(app: &mut App, result: crate::protocol::lsp::LspRangeDto) {
+    let current_root = app
+        .project_execution_context()
+        .ok()
+        .map(|context| context.workspace_root);
+    if current_root.as_ref() != app.file_tree_state.root.as_ref() {
+        app.messages_state
+            .toasts
+            .warning("Open the project file tree before navigating to an LSP result");
+        return;
+    }
+    let mut matches = Vec::new();
+    collect_tree_file_matches(&app.file_tree_state.nodes, &result.path, &mut matches);
+    if matches.len() != 1 {
+        app.messages_state.toasts.warning(if matches.is_empty() {
+            "Open the project file tree before navigating to an LSP result".into()
+        } else {
+            "LSP target is missing from the active workspace tree; no file was opened".into()
+        });
+        return;
+    }
+    let target = matches.pop().unwrap_or_default();
+    if app.editor_state.path.as_deref() == Some(target.as_str()) {
+        if let Some(session) = app.editor_state.session.as_mut() {
+            if let Some(snapshot) = session.try_snapshot() {
+                session.presentation_mut().cursor_byte =
+                    editor::line_start(&snapshot, result.start_line as usize).unwrap_or(0);
+            }
+        }
+    } else {
+        open_editor(app, &target);
+        if app.editor_state.operation == Some(EditorOperation::Open) {
+            app.editor_state.pending_jump_line = Some(result.start_line as usize);
+        }
+    }
+}
+
+fn collect_tree_file_matches(
+    nodes: &[crate::tui::file_tree::TreeNode],
+    workspace_path: &str,
+    matches: &mut Vec<String>,
+) {
+    for node in nodes {
+        if node.kind == crate::tui::file_tree::TreeNodeKind::File && node.path == workspace_path {
+            matches.push(node.path.clone());
+        }
+        if let Some(children) = &node.children {
+            collect_tree_file_matches(children, workspace_path, matches);
         }
     }
 }
@@ -2051,6 +2417,40 @@ mod tests {
         assert!(!state.buffer_focused());
         assert_eq!(editor_text(&state), "base");
         assert_eq!(undo_depth(&state), 0);
+    }
+
+    #[test]
+    fn lsp_navigation_resolves_only_the_exact_workspace_tree_path() {
+        use crate::tui::file_tree::{TreeNode, TreeNodeKind};
+        let nodes = vec![TreeNode {
+            name: "lib.rs".into(),
+            path: "src/lib.rs".into(),
+            depth: 1,
+            kind: TreeNodeKind::File,
+            children: None,
+        }];
+        let mut matches = Vec::new();
+        collect_tree_file_matches(&nodes, "src/lib.rs", &mut matches);
+        assert_eq!(matches, ["src/lib.rs"]);
+
+        let mut duplicated = nodes.clone();
+        duplicated.push(TreeNode {
+            name: "lib.rs".into(),
+            path: "tests/lib.rs".into(),
+            depth: 1,
+            kind: TreeNodeKind::File,
+            children: None,
+        });
+        let mut matches = Vec::new();
+        collect_tree_file_matches(&duplicated, "src/lib.rs", &mut matches);
+        assert_eq!(matches, ["src/lib.rs"]);
+    }
+
+    #[test]
+    fn lsp_position_column_uses_utf16_units() {
+        let snapshot = codegg_document::DocumentBuffer::new("a😀b").snapshot();
+        let cursor = "a😀".len();
+        assert_eq!(utf16_column(&snapshot, cursor, 0), 3);
     }
 
     fn key(code: KeyCode) -> KeyEvent {

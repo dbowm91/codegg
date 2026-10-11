@@ -87,6 +87,8 @@ pub enum TuiCommand {
         generation: u64,
         result: Option<String>,
         state: codegg_client::DocumentState,
+        diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+        diagnostics_error: Option<String>,
     },
     /// Completion of a guarded editor lifecycle operation (save,
     /// reload, resync, close). `operation` decides whether the
@@ -98,6 +100,18 @@ pub enum TuiCommand {
         operation: crate::tui::app::state::EditorOperation,
         error: Option<String>,
         state: codegg_client::DocumentState,
+        diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+        diagnostics_error: Option<String>,
+    },
+    /// Completion of a bounded definition lookup. The result is still only
+    /// navigable when the active bounded project tree contains the exact
+    /// workspace-relative path.
+    EditorNavigationResolved {
+        editor_generation: u64,
+        navigation_generation: u64,
+        operation: crate::protocol::lsp::LspReadOperation,
+        results: Vec<crate::protocol::lsp::LspRangeDto>,
+        error: Option<String>,
     },
     /// Completion of a bounded M006-D workspace tree walk. Carries the
     /// request id, the tree generation, and the root the walk was issued

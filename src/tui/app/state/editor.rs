@@ -268,6 +268,26 @@ pub struct EditorState {
     pub status: EditorStatus,
     /// Whether the attachment was opened requesting the writer lease.
     pub wants_writer: bool,
+    /// Diagnostics for the open workspace-relative path. `None` means the
+    /// daemon has not supplied a usable snapshot; an empty vector is a clean
+    /// snapshot and is intentionally distinct from that state.
+    pub diagnostics: Option<Vec<codegg_protocol::lsp::LspDiagnosticDto>>,
+    /// Why diagnostics are unavailable, if the last pull did not succeed.
+    pub diagnostics_notice: Option<String>,
+    /// Daemon identities captured when the document was opened.
+    pub project_id: Option<String>,
+    pub session_id: Option<String>,
+    /// Optional line requested by read-only LSP navigation before an open
+    /// completes.
+    pub pending_jump_line: Option<usize>,
+    /// Incremented for each point-navigation request, preventing older
+    /// completions from replacing a newer destination.
+    pub navigation_generation: u64,
+    /// At most one point-navigation request may be active for the attachment.
+    pub navigation_pending: bool,
+    /// Workspace-contained locations for cycling through references.
+    pub reference_locations: Vec<codegg_protocol::lsp::LspRangeDto>,
+    pub reference_index: usize,
 }
 
 impl Default for EditorState {
@@ -281,6 +301,15 @@ impl Default for EditorState {
             notice: None,
             status: EditorStatus::Closed,
             wants_writer: false,
+            diagnostics: None,
+            diagnostics_notice: None,
+            project_id: None,
+            session_id: None,
+            pending_jump_line: None,
+            navigation_generation: 0,
+            navigation_pending: false,
+            reference_locations: Vec::new(),
+            reference_index: 0,
         }
     }
 }
@@ -338,6 +367,15 @@ impl EditorState {
         self.generation = self.generation.wrapping_add(1);
         self.request.cancel();
         self.operation = None;
+        self.diagnostics = None;
+        self.diagnostics_notice = None;
+        self.project_id = None;
+        self.session_id = None;
+        self.pending_jump_line = None;
+        self.navigation_generation = self.navigation_generation.wrapping_add(1);
+        self.navigation_pending = false;
+        self.reference_locations.clear();
+        self.reference_index = 0;
         self.session = None;
         self.path = None;
         self.status = EditorStatus::Closed;

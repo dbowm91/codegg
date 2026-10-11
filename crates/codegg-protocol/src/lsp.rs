@@ -189,6 +189,8 @@ impl LspReadRequestDto {
 /// A source range in a project file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRangeDto {
+    /// Workspace-relative for location results; empty for ranges local to an
+    /// already named document (for example a document symbol).
     pub path: String,
     pub start_line: u32,
     pub start_column: u32,

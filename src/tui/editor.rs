@@ -685,7 +685,9 @@ pub fn clear_history(presentation: &mut TuiDocumentPresentation) {
 /// moves, and stable across documents of the same length.
 pub fn gutter_width(line_count: usize) -> u16 {
     let digits = line_count.max(1).to_string().len();
-    (digits as u16).saturating_add(1)
+    // One severity-marker column plus a separator keeps diagnostics visually
+    // distinct from the line number and source text.
+    (digits as u16).saturating_add(2)
 }
 
 /// Result of resolving a viewport against the current presentation.
@@ -969,10 +971,10 @@ mod tests {
 
     #[test]
     fn gutter_width_grows_only_with_line_count_digits() {
-        assert_eq!(gutter_width(1), 2);
-        assert_eq!(gutter_width(9), 2);
-        assert_eq!(gutter_width(10), 3);
-        assert_eq!(gutter_width(100), 4);
+        assert_eq!(gutter_width(1), 3);
+        assert_eq!(gutter_width(9), 3);
+        assert_eq!(gutter_width(10), 4);
+        assert_eq!(gutter_width(100), 5);
     }
 
     #[test]

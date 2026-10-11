@@ -1664,9 +1664,17 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             generation,
             result,
             state,
+            diagnostics,
+            diagnostics_error,
         } => {
             super::super::commands::editor::apply_editor_opened(
-                app, request_id, generation, result, state,
+                app,
+                request_id,
+                generation,
+                result,
+                state,
+                diagnostics,
+                diagnostics_error,
             );
         }
         TuiCommand::EditorOperationFinished {
@@ -1675,9 +1683,34 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             operation,
             error,
             state,
+            diagnostics,
+            diagnostics_error,
         } => {
             super::super::commands::editor::apply_editor_operation_finished(
-                app, request_id, generation, operation, error, state,
+                app,
+                request_id,
+                generation,
+                operation,
+                error,
+                state,
+                diagnostics,
+                diagnostics_error,
+            );
+        }
+        TuiCommand::EditorNavigationResolved {
+            editor_generation,
+            navigation_generation,
+            operation,
+            results,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_navigation_resolved(
+                app,
+                editor_generation,
+                navigation_generation,
+                operation,
+                results,
+                error,
             );
         }
         TuiCommand::FileTreeListed {

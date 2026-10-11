@@ -1,6 +1,6 @@
 # CodeGG Desktop Frontend and IDE Foundation M006-C — LSP Editor Presentation
 
-Status: ready
+Status: active
 
 Repository baseline: `41eb955e`
 
@@ -32,26 +32,30 @@ client-supplied workspace authority.
 
 - M006-A provides the editor route, controller-backed buffer, and diagnostic-free
   gutter in `src/tui/components/editor.rs`.
-- M006-B provides `codegg_client::lsp::LspReadClient`, bounded LSP read DTOs,
-  `DiagnosticsReconciler`, a project-scoped diagnostics subscription, and an
-  authoritative diagnostics pull.
+- M006-B provides bounded LSP read DTOs, `DiagnosticsReconciler`, a project-
+  scoped diagnostics subscription, and an authoritative diagnostics pull.
 - ADR-0012 makes the pull authoritative and diagnostics stream project-scoped.
-- The M006-B diagnostics publication task currently has no production caller;
-  wire the existing publisher into daemon runtime lifecycle before depending on
-  stream updates. The pull remains the recovery path.
+- The M006-B publication function has no periodic daemon task. This plan drives
+  one publisher pass from each authorized diagnostics pull, and pulls on editor
+  open/save/reload; it does not add another poller or TUI stream consumer.
 - `syntect` is already a dependency and code-block rendering demonstrates the
   existing syntax theme integration. The editor currently emits one plain span
   per line.
+- M006-B point-location DTOs carried only file names in `path`, which is
+  ambiguous in a workspace and insufficient for safe navigation. This plan
+  normalizes in-root results to workspace-relative paths and omits external
+  results; the DTO shape remains unchanged.
 - M006-C is intentionally limited to the existing TUI and read protocol. There
   is no need for an LSP protocol or permission expansion.
 
 ## 3. Invariants that cannot regress
 
-- LSP state is requested only through `codegg-client` and remains daemon-owned.
+- LSP state is requested through the daemon-owned `CoreClient` transport and
+  remains daemon-owned.
 - Session/workspace identity comes from the active tab and daemon records;
   renderers never infer authority from process cwd or arbitrary file paths.
-- Diagnostics from another project, stale sequence, or mismatched document
-  version must never appear in the active editor.
+- Diagnostics from another project must never appear in the active editor;
+  diagnostics are cleared when local edits make their document snapshot stale.
 - `NotReady`, unsupported, and failed reads remain distinguishable from an
   empty diagnostic set.
 - All event handling and requests remain bounded; rendering performs no I/O.
@@ -63,13 +67,12 @@ client-supplied workspace authority.
 
 In scope:
 
-- Start and stop the daemon diagnostics publisher through its supported runtime
-  lifecycle, and consume the authorized project diagnostics stream in socket TUI
-  sessions with pull-on-open/resync behavior.
+- Run the existing bounded publisher during an authorized diagnostics pull;
+  pull on editor open/save/reload. The pull is the correctness source and the
+  pass also updates project stream subscribers.
 - Store a bounded diagnostics snapshot per active project/editor file and render
   severity markers in the gutter plus a concise current-line diagnostic status.
-- Apply syntax styling in the editor using `syntect`; overlay LSP semantic token
-  styles only where token ranges map safely to the current saved document.
+- Apply bounded visible-line syntax styling in the editor using `syntect`.
 - Add read-only definition/reference navigation actions using bounded
   `LspReadGet` results and the existing project-scoped editor open path.
 - Surface unsupported/not-ready/error states without treating them as clean.
@@ -85,35 +88,29 @@ Out of scope:
 
 ## 5. Expected changes
 
-- `src/core/daemon_lsp.rs` and daemon runtime construction/lifecycle: activate the
-  existing bounded diagnostics publisher.
-- TUI project event/session handling: subscribe and reconcile diagnostics, pull
-  on editor activation and after sequence gaps/reconnects.
-- `src/tui/app/editor.rs`, `src/tui/components/editor.rs`, and editor commands:
-  diagnostics state, gutter/status rendering, syntax/semantic styling, and
+- `src/core/daemon_lsp.rs`: make pulls project/session coherent, reject cold
+  clients, normalize in-root locations, and run the existing publisher pass.
+- `src/tui/app/state/editor.rs`, `src/tui/components/editor.rs`, and editor
+  commands: diagnostics state, gutter/status rendering, syntax styling, and
   definition/reference navigation.
-- Focused unit/integration tests for reconciliation, line/range mapping,
-  navigation, not-ready state, project isolation, and stale completions.
+- Focused unit/integration tests for project isolation, path mapping, navigation,
+  not-ready state, and stale completions.
 - Update `architecture/lsp.md`, `architecture/tui.md`, `.opencode/skills/lsp-ide/SKILL.md`,
   and `.opencode/skills/tui/SKILL.md` to match shipped behavior.
 
 ## 6. Ordered work packages
 
-1. Trace the diagnostics publisher and projection stream from daemon startup to
-   the socket TUI; activate existing lifecycle hooks without changing event
-   schema or authorization.
-2. Add a bounded per-project diagnostics view model. Reconcile stream sequences,
-   pull authoritative state on editor open/reconnect/gap, and reject results for
-   a different project or document snapshot.
+1. Make the authorized diagnostics pull verify session/project coherence and a
+   warm daemon-owned client, invoke the bounded publisher, and return its
+   complete tracked snapshot.
+2. Add bounded editor diagnostics state. Pull on open/save/reload, and drop the
+   snapshot after local edits or stale editor generations.
 3. Render severity markers and current-line details in the editor. Preserve
    current-line and selection colors where overlays intersect.
-4. Apply syntax highlighting and map semantic-token ranges only when the result
-   is ready and belongs to the displayed saved revision; otherwise retain syntax
-   colors.
-5. Add explicit read-only definition/reference actions. Bound target counts,
+4. Add explicit read-only definition/reference actions. Bound target counts,
    keep navigation within the authorized workspace, and activate targets via
-   the existing file-tree/editor path.
-6. Add regression tests, update module guides/architecture, then run focused
+   exact-path lookup in the active file tree and existing editor path.
+5. Add regression tests, update module guides/architecture, then run focused
    suites and `scripts/verify.sh quick`.
 
 ## 7. Verification
@@ -130,16 +127,16 @@ Out of scope:
 
 ## 8. Acceptance and stop conditions
 
-Accept when the editor can show current project diagnostics, syntax/semantic
-styles, and bounded definition/reference navigation; cold or unavailable LSP is
-visibly distinct from a clean file; stale/cross-project events cannot replace
-active state; the protocol and authorization matrices are unchanged; and all
-verification passes.
+Accept when the editor can show current project diagnostics, syntax styles, and
+bounded definition/reference navigation; cold, unavailable, or not-yet-published
+diagnostics are visibly distinct from a clean file; local edits clear stale
+diagnostics; stale/cross-project completions cannot replace active state; the
+authorization matrix is unchanged; and all verification passes.
 
-Stop and record a blocker if runtime publisher activation requires changing the
-accepted ADR-0012 delivery or authorization contract, or if semantic token data
-cannot be tied to a document revision without a new protocol field. Do not
-weaken dirty-buffer or preview-apply invariants to make the UI appear current.
+Semantic-token presentation remains out of scope because `LspReadResultDto`
+does not carry the document revision needed to bind tokens to a changing buffer.
+Do not infer revision identity from a path or weaken dirty-buffer or preview-
+apply invariants to make semantic coloring appear current.
 
 ## 9. Required closure evidence
 

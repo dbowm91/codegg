@@ -37,7 +37,7 @@ use crate::tui::theme::Theme;
 
 /// Rows of chrome reserved above the text: the state banner and the
 /// current-line/column readout.
-const CHROME_ROWS: u16 = 2;
+const CHROME_ROWS: u16 = 3;
 
 /// Document editor view.
 ///
@@ -64,6 +64,11 @@ pub struct EditorWidget<'a> {
     pub busy: bool,
     /// The controller replica. Borrowed, never retained.
     pub snapshot: &'a DocumentSnapshot,
+    /// Current file diagnostics, or `None` while the daemon has no usable
+    /// diagnostics snapshot.
+    pub diagnostics: Option<&'a [codegg_protocol::lsp::LspDiagnosticDto]>,
+    /// A warmup/transport explanation; kept separate from document errors.
+    pub diagnostics_notice: Option<&'a str>,
     /// Focused editor presentation, mutated only to resolve the viewport.
     pub presentation: &'a mut crate::tui::document_session::TuiDocumentPresentation,
     pub theme: Arc<Theme>,
@@ -153,13 +158,48 @@ impl EditorWidget<'_> {
                 }),
             ),
         ]);
+        let cursor_diagnostic = self.diagnostics.and_then(|diagnostics| {
+            let line = line_number.saturating_sub(1);
+            diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.range.start_line as usize == line)
+        });
+        let third = if let Some(diagnostic) = cursor_diagnostic {
+            let color = match diagnostic.severity {
+                1 => theme.error,
+                2 => theme.warning,
+                _ => theme.muted,
+            };
+            Line::from(Span::styled(
+                format!(
+                    "LSP: {}",
+                    diagnostic.message.chars().take(120).collect::<String>()
+                ),
+                Style::default().fg(color),
+            ))
+        } else if let Some(notice) = self.diagnostics_notice {
+            Line::from(Span::styled(
+                format!("LSP: {}", notice.chars().take(120).collect::<String>()),
+                Style::default().fg(theme.warning),
+            ))
+        } else if self.diagnostics.is_some() {
+            Line::from(Span::styled(
+                "LSP: no diagnostic on this line",
+                Style::default().fg(theme.muted),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "LSP: diagnostics pending",
+                Style::default().fg(theme.muted),
+            ))
+        };
         let rows = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(CHROME_ROWS),
             width: inner.width,
             height: CHROME_ROWS.min(inner.height),
         };
-        frame.render_widget(Paragraph::new(vec![first, second]), rows);
+        frame.render_widget(Paragraph::new(vec![first, second, third]), rows);
     }
 
     /// Gutter plus horizontally scrolled text for the visible slice.
@@ -187,10 +227,31 @@ impl EditorWidget<'_> {
                 break;
             }
             let is_current = line_index == cursor_line;
+            let marker = self.diagnostics.and_then(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .filter(|diagnostic| diagnostic.range.start_line as usize == line_index)
+                    .map(|diagnostic| diagnostic.severity)
+                    .min()
+            });
+            let marker_text = match marker {
+                Some(1) => "E",
+                Some(2) => "W",
+                Some(_) => "·",
+                None => " ",
+            };
+            let marker_style = match marker {
+                Some(1) => Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+                Some(2) => Style::default().fg(theme.warning),
+                Some(_) => Style::default().fg(theme.muted),
+                None => gutter_style,
+            };
             let number = format!(
-                "{:>width$} ",
+                "{:>width$}",
                 line_index + 1,
-                width = viewport.gutter as usize - 1
+                width = viewport.gutter as usize - 2
             );
             let mut spans = vec![Span::styled(
                 number,
@@ -200,14 +261,37 @@ impl EditorWidget<'_> {
                     gutter_style
                 },
             )];
-            spans.push(Span::styled(
-                self.line_slice(line_index, viewport),
-                if is_current {
-                    current_style
-                } else {
-                    Style::default()
-                },
-            ));
+            spans.push(Span::styled(marker_text, marker_style));
+            spans.push(Span::raw(" "));
+            let text = self.line_slice(line_index, viewport);
+            let language = self.path.rsplit('.').next().unwrap_or_default();
+            let highlighted = crate::tui::components::messages::highlight_code(
+                &text,
+                language,
+                "base16-ocean.dark",
+            );
+            if let Some(line) = highlighted.into_iter().next() {
+                spans.extend(line.spans.into_iter().map(|span| {
+                    let mut style = span.style;
+                    if is_current {
+                        style = style.bg(if self.focus == EditorFocus::Buffer {
+                            theme.selection
+                        } else {
+                            theme.alternate_bg
+                        });
+                    }
+                    Span::styled(span.content.to_string(), style)
+                }));
+            } else {
+                spans.push(Span::styled(
+                    text,
+                    if is_current {
+                        current_style
+                    } else {
+                        Style::default()
+                    },
+                ));
+            }
             lines.push(Line::from(spans));
         }
         // An empty document still has one logical line, so `lines` is
@@ -290,6 +374,7 @@ mod tests {
         pending_command: &'a str,
         writable: bool,
         busy: bool,
+        diagnostics: Option<&'a [codegg_protocol::lsp::LspDiagnosticDto]>,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -301,6 +386,7 @@ mod tests {
             pending_command: "",
             writable: true,
             busy: false,
+            diagnostics: None,
         }
     }
 
@@ -331,6 +417,8 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
+                    diagnostics: options.diagnostics,
+                    diagnostics_notice: None,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }
@@ -358,6 +446,42 @@ mod tests {
         assert!(joined.contains("beta"), "{joined}");
         assert!(joined.contains("gamma"), "{joined}");
         assert!(joined.contains("ln 1"), "{joined}");
+    }
+
+    #[test]
+    fn diagnostics_mark_the_gutter_and_show_current_line_message() {
+        let diagnostics = vec![codegg_protocol::lsp::LspDiagnosticDto {
+            range: codegg_protocol::lsp::LspRangeDto {
+                path: "src/lib.rs".into(),
+                start_line: 1,
+                start_column: 0,
+                end_line: 1,
+                end_column: 4,
+            },
+            severity: 1,
+            tag: 0,
+            code: None,
+            message: "expected item".into(),
+            source: Some("rust-analyzer".into()),
+        }];
+        let lines = render(
+            "alpha\nbeta",
+            50,
+            8,
+            6,
+            Options {
+                diagnostics: Some(&diagnostics),
+                ..defaults()
+            },
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("2E beta")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("LSP: expected item")),
+            "{lines:?}"
+        );
     }
 
     #[test]

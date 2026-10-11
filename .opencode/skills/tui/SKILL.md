@@ -16,6 +16,12 @@ lives in `architecture/tui.md`; this skill covers the patterns you must follow
 to avoid breaking invariants that are easy to violate across the TUI composition
 root and lifecycle modules.
 
+The M006-C editor keeps LSP work in registered async tasks. Pull diagnostics
+after open/save/reload, clear them when local edits make them stale, and render
+only cached diagnostics in the frame. Definition/reference navigation must
+resolve daemon-returned workspace-relative paths against the active file tree
+before calling `open_editor`; a renderer never performs LSP or filesystem I/O.
+
 ## Layout
 
 | Path | Purpose |
