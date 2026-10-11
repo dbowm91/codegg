@@ -1915,13 +1915,29 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_alt_m_returns_cycle_model_backward() {
+    fn test_ctrl_alt_p_returns_cycle_model_backward() {
         let key = make_key(
-            KeyCode::Char('m'),
+            KeyCode::Char('p'),
             KeyModifiers::CONTROL | KeyModifiers::ALT,
         );
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
         assert_eq!(result, Some(InputAction::CycleModelBackward));
+    }
+
+    #[test]
+    fn ctrl_alt_m_is_not_a_chord() {
+        // Bare `Ctrl+M` is byte 0x0D (Enter), so `Ctrl+Alt+M` is `ESC` + CR
+        // and is not a chord a legacy terminal can disambiguate. Model cycling
+        // backward therefore lives on `Ctrl+Alt+P`.
+        let key = make_key(
+            KeyCode::Char('m'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_ne!(
+            handle_key_with_bindings(key, None, InputMode::Insert),
+            Some(InputAction::CycleModelBackward),
+            "Ctrl+Alt+M must not resolve to model cycling; use Ctrl+Alt+P"
+        );
     }
 
     #[test]
