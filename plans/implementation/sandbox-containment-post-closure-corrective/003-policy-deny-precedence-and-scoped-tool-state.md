@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective C003 — Effective Denials and Scoped Tool-State Writes
 
-Status: blocked on C002 (hard); C001 interface contract must remain stable
+Status: active (C002 closed; C001 shared launch interface stable)
 
 Repository baseline: `main` `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
