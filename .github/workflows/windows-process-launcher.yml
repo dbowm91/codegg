@@ -54,12 +54,20 @@ jobs:
             ./research/windows-native-sandbox/appcontainer-access-proof.ps1 *>&1 |
               Tee-Object -Variable proofOutput
           } catch {
+            $failureText = @(
+              ($proofOutput | Out-String)
+              ($_ | Out-String)
+            ) -join "`n"
+            $failureText = ($failureText -replace '[\r\n]+', ' ').Trim()
+            if ($failureText.Length -gt 1800) {
+              $failureText = $failureText.Substring(0, 1800)
+            }
+            Write-Output "::error title=AppContainer proof diagnostics::$failureText"
             @(
               '### AppContainer filesystem access proof failure'
               ''
               '```text'
-              ($proofOutput | Out-String)
-              ($_ | Format-List * -Force | Out-String)
+              ($failureText)
               '```'
             ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             throw
