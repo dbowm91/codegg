@@ -174,7 +174,9 @@ mod tests {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
     use std::path::PathBuf;
     use std::ptr;
-    use windows_sys::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeleteAppContainerProfile,
     };
@@ -395,20 +397,40 @@ mod tests {
             return Err(last_error());
         }
         let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
-        let mut appcontainer_info = TOKEN_APPCONTAINER_INFORMATION::default();
         let mut returned = 0u32;
+        let query_succeeded = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle() as HANDLE,
+                TokenAppContainerSid,
+                ptr::null_mut(),
+                0,
+                &mut returned,
+            )
+        };
+        let query_error = unsafe { GetLastError() };
+        if query_succeeded != 0
+            || query_error != ERROR_INSUFFICIENT_BUFFER
+            || returned < size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32
+        {
+            return Err(io::Error::from_raw_os_error(query_error as i32));
+        }
+        let mut token_info_storage = vec![0usize; (returned as usize).div_ceil(size_of::<usize>())];
+        let appcontainer_info = token_info_storage
+            .as_mut_ptr()
+            .cast::<TOKEN_APPCONTAINER_INFORMATION>();
         if unsafe {
             GetTokenInformation(
                 token.as_raw_handle() as HANDLE,
                 TokenAppContainerSid,
-                (&mut appcontainer_info as *mut TOKEN_APPCONTAINER_INFORMATION).cast(),
-                size_of::<TOKEN_APPCONTAINER_INFORMATION>() as u32,
+                appcontainer_info.cast(),
+                returned,
                 &mut returned,
             )
         } == 0
         {
             return Err(last_error());
         }
+        let appcontainer_info = unsafe { &*appcontainer_info };
         if appcontainer_info.TokenAppContainer.is_null()
             || unsafe { EqualSid(appcontainer_info.TokenAppContainer, profile.sid) } == 0
         {
