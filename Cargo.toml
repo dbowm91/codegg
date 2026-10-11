@@ -245,14 +245,6 @@ once_cell.workspace = true
 qrcode = { version = "0.14.1", default-features = false }
 clap_complete = "4.6.2"
 
-# Maintained Landlock bindings.  The helper is only linked on Linux.
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = { version = "0.4.7", default-features = false }
-
-# Process group management (Unix only)
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal", "process", "fs"] }
-
 # Image support (optional; M003 narrowed to the formats CodeGG decodes).
 # `image` keeps `default-features = false` so `rayon` + `default-formats`
 # (avif/dds/exr/hdr/ico/pnm/qoi/tga/tiff, ...) stay out of the optional
@@ -312,6 +304,14 @@ eggwork-core = { git = "https://github.com/eggstack/eggwork.git", rev = "e6a5d82
 # Optional so default builds remain unchanged; no training dependency is imported.
 sdm-core = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3212e8f6fd912e801a479b55751c", optional = true }
 sdm-runtime = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3212e8f6fd912e801a479b55751c", optional = true }
+
+# Maintained Landlock bindings. The helper is only linked on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4.7", default-features = false }
+
+# Process group management (Unix only)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["signal", "process", "fs"] }
 
 [dev-dependencies]
 proptest.workspace = true
