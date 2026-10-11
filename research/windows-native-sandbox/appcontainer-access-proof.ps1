@@ -137,7 +137,7 @@ $outsideRoot = Join-Path $root 'outside-root'
 $result = Join-Path $writeRoot 'read-result.txt'
 $secret = Join-Path $secretRoot 'credential-fixture.txt'
 $outsideWrite = Join-Path $outsideRoot 'outside.txt'
-$sid = $null
+$sid = [IntPtr]::Zero
 $profileCreated = $false
 
 try {
