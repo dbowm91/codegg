@@ -1,0 +1,34 @@
+name: Sandbox Darwin Qualification (one-shot)
+
+on:
+  push:
+    branches:
+      - planning/sandbox-containment-post-closure-corrective
+
+permissions:
+  contents: read
+
+jobs:
+  seatbelt:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Record native host and Seatbelt availability
+        run: |
+          sw_vers
+          uname -a
+          uname -m
+          test -x /usr/bin/sandbox-exec
+      - name: Qualify real Seatbelt helper containment
+        run: cargo test -p codegg --test sandbox_containment -- --test-threads=1 --nocapture
+      - name: Qualify Python execution modes
+        run: cargo test -p codegg --lib python_script::executor::tests -- --test-threads=1 --nocapture
+      - name: Run sandbox contract guards
+        run: |
+          python3 scripts/check_sandbox_contract.py
+          python3 scripts/check_sandbox_policy_wiring.py
