@@ -176,6 +176,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         let response = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnSubmit {
                             session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx: 0,
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
+                            reasoning: None,
                         })).await?;
                         match response {
                             CoreResponse::Ack => active = Some(ActivePrompt {
@@ -665,6 +666,10 @@ mod tests {
             12,
             "session-1",
             CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-2".into(),
                 stop_reason: "end_turn".into(),
@@ -675,6 +680,10 @@ mod tests {
             13,
             "session-1",
             CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-1".into(),
                 stop_reason: "end_turn".into(),

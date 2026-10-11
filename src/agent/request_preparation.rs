@@ -755,6 +755,52 @@ impl AgentLoop {
         }
     }
 
+    /// Apply the frontend's explicit extended-thinking choice for this turn.
+    ///
+    /// Runs *after* the agent config and model-profile defaults, so an
+    /// explicit user selection always wins over configuration. `Inherit`
+    /// leaves whatever the earlier steps decided untouched.
+    ///
+    /// `Off` clears both fields: the wire encoder treats "neither field set"
+    /// as thinking not requested (`wire.rs`), which is the only way to
+    /// express an explicit disable — an agent that sets `thinking_budget`
+    /// otherwise keeps thinking no matter what the user chose.
+    pub(super) fn apply_reasoning_override(&self, request: &mut ChatRequest) {
+        let Some(chosen) = self.state.reasoning_override else {
+            return;
+        };
+        Self::apply_reasoning_choice(request, chosen);
+    }
+
+    /// Apply an explicit extended-thinking choice to a prepared request.
+    ///
+    /// Pure so the precedence rules are directly testable: an explicit user
+    /// choice must win over agent config and model-profile defaults, and effort
+    /// and budget must never both be set (the wire encoder picks its mode from
+    /// whichever is present, so leaving both would silently prefer budget).
+    fn apply_reasoning_choice(
+        request: &mut ChatRequest,
+        chosen: crate::protocol::core::ReasoningOverride,
+    ) {
+        use crate::protocol::core::ReasoningOverride;
+        match chosen {
+            ReasoningOverride::Effort { level } => {
+                request.thinking_budget = None;
+                request.reasoning_effort = Some(level.as_str().to_string());
+            }
+            ReasoningOverride::Budget { tokens } => {
+                request.reasoning_effort = None;
+                request.thinking_budget = Some(tokens);
+            }
+            ReasoningOverride::Off => {
+                // Both cleared: the wire encoder treats "neither set" as
+                // thinking-not-requested, which is the only way to disable.
+                request.reasoning_effort = None;
+                request.thinking_budget = None;
+            }
+        }
+    }
+
     pub(super) fn apply_auto_routing(&self, request: &mut ChatRequest) {
         if !self.services.model_router.is_enabled() {
             return;
@@ -2258,5 +2304,64 @@ mod tests {
             },
         )
         .is_empty());
+    }
+
+    /// A request pre-seeded as if agent config / model profile already
+    /// configured thinking, so precedence is observable.
+    fn request_with_thinking_configured() -> ChatRequest {
+        ChatRequest {
+            messages: Vec::new(),
+            model: "test/model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            // Both set, as if agent config and model profile both configured
+            // thinking: the explicit choice must still win over these.
+            reasoning_effort: Some("high".to_string()),
+            thinking_budget: Some(8192),
+            context: Default::default(),
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_choice_overrides_a_configured_budget() {
+        use crate::protocol::core::{ReasoningEffort, ReasoningOverride};
+        let mut request = request_with_thinking_configured();
+        AgentLoop::apply_reasoning_choice(
+            &mut request,
+            ReasoningOverride::Effort {
+                level: ReasoningEffort::Low,
+            },
+        );
+        assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            request.thinking_budget, None,
+            "effort and budget are mutually exclusive; leaving both would make \
+             the wire encoder pick budget over the user's choice"
+        );
+    }
+
+    #[test]
+    fn reasoning_budget_choice_overrides_a_configured_effort() {
+        use crate::protocol::core::ReasoningOverride;
+        let mut request = request_with_thinking_configured();
+        AgentLoop::apply_reasoning_choice(&mut request, ReasoningOverride::Budget { tokens: 2048 });
+        assert_eq!(request.thinking_budget, Some(2048));
+        assert_eq!(request.reasoning_effort, None);
+    }
+
+    #[test]
+    fn reasoning_off_clears_both_configured_fields() {
+        use crate::protocol::core::ReasoningOverride;
+        let mut request = request_with_thinking_configured();
+        AgentLoop::apply_reasoning_choice(&mut request, ReasoningOverride::Off);
+        assert_eq!(
+            (request.reasoning_effort, request.thinking_budget),
+            (None, None),
+            "Off must clear both, or the model keeps thinking anyway"
+        );
     }
 }

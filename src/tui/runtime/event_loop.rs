@@ -5,7 +5,6 @@ use super::command_dispatch;
 use super::render_recovery;
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
-use crate::tui::app::state::AppMode;
 use crate::tui::app::SessionStatus;
 use crate::tui::terminal::{create_terminal, TerminalGuard};
 use crate::tui::{app, AppTerminal};
@@ -189,8 +188,12 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
             }
         }
 
-        if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send
-        {
+        // Only the WebSocket attach transport is excluded; see
+        // `App::is_ws_attach_transport`. The socket-daemon transport owns a
+        // `core_client` and MUST reach this block — gating on the app mode
+        // alone meant a sessionless socket prompt armed its continuation and
+        // then nothing ever started it.
+        if !app.is_ws_attach_transport() && app.prompt_state.pending_send {
             tracing::debug!(target: "codegg::tui::events", "pending_send=true, submitting through core facade");
             if app.prompt_state.pending_session_submit.is_some() {
                 if !app.prompt_state.session_submit_started {

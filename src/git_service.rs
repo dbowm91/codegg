@@ -301,15 +301,30 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::Status { short });
         let op_label = "status".to_string();
 
-        let repo_status = match egggit::status::repo_status(repository_root).await {
-            Ok(s) => Some(RepoStatusPayload {
+        // Structured reads run inside `eggit`, whose own deadline
+        // (`DEFAULT_READ_TIMEOUT`) kills the child. Bound the whole phase by
+        // the service timeout as well, so `with_timeout` is authoritative
+        // and a multi-command read (status runs several) cannot exceed it by
+        // a multiple. An expired outer bound returns promptly; the inner
+        // per-command bound still reaps the process shortly after.
+        let structured =
+            tokio::time::timeout(self.timeout, egggit::status::repo_status(repository_root)).await;
+        let repo_status = match structured {
+            Ok(Ok(s)) => Some(RepoStatusPayload {
                 branch: s.branch,
                 is_dirty: s.is_dirty,
                 commit_hash: s.commit_hash,
                 stash_count: s.stash_count,
             }),
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(%error, "failed to parse structured git status");
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_s = self.timeout.as_secs(),
+                    "structured git status exceeded the service timeout"
+                );
                 None
             }
         };
@@ -358,8 +373,15 @@ impl GitExecutionService {
         };
 
         let diff_summary = if !is_stat && !is_name_only {
-            match egggit::diff::diff_summary(repository_root, base_ref).await {
-                Ok(s) => Some(DiffSummaryPayload {
+            // Bounded by the service timeout for the same reason as the
+            // status read above; see `execute_status`.
+            match tokio::time::timeout(
+                self.timeout,
+                egggit::diff::diff_summary(repository_root, base_ref),
+            )
+            .await
+            {
+                Ok(Ok(s)) => Some(DiffSummaryPayload {
                     files_changed: s.files_changed,
                     insertions: s.insertions,
                     deletions: s.deletions,
@@ -372,8 +394,15 @@ impl GitExecutionService {
                         })
                         .collect(),
                 }),
-                Err(error) => {
+                Ok(Err(error)) => {
                     tracing::warn!(%error, "failed to parse structured git diff summary");
+                    None
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_s = self.timeout.as_secs(),
+                        "structured git diff summary exceeded the service timeout"
+                    );
                     None
                 }
             }

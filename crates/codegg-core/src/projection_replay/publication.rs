@@ -56,6 +56,8 @@ pub fn projection_events_from_core(
                     subagent_count: 0,
                     input_tokens: None,
                     output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
                 },
             };
             Some((session_id.clone(), None, event))
@@ -146,12 +148,20 @@ pub fn projection_events_from_core(
             session_id,
             turn_id,
             stop_reason,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
             ..
         } => {
             let event = ProjectionEvent::TurnCompleted {
                 turn_id: turn_id.clone(),
                 stop_reason: stop_reason.clone(),
                 completed_at: envelope.timestamp_ms,
+                input_tokens: *input_tokens,
+                output_tokens: *output_tokens,
+                cached_tokens: *cached_tokens,
+                reasoning_tokens: *reasoning_tokens,
             };
             Some((session_id.clone(), None, event))
         }

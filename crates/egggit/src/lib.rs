@@ -83,4 +83,7 @@ pub enum EgggitError {
 
     #[error("git output exceeded the configured byte bound")]
     OutputTooLarge,
+
+    #[error("git command timed out: {0}")]
+    Timeout(String),
 }

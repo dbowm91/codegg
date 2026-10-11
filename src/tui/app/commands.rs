@@ -270,6 +270,18 @@ pub enum TuiCommand {
         message_counts: std::collections::HashMap<String, usize>,
         error: Option<String>,
     },
+    /// Completion: a single session's metadata was refreshed.
+    ///
+    /// Auto-title writes the new title in the daemon and publishes
+    /// `CoreEvent::SessionUpdated`, but that event carries only a session id,
+    /// so the title itself has to be re-read. Without this the sidebar and
+    /// header kept showing "Untitled" until a manual session reload.
+    SessionRefreshed {
+        request_id: u64,
+        session_id: String,
+        title: Option<String>,
+        error: Option<String>,
+    },
     /// Completion for daemon-owned Eggpool provisioning. The result is
     /// secret-free; the API key is never carried in a TUI command.
     EggpoolConnectionFinished {

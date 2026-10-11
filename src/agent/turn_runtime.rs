@@ -94,6 +94,11 @@ pub struct TurnRunInput {
     pub messages_dto: Vec<codegg_protocol::dto::ProviderMessage>,
     /// Whether plan-mode is active for this turn.
     pub plan_mode: bool,
+    /// Per-turn extended-thinking override chosen in the TUI.
+    ///
+    /// `None` inherits the agent / model-profile default, which is the
+    /// pre-existing behavior.
+    pub reasoning_override: Option<crate::protocol::core::ReasoningOverride>,
     /// Loaded configuration.
     pub config: Config,
     /// SQLite connection pool.
@@ -210,6 +215,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             model,
             messages_dto,
             plan_mode,
+            reasoning_override,
             config,
             pool,
             subagent_pool,
@@ -744,6 +750,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
+        agent_loop.set_reasoning_override(reasoning_override);
         agent_loop.set_runtime_asset_pin(asset_pin);
         agent_loop.load_persisted_todos().await;
 
@@ -859,6 +866,12 @@ impl TurnRuntime for DefaultTurnRuntime {
                     );
                 }
                 Ok(events) => {
+                    // Usage rides along on the completion event: the TUI
+                    // footer is the only consumer that crosses the process
+                    // boundary, and `AppEvent::AgentFinished` is deliberately
+                    // not mapped there (see `core::map_app_event_to_core_event`).
+                    let (stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
+                        crate::agent::turn_completion::turn_usage(&events);
                     event_log_for_spawn
                         .publish(
                             Some(session_id_for_spawn.clone()),
@@ -866,7 +879,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                             crate::protocol::core::CoreEvent::TurnCompleted {
                                 session_id: session_id_for_spawn.clone(),
                                 turn_id: turn_id_for_spawn.clone(),
-                                stop_reason: "completed".to_string(),
+                                stop_reason,
+                                input_tokens,
+                                output_tokens,
+                                cached_tokens,
+                                reasoning_tokens,
                             },
                         )
                         .await;

@@ -788,6 +788,39 @@ argument aliases, closed reasoning transforms, tool choice, and parallel-tool
 constraints. Callers without a projection receive conservative behavior. The
 provider crate does not infer model policy from model names.
 
+### Extended-thinking control (`/reasoning`)
+
+Extended thinking is configured in three places, applied in this order —
+later wins:
+
+1. `ModelProfileConfig.default_reasoning_effort` /
+   `default_thinking_budget` (config).
+2. Agent-level `thinking_budget` / `reasoning_effort` (`apply_agent_config`).
+3. The frontend's `/reasoning` selection, carried per turn on
+   `CoreRequest::TurnSubmit.reasoning` (`apply_reasoning_override`).
+
+The per-turn field is **frontend-local and never persisted**: it rides each
+submit rather than becoming durable session state, so it cannot go stale
+against the selected model and needs no migration. It is
+`#[serde(default)]`, so a client that predates the field still decodes and
+inherits the configured default.
+
+`ReasoningOverride::Off` clears *both* `reasoning_effort` and
+`thinking_budget`. That is the only way to express an explicit disable: the
+wire encoder (`wire.rs`) treats "neither field set" as thinking-not-requested,
+so clearing only one would leave a configured value in force.
+
+Effort and budget are mutually exclusive — the encoder selects `ReasoningMode`
+from whichever is present, so leaving both set would silently prefer budget
+over the user's choice. `apply_reasoning_choice` clears the other field.
+
+**Adapter divergence is intentional and unmodified.** Azure, OpenRouter, and
+Zen strip the reasoning projection (`azure.rs`, `openrouter.rs`,
+`opencode_zen.rs`, plus the `openai_compatible` allowlist), with tests
+asserting the fields are absent. A `/reasoning` selection therefore has no
+effect on those providers; this is a wire-shape decision, not a TUI bug, and
+changing it would need a per-adapter justification.
+
 ### Anthropic (`anthropic.rs`)
 
 - Base URL: `https://api.anthropic.com`

@@ -179,7 +179,10 @@ impl App {
                 !sess.project_id.is_empty() && sess.project_id == *selected
             }
         };
-        let needs_session_create = !matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
+        // Session creation is suppressed ONLY for the WebSocket attach
+        // transport. See `App::is_ws_attach_transport`: gating on the mode
+        // alone left a brand-new repo with no way to ever submit a prompt.
+        let needs_session_create = !self.is_ws_attach_transport()
             && (self.session_state.session.is_none()
                 || (workspace_active && !session_matches_selection));
         let pending_session_route = if needs_session_create {
@@ -282,6 +285,19 @@ impl App {
             if self.session_state.session.is_some() {
                 self.dispatch_turn_submit_request(trimmed_text.clone());
                 self.prompt_state.pending_send = false;
+            } else if let Some((context, route, request_id)) = pending_session_route {
+                // No session yet on the socket path: create one through the
+                // shared continuation, which submits the captured prompt
+                // exactly once after a route-validated completion.
+                self.prompt_state.pending_session_submit =
+                    Some(crate::tui::app::state::PendingSessionSubmit {
+                        request_id,
+                        prompt: trimmed_text.clone(),
+                        context,
+                        route,
+                    });
+                self.prompt_state.pending_send = true;
+                self.prompt_state.prompt.set_waiting(true);
             } else {
                 // Nothing can carry this prompt. Surface the failure instead of
                 // leaving the composer spinning.

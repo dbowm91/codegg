@@ -37,10 +37,28 @@ failure exist **only** on this stream.
 | `TurnStarted` | finalize any streaming message |
 | `TurnTextDelta` / `TurnReasoningDelta` | append to the visible transcript |
 | `ToolStarted` / `ToolCompleted` | add / finalize a tool-call row |
-| `TurnCompleted` | `Idle`, or `Error` when `stop_reason == "error"` |
+| `TurnCompleted` | `Idle`, or `Error` when `stop_reason == "error"`; also applies `input_tokens`/`output_tokens` to the footer |
 | `TurnFailed` | `Error` + the daemon message as a toast |
 | `Error` | `Error` + `code: message` as a toast |
 | `PermissionPending` / `QuestionPending` | open the matching dialog |
+| `SessionUpdated` | spawn a bounded single-session metadata refresh (title) |
+
+Usage reaches the footer on `TurnCompleted`, not on
+`AppEvent::AgentFinished`: that bus event is intentionally not mapped across
+the daemon boundary (see `core::map_app_event_to_core_event`), so it is never
+observed in the default socket-daemon mode. `TurnCompleted` carries optional
+`input_tokens` / `output_tokens` / `cached_tokens` / `reasoning_tokens`, and
+every field is `skip_serializing_if = "Option::is_none"`, so the wire payload
+is unchanged when a provider reports no usage.
+
+`SessionUpdated` carries only a session id, so the daemon-side auto-titler
+(which writes the title and publishes the event) still requires a re-read.
+That re-read is the `SessionRefreshed` command: it is generation-guarded,
+updates only the title, and deliberately avoids `App::set_session` — that
+would navigate and re-arm the event stream on a background metadata refresh.
+It must write to both `dialog_state.session_dialog` and the focus-manager
+instance, because `open_dialog(Dialog::Session)` pushes a clone and
+`render_dialog` paints the clone.
 
 Anything else returns `false` (no redraw) and is ignored, so a newer daemon
 cannot break an older TUI. `TurnFailed` is the load-bearing arm: the TUI sets
@@ -50,6 +68,24 @@ There is no polling fallback — `SessionMessagesLoad` is user-triggered.
 
 `remote_event_rx` (`handle_remote_event`, `RemoteTuiMessage`) is the separate
 **server/WS** path and is `None` in local socket mode.
+
+### Transport identity (`App::is_ws_attach_transport`)
+
+`AppMode::RemoteCore` names **two different frontends**, and conflating them
+causes silent data loss:
+
+| Frontend | `remote_send_tx` | Submits via | Creates sessions locally |
+|---|---|---|---|
+| WebSocket attach (served over `/tui`) | `Some` | `remote_send_tx` | no — owns its own session lifecycle |
+| Socket-daemon (plain `codegg`) | `None` | `core_client` | yes |
+
+So `AppMode` alone must never gate the submit path. `is_ws_attach_transport()`
+is the single predicate, and both `send_prompt` and the event loop's
+`pending_send` block use it. Gating on the mode alone previously caused two
+distinct bugs: prompts pushed into an absent channel (pinned on "working"
+forever), and — after that was fixed — session creation disabled for the
+socket path, so a **brand-new repo could never submit anything**: the
+continuation was armed by `send_prompt` and never started by the event loop.
 
 ### Project execution context
 
@@ -664,6 +700,9 @@ pub struct UiState {
     pub sidebar_visible: bool,
     pub auto_scroll: bool,
     pub show_thinking: bool,
+    /// Per-turn extended-thinking selection (`/reasoning`).
+    /// Frontend-local; sent on each `TurnSubmit`, never persisted.
+    pub reasoning_mode: ReasoningMode,
     pub show_timestamps: bool,
     pub routes: RouteManager,
     pub dialog: Dialog,

@@ -673,6 +673,11 @@ impl ProjectionReducer {
                 turn_id,
                 stop_reason,
                 completed_at,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                ..
             } => {
                 let Some(turn) = snapshot.active_turn.as_mut() else {
                     return self.record_diagnostic(
@@ -689,6 +694,20 @@ impl ProjectionReducer {
                         "turn_id_mismatch",
                         "TurnCompleted referenced an unknown turn",
                     );
+                }
+                // Usage is accumulated onto the turn record so a completed
+                // turn carries the cost it actually incurred.
+                if let Some(value) = input_tokens {
+                    turn.input_tokens = Some(*value);
+                }
+                if let Some(value) = output_tokens {
+                    turn.output_tokens = Some(*value);
+                }
+                if let Some(value) = cached_tokens {
+                    turn.cached_tokens = Some(*value);
+                }
+                if let Some(value) = reasoning_tokens {
+                    turn.reasoning_tokens = Some(*value);
                 }
                 turn.status = TurnStatus::Completed;
                 turn.stop_reason =
@@ -1479,6 +1498,8 @@ mod tests {
         let reducer = ProjectionReducer::default();
 
         let turn = TurnProjection {
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1582,6 +1603,8 @@ mod tests {
     fn tool_started_appends_tool_projection() {
         let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
         snap.active_turn = Some(TurnProjection {
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1623,6 +1646,8 @@ mod tests {
     fn message_appended_increments_message_list() {
         let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
         snap.active_turn = Some(TurnProjection {
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1668,6 +1693,8 @@ mod tests {
     fn permission_pending_increments_pending_count_and_sets_status() {
         let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
         snap.active_turn = Some(TurnProjection {
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,

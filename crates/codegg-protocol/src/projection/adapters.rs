@@ -164,6 +164,8 @@ pub fn snapshot_from_snapshot_session(
             subagent_count: *active_subagents,
             input_tokens: *input_tokens,
             output_tokens: *output_tokens,
+            cached_tokens: None,
+            reasoning_tokens: None,
         };
         snap.recent_turns.push_back(turn);
         snap.primary_session.has_active_turn = false;
@@ -426,12 +428,20 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
         CoreEvent::TurnCompleted {
             turn_id,
             stop_reason,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
             ..
         } => {
             events.push(ProjectionEvent::TurnCompleted {
                 turn_id: turn_id.clone(),
                 stop_reason: truncate_str(stop_reason, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 completed_at: env.timestamp_ms,
+                input_tokens: *input_tokens,
+                output_tokens: *output_tokens,
+                cached_tokens: *cached_tokens,
+                reasoning_tokens: *reasoning_tokens,
             });
         }
         CoreEvent::TurnFailed {

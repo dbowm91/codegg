@@ -282,6 +282,19 @@ action regardless of routing mode.
    and codegg-core adapters (`git_mutations`, `git_mutations_ops`,
    `git_network_ops`, `git_recovery`, and `worktree_service`).
 
+   Every structured read is bounded by `egggit::process::DEFAULT_READ_TIMEOUT`
+   (30s, matching `GitExecutionService`'s default). The deadline is enforced
+   *inside* the `spawn_blocking` closure against the running child, not
+   wrapped around the join: a blocking task is not cancellable, so an outer
+   `tokio::time::timeout` would return to the caller while the Git process kept
+   running and kept holding a blocking-pool thread. On expiry the process
+   group is killed — not just the direct child — so a pager, credential
+   helper, or filter driver cannot outlive it and keep holding the repository
+   lock. stdout/stderr are drained concurrently so a large-output child cannot
+   deadlock the wait on a full pipe. `GitExecutionService` additionally bounds
+   each structured phase by its own `timeout`, so `with_timeout` is
+   authoritative for multi-command reads.
+
 2. **Single parsing/rendering truth.** `parse_git_argv` and `render_argv`
    in `codegg-git` are the only Git argv parsers. No duplicate parser
    logic in downstream crates.

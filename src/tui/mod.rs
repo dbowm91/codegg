@@ -1884,29 +1884,79 @@ mod async_cmd_tests {
     // one. `send_prompt` branched on the mode alone and pushed every prompt
     // into the absent channel: a silent no-op that pinned the session on
     // `Working` forever, for every model and provider.
+    //
+    // Follow-up regression: the fix for that excluded ALL of `AppMode::RemoteCore`
+    // from session creation, but the socket path owns a `core_client` and can
+    // create a session exactly like the embedded path. Opening codegg in a new
+    // repo therefore had no session AND no way to make one, so every prompt
+    // died on "No session bound to the daemon connection".
 
-    #[test]
-    fn socket_daemon_mode_never_takes_the_remote_input_path() {
-        let mut app = make_test_app();
+    /// Build a socket-daemon app with an open project tab, so a prompt with no
+    /// session has somewhere to create one.
+    fn socket_daemon_app_with_tab() -> App {
+        let mut app = App::new_for_testing("/tmp".into());
         app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
             endpoint: "unix:///tmp/core.sock".into(),
         };
+        let mut tab = crate::tui::app::state::ProjectTabState::empty(
+            crate::tui::app::state::ProjectTabId::new(),
+            "test".into(),
+        );
+        tab.project_id = Some("/tmp".into());
+        tab.workspace_root = Some(std::path::PathBuf::from("/tmp"));
+        app.project_tabs.add_and_activate(tab);
+        app
+    }
+
+    #[test]
+    fn socket_daemon_mode_never_takes_the_remote_input_path() {
+        let mut app = socket_daemon_app_with_tab();
         // The socket path owns a core client, never a remote TUI channel.
         assert!(app.remote_send_tx.is_none());
+        // Pre-existing session: submit straight into it.
+        app.session_state.session = Some(crate::session::Session {
+            id: "shell-test-session".into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
 
         app.prompt_state.prompt.set_text("hello".into());
         app.send_prompt();
 
-        // With no session bound there is nothing to submit into, and the
-        // composer must say so instead of spinning.
-        assert_eq!(
-            app.session_state.session_status,
-            SessionStatus::Error,
-            "a prompt with no bound session must not stay pinned on Working"
-        );
         assert!(
             !app.prompt_state.pending_send,
-            "a dropped prompt must not leave pending_send latched"
+            "a submitted prompt must not stay latched on pending_send"
+        );
+        assert!(
+            app.prompt_state.pending_session_submit.is_none(),
+            "an existing session needs no creation continuation"
+        );
+        assert_ne!(
+            app.session_state.session_status,
+            SessionStatus::Error,
+            "a bound session must submit instead of erroring"
+        );
+    }
+
+    #[test]
+    fn socket_daemon_new_repo_creates_a_session_instead_of_deadlocking() {
+        let mut app = socket_daemon_app_with_tab();
+        assert!(app.session_state.session.is_none());
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        // A fresh repo on the socket path must capture a session-create
+        // continuation rather than reporting "no session bound": that error
+        // was terminal, leaving a brand-new repo unable to submit anything.
+        assert!(
+            app.prompt_state.pending_session_submit.is_some(),
+            "a sessionless socket prompt must arm the create continuation"
+        );
+        assert!(
+            app.prompt_state.pending_send,
+            "the prompt must stay pending until the session exists"
         );
         let toasts: Vec<String> = app
             .messages_state
@@ -1915,8 +1965,52 @@ mod async_cmd_tests {
             .map(|t| t.message.clone())
             .collect();
         assert!(
-            toasts.iter().any(|t| t.contains("not submitted")),
-            "the dropped prompt must be visible, got {toasts:?}"
+            !toasts.iter().any(|t| t.contains("not submitted")),
+            "session creation must not report a dropped prompt, got {toasts:?}"
+        );
+    }
+
+    /// The event loop's gate must admit the socket path, or the armed
+    /// continuation is never started and the prompt hangs forever.
+    ///
+    /// This is the second half of the deadlock: `send_prompt` arms the
+    /// continuation, but `runtime/event_loop.rs` gated the submit block on
+    /// `!matches!(mode, AppMode::RemoteCore { .. })`, so a socket-daemon app
+    /// could arm a continuation nothing would ever consume. Both call sites
+    /// now share `App::is_ws_attach_transport`.
+    #[test]
+    fn socket_daemon_is_not_the_ws_attach_transport() {
+        let mut app = socket_daemon_app_with_tab();
+        assert!(
+            !app.is_ws_attach_transport(),
+            "the socket path must be admitted by the transport gate"
+        );
+
+        // Adding a remote channel is what makes it the attach transport.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        assert!(
+            app.is_ws_attach_transport(),
+            "owning remote_send_tx is exactly what defines the attach transport"
+        );
+    }
+
+    #[test]
+    fn attach_mode_without_a_remote_channel_creates_a_session() {
+        // A RemoteCore frontend that owns no `remote_send_tx` is the socket
+        // path, whatever its endpoint string says. It must create a session.
+        let mut app = socket_daemon_app_with_tab();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        assert!(app.remote_send_tx.is_none());
+
+        app.prompt_state.prompt.set_text("hello".into());
+        app.send_prompt();
+
+        assert!(
+            app.prompt_state.pending_session_submit.is_some(),
+            "the endpoint string must not decide session-creation capability"
         );
     }
 
@@ -2177,6 +2271,10 @@ mod async_cmd_tests {
             session_id: "s1".into(),
             turn_id: "t1".into(),
             stop_reason: "completed".into(),
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
         });
 
         assert_eq!(app.session_state.session_status, SessionStatus::Idle);
@@ -2191,6 +2289,10 @@ mod async_cmd_tests {
             session_id: "s1".into(),
             turn_id: "t1".into(),
             stop_reason: "error".into(),
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
         });
 
         assert_eq!(app.session_state.session_status, SessionStatus::Error);

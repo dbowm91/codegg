@@ -55,6 +55,11 @@ const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
 pub struct AgentLoopState {
     pub current_agent: String,
+    /// Per-turn extended-thinking override chosen by the frontend.
+    ///
+    /// `None` inherits the agent / model-profile default. Applied after
+    /// `apply_model_profile_defaults` so an explicit user choice always wins.
+    pub reasoning_override: Option<crate::protocol::core::ReasoningOverride>,
     pub turn_count: usize,
     pub total_tokens: usize,
     pub start_time: Instant,
@@ -377,6 +382,7 @@ impl AgentLoop {
             lifecycle: TurnLifecycle::new(),
             state: AgentLoopState {
                 current_agent: default_name,
+                reasoning_override: None,
                 turn_count: 0,
                 total_tokens: 0,
                 start_time: Instant::now(),
@@ -460,6 +466,14 @@ impl AgentLoop {
 
     /// Retain the asset identity captured at agent-run start. The value is
     /// path-free and bounded; later refreshes must not replace it.
+    /// Set the per-turn extended-thinking override from the frontend.
+    pub fn set_reasoning_override(
+        &mut self,
+        override_value: Option<crate::protocol::core::ReasoningOverride>,
+    ) {
+        self.state.reasoning_override = override_value;
+    }
+
     pub fn set_runtime_asset_pin(
         &mut self,
         pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
@@ -866,6 +880,7 @@ impl AgentLoop {
         );
         self.set_execution_policy(exec_policy.clone());
         self.apply_model_profile_defaults(&mut request, &model_profile);
+        self.apply_reasoning_override(&mut request);
         tracing::debug!(
             "Execution policy resolved: model={}, context_window={}, threshold={}, tool_mode={:?}, max_parallel={}",
             exec_policy.model,

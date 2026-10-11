@@ -189,6 +189,7 @@ async fn request_dtos_carry_no_authority() {
             workspace_id: None,
         },
         CoreRequest::TurnSubmit {
+            reasoning: None,
             session_id: "session-1".to_owned(),
             text: String::new(),
             plan_mode: false,
@@ -316,6 +317,7 @@ async fn daemon_gate_denies_remote_turn_with_zero_side_effect() {
         new_request(
             "req-denied".to_owned(),
             CoreRequest::TurnSubmit {
+                reasoning: None,
                 session_id: "session-gated".to_owned(),
                 text: "hello".to_owned(),
                 plan_mode: false,
@@ -346,6 +348,7 @@ async fn daemon_gate_denies_remote_turn_with_zero_side_effect() {
         new_request(
             "req-allowed".to_owned(),
             CoreRequest::TurnSubmit {
+                reasoning: None,
                 session_id: "session-gated".to_owned(),
                 text: "hello".to_owned(),
                 plan_mode: false,

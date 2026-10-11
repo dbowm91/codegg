@@ -923,6 +923,78 @@ fn test_vim_keys_still_move_selection_outside_the_add_model_form() {
 }
 
 #[test]
+fn test_vim_keys_become_literal_text_once_a_filter_is_typed() {
+    // Regression: `/models` defaults to the SelectModel tab, whose filter box
+    // is a real search input, but `j`/`k` were matched as navigation before
+    // the literal-character arm and only guarded on `!adding_model`. A user
+    // could therefore never type `j` or `k` — not even as the first character.
+    let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
+    dialog.tab = ModelDialogTab::SelectModel;
+    dialog.models = vec!["openai/gpt4".to_string(), "openai/gpt5".to_string()];
+    dialog.update_cache();
+    assert_eq!(dialog.selected, 0);
+
+    // First character: with no filter yet, `j` navigates.
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(dialog.selected, 1);
+    assert!(dialog.filter.is_empty());
+
+    // Type a character, after which `j` must be literal text, not navigation.
+    // Use "gpt" as the stem so the filter still matches both models and the
+    // selection index stays meaningful.
+    for c in ['g', 'p'] {
+        dialog.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    assert_eq!(
+        dialog.filter, "gp",
+        "plain characters must reach the filter"
+    );
+
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(
+        dialog.filter, "gpj",
+        "j must type into the filter instead of navigating"
+    );
+    // `set_filter` intentionally resets the selection to the first match on
+    // every keystroke, so the filter text — not the index — is what proves
+    // `j` was typed rather than consumed as navigation.
+    assert_eq!(dialog.selected, 0, "typing resets to the first match");
+
+    // Clearing the query restores navigation, so the guard is not a one-way
+    // door: `j` navigates again once the filter is empty.
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Backspace,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Backspace,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Backspace,
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert!(dialog.filter.is_empty());
+    dialog.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('j'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert!(
+        dialog.filter.is_empty(),
+        "with an empty filter j must navigate again, not type"
+    );
+}
+
+#[test]
 fn test_enter_no_match_does_nothing() {
     let mut dialog = ModelDialog::new(Arc::new(Theme::default()));
     dialog.tab = ModelDialogTab::SelectModel;
@@ -961,13 +1033,19 @@ impl Component for ModelDialog {
             crossterm::event::KeyCode::Down => {
                 self.select_down();
             }
-            // `j`/`k` move the model selection, but while the add-model form
-            // is capturing text they are ordinary characters — a model name
-            // or API key may legitimately contain them.
-            crossterm::event::KeyCode::Char('k') if !self.adding_model => {
+            // `j`/`k` move the model selection while no query is being typed. Once a
+            // filter is active — or while the add-model form captures text —
+            // they are ordinary characters: a filter query or a model name /
+            // API key may legitimately contain them. Mirrors the filter-aware
+            // guard in `session.rs`.
+            crossterm::event::KeyCode::Char('k')
+                if !self.adding_model && self.filter.is_empty() =>
+            {
                 self.select_up();
             }
-            crossterm::event::KeyCode::Char('j') if !self.adding_model => {
+            crossterm::event::KeyCode::Char('j')
+                if !self.adding_model && self.filter.is_empty() =>
+            {
                 self.select_down();
             }
             crossterm::event::KeyCode::Char(c) => {

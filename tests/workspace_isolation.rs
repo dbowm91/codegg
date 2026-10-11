@@ -224,6 +224,7 @@ async fn core_daemon_workspace_binding_rejects_unbound_turn_submit() {
         agents: vec![agent],
         current_agent_idx: 0,
         messages: vec![],
+        reasoning: None,
     };
     let resp = daemon
         .handle_request(codegg::core::new_request("req-1".into(), req))

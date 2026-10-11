@@ -5382,6 +5382,7 @@ mod tests {
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
                 messages: vec![],
+                reasoning: None,
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
@@ -5969,6 +5970,10 @@ mod tests {
                 Some(session_id.clone()),
                 Some(turn_id.clone()),
                 CoreEvent::TurnCompleted {
+                    input_tokens: None,
+                    output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     stop_reason: "completed".to_string(),
@@ -5979,6 +5984,10 @@ mod tests {
         let env = rx.recv().await.expect("expected an envelope on the bus");
         match env.payload {
             CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 turn_id: tid,
                 stop_reason,
                 ..
@@ -6130,6 +6139,7 @@ mod tests {
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
                 messages: vec![],
+                reasoning: None,
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();

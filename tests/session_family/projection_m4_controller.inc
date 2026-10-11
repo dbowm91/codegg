@@ -294,6 +294,8 @@ fn controller_ack_cadence_is_respected() {
                     subagent_count: 0,
                     input_tokens: Some(0),
                     output_tokens: Some(0),
+                    cached_tokens: None,
+                    reasoning_tokens: None,
                 },
             },
         };

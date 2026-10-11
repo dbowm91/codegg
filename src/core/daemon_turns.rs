@@ -76,6 +76,7 @@ impl CoreDaemon {
                 current_agent_idx,
                 messages,
                 plan_mode,
+                reasoning,
                 ..
             } => {
                 if current_agent_idx >= agents.len() {
@@ -532,6 +533,7 @@ impl CoreDaemon {
                     model,
                     messages_dto: messages,
                     plan_mode,
+                    reasoning_override: reasoning,
                     config,
                     pool: self.pool.clone(),
                     subagent_pool: self.deps.legacy_agent.subagent_pool.clone(),
@@ -595,6 +597,7 @@ impl CoreDaemon {
                         agents,
                         current_agent_idx: 0,
                         messages,
+                        reasoning: None,
                     },
                     request_id,
                     trusted_client_id,
@@ -1636,6 +1639,7 @@ mod tests {
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).expect("agent dto")],
                 current_agent_idx: 0,
                 messages: vec![],
+                reasoning: None,
             },
         )
     }

@@ -181,6 +181,10 @@ pub struct TurnProjection {
     pub subagent_count: usize,
     pub input_tokens: Option<usize>,
     pub output_tokens: Option<usize>,
+    /// Provider-reported cached/reused input tokens for this turn.
+    pub cached_tokens: Option<usize>,
+    /// Provider-reported reasoning/thinking tokens for this turn.
+    pub reasoning_tokens: Option<usize>,
 }
 
 impl TurnProjection {

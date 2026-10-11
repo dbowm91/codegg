@@ -736,6 +736,7 @@ impl App {
                 tree_focused: false,
                 auto_scroll: true,
                 show_thinking: true,
+                reasoning_mode: crate::protocol::core::ReasoningMode::Inherit,
                 show_timestamps: false,
                 timeline_visible: false,
                 timeline_selected: 0,
@@ -843,6 +844,7 @@ impl App {
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_refresh_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1284,6 +1286,7 @@ impl App {
                 tree_focused: false,
                 auto_scroll: true,
                 show_thinking: true,
+                reasoning_mode: crate::protocol::core::ReasoningMode::Inherit,
                 show_timestamps: false,
                 timeline_visible: false,
                 timeline_selected: 0,
@@ -1391,6 +1394,7 @@ impl App {
                 import_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 research_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_reload_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                session_refresh_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_list_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_delete_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 task_sheet_request: crate::tui::app::state::AsyncUiRequestState::new(),
@@ -1685,7 +1689,14 @@ impl App {
                     .update_tool_call(&tool_id, output, status, None, None, None);
                 true
             }
-            E::TurnCompleted { stop_reason, .. } => {
+            E::TurnCompleted {
+                stop_reason,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                ..
+            } => {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state.messages.end_activity();
                 self.messages_state.messages.finalize_streaming();
@@ -1695,6 +1706,34 @@ impl App {
                     SessionStatus::Idle
                 };
                 self.status_bar.set_thinking(false, None);
+                // Usage arrives on the completion event because
+                // `AppEvent::AgentFinished` is intentionally not mapped
+                // across the daemon boundary (see
+                // `core::map_app_event_to_core_event`), so this is the only
+                // way the footer can show real numbers in daemon mode.
+                if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
+                    self.set_tokens(in_tok as u64, out_tok as u64);
+                    if let Some(ct) = cached_tokens {
+                        self.session_state.cached_tokens = ct as u64;
+                    }
+                    // The provider's input count IS the prompt size for this
+                    // turn, which is the quantity the context meter measures.
+                    // `context_limit` stays 0 unless a catalog supplied a
+                    // context window, and the footer already treats 0 as
+                    // "unknown" rather than rendering a bogus percentage.
+                    self.session_state.context_tokens = in_tok;
+                }
+                if let Some(rt) = reasoning_tokens {
+                    self.session_state.reasoning_tokens += rt;
+                }
+                true
+            }
+            E::SessionUpdated { session_id } => {
+                // The daemon auto-titler writes the new title and publishes
+                // this event, but the event carries only an id — so the
+                // title has to be re-read. Without this the UI kept showing
+                // "Untitled" until a manual session reload.
+                crate::tui::commands::sessions::start_refresh_session(self, session_id);
                 true
             }
             E::TurnFailed { message, .. } => {
@@ -1789,6 +1828,22 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Whether this frontend is served remotely over the `/tui` WebSocket.
+    ///
+    /// Only this transport submits through `remote_send_tx` and owns its own
+    /// session lifecycle; it must not create sessions locally. `AppMode::RemoteCore`
+    /// alone is NOT sufficient: the socket-daemon frontend sets that mode too but
+    /// owns a `core_client` and creates sessions exactly like the embedded path.
+    /// Gating on the mode alone is what previously left a brand-new repo unable
+    /// to submit a prompt (`send_prompt` refused, and the event loop never started
+    /// the continuation it had armed).
+    pub fn is_ws_attach_transport(&self) -> bool {
+        matches!(
+            self.ui_state.mode,
+            crate::tui::app::state::AppMode::RemoteCore { .. }
+        ) && self.remote_send_tx.is_some()
     }
 
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
@@ -2092,6 +2147,20 @@ impl App {
                         tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
                         Default::default()
                     }),
+                reasoning: match self.ui_state.reasoning_mode {
+                    // `Inherit` sends `None`, which leaves the agent /
+                    // model-profile default untouched.
+                    crate::protocol::core::ReasoningMode::Inherit => None,
+                    crate::protocol::core::ReasoningMode::Effort(level) => {
+                        Some(crate::protocol::core::ReasoningOverride::Effort { level })
+                    }
+                    crate::protocol::core::ReasoningMode::Budget(tokens) => {
+                        Some(crate::protocol::core::ReasoningOverride::Budget { tokens })
+                    }
+                    crate::protocol::core::ReasoningMode::Off => {
+                        Some(crate::protocol::core::ReasoningOverride::Off)
+                    }
+                },
             },
         );
         let promotions: Vec<(uuid::Uuid, u64)> = self
@@ -4945,6 +5014,16 @@ impl App {
                     "thinking hidden"
                 };
                 self.messages_state.toasts.info(msg);
+            }
+            B::Reasoning => {
+                // Cycles default -> medium -> high -> off -> default. Distinct
+                // from `/thinking`, which only toggles whether reasoning text is
+                // rendered; this one changes what the model is asked to do.
+                self.ui_state.reasoning_mode = self.ui_state.reasoning_mode.cycle();
+                let detail = self.ui_state.reasoning_mode.detail();
+                self.messages_state
+                    .toasts
+                    .info(&format!("Extended thinking: {detail}"));
             }
             B::ModelsRefresh => {
                 self.refresh_models();

@@ -150,6 +150,10 @@ fn headless_consumer_bootstraps_replays_resumes_and_reads_bounded_artifact() {
         FIXTURE_SESSION_ID,
         Some("turn-1".into()),
         ProjectionEvent::TurnCompleted {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "turn-1".into(),
             stop_reason: "ok".into(),
             completed_at: terminal_seq as i64,

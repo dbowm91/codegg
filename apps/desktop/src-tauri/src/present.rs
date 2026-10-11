@@ -459,6 +459,10 @@ mod tests {
 
     fn turn(id: &str) -> TurnProjection {
         TurnProjection {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: id.into(),
             status: TurnStatus::Active,
             started_at: 0,

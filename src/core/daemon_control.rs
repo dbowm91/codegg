@@ -348,6 +348,10 @@ impl CoreDaemon {
                 };
                 let terminal = match &envelope.payload {
                     crate::protocol::core::CoreEvent::TurnCompleted {
+                        input_tokens: None,
+                        output_tokens: None,
+                        cached_tokens: None,
+                        reasoning_tokens: None,
                         session_id: sid,
                         turn_id: tid,
                         ..

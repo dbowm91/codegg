@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 156 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 157 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 156 hardcoded commands (highest priority)
+1. **Built-in commands**: 157 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (156 total)
+### Built-in Commands (157 total)
 
 Representative built-ins:
 
@@ -284,7 +284,8 @@ Representative built-ins:
 | `/export` | | Export session transcript |
 | `/import` | | Import session |
 | `/timestamps` | `toggle-timestamps` | Toggle timestamps |
-| `/thinking` | `toggle-thinking` | Toggle thinking |
+| `/thinking` | `toggle-thinking` | Toggle thinking display |
+| `/reasoning` | `reasoning-effort`, `thinking-budget` | Cycle extended thinking: default / effort / off |
 | `/models` | `/model` | Switch model |
 | `/models-refresh` | `refresh-models` | Refresh model list |
 | `/variants` | | Switch model variant |
@@ -382,7 +383,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 156**: Guarded by
+- **Built-in count is 157**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -403,7 +404,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-156 count stays in sync with this documentation.
+157 count stays in sync with this documentation.
 
 ## Related Docs
 
@@ -414,11 +415,11 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 Verified 2026-10-10 against `src/tui/command.rs` and `src/command/mod.rs`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1131`) asserts 156, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 156 (the three
-former's matches are on lines 15, 22, and 250; the latter's on line 375).
-Also verified the 156 built-in registry length, `BuiltinSlashAction`
-(149 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+(`command.rs:1131`) asserts 157, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 157 (the three
+former's matches are on lines 15, 23, and 256; the latter's on line 386).
+Also verified the 157 built-in registry length, `BuiltinSlashAction`
+(150 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:272`), the TUI `Command` struct fields
 (`command.rs:281`), `CommandRegistry` (`command.rs:458`), core `Command`

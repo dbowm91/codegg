@@ -1440,6 +1440,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             agents: Vec::new(),
             current_agent_idx: 0,
             messages: Vec::new(),
+            reasoning: None,
         },
         R::SessionPromptSubmit {
             session_id: String::new(),

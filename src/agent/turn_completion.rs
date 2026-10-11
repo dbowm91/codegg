@@ -16,6 +16,44 @@ use crate::error::AppError;
 use crate::provider::{ChatEvent, ChatRequest};
 use futures_util::FutureExt;
 
+/// Extract provider-reported usage from a completed turn's events.
+///
+/// Returns `(stop_reason, input, output, cached, reasoning)`. This is the
+/// same source `publish_agent_finished` reads, exposed separately so the
+/// daemon can populate usage on `CoreEvent::TurnCompleted` — the only
+/// completion event that crosses the process boundary to the TUI.
+pub(super) fn turn_usage(
+    events: &[ChatEvent],
+) -> (
+    String,
+    Option<usize>,
+    Option<usize>,
+    Option<usize>,
+    Option<usize>,
+) {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            if let ChatEvent::Finish { stop_reason, usage } = event {
+                Some((
+                    stop_reason.to_string(),
+                    Some(usage.input_tokens),
+                    Some(usage.output_tokens),
+                    usage.cached_tokens,
+                    if usage.reasoning_tokens > 0 {
+                        Some(usage.reasoning_tokens)
+                    } else {
+                        None
+                    },
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| ("completed".to_string(), None, None, None, None))
+}
+
 impl AgentLoop {
     pub(super) fn publish_agent_finished(&mut self, events: &[ChatEvent]) {
         self.finalize_habit_observation(events);
@@ -506,6 +544,7 @@ mod tests {
     fn accounting_deltas_are_distinct_from_cumulative_limits() {
         let mut state = AgentLoopState {
             current_agent: "standard".to_string(),
+            reasoning_override: None,
             turn_count: 3,
             total_tokens: 100,
             start_time: Instant::now(),

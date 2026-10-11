@@ -985,6 +985,10 @@ async fn reaper_releases_on_turn_completed_event() {
             Some(fixture.session_id.clone()),
             Some(fixture.turn_id.clone()),
             codegg::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: fixture.session_id.clone(),
                 turn_id: fixture.turn_id.clone(),
                 stop_reason: "completed".to_string(),
@@ -1059,6 +1063,10 @@ async fn reaper_ignores_unrelated_terminal_events() {
             Some("sess-m004-other".to_string()),
             Some(fixture.turn_id.clone()),
             codegg::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: "sess-m004-other".to_string(),
                 turn_id: fixture.turn_id.clone(),
                 stop_reason: "completed".to_string(),
@@ -1072,6 +1080,10 @@ async fn reaper_ignores_unrelated_terminal_events() {
             Some(fixture.session_id.clone()),
             Some("turn-m004-other".to_string()),
             codegg::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: fixture.session_id.clone(),
                 turn_id: "turn-m004-other".to_string(),
                 stop_reason: "completed".to_string(),
@@ -1092,6 +1104,10 @@ async fn reaper_ignores_unrelated_terminal_events() {
             Some(fixture.session_id.clone()),
             Some(fixture.turn_id.clone()),
             codegg::protocol::core::CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: fixture.session_id.clone(),
                 turn_id: fixture.turn_id.clone(),
                 stop_reason: "completed".to_string(),
@@ -1121,6 +1137,10 @@ async fn reaper_immediate_publish_is_stable_across_repetitions() {
                 Some(fixture.session_id.clone()),
                 Some(fixture.turn_id.clone()),
                 codegg::protocol::core::CoreEvent::TurnCompleted {
+                    input_tokens: None,
+                    output_tokens: None,
+                    cached_tokens: None,
+                    reasoning_tokens: None,
                     session_id: fixture.session_id.clone(),
                     turn_id: fixture.turn_id.clone(),
                     stop_reason: "completed".to_string(),
@@ -1222,6 +1242,7 @@ async fn turn_submit_atomically_acquires_controller() {
                 agents: vec![agent],
                 current_agent_idx: 0,
                 messages: Vec::new(),
+                reasoning: None,
             },
         ),
         "client-alice",
@@ -1356,6 +1377,7 @@ async fn concurrent_submits_converge_on_one_controller() {
                 agents: vec![agent()],
                 current_agent_idx: 0,
                 messages: Vec::new(),
+                reasoning: None,
             },
         )
     };

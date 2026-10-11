@@ -372,11 +372,19 @@ pub(crate) fn set_turn_id_on_event(
         CoreEvent::TurnCompleted {
             session_id,
             stop_reason,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
             ..
         } => CoreEvent::TurnCompleted {
             session_id,
             turn_id,
             stop_reason,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            reasoning_tokens,
         },
         CoreEvent::TurnFailed {
             session_id,
@@ -1009,6 +1017,10 @@ mod tests {
 
         // TurnCompleted
         let ev = CoreEvent::TurnCompleted {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             session_id: "s1".into(),
             turn_id: String::new(),
             stop_reason: "ok".into(),

@@ -221,6 +221,7 @@ async fn observer_cannot_steer_cancel_or_mutate_through_daemon() {
             agents: Vec::new(),
             current_agent_idx: 0,
             messages: Vec::new(),
+            reasoning: None,
         },
         CoreRequest::TurnCancel {
             session_id: session_id.to_owned(),
@@ -403,6 +404,7 @@ async fn target_owner_disconnect_grants_no_control_and_observer_survives() {
                 agents: Vec::new(),
                 current_agent_idx: 0,
                 messages: Vec::new(),
+                reasoning: None,
             },
         ),
         "client-watcher",

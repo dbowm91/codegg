@@ -16,6 +16,129 @@ use std::sync::Arc;
 // Production start/apply pairs
 // ---------------------------------------------------------------------------
 
+/// Re-read one session's metadata after the daemon reported an update.
+///
+/// The daemon-side auto-titler writes the title and publishes
+/// `CoreEvent::SessionUpdated { session_id }`, which carries only an id.
+/// Without this refetch the UI keeps rendering the pre-title value
+/// ("Untitled") until the user manually reloads sessions.
+///
+/// Bounded and generation-guarded: a stale completion is dropped rather than
+/// overwriting a newer title.
+pub(crate) fn start_refresh_session(app: &mut App, session_id: String) {
+    if session_id.is_empty() {
+        return;
+    }
+    let request_id = app.dialog_state.session_refresh_request.begin();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let requested_id = session_id.clone();
+
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "refresh_session",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::SessionRefreshed {
+                    request_id,
+                    session_id: requested_id,
+                    title: None,
+                    error: Some("Core unavailable — check daemon status with /doctor".to_string()),
+                });
+            };
+            // `SessionList` is the only bounded read that returns titles; a
+            // single-session read is not on the wire protocol.
+            let request = crate::core::new_request(
+                format!("session-refresh-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionList {
+                    project_id: String::new(),
+                    show_archived: true,
+                    limit: 200,
+                },
+            );
+            let completion = match core_client.request(request).await {
+                Ok(CoreResponse::SessionList { sessions }) => TuiCommand::SessionRefreshed {
+                    request_id,
+                    title: sessions
+                        .into_iter()
+                        .find(|s| s.id == requested_id)
+                        .map(|s| s.title),
+                    session_id: requested_id,
+                    error: None,
+                },
+                Ok(CoreResponse::Error { code, message }) => TuiCommand::SessionRefreshed {
+                    request_id,
+                    session_id: requested_id,
+                    title: None,
+                    error: Some(format!("{code}: {message}")),
+                },
+                Ok(_) => TuiCommand::SessionRefreshed {
+                    request_id,
+                    session_id: requested_id,
+                    title: None,
+                    error: Some("Unexpected response while refreshing a session".to_string()),
+                },
+                Err(error) => TuiCommand::SessionRefreshed {
+                    request_id,
+                    session_id: requested_id,
+                    title: None,
+                    error: Some(error.to_string()),
+                },
+            };
+            Some(completion)
+        },
+    );
+}
+
+/// Apply a `SessionRefreshed` completion.
+///
+/// Only the title is copied. `App::set_session` is deliberately NOT used:
+/// it navigates and re-arms the event stream, which would steal focus and
+/// restart subscriptions on a background metadata refresh.
+pub(crate) fn apply_session_refreshed(
+    app: &mut App,
+    request_id: u64,
+    session_id: String,
+    title: Option<String>,
+    error: Option<String>,
+) {
+    if !app.dialog_state.session_refresh_request.finish(request_id) {
+        return;
+    }
+    if let Some(error) = error {
+        tracing::debug!(%error, %session_id, "session refresh failed");
+        return;
+    }
+    let Some(title) = title else {
+        return;
+    };
+    // Project tab labels name the PROJECT, not the session, so they must not
+    // be overwritten with a session title.
+    if let Some(session) = app.session_state.session.as_mut() {
+        if session.id == session_id {
+            session.title = title.clone();
+        }
+    }
+    // `open_dialog(Dialog::Session)` pushes a *clone* onto the focus manager
+    // and `render_dialog` paints that instance, so both copies must move or
+    // the visible title stays stale. See `apply_sessions_reloaded`.
+    let retitle = |dialog: &mut crate::tui::components::dialogs::session::SessionDialog| {
+        for listed in dialog.sessions.iter_mut() {
+            if listed.id == session_id {
+                listed.title = title.clone();
+            }
+        }
+    };
+    retitle(&mut app.dialog_state.session_dialog);
+    app.focus_manager
+        .with_dialog_mut::<crate::tui::components::dialogs::session::SessionDialog, _>(
+            crate::tui::components::component::DialogType::Session,
+            retitle,
+        );
+}
+
 /// Assign `app.session_state.session` from a session DTO. On conversion
 /// failure the previous session is kept (never wiped to `None`) and an
 /// error toast is shown; returns whether the assignment happened.
@@ -2630,6 +2753,89 @@ mod tests {
             app.dialog_state.session_dialog.session_count(),
             1,
             "a second reload must replace, not accumulate"
+        );
+    }
+
+    /// A `SessionRefreshed` completion updates the visible title on the bound
+    /// session. Regression: daemon auto-title wrote the title and published
+    /// `CoreEvent::SessionUpdated`, but nothing consumed it, so the UI stayed
+    /// on "Untitled" until a manual reload.
+    #[test]
+    fn refreshed_title_is_applied_to_the_bound_session() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(crate::session::Session {
+            id: "sess-1".into(),
+            title: "Untitled".into(),
+            ..Default::default()
+        });
+        let request_id = app.dialog_state.session_refresh_request.begin();
+
+        apply_session_refreshed(
+            &mut app,
+            request_id,
+            "sess-1".into(),
+            Some("Fix login redirect loop".into()),
+            None,
+        );
+
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.title.as_str()),
+            Some("Fix login redirect loop"),
+            "an auto-title must become visible without a manual reload"
+        );
+    }
+
+    /// A superseded refresh must never clobber a newer title.
+    #[test]
+    fn stale_session_refresh_is_dropped() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(crate::session::Session {
+            id: "sess-1".into(),
+            title: "Newer title".into(),
+            ..Default::default()
+        });
+        let stale = app.dialog_state.session_refresh_request.begin();
+        // A newer request supersedes the first one.
+        let _current = app.dialog_state.session_refresh_request.begin();
+
+        apply_session_refreshed(
+            &mut app,
+            stale,
+            "sess-1".into(),
+            Some("Stale title".into()),
+            None,
+        );
+
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.title.as_str()),
+            Some("Newer title"),
+            "a stale completion must not overwrite the current title"
+        );
+    }
+
+    /// A refresh targeting a different session must leave the bound one alone.
+    #[test]
+    fn session_refresh_ignores_other_sessions() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        app.session_state.session = Some(crate::session::Session {
+            id: "sess-1".into(),
+            title: "Untitled".into(),
+            ..Default::default()
+        });
+        let request_id = app.dialog_state.session_refresh_request.begin();
+
+        apply_session_refreshed(
+            &mut app,
+            request_id,
+            "other-session".into(),
+            Some("Someone else".into()),
+            None,
+        );
+
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.title.as_str()),
+            Some("Untitled"),
+            "another session's title must not overwrite the bound session"
         );
     }
 }

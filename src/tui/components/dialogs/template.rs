@@ -245,11 +245,22 @@ impl Component for TemplateDialog {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+            // `j`/`k` navigate only while no query is being typed. This
+            // dialog renders a filter box, so once it holds text they are
+            // ordinary characters. Arrow keys always navigate.
+            crossterm::event::KeyCode::Up => {
                 self.select_up();
                 None
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+            crossterm::event::KeyCode::Down => {
+                self.select_down();
+                None
+            }
+            crossterm::event::KeyCode::Char('k') if self.filter.is_empty() => {
+                self.select_up();
+                None
+            }
+            crossterm::event::KeyCode::Char('j') if self.filter.is_empty() => {
                 self.select_down();
                 None
             }
@@ -262,6 +273,18 @@ impl Component for TemplateDialog {
                 } else {
                     None
                 }
+            }
+            // Typing. Without this arm the filter could only ever be filled
+            // by paste, so a template query was impossible to type.
+            crossterm::event::KeyCode::Char(c) => {
+                self.filter.push(c);
+                self.update_cache();
+                None
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.filter.pop();
+                self.update_cache();
+                None
             }
             _ => None,
         }

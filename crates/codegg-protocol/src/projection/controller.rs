@@ -845,6 +845,8 @@ mod tests {
             scope: ProjectionStreamScope::Session,
             payload: ProjectionEvent::TurnStarted {
                 turn: crate::projection::dto::TurnProjection {
+                    cached_tokens: None,
+                    reasoning_tokens: None,
                     turn_id: format!("turn-{seq}"),
                     status: crate::projection::dto::TurnStatus::Active,
                     started_at: 0,

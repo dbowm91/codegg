@@ -54,6 +54,12 @@ pub struct UiState {
     pub auto_scroll: bool,
     /// Show reasoning/thinking sections
     pub show_thinking: bool,
+    /// Per-turn extended-thinking setting chosen with `/reasoning`.
+    ///
+    /// Frontend-local: sent on each `TurnSubmit` rather than persisted, so it
+    /// cannot go stale against the selected model. `Inherit` means "use the
+    /// agent / model-profile default".
+    pub reasoning_mode: crate::protocol::core::ReasoningMode,
     /// Show message timestamps
     pub show_timestamps: bool,
     /// Route manager for Home/Session navigation

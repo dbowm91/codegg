@@ -838,6 +838,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_sessions_reloaded(app, request_id, sessions, message_counts, error);
         }
+        TuiCommand::SessionRefreshed {
+            request_id,
+            session_id,
+            title,
+            error,
+        } => {
+            crate::tui::commands::sessions::apply_session_refreshed(
+                app, request_id, session_id, title, error,
+            );
+        }
         TuiCommand::SessionMessagesLoaded {
             request_id,
             session_id,

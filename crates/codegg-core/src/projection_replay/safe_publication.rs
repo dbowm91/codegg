@@ -248,6 +248,10 @@ mod tests {
                 path: None,
             },
             CoreEvent::TurnCompleted {
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                reasoning_tokens: None,
                 session_id: "s".into(),
                 turn_id: "t".into(),
                 stop_reason: "end_turn".into(),

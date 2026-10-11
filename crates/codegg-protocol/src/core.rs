@@ -2081,6 +2081,14 @@ pub enum CoreRequest {
         agents: Vec<crate::dto::Agent>,
         current_agent_idx: usize,
         messages: Vec<crate::dto::ProviderMessage>,
+        /// Per-turn extended-thinking override chosen in the TUI.
+        ///
+        /// This is a frontend preference, not durable session state: it is
+        /// sent on each submit rather than persisted, so it never has to be
+        /// migrated and cannot go stale against the model. `None` means "use
+        /// the agent/model-profile default" — the pre-existing behavior.
+        #[serde(default)]
+        reasoning: Option<ReasoningOverride>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -3169,6 +3177,120 @@ pub enum CoreRequest {
     },
 }
 
+/// A TUI-chosen extended-thinking setting for one turn.
+///
+/// Effort and budget are mutually exclusive on the wire: a budget selects
+/// Anthropic-style fixed-budget thinking, an effort selects OpenAI-style
+/// reasoning effort. `Off` explicitly disables thinking, which is distinct
+/// from `None` on the request (inherit the configured default).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ReasoningOverride {
+    /// Reasoning-effort levels, ordered so cycling is well defined.
+    Effort { level: ReasoningEffort },
+    /// A fixed token budget for extended thinking.
+    Budget { tokens: usize },
+    /// Explicitly disable thinking for this turn.
+    Off,
+}
+
+/// Reasoning-effort levels a model may support.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Minimal,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    /// The provider-facing spelling used on the request wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningEffort::Minimal => "minimal",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        }
+    }
+
+    /// The next level in the escalation cycle.
+    pub fn next(self) -> ReasoningEffort {
+        match self {
+            ReasoningEffort::Minimal => ReasoningEffort::Low,
+            ReasoningEffort::Low => ReasoningEffort::Medium,
+            ReasoningEffort::Medium => ReasoningEffort::High,
+            ReasoningEffort::High => ReasoningEffort::High,
+        }
+    }
+}
+
+/// Selector for the extended-thinking mode a turn requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningMode {
+    /// Use whatever the agent / model profile configures.
+    #[default]
+    Inherit,
+    /// Reasoning-effort ladder.
+    Effort(ReasoningEffort),
+    /// Fixed extended-thinking token budget.
+    Budget(usize),
+    /// Explicitly off for this turn.
+    Off,
+}
+
+impl From<Option<ReasoningOverride>> for ReasoningMode {
+    fn from(value: Option<ReasoningOverride>) -> Self {
+        match value {
+            None => ReasoningMode::Inherit,
+            Some(ReasoningOverride::Effort { level }) => ReasoningMode::Effort(level),
+            Some(ReasoningOverride::Budget { tokens }) => ReasoningMode::Budget(tokens),
+            Some(ReasoningOverride::Off) => ReasoningMode::Off,
+        }
+    }
+}
+
+impl ReasoningMode {
+    /// Advance the cycle: inherit → effort ladder → off → inherit.
+    ///
+    /// The effort ladder saturates at `high`; the cycle then continues to
+    /// `Off` so a user can always return to the configured default.
+    pub fn cycle(self) -> ReasoningMode {
+        match self {
+            ReasoningMode::Inherit => ReasoningMode::Effort(ReasoningEffort::Medium),
+            ReasoningMode::Effort(level) => match level.next() {
+                next if next == level => ReasoningMode::Off,
+                next => ReasoningMode::Effort(next),
+            },
+            ReasoningMode::Budget(_) => ReasoningMode::Off,
+            ReasoningMode::Off => ReasoningMode::Inherit,
+        }
+    }
+
+    /// Short label for the status bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            ReasoningMode::Inherit => "default",
+            ReasoningMode::Effort(level) => level.as_str(),
+            ReasoningMode::Budget(tokens) => {
+                // A static label cannot interpolate; callers use `detail()`.
+                let _ = tokens;
+                "budget"
+            }
+            ReasoningMode::Off => "off",
+        }
+    }
+
+    /// Human-readable label, including the concrete budget amount.
+    pub fn detail(self) -> String {
+        match self {
+            ReasoningMode::Budget(tokens) => format!("budget {tokens}"),
+            other => other.label().to_string(),
+        }
+    }
+}
+
 impl CoreRequest {
     /// Whether this request carries secret material and therefore must be
     /// denied on the remote WebSocket transport.
@@ -3304,6 +3426,21 @@ pub enum CoreEvent {
         session_id: String,
         turn_id: String,
         stop_reason: String,
+        /// Provider-reported usage for the turn just finished.
+        ///
+        /// The TUI footer is the consumer that only ever sees this event:
+        /// `AppEvent::AgentFinished` is deliberately not mapped across the
+        /// process boundary, so without usage here the footer can never
+        /// leave zero in daemon mode. Optional because a turn can end
+        /// before usage is known (provider omitted it, or cancellation).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cached_tokens: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_tokens: Option<usize>,
     },
     TurnFailed {
         session_id: String,
@@ -4456,5 +4593,71 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("project_registered"));
         assert!(json.contains("project-1"));
+    }
+
+    #[test]
+    fn reasoning_effort_cycles_upward_and_saturates() {
+        use ReasoningEffort::*;
+        assert_eq!(Minimal.next(), Low);
+        assert_eq!(Low.next(), Medium);
+        assert_eq!(Medium.next(), High);
+        assert_eq!(High.next(), High, "the ladder must not wrap silently");
+    }
+
+    #[test]
+    fn reasoning_mode_cycle_reaches_every_setting_and_returns_home() {
+        use ReasoningEffort::*;
+        let start = ReasoningMode::Inherit;
+        let mut mode = start;
+        let mut seen = vec![mode];
+        // Bounded: the cycle must return to Inherit rather than diverge.
+        for _ in 0..8 {
+            mode = mode.cycle();
+            if mode == start {
+                break;
+            }
+            seen.push(mode);
+        }
+        assert_eq!(mode, start, "the cycle must return to its start");
+        assert!(
+            seen.contains(&ReasoningMode::Effort(Medium)),
+            "the cycle must offer a real effort level"
+        );
+        assert!(
+            seen.contains(&ReasoningMode::Off),
+            "the cycle must offer an explicit off"
+        );
+    }
+
+    #[test]
+    fn reasoning_override_off_is_distinct_from_absent() {
+        // `None` means inherit; `Off` is an explicit disable. Conflating them
+        // would make it impossible to turn thinking off for one turn.
+        assert_eq!(ReasoningMode::from(None), ReasoningMode::Inherit);
+        assert_eq!(
+            ReasoningMode::from(Some(ReasoningOverride::Off)),
+            ReasoningMode::Off
+        );
+        assert_ne!(ReasoningMode::Inherit, ReasoningMode::Off);
+    }
+
+    #[test]
+    fn turn_submit_without_reasoning_is_backward_compatible() {
+        // The field is `#[serde(default)]`, so an older client that omits it
+        // still decodes and inherits the configured default.
+        let json = r#"{
+            "type": "turn_submit",
+            "session_id": "s", "text": "hi", "plan_mode": false,
+            "model": "m", "agents": [], "current_agent_idx": 0, "messages": []
+        }"#;
+        let request: CoreRequest =
+            serde_json::from_str(json).expect("legacy TurnSubmit must decode");
+        let CoreRequest::TurnSubmit { reasoning, .. } = request else {
+            panic!("expected TurnSubmit");
+        };
+        assert!(
+            reasoning.is_none(),
+            "an omitted field must decode as inherit"
+        );
     }
 }

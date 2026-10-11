@@ -161,6 +161,8 @@ pub enum BuiltinSlashAction {
     Import,
     Timestamps,
     Thinking,
+    /// Cycle the per-turn extended-thinking setting (off / default / effort).
+    Reasoning,
     ModelsRefresh,
     Variants,
     Fork,
@@ -536,7 +538,10 @@ impl CommandRegistry {
                 .with_description("Toggle timestamps"),
             Command::new("/thinking", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Thinking))
                 .with_aliases(&["toggle-thinking"])
-                .with_description("Toggle thinking"),
+                .with_description("Toggle thinking display"),
+            Command::new("/reasoning", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Reasoning))
+                .with_aliases(&["reasoning-effort", "thinking-budget"])
+                .with_description("Cycle extended thinking: default / effort / off"),
             Command::new("/models", CommandCategory::System, CommandAction::Dialog(Dialog::Model))
                 .with_aliases(&["/model"])
                 .with_description("Switch model (/models, alias /model)"),
@@ -1133,9 +1138,10 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 156th built-in is `/logs` (daemon log viewer); keep
+        // 157th built-in is `/reasoning` (per-turn extended-thinking control);
+        // 156th was `/logs` (daemon log viewer). Keep
         // `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 156);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 157);
     }
 
     #[test]
@@ -1338,6 +1344,7 @@ mod tests {
             B::Import,
             B::Timestamps,
             B::Thinking,
+            B::Reasoning,
             B::ModelsRefresh,
             B::Variants,
             B::Fork,

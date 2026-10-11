@@ -185,6 +185,19 @@ pub enum ProjectionEvent {
         turn_id: String,
         stop_reason: String,
         completed_at: i64,
+        /// Provider-reported usage for the turn just finished.
+        ///
+        /// The TUI footer reads these; without them the footer can never
+        /// leave zero in daemon mode, because `AppEvent::AgentFinished` is
+        /// intentionally not mapped across the process boundary. Optional
+        /// because a turn can end before usage is known (provider omitted
+        /// it, or the turn was cancelled).
+        input_tokens: Option<usize>,
+        output_tokens: Option<usize>,
+        /// Provider-reported cached/reused input tokens, when known.
+        cached_tokens: Option<usize>,
+        /// Provider-reported reasoning tokens, when known.
+        reasoning_tokens: Option<usize>,
     },
     /// The active turn failed.
     TurnFailed {
@@ -531,6 +544,10 @@ mod tests {
     #[test]
     fn turn_scoped_event_matches_turn() {
         let event = ProjectionEvent::TurnCompleted {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             turn_id: "t1".into(),
             stop_reason: "ok".into(),
             completed_at: 0,

@@ -756,6 +756,10 @@ mod tests {
             turn_id: "t".into(),
         }));
         assert!(should_persist(&CoreEvent::TurnCompleted {
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
             session_id: "s".into(),
             turn_id: "t".into(),
             stop_reason: "ok".into(),

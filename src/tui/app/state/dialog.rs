@@ -64,6 +64,9 @@ pub struct DialogState {
     pub research_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for session reload operations.
     pub session_reload_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for single-session metadata refresh
+    /// (`CoreEvent::SessionUpdated`, e.g. daemon-side auto-title).
+    pub session_refresh_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for task list operations.
     pub task_list_request: crate::tui::app::state::AsyncUiRequestState,
     /// Async request state for task delete operations.
