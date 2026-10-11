@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective C004 — macOS Confidentiality Boundaries and Cross-Platform Qualification
 
-Status: blocked (hard dependencies C001 and C003)
+Status: blocked (native Darwin qualification for C001 and C003 unavailable)
 
 Repository baseline: `main` `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
