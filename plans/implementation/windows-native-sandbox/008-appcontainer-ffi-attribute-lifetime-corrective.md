@@ -1,8 +1,8 @@
 # Windows Native Sandbox Corrective C008 — AppContainer FFI Attribute Lifetime and Host Proof
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
+Repository baseline: `9a0657d8713507c5e667d2fcd77d3ca761784760` on rebased branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
 Corrects original implementation plan: `plans/implementation/windows-native-sandbox/004-filesystem-token-and-acl-enforcement.md`.
 
