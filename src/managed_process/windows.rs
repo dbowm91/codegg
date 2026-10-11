@@ -179,14 +179,15 @@ mod tests {
         CreateAppContainerProfile, DeleteAppContainerProfile,
     };
     use windows_sys::Win32::Security::{
-        EqualSid, FreeSid, GetTokenInformation, OpenProcessToken, TokenAppContainerSid,
-        SECURITY_CAPABILITIES, TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY,
+        EqualSid, FreeSid, GetTokenInformation, TokenAppContainerSid, SECURITY_CAPABILITIES,
+        TOKEN_APPCONTAINER_INFORMATION, TOKEN_QUERY,
     };
     use windows_sys::Win32::System::JobObjects::IsProcessInJob;
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-        InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
-        WaitForSingleObject, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+        InitializeProcThreadAttributeList, OpenProcessToken, TerminateProcess,
+        UpdateProcThreadAttribute, WaitForSingleObject, CREATE_SUSPENDED,
+        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW,
     };
 
