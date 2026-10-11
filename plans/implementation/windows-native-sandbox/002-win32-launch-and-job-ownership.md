@@ -1,8 +1,8 @@
 # Windows Native Sandbox Milestone 002 — Win32 Launch and Job Ownership
 
-Status: ready for handoff
+Status: active
 
-Repository baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c`
+Repository baseline: `739c524d791c9d8d4e81a827fa77e8651e5d1550`
 
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#7-milestones`
 
@@ -19,7 +19,17 @@ Primary class: infrastructure
 
 ## 1. Objective
 
-Implement one supervised native Win32 process launch lifecycle with private status, restricted-token creation plumbing and Job Object descendant ownership. Deliver process control but do not yet claim filesystem or network sandboxing.
+Implement one supervised native Win32 process launch lifecycle with Job Object descendant ownership. Deliver process control but do not yet claim filesystem or network sandboxing.
+
+Scope disposition after implementation review: M002 launches only unconstrained
+(`SandboxRequest::Disabled`) Windows children. All constrained Windows requests
+still fail before process creation, so there is no Windows sandbox setup result
+to send over a status channel and no restricted token whose access policy has
+been validated. The child inherits the caller's existing token for this
+FullHost-only path. M004 owns restricted-token creation and the Windows private
+status handoff together with the enforcement backend that consumes them. This
+keeps M002 from introducing unused or security-ambiguous token/status plumbing;
+it does not relax any constrained-request guarantee.
 
 ## 2. Why this milestone is ready / dependency gate
 
@@ -54,10 +64,19 @@ Hard dependency: M001 closed with stable platform launcher contract and no-fallb
 Add `src/managed_process/windows.rs` or similarly scoped module behind the M001 seam. Use narrow `windows-sys` features for Threading, Security, JobObjects, Foundation, Pipes and process environment. RAII every HANDLE, explicit close inheritance, exit status, stdout/stderr and job lifetimes. Make `ManagedProcessService` the sole process owner; never spawn separately from a tool facade.
 
 ### Security
-Implement disposable restricted token *plumbing only*; no `Enforced` filesystem claim. Open child suspended, bind Job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and no breakaway, verify handles/status, then resume; terminal failure closes Job and process handles. Detect unsupported OS features accurately.
+No restricted token or enforcement status is created in M002. Open the
+unconstrained child suspended, bind a private Job with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and no breakaway, then resume; terminal
+failure closes Job and process handles. Do not label Job ownership as
+filesystem/network enforcement. M004 must add restricted-token and protected
+status setup as fail-closed resume gates before any constrained Windows target
+can run.
 
 ### Protocol/storage
-Reuse M001-private status framing or version its transport only; no new durable protocol or DB columns. Provenance remains job/attempt-scoped.
+M002 has no child status channel because no Windows backend can report
+constrained enforcement yet. Preserve M001's private Unix framing unchanged;
+M004 owns a Windows-specific private status handoff. No durable protocol or DB
+columns are added. Provenance remains job/attempt-scoped.
 
 ### Documentation/guards
 Update process-ownership matrix and Windows execution semantics.
@@ -65,13 +84,13 @@ Update process-ownership matrix and Windows execution semantics.
 ## 7. Ordered work packages
 
 ### WP-A — Parent/child launch adapter
-Create Windows-only spawn with owned process/thread handles, environment block and cwd; prove failure cases do not execute target.
+Create Windows-only spawn with owned process/thread handles, environment block and cwd using the caller's current token for explicitly unconstrained runs; prove setup failure does not execute target. Restricted-token launch remains M004 scope.
 
 ### WP-B — Job supervision
 Create and configure Job Object before resume, assign suspended child, disallow breakaway, impose bounded active process/memory/time as configured; ensure nested-job incompatibilities fail explicitly. Probe child tree on timeout, cancellation and parent death.
 
-### WP-C — Private status and output
-Implement bounded protected status transport and current version state-machine, split stdout/stderr pipes with precise inheritance, and guaranteed reaping/EOF behavior.
+### WP-C — Output and handle inheritance
+Use Tokio's explicit stdio inheritance list and non-inheritable Job handles; keep stdout/stderr separate and bounded, and guarantee reaping/EOF behavior. Do not add an unused sandbox status channel; M004 must establish a protected private status handoff before constrained Windows execution.
 
 ### WP-D — Native verification harness
 Add Windows-only Rust fixtures that spawn child/grandchild and assert no survivors after closing job or cancellation. Add focused Windows CI lane as a non-security smoke prerequisite for M004.
@@ -86,8 +105,8 @@ No changes to Unix helper. Windows installation still bundles helper as needed b
 
 ## 10. Required tests
 
-- Windows native integration: process identity/exit, Unicode/shell-special args, bounded output, timeout and cancellation, Job chain grandchild, sibling isolation.
-- Security negative: inherited handles, failed AssignProcessToJobObject, partial status, forced kill, breakaway attempt, parent death.
+- Windows native integration: exit status, Unicode/shell-special args, bounded output, timeout and cancellation, Job chain grandchild, sibling isolation, root-exit cleanup, and constrained-request fail-closed behavior.
+- Security review: Job handle is created non-inheritable; Tokio's Windows process adapter supplies only configured stdio handles. Native failure injection for Job assignment, breakaway, parent death, and protected status remains a required M004/M006 qualification item before constrained execution is enabled.
 - Non-Windows: unit tests/conditional compilation verify Windows path cannot report filesystem or network containment.
 
 ## 11. Required verification commands

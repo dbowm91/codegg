@@ -333,6 +333,14 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # environment, or CLI setter.
 codegg-providers = { workspace = true, features = ["capture-test-support"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = ["arboard"]
 arboard = ["dep:arboard"]

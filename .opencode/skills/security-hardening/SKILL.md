@@ -23,3 +23,8 @@ Prefer deterministic fixtures for traversal, symlink, malformed input,
 oversized payload, stale state, cancellation, and unauthorized action cases.
 Record which cases ran and what remains unverified. Do not present a static
 guard or compilation as proof of end-to-end security behavior.
+
+On Windows, Job Object process-tree ownership is not filesystem or network
+containment. Keep constrained requests fail-closed until native token/ACL
+behavior and any private enforcement-status handoff have observed Windows
+evidence; the platform guarantee matrix lives in `architecture/security.md`.

@@ -205,6 +205,22 @@ cargo test -p egglsp --features lsp-real-server-tests \
 python3 scripts/audit_tokio_tests.py
 ```
 
+## Windows Process Launcher Smoke
+
+The Windows process-supervision milestone has a focused native test lane. It
+checks Unicode argv, exit and timeout classification, cancellation of a
+Job-owned descendant tree, Job cleanup after root exit, and fail-closed
+filesystem requests. Run it on Windows with:
+
+```powershell
+cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
+```
+
+`.github/workflows/windows-process-launcher.yml` runs the same test target on
+`windows-latest` for the native-sandbox work branch and supports manual
+dispatch. These tests qualify process ownership only; they do not qualify
+filesystem ACL or network enforcement.
+
 ## Test Execution with Nextest
 
 Routine broad execution uses nextest profile `ci`, configured in

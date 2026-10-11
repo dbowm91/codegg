@@ -44,7 +44,7 @@ It installs these siblings side by side:
 | File | Purpose |
 |---|---|
 | `codegg` | The application you invoke. |
-| `codegg-sandbox-helper` | Sandboxed containment helper. |
+| `codegg-sandbox-helper` | Unix sandbox helper. On Windows the packaged `.exe` currently reports unavailable; Windows constrained requests fail before launching a target. |
 | `codegg-eggsearch` | Pinned web-search sidecar, version `0.3.9`. |
 | `THIRD-PARTY-NOTICES.txt` | Only present when the release carries it. |
 

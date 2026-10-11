@@ -61,7 +61,7 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/core/transport/stdio.rs` | Standalone compatibility | Deprecated stdio core transport owns protocol framing and child connection state. |
 | `crates/codegg-client/src/connect.rs` | Frontend daemon lifecycle adapter | Connect-or-start launches only the canonical `codegg daemon start` lifecycle; singleton lock and execution authority remain root-owned. |
 | `src/core/instance.rs`, `src/tui/app/`, `src/tts/`, `src/core/notification.rs`, `src/upgrade/` | Standalone/interactive exceptions | Daemon bootstrap, external editor, speech, and self-upgrade are explicit administrative or user-controlled surfaces. |
-| `src/bin/codegg-sandbox-helper.rs` | Service adapter | Installation-owned helper applies Landlock and replaces itself with the already-validated target; it is launched only by `ManagedProcessService`. |
+| `src/bin/codegg-sandbox-helper.rs` | Service adapter | Unix installation-owned helper applies Landlock/Seatbelt and replaces itself with the already-validated target; `ManagedProcessService` launches it only on supported Unix paths. The packaged Windows `.exe` remains an unavailable stub in M002; Windows FullHost children launch directly through the parent-owned suspended/Job path, and constrained requests fail before spawn until M004. |
 | `src/git_*.rs`, `crates/egggit/`, `crates/codegg-core/src/{worktree.rs,repository_lineage.rs}` | Deferred domain | Typed Git/worktree/read probes retain domain semantics and are tracked for M003 Git ownership convergence. Test-only fixtures are annotated separately. `worktree_service.rs` is not a manifest entry — it owns no direct spawn site. |
 
 Every exception is represented in the manifest with an owner and reason.
@@ -78,6 +78,16 @@ grace and reaping, cancellation and timeout classification, bounded
 head-plus-tail capture and streaming, sandbox-helper status isolation and
 Landlock behavior, secret-safe diagnostics, and existing authorization
 boundaries.
+
+On Windows, the finite-process owner creates each child suspended, assigns it
+to a private Job Object with kill-on-last-handle-close, and resumes it only
+after assignment succeeds. Cancellation and timeout terminate the Job; closing
+the Job after the root exits also terminates any descendants before output
+pipes are joined. `CleanupDiagnostics::job_object_established` reports this
+process-tree ownership fact. This is process supervision only: Windows
+filesystem-constrained requests still fail before launch, and Job Objects do
+not provide filesystem or network containment. Native behavior is exercised
+by `tests/windows_process_launcher.rs` and the focused Windows workflow.
 
 Protocol children remain direct owners only where framing, persistence, or
 crate dependency direction makes finite-process capture the wrong abstraction.
