@@ -882,7 +882,7 @@ async fn run_windows_test_restricted(
         windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
-    let mut environment_block = windows_environment_block(environment)?;
+    let mut environment_block = windows_environment_block(environment, &cwd)?;
     let mut child = windows::WindowsTestRestrictedProcess::launch(
         &spec.target,
         &requested_args,
@@ -1010,11 +1010,38 @@ async fn run_windows_test_restricted(
 #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
 fn windows_environment_block(
     environment: BTreeMap<OsString, OsString>,
+    cwd: &Path,
 ) -> Result<Vec<u16>, ManagedProcessError> {
     use std::os::windows::ffi::OsStrExt;
     let mut environment = environment.into_iter().collect::<Vec<_>>();
     environment.sort_by_key(|(name, _)| name.to_string_lossy().to_ascii_uppercase());
     let mut block = Vec::new();
+
+    // A supplied Windows environment block does not inherit the special
+    // per-drive current-directory entries from the parent. Preserve the
+    // requested working drive explicitly so CreateProcessW can initialize
+    // the child environment consistently with lpCurrentDirectory.
+    let cwd_wide = cwd.as_os_str().encode_wide().collect::<Vec<_>>();
+    let drive = cwd_wide.first().copied();
+    if cwd_wide.len() >= 3
+        && cwd_wide[1] == b':' as u16
+        && matches!(cwd_wide[2], b'\\' as u16 | b'/' as u16)
+        && drive.is_some_and(|drive| {
+            (b'A' as u16..=b'Z' as u16).contains(&drive)
+                || (b'a' as u16..=b'z' as u16).contains(&drive)
+        })
+    {
+        let drive = drive.expect("validated drive letter");
+        let drive = if (b'a' as u16..=b'z' as u16).contains(&drive) {
+            drive - (b'a' - b'A') as u16
+        } else {
+            drive
+        };
+        block.extend([b'=' as u16, drive, b':' as u16, b'=' as u16]);
+        block.extend(cwd_wide);
+        block.push(0);
+    }
+
     for (name, value) in environment {
         if name
             .to_string_lossy()
