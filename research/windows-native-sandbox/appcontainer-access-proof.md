@@ -21,12 +21,14 @@ it was replaced with a direct `OpenProcessToken` /
 follow-up run above.
 
 Two later workflow runs, `38153289874` and `38153623828`, failed in the
-filesystem proof step after adding disposable ACL restoration checks. The
-public run summaries identify the failed step but do not expose its diagnostic
-output, and the GitHub API was rate-limited while retrieving logs. The
-before-image restoration is therefore **not yet verified**. The workflow now
-copies captured proof output and exception details into the run summary so the
-next failure can be diagnosed without relying on log access.
+filesystem proof step after adding disposable ACL restoration checks. Run
+`38154658189` also failed in 1m 21s. Its public workflow annotation confirmed
+that all ACEs matched, but Windows added the DACL
+auto-inherited (`AI`) control flag when restoring an inherited temporary
+directory ACL. The fixture now first freezes the two disposable test-root
+ACLs, preserving their inherited ACEs as explicit entries, and only then takes
+the before-image. Exact descriptor restoration still requires a successful
+Windows runner result.
 
 ## Question
 

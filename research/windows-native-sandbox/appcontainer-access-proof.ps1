@@ -189,6 +189,16 @@ function Restore-DisposableAclLease {
     "ACL lease restored to exact before-image: $path"
 }
 
+function Protect-DisposableAclLeaseBase {
+    param([string]$path)
+    $acl = Get-Acl -LiteralPath $path
+    # Freeze the inherited runner-temp ACL as explicit entries before taking
+    # the before-image. Windows otherwise adds the DACL auto-inherited control
+    # flag when Set-Acl restores a descriptor that originally lacked it.
+    $acl.SetAccessRuleProtection($true, $true)
+    Set-Acl -LiteralPath $path -AclObject $acl
+}
+
 $name = 'CodeggM004-' + [Guid]::NewGuid().ToString('N')
 $root = Join-Path $env:RUNNER_TEMP ('codegg-m004-' + [Guid]::NewGuid().ToString('N'))
 $readRoot = Join-Path $root 'read-root'
@@ -205,6 +215,8 @@ try {
     foreach ($path in @($readRoot, $writeRoot, $secretRoot, $outsideRoot)) {
         [void][IO.Directory]::CreateDirectory($path)
     }
+    Protect-DisposableAclLeaseBase $readRoot
+    Protect-DisposableAclLeaseBase $writeRoot
     [IO.File]::WriteAllText($secret, 'synthetic-secret-marker')
 
     $status = [AppContainerProofNative]::CreateAppContainerProfile(
