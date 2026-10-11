@@ -1771,6 +1771,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::RegisterShellHandle { id, handle } => {
             app.shell_handles.insert(id, handle);
         }
+        TuiCommand::RegisterHumanShellRun { id, run_id } => {
+            app.human_shell_run_ids.insert(id, run_id);
+        }
         TuiCommand::ShellInclude { id, mode, question } => {
             handle_shell_include(app, id, mode, question);
         }

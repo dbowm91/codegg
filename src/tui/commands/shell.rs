@@ -12,7 +12,7 @@ pub(crate) fn handle_run_human_shell(
     app: &mut app::App,
     command: String,
     promote_after: bool,
-    cwd: std::path::PathBuf,
+    _cwd: std::path::PathBuf,
 ) {
     use crate::shell::policy::evaluate_command;
 
@@ -34,7 +34,7 @@ pub(crate) fn handle_run_human_shell(
         crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
             let confirm_enabled = app.shell_confirm_dangerous;
             if confirm_enabled {
-                app.dialog_state.pending_shell_command = Some((command, promote_after, cwd));
+                app.dialog_state.pending_shell_command = Some((command, promote_after, _cwd));
                 let title = "Dangerous Command".to_string();
                 let msg = format!("{}\n\nRun this command anyway?", reason);
                 app.ui_state.dialog = crate::tui::Dialog::Confirm;
@@ -51,16 +51,31 @@ pub(crate) fn handle_run_human_shell(
         crate::shell::policy::HumanShellPolicyDecision::Allow => {}
     }
 
-    spawn_human_shell(app, command, promote_after, cwd);
+    spawn_human_shell(app, command, promote_after, _cwd);
 }
 
 pub(crate) fn spawn_human_shell(
     app: &mut app::App,
     command: String,
     promote_after: bool,
-    cwd: std::path::PathBuf,
+    _cwd: std::path::PathBuf,
 ) {
     use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
+
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Daemon connection unavailable; human shell cannot run");
+        return;
+    };
+    let (session_id, workspace_id) = current_shell_binding(app);
+    let Some(workspace_id) = workspace_id else {
+        app.messages_state
+            .toasts
+            .error("Select a registered workspace before running a shell command");
+        return;
+    };
+    let display_cwd = std::path::PathBuf::from(format!("workspace:{workspace_id}"));
 
     let promote_after = promote_after && app.shell_auto_promote_bangbang;
 
@@ -74,51 +89,223 @@ pub(crate) fn spawn_human_shell(
         id,
         origin: ShellOrigin::HumanEphemeral,
         command: command.clone(),
-        cwd: cwd.clone(),
+        cwd: display_cwd.clone(),
         timeout: std::time::Duration::from_secs(app.shell_default_timeout_secs),
         capture_policy,
-        env_policy: ShellEnvPolicy::Inherit,
+        env_policy: ShellEnvPolicy::InheritHumanOwner,
     };
     app.shell_store.insert_started(&req);
     capture_shell_binding(app, id.0);
 
     app.messages_state
         .messages
-        .add_shell_cell(id.0, &command, &cwd.to_string_lossy());
+        .add_shell_cell(id.0, &command, &display_cwd.to_string_lossy());
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
-    let runtime = crate::shell::ShellRuntime::new();
+    let timeout_secs = app.shell_default_timeout_secs.clamp(1, 300);
     let tui_cmd_tx = app.tui_cmd_tx.clone();
     app.task_registry
-        .spawn(TuiTaskKind::Shell, "shell_event_forwarding", async move {
-            match runtime.spawn(req, tx.clone()).await {
-                Ok(handle) => {
-                    if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = send_tui(
-                            ttx,
-                            app::TuiCommand::RegisterShellHandle {
-                                id: handle.id.0,
-                                handle,
-                            },
-                        );
-                    }
-                    while let Some(event) = rx.recv().await {
-                        if let Some(ref ttx) = tui_cmd_tx {
-                            let _ = send_tui(ttx, app::TuiCommand::ShellEvent(event));
+        .spawn(TuiTaskKind::Shell, "daemon_shell_run", async move {
+            let send_event = |event| {
+                if let Some(ref ttx) = tui_cmd_tx {
+                    let _ = send_tui(ttx, app::TuiCommand::ShellEvent(event));
+                }
+            };
+            let capabilities = crate::core::new_request(
+                format!("human-shell-capabilities-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::HumanShellRunCapabilities,
+            );
+            match core_client.request(capabilities).await {
+                Ok(crate::protocol::core::CoreResponse::HumanShellRunCapabilities {
+                    capabilities,
+                }) if capabilities.version
+                    == crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION => {}
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("{code}: {message}"),
+                    });
+                    return;
+                }
+                Ok(_) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: "daemon does not support workspace-owned human shell".to_string(),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("daemon capability request failed: {error}"),
+                    });
+                    return;
+                }
+            }
+            let create = crate::core::new_request(
+                format!("human-shell-create-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::HumanShellRunCreate {
+                    request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                        protocol_version:
+                            crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                        idempotency_key: uuid::Uuid::new_v4().to_string(),
+                        workspace_id,
+                        session_id: session_id.clone(),
+                        cwd_relative: None,
+                        command: req.command.clone(),
+                        timeout_secs,
+                    },
+                },
+            );
+            let snapshot = match core_client.request(create).await {
+                Ok(crate::protocol::core::CoreResponse::HumanShellRunCreated {
+                    snapshot, ..
+                }) => snapshot,
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("{code}: {message}"),
+                    });
+                    return;
+                }
+                Ok(_) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: "unexpected daemon shell-create response".to_string(),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("daemon shell-create request failed: {error}"),
+                    });
+                    return;
+                }
+            };
+            if let Some(ref ttx) = tui_cmd_tx {
+                let _ = send_tui(
+                    ttx,
+                    app::TuiCommand::RegisterHumanShellRun {
+                        id: id.0,
+                        run_id: snapshot.run_id.clone(),
+                    },
+                );
+            }
+            send_event(crate::shell::ShellEvent::Started {
+                id,
+                command: req.command.clone(),
+                cwd: req.cwd.clone(),
+            });
+            let started = std::time::Instant::now();
+            let mut cursor = 0;
+            let mut truncation_reported = false;
+            loop {
+                let read = crate::core::new_request(
+                    format!("human-shell-read-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::HumanShellRunRead {
+                        session_id: session_id.clone(),
+                        run_id: snapshot.run_id.clone(),
+                        from_cursor: cursor,
+                        max_bytes: Some(
+                            crate::protocol::human_shell::HUMAN_SHELL_RUN_MAX_READ_BYTES,
+                        ),
+                    },
+                );
+                match core_client.request(read).await {
+                    Ok(crate::protocol::core::CoreResponse::HumanShellRunRead {
+                        snapshot,
+                        outputs,
+                        resync_required,
+                    }) => {
+                        if snapshot.truncated && !truncation_reported {
+                            send_event(crate::shell::ShellEvent::OutputTruncated { id });
+                            truncation_reported = true;
+                        }
+                        if resync_required && outputs.is_empty() {
+                            cursor = snapshot.next_cursor;
+                        }
+                        for output in outputs {
+                            cursor = output.sequence.saturating_add(1);
+                            let event = match output.stream {
+                                crate::protocol::human_shell::HumanShellRunStreamDto::Stdout => {
+                                    crate::shell::ShellEvent::Stdout {
+                                        id,
+                                        bytes: output.bytes,
+                                    }
+                                }
+                                crate::protocol::human_shell::HumanShellRunStreamDto::Stderr => {
+                                    crate::shell::ShellEvent::Stderr {
+                                        id,
+                                        bytes: output.bytes,
+                                    }
+                                }
+                            };
+                            send_event(event);
+                        }
+                        match snapshot.status {
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Starting => {}
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Running => {}
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Exited => {
+                                send_event(crate::shell::ShellEvent::Exited {
+                                    id,
+                                    status: snapshot.exit_code,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::TimedOut => {
+                                send_event(crate::shell::ShellEvent::TimedOut {
+                                    id,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Cancelled => {
+                                send_event(crate::shell::ShellEvent::Exited {
+                                    id,
+                                    status: None,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Failed => {
+                                send_event(crate::shell::ShellEvent::FailedToStart {
+                                    id,
+                                    error: "daemon shell process failed".to_string(),
+                                });
+                                break;
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = send_tui(
-                            ttx,
-                            app::TuiCommand::ShellEvent(crate::shell::ShellEvent::FailedToStart {
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        send_event(crate::shell::ShellEvent::FailedToStart {
+                            id,
+                            error: format!("{code}: {message}"),
+                        });
+                        break;
+                    }
+                    Ok(_) => {
+                        send_event(crate::shell::ShellEvent::FailedToStart {
+                            id,
+                            error: "unexpected daemon shell-read response".to_string(),
+                        });
+                        break;
+                    }
+                    Err(error) => {
+                        if started.elapsed() > std::time::Duration::from_secs(timeout_secs + 5) {
+                            send_event(crate::shell::ShellEvent::FailedToStart {
                                 id,
-                                error: e,
-                            }),
-                        );
+                                error: format!(
+                                    "daemon shell run expired or became unavailable: {error}"
+                                ),
+                            });
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        continue;
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         });
 }
@@ -201,6 +388,11 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 cell.stderr_preview = Some(stderr_preview);
             });
         }
+        crate::shell::ShellEvent::OutputTruncated { id } => {
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.truncated = Some(true);
+            });
+        }
         crate::shell::ShellEvent::Exited {
             id,
             status,
@@ -213,6 +405,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 }
             }
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_exited(*id, *status, *elapsed);
             let elapsed_ms = elapsed.as_millis() as u64;
             let exit_code = *status;
@@ -331,6 +524,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_timeout(*id, *elapsed);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("timed_out".to_string());
@@ -339,6 +533,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_failed_to_start(*id);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("failed".to_string());
@@ -993,6 +1188,65 @@ pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
 }
 
 pub(crate) fn handle_shell_kill(app: &mut app::App, id: u64) {
+    if let Some(run_id) = app.human_shell_run_ids.remove(&id) {
+        let Some(core_client) = app.core_client.clone() else {
+            app.messages_state
+                .toasts
+                .error("Daemon connection unavailable; shell cancellation was not confirmed");
+            app.human_shell_run_ids.insert(id, run_id);
+            return;
+        };
+        let session_id = app
+            .shell_command_bindings
+            .get(&id)
+            .and_then(|binding| binding.0.clone());
+        let tx = app.tui_cmd_tx.clone();
+        let cmd_id = crate::shell::types::ShellCommandId(id);
+        let elapsed = app
+            .shell_store
+            .get(cmd_id)
+            .map(|e| e.started_at.elapsed().unwrap_or(std::time::Duration::ZERO))
+            .unwrap_or(std::time::Duration::ZERO);
+        app.shell_store.mark_killed(cmd_id, elapsed);
+        app.messages_state.messages.update_shell_cell(id, |cell| {
+            cell.status = Some("killed".to_string());
+            cell.elapsed_ms = Some(elapsed.as_millis() as u64);
+        });
+        app.task_registry
+            .spawn(TuiTaskKind::Command, "human_shell_cancel", async move {
+                let request = crate::core::new_request(
+                    format!("human-shell-cancel-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::HumanShellRunCancel { session_id, run_id },
+                );
+                let event = match core_client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::HumanShellRunCancelled { .. }) => {
+                        crate::shell::ShellEvent::Exited {
+                            id: cmd_id,
+                            status: None,
+                            elapsed,
+                        }
+                    }
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        crate::shell::ShellEvent::FailedToStart {
+                            id: cmd_id,
+                            error: format!("{code}: {message}"),
+                        }
+                    }
+                    Ok(_) => crate::shell::ShellEvent::FailedToStart {
+                        id: cmd_id,
+                        error: "unexpected daemon shell-cancel response".to_string(),
+                    },
+                    Err(error) => crate::shell::ShellEvent::FailedToStart {
+                        id: cmd_id,
+                        error: format!("daemon shell-cancel request failed: {error}"),
+                    },
+                };
+                if let Some(ref tx) = tx {
+                    let _ = send_tui(tx, app::TuiCommand::ShellEvent(event));
+                }
+            });
+        return;
+    }
     if let Some(handle) = app.shell_handles.remove(&id) {
         handle.kill();
         let cmd_id = crate::shell::types::ShellCommandId(id);

@@ -857,6 +857,24 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::InteractiveProcessRemove { .. } => {
             OperationDescriptor::new("interactive_process_remove", ScopeKind::Global, None)
         }
+        R::HumanShellRunCapabilities => {
+            OperationDescriptor::new("human_shell_run_capabilities", ScopeKind::Global, None)
+        }
+        R::HumanShellRunCreate { .. } => OperationDescriptor::new(
+            "human_shell_run_create",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellRunRead { .. } => OperationDescriptor::new(
+            "human_shell_run_read",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellRunCancel { .. } => OperationDescriptor::new(
+            "human_shell_run_cancel",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         // ── Presence and Observation M001: Project-Scoped Presence Leases ──
         //
         // Heartbeat writes only the caller's own contribution (principal

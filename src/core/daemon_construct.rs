@@ -445,6 +445,15 @@ impl CoreDaemon {
                     scheduler.admission().clone(),
                 ),
             ),
+            human_shell_runs: scheduler_config.enabled.then(|| {
+                Arc::new(crate::shell::human_dispatch::HumanShellRunProtocol::new(
+                    scheduler.admission().clone(),
+                ))
+            }),
+            human_shell_enabled: config
+                .human_shell
+                .as_ref()
+                .is_none_or(crate::config::schema::HumanShellConfig::enabled),
         }
     }
 

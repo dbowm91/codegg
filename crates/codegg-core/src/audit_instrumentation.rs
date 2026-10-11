@@ -691,6 +691,13 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "connection_list_detail",
     "eggpool_connection_cancel",
     "eggpool_connection_status",
+    // Human shell create emits command_execute at the daemon execution owner
+    // after successful admission; capability/read/cancel carry no separate
+    // audit action and remain process-local observations.
+    "human_shell_run_capabilities",
+    "human_shell_run_create",
+    "human_shell_run_read",
+    "human_shell_run_cancel",
     "job_attempts",
     "job_get",
     "job_list",

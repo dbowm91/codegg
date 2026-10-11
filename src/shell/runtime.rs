@@ -92,6 +92,9 @@ impl ShellRuntime {
             super::types::ShellEnvPolicy::Inherit => {
                 crate::managed_process::EnvironmentPolicy::inherited()
             }
+            super::types::ShellEnvPolicy::InheritHumanOwner => {
+                crate::managed_process::EnvironmentPolicy::human_shell()
+            }
             super::types::ShellEnvPolicy::Clean => {
                 crate::managed_process::EnvironmentPolicy::sanitized()
             }

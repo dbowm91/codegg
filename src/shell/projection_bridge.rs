@@ -95,6 +95,7 @@ impl ShellCommandRunBridge {
                 append_capped(&mut entry.stderr, &mut entry.stderr_dropped, bytes);
                 cmd_id
             }
+            ShellEvent::OutputTruncated { id } => CommandRunId::from(*id),
             ShellEvent::Exited {
                 id,
                 status,

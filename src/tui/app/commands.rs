@@ -504,6 +504,10 @@ pub enum TuiCommand {
         id: u64,
         handle: crate::shell::runtime::ShellHandle,
     },
+    RegisterHumanShellRun {
+        id: u64,
+        run_id: String,
+    },
     ShellInclude {
         id: u64,
         mode: String,

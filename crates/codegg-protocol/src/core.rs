@@ -1040,6 +1040,21 @@ pub struct EventEnvelope<T> {
 #[allow(clippy::large_enum_variant)]
 pub enum CoreResponse {
     Ack,
+    HumanShellRunCapabilities {
+        capabilities: crate::human_shell::HumanShellRunCapabilitiesDto,
+    },
+    HumanShellRunCreated {
+        snapshot: crate::human_shell::HumanShellRunSnapshotDto,
+        duplicate: bool,
+    },
+    HumanShellRunRead {
+        snapshot: crate::human_shell::HumanShellRunSnapshotDto,
+        outputs: Vec<crate::human_shell::HumanShellRunOutputDto>,
+        resync_required: bool,
+    },
+    HumanShellRunCancelled {
+        snapshot: crate::human_shell::HumanShellRunSnapshotDto,
+    },
     ShellPromotionCapabilities {
         capabilities: crate::human_shell::HumanShellPromotionCapabilitiesDto,
     },
@@ -2151,6 +2166,24 @@ pub enum CoreRequest {
         session_id: String,
         turn_id: String,
         text: String,
+    },
+    /// Query support and bounds for daemon-owned finite human-shell runs.
+    HumanShellRunCapabilities,
+    /// Start one finite human shell command on the registered workspace owner.
+    HumanShellRunCreate {
+        request: crate::human_shell::HumanShellRunCreateDto,
+    },
+    /// Read bounded output from one caller-owned run at a sequence cursor.
+    HumanShellRunRead {
+        session_id: Option<String>,
+        run_id: String,
+        from_cursor: u64,
+        max_bytes: Option<usize>,
+    },
+    /// Cancel one caller-owned finite human shell run.
+    HumanShellRunCancel {
+        session_id: Option<String>,
+        run_id: String,
     },
     AgentSelect {
         session_id: String,

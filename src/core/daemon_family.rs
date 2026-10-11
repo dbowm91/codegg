@@ -23,6 +23,7 @@
 //! | `chat` | `daemon.rs::handle_chat_request` (pre-router, boxed) | durable project chat channels/messages/actions |
 //! | `team` | `daemon_team.rs::handle_team_request` (pre-router, boxed) | canonical project membership + LocalOwner principal/device-token administration |
 //! | `interactive` | `daemon.rs::run_interactive_request` (pre-router, spawned task) | bounded attach/resume over the scheduler admission controller |
+//! | `human_shell` | `daemon.rs::run_human_shell_request` (pre-router, spawned task) | finite owner-authorized shell runs with bounded output cursors |
 //! | `work_orders` | `daemon_work_orders.rs::handle_work_order_request` (pre-router, boxed) | durable project work orders/occurrences/lanes (M001: no execution) |
 //! | `documents` | `daemon_documents.rs::handle_document_request` | ephemeral editor documents, writer leases, snapshots, and changes |
 //! | `project_init` | `daemon_project_init.rs::handle_project_init_request` | bounded project instruction draft and guarded root publication |
@@ -45,6 +46,7 @@ pub enum DaemonRequestFamily {
     Chat,
     Team,
     Interactive,
+    HumanShell,
     WorkOrders,
     Documents,
     ProjectInitialization,
@@ -136,6 +138,10 @@ impl DaemonRequestFamily {
             CoreRequest::ShellPromotionCapabilities => Self::Turns,
             CoreRequest::ShellPromotionStage { .. } => Self::Turns,
             CoreRequest::ShellPromotionList { .. } => Self::Turns,
+            CoreRequest::HumanShellRunCapabilities
+            | CoreRequest::HumanShellRunCreate { .. }
+            | CoreRequest::HumanShellRunRead { .. }
+            | CoreRequest::HumanShellRunCancel { .. } => Self::HumanShell,
             CoreRequest::SessionControlGet { .. } => Self::Turns,
             CoreRequest::SessionControlRequest { .. } => Self::Turns,
             CoreRequest::SessionControlTransfer { .. } => Self::Turns,
@@ -316,6 +322,7 @@ impl DaemonRequestFamily {
             Self::Chat => "src/core/daemon.rs::handle_chat_request",
             Self::Team => "src/core/daemon_team.rs::handle_team_request",
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
+            Self::HumanShell => "src/core/daemon.rs::run_human_shell_request",
             Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
             Self::Documents => "src/core/daemon_documents.rs::handle_document_request",
             Self::ProjectInitialization => {

@@ -1,4 +1,5 @@
 pub mod digest;
+pub mod human_dispatch;
 pub mod policy;
 pub mod projection;
 pub mod projection_bridge;

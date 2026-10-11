@@ -112,6 +112,11 @@ request payloads supply locators, never authority.
 
 ## Content digest and retention separation
 
+Daemon-owned finite human shell creation emits the standard
+`command_execute` event with the transport-bound principal and authorization
+decision. It records the run locator and structural command digest only; raw
+command text, stdout and stderr remain outside generic audit/session storage.
+
 Bodies are opaque bytes (max 64 KiB) referenced by SHA-256 digest.
 `expire_bodies(now_ms)` deletes `audit_body` rows at or before the
 cutoff and reports the count; structural rows, metadata, and digests

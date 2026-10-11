@@ -112,6 +112,13 @@ canonical daemon denial (`authorization_scope_required`) as a bounded picker
 error rather than a silent fallback to local path interpretation; no process
 `cwd` inference is reintroduced.
 
+Human `!` commands follow the same workspace authority boundary. The TUI
+negotiates and creates a versioned `HumanShellRun` through `CoreClient`, then
+projects bounded daemon reads into its existing shell store and cell. The
+connected daemon resolves the registered workspace, owns process admission,
+and supplies the shell environment; a remote-attached TUI never starts the
+command on its own host. Run handles are ephemeral to that daemon process.
+
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
 workspace root and refreshed on tab activation or explicit asset reload.

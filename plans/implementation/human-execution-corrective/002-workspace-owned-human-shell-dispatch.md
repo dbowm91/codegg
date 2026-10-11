@@ -1,6 +1,6 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: active
+Status: implemented
 
 Repository baseline: `eb960763da34e6992682d4173381c272939619d2`
 
@@ -36,7 +36,25 @@ The accepted operation remains daemon-local. `InteractiveProcessCreate` resolves
 | Remote-attached TUI naming a workspace unknown to the connected daemon | refused | No registry record means no execution context; no frontend-local fallback. |
 | Workspace whose execution target is another node | unsupported/refused | No cross-node transport or target ownership contract exists; this plan does not add one. |
 
-Transport identity is already bound to CoreDaemon dispatch (`client_id`); C002 must add an explicit human/local-owner authorization check for finite shell operations rather than treating the PTY protocol's transport attachment ownership as equivalent. Existing `ManagedProcessService` owns finite spawn, process-tree cancellation, timeout and bounded output. `InteractiveProcessService` owns PTY processes and holds the shared scheduler admission permit before PTY creation. C002 must acquire the same shared `AdmissionController` before finite spawn, and must not route one-shot shell runs through the PTY service.
+### Implemented slice
+
+The additive `HumanShellRun` protocol is capability-gated and daemon-owned.
+The TUI sends only workspace/session identity, command, timeout and an
+idempotency key; the request cannot carry a client shell, cwd, environment,
+principal or execution node. The daemon validates Human/LocalOwner authority,
+session/workspace binding and archived/unknown workspaces, builds the trusted
+`ExecutionContext`, reserves shared process admission, and dispatches through
+`ShellRuntime`/`ManagedProcessService`. Run records are process-local, bounded,
+owner/session-scoped and cancelled on daemon shutdown. The TUI uses bounded
+cursor reads and identifies the daemon workspace in its shell history.
+
+The deterministic qualification uses two principal/workspace contexts and a
+daemon-dispatch fixture. Client cwd/environment are unrepresentable on the
+wire; daemon workspace `pwd` output proves the execution root, while a separate
+environment-policy test proves the allowlist/secret-deny rules. This does not
+claim a live remote host or cross-node execution test.
+
+Transport identity is already bound to CoreDaemon dispatch (`client_id`). The finite shell handler requires a Human or LocalOwner principal, while create/read/cancel also pass the `ViaSession + agent.invoke` authorization gate for authenticated session-bound use; PTY attachment ownership is not reused as authority. Existing `ManagedProcessService` owns finite spawn, process-tree cancellation, timeout and bounded output. `InteractiveProcessService` owns PTY processes. The finite handler acquires the shared `AdmissionController` before process creation and does not route one-shot runs through the PTY service.
 
 ## 4. Invariants
 
@@ -91,9 +109,9 @@ Shell syntax and human output-history semantics remain. New protocol features ar
 
 ## 10. Required tests
 
-- Two-client fixture with frontend cwd/environment intentionally differing from daemon workspace; `pwd`/sentinel prove only authoritative execution-root identity is used. Two workspaces isolate cwd, env, command handles and output under concurrency.
-- Negative: forged workspace/principal, observer, unbound/archived workspace, unknown execution node, oversized command, invalid env, absent protocol capability and remote-only target fail closed.
-- Timeout, output caps, streaming order/lag, process tree cleanup, cancel/late exit, duplicate start ID, connection loss and daemon restart.
+- Two principal/workspace contexts plus daemon dispatch: `pwd`/sentinel prove the registered daemon root; foreign owner/session reads return the same typed `gone` response. Client cwd, environment and execution-node claims cannot be supplied by the wire DTO; the daemon environment allowlist has a focused secret-deny test.
+- Negative: non-human transport, unbound session, unknown workspace, oversized command and unsupported capability fail closed. Archived workspace and remote-only target do not resolve to an executable target in this protocol; cross-node execution remains unsupported.
+- One-second timeout, retained-output cap, concurrent active-run cap, cancellation, idempotent retry/conflicting reuse, daemon shutdown cleanup and permit release. Reconnect reads use the same process-local run id/cursor; restart has no recovered record.
 - C001 regression: `!` never enters model; `!!`/include project only authenticated bounded redacted output in the intended session and survive the relocation.
 - Existing `tests/interactive_terminal_tui.rs` remains passing, proving no effect on PTY owner.
 

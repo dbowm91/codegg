@@ -94,6 +94,29 @@ impl EnvironmentPolicy {
         }
     }
 
+    /// Inherit only the execution-owner variables needed for an ordinary
+    /// human shell. Credentials, loader injection, and every `GIT_*` value
+    /// are excluded even if present in the daemon environment.
+    pub fn human_shell() -> Self {
+        let mut inherited = BTreeSet::new();
+        for (name, _) in std::env::vars_os() {
+            let Some(name_text) = name.to_str() else {
+                continue;
+            };
+            if human_shell_env_name_allowed(name_text) {
+                inherited.insert(name);
+            }
+        }
+        Self {
+            inherited,
+            overrides: BTreeMap::new(),
+            denied: codegg_git::ALWAYS_STRIPPED_ENV_VARS
+                .iter()
+                .map(OsString::from)
+                .collect(),
+        }
+    }
+
     /// Add a variable to the inherited allowlist.
     pub fn allow_inherited_var(mut self, name: impl Into<OsString>) -> Self {
         self.inherited.insert(name.into());
@@ -143,6 +166,44 @@ impl EnvironmentPolicy {
             .env("GIT_PAGER", "cat")
             .env("PAGER", "cat");
     }
+}
+
+fn human_shell_env_name_allowed(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let shell_useful = matches!(
+        upper.as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "SHELL"
+            | "TERM"
+            | "COLORTERM"
+            | "LANG"
+            | "TMPDIR"
+            | "TMP"
+            | "TEMP"
+            | "EDITOR"
+            | "VISUAL"
+            | "XDG_CONFIG_HOME"
+            | "XDG_CACHE_HOME"
+            | "XDG_DATA_HOME"
+            | "XDG_STATE_HOME"
+            | "XDG_RUNTIME_DIR"
+    ) || upper.starts_with("LC_");
+    let sensitive = [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "CREDENTIAL",
+        "API_KEY",
+        "AUTH",
+        "COOKIE",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle));
+    let loader = upper.starts_with("LD_") || upper.starts_with("DYLD_");
+    shell_useful && !sensitive && !loader && !upper.starts_with("GIT_")
 }
 
 /// Overflow behavior for a bounded output stream.
@@ -1069,6 +1130,26 @@ fn interpret_sandbox_status(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn human_shell_environment_name_filter_keeps_shell_basics_and_drops_secrets() {
+        assert!(human_shell_env_name_allowed("PATH"));
+        assert!(human_shell_env_name_allowed("LC_CTYPE"));
+        assert!(human_shell_env_name_allowed("XDG_CONFIG_HOME"));
+        for denied in [
+            "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY",
+            "GIT_DIR",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "SSH_AUTH_SOCK",
+        ] {
+            assert!(
+                !human_shell_env_name_allowed(denied),
+                "{denied} must be filtered"
+            );
+        }
+    }
 
     fn request(script: &str) -> ManagedProcessRequest {
         ManagedProcessRequest::new(

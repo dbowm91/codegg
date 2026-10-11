@@ -46,10 +46,15 @@ capabilities as available unless a separate implementation lands.
 
 1. User types `!cargo test` in the prompt
 2. `classify_prompt_submission()` detects the `!` prefix, returns `PromptSubmissionKind::HumanShell { command: "cargo test", promote_after: false }`
-3. TUI dispatches `TuiCommand::RunHumanShell`
-4. `ShellRuntime::spawn()` creates a child process via `$SHELL -lc "cargo test"`
-5. stdout/stderr chunks stream as `ShellEvent::Stdout`/`ShellEvent::Stderr`
-6. `ShellOutputStore` captures output in `BoundedOutput` (head 256KB + tail 256KB)
+3. TUI dispatches `TuiCommand::RunHumanShell` and negotiates the versioned
+   `HumanShellRun` capability through `CoreClient`.
+4. The daemon verifies the human/local-owner authority and resolves the
+   registered workspace into its immutable execution context.
+5. The daemon's `HumanShellRunProtocol` acquires the shared scheduler process
+   permit and starts `$SHELL -lc "cargo test"` through `ShellRuntime` and
+   `ManagedProcessService`, using the daemon owner's filtered environment.
+6. The TUI reads bounded sequence cursors and maps stdout/stderr into
+   `ShellEvent`s; `ShellOutputStore` retains its existing head/tail projection.
 7. `ShellCell` renders in the message timeline with status, elapsed, exit code
 8. `/shell-list` displays the last 10 commands as `[id] <status> $ command`,
    where `<status>` is `done exit=N X.Xs`, `running X.Xs`, `timeout Xs`,
@@ -57,6 +62,12 @@ capabilities as available unless a separate implementation lands.
    been promoted (`src/tui/commands/shell.rs:567-574`)
 9. `!` output is NOT added to model context. Explicit promotions use the shared
    redactor, are capped at 32 KiB, and are sent only with a user-submitted turn.
+
+The connected daemon is the execution owner for local, standalone, and
+remote-attached TUI topologies. The TUI never falls back to a local spawn when
+the daemon does not recognize the workspace. Run handles are process-local and
+ephemeral; reconnect can resume a live daemon run, while daemon shutdown kills
+live handles and daemon restart reports them unavailable.
 
 ## Promotion Model
 

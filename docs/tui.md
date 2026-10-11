@@ -144,15 +144,17 @@ same effect.
 
 ## Human shell
 
-Prefix a prompt with `!` to run a command locally:
+Prefix a prompt with `!` to run a command through the CoreClient connected to
+the daemon that owns the selected registered workspace:
 
 ```text
 !cargo test
 !!cargo test
 ```
 
-The single bang runs the command and keeps its command and output out of the
-model's context. The double bang
+The single bang runs the command on that execution owner and keeps its command
+and output out of the model's context. A remote-attached TUI never runs the
+command on its own host; an unknown workspace is refused. The double bang
 stages one bounded, redacted result in the conversation for the next submitted
 turn. It does not start inference on its own. `/shell-include` stages a selected
 view the same way; `/shell-ask` submits one question with the selected evidence
