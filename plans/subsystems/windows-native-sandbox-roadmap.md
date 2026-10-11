@@ -93,6 +93,21 @@ Class: capability. Objective: end-to-end qualified native Windows sandbox with a
 ### M007 — MXC implementation feasibility (optional)
 Class: infrastructure. Objective: non-production comparison of Microsoft MXC Rust SDK and Windows ProcessContainer against Codegg's policy contract. Exit: reproducible compatibility/security gap matrix and explicit accept/defer/reject disposition; no production auto-selection. Non-goal: production security promise.
 
+## M004 corrective execution sequence
+
+M004 is **blocked**, with its historical failure recorded immutably at `plans/closure/windows-native-sandbox/004-status.md`. Rather than changing or pretending to close that record, four bounded corrective plans are now registered:
+
+- **C008 (ready):** `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` — fix the Windows `UpdateProcThreadAttribute` `SECURITY_CAPABILITIES` backing-lifetime violation and obtain a same-revision Rust token/Job launch proof. Hosted Windows runner sufficient.
+- **C009 (blocked on C008):** `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` — integrate restricted child/stdio/status/cancellation into `ManagedProcessService` in a safely gated test path. Hosted runner sufficient. This is *not* file containment activation.
+- **C010 (blocked on C009):** `plans/implementation/windows-native-sandbox/010-windows-acl-leases-and-recovery.md` — journaled ACL lease, restore/restart/concurrency and synthetic denied/allowed operations on disposable hosted-runner roots. Hosted runner sufficient. A passing fixture still cannot close M004.
+- **C011 (blocked on C010 and a privileged disposable Windows VM):** `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` — actual existing-path, credentials, privileged daemon IPC, symlink/hardlink/ADS, crash recovery and backend admission. Full strict M004 requalification and M005/M006 unblocking require this evidence.
+
+**Dependency class:** C008 → C009 → C010 → C011 is **hard**; isolated privileged VM is an **operational** gate only for C011 and M004 strict security closure. ADR-0016 and M001–M003 are accepted/stable **interface** dependencies. Optional M007 MXC remains separate and non-blocking. Do not turn historical `004-status.md` from blocked into closed; write a new additive requalification record after C011.
+
+**Root-cause hypothesis:** `src/managed_process/windows.rs` `WindowsProcessAttributes::set_appcontainer` passes an address of a function-local `SECURITY_CAPABILITIES` into `UpdateProcThreadAttribute` and returns before `CreateProcessW`. The documented Win32 contract requires `lpValue` to survive until `DeleteProcThreadAttributeList`; the observed error 87 may also have additional causes. Repair and test ownership before modifying more command-line flags or current-directory settings.
+
+**Availability and acceptance:** Until C011 establishes requested read/write guarantees and approved backend registration, Windows `SandboxRequest::Required` stays unavailable/fail-closed. Successful C008/C009/C010 infrastructure tests never mean `filesystem=Enforced`. Keep `network=Unrestricted` absent separately qualified M005. Maintain same-revision Windows Server 2025 native testing and Linux/macOS regression guards; no VM results may be inferred from hosted-runner tests. At branch merge time, reconcile independently advancing `main` without folding unrelated human-shell runtime work into a fictitious Windows security closure.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -145,3 +160,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 | M005 | blocked | `plans/implementation/windows-native-sandbox/005-dedicated-identity-and-offline-network.md` | — | M004 |
 | M006 | blocked | `plans/implementation/windows-native-sandbox/006-windows-security-qualification-and-release.md` | — | M004; offline scope additionally M005 |
 | M007 | blocked/optional | `plans/implementation/windows-native-sandbox/007-mxc-feasibility-spike.md` | `plans/closure/windows-native-sandbox/007-status.md` | No qualifying Windows 11 SDK build/runtime matrix; defer with no security conclusion |
+| C008 | ready | `plans/implementation/windows-native-sandbox/008-appcontainer-ffi-attribute-lifetime-corrective.md` | — | none; hosted Windows Rust proof |
+| C009 | blocked | `plans/implementation/windows-native-sandbox/009-restricted-launch-managed-process-integration.md` | — | C008 strict closure |
+| C010 | blocked | `plans/implementation/windows-native-sandbox/010-windows-acl-leases-and-recovery.md` | — | C009 strict closure |
+| C011 | blocked | `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` | — | C010 strict closure + privileged isolated Windows VM |

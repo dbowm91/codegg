@@ -208,3 +208,9 @@ only the hosted runner is available; no privileged VM is available.
 ## 16. Handoff notes
 
 Relevant references: https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken and https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens. Using `WRITE_RESTRICTED` as the whole backend is specifically prohibited.
+
+## M004 corrective recovery plans (2026-10-11)
+
+This original plan remains **blocked** under its immutable `plans/closure/windows-native-sandbox/004-status.md`. New implementation is decomposed into C008 (Win32 attribute-value lifetime/root cause), C009 (gated `ManagedProcessService` integration), C010 (owned ACL leases and crash recovery) and C011 (qualified native adversarial matrix, including an isolated privileged Windows VM). See `plans/subsystems/windows-native-sandbox-roadmap.md#m004-corrective-execution-sequence` and `plans/registry.md` for the only dependency-ready handoff.
+
+This addendum **does not** claim the `CreateProcessW` error 87 is conclusively explained, does not relax the privileged VM gate, and does not amend prior closure evidence. Keep constrained Windows requests unavailable until actual M004 requalification. A hosted-only implementation may advance C008–C010, but cannot complete C011 or mark M004 strictly closed.
