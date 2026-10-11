@@ -216,12 +216,26 @@ pub async fn execute_python_script_with_cancellation(
         return result;
     }
 
-    // Materialize script to temp file BEFORE snapshot so the script file
-    // itself is not detected as a workspace change.
-    let tmp_dir = cwd.join(".codegg").join("python_runs");
-    if let Err(error) = tokio::fs::create_dir_all(&tmp_dir).await {
-        tracing::debug!(?error, path = %tmp_dir.display(), "python script tmp dir create_dir_all failed");
-    }
+    // Materialize the script in a collision-resistant private directory.
+    // The directory stays alive until the managed process has been reaped
+    // and becomes Python's scoped TMPDIR under containment.
+    let python_tmp_dir = match tempfile::Builder::new().prefix("codegg-python-").tempdir() {
+        Ok(directory) => directory,
+        Err(error) => {
+            return make_result(
+                PythonRunStatus::SpawnError,
+                String::new(),
+                format!("failed to create private Python scratch: {error}"),
+                start.elapsed(),
+                request.mode,
+                request.code.len(),
+                risk,
+                capabilities,
+                script_body_hash,
+            );
+        }
+    };
+    let tmp_dir = python_tmp_dir.path().to_path_buf();
     let script_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
@@ -234,16 +248,6 @@ pub async fn execute_python_script_with_cancellation(
         .unwrap_or_default()
         .as_nanos();
     let script_file = tmp_dir.join(format!("script_{script_id}.py"));
-
-    // Drop guard: ensure temp file is cleaned up even if we are cancelled
-    // or the future is dropped before reaching the normal cleanup path.
-    struct TempScriptCleanup(PathBuf);
-    impl Drop for TempScriptCleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-    let _cleanup_guard = TempScriptCleanup(script_file.clone());
 
     if let Err(e) = tokio::fs::write(&script_file, &request.code).await {
         return make_result(
@@ -344,7 +348,8 @@ pub async fn execute_python_script_with_cancellation(
     process.cancellation = cancellation;
     process.output_policy =
         crate::managed_process::OutputPolicy::new(crate::managed_process::DEFAULT_MAX_OUTPUT_BYTES);
-    process.environment_policy = python_environment_policy();
+    process.environment_policy =
+        python_environment_policy().with_var("TMPDIR", tmp_dir.as_os_str());
     process.sandbox = match sandbox_spec {
         Some(spec) => crate::managed_process::SandboxRequest::Required(spec),
         None => crate::managed_process::SandboxRequest::Disabled,
@@ -555,7 +560,9 @@ fn build_landlock_paths(
     writable: bool,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut read_paths = vec![workspace_root.to_path_buf(), tmp_dir.to_path_buf()];
-    let mut write_paths = Vec::new();
+    // Per-run scratch is temporary output in every mode. Transform's
+    // persistent writes remain limited to the workspace root.
+    let mut write_paths = vec![tmp_dir.to_path_buf()];
     if writable {
         write_paths.push(workspace_root.to_path_buf());
     }
@@ -801,6 +808,31 @@ mod tests {
         ));
         let _ = std::fs::create_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn python_persistent_writes_are_workspace_only_with_private_scratch() {
+        let workspace = tempfile::tempdir().expect("workspace fixture");
+        let scratch = tempfile::tempdir().expect("private scratch fixture");
+        let interpreter = resolve_executable_path("python3").expect("python3 interpreter");
+
+        let (_, read_only_writes) =
+            build_landlock_paths(&interpreter, workspace.path(), scratch.path(), false);
+        assert_eq!(read_only_writes, vec![scratch.path().to_path_buf()]);
+
+        let (_, transform_writes) =
+            build_landlock_paths(&interpreter, workspace.path(), scratch.path(), true);
+        assert!(transform_writes.contains(&workspace.path().to_path_buf()));
+        assert!(transform_writes.contains(&scratch.path().to_path_buf()));
+        let shared_tmp = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        assert!(
+            !transform_writes
+                .iter()
+                .any(|path| path == Path::new("/tmp") || path == &shared_tmp),
+            "Python must not receive a shared temporary or HOME cache grant: {transform_writes:?}"
+        );
     }
 
     #[tokio::test]

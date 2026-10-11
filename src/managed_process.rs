@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(unix)]
 type SandboxStatusWriter = OwnedFd;
@@ -508,7 +510,7 @@ async fn run_inner(
         executable,
         argv,
         cwd,
-        environment_policy,
+        mut environment_policy,
         stdin,
         timeout: process_timeout,
         cancellation,
@@ -535,6 +537,34 @@ async fn run_inner(
     }
     if cancellation.is_cancelled() {
         return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+
+    // Every constrained launch receives a collision-resistant 0700 scratch
+    // directory. It is the only generic writable temporary root exposed to
+    // the target and remains owned by this future until the process tree is
+    // reaped, including timeout and cancellation paths.
+    let mut sandbox_scratch = None;
+    let mut sandbox = sandbox;
+    if let SandboxRequest::Required(spec) = &mut sandbox {
+        crate::security::sandbox::policy::validate_denied_paths(&spec.deny_paths)
+            .map_err(ManagedProcessError::SandboxFailed)?;
+        let scratch = tempfile::Builder::new()
+            .prefix("codegg-run-")
+            .tempdir()
+            .map_err(|error| {
+                ManagedProcessError::SandboxFailed(format!("create private scratch: {error}"))
+            })?;
+        #[cfg(unix)]
+        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| ManagedProcessError::SandboxFailed(format!("secure private scratch: {error}")),
+        )?;
+        let scratch_path = std::fs::canonicalize(scratch.path()).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!("resolve private scratch: {error}"))
+        })?;
+        spec.read_paths.push(scratch_path.clone());
+        spec.write_paths.push(scratch_path.clone());
+        environment_policy = environment_policy.with_var("TMPDIR", scratch_path.as_os_str());
+        sandbox_scratch = Some(scratch);
     }
 
     let (launch_argv, _sandbox_file, status_reader, status_writer) = prepare_launch_argv(
@@ -650,6 +680,7 @@ async fn run_inner(
         None
     };
     let sandbox = interpret_sandbox_status(sandbox_status.as_deref(), &sandbox)?;
+    drop(sandbox_scratch);
 
     Ok(ManagedProcessResult {
         exit_status,
@@ -1198,6 +1229,66 @@ mod tests {
         assert_eq!(
             result.stderr.to_string_lossy(),
             "CODEGG_SANDBOX_ENFORCED abi=9\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constrained_launch_gets_private_tmpdir_removed_after_reap() {
+        if crate::security::sandbox::probe_landlock().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let command =
+            "printf '%s|%s' \"$TMPDIR\" \"$(stat -c %a \"$TMPDIR\")\"; test -w \"$TMPDIR\"";
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().to_string()]);
+        let mut spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".to_string(), command.to_string()],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        // This test isolates scratch creation and cleanup. Credential deny
+        // fixtures are covered by the sandbox policy/helper tests; avoiding
+        // host-home inspection here keeps the test portable to containers
+        // where HOME points at a directory the runner cannot inspect.
+        spec.deny_paths.clear();
+        let mut request = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), command.into()],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("target debug directory")
+            .join("codegg-sandbox-helper");
+
+        let result = run_inner(request, None, Some(&helper))
+            .await
+            .expect("contained process succeeds");
+        assert!(
+            result.exit_status.success(),
+            "{}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { .. }
+        ));
+        let stdout = result.stdout.to_string_lossy();
+        let (scratch, mode) = stdout.split_once('|').expect("TMPDIR and mode");
+        assert!(scratch.starts_with(std::env::temp_dir().to_string_lossy().as_ref()));
+        assert_eq!(mode, "700", "scratch permissions must be private: {stdout}");
+        assert!(
+            !Path::new(scratch).exists(),
+            "private scratch should be removed after the target is reaped"
         );
     }
 

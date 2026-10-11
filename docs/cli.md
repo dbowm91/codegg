@@ -67,7 +67,8 @@ Approval mode and sandbox are orthogonal: an automatic approval mode never
 implies host-level filesystem access. A constrained Bash or Python command is
 refused when the host cannot apply its OS filesystem sandbox; it is not run
 without containment. Use `full-host` only when you intend to opt out of CodeGG
-filesystem containment. See `docs/tui.md`.
+filesystem containment. Constrained processes receive private temporary space;
+shared `/tmp` and global user caches are not writable grants. See `docs/tui.md`.
 
 ## Sessions
 

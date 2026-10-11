@@ -34,6 +34,8 @@ fn helper_path() -> PathBuf {
 /// Outcome of one helper launch.
 struct Run {
     stdout: String,
+    stderr: String,
+    success: bool,
     status: Vec<u8>,
 }
 
@@ -86,7 +88,11 @@ fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
             Ok(())
         });
     }
-    let Output { stdout, .. } = command.output().expect("sandbox helper process");
+    let Output {
+        stdout,
+        stderr,
+        status: exit_status,
+    } = command.output().expect("sandbox helper process");
     // Drop the parent's copy of the write end so the reader sees EOF. This
     // is what lets an `Enforced`-then-EOF stream decode as a clean success.
     drop(writer);
@@ -96,6 +102,8 @@ fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
         .expect("sandbox status frame");
     Run {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        success: exit_status.success(),
         status,
     }
 }
@@ -156,6 +164,82 @@ macro_rules! require_backend {
             return;
         }
     };
+}
+
+#[test]
+fn denied_credential_nested_under_workspace_is_not_read_or_written() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let credentials = workspace.path().join(".config/gh/hosts.yml");
+    std::fs::create_dir_all(credentials.parent().expect("credential parent"))
+        .expect("credential directory");
+    std::fs::write(&credentials, "token: secret-value\n").expect("credential fixture");
+    let alias = workspace.path().join("credential-alias");
+    std::os::unix::fs::symlink(&credentials, &alias).expect("credential symlink alias");
+
+    let read = probe(
+        workspace.path(),
+        SandboxMode::ReadOnly,
+        std::slice::from_ref(&credentials),
+        &format!("cat {}; cat {}", sh_quote(&credentials), sh_quote(&alias)),
+    )
+    .expect("backend enforced containment");
+    assert!(
+        !read.stdout.contains("secret-value"),
+        "a workspace allowance must not expose a nested credential: {:?}",
+        read.stdout
+    );
+
+    let marker = workspace.path().join("target-ran");
+    let mut write_spec = spec_for(
+        workspace.path(),
+        SandboxMode::WorkspaceWrite,
+        std::slice::from_ref(&credentials),
+    );
+    write_spec.args = vec![
+        "-c".to_string(),
+        format!(
+            "printf changed > {}; touch {}",
+            sh_quote(&credentials),
+            sh_quote(&marker)
+        ),
+    ];
+    let write = run_helper(&write_spec);
+    assert_eq!(
+        std::fs::read_to_string(credentials).expect("credential remains readable to fixture"),
+        "token: secret-value\n",
+        "a broad writable workspace root must not override a credential deny; output={:?}",
+        write.stdout
+    );
+    if write.backend().is_none() {
+        assert!(
+            !marker.exists(),
+            "unrepresentable Landlock policy must refuse launch"
+        );
+    }
+}
+
+#[test]
+fn missing_deny_path_remains_denied_if_created_before_helper_apply() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let future = workspace.path().join(".config/codegg/new-secret");
+    let mut spec = spec_for(
+        workspace.path(),
+        SandboxMode::ReadOnly,
+        std::slice::from_ref(&future),
+    );
+    std::fs::create_dir_all(future.parent().expect("future deny parent"))
+        .expect("create future deny parent after policy preparation");
+    std::fs::write(&future, "future-secret").expect("future denied fixture");
+    spec.args = vec!["-c".to_string(), format!("cat {}", sh_quote(&future))];
+
+    let run = run_helper(&spec);
+    assert!(
+        !run.stdout.contains("future-secret"),
+        "a deny absent during launch-spec preparation must still apply: {:?}",
+        run.stdout
+    );
 }
 
 // ── The backend actually engages ────────────────────────────────────────
@@ -443,12 +527,8 @@ fn read_only_denies_even_the_workspace() {
 fn explicitly_denied_paths_are_unreachable() {
     require_backend!();
     let workspace = tempfile::tempdir().expect("workspace");
-    // The secret must live outside every tool allowance: `/tmp` (where
-    // `tempdir()` lands by default) is a writable allowance, and under a
-    // deny-first backend like Landlock anything under an allowed root stays
-    // reachable no matter what the deny list says. `$HOME` itself is never
-    // allowed (only named caches/config subdirs are), so a fresh dir there is
-    // unreachable on Landlock and explicitly denied on Seatbelt alike.
+    // The secret lives under HOME, outside the curated read roots. Its
+    // explicit deny is retained on allow-default Seatbelt as well.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_dir())
@@ -516,32 +596,77 @@ fn a_sandboxed_shell_can_still_read_the_system_and_resolve_a_command() {
 }
 
 #[test]
+fn sandboxed_cargo_metadata_uses_workspace_and_scoped_scratch() {
+    require_backend!();
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .canonicalize()
+        .expect("workspace root");
+    let scratch = tempfile::tempdir().expect("private scratch");
+    let cargo_home = scratch.path().join("cargo-home");
+    std::fs::create_dir(&cargo_home).expect("scoped Cargo home");
+    std::fs::write(cargo_home.join("config.toml"), "").expect("empty scoped Cargo config");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".rustup")))
+        .expect("Rustup home");
+    let command = format!(
+        "cd {} && HOME={} CARGO_HOME={} RUSTUP_HOME={} TMPDIR={} cargo metadata --no-deps --offline --format-version 1 --manifest-path {}/Cargo.toml >/dev/null",
+        sh_quote(scratch.path()),
+        sh_quote(&cargo_home),
+        sh_quote(&cargo_home),
+        sh_quote(&rustup_home),
+        sh_quote(scratch.path()),
+        sh_quote(&workspace),
+    );
+    let mut spec = spec_for(&workspace, SandboxMode::WorkspaceWrite, &[]);
+    spec.read_paths.push(scratch.path().to_path_buf());
+    spec.write_paths.push(scratch.path().to_path_buf());
+    spec.args = vec!["-c".to_string(), command];
+
+    let run = run_helper(&spec);
+    assert!(
+        run.success,
+        "offline Cargo metadata should work with read-only tool inputs and scoped scratch: {}\n{}",
+        run.stdout, run.stderr
+    );
+}
+
+#[test]
 fn scratch_space_is_writable_so_tooling_still_works() {
     require_backend!();
     let workspace = tempfile::tempdir().expect("workspace");
-    // TMPDIR is the scratch every compiler and test runner writes to, and it
-    // is deliberately outside the workspace. Confined there on purpose: it
-    // is scratch space, not host state.
+    // This explicit scratch root stands in for ManagedProcessService's
+    // per-launch directory. The sibling must stay inaccessible.
     let scratch = tempfile::tempdir().expect("scratch dir");
+    let other_scratch = tempfile::tempdir().expect("another session scratch dir");
+    let scratch_file = scratch.path().join("tmpfile");
+    let other_file = other_scratch.path().join("cross-session-write");
 
-    let run = probe(
-        workspace.path(),
-        SandboxMode::WorkspaceWrite,
-        &[],
-        &format!(
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.write_paths.push(scratch.path().to_path_buf());
+    spec.args = vec![
+        "-c".to_string(),
+        format!(
             "(exec 3> {}) && echo SCRATCH-OK || echo SCRATCH-DENIED\n\
+             (echo forbidden > {}) && echo OTHER-SCRATCH-WRITABLE || echo OTHER-SCRATCH-DENIED\n\
              (exec 3> /dev/null) && echo NULL-OK || echo NULL-DENIED\n\
              ls /etc >/dev/null 2>&1 && echo REDIRECT-OK || echo REDIRECT-DENIED\n",
-            sh_quote(&scratch.path().join("tmpfile"))
+            sh_quote(&scratch_file),
+            sh_quote(&other_file)
         ),
-    )
-    .expect("scratch probe must run contained");
+    ];
+    let run = run_helper(&spec);
 
     // Scratch space is intentionally allowed: without it every test runner
     // and compiler that writes a temp fixture fails under containment.
     assert!(
         run.stdout.contains("SCRATCH-OK"),
         "temporary scratch space must stay writable: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("OTHER-SCRATCH-DENIED") && !other_file.exists(),
+        "a launch must not write another session's scratch: {}",
         run.stdout
     );
     // Stateless device nodes stay writable under every profile: without
@@ -564,14 +689,14 @@ fn read_only_still_permits_shell_redirection() {
     let workspace = tempfile::tempdir().expect("workspace");
     // ReadOnly denies workspace writes, but denying `/dev/null` too would
     // break redirection without protecting anything.
-    let run = probe(
-        workspace.path(),
-        SandboxMode::ReadOnly,
-        &[],
+    let mut spec = spec_for(workspace.path(), SandboxMode::ReadOnly, &[]);
+    spec.args = vec![
+        "-c".to_string(),
         "ls /etc >/dev/null 2>&1 && echo REDIRECT-OK || echo REDIRECT-DENIED\n\
-         (exec 3> /dev/null) && echo NULL-OK || echo NULL-DENIED\n",
-    )
-    .expect("redirection probe must run contained");
+         (exec 3> /dev/null) && echo NULL-OK || echo NULL-DENIED\n"
+            .to_string(),
+    ];
+    let run = run_helper(&spec);
 
     assert!(
         run.stdout.contains("NULL-OK"),
