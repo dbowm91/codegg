@@ -1462,7 +1462,14 @@ mod tests {
         ));
         let stdout = result.stdout.to_string_lossy();
         let (scratch, mode) = stdout.split_once('|').expect("TMPDIR and mode");
-        assert!(scratch.starts_with(std::env::temp_dir().to_string_lossy().as_ref()));
+        let scratch_root = Path::new(scratch)
+            .parent()
+            .expect("private scratch has a parent");
+        assert_eq!(
+            std::fs::canonicalize(scratch_root).expect("scratch parent canonicalizes"),
+            std::fs::canonicalize(std::env::temp_dir()).expect("system temp root canonicalizes"),
+            "scratch must be created under the system temporary root: {scratch}"
+        );
         assert_eq!(mode, "700", "scratch permissions must be private: {stdout}");
         assert!(
             !Path::new(scratch).exists(),
