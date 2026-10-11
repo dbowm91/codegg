@@ -17,6 +17,8 @@ on:
       - 'src/scheduler/executors.rs'
       - 'crates/codegg-config/src/schema.rs'
       - 'crates/codegg-config/src/paths.rs'
+      - 'crates/egggit/Cargo.toml'
+      - 'crates/egggit/src/**'
       - 'tests/windows_process_launcher.rs'
       - 'research/windows-native-sandbox/**'
   workflow_dispatch:
