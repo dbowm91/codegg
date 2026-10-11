@@ -12,7 +12,7 @@ Source subsystem roadmap:
 
 Repository baseline reviewed: `2f026f05220f60c62bfc381af3d7479172dfdb50`
 
-Implementation commits: pending commit for this closure batch.
+Implementation commit: `900d1ec5` — `feat(human-shell): stage redacted promotions durably`.
 
 ## 1. Executive finding
 
