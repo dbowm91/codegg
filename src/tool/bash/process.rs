@@ -307,6 +307,7 @@ impl BashTool {
         let cwd = cwd_owned.clone().ok_or_else(|| {
             ToolError::Execution("managed shell cwd could not be resolved".into())
         })?;
+        let raw_shell_argv = shell_argv(command, self.windows_shell)?;
         // One place decides contained vs degraded vs unconstrained, from the
         // real host capability. A constrained request on a host without OS
         // containment must not fail every command, and must never be
@@ -322,10 +323,9 @@ impl BashTool {
                     .landlock_sandbox
                     .as_ref()
                     .expect("contained path requires an enabled config");
-                let shell_argv = shell_argv(command, self.windows_shell)?;
-                let args = shell_argv[1..].to_vec();
+                let args = raw_shell_argv[1..].to_vec();
                 crate::managed_process::SandboxRequest::Required(config.launch_spec(
-                    &shell_argv[0],
+                    &raw_shell_argv[0],
                     &args,
                     Some(&cwd),
                 )?)
@@ -337,14 +337,21 @@ impl BashTool {
             }
         };
         let mut request = crate::managed_process::ManagedProcessRequest::new(
-            shell_argv(command, self.windows_shell)?
-                .into_iter()
-                .map(OsString::from)
-                .collect(),
+            raw_shell_argv.into_iter().map(OsString::from).collect(),
             cwd,
             crate::managed_process::ProcessProvenance::default(),
         );
         request.environment_policy = bash_environment_policy();
+        #[cfg(windows)]
+        if matches!(
+            self.windows_shell,
+            Some(crate::config::schema::WindowsShellKind::Cmd)
+        ) {
+            request.environment_policy = request
+                .environment_policy
+                .clone()
+                .with_var(OsString::from("COMSPEC"), request.executable.clone());
+        }
         #[cfg(windows)]
         let _shell_temp = {
             let directory = create_shell_temp_dir()?;
@@ -1370,9 +1377,18 @@ mod tests {
         let tool =
             BashTool::new().with_windows_shell(Some(crate::config::schema::WindowsShellKind::Cmd));
         let (version, _) = tool
-            .execute_via_raw_shell("ver", Some(Path::new(".")), Duration::from_secs(10))
+            .execute_via_raw_shell(
+                "echo cmd-shell-ready & echo %COMSPEC% & ver",
+                Some(Path::new(".")),
+                Duration::from_secs(10),
+            )
             .await
             .expect("cmd version invocation");
+        assert!(version.contains("cmd-shell-ready"), "{version}");
+        assert!(
+            version.to_ascii_lowercase().contains("cmd.exe"),
+            "{version}"
+        );
         assert!(
             version.to_ascii_lowercase().contains("windows"),
             "{version}"
