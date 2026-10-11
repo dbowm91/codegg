@@ -1,9 +1,11 @@
 //! Canonical execution service for scheduler-owned argv processes.
 //!
-//! This module deliberately accepts argv rather than a shell command.  It is
-//! the common boundary for non-interactive managed processes: the environment
-//! is rebuilt from an allowlist, output is drained without unbounded growth,
-//! and cancellation/timeout cleanup targets the whole process session on Unix.
+//! This module deliberately accepts argv rather than an implicit shell command.
+//! The one explicit exception is the Windows `cmd.exe /C` route, whose raw
+//! command-line grammar is carried in a typed request field. It is the common
+//! boundary for non-interactive managed processes: the environment is rebuilt
+//! from an allowlist, output is drained without unbounded growth, and
+//! cancellation/timeout cleanup targets the whole process session on Unix.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
@@ -339,11 +341,15 @@ impl ProcessProvenance {
     }
 }
 
-/// Request to run one non-shell argv process.
+/// Request to run one managed process. `argv` is passed directly to the child;
+/// `raw_command` is reserved for Windows `cmd.exe /C` shell text.
 #[derive(Debug, Clone)]
 pub struct ManagedProcessRequest {
     pub executable: OsString,
     pub argv: Vec<OsString>,
+    /// An uninterpreted Windows `cmd.exe /C` command appended after argv.
+    /// This is shell text and must only be set for an explicitly selected cmd shell.
+    pub raw_command: Option<OsString>,
     pub cwd: PathBuf,
     pub environment_policy: EnvironmentPolicy,
     pub stdin: StdinPolicy,
@@ -361,6 +367,7 @@ impl ManagedProcessRequest {
         Self {
             executable,
             argv: argv.collect(),
+            raw_command: None,
             cwd,
             environment_policy: EnvironmentPolicy::default(),
             stdin: StdinPolicy::Null,
@@ -370,6 +377,13 @@ impl ManagedProcessRequest {
             sandbox: SandboxRequest::Disabled,
             provenance,
         }
+    }
+
+    /// Append raw command text to a Windows cmd invocation without applying
+    /// Windows argv quoting to shell syntax.
+    pub fn with_raw_command(mut self, command: impl Into<OsString>) -> Self {
+        self.raw_command = Some(command.into());
+        self
     }
 
     pub fn full_argv(&self) -> Vec<OsString> {
@@ -541,6 +555,7 @@ async fn run_inner(
     let ManagedProcessRequest {
         executable,
         argv,
+        raw_command,
         cwd,
         environment_policy,
         stdin,
@@ -557,6 +572,31 @@ async fn run_inner(
     if executable.to_string_lossy().contains('\0') {
         return Err(ManagedProcessError::InvalidArgument(
             "executable".to_string(),
+        ));
+    }
+    #[cfg(windows)]
+    if let Some(raw_command) = raw_command.as_deref() {
+        if raw_command.to_string_lossy().contains('\0') {
+            return Err(ManagedProcessError::InvalidArgument(
+                "raw command".to_string(),
+            ));
+        }
+        let executable_path = Path::new(&executable);
+        if !executable_path.is_absolute()
+            || !executable_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe"))
+        {
+            return Err(ManagedProcessError::InvalidArgument(
+                "raw command requires an absolute cmd.exe executable".to_string(),
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    if raw_command.is_some() {
+        return Err(ManagedProcessError::InvalidArgument(
+            "raw command is only supported for Windows cmd.exe".to_string(),
         ));
     }
     if let Some(index) = argv
@@ -588,6 +628,11 @@ async fn run_inner(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(raw_command) = raw_command.as_deref() {
+        use std::os::windows::process::CommandExt;
+        command.as_std_mut().raw_arg(raw_command);
+    }
     match &stdin {
         StdinPolicy::Null => {
             command.stdin(std::process::Stdio::null());

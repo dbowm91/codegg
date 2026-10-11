@@ -304,6 +304,20 @@ impl JobExecutor for ManagedArgvExecutor {
                 );
             }
         };
+        #[cfg(windows)]
+        let mut argv = argv;
+        #[cfg(windows)]
+        let raw_cmd_command = match &ctx.job.payload {
+            JobPayload::Shell { command, .. } => {
+                match crate::tool::bash::process::extract_cmd_raw_command(command, &mut argv) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        return failure_completion(started, ExecutorStatus::Failed, error.into());
+                    }
+                }
+            }
+            _ => None,
+        };
         let cwd = match &ctx.job.payload {
             JobPayload::ManagedArgv { cwd, .. } | JobPayload::Shell { cwd, .. } => {
                 cwd.clone().map(PathBuf::from)
@@ -332,6 +346,10 @@ impl JobExecutor for ManagedArgvExecutor {
                 ctx.attempt_id.as_str(),
             ),
         );
+        #[cfg(windows)]
+        if let Some(raw_command) = raw_cmd_command {
+            request = request.with_raw_command(raw_command);
+        }
         let is_shell = matches!(&ctx.job.payload, JobPayload::Shell { .. });
         #[cfg(windows)]
         let _shell_temp = if is_shell {
@@ -350,6 +368,13 @@ impl JobExecutor for ManagedArgvExecutor {
         };
         if is_shell {
             request.environment_policy = crate::tool::bash::process::bash_environment_policy();
+            #[cfg(windows)]
+            if request.raw_command.is_some() {
+                request.environment_policy = request
+                    .environment_policy
+                    .clone()
+                    .with_var(OsString::from("COMSPEC"), request.executable.clone());
+            }
             #[cfg(windows)]
             if let Some(directory) = _shell_temp.as_ref() {
                 let path = directory.path().as_os_str().to_owned();

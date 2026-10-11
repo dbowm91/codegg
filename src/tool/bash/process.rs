@@ -187,7 +187,12 @@ pub(crate) fn shell_argv(
                 ),
                 crate::config::schema::WindowsShellKind::Cmd => (
                     system_root.join("System32/cmd.exe"),
-                    vec!["/D".to_string(), "/C".to_string(), command.to_string()],
+                    vec![
+                        "/D".to_string(),
+                        "/S".to_string(),
+                        "/C".to_string(),
+                        command.to_string(),
+                    ],
                 ),
                 crate::config::schema::WindowsShellKind::GitBash => {
                     let executable = ["ProgramFiles", "ProgramFiles(x86)"]
@@ -232,6 +237,30 @@ pub(crate) fn shell_argv(
             command.to_string(),
         ])
     }
+}
+
+/// Move a cmd.exe shell string out of argv so the process owner can append it
+/// with Windows' raw command-line API. `cmd.exe` does not use the standard C
+/// runtime argv grammar, so quoting the string as an ordinary argument changes
+/// its shell meaning.
+#[cfg(windows)]
+pub(crate) fn extract_cmd_raw_command(
+    command: &str,
+    argv: &mut Vec<String>,
+) -> Result<Option<OsString>, &'static str> {
+    let is_cmd = argv
+        .first()
+        .and_then(|executable| Path::new(executable).file_name())
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe"));
+    if !is_cmd {
+        return Ok(None);
+    }
+    if argv.last().is_none_or(|argument| argument != command) {
+        return Err("cmd shell payload is missing its raw command argument");
+    }
+    argv.pop();
+    Ok(Some(OsString::from(format!("\"{command}\""))))
 }
 
 #[cfg(windows)]
@@ -336,11 +365,21 @@ impl BashTool {
                 )));
             }
         };
+        let managed_shell_argv = raw_shell_argv.clone();
+        #[cfg(windows)]
+        let mut managed_shell_argv = managed_shell_argv;
+        #[cfg(windows)]
+        let raw_cmd_command = extract_cmd_raw_command(command, &mut managed_shell_argv)
+            .map_err(|error| ToolError::Execution(error.into()))?;
         let mut request = crate::managed_process::ManagedProcessRequest::new(
-            raw_shell_argv.into_iter().map(OsString::from).collect(),
+            managed_shell_argv.into_iter().map(OsString::from).collect(),
             cwd,
             crate::managed_process::ProcessProvenance::default(),
         );
+        #[cfg(windows)]
+        if let Some(raw_command) = raw_cmd_command {
+            request = request.with_raw_command(raw_command);
+        }
         request.environment_policy = bash_environment_policy();
         #[cfg(windows)]
         if matches!(
@@ -1457,7 +1496,7 @@ mod tests {
                 );
             } else {
                 assert_eq!(Path::new(&argv[0]), system_root.join("System32/cmd.exe"));
-                assert_eq!(&argv[1..3], &["/D", "/C"]);
+                assert_eq!(&argv[1..4], &["/D", "/S", "/C"]);
             }
         }
         match shell_argv(
@@ -1476,6 +1515,24 @@ mod tests {
                 "WSL absence should be reported explicitly: {error}"
             ),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cmd_shell_text_moves_to_the_unescaped_command_channel() {
+        let command = r#"echo "space & unicode λ""#;
+        let mut argv = vec![
+            r"C:\Windows\System32\cmd.exe".to_string(),
+            "/D".to_string(),
+            "/S".to_string(),
+            "/C".to_string(),
+            command.to_string(),
+        ];
+        let raw = extract_cmd_raw_command(command, &mut argv)
+            .expect("valid cmd shell argv")
+            .expect("cmd uses raw command channel");
+        assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/S", "/C"]);
+        assert_eq!(raw.to_string_lossy(), format!("\"{command}\""));
     }
 
     #[test]
