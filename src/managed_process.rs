@@ -1025,7 +1025,7 @@ fn windows_environment_block(
     let drive = cwd_wide.first().copied();
     if cwd_wide.len() >= 3
         && cwd_wide[1] == b':' as u16
-        && matches!(cwd_wide[2], b'\\' as u16 | b'/' as u16)
+        && (cwd_wide[2] == b'\\' as u16 || cwd_wide[2] == b'/' as u16)
         && drive.is_some_and(|drive| {
             (b'A' as u16..=b'Z' as u16).contains(&drive)
                 || (b'a' as u16..=b'z' as u16).contains(&drive)

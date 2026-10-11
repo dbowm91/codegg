@@ -885,7 +885,6 @@ fn with_operation(error: io::Error, operation: &str) -> io::Error {
     io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
-#[cfg(feature = "windows-sandbox-test-support")]
 fn describe_environment_block(block: &[u16]) -> String {
     block
         .split(|unit| *unit == 0)
