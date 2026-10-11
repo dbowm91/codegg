@@ -1529,15 +1529,14 @@ mod tests {
         let mut argv = vec![
             r"C:\Windows\System32\cmd.exe".to_string(),
             "/D".to_string(),
-            "/S".to_string(),
             "/C".to_string(),
             command.to_string(),
         ];
         let raw = extract_cmd_raw_command(command, &mut argv)
             .expect("valid cmd shell argv")
             .expect("cmd uses raw command channel");
-        assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/S", "/C"]);
-        assert_eq!(raw.to_string_lossy(), format!(" \"{command}\""));
+        assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/C"]);
+        assert_eq!(raw.to_string_lossy(), format!(" {command}"));
     }
 
     #[test]
