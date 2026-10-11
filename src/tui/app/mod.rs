@@ -769,7 +769,10 @@ impl App {
                 changed_files: Vec::new(),
                 mcp_servers: Vec::new(),
                 context_tokens: 0,
-                context_limit: 128_000,
+                // 0 means "unresolved". The footer degrades a zero limit to
+                // `0%`; seeding 128_000 would show a confident percentage
+                // against a window this model may not have.
+                context_limit: 0,
                 compaction_count: 0,
                 rpm_limit: None,
                 tpm_limit: None,
@@ -1319,7 +1322,10 @@ impl App {
                 changed_files: Vec::new(),
                 mcp_servers: Vec::new(),
                 context_tokens: 0,
-                context_limit: 128_000,
+                // 0 means "unresolved". The footer degrades a zero limit to
+                // `0%`; seeding 128_000 would show a confident percentage
+                // against a window this model may not have.
+                context_limit: 0,
                 compaction_count: 0,
                 rpm_limit: None,
                 tpm_limit: None,
@@ -1695,6 +1701,7 @@ impl App {
                 output_tokens,
                 cached_tokens,
                 reasoning_tokens,
+                context_limit,
                 ..
             } => {
                 self.messages_state.messages.end_reasoning();
@@ -1718,10 +1725,14 @@ impl App {
                     }
                     // The provider's input count IS the prompt size for this
                     // turn, which is the quantity the context meter measures.
-                    // `context_limit` stays 0 unless a catalog supplied a
-                    // context window, and the footer already treats 0 as
-                    // "unknown" rather than rendering a bogus percentage.
                     self.session_state.context_tokens = in_tok;
+                }
+                // The limit is the window the agent actually resolved for
+                // this turn - the same number that gates compaction - so the
+                // meter cannot disagree with the behaviour it describes.
+                // `None` leaves the previous value rather than inventing one.
+                if let Some(limit) = context_limit {
+                    self.session_state.context_limit = limit;
                 }
                 if let Some(rt) = reasoning_tokens {
                     self.session_state.reasoning_tokens += rt;
@@ -1844,6 +1855,24 @@ impl App {
             self.ui_state.mode,
             crate::tui::app::state::AppMode::RemoteCore { .. }
         ) && self.remote_send_tx.is_some()
+    }
+
+    /// Whether the provider backing the selected model removes
+    /// `reasoning_effort` from the outgoing body.
+    ///
+    /// The selected model is carried as `provider/model` (see the model
+    /// dialog's `format!("{}/{}", provider, name)`), so the provider kind is
+    /// the first segment — the same split `session::legacy_resolution` uses
+    /// to resolve a legacy model string.
+    ///
+    /// An empty or bare model has no known provider, so it reports `false`
+    /// rather than warning speculatively about a provider we cannot name.
+    pub fn selected_provider_strips_reasoning(&self) -> bool {
+        let model = self.agent_state.current_model.as_str();
+        let Some(provider) = model.split('/').next().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        crate::provider::ProviderCapabilities::for_provider(provider).strips_reasoning_effort
     }
 
     pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
@@ -5021,9 +5050,25 @@ impl App {
                 // rendered; this one changes what the model is asked to do.
                 self.ui_state.reasoning_mode = self.ui_state.reasoning_mode.cycle();
                 let detail = self.ui_state.reasoning_mode.detail();
-                self.messages_state
-                    .toasts
-                    .info(&format!("Extended thinking: {detail}"));
+                // Selecting an effort or budget on a provider whose adapter
+                // deletes `reasoning_effort` is silently ignored. Warn instead
+                // of letting the control look broken.
+                if self.ui_state.reasoning_mode.requests_reasoning()
+                    && self.selected_provider_strips_reasoning()
+                {
+                    self.messages_state.toasts.warning(&format!(
+                        "Extended thinking: {detail} — {} drops this setting on the wire",
+                        self.agent_state
+                            .current_model
+                            .split('/')
+                            .next()
+                            .unwrap_or("this provider")
+                    ));
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info(&format!("Extended thinking: {detail}"));
+                }
             }
             B::ModelsRefresh => {
                 self.refresh_models();
@@ -5795,12 +5840,20 @@ impl App {
 
                 lines.push(format!("Files: {} changed", state.changed_files.len()));
 
-                lines.push(format!(
-                    "Context: {}%",
-                    (self.session_state.context_tokens as f64
-                        / self.session_state.context_limit as f64
-                        * 100.0) as u64
-                ));
+                // `context_limit` is 0 until the agent resolves a window for the turn.
+                // Dividing unconditionally here yielded NaN (rendered as a
+                // bogus 0%) whenever the limit was still unknown.
+                let context_line = if self.session_state.context_limit > 0 {
+                    format!(
+                        "Context: {}%",
+                        (self.session_state.context_tokens as f64
+                            / self.session_state.context_limit as f64
+                            * 100.0) as u64
+                    )
+                } else {
+                    "Context: unknown".to_string()
+                };
+                lines.push(context_line);
 
                 self.show_short_or_info(
                     crate::tui::components::dialogs::info::InfoType::Stats,
@@ -12955,10 +13008,17 @@ fn format_token_line(
     let displayed_output = token_out + live_output_tokens;
     let displayed_context = context_tokens + live_output_tokens;
     let total = token_in + displayed_output;
+    // A zero limit means the agent has not resolved a context window yet, so
+    // say so rather than printing a confident `0%` against a denominator we
+    // do not have. Matches the "unknown" wording used by the other context
+    // readouts.
     let pct = if context_limit > 0 {
-        ((displayed_context as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
+        format!(
+            "{:.0}%",
+            ((displayed_context as f64 / context_limit as f64) * 100.0).clamp(0.0, 100.0)
+        )
     } else {
-        0.0
+        "unknown".to_string()
     };
     let output_prefix = if live_output_tokens > 0 {
         "↑~"
@@ -12966,7 +13026,7 @@ fn format_token_line(
         "↑"
     };
     format!(
-        "↓{} {}{} ({}) / {} {:.0}%",
+        "↓{} {}{} ({}) / {} {}",
         format_token_short(token_in),
         output_prefix,
         format_token_short(displayed_output),
@@ -13053,6 +13113,42 @@ mod token_line_tests {
 
         assert!(line.contains("↑~35"));
         assert!(line.contains("(135)"));
+    }
+
+    #[test]
+    fn token_line_says_unknown_when_no_window_is_resolved() {
+        // Regression guard for the fabricated-limit bug: with an unresolved
+        // window the footer used to divide by a hardcoded 128_000, and after
+        // that was removed it printed a confident `0%`. It must now state
+        // that the percentage is unknown while still showing real counts.
+        let line = format_token_line(1_000, 200, 0, 1_000, 0);
+
+        assert!(line.contains("↓1k"), "counts stay real: {line}");
+        assert!(line.contains("↑200"), "counts stay real: {line}");
+        assert!(
+            line.contains("unknown"),
+            "expected an unknown window: {line}"
+        );
+        assert!(
+            !line.contains("0%"),
+            "must not print a bogus percentage: {line}"
+        );
+    }
+
+    #[test]
+    fn token_line_reports_a_real_percentage_once_the_window_is_known() {
+        // 20_000 of a 200_000 window is exactly 10%, so this does not depend
+        // on how a fractional percentage rounds.
+        let line = format_token_line(1_000, 200, 0, 20_000, 200_000);
+
+        assert!(
+            line.contains("20k 10%"),
+            "expected a real percentage: {line}"
+        );
+        assert!(
+            !line.contains("unknown"),
+            "a known limit is not unknown: {line}"
+        );
     }
 }
 
@@ -15802,5 +15898,113 @@ mod projection_adoption_tests {
         .expect("serializable");
         app.handle_remote_event(json);
         assert_eq!(app.projection_client.subscription_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod reasoning_strip_warning_tests {
+    use super::*;
+
+    fn app_with_model(model: &str) -> App {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.agent_state.current_model = model.to_string();
+        app
+    }
+
+    fn toast_messages(app: &App) -> Vec<String> {
+        app.messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn stripping_providers_are_derived_from_the_capability_flag() {
+        for provider in ["azure", "openrouter", "opencode_zen"] {
+            let app = app_with_model(&format!("{provider}/some-model"));
+            assert!(
+                app.selected_provider_strips_reasoning(),
+                "{provider} removes reasoning_effort on the wire"
+            );
+        }
+        for provider in ["openai", "anthropic", "some-future-provider"] {
+            let app = app_with_model(&format!("{provider}/some-model"));
+            assert!(
+                !app.selected_provider_strips_reasoning(),
+                "{provider} passes reasoning_effort through"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_never_warns_speculatively() {
+        // No provider segment (bare or empty model) means we cannot name one,
+        // so stay quiet rather than warn about a provider we invented.
+        for model in ["", "gpt-5", "/leading-slash"] {
+            let app = app_with_model(model);
+            assert!(
+                !app.selected_provider_strips_reasoning(),
+                "model {model:?} has no resolvable provider"
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_an_effort_on_a_stripping_provider_warns() {
+        let mut app = app_with_model("azure/gpt-5");
+        // Cycle from Inherit onto the effort ladder.
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Reasoning, None);
+
+        assert!(
+            app.ui_state.reasoning_mode.requests_reasoning(),
+            "expected a reasoning-requesting mode, got {:?}",
+            app.ui_state.reasoning_mode
+        );
+        let toasts = toast_messages(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("drops this setting")),
+            "expected a wire-stripping warning, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn a_passthrough_provider_gets_the_plain_confirmation() {
+        let mut app = app_with_model("openai/gpt-5");
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Reasoning, None);
+
+        let toasts = toast_messages(&app);
+        assert!(
+            toasts.iter().any(|t| t.contains("Extended thinking")),
+            "expected the normal confirmation, got {toasts:?}"
+        );
+        assert!(
+            !toasts.iter().any(|t| t.contains("drops this setting")),
+            "a pass-through provider must not be warned about, got {toasts:?}"
+        );
+    }
+
+    #[test]
+    fn turning_reasoning_off_never_warns() {
+        // Cycle all the way to Off on a stripping provider: asking for no
+        // thinking is honoured by every adapter, so there is nothing to warn
+        // about even though the provider strips the field.
+        let mut app = app_with_model("openrouter/anthropic/claude");
+        for _ in 0..3 {
+            app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Reasoning, None);
+        }
+        assert_eq!(
+            app.ui_state.reasoning_mode,
+            crate::protocol::core::ReasoningMode::Off,
+            "expected the cycle to land on Off"
+        );
+        // Toasts accumulate, so the two earlier effort steps are still
+        // queued; only the most recent one describes the Off step.
+        let toasts = toast_messages(&app);
+        let last = toasts.last().expect("the cycle always toasts");
+        assert!(
+            !last.contains("drops this setting"),
+            "Off must not warn on a stripping provider, got {last:?}"
+        );
     }
 }

@@ -712,6 +712,17 @@ impl AgentLoop {
         &self.session_id
     }
 
+    /// The context window the agent resolved for this turn.
+    ///
+    /// Mirrors what `AppEvent::ContextUpdated` publishes and what the
+    /// compaction threshold is measured against. `None` before an execution
+    /// policy is installed, so a turn that never resolved a profile cannot
+    /// render a percentage against an invented limit.
+    pub fn context_limit(&self) -> Option<usize> {
+        let limit = self.services.context_tracker.context_limit();
+        (limit > 0).then_some(limit)
+    }
+
     pub fn set_task_state_policy(&mut self, policy: crate::model_profile::types::TaskStatePolicy) {
         self.services.task_state_policy = policy;
     }

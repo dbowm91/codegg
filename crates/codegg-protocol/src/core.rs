@@ -3268,6 +3268,14 @@ impl ReasoningMode {
         }
     }
 
+    /// Whether this mode asks the provider for extended thinking at all.
+    ///
+    /// Only the modes that pin a concrete value need it; `Inherit` defers to
+    /// config and `Off` deliberately asks for none.
+    pub fn requests_reasoning(self) -> bool {
+        matches!(self, ReasoningMode::Effort(_) | ReasoningMode::Budget(_))
+    }
+
     /// Short label for the status bar.
     pub fn label(self) -> &'static str {
         match self {
@@ -3441,6 +3449,16 @@ pub enum CoreEvent {
         cached_tokens: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_tokens: Option<usize>,
+        /// The context window the agent actually resolved for this turn.
+        ///
+        /// This is `ExecutionPolicy::context_window` — the same number that
+        /// decides when compaction fires — not a frontend guess. The footer
+        /// renders a percentage against it, so it must travel the process
+        /// boundary with the usage counts or the meter measures against a
+        /// fabricated limit. `None` means "not yet resolved": a consumer must
+        /// not substitute a default window.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_limit: Option<usize>,
     },
     TurnFailed {
         session_id: String,
@@ -4639,6 +4657,18 @@ mod tests {
             ReasoningMode::Off
         );
         assert_ne!(ReasoningMode::Inherit, ReasoningMode::Off);
+    }
+
+    #[test]
+    fn only_pinned_modes_request_reasoning() {
+        // The TUI warns about providers that strip the field, so the
+        // predicate must be true exactly where a request would be sent.
+        assert!(ReasoningMode::Effort(ReasoningEffort::Medium).requests_reasoning());
+        assert!(ReasoningMode::Budget(4_096).requests_reasoning());
+        // `Inherit` defers to config (which may or may not set anything) and
+        // `Off` asks for none; neither is a request this control made.
+        assert!(!ReasoningMode::Inherit.requests_reasoning());
+        assert!(!ReasoningMode::Off.requests_reasoning());
     }
 
     #[test]

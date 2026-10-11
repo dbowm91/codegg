@@ -5974,6 +5974,7 @@ mod tests {
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    context_limit: None,
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     stop_reason: "completed".to_string(),

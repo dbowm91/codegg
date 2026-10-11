@@ -296,6 +296,7 @@ fn controller_ack_cadence_is_respected() {
                     output_tokens: Some(0),
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    context_limit: None,
                 },
             },
         };

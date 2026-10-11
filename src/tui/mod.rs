@@ -2275,6 +2275,7 @@ mod async_cmd_tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
         });
 
         assert_eq!(app.session_state.session_status, SessionStatus::Idle);
@@ -2293,9 +2294,62 @@ mod async_cmd_tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
         });
 
         assert_eq!(app.session_state.session_status, SessionStatus::Error);
+    }
+
+    #[test]
+    fn turn_completed_carries_usage_and_the_resolved_context_limit() {
+        let mut app = make_test_app();
+
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(50),
+            reasoning_tokens: Some(30),
+            context_limit: Some(200_000),
+        });
+
+        // Usage is the footer counters...
+        assert_eq!(app.session_state.token_in, 1_000);
+        assert_eq!(app.session_state.token_out, 200);
+        assert_eq!(app.session_state.cached_tokens, 50);
+        // ...and the limit is the window the meter measures against, so the
+        // percentage is meaningful rather than a fabricated 128k guess.
+        assert_eq!(app.session_state.context_tokens, 1_000);
+        assert_eq!(app.session_state.context_limit, 200_000);
+    }
+
+    #[test]
+    fn an_unresolved_context_limit_never_invents_a_window() {
+        // A fresh session starts with an UNKNOWN limit, not a hardcoded
+        // 128_000: seeding one would render a confident percentage for a
+        // model that may have a completely different window.
+        let app = make_test_app();
+        assert_eq!(app.session_state.context_limit, 0);
+
+        let mut app = app;
+        app.apply_core_event(CoreEvent::TurnCompleted {
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+            stop_reason: "completed".into(),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            // Provider omitted it / turn cancelled before resolution.
+            context_limit: None,
+        });
+
+        assert_eq!(app.session_state.context_tokens, 1_000);
+        // Still unknown - and the footer renders "unknown" for a zero limit
+        // rather than a bogus percentage.
+        assert_eq!(app.session_state.context_limit, 0);
     }
 
     #[test]

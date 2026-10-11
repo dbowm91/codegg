@@ -677,6 +677,7 @@ impl ProjectionReducer {
                 output_tokens,
                 cached_tokens,
                 reasoning_tokens,
+                context_limit,
                 ..
             } => {
                 let Some(turn) = snapshot.active_turn.as_mut() else {
@@ -708,6 +709,9 @@ impl ProjectionReducer {
                 }
                 if let Some(value) = reasoning_tokens {
                     turn.reasoning_tokens = Some(*value);
+                }
+                if let Some(value) = context_limit {
+                    turn.context_limit = Some(*value);
                 }
                 turn.status = TurnStatus::Completed;
                 turn.stop_reason =
@@ -1500,6 +1504,7 @@ mod tests {
         let turn = TurnProjection {
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1529,6 +1534,140 @@ mod tests {
         assert_eq!(outcome, ApplyOutcome::Applied);
         assert!(snap.active_turn.is_some());
         assert!(snap.primary_session.has_active_turn);
+    }
+
+    #[test]
+    fn turn_completed_carries_usage_and_context_limit_onto_the_record() {
+        use crate::projection::snapshot::SessionProjectionSnapshot;
+
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let turn = TurnProjection {
+            turn_id: "t1".into(),
+            status: TurnStatus::Active,
+            started_at: 0,
+            updated_at: 0,
+            stop_reason: None,
+            error: None,
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
+            subagent_count: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            context_limit: None,
+        };
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                Some("t1".into()),
+                ProjectionEvent::TurnStarted { turn },
+            ),
+        );
+
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                2,
+                0,
+                "s",
+                Some("t1".into()),
+                ProjectionEvent::TurnCompleted {
+                    turn_id: "t1".into(),
+                    stop_reason: "completed".into(),
+                    completed_at: 5,
+                    input_tokens: Some(1_000),
+                    output_tokens: Some(200),
+                    cached_tokens: Some(50),
+                    reasoning_tokens: Some(30),
+                    context_limit: Some(200_000),
+                },
+            ),
+        );
+
+        let completed = snap.recent_turns.back().expect("turn completed");
+        assert_eq!(completed.input_tokens, Some(1_000));
+        assert_eq!(completed.output_tokens, Some(200));
+        assert_eq!(completed.cached_tokens, Some(50));
+        assert_eq!(completed.reasoning_tokens, Some(30));
+        // The window the meter is measured against survives the replay, so a
+        // consumer rebuilding state from the projection renders the same
+        // percentage the live footer did.
+        assert_eq!(completed.context_limit, Some(200_000));
+    }
+
+    #[test]
+    fn an_absent_context_limit_leaves_the_record_unknown() {
+        use crate::projection::snapshot::SessionProjectionSnapshot;
+
+        let mut snap = SessionProjectionSnapshot::empty("s", "p", "w");
+        let reducer = ProjectionReducer::default();
+
+        let turn = TurnProjection {
+            turn_id: "t1".into(),
+            status: TurnStatus::Active,
+            started_at: 0,
+            updated_at: 0,
+            stop_reason: None,
+            error: None,
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
+            subagent_count: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            context_limit: None,
+        };
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                1,
+                0,
+                "s",
+                Some("t1".into()),
+                ProjectionEvent::TurnStarted { turn },
+            ),
+        );
+        reducer.apply(
+            &mut snap,
+            ReducerEventInput::session(
+                2,
+                0,
+                "s",
+                Some("t1".into()),
+                ProjectionEvent::TurnCompleted {
+                    turn_id: "t1".into(),
+                    stop_reason: "completed".into(),
+                    completed_at: 5,
+                    input_tokens: Some(1_000),
+                    output_tokens: Some(200),
+                    cached_tokens: None,
+                    reasoning_tokens: None,
+                    context_limit: None,
+                },
+            ),
+        );
+
+        // Unknown stays unknown - it is never back-filled with a default.
+        assert_eq!(
+            snap.recent_turns
+                .back()
+                .expect("turn completed")
+                .context_limit,
+            None
+        );
     }
 
     #[test]
@@ -1605,6 +1744,7 @@ mod tests {
         snap.active_turn = Some(TurnProjection {
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1648,6 +1788,7 @@ mod tests {
         snap.active_turn = Some(TurnProjection {
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,
@@ -1695,6 +1836,7 @@ mod tests {
         snap.active_turn = Some(TurnProjection {
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             turn_id: "t1".into(),
             status: TurnStatus::Active,
             started_at: 0,

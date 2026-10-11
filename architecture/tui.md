@@ -51,6 +51,20 @@ observed in the default socket-daemon mode. `TurnCompleted` carries optional
 every field is `skip_serializing_if = "Option::is_none"`, so the wire payload
 is unchanged when a provider reports no usage.
 
+`TurnCompleted` also carries an optional `context_limit`: the window the agent
+actually resolved for that turn (`ExecutionPolicy::context_window`, installed
+into the context tracker by `set_execution_policy`). `AppEvent::ContextUpdated`
+publishes the same number but is equally unmapped across the boundary, so the
+field is what makes the footer's context percentage real in daemon mode.
+`SessionState::context_limit` therefore starts at **0, not a default window**:
+`0` means "unknown". Every reader treats that as unknown rather than
+dividing — the footer prints `unknown` instead of a percentage
+(`format_token_line`), the stats dialog prints `Context: unknown`, and the
+timeline readout prints `unknown`. Seeding a fabricated 128k would display a
+confident percentage against a window the selected model may not have. The
+number is deliberately the one that gates compaction, so the meter cannot
+disagree with the behaviour it describes.
+
 `SessionUpdated` carries only a session id, so the daemon-side auto-titler
 (which writes the title and publishes the event) still requires a re-read.
 That re-read is the `SessionRefreshed` command: it is generation-guarded,
@@ -702,6 +716,15 @@ pub struct UiState {
     pub show_thinking: bool,
     /// Per-turn extended-thinking selection (`/reasoning`).
     /// Frontend-local; sent on each `TurnSubmit`, never persisted.
+    ///
+    /// When the cycled mode actually requests reasoning
+    /// (`ReasoningMode::requests_reasoning`) and the selected model's provider
+    /// strips `reasoning_effort` on the wire, the confirmation is raised as a
+    /// warning instead of an info toast. The provider is derived from the
+    /// first segment of the `provider/model` string via
+    /// `App::selected_provider_strips_reasoning`, which consults
+    /// `ProviderCapabilities::for_provider` — never a TUI-maintained list. An
+    /// unresolvable provider stays silent rather than warning speculatively.
     pub reasoning_mode: ReasoningMode,
     pub show_timestamps: bool,
     pub routes: RouteManager,

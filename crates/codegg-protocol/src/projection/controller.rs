@@ -847,6 +847,7 @@ mod tests {
                 turn: crate::projection::dto::TurnProjection {
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    context_limit: None,
                     turn_id: format!("turn-{seq}"),
                     status: crate::projection::dto::TurnStatus::Active,
                     started_at: 0,
