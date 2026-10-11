@@ -10,10 +10,9 @@ permissions:
 
 jobs:
   seatbelt:
-    # The first qualification run already executed the helper matrix on the
-    # default macOS 15 Apple Silicon runner. Use Intel here to avoid the
-    # documented ARM64 capacity queue while repeating the Python path.
-    runs-on: macos-15-intel
+    # C004 requires qualification on native Apple Silicon as well as Linux.
+    # GitHub's macos-15 standard runner is an M1 arm64 host.
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
