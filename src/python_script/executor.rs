@@ -1180,16 +1180,17 @@ mod tests {
                 .path()
                 .join(format!("inside-{}.txt", mode.label()));
             let code = format!(
-                "from pathlib import Path\n\
-                 def attempt(path, content, label):\n\
-                     try:\n\
-                         method = 'write' + '_text'\n\
-                         getattr(Path(path), method)(content)\n\
-                         print(label + '-ALLOWED')\n\
-                     except PermissionError:\n\
-                         print(label + '-DENIED')\n\
-                 attempt({inside:?}, 'inside', 'INSIDE-WRITE')\n\
-                 attempt({outside:?}, 'outside', 'OUTSIDE-WRITE')\n",
+                r#"from pathlib import Path
+def attempt(path, content, label):
+    try:
+        method = 'write' + '_text'
+        getattr(Path(path), method)(content)
+        print(label + '-ALLOWED')
+    except PermissionError:
+        print(label + '-DENIED')
+attempt({inside:?}, 'inside', 'INSIDE-WRITE')
+attempt({outside:?}, 'outside', 'OUTSIDE-WRITE')
+"#,
                 inside = inside_file.to_string_lossy(),
                 outside = outside_file.to_string_lossy(),
             );
