@@ -187,12 +187,7 @@ pub(crate) fn shell_argv(
                 ),
                 crate::config::schema::WindowsShellKind::Cmd => (
                     system_root.join("System32/cmd.exe"),
-                    vec![
-                        "/D".to_string(),
-                        "/S".to_string(),
-                        "/C".to_string(),
-                        command.to_string(),
-                    ],
+                    vec!["/D".to_string(), "/C".to_string(), command.to_string()],
                 ),
                 crate::config::schema::WindowsShellKind::GitBash => {
                     let executable = ["ProgramFiles", "ProgramFiles(x86)"]
@@ -261,9 +256,9 @@ pub(crate) fn extract_cmd_raw_command(
     }
     argv.pop();
     // `CommandExt::raw_arg` appends literal text and does not add an argument
-    // separator. Keep one before the `/C` payload so cmd.exe receives it as
-    // the command string rather than as part of the preceding switch.
-    Ok(Some(OsString::from(format!(" \"{command}\""))))
+    // separator. Keep one before the `/C` payload so cmd.exe receives the
+    // original shell string without standard Windows argv quoting.
+    Ok(Some(OsString::from(format!(" {command}"))))
 }
 
 #[cfg(windows)]
@@ -1499,7 +1494,7 @@ mod tests {
                 );
             } else {
                 assert_eq!(Path::new(&argv[0]), system_root.join("System32/cmd.exe"));
-                assert_eq!(&argv[1..4], &["/D", "/S", "/C"]);
+                assert_eq!(&argv[1..3], &["/D", "/C"]);
             }
         }
         match shell_argv(
@@ -1527,15 +1522,14 @@ mod tests {
         let mut argv = vec![
             r"C:\Windows\System32\cmd.exe".to_string(),
             "/D".to_string(),
-            "/S".to_string(),
             "/C".to_string(),
             command.to_string(),
         ];
         let raw = extract_cmd_raw_command(command, &mut argv)
             .expect("valid cmd shell argv")
             .expect("cmd uses raw command channel");
-        assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/S", "/C"]);
-        assert_eq!(raw.to_string_lossy(), format!(" \"{command}\""));
+        assert_eq!(argv, [r"C:\Windows\System32\cmd.exe", "/D", "/C"]);
+        assert_eq!(raw.to_string_lossy(), format!(" {command}"));
     }
 
     #[test]
