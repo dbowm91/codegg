@@ -271,6 +271,14 @@ impl Widget for &TreeDialog {
 }
 
 impl Component for TreeDialog {
+    /// A plain viewer box: no composer, no live filter, no mode of its own,
+    /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
+    /// before this dialog sees the key.
+    fn docks_as_viewer(&self) -> bool {
+        {
+            true
+        }
+    }
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Esc => Some(TuiMsg::CloseDialog),

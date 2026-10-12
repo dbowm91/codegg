@@ -127,6 +127,7 @@ pub fn active_turn_snapshot() -> SessionProjectionSnapshot {
         output_tokens: Some(0),
         cached_tokens: None,
         reasoning_tokens: None,
+        context_limit: None,
     });
     snap.primary_session.has_active_turn = true;
     snap
@@ -164,6 +165,7 @@ pub fn completed_snapshot() -> SessionProjectionSnapshot {
         output_tokens: Some(20),
         cached_tokens: None,
         reasoning_tokens: None,
+        context_limit: None,
     };
     snap.recent_turns.push_back(turn);
     snap.runs.push_back(RunProjection {
@@ -223,6 +225,7 @@ pub fn permission_pending_snapshot() -> SessionProjectionSnapshot {
         output_tokens: Some(0),
         cached_tokens: None,
         reasoning_tokens: None,
+        context_limit: None,
     });
     snap.primary_session.has_active_turn = true;
     snap.primary_session.pending_permission_count = 1;
@@ -274,6 +277,7 @@ pub fn active_turn_event_script() -> Vec<ReducerEventInput> {
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    context_limit: None,
                 },
             },
         ),
@@ -382,6 +386,7 @@ pub fn completed_event_script() -> Vec<ReducerEventInput> {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             turn_id: "turn-1".into(),
             stop_reason: "ok".into(),
             completed_at: 6,

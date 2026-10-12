@@ -185,6 +185,11 @@ pub struct TurnProjection {
     pub cached_tokens: Option<usize>,
     /// Provider-reported reasoning/thinking tokens for this turn.
     pub reasoning_tokens: Option<usize>,
+    /// The context window the agent resolved for this turn.
+    ///
+    /// `None` means unresolved; a consumer must not substitute a default
+    /// window, which would silently misreport how full the context is.
+    pub context_limit: Option<usize>,
 }
 
 impl TurnProjection {

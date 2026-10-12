@@ -21,7 +21,12 @@ use codegg::protocol::core::{
     CoreResponse, EventEnvelope, RequestEnvelope,
 };
 use codegg::tui::app::TuiCommand;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
 
 // ── Fake chat core ───────────────────────────────────────────────────────
 
@@ -57,6 +62,7 @@ impl FakeChatClient {
             composing_ttl_secs: 30,
             retention_max_messages: 1000,
             actions_supported: true,
+            backward_paging: true,
             max_action_title_bytes: 512,
             max_action_prompt_bytes: 8192,
         }
@@ -1143,23 +1149,33 @@ fn chat_panel_opens_with_standard_focus_keys_and_stays_bounded() {
         epoch
     ));
     app.show_chat();
-    // Panel opens as the standard scrollable info dialog (j/k scroll,
-    // Esc/Enter close — no session state mutated).
+    // The window is the interactive ChatDialog, not the read-only info
+    // panel: it owns composing and editing, so it must mount as its own
+    // component rather than borrowing the shared InfoDialog slot.
     assert_eq!(
         app.focus_manager.active_dialog_type(),
         codegg::tui::components::component::DialogType::ProjectChat
     );
     assert!(app
         .focus_manager
-        .with_dialog(
-            codegg::tui::components::component::DialogType::ProjectChat,
-            |dialog: &codegg::tui::components::dialogs::info::InfoDialog| {
-                dialog.info_type() == codegg::tui::components::dialogs::info::InfoType::ProjectChat
-            },
-        )
-        .unwrap_or(false));
+        .has_component::<codegg::tui::components::dialogs::chat::ChatDialog>());
+    assert!(!app
+        .focus_manager
+        .has_component::<codegg::tui::components::dialogs::info::InfoDialog>());
     assert_eq!(app.chat_panel_project.as_deref(), Some("proj-a"));
     assert_eq!(app.open_tab_count(), 1);
+
+    // Re-opening refreshes the mounted window instead of stacking a
+    // second copy.
+    app.show_chat();
+    assert_eq!(app.focus_manager.len(), 1);
+
+    // Esc closes the window and leaves chat usable from the command line.
+    app.focus_manager.handle_key(key(KeyCode::Esc));
+    app.process_msg(codegg::tui::app::TuiMsg::CloseDialog);
+    assert!(!app
+        .focus_manager
+        .has_component::<codegg::tui::components::dialogs::chat::ChatDialog>());
 
     // Bounded history: 110 retained messages keep a 100-row window and
     // the panel renders at most the display bound plus chrome.

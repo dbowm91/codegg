@@ -60,8 +60,29 @@ fn run_helper(spec: &SandboxLaunchSpec) -> Run {
     launch_helper(helper_path(), spec_file.path())
 }
 
+/// Launch a helper with explicit environment overrides for the target.
+///
+/// Some developer tools read a credential file unconditionally, even for
+/// `--version`. That file is a deliberate deny root, so a probe meant to
+/// exercise tool *availability* must point the tool at an empty config
+/// directory instead of the operator's real one.
+fn run_helper_with_env(spec: &SandboxLaunchSpec, overrides: &[(&str, &str)]) -> Run {
+    let spec_file = tempfile::NamedTempFile::new().expect("sandbox spec file");
+    serde_json::to_writer(spec_file.as_file(), spec).expect("sandbox spec encoding");
+
+    launch_helper_with_env(helper_path(), spec_file.path(), overrides)
+}
+
+fn launch_helper_with_env(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) -> Run {
+    launch_helper_impl(helper, spec, overrides)
+}
+
 /// Fork/exec the helper with its status channel wired to `SANDBOX_STATUS_FD`.
 fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
+    launch_helper_impl(helper, spec, &[])
+}
+
+fn launch_helper_impl(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) -> Run {
     let (reader, writer) = nix::unistd::pipe().expect("status pipe");
     let writer_fd = writer.as_raw_fd();
     let mut command = Command::new(helper);
@@ -70,6 +91,9 @@ fn launch_helper(helper: PathBuf, spec: &Path) -> Run {
         .arg(spec)
         .arg("--status-fd")
         .arg(SANDBOX_STATUS_FD.to_string());
+    for (name, value) in overrides {
+        command.env(name, value);
+    }
     // SAFETY: `pre_exec` runs between fork and exec in a single-threaded
     // child here. It duplicates an already-open descriptor onto a fixed
     // number and clears close-on-exec; it allocates nothing and runs no
@@ -924,7 +948,20 @@ fn seatbelt_keeps_read_only_developer_tool_probes_operational() {
         let mut spec = spec_for(workspace.path(), SandboxMode::ReadOnly, &[]);
         spec.target = PathBuf::from(program);
         spec.args = args.iter().map(|arg| (*arg).to_string()).collect();
-        let run = run_helper(&spec);
+        // `gh` opens its credential store before it dispatches a command, so
+        // a bare `--version` fails on any host where the operator is signed
+        // in. That store (`~/.config/gh/hosts.yml`) is a deliberate deny
+        // root; pointing the probe at an empty config directory keeps this a
+        // tool-availability check rather than a credential-access check.
+        let run = if program == "gh" {
+            let config = tempfile::tempdir().expect("gh config directory");
+            run_helper_with_env(
+                &spec,
+                &[("GH_CONFIG_DIR", config.path().to_str().expect("utf-8 path"))],
+            )
+        } else {
+            run_helper(&spec)
+        };
         assert!(
             run.success,
             "read-only {program} probe failed: {}\n{}",

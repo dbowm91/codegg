@@ -58,6 +58,7 @@ pub fn projection_events_from_core(
                     output_tokens: None,
                     cached_tokens: None,
                     reasoning_tokens: None,
+                    context_limit: None,
                 },
             };
             Some((session_id.clone(), None, event))
@@ -152,6 +153,7 @@ pub fn projection_events_from_core(
             output_tokens,
             cached_tokens,
             reasoning_tokens,
+            context_limit,
             ..
         } => {
             let event = ProjectionEvent::TurnCompleted {
@@ -162,6 +164,7 @@ pub fn projection_events_from_core(
                 output_tokens: *output_tokens,
                 cached_tokens: *cached_tokens,
                 reasoning_tokens: *reasoning_tokens,
+                context_limit: *context_limit,
             };
             Some((session_id.clone(), None, event))
         }

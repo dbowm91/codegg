@@ -152,6 +152,15 @@ impl FocusManager {
         self.stack.len()
     }
 
+    /// Whether the topmost modal is a viewer box, i.e. one that leaves the
+    /// Shift-qualified directionals free for the panel docking gesture.
+    ///
+    /// See [`Component::docks_as_viewer`]. `false` when nothing is mounted,
+    /// so a caller must not treat "no modal" as "docks".
+    pub fn top_docks_as_viewer(&self) -> bool {
+        self.stack.back().is_some_and(|top| top.docks_as_viewer())
+    }
+
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         if key.code == crossterm::event::KeyCode::Tab {
             return self.handle_tab(

@@ -215,6 +215,11 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
             ..
         } => {
             tracing::debug!(target: "codegg::tui::events", tool = %tool_name, "ToolCallStarted");
+            app.session_state.running_tool =
+                Some(crate::tui::app::state::session::RunningTool::new(
+                    tool_id.clone(),
+                    tool_name.clone(),
+                ));
             app.messages_state.messages.finalize_streaming();
             app.streaming_active = true;
             match serde_json::from_str::<serde_json::Value>(&arguments) {
@@ -258,6 +263,16 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
             } else {
                 crate::session::message::ToolStatus::Error
             };
+            // Matches the daemon path: clear only on an id match, so a late
+            // out-of-order result cannot un-track a call still in flight.
+            if app
+                .session_state
+                .running_tool
+                .as_ref()
+                .is_some_and(|running| running.tool_id == tool_id)
+            {
+                app.session_state.running_tool = None;
+            }
             app.messages_state
                 .messages
                 .update_tool_call(&tool_id, output, status, None, None, None);

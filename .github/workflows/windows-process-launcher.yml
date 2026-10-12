@@ -1,0 +1,153 @@
+name: Windows process launcher
+
+on:
+  push:
+    branches: [work/windows-native-sandbox-foundation]
+    paths:
+      - '.github/workflows/windows-process-launcher.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/managed_process.rs'
+      - 'src/managed_process/**'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'src/tool/bash/process.rs'
+      - 'src/tool/mod.rs'
+      - 'src/tool/factory.rs'
+      - 'src/scheduler/executors.rs'
+      - 'crates/codegg-config/src/schema.rs'
+      - 'crates/codegg-config/src/paths.rs'
+      - 'crates/egggit/Cargo.toml'
+      - 'crates/egggit/src/**'
+      - 'tests/windows_process_launcher.rs'
+      - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_acl_lease.rs'
+      - 'tests/windows_sandbox_adversarial.rs'
+      - 'research/windows-native-sandbox/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  process-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Record Windows runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          rustc --version --verbose
+
+      - name: Record disposable runner privilege evidence
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          $groups = whoami /groups
+          $highIntegrity = [bool]($groups | Select-String 'S-1-16-12288')
+          $uac = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA
+          "Runner identity: $($identity.Name)"
+          "Administrator role: $isAdministrator"
+          "High integrity token: $highIntegrity"
+          "UAC enabled: $([bool]$uac)"
+          if (-not $isAdministrator -or -not $highIntegrity) {
+            throw 'C011 requires an elevated administrator token on its disposable Windows runner.'
+          }
+          @(
+            '### Disposable Windows runner privilege evidence'
+            ''
+            "- Administrator role: ``$isAdministrator``"
+            "- High integrity token: ``$highIntegrity``"
+            "- UAC enabled: ``$([bool]$uac)``"
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: AppContainer filesystem access proof
+        shell: pwsh
+        run: |
+          $proofOutput = @()
+          try {
+            ./research/windows-native-sandbox/appcontainer-access-proof.ps1 *>&1 |
+              Tee-Object -Variable proofOutput
+          } catch {
+            $failureText = @(
+              ($proofOutput | Out-String)
+              ($_ | Out-String)
+            ) -join "`n"
+            $failureText = ($failureText -replace '[\r\n]+', ' ').Trim()
+            if ($failureText.Length -gt 1800) {
+              $failureText = $failureText.Substring(0, 1800)
+            }
+            Write-Output "::error title=AppContainer proof diagnostics::$failureText"
+            @(
+              '### AppContainer filesystem access proof failure'
+              ''
+              '```text'
+              ($failureText)
+              '```'
+            ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
+
+      - name: Windows managed process launcher tests
+        run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
+
+      - name: Windows suspended-target failure injection
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture
+
+      - name: Restricted stdio setup failure injection
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::restricted_ -- --nocapture --test-threads=1
+
+      - name: Managed environment block control test
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_environment_block_is_accepted_by_create_process -- --nocapture
+
+      - name: Sandbox status frame rejection tests
+        run: cargo test --locked -p codegg --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture
+
+      - name: Test-only restricted managed process integration
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_restricted_managed_process -- --nocapture --test-threads=1
+
+      - name: Journaled Windows ACL lease and recovery tests
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_acl_lease -- --nocapture --test-threads=1
+
+      - name: Windows sandbox existing-root adversarial qualification
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_adversarial -- --nocapture --test-threads=1
+
+      - name: Windows ACL lease failure and recovery unit tests
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib windows_acl_lease -- --nocapture --test-threads=1
+
+      - name: Rust AppContainer launch ordering and cleanup proof
+        run: cargo test --locked -p codegg --lib managed_process::windows::tests::appcontainer_ -- --nocapture
+
+      - name: Windows native shell and policy inputs
+        shell: pwsh
+        run: |
+          cargo test --locked -p codegg --lib windows_policy_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib raw_shell_keeps_command_text_in_one_argument -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib configured_windows_shells_resolve_outside_path -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib cmd_shell_text_moves_to_the_unescaped_command_channel -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib native_shell_receives_a_private_per_run_temp_directory -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib native_shell_can_run_common_toolchain_smoke_commands -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib configured_cmd_shell_executes_raw_text -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p codegg --lib configured_git_bash_executes_raw_text -- --nocapture
+

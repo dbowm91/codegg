@@ -199,9 +199,18 @@ def main() -> int:
             fail(
                 f"crates/codegg-core/src/work_plan/repository_binding.rs: missing table {table}"
             )
+    migration_cases = re.findall(r"^\s*(\d+)\s*=>\s*migrate_v\d+\(", schema, re.MULTILINE)
     storage = read("crates/codegg-core/src/storage/mod.rs")
-    if not re.search(r"STORAGE_LAYOUT_VERSION:\s*u32\s*=\s*68", storage):
-        fail("crates/codegg-core/src/storage/mod.rs: STORAGE_LAYOUT_VERSION must be 68")
+    layout_version = re.search(r"STORAGE_LAYOUT_VERSION:\s*u32\s*=\s*(\d+)", storage)
+    if not migration_cases:
+        fail("crates/codegg-core/src/session/schema.rs: no numbered migrations found")
+    elif layout_version is None:
+        fail("crates/codegg-core/src/storage/mod.rs: STORAGE_LAYOUT_VERSION is missing")
+    elif int(layout_version.group(1)) != max(map(int, migration_cases)):
+        fail(
+            "crates/codegg-core/src/storage/mod.rs: STORAGE_LAYOUT_VERSION must match "
+            f"the highest migration ({max(map(int, migration_cases))})"
+        )
 
     if FAILURES:
         print("repository-binding ownership check failed:")

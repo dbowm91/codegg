@@ -1558,13 +1558,35 @@ impl Default for SidebarWidget {
 
 impl Widget for &SidebarWidget {
     fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
+        self.render_with_title(area, buf, " Sidebar ", false);
+    }
+}
+
+impl SidebarWidget {
+    /// Render with a caller-supplied title and focus styling.
+    ///
+    /// The side column is a swappable panel host now, so the border title
+    /// has to name whichever panel is active. The body, scrollbar, and
+    /// tooltip logic is identical to the plain `Widget` path — this only
+    /// moves the title and the border colour to the caller.
+    pub fn render_with_title(
+        &self,
+        area: Rect,
+        buf: &mut ratatui::prelude::Buffer,
+        title: &str,
+        focused: bool,
+    ) {
         let lines = self.content_lines(area.width);
         let scroll_offset = self.scroll_offset.min(self.max_scroll(area));
 
         let block = Block::default()
-            .title(" Sidebar ")
+            .title(title.to_string())
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border))
+            .border_style(Style::default().fg(if focused {
+                self.theme.primary
+            } else {
+                self.theme.border
+            }))
             .style(Style::default().bg(self.theme.background));
 
         let paragraph = Paragraph::new(lines)

@@ -80,6 +80,7 @@ impl CoreClient for FakeM005Client {
                     actions_supported: false,
                     max_action_title_bytes: 0,
                     max_action_prompt_bytes: 0,
+                    backward_paging: true,
                 },
             },
             CoreRequest::ChatChannelEnsure { project_id, .. } => {

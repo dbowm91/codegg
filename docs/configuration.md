@@ -118,6 +118,24 @@ That is enough to run a turn once `ANTHROPIC_API_KEY` is set. See
 `docs/providers.md` for the credential options, including the encrypted
 store.
 
+## Windows model shell
+
+On Windows, raw model shell commands use Windows PowerShell by default. To
+select `cmd.exe` explicitly, add:
+
+```jsonc
+{
+  "shell": { "windows_shell": "cmd" }
+}
+```
+
+`"powershell"` is also accepted, along with `"git-bash"` and `"wsl"` when
+those executors are installed. The setting is ignored on Unix and applies only
+to raw shell text; structured executable-and-argument calls bypass shell
+parsing. It does not enable Windows filesystem or network containment, so
+constrained Windows requests remain unavailable until native enforcement is
+qualified.
+
 ## Semantic model routing
 
 Semantic routing is opt-in and only reachable through an exact `virtual:<name>`

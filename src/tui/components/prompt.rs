@@ -13,7 +13,7 @@ pub struct PromptWidget {
     pub focused: bool,
     pub theme: Arc<Theme>,
     pub prefix: Span<'static>,
-    pub mode_indicator: Span<'static>,
+    pub mode_indicator: Line<'static>,
     pub placeholder: String,
     pub scroll: usize,
     /// Horizontal offset used to keep the cursor visible on long prompt lines.
@@ -31,7 +31,7 @@ impl PromptWidget {
             focused: true,
             theme,
             prefix: Span::raw("❯ "),
-            mode_indicator: Span::raw(""),
+            mode_indicator: Line::default(),
             placeholder: "Ask anything…".to_string(),
             scroll: 0,
             horizontal_scroll: 0,
@@ -49,7 +49,10 @@ impl PromptWidget {
         self.prefix = prefix;
     }
 
-    pub fn set_mode_indicator(&mut self, indicator: Span<'static>) {
+    /// Takes a whole `Line` rather than a `Span` because the mode row
+    /// carries two send targets (`[BUILD]`/`[CHAT]`) that must be styled
+    /// differently from each other to show which one is armed.
+    pub fn set_mode_indicator(&mut self, indicator: Line<'static>) {
         self.mode_indicator = indicator;
     }
 
@@ -339,13 +342,18 @@ impl Widget for &PromptWidget {
             String::new()
         };
 
-        all_lines.push(Line::from(Span::styled(
-            format!(
-                "{}{}{}",
-                prefix_text, self.mode_indicator.content, self.prefix.content
-            ),
-            Style::default().fg(self.theme.primary),
-        )));
+        all_lines.push(Line::from(
+            std::iter::once(Span::styled(
+                prefix_text,
+                Style::default().fg(self.theme.primary),
+            ))
+            .chain(self.mode_indicator.spans.iter().cloned())
+            .chain(std::iter::once(Span::styled(
+                self.prefix.content.to_string(),
+                Style::default().fg(self.theme.primary),
+            )))
+            .collect::<Vec<_>>(),
+        ));
 
         let text_lines = if self.text.is_empty() && !self.focused {
             vec![Line::from(Span::styled(

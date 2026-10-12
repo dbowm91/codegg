@@ -177,6 +177,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx: 0,
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
                             reasoning: None,
+                            human_shell_promotion_ids: Vec::new(),
                         })).await?;
                         match response {
                             CoreResponse::Ack => active = Some(ActivePrompt {
@@ -188,6 +189,28 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                                 close_requested: false,
                                 cancel_sent: false,
                             }),
+                            CoreResponse::TurnAdmissionReceipt { receipt }
+                                if receipt.status == "accepted" =>
+                            {
+                                active = Some(ActivePrompt {
+                                    request_id: request.id.unwrap_or(Value::Null),
+                                    session_id: sid,
+                                    submission_event_floor,
+                                    turn_id: Some(receipt.turn_id),
+                                    cancel_requested: false,
+                                    close_requested: false,
+                                    cancel_sent: false,
+                                })
+                            }
+                            CoreResponse::TurnAdmissionReceipt { receipt } => {
+                                write_error(
+                                    &stdout,
+                                    request.id.unwrap_or(Value::Null),
+                                    -32002,
+                                    &format!("turn admission was not accepted ({})", receipt.status),
+                                )
+                                .await?;
+                            }
                             other => write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?,
                         }
                     }
@@ -670,6 +693,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                context_limit: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-2".into(),
                 stop_reason: "end_turn".into(),
@@ -684,6 +708,7 @@ mod tests {
                 output_tokens: None,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                context_limit: None,
                 session_id: "session-1".into(),
                 turn_id: "turn-1".into(),
                 stop_reason: "end_turn".into(),

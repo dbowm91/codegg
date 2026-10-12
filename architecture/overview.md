@@ -288,7 +288,7 @@ Counts below were re-measured against the current tree on **2026-10-06**.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 215 | `tests/*.rs` |
+| Integration test files | 226 | `tests/*.rs` |
 | CI guard scripts | 41 | `scripts/check_*` |
 
 ## Feature gates

@@ -283,9 +283,19 @@ impl JobExecutor for ManagedArgvExecutor {
         let started = std::time::Instant::now();
         let argv = match &ctx.job.payload {
             JobPayload::ManagedArgv { argv, .. } => argv.clone(),
-            JobPayload::Shell { command, argv, .. } => argv
-                .clone()
-                .unwrap_or_else(|| vec!["sh".into(), "-c".into(), command.clone()]),
+            JobPayload::Shell { command, argv, .. } => match argv.clone() {
+                Some(argv) => argv,
+                None => match crate::tool::bash::process::shell_argv(command, None) {
+                    Ok(argv) => argv,
+                    Err(error) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("shell resolution failed: {error}"),
+                        );
+                    }
+                },
+            },
             _ => {
                 return failure_completion(
                     started,
@@ -293,6 +303,20 @@ impl JobExecutor for ManagedArgvExecutor {
                     "unsupported payload kind".into(),
                 );
             }
+        };
+        #[cfg(windows)]
+        let mut argv = argv;
+        #[cfg(windows)]
+        let raw_cmd_command = match &ctx.job.payload {
+            JobPayload::Shell { command, .. } => {
+                match crate::tool::bash::process::extract_cmd_raw_command(command, &mut argv) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        return failure_completion(started, ExecutorStatus::Failed, error.into());
+                    }
+                }
+            }
+            _ => None,
         };
         let cwd = match &ctx.job.payload {
             JobPayload::ManagedArgv { cwd, .. } | JobPayload::Shell { cwd, .. } => {
@@ -322,6 +346,45 @@ impl JobExecutor for ManagedArgvExecutor {
                 ctx.attempt_id.as_str(),
             ),
         );
+        #[cfg(windows)]
+        if let Some(raw_command) = raw_cmd_command {
+            request = request.with_raw_command(raw_command);
+        }
+        let is_shell = matches!(&ctx.job.payload, JobPayload::Shell { .. });
+        #[cfg(windows)]
+        let _shell_temp = if is_shell {
+            match crate::tool::bash::process::create_shell_temp_dir() {
+                Ok(directory) => Some(directory),
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("shell temp setup failed: {error}"),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        if is_shell {
+            request.environment_policy = crate::tool::bash::process::bash_environment_policy();
+            #[cfg(windows)]
+            if request.raw_command.is_some() {
+                request.environment_policy = request
+                    .environment_policy
+                    .clone()
+                    .with_var(OsString::from("COMSPEC"), request.executable.clone());
+            }
+            #[cfg(windows)]
+            if let Some(directory) = _shell_temp.as_ref() {
+                let path = directory.path().as_os_str().to_owned();
+                request.environment_policy = request
+                    .environment_policy
+                    .clone()
+                    .with_var(OsString::from("TEMP"), path.clone())
+                    .with_var(OsString::from("TMP"), path);
+            }
+        }
         request.cancellation = ctx.cancellation.clone();
 
         let output = match crate::managed_process::ManagedProcessService::run(request).await {

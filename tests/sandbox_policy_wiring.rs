@@ -424,6 +424,26 @@ fn unsupported_host_takes_an_explicit_unavailable_path() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn unsupported_host_rejects_constrained_command_before_execution() {
+    use codegg::tool::bash::BashTool;
+    use codegg::tool::Tool;
+
+    if platform_sandbox_capability().is_available() {
+        // On a capable host this scenario cannot be exercised.
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let tool = BashTool::new().with_sandbox_profile(SandboxProfile::WorkspaceWrite, dir.path());
+    let error = tool
+        .execute(serde_json::json!({"command": "echo degraded-ok"}))
+        .await
+        .expect_err("an unsupported host must reject constrained Bash execution");
+    assert!(error
+        .to_string()
+        .contains("filesystem containment is unavailable"));
+}
+
 // ── Restart and recovery ────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

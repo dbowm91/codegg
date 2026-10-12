@@ -64,6 +64,8 @@ pub struct EditorWidget<'a> {
     pub busy: bool,
     /// The controller replica. Borrowed, never retained.
     pub snapshot: &'a DocumentSnapshot,
+    /// Bounded diagnostics and semantic spans for this document generation.
+    pub lsp: &'a crate::tui::editor_lsp::EditorLspState,
     /// Focused editor presentation, mutated only to resolve the viewport.
     pub presentation: &'a mut crate::tui::document_session::TuiDocumentPresentation,
     pub theme: Arc<Theme>,
@@ -103,6 +105,7 @@ impl EditorWidget<'_> {
         if text_area.height > 0 {
             self.render_text(frame, text_area);
         }
+        self.render_lsp_panel(frame, area);
     }
 
     fn mode_label(&self) -> &'static str {
@@ -192,22 +195,33 @@ impl EditorWidget<'_> {
                 line_index + 1,
                 width = viewport.gutter as usize - 1
             );
+            let marker = self
+                .lsp
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.range.start_line as usize == line_index)
+                .map(|diagnostic| diagnostic.severity)
+                .min();
+            let marker = match marker {
+                Some(1) => "!",
+                Some(2) => "▲",
+                Some(_) => "·",
+                None => " ",
+            };
             let mut spans = vec![Span::styled(
-                number,
+                format!("{number}{marker}"),
                 if is_current {
                     current_gutter
                 } else {
                     gutter_style
                 },
             )];
-            spans.push(Span::styled(
-                self.line_slice(line_index, viewport),
-                if is_current {
-                    current_style
-                } else {
-                    Style::default()
-                },
-            ));
+            let text_style = if is_current {
+                current_style
+            } else {
+                Style::default()
+            };
+            spans.extend(self.line_spans(line_index, viewport, text_style));
             lines.push(Line::from(spans));
         }
         // An empty document still has one logical line, so `lines` is
@@ -221,6 +235,137 @@ impl EditorWidget<'_> {
         }
         frame.render_widget(Clear, area);
         frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn render_lsp_panel(&self, frame: &mut Frame, area: Rect) {
+        use crate::tui::editor_lsp::{DiagnosticsViewStatus, EditorLspPanel};
+        let Some(panel) = self.lsp.panel else { return };
+        let height = area.height.min(12);
+        let width = area.width.min(100);
+        if height < 3 || width < 12 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        let theme = Arc::clone(&self.theme);
+        let (title, mut lines) = match panel {
+            EditorLspPanel::Diagnostics => {
+                let status = match self.lsp.diagnostics_status {
+                    DiagnosticsViewStatus::Idle => "not requested".to_string(),
+                    DiagnosticsViewStatus::Loading => "refreshing".to_string(),
+                    DiagnosticsViewStatus::Ready => "current".to_string(),
+                    DiagnosticsViewStatus::NotReady => "language server not ready".to_string(),
+                    DiagnosticsViewStatus::Unavailable => "unavailable".to_string(),
+                };
+                let stale = if self.lsp.diagnostics_stale {
+                    " · showing stale results"
+                } else {
+                    ""
+                };
+                let mut lines = vec![Line::from(Span::styled(
+                    format!("{status}{stale}"),
+                    Style::default().fg(theme.warning),
+                ))];
+                lines.extend(self.lsp.diagnostics.iter().take(8).enumerate().map(
+                    |(index, item)| {
+                        Line::from(format!(
+                            "{}{}:{} [{}] {}",
+                            if index == self.lsp.selected_index {
+                                "> "
+                            } else {
+                                "  "
+                            },
+                            item.range.start_line + 1,
+                            item.range.start_column + 1,
+                            severity_label(item.severity),
+                            crate::tui::editor_lsp::truncate_chars(&item.message, 120)
+                        ))
+                    },
+                ));
+                if self.lsp.diagnostics.is_empty()
+                    && self.lsp.diagnostics_status == DiagnosticsViewStatus::Ready
+                {
+                    lines.push(Line::from("No diagnostics"));
+                }
+                (" Diagnostics · Enter jump · r refresh · Esc close ", lines)
+            }
+            EditorLspPanel::ReadResult => {
+                let mut lines = Vec::new();
+                if self.lsp.read_loading {
+                    lines.push(Line::from("Request in progress…"));
+                }
+                if let Some(error) = &self.lsp.read_error {
+                    lines.push(Line::from(crate::tui::editor_lsp::truncate_chars(
+                        error, 120,
+                    )));
+                }
+                if let Some(result) = &self.lsp.read_result {
+                    use codegg_protocol::lsp::{LspReadPayloadDto, LspReadStatus};
+                    if result.status == LspReadStatus::NotReady {
+                        lines.push(Line::from("Language server not ready"));
+                    }
+                    match result.payload.as_ref() {
+                        Some(LspReadPayloadDto::Hover { text, .. }) => lines.push(Line::from(
+                            crate::tui::editor_lsp::truncate_chars(text, 240),
+                        )),
+                        Some(LspReadPayloadDto::Locations { locations, .. }) => lines.extend(
+                            locations.iter().take(8).enumerate().map(|(index, loc)| {
+                                Line::from(format!(
+                                    "{}{}:{} · {}",
+                                    if index == self.lsp.selected_index {
+                                        "> "
+                                    } else {
+                                        "  "
+                                    },
+                                    loc.path,
+                                    loc.start_line + 1,
+                                    loc.workspace_relative_path
+                                        .as_deref()
+                                        .unwrap_or("outside workspace; display only")
+                                ))
+                            }),
+                        ),
+                        Some(LspReadPayloadDto::Symbols { symbols, .. }) => lines.extend(
+                            symbols.iter().take(8).enumerate().map(|(index, symbol)| {
+                                Line::from(format!(
+                                    "{}{} · {}:{}",
+                                    if index == self.lsp.selected_index {
+                                        "> "
+                                    } else {
+                                        "  "
+                                    },
+                                    crate::tui::editor_lsp::truncate_chars(&symbol.name, 80),
+                                    symbol.range.path,
+                                    symbol.range.start_line + 1
+                                ))
+                            }),
+                        ),
+                        _ => {}
+                    }
+                }
+                if lines.is_empty() {
+                    lines.push(Line::from("No results"));
+                }
+                (" LSP result · Enter opens safe target · Esc close ", lines)
+            }
+        };
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        lines.truncate(inner.height as usize);
+        frame.render_widget(
+            Paragraph::new(lines).scroll((self.lsp.selected_index as u16, 0)),
+            inner,
+        );
     }
 
     /// The visible display-column slice of `line_index`, truncated to the
@@ -255,6 +400,120 @@ impl EditorWidget<'_> {
         }
         out
     }
+
+    fn line_spans(
+        &self,
+        line_index: usize,
+        viewport: EditorViewport,
+        base: Style,
+    ) -> Vec<Span<'static>> {
+        use crate::tui::editor_lsp::utf16_column_to_byte;
+        let Some(start) = editor::line_start(self.snapshot, line_index) else {
+            return vec![];
+        };
+        let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
+        if end.saturating_sub(start) > 16 * 1024 {
+            return vec![Span::styled(self.line_slice(line_index, viewport), base)];
+        }
+        let Ok(line) = self.snapshot.read_bytes(start, end) else {
+            return vec![];
+        };
+        let mut display = 0usize;
+        let mut visible_start = line.len();
+        let mut visible_end = line.len();
+        let mut started = false;
+        let limit = viewport
+            .column
+            .saturating_add(viewport.text_columns as usize);
+        for (byte, ch) in line.char_indices() {
+            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            let next = display.saturating_add(width);
+            if !started && next > viewport.column {
+                visible_start = byte;
+                started = true;
+            }
+            if started && display < limit {
+                visible_end = byte + ch.len_utf8();
+            }
+            display = next;
+        }
+        if !started && viewport.column == 0 {
+            visible_start = 0;
+            visible_end = line.len();
+        } else if !started {
+            return vec![Span::styled(String::new(), base)];
+        }
+        let visible_end = visible_end.max(visible_start).min(line.len());
+        let mut boundaries = vec![visible_start, visible_end];
+        let mut ranges = Vec::new();
+        for token in self
+            .lsp
+            .semantic_tokens
+            .iter()
+            .filter(|token| token.line as usize == line_index)
+        {
+            let Some(style) = known_token_style(&token.token_type) else {
+                continue;
+            };
+            let Some(token_end) = token.character.checked_add(token.length) else {
+                continue;
+            };
+            let Some(token_start) = utf16_column_to_byte(&line, token.character) else {
+                continue;
+            };
+            let Some(token_end) = utf16_column_to_byte(&line, token_end) else {
+                continue;
+            };
+            let range = token_start.max(visible_start)..token_end.min(visible_end);
+            if range.start < range.end {
+                boundaries.push(range.start);
+                boundaries.push(range.end);
+                ranges.push((range, style));
+            }
+        }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        boundaries
+            .windows(2)
+            .filter_map(|pair| {
+                let range = pair[0]..pair[1];
+                if range.start == range.end {
+                    return None;
+                }
+                let text = line.get(range.clone())?.to_string();
+                let style = ranges
+                    .iter()
+                    .find(|(token_range, _)| {
+                        token_range.start <= range.start && token_range.end >= range.end
+                    })
+                    .map_or(base, |(_, token_style)| base.patch(*token_style));
+                Some(Span::styled(text, style))
+            })
+            .collect()
+    }
+}
+
+fn severity_label(severity: u32) -> &'static str {
+    match severity {
+        1 => "error",
+        2 => "warning",
+        3 => "info",
+        _ => "hint",
+    }
+}
+
+fn known_token_style(token_type: &str) -> Option<Style> {
+    Some(match token_type {
+        "keyword" => Style::default().fg(ratatui::style::Color::Yellow),
+        "string" => Style::default().fg(ratatui::style::Color::Green),
+        "number" => Style::default().fg(ratatui::style::Color::Cyan),
+        "comment" => Style::default()
+            .fg(ratatui::style::Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
+        "function" | "method" => Style::default().fg(ratatui::style::Color::Magenta),
+        "type" | "class" | "enum" | "struct" => Style::default().fg(ratatui::style::Color::Blue),
+        _ => return None,
+    })
 }
 
 fn display_width_str(text: &str) -> usize {
@@ -317,6 +576,7 @@ mod tests {
             cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         };
+        let lsp = crate::tui::editor_lsp::EditorLspState::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -331,6 +591,7 @@ mod tests {
                     writable: options.writable,
                     busy: options.busy,
                     snapshot: &snapshot,
+                    lsp: &lsp,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }

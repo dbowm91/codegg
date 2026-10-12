@@ -290,6 +290,22 @@ pub struct MessageData {
     pub message_id: String,
     #[serde(default)]
     pub parts: Vec<PartInfo>,
+    /// Author of this message. Absent on rows imported from other tools,
+    /// which predate the field; readers fall back to inferring it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<MessageRole>,
+}
+
+/// Author of a persisted transcript message.
+///
+/// Mirrors `codegg_core::session::message::MessageRole`; the two types are
+/// kept in step by the JSON round-trip in `message_to_dto`, which requires
+/// identical serde attributes on both sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -243,7 +243,7 @@ pub fn platform_sandbox_capability() -> SandboxCapability {
 /// `Unconstrained` is only ever reached when no containment was requested
 /// (an explicit `FullHost` profile, or no policy at all). A constrained
 /// request on a host without containment is refused — it never degrades
-/// into `Unconstrained`.
+/// into `Unconstrained`. The caller rejects it before process creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SandboxExecutionPath {
     /// No CodeGG filesystem containment was requested (explicit FullHost).
@@ -251,7 +251,8 @@ pub enum SandboxExecutionPath {
     /// The child helper will enforce the policy before exec.
     Contained { backend: BackendId },
     /// Containment was requested but this host cannot provide it. The caller
-    /// must refuse to launch the command.
+    /// must refuse to launch the command; it is never an authorization to run
+    /// without containment.
     Unavailable { reason: String },
 }
 
@@ -283,8 +284,8 @@ impl SandboxExecutionPath {
 /// Decide the execution path for a configured (or absent) sandbox policy.
 ///
 /// This is the single place that turns "containment was requested" plus the
-/// host capability into a named path, so the bash tool cannot silently pick
-/// containment on a host that has none.
+/// host capability into a named path, so the bash tool can reject a
+/// constrained request on a host that has no backend.
 pub fn sandbox_execution_path(config: Option<&SandboxConfig>) -> SandboxExecutionPath {
     if !config.is_some_and(|config| config.enabled) {
         return SandboxExecutionPath::Unconstrained;
@@ -411,6 +412,13 @@ impl SandboxConfig {
                 "cannot build a sandbox launch spec for a disabled sandbox".to_string(),
             ));
         }
+        #[cfg(windows)]
+        if policy::windows_profile_root().is_none() {
+            return Err(ToolError::Permission(
+                "Windows USERPROFILE is unavailable; sensitive credential roots cannot be resolved"
+                    .to_string(),
+            ));
+        }
         let target = resolve_executable(target.as_ref()).ok_or_else(|| {
             ToolError::Permission(format!(
                 "sandbox target could not be resolved: {}",
@@ -425,10 +433,8 @@ impl SandboxConfig {
             self.allowed_paths
                 .iter()
                 .map(|raw| {
-                    std::fs::canonicalize(raw).map_err(|e| {
-                        ToolError::Permission(format!(
-                            "sandbox path '{raw}' could not resolve: {e}"
-                        ))
+                    policy::resolve_policy_path(Path::new(raw)).map_err(|e| {
+                        ToolError::Permission(format!("sandbox path '{raw}' is invalid: {e}"))
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?
@@ -437,19 +443,34 @@ impl SandboxConfig {
         let mut read_paths = roots;
         read_paths.push(target.clone());
         // Curated system/runtime and read-only toolchain inputs. Shared user
-        // configuration and cache ancestors are deliberately excluded.
-        read_paths.extend(
-            policy::tool_read_allowances()
-                .into_iter()
-                .filter(|path| path.exists()),
-        );
-        let write_paths = if self.mode.is_writable() {
+        // configuration and cache ancestors are deliberately excluded. Only
+        // existing paths are kept: the curated sets name locations for both
+        // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
+        // naming a missing path is a hard Landlock setup error.
+        for path in policy::tool_read_allowances()
+            .into_iter()
+            .filter(|path| path.exists())
+        {
+            read_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                ToolError::Permission(format!(
+                    "sandbox runtime read root '{}' is invalid: {reason}",
+                    path.display()
+                ))
+            })?);
+        }
+        let mut write_paths = if self.mode.is_writable() {
             let mut writes = write_roots;
-            writes.extend(
-                policy::tool_write_allowances()
-                    .into_iter()
-                    .filter(|path| path.exists()),
-            );
+            for path in policy::tool_write_allowances()
+                .into_iter()
+                .filter(|path| path.exists())
+            {
+                writes.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                    ToolError::Permission(format!(
+                        "sandbox runtime write root '{}' is invalid: {reason}",
+                        path.display()
+                    ))
+                })?);
+            }
             writes
         } else {
             Vec::new()
@@ -458,15 +479,21 @@ impl SandboxConfig {
         // ReadOnly: they hold no persistent state, and without them every
         // `> /dev/null` and `2>&1` fails. See `policy::device_write_allowances`.
         // Same existence filter: e.g. `/dev/console` may not exist on Linux.
-        let mut write_paths = write_paths;
-        write_paths.extend(
-            policy::device_write_allowances()
-                .into_iter()
-                .filter(|path| path.exists()),
-        );
+        for path in policy::device_write_allowances()
+            .into_iter()
+            .filter(|path| path.exists())
+        {
+            write_paths.push(policy::resolve_policy_path(&path).map_err(|reason| {
+                ToolError::Permission(format!(
+                    "sandbox device write root '{}' is invalid: {reason}",
+                    path.display()
+                ))
+            })?);
+        }
         // Operator-declared denies are resolved against the launch cwd and
         // retained even when absent. Policy normalization resolves the nearest
         // existing parent so future-created sensitive paths stay excluded.
+        // The backend's own sensitive-path set lands in the same list.
         let base = cwd.unwrap_or_else(|| Path::new("."));
         let mut deny_paths: Vec<PathBuf> = self
             .deny_paths
@@ -695,6 +722,7 @@ pub(crate) fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> 
         .map_err(|e| e.replace("installation-owned", "trusted sandbox helper"))
 }
 
+#[cfg(unix)]
 fn resolve_executable(path: &Path) -> Option<PathBuf> {
     if path.is_absolute() {
         return path.canonicalize().ok();
@@ -705,6 +733,16 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
             .find(|candidate| candidate.is_file())
             .and_then(|candidate| candidate.canonicalize().ok())
     })
+}
+
+#[cfg(windows)]
+fn resolve_executable(path: &Path) -> Option<PathBuf> {
+    // Relative executable names would let PATH select a caller-controlled
+    // binary. Windows policy launch descriptions require an absolute path.
+    path.is_absolute()
+        .then(|| policy::resolve_policy_path(path).ok())
+        .flatten()
+        .filter(|resolved| resolved.is_file())
 }
 
 /// Probe the Landlock backend specifically.

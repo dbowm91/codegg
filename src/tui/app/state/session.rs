@@ -68,6 +68,28 @@ pub struct ChangedFile {
     pub diff_state: DiffStatsState,
 }
 
+/// A tool call the TUI has seen start but not yet seen finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningTool {
+    pub tool_id: String,
+    pub name: String,
+    pub started: std::time::Instant,
+}
+
+impl RunningTool {
+    pub fn new(tool_id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            name: name.into(),
+            started: std::time::Instant::now(),
+        }
+    }
+
+    pub fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+}
+
 pub struct SessionState {
     pub session: Option<Session>,
     pub session_status: SessionStatus,
@@ -81,6 +103,14 @@ pub struct SessionState {
     /// the spinner runs forever with no error text anywhere. This timestamp is
     /// the stall watchdog's input; it is refreshed by every incoming turn event.
     pub working_since: Option<std::time::Instant>,
+    /// The tool call currently in flight, if any.
+    ///
+    /// A long tool call is silent by construction — `bash` delivers its
+    /// output only on completion, so a multi-minute build emits no events at
+    /// all. The stall watchdog measures silence, which made it kill healthy
+    /// turns that were simply running several slow commands. Tracking the
+    /// in-flight call lets the watchdog tell "working" apart from "wedged".
+    pub running_tool: Option<RunningTool>,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,

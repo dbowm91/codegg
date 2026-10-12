@@ -894,6 +894,17 @@ through `crate::tool::util::validate_target_path` — the identical primitive
 `src/lsp/mutation.rs` uses to apply a preview, so a file that cannot be
 written also cannot be read.
 
+#### Workspace-relative navigation identity (ADR-0018)
+
+`LspRangeDto.path` remains display text. Location and symbol results may also
+carry `workspace_relative_path`, an optional locator derived by the daemon from
+the returned file URI only after canonicalizing both the target and the
+session-authorized workspace root and proving containment. A result outside
+that root, or one whose identity cannot be proved, has no locator and remains
+display-only. The locator is not authority: the frontend opens it only through
+`DocumentOpen`, which repeats path containment and `file.read` authorization.
+Older responses omit the field and deserialize as non-navigable.
+
 #### Diagnostics: publish on change, pull for correctness
 
 `DiagnosticsTracker` holds, per file, the digest of the last published set and
@@ -955,6 +966,18 @@ ruling that preview and diagnostic state stay bounded and non-durable applies.
 The cost is that after a daemon restart a client has no sequence history and
 must re-pull — which is exactly why the pull, not the stream, is the
 correctness authority.
+
+`LspDiagnosticsResultDto` carries `LspDiagnosticsStatus::{Ready, NotReady}`
+separately from `files`. A complete `Ready` response with no files is an
+authoritative empty set. A missing project snapshot or unavailable LSP service
+is `NotReady`; it must preserve the client's previous view and must never be
+rendered as “no diagnostics.” Older daemon responses that omit this additive
+field deserialize as `NotReady` for compatibility and safety.
+
+The change publisher currently has no production driver. The subscribe path
+provides its initial authoritative snapshot, but this implementation does not
+emit ongoing diagnostic changes. Consumers must use the pull result and must
+not claim live push updates until a separately qualified driver exists.
 
 ### download.rs - Binary Download
 

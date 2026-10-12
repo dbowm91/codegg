@@ -44,6 +44,65 @@ pub struct BackendPolicy {
     pub denied_roots: Vec<PathBuf>,
 }
 
+/// Resolve a policy root for later backend compilation. On Windows this is a
+/// conservative lexical and reparse-point check only; it is not a security
+/// boundary against a path being replaced after the check. M004 must bind
+/// enforcement to opened handles and ACL identity before constrained runs are
+/// enabled.
+pub fn resolve_policy_path(path: &std::path::Path) -> Result<PathBuf, String> {
+    #[cfg(unix)]
+    {
+        path.canonicalize().map_err(|error| error.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        let raw = path.as_os_str().to_string_lossy();
+        let folded = raw.replace('/', "\\");
+        if folded.starts_with(r"\\?\") {
+            return Err("extended-length device paths are not accepted as policy roots".into());
+        }
+        if folded.starts_with(r"\\") || folded.starts_with(r"\\.\") {
+            return Err("UNC and device namespace paths are not accepted as policy roots".into());
+        }
+        if !path.is_absolute() {
+            return Err("Windows policy roots must be absolute drive paths".into());
+        }
+        if folded
+            .split('\\')
+            .skip(1)
+            .any(|component| component.contains(':'))
+        {
+            return Err("alternate data stream syntax is not accepted in policy roots".into());
+        }
+        if path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("parent traversal is not accepted in Windows policy roots".into());
+        }
+
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+                    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        return Err(format!(
+                            "reparse-point component is not accepted in policy root: {}",
+                            current.display()
+                        ));
+                    }
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        path.canonicalize().map_err(|error| error.to_string())
+    }
+}
+
 impl BackendPolicy {
     /// Canonicalize, de-duplicate, and drop non-existent grant entries.
     ///
@@ -308,6 +367,7 @@ pub fn validate_landlock_write_exclusions(
 ///
 /// This is the "tool compatible" half of the policy. It grants **read**
 /// only; none of these paths become writable under any profile.
+#[cfg(unix)]
 pub fn tool_read_allowances() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = [
         // Interpreter/runtime search path and shared objects. On macOS the
@@ -350,10 +410,72 @@ pub fn tool_read_allowances() -> Vec<PathBuf> {
     paths
 }
 
+/// Windows runtime and installed-tool locations required to execute native
+/// commands. These roots are read inputs for a future enforcement backend;
+/// they do not enable Windows constrained launches in this milestone.
+#[cfg(windows)]
+pub fn tool_read_allowances() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(system_root) = windows_env_dir("SystemRoot").or_else(|| windows_env_dir("WINDIR")) {
+        paths.extend([
+            system_root.clone(),
+            system_root.join("System32"),
+            system_root.join("SysWOW64"),
+            system_root.join("System32/WindowsPowerShell/v1.0"),
+        ]);
+    }
+    for name in ["ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles"] {
+        if let Some(root) = windows_env_dir(name) {
+            paths.push(root);
+        }
+    }
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".cargo",
+            ".rustup",
+            ".gitconfig",
+            ".npm",
+            ".cache",
+            "AppData/Local/Programs",
+            "AppData/Roaming/npm",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    paths
+}
+
 /// Shared scratch and global package caches are intentionally absent. The
 /// managed process owner supplies a fresh private scratch root per launch.
+#[cfg(unix)]
 pub fn tool_write_allowances() -> Vec<PathBuf> {
     Vec::new()
+}
+
+/// Temporary and package-cache write roots used by native developer tools.
+/// M004 must replace ambient TEMP/TMP authority with per-run scratch before
+/// it advertises constrained Windows execution.
+#[cfg(windows)]
+pub fn tool_write_allowances() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for name in ["TEMP", "TMP"] {
+        if let Some(root) = windows_env_dir(name) {
+            paths.push(root);
+        }
+    }
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".cargo",
+            ".rustup",
+            ".npm",
+            ".cache",
+            "AppData/Local/Temp",
+            "AppData/Local/Cargo",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    paths
 }
 
 /// Stateless device nodes that must stay writable under **every** profile,
@@ -366,6 +488,7 @@ pub fn tool_write_allowances() -> Vec<PathBuf> {
 /// every `2>&1` fail outright without them. Under Landlock this also matters:
 /// the read allowance for `/dev` grants no `WriteFile` right, so a
 /// redirect-capable shell needs these named explicitly in the write set.
+#[cfg(unix)]
 pub fn device_write_allowances() -> Vec<PathBuf> {
     [
         "/dev/null",
@@ -381,11 +504,17 @@ pub fn device_write_allowances() -> Vec<PathBuf> {
     .collect()
 }
 
+#[cfg(windows)]
+pub fn device_write_allowances() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// Credential material and CodeGG's own secret store.
 ///
 /// Denied on every backend. Under a deny-first backend this is redundant,
 /// but it is stated here so the policy has one intent and so a future
 /// allow-default backend inherits it for free.
+#[cfg(unix)]
 pub fn sensitive_deny_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = [
         // Host-wide secrets and privilege material. Named individually
@@ -438,7 +567,42 @@ pub fn sensitive_deny_paths() -> Vec<PathBuf> {
     paths
 }
 
+#[cfg(windows)]
+pub fn sensitive_deny_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = home_dir() {
+        for relative in [
+            ".ssh",
+            ".aws",
+            ".gnupg",
+            ".gpg",
+            ".kube",
+            ".docker",
+            ".netrc",
+            ".npmrc",
+            ".pypirc",
+            ".gem/credentials",
+            ".config/gh/hosts.yml",
+            ".config/gcloud",
+            ".azure",
+            ".terraform.d",
+            ".config/codegg",
+            ".codegg",
+            "AppData/Roaming/codegg",
+            "AppData/Local/codegg",
+            "AppData/Roaming/Microsoft/Credentials",
+            "AppData/Local/Microsoft/Credentials",
+            "AppData/Roaming/Microsoft/Protect",
+            "AppData/Local/Microsoft/Vault",
+        ] {
+            paths.push(home.join(relative));
+        }
+    }
+    paths
+}
+
 /// `$HOME`, if it exists and is a usable home directory.
+#[cfg(unix)]
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
@@ -446,7 +610,25 @@ fn home_dir() -> Option<PathBuf> {
         .filter(|path| path.is_dir())
 }
 
-#[cfg(test)]
+#[cfg(windows)]
+fn home_dir() -> Option<PathBuf> {
+    windows_profile_root()
+}
+
+#[cfg(windows)]
+pub fn windows_profile_root() -> Option<PathBuf> {
+    windows_env_dir("USERPROFILE").filter(|path| path.is_dir())
+}
+
+#[cfg(windows)]
+fn windows_env_dir(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::security::sandbox::SandboxConfig;
@@ -537,29 +719,30 @@ mod tests {
     #[test]
     fn broad_allowance_is_split_around_existing_and_future_denies() {
         let dir = tempfile::tempdir().expect("fixture root");
-        let safe = dir.path().join("safe");
-        let secret_dir = dir.path().join("credentials");
+        // Policy roots are canonicalized; on macOS the system temp root is a
+        // symlink (`/var/folders/...` -> `/private/var/folders/...`), so the
+        // fixture paths must be resolved before they are compared.
+        let root = std::fs::canonicalize(dir.path()).expect("canonical fixture root");
+        let safe = root.join("safe");
+        let secret_dir = root.join("credentials");
         std::fs::create_dir_all(&safe).expect("safe directory");
         std::fs::create_dir_all(&secret_dir).expect("secret directory");
         std::fs::write(secret_dir.join("token"), b"secret").expect("secret fixture");
         let future_secret = secret_dir.join("future-token");
         let policy = BackendPolicy::new(
-            vec![dir.path().to_path_buf()],
-            vec![dir.path().to_path_buf()],
+            vec![root.clone()],
+            vec![root.clone()],
             vec![secret_dir.join("token"), future_secret.clone()],
         )
         .landlock_effective();
-        assert!(policy.read_roots.iter().any(|root| root == &safe));
-        assert!(policy.read_dir_roots.iter().any(|root| root == dir.path()));
-        assert!(policy.write_roots.iter().any(|root| root == &safe));
-        assert!(!policy
-            .read_roots
-            .iter()
-            .any(|root| root.starts_with(&secret_dir)));
+        assert!(policy.read_roots.iter().any(|r| r == &safe));
+        assert!(policy.read_dir_roots.iter().any(|r| r == &root));
+        assert!(policy.write_roots.iter().any(|r| r == &safe));
+        assert!(!policy.read_roots.iter().any(|r| r.starts_with(&secret_dir)));
         assert!(!policy
             .write_roots
             .iter()
-            .any(|root| root.starts_with(&secret_dir)));
+            .any(|r| r.starts_with(&secret_dir)));
         assert!(policy.denied_roots.contains(&future_secret));
     }
 
@@ -691,10 +874,23 @@ mod tests {
                 Some(workspace.path()),
             )
             .expect("launch spec");
-        for expected in BackendPolicy::normalized(sensitive_deny_paths()) {
+        // The spec carries the curated denies verbatim: `launch_spec`
+        // deliberately leaves them unresolved so an absent credential file
+        // stays denied, and `normalized_denies` resolves them when a backend
+        // compiles the policy.
+        for expected in sensitive_deny_paths() {
             assert!(
                 spec.deny_paths.iter().any(|path| path == &expected),
                 "wrapper dropped the curated deny path {expected:?}"
+            );
+        }
+        // Resolution still happens before a backend sees the policy, and
+        // matches the canonicalized form the allow sets are normalized to.
+        let resolved = BackendPolicy::for_spec(&spec).denied_roots;
+        for expected in BackendPolicy::normalized(sensitive_deny_paths()) {
+            assert!(
+                resolved.iter().any(|path| path == &expected),
+                "compiled policy dropped the curated deny path {expected:?}"
             );
         }
     }
@@ -717,5 +913,111 @@ mod tests {
             !policy.denied_roots.is_empty(),
             "a policy must carry the deny intent into the backend"
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_policy_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn windows_roots_use_known_folders_and_retain_credential_denies() {
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap();
+        let reads = tool_read_allowances();
+        assert!(reads.iter().any(|path| path.ends_with("System32")));
+        assert!(reads.iter().any(|path| path.starts_with(&home)));
+        let writes = tool_write_allowances();
+        assert!(writes.iter().any(|path| {
+            std::env::var_os("TEMP").is_some_and(|temp| path.as_os_str() == temp.as_os_str())
+        }));
+        let denies = sensitive_deny_paths();
+        assert!(denies.contains(&home.join(".ssh")));
+        assert!(denies.contains(&home.join(".config/codegg")));
+        assert!(device_write_allowances().is_empty());
+    }
+
+    #[test]
+    fn windows_policy_path_rejects_unc_device_ads_and_traversal() {
+        for rejected in [
+            r"\\server\share\repo",
+            r"\\?\C:\repo",
+            r"\\.\PhysicalDrive0",
+            r"C:\repo\secrets:stream",
+            r"C:\repo\..\outside",
+        ] {
+            assert!(
+                resolve_policy_path(Path::new(rejected)).is_err(),
+                "must reject {rejected}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_policy_path_rejects_junction_components() {
+        let fixture = tempfile::tempdir().expect("fixture root");
+        let target = fixture.path().join("target");
+        let junction = fixture.path().join("junction");
+        std::fs::create_dir(&target).expect("target directory");
+        // execution-ownership: test_only
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&target)
+            .output()
+            .expect("start junction fixture command");
+        assert!(
+            output.status.success() && junction.is_dir(),
+            "native Windows runner must create a junction fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(resolve_policy_path(&junction).is_err());
+    }
+
+    #[test]
+    fn windows_policy_path_normalizes_case_aliases() {
+        let fixture = tempfile::tempdir().expect("fixture root");
+        let mixed = fixture.path().join("CaseAlias");
+        std::fs::create_dir(&mixed).expect("fixture directory");
+        let lower = PathBuf::from(mixed.to_string_lossy().to_lowercase());
+        let upper = PathBuf::from(mixed.to_string_lossy().to_uppercase());
+        assert_eq!(
+            resolve_policy_path(&lower).expect("lower-case path"),
+            resolve_policy_path(&upper).expect("upper-case path")
+        );
+    }
+
+    #[test]
+    fn windows_launch_spec_keeps_workspace_write_roots_distinct() {
+        let fixture = tempfile::tempdir().expect("workspace fixture root");
+        let first = fixture.path().join("worktree-one");
+        let second = fixture.path().join("worktree-two");
+        std::fs::create_dir(&first).expect("first worktree");
+        std::fs::create_dir(&second).expect("second worktree");
+        let argv =
+            crate::tool::bash::process::shell_argv("exit 0", None).expect("native shell argv");
+        let mut config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::WorkspaceWrite);
+        config.allowed_paths = vec![
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let spec = config
+            .launch_spec(&argv[0], &argv[1..], Some(&first))
+            .expect("Windows policy inputs");
+        for root in [&first, &second] {
+            let resolved = resolve_policy_path(root).expect("resolved worktree");
+            assert!(
+                spec.write_paths.contains(&resolved),
+                "worktree root must remain a distinct write input: {resolved:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_policy_roots_cannot_be_resolved_through_search_path() {
+        assert!(resolve_policy_path(Path::new("powershell.exe")).is_err());
+        assert!(resolve_policy_path(Path::new("cmd.exe")).is_err());
     }
 }

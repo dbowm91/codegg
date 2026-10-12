@@ -37,6 +37,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::protocol::core::{ChatChannelDto, ChatComposingDto, ChatMessageDto};
+use crate::tui::components::dialogs::chat::MAX_CHAT_WINDOW_MESSAGES;
 
 // ── Bounds ───────────────────────────────────────────────────────────────
 
@@ -139,9 +140,11 @@ pub fn extract_mentions(body: &str) -> Vec<String> {
 // ── Status ───────────────────────────────────────────────────────────────
 
 /// Presentation status for one project's chat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChatStatus {
-    /// Never fetched.
+    /// Never fetched. Also the `Default`: before the first
+    /// capabilities round-trip there is no authority either way.
+    #[default]
     Unknown,
     /// Fetch in flight.
     Loading,
@@ -180,6 +183,10 @@ pub struct ProjectChat {
     /// Last daemon-confirmed read marker (forward-only).
     pub last_read_seq: u64,
     pub read_marker_known: bool,
+    /// Daemon retains at least one message older than this window. Set
+    /// from the backward-page response so the window can offer `u`
+    /// honestly instead of guessing from `history_truncated`.
+    pub has_older: bool,
     /// Content-free composing snapshot for the active channel.
     pub composing: Vec<ChatComposingDto>,
     /// Retained editable draft for this project (set on failed send so
@@ -215,6 +222,7 @@ impl ProjectChat {
             needs_resync: false,
             last_read_seq: 0,
             read_marker_known: false,
+            has_older: false,
             composing: Vec::new(),
             draft: String::new(),
             last_send_error: None,
@@ -316,6 +324,11 @@ pub struct ChatState {
     order: VecDeque<String>,
     /// `None` before the first capabilities round-trip.
     pub capability_supported: Option<bool>,
+    /// Daemon advertises `ChatHistoryOlder`. Defaults to `false`, so an
+    /// older daemon (or one that never answered) fails closed: the window
+    /// reports that backward paging is unavailable instead of issuing a
+    /// request the daemon cannot decode.
+    pub backward_paging: bool,
     /// Monotonic reconnect epoch. Bumped on transport reconnect so
     /// pre-reconnect completions are dropped.
     pub reconnect_epoch: u64,
@@ -432,6 +445,200 @@ impl ChatState {
         entry.status = ChatStatus::Loading;
         entry.needs_resync = false;
         Some(request_id)
+    }
+
+    /// Begin a backward page for `channel_id`. Unlike
+    /// [`begin_history`](Self::begin_history) this leaves the status
+    /// alone: the visible window keeps rendering while older messages are
+    /// fetched behind it. Still bumps the request id, so a full reload or
+    /// channel switch racing this page wins and drops it.
+    pub fn begin_history_older(&mut self, project_id: &str, channel_id: &str) -> Option<u64> {
+        if !valid_locator(project_id) || !valid_locator(channel_id) {
+            return None;
+        }
+        self.request_counter = self.request_counter.saturating_add(1);
+        let request_id = self.request_counter;
+        let entry = self.ensure_project(project_id);
+        entry.current_request_id = request_id;
+        Some(request_id)
+    }
+
+    /// Point the project at `channel_id` without waiting for its page.
+    ///
+    /// The composer resolves its target channel from this field, so a
+    /// switch has to land before the messages do — otherwise a send typed
+    /// immediately after switching would post into the channel the user
+    /// just left. The subsequent [`apply_history`](Self::apply_history)
+    /// still validates the returned page against the same channel and
+    /// drops a cross-channel reply.
+    pub fn set_active_channel(&mut self, project_id: &str, channel_id: &str) -> bool {
+        if !valid_locator(project_id) || !valid_locator(channel_id) {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(project_id) else {
+            return false;
+        };
+        // Only channels the daemon actually listed are selectable.
+        if !entry.channels.iter().any(|c| c.channel_id == channel_id) {
+            return false;
+        }
+        if entry.active_channel_id.as_deref() == Some(channel_id) {
+            return false;
+        }
+        entry.active_channel_id = Some(channel_id.to_string());
+        // A different channel has a different message window; clearing it
+        // is the honest state, and the in-flight page replaces it.
+        entry.messages.clear();
+        entry.next_cursor = 0;
+        entry.retention_floor_seq = 0;
+        entry.history_truncated = false;
+        entry.has_older = false;
+        entry.composing.clear();
+        entry.actions.clear();
+        entry.last_action_error = None;
+        entry.last_error = None;
+        entry.resync_required = false;
+        self.sequence_counter = self.sequence_counter.saturating_add(1);
+        entry.sequence = self.sequence_counter;
+        self.touch_order(project_id);
+        true
+    }
+
+    /// Apply a backward history page: prepends messages older than the
+    /// current window, keeping ascending `seq` order and the same
+    /// retention bound as a forward page.
+    ///
+    /// Prepending then re-trimming is what keeps the bound honest: the
+    /// window may only hold [`MAX_CHAT_MESSAGES_PER_CHANNEL`], so loading
+    /// older messages necessarily drops the newest ones. Callers that need
+    /// the newest window re-fetch rather than relying on this.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_history_older(
+        &mut self,
+        request_id: u64,
+        project_id: &str,
+        channel_id: &str,
+        messages: Vec<ChatMessageDto>,
+        has_older: bool,
+        retention_floor_seq: u64,
+        reconnect_epoch: u64,
+    ) -> bool {
+        if reconnect_epoch != self.reconnect_epoch {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(project_id) else {
+            return false;
+        };
+        if entry.current_request_id != request_id {
+            return false;
+        }
+        if messages
+            .iter()
+            .any(|m| m.project_id != project_id || m.channel_id != channel_id)
+        {
+            return false;
+        }
+        // A backward page only makes sense for the channel being shown.
+        // Anything else is a stale completion from a channel switch.
+        if entry.active_channel_id.as_deref() != Some(channel_id) {
+            entry.current_request_id = 0;
+            return false;
+        }
+        let mut merged: Vec<ChatMessageDto> = messages
+            .into_iter()
+            .filter(|m| {
+                !entry
+                    .messages
+                    .iter()
+                    .any(|existing| existing.message_id == m.message_id)
+            })
+            .collect();
+        merged.extend(entry.messages.drain(..));
+        merged.sort_by_key(|m| m.seq);
+        entry.messages = merged.into_iter().collect();
+        // Trim the NEW end, not the old one. A backward page grows the
+        // window at its front, so the overflow is at the back; popping the
+        // front would discard exactly the messages the user just asked
+        // for and leave them where they started. The consequence is that
+        // paging back can push the live head out of the window — that is
+        // inherent to the 100-message bound, and re-fetching (`R`) is how
+        // the user returns to the newest messages.
+        while entry.messages.len() > MAX_CHAT_MESSAGES_PER_CHANNEL {
+            entry.messages.pop_back();
+        }
+        entry.has_older = has_older;
+        entry.retention_floor_seq = retention_floor_seq;
+        entry.history_truncated = has_older;
+        // Keep the forward sync cursor ahead of the newest message held,
+        // so `/chat-sync` resumes from the live head rather than replaying
+        // history the window already shows.
+        if let Some(newest) = entry.messages.back().map(|m| m.seq) {
+            entry.next_cursor = entry.next_cursor.max(newest.saturating_add(1));
+        }
+        entry.current_request_id = 0;
+        entry.last_error = None;
+        if entry.status == ChatStatus::Loading {
+            entry.status = ChatStatus::Ready;
+        }
+        self.sequence_counter = self.sequence_counter.saturating_add(1);
+        entry.sequence = self.sequence_counter;
+        self.touch_order(project_id);
+        true
+    }
+
+    /// Bounded read-only view of one project's chat for the chat window.
+    ///
+    /// Built on demand rather than cached: the dialog must never hold the
+    /// only copy of a message window, and a stale cached snapshot would be
+    /// exactly that.
+    pub fn snapshot(
+        &self,
+        project_id: &str,
+        now_ms: i64,
+    ) -> crate::tui::components::dialogs::chat::ChatSnapshot {
+        use crate::tui::components::dialogs::chat::ChatSnapshot;
+        let base = ChatSnapshot {
+            status: ChatStatus::Unknown,
+            backward_paging: self.backward_paging,
+            ..Default::default()
+        };
+        let Some(entry) = self.entries.get(project_id) else {
+            if self.capability_supported == Some(false) {
+                return ChatSnapshot {
+                    status: ChatStatus::Unavailable,
+                    ..base
+                };
+            }
+            return base;
+        };
+        ChatSnapshot {
+            channels: entry.channels.clone(),
+            active_channel_id: entry.active_channel_id.clone(),
+            // Bounded twice: the window is already capped at
+            // MAX_CHAT_MESSAGES_PER_CHANNEL, this just makes the handoff
+            // explicit rather than relying on that invariant holding.
+            messages: entry
+                .messages
+                .iter()
+                .rev()
+                .take(MAX_CHAT_WINDOW_MESSAGES)
+                .rev()
+                .cloned()
+                .collect(),
+            status: entry.status,
+            draft: entry.draft.clone(),
+            last_error: entry.last_error.clone(),
+            last_send_error: entry.last_send_error.clone(),
+            unread: entry.unread_count(),
+            composing: entry
+                .active_composing(now_ms)
+                .into_iter()
+                .cloned()
+                .collect(),
+            history_truncated: entry.history_truncated,
+            has_older: entry.has_older,
+            backward_paging: self.backward_paging,
+        }
     }
 
     /// Whether `project_id` needs a (re)fetch: unknown, resync-flagged,
@@ -1449,6 +1656,209 @@ mod tests {
             .map(|s| message(project, channel, s, &format!("m{s}"), &format!("body {s}")))
             .collect();
         assert!(state.apply_history(hist_req, project, channel, messages, n + 1, false, 0, epoch));
+    }
+
+    /// Backward paging prepends in ascending order and keeps the window
+    /// bounded, which necessarily trims the newest end.
+    /// Load a window covering `seq` in `lo..=hi` so older pages have
+    /// somewhere strictly below it to land.
+    fn window_over(state: &mut ChatState, project: &str, channel: &str, lo: u64, hi: u64) {
+        let epoch = state.reconnect_epoch;
+        let ensure_req = state.begin_ensure(project).unwrap();
+        state.apply_channel_ensured(
+            ensure_req,
+            project,
+            &test_channel(project, channel, "general"),
+            epoch,
+        );
+        let hist_req = state.begin_history(project, channel).unwrap();
+        let messages: Vec<ChatMessageDto> = (lo..=hi)
+            .map(|s| message(project, channel, s, &format!("m{s}"), &format!("body {s}")))
+            .collect();
+        assert!(state.apply_history(
+            hist_req,
+            project,
+            channel,
+            messages,
+            hi + 1,
+            false,
+            0,
+            epoch
+        ));
+    }
+
+    #[test]
+    fn apply_history_older_prepends_and_stays_bounded() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        window_over(&mut state, "p", "ch", 6, 10);
+        let epoch = state.reconnect_epoch;
+        let req = state.begin_history_older("p", "ch").unwrap();
+        let older: Vec<ChatMessageDto> = (1..=5)
+            .map(|s| message("p", "ch", s, &format!("m{s}"), "older"))
+            .collect();
+        assert!(state.apply_history_older(req, "p", "ch", older, false, 0, epoch));
+        let entry = state.get("p").unwrap();
+        assert_eq!(entry.messages.len(), 10);
+        let seqs: Vec<u64> = entry.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, (1..=10).collect::<Vec<u64>>(), "ascending");
+        assert!(!entry.has_older);
+    }
+
+    /// Re-fetching rows the window already holds must not duplicate them.
+    #[test]
+    fn apply_history_older_dedups_by_message_id() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        window_over(&mut state, "p", "ch", 6, 10);
+        let epoch = state.reconnect_epoch;
+        let req = state.begin_history_older("p", "ch").unwrap();
+        // Overlaps 8..10 and adds 4..7.
+        let page: Vec<ChatMessageDto> = (4..=10)
+            .map(|s| message("p", "ch", s, &format!("m{s}"), "x"))
+            .collect();
+        assert!(state.apply_history_older(req, "p", "ch", page, false, 0, epoch));
+        let entry = state.get("p").unwrap();
+        let seqs: Vec<u64> = entry.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, (4..=10).collect::<Vec<u64>>(), "no duplicates");
+    }
+
+    /// A backward page must never push the window past its bound; the
+    /// newest messages are what get dropped.
+    #[test]
+    fn apply_history_older_trims_the_newest_end() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        let base = MAX_CHAT_MESSAGES_PER_CHANNEL as u64;
+        window_over(&mut state, "p", "ch", base + 1, base * 2);
+        let epoch = state.reconnect_epoch;
+        let req = state.begin_history_older("p", "ch").unwrap();
+        let older: Vec<ChatMessageDto> = (1..=10)
+            .map(|s| message("p", "ch", s, &format!("m{s}"), "older"))
+            .collect();
+        assert!(state.apply_history_older(req, "p", "ch", older, true, 0, epoch));
+        let entry = state.get("p").unwrap();
+        assert_eq!(entry.messages.len(), MAX_CHAT_MESSAGES_PER_CHANNEL);
+        // The window keeps the OLDEST 100 after a prepend; the newest are
+        // what fall off. Reaching the live head again means re-fetching.
+        assert_eq!(entry.messages.front().unwrap().seq, 1);
+        assert_eq!(entry.messages.back().unwrap().seq, base * 2 - 10);
+        assert!(entry.has_older);
+        // The forward cursor stays ahead of the live head so `/chat-sync`
+        // still resumes correctly after paging back.
+        assert!(entry.next_cursor > base * 2);
+    }
+
+    /// Stale completions and cross-channel pages are dropped, not merged.
+    #[test]
+    fn apply_history_older_drops_stale_and_cross_channel_pages() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        ready_window(&mut state, "p", "ch", 3);
+        let epoch = state.reconnect_epoch;
+        let foreign: Vec<ChatMessageDto> = vec![message("p", "other", 1, "m1", "wrong channel")];
+        let req = state.begin_history_older("p", "ch").unwrap();
+        assert!(!state.apply_history_older(req, "p", "ch", foreign, false, 0, epoch));
+        assert_eq!(state.get("p").unwrap().messages.len(), 3);
+        // Wrong request id.
+        let page: Vec<ChatMessageDto> = vec![message("p", "ch", 1, "m1", "older")];
+        assert!(!state.apply_history_older(req + 99, "p", "ch", page.clone(), false, 0, epoch));
+        // Wrong reconnect epoch.
+        assert!(!state.apply_history_older(req, "p", "ch", page, false, 0, epoch + 1));
+        assert_eq!(state.get("p").unwrap().messages.len(), 3);
+    }
+
+    /// Backward paging is refused once the window is showing another
+    /// channel — the completion belongs to a switch that already moved on.
+    #[test]
+    fn apply_history_older_refuses_a_non_active_channel() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        ready_window(&mut state, "p", "ch", 3);
+        let epoch = state.reconnect_epoch;
+        let req = state.begin_history_older("p", "ch").unwrap();
+        state.get_mut("p").unwrap().active_channel_id = Some("moved".to_string());
+        let page: Vec<ChatMessageDto> = vec![message("p", "ch", 1, "m1", "older")];
+        assert!(!state.apply_history_older(req, "p", "ch", page, false, 0, epoch));
+    }
+
+    /// Only daemon-listed channels are selectable, and switching clears
+    /// the previous channel's window rather than showing it under the new
+    /// header.
+    #[test]
+    fn set_active_channel_only_accepts_listed_channels_and_clears_the_window() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        let epoch = state.reconnect_epoch;
+        let ensure = state.begin_ensure("p").unwrap();
+        state.apply_channel_list(
+            ensure,
+            "p",
+            &[
+                test_channel("p", "ch-a", "general"),
+                test_channel("p", "ch-b", "random"),
+            ],
+            false,
+            epoch,
+        );
+        let hist = state.begin_history("p", "ch-a").unwrap();
+        state.apply_history(
+            hist,
+            "p",
+            "ch-a",
+            vec![message("p", "ch-a", 1, "m1", "in a")],
+            2,
+            false,
+            0,
+            epoch,
+        );
+
+        // An unlisted channel is rejected outright.
+        assert!(!state.set_active_channel("p", "ch-ghost"));
+        assert_eq!(
+            state.get("p").unwrap().active_channel_id.as_deref(),
+            Some("ch-a")
+        );
+
+        assert!(state.set_active_channel("p", "ch-b"));
+        let entry = state.get("p").unwrap();
+        assert_eq!(entry.active_channel_id.as_deref(), Some("ch-b"));
+        assert!(entry.messages.is_empty(), "no cross-channel message leak");
+        assert_eq!(entry.next_cursor, 0);
+        assert!(!entry.has_older);
+
+        // Re-selecting the current channel is a no-op, so a repeated `[`
+        // does not trigger a redundant refetch.
+        assert!(!state.set_active_channel("p", "ch-b"));
+    }
+
+    /// The snapshot the window renders is bounded and carries the paging
+    /// capability so the window can decide whether `u` is even offered.
+    #[test]
+    fn snapshot_is_bounded_and_reports_the_paging_capability() {
+        let mut state = ChatState::new();
+        state.set_capability(true);
+        ready_window(&mut state, "p", "ch", 3);
+        // Capability defaults to fail-closed before negotiation.
+        assert!(!state.snapshot("p", 0).backward_paging);
+        state.backward_paging = true;
+        let snap = state.snapshot("p", 0);
+        assert!(snap.backward_paging);
+        assert_eq!(snap.messages.len(), 3);
+        assert_eq!(snap.status, ChatStatus::Ready);
+        assert_eq!(snap.active_channel_id.as_deref(), Some("ch"));
+        assert_eq!(snap.channels.len(), 1);
+
+        // An unknown project reads as "not yet loaded", never as content.
+        let fresh = state.snapshot("absent", 0);
+        assert_eq!(fresh.status, ChatStatus::Unknown);
+        assert!(fresh.messages.is_empty());
+
+        // A feature-absent daemon reads as Unavailable with no channels.
+        state.set_capability(false);
+        let denied = state.snapshot("p", 0);
+        assert_eq!(denied.status, ChatStatus::Unavailable);
+        assert!(denied.channels.is_empty());
     }
 
     #[test]

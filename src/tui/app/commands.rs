@@ -12,6 +12,18 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
+pub struct ShellPromotionStageResult {
+    pub source_id: u64,
+    pub promotion_id: uuid::Uuid,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+    pub projection: String,
+    pub duplicate: bool,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum TuiCommand {
     DeleteSession {
         session_id: String,
@@ -98,6 +110,21 @@ pub enum TuiCommand {
         operation: crate::tui::app::state::EditorOperation,
         error: Option<String>,
         state: codegg_client::DocumentState,
+    },
+    /// Completion of an authoritative current-file diagnostics pull.
+    EditorDiagnosticsFinished {
+        request_id: u64,
+        scope: crate::tui::editor_lsp::EditorLspScope,
+        result: Option<crate::protocol::lsp::LspDiagnosticsResultDto>,
+        error: Option<String>,
+    },
+    /// Completion of one guarded existing LSP read operation.
+    EditorLspReadFinished {
+        request_id: u64,
+        scope: crate::tui::editor_lsp::EditorLspScope,
+        operation: crate::protocol::lsp::LspReadOperation,
+        result: Option<crate::protocol::lsp::LspReadResultDto>,
+        error: Option<String>,
     },
     /// Completion of a bounded M006-D workspace tree walk. Carries the
     /// request id, the tree generation, and the root the walk was issued
@@ -486,6 +513,18 @@ pub enum TuiCommand {
         command: String,
         promote_after: bool,
         cwd: PathBuf,
+        confirmed_dangerous: bool,
+    },
+    RemoteShellRunAccepted {
+        local_id: u64,
+        command: String,
+        cwd: PathBuf,
+        promote_after: bool,
+        shell_binding: (Option<String>, Option<String>),
+        binding: crate::shell::daemon::RemoteShellRunBinding,
+    },
+    RemoteShellRunCancelResult {
+        message: String,
     },
     /// Run supervised tests from the /test slash command.
     TestRun {
@@ -526,12 +565,28 @@ pub enum TuiCommand {
     /// A session owner accepted or rejected one explicit shell evidence ask.
     ShellAskSubmitted {
         id: u64,
+        promotion_id: Option<uuid::Uuid>,
         text: String,
+        error: Option<String>,
+    },
+    /// The daemon durably staged a redacted shell projection, or rejected it.
+    ShellPromotionStaged {
+        result: ShellPromotionStageResult,
+    },
+    /// Pending promotions recovered from the authoritative session owner.
+    ShellPromotionsLoaded {
+        session_id: String,
+        workspace_id: Option<String>,
+        promotions: Vec<crate::protocol::core::HumanShellPromotionDto>,
         error: Option<String>,
     },
     /// A normal next turn accepted or rejected staged shell evidence.
     ShellPromotionsSubmitted {
         promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
+    },
+    TurnSubmissionFinished {
+        request_id: String,
         error: Option<String>,
     },
     ShellExpand {
@@ -1001,6 +1056,19 @@ pub enum TuiCommand {
         error: Option<String>,
         unauthorized: bool,
         unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Backward-page completion. Serves both the window's initial
+    /// newest-first load (`before_seq = None`) and its `u` paging, since
+    /// both ask for "the page just older than what I hold".
+    ChatHistoryOlderLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        has_older: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
         reconnect_epoch: u64,
     },
     /// Project Collaboration M002: incremental-sync completion from the

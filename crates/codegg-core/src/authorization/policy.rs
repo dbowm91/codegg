@@ -338,6 +338,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
+        R::HumanShellPromotionStage { .. } => OperationDescriptor::new(
+            "human_shell_promotion_stage",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellPromotionsGet { .. } => OperationDescriptor::new(
+            "human_shell_promotions_get",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::TurnCancel { .. } => OperationDescriptor::new(
             "turn_cancel",
             ScopeKind::ViaSession,
@@ -790,6 +800,24 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        R::HumanShellRunCreate { .. } => OperationDescriptor::new(
+            "human_shell_run_create",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
+        R::HumanShellRunCapabilities => {
+            OperationDescriptor::new("human_shell_run_capabilities", ScopeKind::Global, None)
+        }
+        R::HumanShellRunRead { .. } => OperationDescriptor::new(
+            "human_shell_run_read",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
+        R::HumanShellRunCancel { .. } => OperationDescriptor::new(
+            "human_shell_run_cancel",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
         R::AuditQuery { .. } => OperationDescriptor::new(
             "audit_query",
             ScopeKind::DirectProject,
@@ -888,6 +916,14 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         ),
         R::ChatHistory { .. } => OperationDescriptor::new(
             "chat_history",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        // Backward paging is the same read over the same channel, so it
+        // carries the identical descriptor — only the cursor direction
+        // differs, and that is not an authority distinction.
+        R::ChatHistoryOlder { .. } => OperationDescriptor::new(
+            "chat_history_older",
             ScopeKind::DirectProject,
             Some(Capability::ProjectChat),
         ),
@@ -1441,11 +1477,22 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             current_agent_idx: 0,
             messages: Vec::new(),
             reasoning: None,
+            human_shell_promotion_ids: Vec::new(),
         },
         R::SessionPromptSubmit {
             session_id: String::new(),
             text: String::new(),
             plan_mode: false,
+            human_shell_promotion_ids: Vec::new(),
+        },
+        R::HumanShellPromotionStage {
+            session_id: String::new(),
+            promotion_id: String::new(),
+            source_id: String::new(),
+            projection: String::new(),
+        },
+        R::HumanShellPromotionsGet {
+            session_id: String::new(),
         },
         R::TurnCancel {
             session_id: String::new(),
@@ -1835,6 +1882,38 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::InteractiveProcessRemove {
             attachment_id: String::new(),
         },
+        R::HumanShellRunCreate {
+            request: codegg_protocol::human_shell::HumanShellRunCreateRequestDto {
+                protocol_version: 1,
+                submission_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+                origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
+                confirmed_dangerous: false,
+                command: String::new(),
+                timeout_secs: 300,
+            },
+        },
+        R::HumanShellRunCapabilities,
+        R::HumanShellRunRead {
+            request: codegg_protocol::human_shell::HumanShellRunReadDto {
+                run_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+                from_sequence: 0,
+                max_bytes: 1,
+            },
+        },
+        R::HumanShellRunCancel {
+            request: codegg_protocol::human_shell::HumanShellRunCancelDto {
+                run_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+            },
+        },
         R::PresenceCapabilities,
         R::PresenceHeartbeat {
             request: codegg_protocol::core::PresenceHeartbeatRequestDto {
@@ -1859,6 +1938,11 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::ChatHistory {
             channel_id: String::new(),
             from_seq: None,
+            limit: None,
+        },
+        R::ChatHistoryOlder {
+            channel_id: String::new(),
+            before_seq: None,
             limit: None,
         },
         R::ChatSend {

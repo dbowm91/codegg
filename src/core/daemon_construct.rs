@@ -445,6 +445,9 @@ impl CoreDaemon {
                     scheduler.admission().clone(),
                 ),
             ),
+            human_shell_runs: Arc::new(crate::shell::daemon::HumanShellRunService::new(
+                scheduler.admission().clone(),
+            )),
         }
     }
 

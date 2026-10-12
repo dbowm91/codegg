@@ -156,6 +156,43 @@ through this registry regardless of profile. Guards: `job_tool_context_confines_
 **Platform outcomes:**
 - Linux with Landlock ABI: `Enforced { backend: landlock, abi: Some(v) }`
 - macOS: `Enforced { backend: seatbelt, abi: None, .. }`
+- Windows: managed finite processes receive Job Object lifecycle
+  supervision, but no filesystem or network enforcement backend is registered;
+  constrained requests fail before launch.
+
+Windows policy inputs enumerate system/toolchain reads, user tool caches,
+temporary/cache writes, and sensitive user-profile credential roots for future
+backend compilation. Raw Windows shell invocations receive a unique per-run
+TEMP/TMP directory and remove it after process completion; this is cleanup and
+environment isolation, not an OS access-control boundary. Existing policy
+paths reject UNC/device/extended-length
+namespaces, alternate data stream syntax, parent traversal, and reparse-point
+components before canonicalization. These checks are pre-launch diagnostics;
+they do not bind a later filesystem operation to the checked identity, prevent
+hardlink aliases, or close a replacement race. Windows constrained execution
+remains unavailable until M004 supplies and qualifies enforcement.
+The debug-only `windows-sandbox-test-support` feature exercises the AppContainer
+process lifecycle through `ManagedProcessService` with a restricted three-handle
+stdio list, pre-resume token/Job verification, bounded output, cancellation, and
+a private status pipe. It returns a distinct `TestOnlyAppContainer` result and
+never `Enforced`; release builds fail compilation if this feature is enabled.
+Its explicit Unicode environment block retains drive-current-directory entries,
+uses the requested cwd for its drive entry, and supplies `LOCALAPPDATA`, `TEMP`,
+and `TMP` from the AppContainer package-local profile instead of the host user's
+profile paths. Its disposable-root fixture can add an AppContainer ACE after
+journaling the exact original and expected descriptors, then restore only when
+path identity and the expected descriptor still match. The fixture does not
+establish production journal protection, existing-workspace authority,
+adversarial path safety, or backend availability. The test-only lease rejects a
+deny root that already contains an entry before child creation: root-only DACL
+leasing allowed a child to read a synthetic denied file through its direct
+path, a junction, and a hardlink in hosted run `38220136385`. The
+populated-root preflight and separate empty-root fixtures passed exact-SHA
+Windows workflow `38223080719`, but the path-based check is not qualified
+against replacement races. This fail-closed restriction is not a production
+capability or complete existing-tree policy. See
+`tests/windows_restricted_managed_process.rs`, `tests/windows_acl_lease.rs`, and
+`docs/windows-acl-leases.md`.
 - Any host with no registered backend: constrained requests report
   `FilesystemEnforcement::Unavailable` and are refused before launching
   constrained Bash or Python (never `FullHost`). Portable post-execution

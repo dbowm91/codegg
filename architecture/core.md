@@ -657,6 +657,21 @@ bounded input parsing and durable membership/lifecycle checks before
 execution. The resolver does not authorize principals and does not scan the
 filesystem or use process cwd as identity authority.
 
+Because the resolver resolves a directory only by catalog lookup, a directory
+CodeGG has never registered has no executable context at all. The frontend owns
+closing that gap: `App::bootstrap_launch_project_context` runs at TUI startup,
+before any session-scoped request, and issues `WorkspaceRegister` followed by
+`ProjectRegister` for the launch directory. Both are idempotent, so a known
+directory re-resolves to the same ids, and the resulting pair is written onto
+the active tab via `set_active_identities`. Registration runs under the
+`LocalOwner` broad policy, which is what a local socket TUI binds; an
+unauthorized principal still cannot name an arbitrary root.
+
+The launch directory is the frontend's own cwd, which is why this is safe in
+`AppMode::RemoteCore`. The project picker's "register by path" remains gated to
+`AppMode::Embedded` because there the path is user-supplied text that a remote
+attach must not be able to place on a daemon with a different filesystem.
+
 ## Source verification
 
 Verified 2026-10-06 against `crates/codegg-core/src/lib.rs`, `src/lib.rs`,

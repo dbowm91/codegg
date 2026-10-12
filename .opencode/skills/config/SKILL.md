@@ -83,6 +83,9 @@ workspace-bound must NOT do that — thread an `ExecutionContext` instead
   on explicit invocation (see `architecture/upgrade.md`). It is deliberately
   not removed because existing user config files contain it. Document a
   retained field rather than deleting it.
+- `shell.windows_shell` is optional and accepts `powershell`, `cmd`, `git-bash`,
+  or `wsl`. It is consumed by the raw model-shell path on Windows only;
+  structured argv does not use a shell. `None` selects native PowerShell.
 - **`encrypt_provider_keys` / `decrypt_provider_keys` are no-ops**
   (`encryption.rs:544`/`:549`). The config crate owns master-key *resolution*
   only; credential encryption/decryption lives in the providers crate and

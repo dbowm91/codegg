@@ -1490,6 +1490,80 @@ pub(crate) fn apply_tree_dialog_loaded(
         .load_nodes(nodes, current_session_id);
 }
 
+/// Who wrote a persisted transcript message.
+///
+/// A recorded role is authoritative. Rows written before `role` existed —
+/// including every compatibility import — fall back to inferring it from the
+/// parts, which cannot distinguish a plain text reply from a prompt: both are
+/// a single text part, so an assistant that never called a tool used to be
+/// rendered as the user's own words.
+fn transcript_role(
+    msg: &crate::session::message::Message,
+) -> crate::tui::components::messages::MessageRole {
+    use crate::tui::components::messages::MessageRole;
+
+    if let Some(role) = msg.data.role {
+        return match role {
+            crate::session::message::MessageRole::User => MessageRole::User,
+            crate::session::message::MessageRole::Assistant => MessageRole::Assistant,
+        };
+    }
+
+    for part in &msg.data.parts {
+        match &part.data {
+            crate::session::message::PartData::Reasoning { .. }
+            | crate::session::message::PartData::ToolCall { .. } => {
+                return MessageRole::Assistant;
+            }
+            _ => {}
+        }
+    }
+    MessageRole::User
+}
+
+/// Convert one persisted part into its transcript rendering.
+fn transcript_part(
+    p: &crate::session::message::PartInfo,
+) -> crate::tui::components::messages::MsgPart {
+    use crate::tui::components::messages::MsgPart;
+
+    match &p.data {
+        crate::session::message::PartData::Text { text } => MsgPart::Text {
+            content: text.clone(),
+        },
+        crate::session::message::PartData::Reasoning { reasoning } => MsgPart::Reasoning {
+            content: reasoning.clone(),
+            collapsed: false,
+        },
+        crate::session::message::PartData::ToolCall {
+            id,
+            name,
+            input,
+            output,
+            status,
+        } => MsgPart::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            input: serde_json::to_string(input).unwrap_or_default(),
+            output: output.clone().unwrap_or_default(),
+            status: status.clone(),
+            duration_ms: None,
+            exit_code: None,
+            output_lines: None,
+            expanded: false,
+        },
+        crate::session::message::PartData::Image { url } => MsgPart::Image {
+            data_uri: url.clone(),
+            alt_text: "[Image]".to_string(),
+            width: 0,
+            height: 0,
+        },
+        crate::session::message::PartData::File { .. } => MsgPart::Text {
+            content: "[File]".to_string(),
+        },
+    }
+}
+
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: String) {
@@ -1585,66 +1659,8 @@ pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: Stri
     };
 
     for msg in messages {
-        let role = {
-            fn determine_role(msg: &crate::session::message::Message) -> MessageRole {
-                for part in &msg.data.parts {
-                    match &part.data {
-                        crate::session::message::PartData::Reasoning { .. }
-                        | crate::session::message::PartData::ToolCall { .. } => {
-                            return MessageRole::Assistant;
-                        }
-                        _ => {}
-                    }
-                }
-                MessageRole::User
-            }
-            determine_role(&msg)
-        };
-        let parts = {
-            fn convert(parts: &[crate::session::message::PartInfo]) -> Vec<MsgPart> {
-                parts
-                    .iter()
-                    .map(|p| match &p.data {
-                        crate::session::message::PartData::Text { text } => MsgPart::Text {
-                            content: text.clone(),
-                        },
-                        crate::session::message::PartData::Reasoning { reasoning } => {
-                            MsgPart::Reasoning {
-                                content: reasoning.clone(),
-                                collapsed: false,
-                            }
-                        }
-                        crate::session::message::PartData::ToolCall {
-                            id,
-                            name,
-                            input,
-                            output,
-                            status,
-                        } => MsgPart::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: serde_json::to_string(input).unwrap_or_default(),
-                            output: output.clone().unwrap_or_default(),
-                            status: status.clone(),
-                            duration_ms: None,
-                            exit_code: None,
-                            output_lines: None,
-                            expanded: false,
-                        },
-                        crate::session::message::PartData::Image { url } => MsgPart::Image {
-                            data_uri: url.clone(),
-                            alt_text: "[Image]".to_string(),
-                            width: 0,
-                            height: 0,
-                        },
-                        crate::session::message::PartData::File { .. } => MsgPart::Text {
-                            content: "[File]".to_string(),
-                        },
-                    })
-                    .collect()
-            }
-            convert(&msg.data.parts)
-        };
+        let role = transcript_role(&msg);
+        let parts: Vec<MsgPart> = msg.data.parts.iter().map(transcript_part).collect();
 
         if !parts.is_empty() || role == MessageRole::Assistant {
             app.messages_state.messages.messages.push(UIMessage {
@@ -1754,69 +1770,21 @@ pub(crate) fn apply_session_messages_loaded(
         return;
     }
 
-    app.messages_state.messages.clear();
+    // An empty authoritative load must not destroy unsynced local state.
+    //
+    // A brand-new session returns zero rows: nothing has been persisted for it
+    // yet, because the turn that would write the first one has not finished.
+    // Clearing unconditionally erased the prompt the user had just sent, so the
+    // transcript went blank mid-turn and looked like the message was lost. A
+    // genuinely empty session has no local rows to protect, so skipping the
+    // clear here cannot leave a stale transcript behind.
+    if !messages.is_empty() || app.messages_state.messages.messages.is_empty() {
+        app.messages_state.messages.clear();
+    }
 
     for msg in messages {
-        let role = {
-            fn determine_role(msg: &crate::session::message::Message) -> MessageRole {
-                for part in &msg.data.parts {
-                    match &part.data {
-                        crate::session::message::PartData::Reasoning { .. }
-                        | crate::session::message::PartData::ToolCall { .. } => {
-                            return MessageRole::Assistant;
-                        }
-                        _ => {}
-                    }
-                }
-                MessageRole::User
-            }
-            determine_role(&msg)
-        };
-        let parts = {
-            fn convert(parts: &[crate::session::message::PartInfo]) -> Vec<MsgPart> {
-                parts
-                    .iter()
-                    .map(|p| match &p.data {
-                        crate::session::message::PartData::Text { text } => MsgPart::Text {
-                            content: text.clone(),
-                        },
-                        crate::session::message::PartData::Reasoning { reasoning } => {
-                            MsgPart::Reasoning {
-                                content: reasoning.clone(),
-                                collapsed: false,
-                            }
-                        }
-                        crate::session::message::PartData::ToolCall {
-                            id,
-                            name,
-                            input,
-                            output,
-                            status,
-                        } => MsgPart::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: serde_json::to_string(input).unwrap_or_default(),
-                            output: output.clone().unwrap_or_default(),
-                            status: status.clone(),
-                            duration_ms: None,
-                            exit_code: None,
-                            output_lines: None,
-                            expanded: false,
-                        },
-                        crate::session::message::PartData::Image { url } => MsgPart::Image {
-                            data_uri: url.clone(),
-                            alt_text: "[Image]".to_string(),
-                            width: 0,
-                            height: 0,
-                        },
-                        crate::session::message::PartData::File { .. } => MsgPart::Text {
-                            content: "[File]".to_string(),
-                        },
-                    })
-                    .collect()
-            }
-            convert(&msg.data.parts)
-        };
+        let role = transcript_role(&msg);
+        let parts: Vec<MsgPart> = msg.data.parts.iter().map(transcript_part).collect();
 
         if !parts.is_empty() || role == MessageRole::Assistant {
             app.messages_state.messages.messages.push(UIMessage {
@@ -1853,7 +1821,14 @@ pub(crate) fn start_new_session(app: &mut App) {
     let project_dir = app
         .active_workspace_root()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let project_id = app.active_project_key();
+    // Send the typed identities only. `active_project_key()` falls back to
+    // the workspace root when the tab has no daemon project id, and
+    // `SessionCreate` takes a `(project_id, workspace_id)` pair — sending a
+    // path as `project_id` could only ever be rejected with
+    // "project_id and workspace_id must be provided together". Both stay
+    // `None` when the launch bootstrap has not run yet, which sends the
+    // daemon down its directory-locator path instead.
+    let project_id = app.active_project_id().map(|id| id.to_string());
     let workspace_id = app.active_workspace_id().map(|id| id.to_string());
 
     spawn_registered_tui_task(
@@ -2836,6 +2811,138 @@ mod tests {
             app.session_state.session.as_ref().map(|s| s.title.as_str()),
             Some("Untitled"),
             "another session's title must not overwrite the bound session"
+        );
+    }
+}
+
+/// Reloading a session must reproduce the conversation, not an empty one.
+///
+/// The reported symptom was a session that came back truncated. Two things
+/// had to hold for it to be observable here: the run had to persist something
+/// in the first place, and the reader had to keep the persisted role. A reply
+/// whose only part is text used to be inferred as the user's own words.
+#[cfg(test)]
+mod transcript_reload_tests {
+    use super::*;
+    use crate::session::message::{Message, MessageData, MessageRole, PartData, PartInfo};
+
+    fn persisted(
+        session_id: &str,
+        id: &str,
+        role: MessageRole,
+        text: &str,
+        time_created: i64,
+    ) -> Message {
+        Message {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            time_created,
+            time_updated: time_created,
+            data: MessageData {
+                id: id.to_string(),
+                session_id: session_id.to_string(),
+                message_id: id.to_string(),
+                parts: vec![PartInfo {
+                    id: format!("{id}_0"),
+                    session_id: session_id.to_string(),
+                    message_id: id.to_string(),
+                    data: PartData::Text {
+                        text: text.to_string(),
+                    },
+                }],
+                role: Some(role),
+            },
+        }
+    }
+
+    #[test]
+    fn reloading_a_session_restores_the_persisted_conversation() {
+        let session_id = "reload-session";
+        let mut app = App::new_for_testing("/tmp".into());
+        app.session_state.session = Some(crate::session::Session {
+            id: session_id.into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+        app.messages_state
+            .messages
+            .messages
+            .push(crate::tui::components::messages::UIMessage {
+                role: crate::tui::components::messages::MessageRole::User,
+                parts: vec![],
+                timestamp: None,
+                is_plan_mode: None,
+            });
+
+        let request_id = app.dialog_state.session_messages_request.begin();
+        apply_session_messages_loaded(
+            &mut app,
+            request_id,
+            session_id.to_string(),
+            vec![
+                persisted(session_id, "m1", MessageRole::User, "fix the bug", 1_000),
+                persisted(session_id, "m2", MessageRole::Assistant, "fixed it", 1_001),
+            ],
+            None,
+        );
+
+        let reloaded = &app.messages_state.messages.messages;
+        assert_eq!(reloaded.len(), 2, "reload must not truncate the transcript");
+        assert_eq!(
+            reloaded[0].role,
+            crate::tui::components::messages::MessageRole::User
+        );
+        assert_eq!(
+            reloaded[1].role,
+            crate::tui::components::messages::MessageRole::Assistant,
+            "a text-only reply must not be reloaded as the user's own words"
+        );
+        assert!(matches!(
+            &reloaded[1].parts[0],
+            crate::tui::components::messages::MsgPart::Text { content } if content == "fixed it"
+        ));
+    }
+
+    #[test]
+    fn a_legacy_row_without_a_role_still_infers_from_its_parts() {
+        let session_id = "legacy-session";
+        let mut app = App::new_for_testing("/tmp".into());
+        app.session_state.session = Some(crate::session::Session {
+            id: session_id.into(),
+            project_id: "/tmp".into(),
+            directory: "/tmp".into(),
+            ..Default::default()
+        });
+
+        // A pre-`role` row: no role recorded, but it called a tool.
+        let mut legacy = persisted(session_id, "m1", MessageRole::User, "run it", 1_000);
+        legacy.data.role = None;
+        legacy.data.parts = vec![PartInfo {
+            id: "m1_0".to_string(),
+            session_id: session_id.to_string(),
+            message_id: "m1".to_string(),
+            data: PartData::ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                input: serde_json::json!({}),
+                output: Some("contents".to_string()),
+                status: crate::session::message::ToolStatus::Completed,
+            },
+        }];
+
+        let request_id = app.dialog_state.session_messages_request.begin();
+        apply_session_messages_loaded(
+            &mut app,
+            request_id,
+            session_id.to_string(),
+            vec![legacy],
+            None,
+        );
+
+        assert_eq!(
+            app.messages_state.messages.messages[0].role,
+            crate::tui::components::messages::MessageRole::Assistant
         );
     }
 }

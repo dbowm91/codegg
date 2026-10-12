@@ -1,5 +1,6 @@
 use crate::tui::app::state::{ComposerMode, PendingTaskCreate, TaskModelChoice};
 use crate::tui::app::state::{ProjectExecutionContext, UiRouteToken};
+use crate::tui::chat_browser::ChatComposeSeed;
 use crate::tui::components::completion_overlay::CompletionItem;
 
 /// Immutable payload captured when a prompt needs a session before its turn
@@ -52,6 +53,19 @@ pub struct PromptState {
     /// current/default selection). Convenience default only; ordinary
     /// session preference behavior is unchanged.
     pub task_model_choice: Option<TaskModelChoice>,
+    /// Armed chat context for the next composer submission.
+    ///
+    /// Set by a chat surface that cannot own a text buffer of its own — the
+    /// side panel — when `r`/`e` is pressed. It is *not* a second draft: the
+    /// prompt widget still holds the text, and this records only what the
+    /// text means (a reply target, or a body being replaced).
+    ///
+    /// While armed it outranks panel focus for
+    /// [`App::input_target`](crate::tui::app::App::input_target): the user
+    /// explicitly asked to reply to *this* message, so moving focus to the
+    /// session panel must not silently redirect what they type into the
+    /// agent. Cancelling clears it and leaves the text in place.
+    pub chat_seed: Option<ChatComposeSeed>,
 }
 
 impl PromptState {

@@ -142,6 +142,54 @@ pub(crate) fn start_terminal_create(app: &mut App, argv: Vec<String>) {
     );
 }
 
+/// argv for the everyday interactive shell.
+///
+/// `$SHELL` is the user's own answer to "which shell do I run", and the
+/// `sh` fallback matches [`crate::shell::ShellRuntime`] so this surface and
+/// human `!cmd` execution cannot disagree about it. No `-l`: the daemon gives
+/// the process a real PTY, so the shell detects an interactive terminal on its
+/// own, and a login flag would only re-run rc files nobody asked for.
+pub(crate) fn default_shell_argv() -> Vec<String> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "cmd.exe".to_string()
+            } else {
+                "sh".to_string()
+            }
+        });
+    vec![shell]
+}
+
+/// Start the default shell and show it in the box.
+///
+/// This is what `/terminal` with no usable terminal behind it calls. Opening a
+/// terminal is expected to produce a terminal: making the user first invent
+/// an argv for `/terminal-create` and then re-run `/terminal` to see it was
+/// the single thing standing between this command and being usable.
+pub(crate) fn spawn_default_terminal(app: &mut App) {
+    start_terminal_create(app, default_shell_argv());
+}
+
+/// Start the default shell *for the side panel*.
+///
+/// The panel is already on screen, so the completion has to land there instead
+/// of throwing a box over the surface the user is reading. The route is one
+/// bit of correlation state because create and attach are asynchronous and
+/// several frames wide, and a panel cannot see app state by construction.
+pub(crate) fn spawn_default_terminal_for_panel(app: &mut App) {
+    if app.terminal_panel_spawn {
+        // A create is already in flight for this panel. A second one would
+        // race the first to become the active handle and orphan a shell.
+        return;
+    }
+    app.terminal_panel_spawn = true;
+    start_terminal_create(app, default_shell_argv());
+}
+
 /// Match the PTY to the usable dialog area, with a minimum useful viewport.
 pub(crate) fn terminal_viewport_size() -> (u16, u16) {
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -178,6 +226,9 @@ pub(crate) fn apply_terminal_create_finished(
     error: Option<String>,
 ) {
     if let Some(error) = error {
+        // Drop the panel route too: a failed create must not divert the next
+        // unrelated terminal into the side panel.
+        app.terminal_panel_spawn = false;
         if app
             .dialog_state
             .terminal_request
@@ -190,6 +241,7 @@ pub(crate) fn apply_terminal_create_finished(
     let (Some(handle), Some(workspace_id), Some(command_label)) =
         (handle, workspace_id, command_label)
     else {
+        app.terminal_panel_spawn = false;
         if app.dialog_state.terminal_request.fail(
             request_id,
             "terminal create completed without a handle".to_string(),
@@ -207,6 +259,7 @@ pub(crate) fn apply_terminal_create_finished(
         .interactive_terminals
         .apply_created(handle.clone(), workspace_id, command_label, 80, 24)
     {
+        app.terminal_panel_spawn = false;
         app.messages_state
             .toasts
             .warning("Terminal created but the TUI view is full; use /terminal-list");
@@ -430,6 +483,7 @@ pub(crate) fn apply_terminal_attach_finished(
             .terminal_request
             .fail(request_id, error.clone())
         {
+            app.terminal_panel_spawn = false;
             app.messages_state.toasts.error(&error);
         }
         return;
@@ -440,6 +494,7 @@ pub(crate) fn apply_terminal_attach_finished(
             request_id,
             "terminal attach completed without output".to_string(),
         ) {
+            app.terminal_panel_spawn = false;
             app.messages_state
                 .toasts
                 .error("Terminal attach completed without output");
@@ -450,6 +505,7 @@ pub(crate) fn apply_terminal_attach_finished(
         return;
     }
     let Some(attachment_id) = attachment_id else {
+        app.terminal_panel_spawn = false;
         app.messages_state
             .toasts
             .error("Terminal attach completed without an attachment");
@@ -489,7 +545,15 @@ pub(crate) fn apply_terminal_attach_finished(
             .toasts
             .warning("Terminal requires resync; use /terminal-resume to follow live output");
     }
-    handle_terminal_show(app, handle);
+    if app.terminal_panel_spawn {
+        // The side panel is the surface the user is already reading, so the
+        // new shell lands there. Opening the box as well would cover it and
+        // leave two views of one PTY fighting over the keyboard.
+        app.terminal_panel_spawn = false;
+        app.panel_host.show_terminal(Some(&handle));
+    } else {
+        handle_terminal_show(app, handle);
+    }
 }
 
 /// Start a resume from `/terminal-resume [handle]` (defaults to the
@@ -1141,6 +1205,14 @@ pub(crate) fn apply_terminal_op_finished(
 // ── Dialog view ─────────────────────────────────────────────────────
 
 /// Render one terminal into the terminal dialog (`/terminal-show`).
+/// Show a terminal in the box. The one entry point for every caller that
+/// wants the terminal surface open — `/terminal`, `/terminal-show`, and the
+/// live-refresh path all land here so they cannot disagree about which
+/// handle is on screen.
+pub(crate) fn show_terminal(app: &mut App, handle: String) {
+    handle_terminal_show(app, handle);
+}
+
 pub(crate) fn handle_terminal_show(app: &mut App, handle: String) {
     if app.interactive_terminals.view(&handle).is_none() {
         app.messages_state
@@ -1232,6 +1304,70 @@ pub(crate) fn focus_terminal(app: &mut App, handle: Option<String>) {
     }
 }
 
+// ── Panel surface ───────────────────────────────────────────────────
+//
+// The side panel is a peer of the box, not a second implementation: it maps
+// keys through the same `map_key`/`classify_key` gate and sends through the
+// same `send_terminal_input`. These four functions are the only app-side
+// entry points, because focusing and reporting need message state the panel
+// deliberately cannot see.
+
+/// Take the PTY's keyboard for the terminal the panel is showing.
+pub(crate) fn focus_terminal_panel(app: &mut App, handle: &str) {
+    if app.interactive_terminals.view(handle).is_none() {
+        app.panel_host.forget_terminal(handle);
+        app.messages_state
+            .toasts
+            .warning("That terminal is gone — press i for a new shell");
+        return;
+    }
+    if app.interactive_terminals.focus(handle) {
+        app.messages_state.toasts.info(&format!(
+            "Terminal {handle} focused: keystrokes go to the process; Ctrl-] leaves focus"
+        ));
+        return;
+    }
+    // Focus was refused, so this view cannot take keystrokes — and that
+    // refusal is the whole reason the panel read as broken. Two distinct
+    // causes need opposite answers: a live process that only lost its
+    // attachment is re-attached, while an exited or gone one can only be
+    // replaced. Typing into either used to produce `interactive_not_running`
+    // with no way forward from the surface the user was standing on.
+    if app.interactive_terminals.is_live(handle) {
+        start_terminal_attach(app, handle.to_string());
+    } else {
+        spawn_default_terminal_for_panel(app);
+    }
+}
+
+/// Return the keyboard to the host, leaving the PTY running.
+pub(crate) fn blur_terminal_panel(app: &mut App, handle: &str) {
+    app.interactive_terminals.escape(handle);
+    app.messages_state
+        .toasts
+        .info("Terminal unfocused: keystrokes go to the prompt; Shift+← leaves the panel");
+}
+
+/// Clear the local scrollback and screen for `handle`.
+///
+/// Local only: the process keeps running and the daemon keeps streaming.
+/// Sequence tracking is preserved by `clear_scrollback`, so the next chunk
+/// arrives as an ordinary continuation rather than a gap the user cannot
+/// explain.
+pub(crate) fn clear_terminal(app: &mut App, handle: &str) {
+    if app.interactive_terminals.clear_scrollback(handle) {
+        // A box may be showing the same view; repaint it so the clear is
+        // visible in whichever surface the user is actually looking at.
+        if app.dialog_state.terminal_detail_handle.as_deref() == Some(handle) {
+            refresh_terminal_dialog(app, handle);
+        }
+    } else {
+        app.messages_state
+            .toasts
+            .warning("No terminal selected to clear");
+    }
+}
+
 /// Close the terminal dialog. Detaches the viewed terminal (releasing
 /// the caller-owned attachment; the process keeps running) unless
 /// `terminate` is set by an explicit terminate-then-close flow.
@@ -1273,7 +1409,16 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
     }
 
     if !focused {
-        // Viewing: Esc closes (detach); navigation falls through to the
+        // Viewing: the directional gesture docks this box into the side
+        // panel. Handled here rather than by the dialog scroller below,
+        // which would swallow it — a modal short-circuits key routing
+        // before the binding map is consulted, so the box has to recognise
+        // the gesture itself.
+        if let Some(dir) = crate::tui::panels::direction_of(key) {
+            app.process_msg(crate::tui::app::TuiMsg::MoveDirection(dir));
+            return true;
+        }
+        // Esc closes (detach); navigation falls through to the
         // dialog scroller (return false); everything else is ignored here
         // and must not reach the prompt while the dialog is modal.
         if matches!(key.code, KeyCode::Esc) {
@@ -1306,7 +1451,11 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
 }
 
 /// Map a crossterm key event to the framework-neutral terminal key.
-fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
+///
+/// Shared with the side panel so both surfaces map a keystroke identically;
+/// the alternative is a panel that quietly disagrees with the box about what
+/// `Ctrl-]` or a literal `Esc` means.
+pub(crate) fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {
         KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1526,6 +1675,19 @@ mod tests {
                 "{name} missing from the slash registry"
             );
         }
+    }
+
+    #[test]
+    fn the_default_shell_is_never_empty() {
+        // `/terminal` has to produce something to show. An empty argv is
+        // rejected pre-admission, so an empty fallback would turn the command
+        // back into a failure with nothing the user can do about it.
+        let argv = default_shell_argv();
+        assert_eq!(argv.len(), 1, "a plain shell takes no arguments");
+        assert!(
+            !argv[0].trim().is_empty(),
+            "a blank $SHELL must fall through to the real default"
+        );
     }
 
     #[test]

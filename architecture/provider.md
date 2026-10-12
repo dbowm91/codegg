@@ -364,10 +364,10 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-### ProviderCapabilities (`provider_core.rs:133`)
+### ProviderCapabilities (`provider_core.rs:132`)
 
 Per-provider capability flags for tool deferral, request limits, and hosted
-programmatic tool calling. Full field set (14 fields):
+programmatic tool calling. Full field set (15 fields):
 
 ```rust
 pub struct ProviderCapabilities {
@@ -385,6 +385,7 @@ pub struct ProviderCapabilities {
     pub supports_output_schema: bool,
     pub max_result_size: Option<usize>,
     pub max_tool_calls_per_program: Option<usize>,
+    pub strips_reasoning_effort: bool,
 }
 ```
 
@@ -820,6 +821,18 @@ Zen strip the reasoning projection (`azure.rs`, `openrouter.rs`,
 asserting the fields are absent. A `/reasoning` selection therefore has no
 effect on those providers; this is a wire-shape decision, not a TUI bug, and
 changing it would need a per-adapter justification.
+
+Because that failure is silent, `ProviderCapabilities` exposes
+`strips_reasoning_effort` for exactly those three providers, and the TUI raises
+a **warning** instead of an info toast when a reasoning-requesting mode is
+selected against one (`App::selected_provider_strips_reasoning`). The flag
+lives beside the other per-provider capabilities rather than in a TUI list, so
+it cannot drift from the adapters: `strips_reasoning_effort_matches_real_adapter_behavior`
+runs each adapter's `build_body` and asserts the field is actually gone, and
+`strips_reasoning_effort_flag_matches_the_declared_provider_list` pins the
+flag to that set. `false` means "does not strip", never "cannot reason" —
+most providers simply pass the field through without declaring anything, so
+over-reporting would warn users who are getting what they asked for.
 
 ### Anthropic (`anthropic.rs`)
 
