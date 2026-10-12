@@ -4405,7 +4405,11 @@ mod tests {
         let CoreResponse::HumanShellRunCreated { run, .. } = response else {
             panic!("expected standalone human shell acceptance, got {response:?}");
         };
-        assert_eq!(run.cwd, root.path().to_string_lossy());
+        // Registration canonicalizes the workspace root, so compare against
+        // the canonical form: on macOS `tempfile` hands back `/var/...`
+        // while the registered root resolves to `/private/var/...`.
+        let canonical_root = root.path().canonicalize().expect("canonical root");
+        assert_eq!(run.cwd, canonical_root.to_string_lossy());
 
         let read = CoreRequest::HumanShellRunRead {
             request: codegg_protocol::human_shell::HumanShellRunReadDto {

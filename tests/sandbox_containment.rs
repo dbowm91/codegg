@@ -66,6 +66,10 @@ fn run_helper(spec: &SandboxLaunchSpec) -> Run {
 /// `--version`. That file is a deliberate deny root, so a probe meant to
 /// exercise tool *availability* must point the tool at an empty config
 /// directory instead of the operator's real one.
+///
+/// Gated with its only caller: the Seatbelt developer-tool probe, so the
+/// function is not dead code on hosts that compile that probe out.
+#[cfg(target_os = "macos")]
 fn run_helper_with_env(spec: &SandboxLaunchSpec, overrides: &[(&str, &str)]) -> Run {
     let spec_file = tempfile::NamedTempFile::new().expect("sandbox spec file");
     serde_json::to_writer(spec_file.as_file(), spec).expect("sandbox spec encoding");
@@ -73,6 +77,7 @@ fn run_helper_with_env(spec: &SandboxLaunchSpec, overrides: &[(&str, &str)]) -> 
     launch_helper_with_env(helper_path(), spec_file.path(), overrides)
 }
 
+#[cfg(target_os = "macos")]
 fn launch_helper_with_env(helper: PathBuf, spec: &Path, overrides: &[(&str, &str)]) -> Run {
     launch_helper_impl(helper, spec, overrides)
 }
