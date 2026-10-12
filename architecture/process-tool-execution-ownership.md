@@ -101,7 +101,12 @@ For that test-only path, the service obtains the AppContainer package-local
 data path from the profile, creates its `Temp` child, and supplies those paths
 as `LOCALAPPDATA`, `TEMP`, and `TMP`; it never forwards the host user's profile
 or temp directories. This test seam does not activate a production Windows
-sandbox backend.
+sandbox backend. Its disposable-root ACL fixture captures directory identity
+and the exact original/leased DACLs before mutation, applies read, read/write,
+or deny ACEs, and restores only on exact identity/descriptor match. Startup
+reconciliation refuses drift and preserves conflicting journals. The current
+journal root is test-runner temporary storage; it is not the production
+daemon-owned journal location and does not qualify existing workspaces.
 
 Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
 while Windows defaults to the inbox Windows PowerShell executable and can opt

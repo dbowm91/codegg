@@ -32,3 +32,10 @@ Drive/UNC/ADS/reparse checks on policy path strings are pre-launch diagnostics;
 they do not establish handle identity, detect hardlink aliases, or prevent a
 path replacement after validation. Keep those cases as native enforcement
 gates for M004/M006.
+
+The C010 AppContainer ACL fixture is only for fresh runner-owned disposable
+roots. It journals the original and expected DACLs before mutation, verifies
+the directory volume/file identity on recovery, restores only an exact
+descriptor match, and preserves drift as a conflict. Its temporary test journal
+is not the production daemon-owned storage path. Do not treat its allowed/denied
+traces as production backend or existing-workspace authority evidence.
