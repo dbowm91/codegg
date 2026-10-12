@@ -2173,8 +2173,8 @@ mod tests {
         std::fs::write(&protected, "synthetic-protected-secret").unwrap();
 
         let protect = std::process::Command::new("icacls.exe")
-            .args(["/inheritance:d"])
             .arg(&protected)
+            .arg("/inheritance:d")
             .output()
             .expect("icacls is available on the native Windows runner");
         assert!(
