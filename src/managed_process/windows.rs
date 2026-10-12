@@ -1238,6 +1238,38 @@ mod tests {
     }
 
     #[test]
+    fn appcontainer_sid_mismatch_keeps_target_suspended() -> io::Result<()> {
+        let profile = WindowsAppContainerProfile::create()?;
+        let wrong_profile = WindowsAppContainerProfile::create()?;
+        let mut job = WindowsJob::create()?;
+        let mut attributes = WindowsProcessAttributes::new(1)?;
+        attributes.set_appcontainer(&profile)?;
+
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32")
+            .join("cmd.exe");
+        let mut command_line = wide(&format!("\"{}\" /D /C exit 0", executable.display()));
+        let mut process = WindowsSuspendedAppContainerProcess::create(
+            &executable,
+            &mut command_line,
+            &attributes,
+        )?;
+        let process_handle = process.process_handle();
+        let error = job
+            .assign_appcontainer_and_resume(&mut process, |handle| {
+                super::verify_appcontainer_token(handle, wrong_profile.sid())
+            })
+            .expect_err("a different AppContainer SID must prevent resume");
+        assert!(error.to_string().contains("did not match"));
+        assert_eq!(
+            unsafe { WaitForSingleObject(process_handle, 0) },
+            windows_sys::Win32::Foundation::WAIT_TIMEOUT,
+            "SID mismatch must leave the target suspended until cleanup"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn appcontainer_resume_failure_keeps_target_suspended() -> io::Result<()> {
         let profile = WindowsAppContainerProfile::create()?;
         let mut job = WindowsJob::create()?;
