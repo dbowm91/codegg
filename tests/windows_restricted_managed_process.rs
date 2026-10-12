@@ -217,8 +217,8 @@ Start-Sleep -Seconds 60
 
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(8);
     let run = tokio::spawn(ManagedProcessService::run_streaming(request, output_tx));
-    let child_pid = tokio::time::timeout(Duration::from_secs(15), async {
-        let mut output = Vec::new();
+    let mut output = Vec::new();
+    let marker = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             assert!(
                 !run.is_finished(),
@@ -231,15 +231,20 @@ Start-Sleep -Seconds 60
             output.extend_from_slice(&chunk.bytes);
             let text = String::from_utf8_lossy(&output);
             if let Some(line) = text.lines().find(|line| line.starts_with("child-pid:")) {
-                return line["child-pid:".len()..]
+                let child_pid = line["child-pid:".len()..]
                     .trim()
                     .parse::<u32>()
                     .expect("descendant PID is numeric");
+                return Some(child_pid);
             }
         }
     })
-    .await
-    .expect("restricted child publishes descendant PID");
+    .await;
+    assert!(
+        marker.is_ok(),
+        "restricted child neither published a descendant PID nor denied spawn; output: {}",
+        String::from_utf8_lossy(&output)
+    );
 
     cancellation.cancel();
     let result = run
@@ -249,7 +254,7 @@ Start-Sleep -Seconds 60
     assert_eq!(result.termination, TerminationReason::Cancelled);
     assert!(result.cleanup.job_object_established);
     assert!(result.cleanup.forced_signal_sent);
-    wait_for_process_exit(child_pid).await;
+    wait_for_process_exit(marker.unwrap().expect("descendant process was started")).await;
 }
 
 #[tokio::test]
