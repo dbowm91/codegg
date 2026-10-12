@@ -215,7 +215,13 @@ mod server {
             let mut parts = request_line.split_whitespace();
             let method = parts.next().unwrap_or("");
             let path = parts.next().unwrap_or("");
-            let response = if method == "POST" && path.ends_with("/chat/completions") {
+            let response = if method == "GET" && path.ends_with("/models") {
+                http_response(
+                    "200 OK",
+                    "application/json",
+                    br#"{"data":[{"id":"gpt-4o","name":"gpt-4o"}]}"#,
+                )
+            } else if method == "POST" && path.ends_with("/chat/completions") {
                 let index = count.fetch_add(1, Ordering::SeqCst);
                 eprintln!("mock-model: chat completions request #{index}");
                 let body = if index == 0 {
