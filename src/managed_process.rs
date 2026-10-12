@@ -957,9 +957,12 @@ async fn run_windows_test_restricted_inner(
             .or_insert((canonical, access));
     }
     let daemon_paths = codegg_client::LocalDaemonPaths::resolve();
-    daemon_paths
-        .ensure_root()
-        .map_err(ManagedProcessError::Spawn)?;
+    daemon_paths.ensure_root().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("prepare daemon-owned ACL journal root: {error}"),
+        ))
+    })?;
     let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
     let conflicts = windows_acl_lease::recover_all(&journal_root).map_err(|error| {
         ManagedProcessError::Spawn(std::io::Error::new(
@@ -1026,11 +1029,19 @@ async fn run_windows_test_restricted_inner(
                 .for_each(|snapshot| eprintln!("C013 post-lease object: {snapshot}"));
         }
     }
-    let local_app_data = profile
-        .local_app_data_path()
-        .map_err(ManagedProcessError::Spawn)?;
+    let local_app_data = profile.local_app_data_path().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("resolve AppContainer local application data: {error}"),
+        ))
+    })?;
     let temporary_directory = local_app_data.join("Temp");
-    std::fs::create_dir_all(&temporary_directory).map_err(ManagedProcessError::Spawn)?;
+    std::fs::create_dir_all(&temporary_directory).map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("create AppContainer temporary directory: {error}"),
+        ))
+    })?;
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
     let mut environment_block =
