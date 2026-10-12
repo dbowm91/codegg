@@ -36,7 +36,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, OPEN_EXISTING,
 };
 
 const JOURNAL_VERSION: u32 = 2;
@@ -746,7 +746,13 @@ fn add_appcontainer_ace(
     }
     let (access_mask, access_mode) = match access {
         LeaseAccess::Read => (FILE_GENERIC_READ, SET_ACCESS),
-        LeaseAccess::ReadWrite => (FILE_GENERIC_READ | FILE_GENERIC_WRITE, SET_ACCESS),
+        // Directory working directories require FILE_TRAVERSE in addition to
+        // file creation and reads. This lease is restricted to fresh,
+        // disposable roots; descendants inherit only this same test grant.
+        LeaseAccess::ReadWrite => (
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_TRAVERSE,
+            SET_ACCESS,
+        ),
         LeaseAccess::Deny => (FILE_GENERIC_READ | FILE_GENERIC_WRITE, DENY_ACCESS),
     };
     let entry = EXPLICIT_ACCESS_W {
