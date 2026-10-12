@@ -1,8 +1,8 @@
 # Sandbox Containment Post-Closure Corrective C006 — Hosted Integration Qualification and PR Closure
 
-Status: active (C005 conditionally closed; final hosted qualification running on focused PR #112)
+Status: conditionally closed (C005 remains conditionally closed; sandbox behavior fix landed and its focused Linux regression passed, while one bounded hosted retry ended on an unrelated process-test SIGKILL)
 
-Repository baseline: focused sandbox PR #112 at `e9ea2078718130229ef639af0658cab96fed191c`, based on `main` and merge base `7317a67ad604fe39fd5282ddca07496255faa4d1`; C005 closure is `f4f5308`. Hosted CI and Desktop E2E must be read against this exact head and any later source SHA.
+Repository baseline: focused sandbox PR #112 at `cbed1e5aeff6507cb542a6ab44209da7908c6bff`, based on `main` and merge base `7317a67ad604fe39fd5282ddca07496255faa4d1`; C005 closure is recorded on the planning branch. Hosted CI and Desktop E2E evidence below is tied to exact head SHAs.
 
 Source roadmap:
 - `plans/subsystems/sandbox-containment-post-closure-corrective-roadmap.md#7-milestones-and-useroperator-exits`
@@ -64,11 +64,21 @@ Do not downgrade the failures to "CI flake" or claim the tests passed: the Clipp
 
 ### Focused candidate follow-up (2026-10-12)
 
-C005 separated those owner paths from the sandbox PR. PR #111 now carries the human-shell/editor/desktop work; its hosted CI run `38275854474` and Desktop E2E run `38275854469` passed on `05090325e177a0142811a697d2fc5f339da5e066` (Windows process-launcher check was still running when observed). Focused sandbox PR #112 is based on current `main` and excludes those files.
+C005 separated those owner paths from the sandbox PR. PR #111 carries the human-shell/editor/desktop work. Its hosted CI run `38278829788` and Desktop E2E run `38278829963` passed on `3f8453bab75966a4086bcfc009edccbfd6901bfe`; its separate Windows process-launcher run `38278824470` failed in the C013 existing-object ACL/alias probe with `Access is denied`. Focused sandbox PR #112 is based on current `main` and excludes those files; the Windows finding remains with that sibling owner.
 
 The first hosted run on sandbox head `c6a63a46e0efdb0e1b68b5258e03206db91e5dcb`, CI run `38276126795`, passed formatting and static guards then failed Workspace Clippy 1.99 on a redundant wildcard in the existing `tests/session_family/projection_consumer.inc`; Workspace tests were skipped. The same run also motivated Linux-gating the `BackendPolicy` import in `src/security/sandbox/landlock.rs` for non-Linux Clippy. Both narrow issues were corrected at `e9ea2078718130229ef639af0658cab96fed191c`; focused `cargo clippy -p codegg --test session_family --locked -- -D warnings` then passed locally. Exact-head CI and Desktop E2E on `e9ea207` are the remaining qualification gates.
 
-The first exact-head CI run `38277915980` on `e9ea207` passed formatting, all static guards, and Workspace Clippy. Workspace tests reported 5,668 passed, 1 failed, and 5 skipped before stopping; `causal_observe_replay::replay_p95_within_budget` measured 5.775 ms against its 5 ms ceiling. This causal-frontier path is absent from the sandbox diff. Per the single-retry rule below, one `gh run rerun --failed 38277915980` was started on the same SHA (retry job `114913355755`); a repeated failure is a real blocker and must not receive another retry-only loop.
+The first exact-head CI run `38277915980` on `e9ea207` passed formatting, all static guards, and Workspace Clippy. Workspace tests reported 5,668 passed, 1 failed, and 5 skipped before stopping; `causal_observe_replay::replay_p95_within_budget` measured 5.775 ms against its 5 ms ceiling. Its single same-SHA retry reached the sandbox test and exposed a real required-grant defect, which was fixed in `cbed1e5aeff6507cb542a6ab44209da7908c6bff`.
+
+### Exact final-head qualification and bounded retry (2026-10-12)
+
+At `cbed1e5aeff6507cb542a6ab44209da7908c6bff`, the candidate validates every requested read/write grant before backend selection or direct Landlock application. This closes the discovered path where policy normalization discarded a missing required grant and the target still ran. The existing Linux regression `sandbox_landlock::required_rule_failure_stops_before_target_execution` passed on the final head.
+
+Hosted CI run `38281750403`, attempt 1/job `114920421499`, passed formatting, every static guard, and Workspace Clippy. Workspace tests stopped at 9,897/12,772 after 9,896 passed and one unrelated unchanged `codegg-core::goal::checkpoint::tests::test_append_checkpoint_update` assertion failed because the output did not contain `Phase 1`.
+
+The one permitted same-SHA retry, attempt 2/job `114927563136`, again passed formatting, static guards, and Workspace Clippy. The checkpoint test passed; the workspace suite then stopped at 11,555/12,772 with 11,554 passed and `egggit::process::tests::run_command_times_out_instead_of_waiting_forever` aborted by SIGKILL. The sandbox required-rule regression passed (test 7,547). `crates/egggit` is unchanged in PR #112. No further retry is permitted by this plan.
+
+PR #112 changes no Desktop E2E trigger paths. The sibling-owner Desktop E2E run `38278829963` passed at PR #111 head `3f8453bab75966a4086bcfc009edccbfd6901bfe`; the sibling Windows process-launcher run failed its C013 ACL/alias probe as recorded above. The Windows finding does not enter the sandbox-only diff and remains an unresolved sibling qualification.
 
 ## 4. Invariants and non-goals
 
