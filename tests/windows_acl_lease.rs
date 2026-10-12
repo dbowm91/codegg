@@ -62,9 +62,9 @@ async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_ac
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
-        read_paths: vec![readonly.to_string_lossy().into_owned()],
-        write_paths: vec![allowed.to_string_lossy().into_owned()],
-        deny_paths: vec![outside.to_string_lossy().into_owned()],
+        read_paths: vec![readonly.clone()],
+        write_paths: vec![allowed.clone()],
+        deny_paths: vec![outside.clone()],
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_LEASE_ALLOWED", allowed.as_os_str())
@@ -145,7 +145,7 @@ async fn windows_acl_lease_cancellation_restores_after_job_termination() {
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
         read_paths: Vec::new(),
-        write_paths: vec![allowed.to_string_lossy().into_owned()],
+        write_paths: vec![allowed.clone()],
         deny_paths: Vec::new(),
     });
     let cancellation = CancellationToken::new();
