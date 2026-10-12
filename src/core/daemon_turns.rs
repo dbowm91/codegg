@@ -468,6 +468,15 @@ impl CoreDaemon {
                         });
                     }
                 };
+                for promotion in &admitted_promotions {
+                    self.record_human_shell_promotion_stage(
+                        &authority,
+                        &authz_decision,
+                        promotion,
+                        "consumed",
+                    )
+                    .await;
+                }
                 for promotion in admitted_promotions {
                     messages.push(crate::protocol::dto::ProviderMessage::User {
                         content: vec![crate::protocol::dto::ContentPart::Text {
