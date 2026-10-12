@@ -2061,7 +2061,11 @@ mod tests {
         for model in ["opencode_go/minimax-m3", "other:opencode_go/minimax-m3"] {
             let (response, called) = submit_with_scoped_opencode_go(model).await;
             assert!(
-                matches!(&response, CoreResponse::Ack),
+                matches!(
+                    &response,
+                    CoreResponse::TurnAdmissionReceipt { receipt }
+                        if receipt.status == "accepted"
+                ),
                 "a connection-scoped kind ({model}) must not be reported as \
                  provider_not_found: {response:?}",
             );
@@ -2251,7 +2255,11 @@ mod tests {
             .await
             .expect("turn submit");
         assert!(
-            matches!(&response, CoreResponse::Ack),
+            matches!(
+                &response,
+                CoreResponse::TurnAdmissionReceipt { receipt }
+                    if receipt.status == "accepted"
+            ),
             "a live durable selection must be accepted: {response:?}",
         );
         assert!(
