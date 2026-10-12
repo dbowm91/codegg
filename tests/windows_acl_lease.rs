@@ -37,6 +37,10 @@ async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_ac
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&readonly).unwrap();
     let outside_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap();
+    let journal_root = codegg_client::LocalDaemonPaths::resolve()
+        .root
+        .join("sandbox")
+        .join("acl-leases");
     let executable = powershell();
     let script = r#"
 $write = [IO.Path]::Combine($env:CODEGG_LEASE_ALLOWED, 'created.txt')
@@ -129,6 +133,14 @@ try {
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap(),
         outside_before
     );
+    assert!(std::fs::read_dir(journal_root).unwrap().all(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("json")
+    }));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

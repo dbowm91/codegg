@@ -35,7 +35,8 @@ use nix::unistd::setsid;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
-#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+#[cfg(windows)]
+#[allow(dead_code)]
 mod windows_acl_lease;
 
 #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
@@ -916,7 +917,11 @@ async fn run_windows_test_restricted(
             })
             .or_insert((canonical, access));
     }
-    let journal_root = std::env::temp_dir().join("CodeGG-test-acl-leases");
+    let daemon_paths = codegg_client::LocalDaemonPaths::resolve();
+    daemon_paths
+        .ensure_root()
+        .map_err(ManagedProcessError::Spawn)?;
+    let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
     let conflicts =
         windows_acl_lease::recover_all(&journal_root).map_err(ManagedProcessError::Spawn)?;
     if !conflicts.is_empty() {

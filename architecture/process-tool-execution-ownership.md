@@ -104,9 +104,11 @@ or temp directories. This test seam does not activate a production Windows
 sandbox backend. Its disposable-root ACL fixture captures directory identity
 and the exact original/leased DACLs before mutation, applies read, read/write,
 or deny ACEs, and restores only on exact identity/descriptor match. Startup
-reconciliation refuses drift and preserves conflicting journals. The current
-journal root is test-runner temporary storage; it is not the production
-daemon-owned journal location and does not qualify existing workspaces.
+reconciliation refuses drift and preserves conflicting journals. The
+test-only path stores records under the per-user daemon root at
+`sandbox/acl-leases`, with `CODEGG_DAEMON_HOME` as the normal root override.
+There is no production caller or operator repair command, and existing
+workspaces remain unqualified.
 
 Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
 while Windows defaults to the inbox Windows PowerShell executable and can opt
