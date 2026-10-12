@@ -221,7 +221,7 @@ impl CoreDaemon {
                 )
                 .await
                 {
-                    return Ok(response);
+                    return Ok(*response);
                 }
                 let scope = crate::shell::daemon::HumanShellRunScope {
                     principal_id: authority.principal_id().as_str().to_owned(),
@@ -244,7 +244,7 @@ impl CoreDaemon {
                 )
                 .await
                 {
-                    return Ok(response);
+                    return Ok(*response);
                 }
                 let scope = crate::shell::daemon::HumanShellRunScope {
                     principal_id: authority.principal_id().as_str().to_owned(),
@@ -268,39 +268,39 @@ async fn validate_workspace_scope(
     project_id: &str,
     workspace_id: &str,
     session_id: Option<&str>,
-) -> Result<std::path::PathBuf, CoreResponse> {
+) -> Result<std::path::PathBuf, Box<CoreResponse>> {
     let pool = daemon.pool.clone();
     if pool.is_none()
         && (authority.principal().auth_method()
             != codegg_core::transport_auth::AuthMethod::LocalOwner
             || session_id.is_some())
     {
-        return Err(error(
+        return Err(Box::new(error(
             "human_shell_policy_unavailable",
             "execution authority is unavailable",
-        ));
+        )));
     }
     let workspace_id = codegg_core::workspace::WorkspaceId::parse(workspace_id).map_err(|_| {
-        error(
+        Box::new(error(
             "human_shell_workspace_unavailable",
             "workspace is unavailable",
-        )
+        ))
     })?;
     let workspace = daemon
         .workspaces
         .resolve(&workspace_id)
         .await
         .ok_or_else(|| {
-            error(
+            Box::new(error(
                 "human_shell_workspace_unavailable",
                 "workspace is unavailable",
-            )
+            ))
         })?;
     if workspace.is_archived() {
-        return Err(error(
+        return Err(Box::new(error(
             "human_shell_workspace_unavailable",
             "workspace is unavailable",
-        ));
+        )));
     }
     let Some(pool) = pool else {
         return Ok(workspace.canonical_root.clone());
@@ -310,41 +310,41 @@ async fn validate_workspace_scope(
         .workspace_binding(&workspace_id)
         .await
         .map_err(|_| {
-            error(
+            Box::new(error(
                 "human_shell_workspace_unavailable",
                 "workspace binding is unavailable",
-            )
+            ))
         })?
         .ok_or_else(|| {
-            error(
+            Box::new(error(
                 "human_shell_workspace_unavailable",
                 "workspace binding is unavailable",
-            )
+            ))
         })?;
     if binding.status != BindingStatus::Resolved
         || binding.project_id.as_str() != project_id
         || binding.node_id.is_some()
     {
-        return Err(error(
+        return Err(Box::new(error(
             "human_shell_scope_mismatch",
             "workspace is not bound to the requested local project",
-        ));
+        )));
     }
     if let Some(session_id) = session_id {
         let binding = storage.session_binding(session_id).await.map_err(|_| {
-            error(
+            Box::new(error(
                 "human_shell_scope_mismatch",
                 "session binding is unavailable",
-            )
+            ))
         })?;
         if !matches!(binding, Some(row) if row.status == BindingStatus::Resolved
             && row.project_id.as_ref().is_some_and(|id| id.as_str() == project_id)
             && row.workspace_id.as_ref().is_some_and(|id| id == &workspace_id))
         {
-            return Err(error(
+            return Err(Box::new(error(
                 "human_shell_scope_mismatch",
                 "session is not bound to the requested project and workspace",
-            ));
+            )));
         }
     }
     Ok(workspace.canonical_root.clone())

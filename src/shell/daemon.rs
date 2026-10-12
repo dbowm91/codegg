@@ -376,7 +376,8 @@ impl HumanShellRunService {
         let expired: Vec<String> = inner
             .runs
             .iter()
-            .filter_map(|(id, run)| (run.lock().meta.expires_at_ms <= now).then(|| id.clone()))
+            .filter(|(_, run)| run.lock().meta.expires_at_ms <= now)
+            .map(|(id, _)| id.clone())
             .collect();
         for id in expired {
             if let Some(run) = inner.runs.remove(&id) {
