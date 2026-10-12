@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C013 — Existing-Object Access and Alias Containment
 
-Status: active (native existing-object forensic diagnosis)
+Status: implemented (negative feasibility; successor deferred pending ADR review)
 
 Repository baseline: `265146ac451a74c1c8b41acdc50df993c38e6b9a` on `work/windows-native-sandbox-foundation` (2026-10-12).
 
@@ -192,3 +192,9 @@ Keep `ManagedProcessService` as the only runtime owner, retain `ApprovalRouter` 
 - WP-D actual token/child, ancestor/junction/hardlink, races, recovery and Job controls verified.
 - WP-E C013 closure and registry/roadmap update based on obtained native evidence, not narrative status.
 - No unrelated branch diff review or rebase/merge work in this plan.
+
+## 11. Final disposition (2026-10-12)
+
+C013 is complete as a **negative feasibility/defer result**, not as a populated-tree enforcement capability. Exact-SHA hosted evidence is recorded in `plans/closure/windows-native-sandbox/013-status.md` and `research/windows-native-sandbox/c013-existing-object-findings.md` (commit `6028e03f`, workflow `38296752862`). Root-level ACL leasing changed the hardlink-backed credential object and left descendant DACL control-bit drift after restoration; the actual child also could not read the intended allowed workspace file in the forensic grant-only fixture. No bounded, race-safe per-object journal strategy was qualified. The normal test-support admission path rejects populated lease roots before mutation or child creation.
+
+The future staged-projection/isolated-identity architecture question is scoped as proposed ADR-0019. It is not accepted and authorizes no implementation. C011, M004, M005 and M006 remain blocked. Production Windows `SandboxRequest::Required` remains unavailable, and no Windows filesystem `Enforced` claim is made. No plan is unblocked by this disposition.
