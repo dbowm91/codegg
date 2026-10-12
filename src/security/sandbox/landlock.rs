@@ -7,6 +7,7 @@
 //! that Seatbelt cannot provide.
 
 use super::backend::BackendEnforcement;
+#[cfg(target_os = "linux")]
 use super::policy::BackendPolicy;
 use super::SandboxLaunchSpec;
 #[cfg(target_os = "linux")]
