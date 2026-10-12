@@ -127,6 +127,16 @@ module is at end of file. Focused local Clippy (`cargo clippy -p codegg --lib
 --tests --locked -- -D warnings`) completed with no issues; dispatch hosted CI
 again after pushing these corrections.
 
+Hosted attempt `38229457314` passed Formatting and Workspace Clippy, then
+failed in Workspace tests when two `egggit` timeout tests were themselves
+terminated by `SIGKILL`. The timeout code signaled the child's process group
+without first creating a separate group; on Linux this selected the caller's
+group and killed the test processes. Timeout-bound children now become their
+own Unix process-group leaders before spawn. The 84 `egggit` tests and
+`scripts/check_git_forbidden_patterns.py` pass locally after the fix. This
+Git-process isolation correction is documented in `architecture/git.md` and
+the Git skill; rerun hosted CI before closure.
+
 ## 11. Documentation and closure evidence
 
 Update `architecture/lsp.md`, `.opencode/skills/lsp-ide/SKILL.md`, and `plans/registry.md`. Closure requires the empty-vs-missing state table, compatibility test, focused trajectories, relevant authorization checks, quick verification, and hosted CI result. Do not edit `plans/closure/desktop-frontend-ide-foundation/009-status.md`.
