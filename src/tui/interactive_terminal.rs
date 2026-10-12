@@ -861,6 +861,18 @@ impl InteractiveTerminalController {
         }
     }
 
+    /// Whether `handle` still has a process that can take input.
+    ///
+    /// Distinct from [`Self::focus`] succeeding, which additionally demands a
+    /// live attachment. The two failure modes need opposite answers — a
+    /// detached process is re-attached, an exited one is replaced — so callers
+    /// that are recovering need to tell them apart.
+    pub fn is_live(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.link.allows_mutation())
+    }
+
     /// Make `handle` the active view (viewing, not focused).
     pub fn set_active(&mut self, handle: &str) -> bool {
         if self.views.contains_key(handle) {

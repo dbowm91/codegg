@@ -162,13 +162,40 @@ root and lifecycle modules.
   `[CHAT]` unconditionally, giving `[INS] [build][BUILD] [CHAT]` — two badges
   on one axis and one permanently lit. Adding a panel means adding a `title()`
   arm; a destination the user cannot name is one they cannot trust.
-- **`L` docks a box into a panel; it does not move focus.** `L`/`Shift+L`
-  (`InputAction::DockPanel`) closes the open box and activates the panel that
-  can hold it, so `/chat` then `L` leaves the same browser running in the
-  column. The association lives in one `match` arm in `App::dock_target` — a
-  `/help` panel later is one arm plus one `SidePanel` impl, with no change to
-  `commands::panels::dock_open_box`. With no box open it warns instead of
-  silently navigating.
+- **`L` docks a box into a panel.** `Shift+L` (one of the four `Direction*`
+  actions — there is no `DockPanel` action) closes the open box and activates
+  the panel that can hold it, so `/chat` then `Shift+L` leaves the same browser
+  running in the column. The association lives in one `match` arm in
+  `App::dock_target` — a `/help` panel later was one arm plus one `SidePanel`
+  impl, with no change to `commands::panels::dock_open_box`. With no box open
+  the same key is a *pane move*, not a warning; both meanings live in the one
+  `move_directionally` dispatcher.
+- **A box and its panel may open in different modes, and the caller decides.**
+  `HelpDialog::new_with_mode` takes the starting mode: `/help` passes **Insert**
+  (opened to type a query), the docked Help panel passes **Normal** (read and
+  scroll first; `i` reaches the filter). Never hardcode the mode inside the
+  widget. In Insert `j`/`k` are filter text, so a panel hardcoded to Insert
+  does not "refuse" to scroll — it types `j` into a filter nobody is watching,
+  which is indistinguishable from a dead pane. The panel owns no copy of the
+  rule; it hosts the dialog and passes a mode.
+- **A panel refuses focus only when it has nothing at all to show.** Chat with
+  no bound project leaves the keyboard in the composer. **Terminal is the
+  deliberate exception**: `i` either takes the keyboard of a terminal that
+  exists or starts a shell, so it always has something to do. Refusing there
+  was the dead end — an empty panel takes no keys, so the `i` that would have
+  fixed it never arrived. Distinguishing "re-attach a live process" from
+  "replace an exited one" belongs to the command layer (`focus_terminal_panel`
+  consults `InteractiveTerminalController::is_live`), never the panel.
+- **A command that means "open X" should produce X.** `/terminal` with no live
+  view behind it starts `default_shell_argv()` (`$SHELL`, falling back to
+  `sh`/`cmd.exe` — the same answer `shell::ShellRuntime` gives `!cmd`). Making
+  the user first invent an argv for `/terminal-create` and then re-run
+  `/terminal` to see it was the whole reason it read as broken. An explicitly
+  named handle is still honoured as typed, so `/terminal <handle>` never
+  silently substitutes a shell. Where an async create needs to land in a
+  *different surface* than the usual one (the side panel), carry the route as
+  explicit app state — `App::terminal_panel_spawn` — and clear it on **every**
+  failure path, or a failed create diverts the next unrelated terminal.
 - **Never put arithmetic in `bool::then_some`.** `then_some` takes its value
   eagerly, so `cond.then_some(a - b)` evaluates `a - b` even when `cond` is
   false — and `Duration`'s `Sub` panics on underflow. This crashed the TUI on
@@ -239,9 +266,15 @@ root and lifecycle modules.
   navigation and concluded the input box was broken. The chat panel has no
   manual refresh key — it renders `ChatState` live and daemon chat events push
   into the reducer.
-- **`HelpDialog` is searchable.** Printable keys filter the keybinding rows,
-  `Esc` clears the filter before it closes the dialog, and scrolling is on
-  arrows/PageUp/PageDown rather than `j`/`k` so letters stay typeable.
+- **`HelpDialog` is searchable and mode-aware.** Printable keys filter the
+  keybinding rows, `Esc` clears the filter before it closes the dialog, and it
+  tracks `NOR`/`INS` with a badge. Arrows/PageUp/PageDown scroll in **both**
+  modes; `j`/`k` scroll **only** in Normal, because in Insert they have to stay
+  typeable so `help` itself can be searched for. `NOR` exists for the
+  gestures that need a non-typable key — above all the directional that docks
+  the box — since in Insert `Shift+L` is the letter `L` and must stay typeable.
+  The Help *panel* hosts this dialog via `render_into`; it does not
+  reimplement it, so box and panel cannot drift.
 - **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
   shared by keyboard navigation and mouse hit testing. Selection is cleared on
   project-scope changes, and the bounded `agent_tree` is joined to durable

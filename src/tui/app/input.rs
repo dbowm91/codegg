@@ -614,6 +614,9 @@ impl App {
             TuiMsg::TerminalPanelClear { handle } => {
                 crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)
             }
+            TuiMsg::StartTerminal => {
+                crate::tui::commands::interactive_terminal::spawn_default_terminal_for_panel(self)
+            }
             TuiMsg::SelectPanel { panel } => {
                 // Focus follows the pick: the manager exists to get the user
                 // *to* a panel, and landing there without the keyboard would

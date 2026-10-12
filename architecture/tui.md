@@ -584,12 +584,13 @@ handles/output, and `src/tui/commands/interactive_terminal.rs` issues
 every mutation as a daemon `CoreRequest::InteractiveProcess*` operation
 through the TUI `CoreClient`.
 
-- **Slash commands**: `/terminal-create <cmd> [args...]`, `/terminal-list`,
+- **Slash commands**: `/terminal [handle]` (starts a shell when nothing live is
+  behind it), `/terminal-create <cmd> [args...]`, `/terminal-list`,
   `/terminal-attach <handle>`, `/terminal-show <handle>`,
   `/terminal-focus [handle]`, `/terminal-send <handle> <text>`,
   `/terminal-resize <handle> <cols> <rows>`, `/terminal-resume [handle]`,
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
-  `/terminal-remove [handle]`.
+  `/terminal-remove [handle]`, `/terminal-clear [handle]`.
 - **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
   to the process), `Esc` unfocuses, `Esc` again closes with detach.
   The raw `Esc` byte is never forwarded and a prompt is never submitted
@@ -750,6 +751,35 @@ Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, a
 `label`/`title`/`hint` arm each, a host field, and arms in `panel()`,
 `panel_is_empty()` and `composer_hints()`. There is no per-panel branch left
 in the render path or the key handler.
+
+**A box and its panel open in different modes.** `HelpDialog::new_with_mode`
+takes the starting mode from its caller, and the two callers disagree on
+purpose. `/help` arrives in **Insert** — it is opened to type a query. The
+docked Help panel arrives in **Normal** — it is read and scrolled first, and
+`i`/`a`/`Enter` reach the filter in one keystroke when the user wants it. In
+Insert `j`/`k` are filter text, so a panel hardcoded to Insert does not
+"refuse" to scroll; it types `j` into a filter nobody is watching, which is
+indistinguishable from a dead pane. The panel owns no copy of this logic: it
+hosts the dialog and hands it a mode.
+
+**The Terminal panel always has a way in.** `i` routes through
+`type_intent()`: with a handle it emits `TerminalPanelFocus`, and the command
+layer decides what that means. A live process that merely lost its attachment
+is re-attached; an exited or gone one is replaced with a fresh shell. With no
+handle at all the panel emits `TuiMsg::StartTerminal` instead. The distinction
+lives in the command layer because only it can tell the cases apart, and a
+panel is structurally unable to see app state. `App::terminal_panel_spawn`
+carries *which surface* the result lands on across the asynchronous
+create → attach pair, so the panel is not covered by a box it did not ask for;
+every terminal failure path clears it, because a flag left set by a failed
+create would divert the next unrelated terminal into the panel.
+
+**`/terminal` produces a terminal.** With no live view behind it the command
+starts `default_shell_argv()` (`$SHELL`, falling back to `sh`/`cmd.exe` — the
+same answer `shell::ShellRuntime` gives human `!cmd`) and shows the result. An
+*explicitly named* handle is still honoured as typed, so `/terminal <handle>`
+never silently substitutes a shell for a command the user actually asked for.
+`/terminal-create` remains for running a specific program.
 
 `PanelCtx` grants a panel the state it renders from and nothing else. The
 Terminal panel is granted `&mut InteractiveTerminalController` — the *same*
@@ -936,9 +966,12 @@ Three ordering rules, all load-bearing:
   stole the keyboard, a user who pressed it from the composer and then
   cancelled would find their next keystroke going to a panel they never
   chose.
-- **Committed panels refuse focus when they cannot act.** Chat with no bound
-  project, or Terminal with no handle, leave the keyboard in the composer
-  rather than swallowing it.
+- **A panel refuses focus only when it has nothing at all to show.** Chat with
+  no bound project leaves the keyboard in the composer rather than swallowing
+  it. Terminal is deliberately the exception: `i` either takes the keyboard of
+  a terminal that exists or starts a shell, so it always has something to do.
+  Refusing there was the dead end — an empty panel takes no keys, so the `i`
+  that would have fixed it never arrived.
 
 **Saved hotkeys.** The manager's digits persist as `panel_hotkeys` in
 `codegg.json` (`{"1": "chat"}`), written through `Config::save_global` — the
@@ -1278,18 +1311,18 @@ A single `Dialog::Plugin` variant handles all plugin dialogs.
 ```rust
 pub enum Dialog {
     None, Model, Agent, Session, Help, Tree, Theme,
-    Question, Permission, Mcp, Keybind,
+    Question, Permission, PanelManager, Mcp, Keybind,
     Share, Import, Template, Connect, ConnectionSelection,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
     Team, TeamTokenSecret, TriggerSecret,
     TaskSchedule, TaskView, WorkspaceDashboard,
 }
 ```
 
-46 variants.
+48 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -1304,12 +1337,12 @@ and keyboard bytes reach the process only under explicit focus
 ```rust
 pub enum DialogType {
     Share, Model, Agent, Session, Help, Tree, Theme,
-    Permission, Mcp, Question, Diff, Import, Template,
+    Permission, PanelManager, Mcp, Question, Diff, Import, Template,
     Connect, ConnectionSelection, Keybind,
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Plugin, RunDetail, Collaborators, ProjectChat,
+    DoctorReport, Logs, Plugin, RunDetail, Collaborators, ProjectChat,
     Team, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
     TriggerSecret, WorkspaceDashboard, None,
 }
@@ -1926,8 +1959,10 @@ tui/
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
 ├── panels/                 # Swappable side-panel host (Ctrl+Alt+W manager)
-│   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost, selector
+│   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost
 │   ├── chat.rs             # Interactive project-chat panel
+│   ├── terminal.rs         # Live PTY panel (NOR/INS, starts a shell on `i`)
+│   ├── help.rs             # Keybinding-reference panel (hosts HelpDialog)
 │   └── session.rs          # Session panel (delegates to SidebarWidget)
 ├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
 ├── selection.rs            # Terminal text selection over the rendered frame buffer

@@ -111,6 +111,11 @@ in the side column, `/help` then `Shift+L` does the same for the keybinding
 reference, and `/terminal` then `Shift+L` moves the terminal across. With no
 box open, the same keys move the keyboard instead.
 
+The docked **Help** panel opens in `NOR` rather than `INS`, because a panel is
+read and scrolled before it is filtered: `j`/`k` and the arrow keys scroll
+immediately, and `i` takes you to the filter. The `/help` *box* opens in `INS`,
+because you opened it to type a query.
+
 The **panel manager** (`Ctrl+Alt+W`) lists every panel with a one-line
 description; type to filter, `Enter` to load, and a digit (`1`-`9`, `0`) to
 bind that panel to `Ctrl+<digit>` so you can swap to it in one keystroke.
@@ -242,13 +247,23 @@ Human output sent to model context is ANSI-stripped, redacted, and capped at
 
 ## Interactive terminal
 
-`/terminal-create <command> [args...]` opens a daemon-owned Unix PTY. The
-terminal starts in viewing mode; press `i` to focus it. While focused, literal
-`Esc` is sent to the program (for example, Vim), and `Ctrl-]` returns keyboard
-focus to the TUI. Press `Esc` while viewing to close and detach. The screen
-interprets VT cursor movement, erase, SGR colors, and alternate-screen control
-in bounded local state; child escape sequences are not written to the outer
-terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
+`/terminal` opens a daemon-owned PTY. With nothing live behind it, it starts
+your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
+command first. `/terminal-create <command> [args...]` is still there when you
+want to run a specific program instead.
+
+The terminal starts in viewing mode; press `i` to focus it. While focused,
+literal `Esc` is sent to the program (for example, Vim), and `Ctrl-]` returns
+keyboard focus to the TUI. Press `Esc` while viewing to close and detach. The
+screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
+control in bounded local state; child escape sequences are not written to the
+outer terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
+
+`/terminal` then `Shift+L` moves it into the side panel, where it behaves the
+same way: `i` takes the keyboard, `Ctrl-]` gives it back. If the process behind
+the panel has exited, `i` starts a fresh shell instead — the panel never leaves
+you staring at a dead one. `/terminal-clear` wipes the local scrollback and
+screen while the process keeps running.
 
 ## Approval and sandbox
 

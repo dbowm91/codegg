@@ -104,6 +104,14 @@ impl HelpDialog {
     }
 
     /// Create a help dialog with mode-aware content.
+    ///
+    /// `input_mode` decides two things, and both matter: which section is
+    /// listed first, and which mode the filter *starts* in. The second one is
+    /// the caller's business, not this widget's — a `/help` box opened from
+    /// the composer arrives in Insert because the user typed it, while the
+    /// docked panel arrives in Normal because a panel is read and scrolled
+    /// before it is filtered. Hardcoding Insert here is what made the panel
+    /// swallow `j`/`k` as filter text instead of scrolling.
     pub fn new_with_mode(theme: Arc<Theme>, vim_mode: bool, input_mode: InputMode) -> Self {
         let active_mode = match input_mode {
             InputMode::Insert => HelpMode::Insert,
@@ -117,7 +125,7 @@ impl HelpDialog {
             query: String::new(),
             theme,
             scroll: 0,
-            mode: InputMode::Insert,
+            mode: input_mode,
         }
     }
 
@@ -134,6 +142,16 @@ impl HelpDialog {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// First visible row.
+    ///
+    /// Exposed alongside [`Self::query`] and [`Self::input_mode`] for the
+    /// parity tests: "the panel does not scroll" and "the panel types `j` into
+    /// the filter" are the same bug seen from two sides, and only this pair
+    /// distinguishes them.
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll
     }
 
     /// Which mode the filter is in. Exposed for the parity tests, which
@@ -521,8 +539,36 @@ mod tests {
     use crate::tui::panels::PanelDirection;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    /// The `/help` box as it actually opens: **Insert**, ready to type.
+    ///
+    /// Spelled out rather than left implicit because the starting mode is the
+    /// caller's decision, and most of these tests exercise the filter.
     fn dialog() -> HelpDialog {
+        HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, InputMode::Insert)
+    }
+
+    /// The docked panel as it actually opens: **Normal**, ready to scroll.
+    fn normal_dialog() -> HelpDialog {
         HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, InputMode::Normal)
+    }
+
+    #[test]
+    fn the_starting_mode_is_the_callers_choice() {
+        // The box and the panel open in different modes on purpose: the box is
+        // opened to type a query, the panel to read the list. Hardcoding
+        // either one is what made the docked panel swallow `j` as filter text.
+        assert_eq!(dialog().input_mode(), InputMode::Insert);
+        assert_eq!(normal_dialog().input_mode(), InputMode::Normal);
+    }
+
+    #[test]
+    fn a_normal_dialog_scrolls_instead_of_filtering() {
+        let mut d = normal_dialog();
+        d.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(d.query(), "", "Normal must scroll, not type");
+        assert_eq!(d.scroll, 1);
+        d.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(d.scroll, 0);
     }
 
     #[test]

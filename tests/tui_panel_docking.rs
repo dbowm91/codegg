@@ -67,6 +67,15 @@ fn choose_nth(app: &mut App, n: usize) {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
 
+/// Put the app in Normal mode.
+///
+/// A focused panel only takes keys in Normal — in Insert the composer owns the
+/// keyboard, which is what lets one bottom prompt deliver to either target. So
+/// every test that drives a *panel* has to say so rather than assume it.
+fn to_normal_mode(app: &mut App) {
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+}
+
 // ── The directional matcher ─────────────────────────────────────────
 
 #[test]
@@ -195,6 +204,43 @@ async fn the_help_filter_keeps_letters_typeable_in_insert_mode() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn the_docked_help_panel_scrolls_rather_than_filtering() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    to_normal_mode(&mut app);
+    choose_nth(&mut app, SidePanelId::Help.index());
+    assert!(app.panel_host.is_focused());
+
+    assert_eq!(
+        app.panel_host.help_panel().dialog().input_mode(),
+        InputMode::Normal,
+        "a docked panel is read and scrolled before it is filtered"
+    );
+    app.on_key(plain('j'));
+
+    let dialog = app.panel_host.help_panel().dialog();
+    assert_eq!(dialog.scroll_offset(), 1, "j must scroll the reference");
+    assert_eq!(
+        dialog.query(),
+        "",
+        "j must not become filter text — that is what made the panel look dead"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_docked_help_panel_still_filters_on_demand() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    to_normal_mode(&mut app);
+    choose_nth(&mut app, SidePanelId::Help.index());
+    app.on_key(plain('i'));
+    for ch in "panel".chars() {
+        app.on_key(plain(ch));
+    }
+    assert_eq!(app.panel_host.help_panel().dialog().query(), "panel");
+}
+
 #[test]
 fn every_panel_has_a_name_a_badge_and_a_hint() {
     // The manager list and the composer badge both read these; a panel with
@@ -230,18 +276,53 @@ fn the_registry_covers_every_dockable_box() {
 // ── The terminal panel ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn the_terminal_panel_refuses_focus_until_it_has_a_handle() {
+async fn the_terminal_panel_takes_focus_with_no_terminal_yet() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
-    // Select it the way a user does. No terminal exists yet, so the panel has
-    // nothing to show.
+    // Selecting it with nothing behind it must still hand over the keyboard:
+    // `i` is the key that starts a shell, so refusing focus here would make
+    // the one surface that can fix the problem unable to receive the fix.
     choose_nth(&mut app, SidePanelId::Terminal.index());
     assert_eq!(app.panel_host.active(), SidePanelId::Terminal);
     assert!(
-        !app.panel_host.is_focused(),
-        "a panel with nothing to show must not take the keyboard, or it would \
-         swallow every keystroke"
+        app.panel_host.is_focused(),
+        "the terminal panel must take focus so `i` can start a shell"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pressing_i_with_no_terminal_asks_for_a_shell() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    choose_nth(&mut app, SidePanelId::Terminal.index());
+    app.process_msg(TuiMsg::StartTerminal);
+
+    // The request is dispatched to the daemon, not faked. What matters here
+    // is that the panel asked for one and nothing pretended it already had
+    // a handle to type into.
+    assert_eq!(app.panel_host.terminal_handle(), None);
+    assert!(
+        app.panel_host.is_focused(),
+        "the panel stays on screen while the shell is being created"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unknown_handle_does_not_stop_the_panel_from_starting_one() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    choose_nth(&mut app, SidePanelId::Terminal.index());
+    // The user is looking at a terminal whose process is gone. That must not
+    // be a dead end — this is the `interactive_not_running` report.
+    app.process_msg(TuiMsg::TerminalPanelFocus {
+        handle: "not-a-handle".to_string(),
+    });
+    assert_eq!(
+        app.panel_host.terminal_handle(),
+        None,
+        "a gone handle is dropped rather than left to swallow input"
+    );
+    assert!(app.panel_host.is_focused());
 }
 
 #[tokio::test(flavor = "current_thread")]

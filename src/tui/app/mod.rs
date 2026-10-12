@@ -540,6 +540,15 @@ pub struct App {
     /// [`panel_hotkeys`](crate::tui::app::state::panel_hotkeys) for why
     /// `Ctrl` and not `Cmd`.
     pub panel_hotkeys: crate::tui::app::state::panel_hotkeys::PanelHotkeys,
+    /// Where a terminal created for the **side panel** should land.
+    ///
+    /// Set by the panel's `i`-with-nothing-live, cleared by whichever
+    /// terminal completion finishes first. It exists because create and
+    /// attach are asynchronous and span several frames: without it the panel
+    /// would open a box over itself, and with it held forever a failed create
+    /// would silently divert some later, unrelated terminal into the panel.
+    /// Every terminal failure path clears it for exactly that reason.
+    pub terminal_panel_spawn: bool,
     /// M005: explicit input focus while `Route::Workspace` is active.
     /// `Composer` (default) keeps the ordinary Session/Task prompt
     /// editable; `Chat` routes printable keys + Enter to the side-panel
@@ -1044,6 +1053,7 @@ impl App {
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
             panel_hotkeys: saved_panel_hotkeys,
+            terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
@@ -1570,6 +1580,7 @@ impl App {
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
             panel_hotkeys: Default::default(),
+            terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
@@ -7245,31 +7256,39 @@ impl App {
                 }
             }
             B::Terminal => {
-                // The everyday spelling of "show me a terminal". The
-                // controller already knows which one is active, so this
-                // resolves it rather than asking the user to name a handle.
+                // The everyday spelling of "give me a terminal". Opening a
+                // terminal is expected to produce one, so a missing or dead
+                // view is answered with a shell rather than an instruction to
+                // go run a different command — the two-step is exactly what
+                // made this feel like it did not work.
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
-                let handle = if args.is_empty() {
+                let explicit = !args.is_empty();
+                let handle = if explicit {
+                    Some(args.to_string())
+                } else {
                     self.interactive_terminals
                         .active_handle()
                         .map(str::to_string)
-                } else {
-                    Some(args.to_string())
                 };
-                let Some(handle) = handle else {
-                    self.messages_state
-                        .toasts
-                        .warning("No terminal yet — /terminal-create <command>, then /terminal");
-                    return;
-                };
-                if self.interactive_terminals.view(&handle).is_none() {
-                    self.messages_state
-                        .toasts
-                        .warning("That terminal is gone — /terminal-list to see the rest");
-                    return;
+                match handle {
+                    Some(handle) if self.interactive_terminals.is_live(&handle) => {
+                        crate::tui::commands::interactive_terminal::show_terminal(self, handle);
+                    }
+                    // An explicitly named handle is honoured as typed: if it
+                    // is not there, say so rather than silently substituting a
+                    // shell for a command the user actually asked for.
+                    Some(handle) if explicit => {
+                        if self.interactive_terminals.view(&handle).is_none() {
+                            self.messages_state
+                                .toasts
+                                .warning("That terminal is gone — /terminal-list to see the rest");
+                        } else {
+                            crate::tui::commands::interactive_terminal::show_terminal(self, handle);
+                        }
+                    }
+                    _ => crate::tui::commands::interactive_terminal::spawn_default_terminal(self),
                 }
-                crate::tui::commands::interactive_terminal::show_terminal(self, handle);
             }
             B::TerminalClear => {
                 let query = self.dialog_state.command_palette.query.clone();

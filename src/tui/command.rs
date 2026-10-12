@@ -754,7 +754,7 @@ impl CommandRegistry {
             Command::new("/shell-expand", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellExpand))
                 .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
             Command::new("/terminal", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Terminal))
-                .with_description("Open an interactive terminal in a box (Shift+L docks it into the panel)")
+                .with_description("Open an interactive terminal box, starting a shell if none is live (Shift+L docks it into the panel; args: [handle])")
                 .with_aliases(&["/term"]),
             Command::new("/terminal-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalClear))
                 .with_description("Clear a terminal's scrollback and screen; the process keeps running (args: [handle])"),

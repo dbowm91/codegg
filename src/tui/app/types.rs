@@ -190,6 +190,12 @@ pub enum TuiMsg {
     TerminalPanelClear {
         handle: String,
     },
+    /// Start a shell for the terminal panel.
+    ///
+    /// A panel can ask but cannot act: spawning is a daemon operation, and
+    /// *which surface* the result lands on is app state a panel is
+    /// structurally unable to see. One intent, one owner.
+    StartTerminal,
     /// Load `panel` into the side column and close the manager.
     SelectPanel {
         panel: crate::tui::panels::SidePanelId,

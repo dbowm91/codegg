@@ -41,7 +41,15 @@ pub struct HelpPanel {
 impl Default for HelpPanel {
     fn default() -> Self {
         Self {
-            dialog: HelpDialog::new(std::sync::Arc::new(Theme::default()), Vec::new()),
+            // Built here, in Normal, rather than left to the first paint. The
+            // rows exist from construction so the default mode is a fact
+            // about the panel instead of a side effect of having been drawn
+            // once — and it is the fact a user meets first: they scroll.
+            dialog: HelpDialog::new_with_mode(
+                std::sync::Arc::new(Theme::default()),
+                false,
+                InputMode::Normal,
+            ),
             vim_mode: false,
         }
     }
@@ -63,12 +71,17 @@ impl SidePanel for HelpPanel {
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         // Built on first paint and rebuilt only when vim mode changes, so
         // the common path does no allocation at all.
+        //
+        // Normal, not Insert: a docked panel is *read* before it is
+        // filtered, and in Insert `j`/`k` are filter text — which is exactly
+        // the "the panel won't scroll" report. `i`/`a`/`Enter` reach the
+        // filter in one keystroke whenever the user actually wants to type.
         if ctx.vim_mode != self.vim_mode || self.dialog.rows_len() == 0 {
             self.vim_mode = ctx.vim_mode;
             self.dialog = HelpDialog::new_with_mode(
                 std::sync::Arc::clone(&ctx.theme),
                 self.vim_mode,
-                InputMode::Insert,
+                InputMode::Normal,
             );
         }
         let title = if ctx.focused { " Help ● " } else { " Help " };
@@ -95,13 +108,13 @@ impl SidePanel for HelpPanel {
         if !hints.focused {
             return None;
         }
-        let mode = if self.dialog.input_mode() == InputMode::Normal {
-            "NOR"
+        // Mode-aware because the two modes genuinely have different verbs:
+        // naming "type to filter" to a user who is in Normal is how they end
+        // up pressing `j` and concluding the panel is broken.
+        Some(if self.dialog.input_mode() == InputMode::Normal {
+            "HELP · NOR · j/k scroll · i filter · Shift+← back".to_string()
         } else {
-            "INS"
-        };
-        Some(format!(
-            "HELP · {mode} · type to filter · Esc normal · Shift+← back"
-        ))
+            "HELP · INS · type to filter · Esc normal · Shift+← back".to_string()
+        })
     }
 }

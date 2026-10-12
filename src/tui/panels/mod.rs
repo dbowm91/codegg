@@ -508,6 +508,12 @@ impl SidePanelHost {
         &mut self.terminal
     }
 
+    /// The help panel, so parity tests can read the filter and mode the panel
+    /// is showing without having to drive a render.
+    pub fn help_panel(&self) -> &help::HelpPanel {
+        &self.help
+    }
+
     /// The handle the terminal panel is showing, if any. Used to resolve
     /// "whichever terminal the user is looking at" for a command that takes
     /// an optional handle.
@@ -532,9 +538,10 @@ impl SidePanelHost {
         match self.active {
             SidePanelId::Session => false,
             SidePanelId::Chat => self.chat.is_unbound(),
-            // No terminal yet is the same condition as no bound project: the
-            // panel has nothing to show, so focus is refused rather than
-            // stranding keys in a region that cannot act on them.
+            // The terminal panel is always actionable: `i` takes the keyboard
+            // of a terminal that exists, or starts a shell when there is
+            // none, so refusing focus would only strand the keyboard on the
+            // one surface that can fix it.
             SidePanelId::Terminal => self.terminal.is_empty(),
             // Help always has rows, so it can always take focus.
             SidePanelId::Help => false,

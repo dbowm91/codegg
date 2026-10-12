@@ -16,7 +16,9 @@
 //! split, and it is reused rather than re-invented:
 //!
 //! * **NOR** — the panel has the keyboard but the PTY does not. Arrow and
-//!   page keys scroll; `i` takes the PTY; the directional gesture is claimed
+//!   page keys scroll; `i` takes the PTY — or starts a shell when there is
+//!   none to take, since a terminal panel that refuses focus leaves nowhere
+//!   to type and nothing to fix it with. The directional gesture is claimed
 //!   by the host before it reaches here.
 //! * **INS** — the PTY owns the keyboard. Every key is mapped by
 //!   [`map_key`] and gated by [`classify_key`]; `Ctrl-]` leaves.
@@ -85,10 +87,31 @@ impl TerminalPanel {
         }
     }
 
-    /// True when there is nothing to show. The host refuses focus rather
-    /// than stranding keys in a panel that cannot act on them.
+    /// Never refuses focus.
+    ///
+    /// Every other panel that refuses is refusing because it would swallow
+    /// keys it cannot act on — an unbound Chat has no channel to show. This
+    /// panel always has something to do: `i` takes the keyboard of a terminal
+    /// that exists, or starts a shell when there is none. Refusing here was
+    /// the actual dead end — an empty panel took no keys, so `i` never reached
+    /// it, and the only way to get a terminal was a command typed elsewhere.
     pub fn is_empty(&self) -> bool {
-        self.handle.is_none()
+        false
+    }
+
+    /// What `i` should ask for.
+    ///
+    /// The dead case is routed to `TerminalPanelFocus` rather than straight to
+    /// `StartTerminal` on purpose: only the command layer can tell an exited
+    /// process (replace it) from a detached one (re-attach), and the panel is
+    /// not allowed to know that difference.
+    fn type_intent(&self) -> TuiMsg {
+        match self.handle.as_deref() {
+            Some(handle) => TuiMsg::TerminalPanelFocus {
+                handle: handle.to_string(),
+            },
+            None => TuiMsg::StartTerminal,
+        }
     }
 }
 
@@ -176,7 +199,7 @@ impl SidePanel for TerminalPanel {
 
         let Some(handle) = self.handle.clone() else {
             Paragraph::new(Line::from(Span::styled(
-                " No terminal — /terminal",
+                " press i for a shell",
                 Style::default().fg(theme.muted),
             )))
             .render(rows[1], buf);
@@ -202,28 +225,35 @@ impl SidePanel for TerminalPanel {
         _action: Option<InputAction>,
         ctx: &mut PanelCtx<'_>,
     ) -> PanelKey {
-        let Some(handle) = self.handle.clone() else {
-            return PanelKey::Consumed;
-        };
-        if ctx.terminal.view(&handle).is_none() {
-            // The view went away underneath us. Forget it rather than
-            // reporting an error the user cannot cause or clear.
-            self.forget(&handle);
-            return PanelKey::Consumed;
+        // A handle whose view has gone is dropped rather than reported, but
+        // the panel stays actionable: `i` then starts a shell, which is what
+        // a terminal emulator does when you ask it for a new one.
+        if let Some(handle) = self.handle.clone() {
+            if ctx.terminal.view(&handle).is_none() {
+                self.forget(&handle);
+            }
         }
+        let focused = self.handle.as_deref().is_some_and(|handle| {
+            ctx.terminal.view(handle).is_some() && ctx.terminal.is_focused(handle)
+        });
 
-        if !ctx.terminal.is_focused(&handle) {
-            // NOR. `i` is the way in; the directional gesture was already
-            // claimed by the host, so anything else here is inert rather
-            // than forwarded — a stray `q` must never become PTY input.
+        if !focused {
+            // NOR. `i` is the way in — to an existing PTY, or to a new one
+            // when there is nothing live to type into. The directional
+            // gesture was already claimed by the host, so anything else here
+            // is inert rather than forwarded: a stray `q` must never become
+            // PTY input.
             return match key.code {
                 KeyCode::Char('i') if key.modifiers == KeyModifiers::NONE => {
-                    PanelKey::Intent(TuiMsg::TerminalPanelFocus { handle })
+                    PanelKey::Intent(self.type_intent())
                 }
-                KeyCode::Enter => PanelKey::Intent(TuiMsg::TerminalPanelFocus { handle }),
+                KeyCode::Enter => PanelKey::Intent(self.type_intent()),
                 _ => PanelKey::Consumed,
             };
         }
+        let Some(handle) = self.handle.clone() else {
+            return PanelKey::Consumed;
+        };
 
         // INS. Every key is classified by the same gate the box uses, so
         // the two cannot disagree about what is a control sequence.
@@ -239,17 +269,22 @@ impl SidePanel for TerminalPanel {
     }
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
-        if !hints.focused || self.handle.is_none() {
+        if !hints.focused {
             return None;
         }
-        Some("TERM · i type · ^-] stop · Shift+← back".to_string())
+        Some(if self.handle.is_none() {
+            "TERM · i start a shell · Shift+← back".to_string()
+        } else {
+            "TERM · i type · ^-] stop · Shift+← back".to_string()
+        })
     }
 
     fn on_activate(&mut self, ctx: &mut PanelCtx<'_>) {
         // Adopt whatever the controller considers active, so selecting the
         // panel shows the terminal the user was just looking at rather than
-        // an empty column. An empty controller leaves the panel empty, which
-        // the host reads as "cannot act" and refuses to focus.
+        // an empty column. An empty controller leaves the panel with nothing
+        // to show, which `i` then fixes by starting a shell — the panel never
+        // refuses focus, so it never strands the keyboard here.
         if self.handle.is_none() {
             self.show(ctx.terminal.active_handle());
         }
