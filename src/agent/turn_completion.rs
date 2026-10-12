@@ -511,6 +511,77 @@ impl AgentLoop {
         None
     }
 
+    /// Persist this run's conversation into the session transcript.
+    ///
+    /// Without this, a run leaves nothing behind: the client held the
+    /// conversation in memory, so reloading the session replaced the
+    /// transcript with whatever imports had written — usually nothing. Called
+    /// once per run, after goal continuation has folded any autonomous
+    /// follow-ups into `all_events`, so the stored reply is the whole turn.
+    ///
+    /// Every failure is logged and swallowed. The run has already succeeded;
+    /// a transcript write is bookkeeping, and failing it here would turn a
+    /// completed agent turn into an error the user has to reason about.
+    pub(super) async fn persist_turn_transcript(&self, events: &[ChatEvent]) {
+        let Some(store) = self.services.message_store.clone() else {
+            return;
+        };
+        if self.session_id.is_empty() {
+            return;
+        }
+        let Some(prompt) = self.current_user_prompt.as_deref() else {
+            return;
+        };
+
+        let prefix = format!("msg_{}", uuid::Uuid::new_v4().simple());
+        let transcript =
+            super::transcript::build_turn_transcript(&self.session_id, &prefix, prompt, events);
+        if transcript.entries.is_empty() {
+            return;
+        }
+
+        let mut batch = Vec::with_capacity(transcript.entries.len());
+        for entry in transcript.entries {
+            match serde_json::to_value(&entry.data) {
+                Ok(value) => batch.push((entry.id, value)),
+                Err(error) => {
+                    tracing::warn!(
+                        session_id = %self.session_id,
+                        %error,
+                        "session transcript entry could not be encoded; skipping persist"
+                    );
+                    return;
+                }
+            }
+        }
+
+        match store.append_batch(&self.session_id, &batch).await {
+            Ok(Some(written)) => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    written,
+                    requested = batch.len(),
+                    "session transcript persisted"
+                );
+            }
+            // Synthetic transcripts (subagents, continuation tasks) have no
+            // durable session row; their output stays in the run journal.
+            Ok(None) => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    "session transcript skipped: no durable session"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %self.session_id,
+                    %error,
+                    "session transcript persist failed"
+                );
+            }
+        }
+    }
+
     pub(super) async fn record_run_boundary(&self, boundary: &str) {
         let (Some(control), Some(run_id)) = (&self.services.run_control, &self.run_id) else {
             return;

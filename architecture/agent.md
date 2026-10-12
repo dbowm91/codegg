@@ -21,7 +21,8 @@ asset management.
 | `src/agent/loop_output.rs` | Bounded `AgentLoopTerminalOutput` collector and local-path redaction |
 | `src/agent/request_preparation.rs` | Per-turn request preparation: policy, routing, research hints, context frames, tool definitions |
 | `src/agent/semantic_router.rs` | Bounded selector execution and exact virtual-model route resolution |
-| `src/agent/turn_completion.rs` | Terminal publication, goal accounting/continuation, limit checks, run-boundary journaling |
+| `src/agent/turn_completion.rs` | Terminal publication, goal accounting/continuation, limit checks, run-boundary journaling, session transcript persistence |
+| `src/agent/transcript.rs` | Pure turn→transcript projection (`build_turn_transcript`): prompt, assistant text/reasoning, tool calls with outputs |
 | `src/agent/habit_observation.rs` | Host-owned habit observation adapter (allowlisted structural metadata only) |
 | `src/agent/snapshot_capture.rs` | Snapshot capture, file-change draining, security-review trigger dispatch |
 | `src/agent/follow_up.rs` | Notification injection and non-blocking follow-up drain |
@@ -718,6 +719,34 @@ Uses `BTreeMap` for deterministic iteration order.
 | `CODEGG_ROUTING_DISABLE=1` | Kill switch for command routing |
 
 ## Invariants & Gotchas
+
+### Session transcript persistence
+
+A completed run is written to the session transcript so reloading the session
+reproduces the conversation instead of replacing it with whatever imports left
+behind.
+
+- `src/agent/transcript.rs::build_turn_transcript` is the pure projection:
+  the run's prompt plus the assistant's text, reasoning, and tool calls
+  (with outputs and status) as ordered parts. Consecutive text deltas merge
+  into one part; a tool call closes the open text so the reply reads in the
+  order it was produced.
+- `turn_completion.rs::persist_turn_transcript` runs once per `run_inner`,
+  **after** goal continuation has folded autonomous follow-ups into
+  `all_events` — otherwise the stored reply would be only the first provider
+  pass.
+- Every failure is logged and swallowed. The run has already succeeded; a
+  transcript write is bookkeeping and must not turn a completed turn into an
+  error.
+- `MessageData.role` is what keeps a text-only reply from reloading as the
+  user's own words. It is optional and absent on pre-existing rows and
+  compatibility imports, so readers still fall back to inferring role from
+  parts.
+- A subagent or other synthetic transcript has no `session` row;
+  `append_batch` returns `Ok(None)` rather than failing the foreign key.
+  Their output stays in the run journal.
+- The TUI never writes this. `set_message_store` refuses in
+  `AppMode::RemoteCore` — the daemon owns durable storage.
 
 ### Bounded run groups
 

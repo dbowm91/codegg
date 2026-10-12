@@ -1071,3 +1071,278 @@ async fn test_import_session_invalid_data() {
 
     assert!(result.is_err());
 }
+
+/// Regression coverage for session transcript persistence.
+///
+/// A completed agent run used to write nothing, so reloading a session
+/// replaced the transcript with whatever imports had left behind — usually
+/// nothing. These tests pin the properties that write depends on: write order
+/// survives the read order, an assistant reply stays an assistant reply, and a
+/// session that does not exist is never invented.
+mod transcript_persistence {
+    use super::*;
+    use codegg::session::message::{MessageData, MessageRole, PartData, PartInfo};
+
+    async fn session_with_title(store: &SessionStore, title: &str) -> String {
+        store
+            .create(CreateSession {
+                agent: None,
+                model: None,
+                tags: None,
+                project_id: "proj_1".to_string(),
+                directory: "/tmp".to_string(),
+                title: Some(title.to_string()),
+                parent_id: None,
+                workspace_id: None,
+                provider_connection_id: None,
+                provider_connection_revision: None,
+                model_catalog_revision: None,
+                selected_model_id: None,
+            })
+            .await
+            .unwrap()
+            .id
+    }
+
+    fn message(
+        session_id: &str,
+        id: &str,
+        role: MessageRole,
+        text: &str,
+    ) -> (String, serde_json::Value) {
+        let data = MessageData {
+            id: id.to_string(),
+            session_id: session_id.to_string(),
+            message_id: id.to_string(),
+            parts: vec![PartInfo {
+                id: format!("{id}_0"),
+                session_id: session_id.to_string(),
+                message_id: id.to_string(),
+                data: PartData::Text {
+                    text: text.to_string(),
+                },
+            }],
+            role: Some(role),
+        };
+        (id.to_string(), serde_json::to_value(&data).unwrap())
+    }
+
+    fn text_of(msg: &codegg::session::message::Message) -> String {
+        match &msg.data.parts[0].data {
+            PartData::Text { text } => text.clone(),
+            other => panic!("expected a text part, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_batch_round_trips_in_write_order_with_roles_intact() {
+        let pool = create_test_pool().await;
+        let session_store = SessionStore::new(pool.clone());
+        let message_store = MessageStore::new(pool);
+        let session_id = session_with_title(&session_store, "Ordered Batch").await;
+
+        let written = message_store
+            .append_batch(
+                &session_id,
+                &[
+                    message(&session_id, "m_user", MessageRole::User, "fix the bug"),
+                    message(&session_id, "m_assistant", MessageRole::Assistant, "on it"),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(written, Some(2));
+
+        let messages = message_store.list(&session_id).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        // `ORDER BY time_created ASC, id ASC` is the only ordering the reader
+        // has. Two rows written in the same millisecond must not fall through
+        // to the id tiebreak, or the reply loads before the prompt.
+        assert_eq!(text_of(&messages[0]), "fix the bug");
+        assert_eq!(messages[0].data.role, Some(MessageRole::User));
+        assert_eq!(text_of(&messages[1]), "on it");
+        assert_eq!(messages[1].data.role, Some(MessageRole::Assistant));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn successive_batches_keep_accumulating_in_order() {
+        let pool = create_test_pool().await;
+        let session_store = SessionStore::new(pool.clone());
+        let message_store = MessageStore::new(pool);
+        let session_id = session_with_title(&session_store, "Multi Turn").await;
+
+        for turn in 0..3 {
+            message_store
+                .append_batch(
+                    &session_id,
+                    &[
+                        message(
+                            &session_id,
+                            &format!("t{turn}_user"),
+                            MessageRole::User,
+                            &format!("question {turn}"),
+                        ),
+                        message(
+                            &session_id,
+                            &format!("t{turn}_assistant"),
+                            MessageRole::Assistant,
+                            &format!("answer {turn}"),
+                        ),
+                    ],
+                )
+                .await
+                .unwrap();
+        }
+
+        let messages = message_store.list(&session_id).await.unwrap();
+        let rendered: Vec<String> = messages.iter().map(text_of).collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "question 0",
+                "answer 0",
+                "question 1",
+                "answer 1",
+                "question 2",
+                "answer 2",
+            ],
+            "a reloaded transcript must read in conversation order"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_batch_for_a_session_that_does_not_exist_is_skipped() {
+        let pool = create_test_pool().await;
+        let message_store = MessageStore::new(pool.clone());
+
+        // Subagent transcripts use a synthetic id with no `session` row, and
+        // `message.session_id` is a foreign key.
+        let synthetic = "parent-session-sub-task_1";
+        let written = message_store
+            .append_batch(
+                synthetic,
+                &[message(synthetic, "m_1", MessageRole::User, "hello")],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(written, None);
+        assert!(message_store.list(synthetic).await.unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replaying_a_batch_does_not_duplicate_the_transcript() {
+        let pool = create_test_pool().await;
+        let session_store = SessionStore::new(pool.clone());
+        let message_store = MessageStore::new(pool);
+        let session_id = session_with_title(&session_store, "Replayed").await;
+
+        let batch = vec![
+            message(&session_id, "m_user", MessageRole::User, "hello"),
+            message(&session_id, "m_assistant", MessageRole::Assistant, "hi"),
+        ];
+        message_store
+            .append_batch(&session_id, &batch)
+            .await
+            .unwrap();
+        let second = message_store
+            .append_batch(&session_id, &batch)
+            .await
+            .unwrap();
+
+        assert_eq!(second, Some(0), "an already-stored id is left alone");
+        assert_eq!(message_store.list(&session_id).await.unwrap().len(), 2);
+    }
+
+    /// Forking a long session must keep the recent conversation.
+    ///
+    /// The query ordered ascending before its `LIMIT`, so a session past the
+    /// limit inherited its *oldest* messages and silently dropped the turn it
+    /// was branched from. It also copied every `part` regardless of whether
+    /// its message survived, which fails the `part.message_id` foreign key and
+    /// loses the fork outright.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_fork_keeps_the_newest_messages_and_only_their_parts() {
+        let pool = create_test_pool().await;
+        let session_store = SessionStore::new(pool.clone());
+        let message_store = MessageStore::new(pool.clone());
+        let session_id = session_with_title(&session_store, "Long Session").await;
+
+        // Well past the fork window, with ascending timestamps.
+        const OVER_LIMIT: usize = 5005;
+        let mut batch = Vec::new();
+        for index in 0..OVER_LIMIT {
+            batch.push(message(
+                &session_id,
+                &format!("m{index}"),
+                MessageRole::User,
+                &format!("turn {index}"),
+            ));
+        }
+        // Written in chunks so each call is a realistic batch.
+        for chunk in batch.chunks(500) {
+            message_store
+                .append_batch(&session_id, chunk)
+                .await
+                .unwrap();
+        }
+
+        // An orphan part belonging to a message we will drop.
+        sqlx::query(
+            r#"
+            INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+            VALUES ('p_old', 'm0', ?, 1, 1, '{}')
+            "#,
+        )
+        .bind(&session_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let forked = session_store.fork(&session_id).await.unwrap();
+        let messages = message_store.list(&forked.id).await.unwrap();
+
+        assert_eq!(messages.len(), 5000, "the fork keeps a bounded transcript");
+        assert_eq!(
+            text_of(&messages[0]),
+            format!("turn {}", OVER_LIMIT - 5000),
+            "a fork branches from the present, so it keeps the newest turn"
+        );
+        assert_eq!(
+            text_of(messages.last().unwrap()),
+            format!("turn {}", OVER_LIMIT - 1),
+            "the newest message must survive"
+        );
+
+        let orphan_parts: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM part WHERE message_id = 'm0'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(orphan_parts, 1, "the parent keeps its own parts");
+        let orphan_in_child: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM part WHERE session_id = ?")
+                .bind(&forked.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            orphan_in_child, 0,
+            "a part whose message was dropped must not be carried into the fork"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_empty_batch_is_a_no_op() {
+        let pool = create_test_pool().await;
+        let message_store = MessageStore::new(pool);
+
+        assert_eq!(
+            message_store
+                .append_batch("no-such-session", &[])
+                .await
+                .unwrap(),
+            None
+        );
+    }
+}

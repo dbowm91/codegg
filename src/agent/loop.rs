@@ -239,6 +239,9 @@ impl AgentLoop {
         let usage_store = pool
             .clone()
             .map(|p| Arc::new(crate::session::UsageStore::new(p)));
+        let message_store = pool
+            .clone()
+            .map(|p| Arc::new(crate::session::MessageStore::new(p)));
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
         let tool_advisor_mode = tool_registry.advisor_mode();
@@ -342,6 +345,7 @@ impl AgentLoop {
                 checkpoint_manager,
                 file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
                 usage_store,
+                message_store,
                 security_service,
                 todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::task_state::TodoState::new(),
@@ -2052,6 +2056,9 @@ impl AgentLoop {
         // `maybe_start_goal_continuation_turn`.
         self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
             .await;
+        // After continuation, so the stored reply is the whole turn rather
+        // than its first provider pass.
+        self.persist_turn_transcript(&all_events).await;
         self.lifecycle.set_phase(TurnPhase::Completion);
 
         crate::bus::global::GlobalEventBus::publish(AppEvent::ContextUpdated {

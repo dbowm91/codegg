@@ -206,7 +206,7 @@ or device secrets. See `architecture/authorization.md` and
 
 ### Event System
 
-`EventStore` (`session/store.rs:2603`) persists typed `SessionEvent`
+`EventStore` (`session/store.rs:2687`) persists typed `SessionEvent`
 variants into the `session_events` table. Events are:
 - `GoalSet`, `PlanUpdated`, `PlanItemUpdated`
 - `AgentMessage`, `UserMessage`
@@ -306,45 +306,45 @@ pub struct Session {
 
 | Method | Line | Description |
 |--------|------|-------------|
-| `create(CreateSession)` | 69 | Create with auto UUID |
-| `create_with_id(id, input)` | 76 | Stable ID for imports |
-| `create_with_binding(input, pid, wid, src)` | 172 | Atomic session + binding |
-| `create_from_template(template, pid, dir)` | 311 | From config template |
-| `get(id)` | 334 | Get by ID (excludes soft-deleted) |
-| `list(pid, limit)` | 346 | Active sessions, paginated |
-| `list_with_offset(pid, limit, offset)` | 379 | Offset-based pagination |
-| `list_all(pid, limit)` | 445 | Includes archived, excludes deleted |
-| `list_all_with_offset(pid, limit, offset)` | 475 | Offset-based for all |
-| `list_by_canonical_project(pid, limit)` | 353 | Via session_project_binding |
-| `list_all_sessions(limit)` | 456 | Cross-project (import tooling) |
-| `list_deleted(pid)` | 1066 | Soft-deleted sessions |
-| `search(pid, query)` | 498 | LIKE title/slug/directory |
-| `search_all(pid, query)` | 520 | Also searches message content |
-| `find_by_tag(pid, tag)` | 543 | JSON tag matching |
-| `all_tags(pid)` | 563 | Tags with counts |
-| `session_count(pid)` | 398 | Active session count |
-| `message_count(sid)` | 409 | Messages in session |
-| `message_counts(sids)` | 418 | Batch message counts |
-| `export_session(sid)` | 586 | Full JSON export |
-| `import_session(data, new_pid)` | 667 | Import with ID remapping |
-| `import_session_with_binding(data, pid, wid, src)` | 677 | Import + binding |
-| `update(id, UpdateSession)` | 948 | Partial update (COALESCE) |
-| `delete(id)` | 1030 | Soft delete |
-| `soft_delete(id)` | 1035 | Set time_deleted |
-| `restore(id)` | 1051 | Clear time_deleted |
-| `set_tags(id, tags)` | 1078 | Replace tags |
-| `fork(id)` | 1096 | Copy with new IDs |
-| `archive(id)` | 1315 | Set time_archived |
-| `unarchive(id)` | 1331 | Clear time_archived |
-| `share_session(sid)` | 1628 | Generate share URL (7-day) |
-| `unshare_session(sid)` | 1700 | Remove share |
-| `revert_to_message(sid, mid)` | 1375 | Truncate + save revert |
-| `unrevert_session(sid)` | 1731 | Restore from revert state |
-| `generate_summary(provider, sid)` | 1526 | LLM summary |
-| `generate_title(provider, sid)` | 1562 | LLM title |
-| `get_analytics(pid)` | 1863 | Aggregate statistics |
-| `children(id)` | 1362 | Child sessions |
-| `set_share_url(id, url)` | 1346 | Direct share URL set |
+| `create(CreateSession)` | 76 | Create with auto UUID |
+| `create_with_id(id, input)` | 83 | Stable ID for imports |
+| `create_with_binding(input, pid, wid, src)` | 179 | Atomic session + binding |
+| `create_from_template(template, pid, dir)` | 318 | From config template |
+| `get(id)` | 341 | Get by ID (excludes soft-deleted) |
+| `list(pid, limit)` | 353 | Active sessions, paginated |
+| `list_with_offset(pid, limit, offset)` | 386 | Offset-based pagination |
+| `list_all(pid, limit)` | 452 | Includes archived, excludes deleted |
+| `list_all_with_offset(pid, limit, offset)` | 482 | Offset-based for all |
+| `list_by_canonical_project(pid, limit)` | 360 | Via session_project_binding |
+| `list_all_sessions(limit)` | 463 | Cross-project (import tooling) |
+| `list_deleted(pid)` | 1073 | Soft-deleted sessions |
+| `search(pid, query)` | 505 | LIKE title/slug/directory |
+| `search_all(pid, query)` | 527 | Also searches message content |
+| `find_by_tag(pid, tag)` | 550 | JSON tag matching |
+| `all_tags(pid)` | 570 | Tags with counts |
+| `session_count(pid)` | 405 | Active session count |
+| `message_count(sid)` | 416 | Messages in session |
+| `message_counts(sids)` | 425 | Batch message counts |
+| `export_session(sid)` | 593 | Full JSON export |
+| `import_session(data, new_pid)` | 674 | Import with ID remapping |
+| `import_session_with_binding(data, pid, wid, src)` | 684 | Import + binding |
+| `update(id, UpdateSession)` | 955 | Partial update (COALESCE) |
+| `delete(id)` | 1037 | Soft delete |
+| `soft_delete(id)` | 1042 | Set time_deleted |
+| `restore(id)` | 1058 | Clear time_deleted |
+| `set_tags(id, tags)` | 1085 | Replace tags |
+| `fork(id)` | 1114 | Copy with new IDs |
+| `archive(id)` | 1341 | Set time_archived |
+| `unarchive(id)` | 1357 | Clear time_archived |
+| `share_session(sid)` | 1654 | Generate share URL (7-day) |
+| `unshare_session(sid)` | 1726 | Remove share |
+| `revert_to_message(sid, mid)` | 1401 | Truncate + save revert |
+| `unrevert_session(sid)` | 1757 | Restore from revert state |
+| `generate_summary(provider, sid)` | 1552 | LLM summary |
+| `generate_title(provider, sid)` | 1588 | LLM title |
+| `get_analytics(pid)` | 1889 | Aggregate statistics |
+| `children(id)` | 1388 | Child sessions |
+| `set_share_url(id, url)` | 1372 | Direct share URL set |
 
 ### TodoStore (`session/store.rs:1922`)
 
@@ -352,15 +352,27 @@ Methods: `new`, `list`, `set`, `add`, `update`, `remove`, `clear`
 
 ### MessageStore (`session/store.rs:2127`)
 
-Methods: `new`, `create`, `create_with_id`, `get`, `list`, `count`,
-`update`, `delete`
+Methods: `new`, `create`, `create_with_id`, `append_batch`, `get`, `list`,
+`count`, `update`, `delete`
 
-### PartStore (`session/store.rs:2263`)
+`append_batch` is the live-turn transcript write: one transaction, strictly
+increasing `time_created` after the session's current maximum so the canonical
+`ORDER BY time_created ASC, id ASC` read order reproduces write order, and
+`Ok(None)` for a `session_id` with no `session` row (subagent transcripts have
+no durable session, and `message.session_id` is a foreign key). See
+`architecture/agent.md` for who calls it.
+
+`fork(id)` copies the newest 5000 messages, not the oldest: a fork branches
+from where the session is now, so truncating from the old end would drop the
+turn it was branched from. Only parts belonging to a copied message come
+along, since `part.message_id` is a foreign key.
+
+### PartStore (`session/store.rs:2347`)
 
 Methods: `new`, `create`, `get`, `list_by_message`, `list_by_session`,
 `update`, `delete`
 
-### PermissionStore (`session/store.rs:2381`)
+### PermissionStore (`session/store.rs:2465`)
 
 Methods: `new`, `get`, `upsert`, `delete`
 
@@ -403,12 +415,12 @@ with a bounded diagnostic (never silent fallback). Guard:
 `selected_model_id` is a display hint reconciled by
 `restore::reconcile_tab_model_with_daemon` (daemon wins).
 
-### UsageStore (`session/store.rs:2446`)
+### UsageStore (`session/store.rs:2530`)
 
 Methods: `new`, `insert`, `get_session_usage`, `get_all_usage`,
 `get_session_cost_summary`
 
-### EventStore (`session/store.rs:2603`)
+### EventStore (`session/store.rs:2687`)
 
 Methods: `new`, `pool`, `append`, `append_idempotent`,
 `list_for_session`, `has_event`, `confirm_existing`

@@ -70,6 +70,11 @@ pub(super) struct AgentLoopServices {
     pub(super) checkpoint_manager: Option<crate::snapshot::checkpoint::EditCheckpointManager>,
     pub(super) file_change_rx: broadcast::Receiver<AppEvent>,
     pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
+    /// Durable session transcript sink. `None` when the loop was built without
+    /// a pool (headless exec, one-shot CLI, subagents), and present but a no-op
+    /// for synthetic session ids that have no `session` row — see
+    /// [`crate::session::MessageStore::append_batch`].
+    pub(super) message_store: Option<Arc<crate::session::MessageStore>>,
     pub(super) security_service: crate::security::service::SecurityService,
     pub(super) todo_state: Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
     pub(super) task_state_policy: crate::model_profile::types::TaskStatePolicy,
