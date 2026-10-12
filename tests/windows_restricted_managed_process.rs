@@ -11,6 +11,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use windows_sys::Win32::Foundation::{GetLastError, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
 };
@@ -78,6 +81,28 @@ async fn wait_for_process_exit(pid: u32) {
     })
     .await
     .unwrap_or_else(|_| panic!("restricted Job Object left descendant process {pid} alive"));
+}
+
+fn child_processes(parent_pid: u32) -> Vec<u32> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    assert_ne!(
+        snapshot,
+        windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,
+        "CreateToolhelp32Snapshot failed: {}",
+        unsafe { GetLastError() }
+    );
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot as RawHandle) };
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = Vec::new();
+    let mut has_entry = unsafe { Process32FirstW(snapshot.as_raw_handle() as _, &mut entry) } != 0;
+    while has_entry {
+        if entry.th32ParentProcessID == parent_pid {
+            found.push(entry.th32ProcessID);
+        }
+        has_entry = unsafe { Process32NextW(snapshot.as_raw_handle() as _, &mut entry) } != 0;
+    }
+    found
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -198,10 +223,10 @@ async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_cancellation_terminates_job_owned_descendants() {
     let script = r#"
-$child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\timeout.exe') `
-    -ArgumentList @('/T', '60', '/NOBREAK') -PassThru
-[Console]::Out.WriteLine("child-pid:$($child.Id)")
+[Console]::Out.WriteLine("root-pid:$PID")
 [Console]::Out.Flush()
+Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\timeout.exe') `
+    -ArgumentList @('/T', '60', '/NOBREAK') | Out-Null
 Start-Sleep -Seconds 60
 "#;
     let mut request = restricted_request(vec![
@@ -218,11 +243,11 @@ Start-Sleep -Seconds 60
     let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(8);
     let run = tokio::spawn(ManagedProcessService::run_streaming(request, output_tx));
     let mut output = Vec::new();
-    let marker = tokio::time::timeout(Duration::from_secs(15), async {
+    let root_pid = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             assert!(
                 !run.is_finished(),
-                "restricted child exited before publishing descendant PID"
+                "restricted child exited before publishing its PID"
             );
             let chunk = output_rx
                 .recv()
@@ -230,21 +255,43 @@ Start-Sleep -Seconds 60
                 .expect("restricted child output stream remains open");
             output.extend_from_slice(&chunk.bytes);
             let text = String::from_utf8_lossy(&output);
-            if let Some(line) = text.lines().find(|line| line.starts_with("child-pid:")) {
-                let child_pid = line["child-pid:".len()..]
+            if let Some(line) = text.lines().find(|line| line.starts_with("root-pid:")) {
+                return line["root-pid:".len()..]
                     .trim()
                     .parse::<u32>()
-                    .expect("descendant PID is numeric");
-                return Some(child_pid);
+                    .expect("root PID is numeric");
             }
         }
     })
-    .await;
-    assert!(
-        marker.is_ok(),
-        "restricted child neither published a descendant PID nor denied spawn; output: {}",
-        String::from_utf8_lossy(&output)
-    );
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "restricted child did not publish its PID; output: {}",
+            String::from_utf8_lossy(&output)
+        )
+    });
+    let child_pid = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            while let Ok(chunk) = output_rx.try_recv() {
+                output.extend_from_slice(&chunk.bytes);
+            }
+            if let Some(pid) = child_processes(root_pid).into_iter().next() {
+                return pid;
+            }
+            assert!(
+                !run.is_finished(),
+                "restricted root exited before cancellation"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "restricted process {root_pid} did not create a child process; output: {}",
+            String::from_utf8_lossy(&output)
+        )
+    });
 
     cancellation.cancel();
     let result = run
@@ -254,7 +301,7 @@ Start-Sleep -Seconds 60
     assert_eq!(result.termination, TerminationReason::Cancelled);
     assert!(result.cleanup.job_object_established);
     assert!(result.cleanup.forced_signal_sent);
-    wait_for_process_exit(marker.unwrap().expect("descendant process was started")).await;
+    wait_for_process_exit(child_pid).await;
 }
 
 #[tokio::test]
