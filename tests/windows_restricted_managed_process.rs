@@ -198,12 +198,8 @@ async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_cancellation_terminates_job_owned_descendants() {
     let script = r#"
-$psi = [Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = Join-Path $PSHOME 'powershell.exe'
-$psi.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 60"'
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
-$child = [Diagnostics.Process]::Start($psi)
+$child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\timeout.exe') `
+    -ArgumentList @('/T', '60', '/NOBREAK') -PassThru
 [Console]::Out.WriteLine("child-pid:$($child.Id)")
 [Console]::Out.Flush()
 Start-Sleep -Seconds 60
