@@ -26,8 +26,9 @@ use windows_sys::Win32::Security::Authorization::{
     SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, TokenOwner, ACL, DACL_SECURITY_INFORMATION,
+    GetLengthSid, GetTokenInformation, TokenOwner, TokenUser, ACL, DACL_SECURITY_INFORMATION,
     OWNER_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_OWNER, TOKEN_QUERY,
+    TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -281,10 +282,10 @@ fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, Vec<u8>, u32, u
     let file_index =
         (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
     let owner_sid = owner_sid(&canonical)?;
-    if owner_sid != current_token_owner_sid()? {
+    if owner_sid != current_user_sid()? && owner_sid != current_token_owner_sid()? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "ACL lease root owner does not match the current process token owner",
+            "ACL lease root is not owned by the current daemon user or its token owner",
         ));
     }
     Ok((
@@ -342,6 +343,47 @@ fn owner_sid(path: &Path) -> io::Result<Vec<u8>> {
     }
     let _descriptor = LocalAllocation(descriptor.cast());
     sid_bytes(owner, "ACL lease root has no owner SID")
+}
+
+fn current_token_owner_sid() -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
+    let mut bytes = 0u32;
+    unsafe {
+        let _ = GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenOwner,
+            ptr::null_mut(),
+            0,
+            &mut bytes,
+        );
+    }
+    if bytes < std::mem::size_of::<TOKEN_OWNER>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "current process token owner information is invalid",
+        ));
+    }
+    let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenOwner,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let owner = unsafe { &*storage.as_ptr().cast::<TOKEN_OWNER>() };
+    sid_bytes(owner.Owner, "current process token has no owner SID")
 }
 
 fn current_token_owner_sid() -> io::Result<Vec<u8>> {

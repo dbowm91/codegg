@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C011 — M004 Native Security Requalification and Closure
 
-Status: blocked (hosted-runner privilege proof; privileged disposable Windows VM)
+Status: blocked (C010 strict closure verification; privileged disposable Windows VM)
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
@@ -27,7 +27,7 @@ Prove the full requested Windows `ReadOnly`/`WorkspaceWrite` security semantics 
 
 ## 2. Why this milestone is ready / dependency gate
 
-Hard: C008–C010 closed on hosted native evidence; a disposable Windows VM with suitable administrative rights and a provisioned test user/workspace is available for adversarial ACL/recovery testing. GitHub's hosted Windows runner is being checked as a candidate for this gate. M004 historical closure stays blocked until the privilege probe and adversarial matrix pass. If the hosted runner lacks the required token/UAC state, this plan remains registered but blocked; it does **not** undo hosted C008–C010.
+Hard: C008–C010 closed on hosted native evidence; a disposable Windows VM with suitable administrative rights and a provisioned test user/workspace is available for adversarial ACL/recovery testing. GitHub's hosted runner privilege probe passed (`Administrator role=True`, `High integrity token=True`; UAC is enabled but the process token is elevated). The hosted runner satisfies the operational privilege gate. C010's latest root-owner change is being corrected and requalified before C011 proceeds. M004 historical closure stays blocked until C010 strict closure and the adversarial matrix pass.
 
 ## 3. Current implementation evidence and failed predecessor coverage
 
@@ -145,4 +145,4 @@ Do not edit the historical `plans/closure/windows-native-sandbox/004-status.md` 
 
 ## 16. Handoff notes
 
-Only hosted Windows runners are currently confirmed. A workflow now records Administrator role, token integrity, and UAC state to determine whether an ephemeral GitHub runner can serve as the privileged disposable VM. Continue with that runner if the runtime evidence satisfies the gate; otherwise C011 is **blocked on environment**, not a reason to reopen C008–C010. Do not rewrite historical `plans/closure/windows-native-sandbox/004-status.md`. An additive M004 closure may use e.g. `plans/closure/windows-native-sandbox/004-requalification-status.md` to preserve original evidence chronology.
+The GitHub hosted Windows runner meets the disposable privileged environment gate: the workflow observed an Administrator role and high-integrity token (UAC remains enabled). Use the fresh runner-owned workspace and synthetic credential/IPC fixtures for C011; do not access repository or runner secrets. Do not rewrite historical `plans/closure/windows-native-sandbox/004-status.md`. An additive M004 closure may use e.g. `plans/closure/windows-native-sandbox/004-requalification-status.md` to preserve original evidence chronology.
