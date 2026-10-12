@@ -351,7 +351,14 @@ fn is_transient_transport_kind(kind: &str) -> bool {
 /// invalid-request loop cannot retry to exhaustion.
 fn is_transient_api_error(code: &str, message: &str) -> bool {
     if let Ok(status) = code.parse::<u16>() {
-        return matches!(status, 408 | 425 | 429 | 500 | 502 | 503 | 504);
+        // Match the documented contract: every 5xx is transient. The previous
+        // allowlist covered only 500/502/503/504, so 529 (Anthropic's
+        // `overloaded_error`) — the canonical "upstream is overloaded" signal —
+        // was classified Permanent and the turn died instead of retrying.
+        // 401/403 (auth) and 400/404/422 (invalid request/model) stay
+        // permanent, so an invalid-request loop still cannot retry to
+        // exhaustion.
+        return status == 408 || status == 425 || status == 429 || (500..=599).contains(&status);
     }
     let lowered = format!("{code} {message}").to_lowercase();
     // Word-boundary style checks avoid misclassifying e.g. "moderation"
@@ -363,6 +370,8 @@ fn is_transient_api_error(code: &str, message: &str) -> bool {
         || lowered.contains("502")
         || lowered.contains("503")
         || lowered.contains("504")
+        || lowered.contains("529")
+        || lowered.contains("overload")
         || lowered.contains("timeout")
         || lowered.contains("temporarily")
         || lowered.contains("try again")
@@ -468,6 +477,35 @@ mod tests {
         let open = ProviderError::CircuitOpen("p".to_string());
         assert_eq!(open.retry_disposition(), RetryDisposition::Conditional);
         assert!(!open.is_retryable());
+    }
+
+    /// 529 is the canonical "upstream is overloaded" signal. It was outside
+    /// the old 500/502/503/504 allowlist, so an overloaded provider was
+    /// classified Permanent and the turn died instead of retrying.
+    #[test]
+    fn overloaded_5xx_is_transient_but_auth_and_bad_request_stay_permanent() {
+        for code in ["500", "502", "503", "504", "507", "522", "529"] {
+            let err = ProviderError::api(code, "upstream failure");
+            assert_eq!(
+                err.retry_disposition(),
+                RetryDisposition::Transient,
+                "{code} must be transient so an overloaded upstream is retried"
+            );
+        }
+        for code in ["400", "401", "403", "404", "422"] {
+            let err = ProviderError::api(code, "rejected");
+            assert_eq!(
+                err.retry_disposition(),
+                RetryDisposition::Permanent,
+                "{code} must stay permanent so invalid requests cannot loop"
+            );
+        }
+    }
+
+    #[test]
+    fn non_numeric_overload_wording_is_transient() {
+        let err = ProviderError::api("overloaded_error", "The model is currently overloaded");
+        assert_eq!(err.retry_disposition(), RetryDisposition::Transient);
     }
 
     #[test]

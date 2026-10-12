@@ -83,6 +83,17 @@ pub enum TuiCommand {
         report: Option<crate::protocol::core::AssetRefreshReportDto>,
         error: Option<String>,
     },
+    /// Completion of a permission or question response round trip.
+    ///
+    /// The reply is sent from a detached task, so a daemon-side refusal
+    /// (`CoreResponse::Error`) is otherwise invisible: the dialog closes,
+    /// nothing is logged, and the waiter — whose human wait is unbounded by
+    /// default — blocks the tool forever. This variant surfaces the refusal
+    /// so the user learns the tool did **not** resume.
+    PermissionResponseFinished {
+        /// Human-readable cause. `None` on a successful `Ack`.
+        error: Option<String>,
+    },
     /// Completion of a daemon-owned controlled LSP preview application.
     LspPreviewApplyFinished {
         session_id: String,

@@ -13238,12 +13238,17 @@ impl App {
     }
 
     fn send_local_permission_response(
-        &self,
+        &mut self,
         perm_id: String,
         choice: crate::permission::PermissionChoice,
     ) {
         let Some(core_client) = self.core_client.clone() else {
-            tracing::warn!("core client unavailable for permission response");
+            // Without a core client the reply never leaves the TUI, so the
+            // waiter would block indefinitely. Say so instead of failing
+            // silently.
+            self.messages_state.toasts.error(
+                "Cannot deliver approval: the core client is unavailable (check daemon status with /doctor). The tool will not run until this is resolved.",
+            );
             return;
         };
         let choice = match choice {
@@ -13253,6 +13258,10 @@ impl App {
             crate::permission::PermissionChoice::AlwaysDeny => "always_deny",
         }
         .to_string();
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            tracing::warn!("no TUI command channel; cannot report permission response result");
+            return;
+        };
         tokio::spawn(async move {
             let request = crate::core::new_request(
                 format!("permission-respond-{}", uuid::Uuid::new_v4()),
@@ -13261,19 +13270,39 @@ impl App {
                     choice,
                 },
             );
-            if let Err(e) = core_client.request(request).await {
-                tracing::warn!("failed to send permission response via core: {}", e);
-            }
+            // A daemon refusal arrives as `Ok(CoreResponse::Error { .. })`, not
+            // as a transport `Err`. Treating only `Err` as failure is what made
+            // a rejected approval completely invisible while the tool hung.
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(format!("Approval was not delivered ({code}): {message}"))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("failed to send permission response via core: {}", e);
+                    Some(format!("Approval was not delivered: {e}"))
+                }
+            };
+            let _ = send_tui(
+                &tx,
+                crate::tui::app::commands::TuiCommand::PermissionResponseFinished { error },
+            );
         });
     }
 
-    fn send_local_question_response(&self, question_id: String, answers_json: String) {
+    fn send_local_question_response(&mut self, question_id: String, answers_json: String) {
         let Some(core_client) = self.core_client.clone() else {
-            tracing::warn!("core client unavailable for question response");
+            self.messages_state.toasts.error(
+                "Cannot deliver answer: the core client is unavailable (check daemon status with /doctor).",
+            );
             return;
         };
         let answers = serde_json::from_str::<serde_json::Value>(&answers_json)
             .unwrap_or(serde_json::Value::String(answers_json));
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            tracing::warn!("no TUI command channel; cannot report question response result");
+            return;
+        };
         tokio::spawn(async move {
             let request = crate::core::new_request(
                 format!("question-respond-{}", uuid::Uuid::new_v4()),
@@ -13282,9 +13311,22 @@ impl App {
                     answers,
                 },
             );
-            if let Err(e) = core_client.request(request).await {
-                tracing::warn!("failed to send question response via core: {}", e);
-            }
+            // Same contract as permissions: a daemon refusal is an
+            // `Ok(CoreResponse::Error { .. })`, not a transport error.
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(format!("Answer was not delivered ({code}): {message}"))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!("failed to send question response via core: {}", e);
+                    Some(format!("Answer was not delivered: {e}"))
+                }
+            };
+            let _ = send_tui(
+                &tx,
+                crate::tui::app::commands::TuiCommand::PermissionResponseFinished { error },
+            );
         });
     }
 

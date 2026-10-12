@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
@@ -20,7 +20,12 @@ pub struct PermissionDialog {
     pub selected_option: usize,
     pub theme: Arc<Theme>,
     pub confirm_persistent: bool,
-    pub pending_persistent: Option<usize>,
+    /// Option index the interstitial is confirming (`1` = Always Allow,
+    /// `3` = Always Deny). Read before the interstitial state is cleared so a
+    /// confirmed standing grant still reports the grant it was granting —
+    /// the previous code read and cleared one field, silently degrading an
+    /// "always" answer to "allow once".
+    pub pending_choice: Option<usize>,
     pub risk: ToolRisk,
 }
 
@@ -35,7 +40,7 @@ impl PermissionDialog {
             selected_option: 0,
             theme,
             confirm_persistent: false,
-            pending_persistent: None,
+            pending_choice: None,
             risk,
         }
     }
@@ -44,11 +49,24 @@ impl PermissionDialog {
         self.theme = Arc::clone(theme);
     }
 
-    pub fn options(&self) -> Vec<&str> {
+    pub fn options(&self) -> Vec<&'static str> {
         if self.confirm_persistent {
             vec!["⚠ Confirm & Persist", "← Cancel"]
         } else {
             vec!["Allow Once", "Always Allow", "Deny Once", "Always Deny"]
+        }
+    }
+
+    /// Codex-style direct keys, mapped to the same option indices Enter
+    /// selects. `p` deliberately arms the same persistence confirmation as
+    /// selecting "Always Allow", so a standing grant is still an explicit
+    /// second keypress.
+    pub fn option_for_key(code: KeyCode) -> Option<usize> {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => Some(0),
+            KeyCode::Char('p') | KeyCode::Char('P') => Some(1),
+            KeyCode::Char('n') | KeyCode::Char('N') => Some(2),
+            _ => None,
         }
     }
 
@@ -100,52 +118,38 @@ impl PermissionDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
-        // Outer frame: single border in the theme primary color so the
-        // dialog matches the styling of the other dialogs (e.g. /models),
-        // with a theme background fill so the inside reads as a distinct
-        // surface (not transparent).
+        // Single outer frame in `theme.border` — the same frame the other
+        // dialogs use — carrying the request title so the box reads as one
+        // surface instead of a warning-coloured frame nested inside another.
+        // Risk still shouts, but through the title/label text rather than a
+        // second border.
+        let risk_label = format!("{}", self.risk);
+        let risk_color = self.risk_color(theme);
         let outer_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border))
-            .style(Style::default().bg(theme.background));
+            .style(Style::default().bg(theme.background))
+            .title(Span::styled(
+                format!(" Permission Request — {} ", self.request.tool),
+                Style::default().fg(theme.foreground),
+            ))
+            .title_top(
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", self.tool_icon()),
+                        Style::default().fg(theme.warning),
+                    ),
+                    Span::styled(
+                        format!("[{}] ", risk_label),
+                        Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
+                    ),
+                ])
+                .right_aligned(),
+            );
         let inner = outer_block.inner(area);
-        // Render an empty paragraph that only exists to paint the outer
-        // border + background. Sub-blocks render inside `inner`.
         frame.render_widget(Paragraph::new("").block(outer_block), area);
 
-        let chunks = Layout::vertical([
-            Constraint::Length(5),
-            Constraint::Min(4),
-            Constraint::Length(5),
-        ])
-        .split(inner);
-
-        let tool_icon = self.tool_icon();
-        let risk_label = format!("{}", self.risk);
-        let risk_color = self.risk_color(theme);
-
-        let title = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("{} ", tool_icon),
-                Style::default().fg(theme.warning),
-            ),
-            Span::styled(
-                format!("Tool '{}' requires permission", self.request.tool),
-                Style::default().fg(theme.foreground),
-            ),
-            Span::styled(
-                format!("  [{risk_label}]"),
-                Style::default().fg(risk_color).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Permission Request ")
-                .border_style(Style::default().fg(theme.warning))
-                .style(Style::default().bg(theme.background)),
-        );
-        frame.render_widget(title, chunks[0]);
+        let chunks = Layout::vertical([Constraint::Min(3), Constraint::Length(6)]).split(inner);
 
         let mut details = Vec::new();
         if let Some(ref path) = self.request.path {
@@ -255,7 +259,7 @@ impl PermissionDialog {
                 .border_style(Style::default().fg(theme.border))
                 .style(Style::default().bg(theme.background)),
         );
-        frame.render_widget(detail, chunks[1]);
+        frame.render_widget(detail, chunks[0]);
 
         let options: Vec<Line> = self
             .options()
@@ -266,6 +270,16 @@ impl PermissionDialog {
                     "> "
                 } else {
                     "  "
+                };
+                // Direct keys are the primary affordance, so each row names
+                // its own key instead of leaving them to be discovered.
+                let shortcut = match (self.confirm_persistent, i) {
+                    (true, 0) => "y",
+                    (true, _) => "n",
+                    (false, 0) => "y",
+                    (false, 1) => "p",
+                    (false, 2) => "n",
+                    (false, _) => "",
                 };
                 let style = if self.confirm_persistent {
                     if i == 0 {
@@ -280,72 +294,97 @@ impl PermissionDialog {
                 } else {
                     Style::default().fg(theme.foreground)
                 };
-                Line::from(Span::styled(format!("{prefix}{}", opt), style))
+                let label = if shortcut.is_empty() {
+                    format!("{prefix}{opt}")
+                } else {
+                    format!("{prefix}{shortcut})  {opt}")
+                };
+                Line::from(Span::styled(label, style))
             })
             .collect();
+
+        let hint = if self.confirm_persistent {
+            " Options — y confirm & persist  |  n cancel "
+        } else {
+            " Options — y yes  |  p yes always  |  n no  |  ↑↓/j/k navigate  |  Esc cancel "
+        };
 
         let options_para = Paragraph::new(options).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Options (↑↓/j/k navigate  |  Enter confirm  |  Esc cancel) ")
+                .title(hint)
+                .title_style(Style::default().fg(theme.muted))
                 .border_style(Style::default().fg(theme.border))
                 .style(Style::default().bg(theme.background)),
         );
-        frame.render_widget(options_para, chunks[2]);
+        frame.render_widget(options_para, chunks[1]);
+    }
+
+    /// Commit the option at `choice`. Persistent grants route through the
+    /// `⚠ Confirm & Persist` interstitial instead of submitting immediately;
+    /// this is the single path for both `Enter` and the `y`/`n`/`p` direct
+    /// keys so they can never disagree about what a keypress means.
+    fn commit(&mut self, choice: usize) -> Option<TuiMsg> {
+        if self.confirm_persistent {
+            let confirmed = self.pending_choice.take().unwrap_or(1);
+            self.confirm_persistent = false;
+            self.selected_option = 0;
+            // Inside the interstitial, option 0 confirms and anything else
+            // cancels — including the `n` direct key.
+            return (choice == 0).then_some(TuiMsg::SubmitPermission {
+                choice_index: confirmed,
+            });
+        }
+        if choice == 1 || choice == 3 {
+            self.confirm_persistent = true;
+            self.pending_choice = Some(choice);
+            self.selected_option = 0;
+            return None;
+        }
+        Some(TuiMsg::SubmitPermission {
+            choice_index: choice,
+        })
+    }
+
+    fn cancel_confirm(&mut self) {
+        self.confirm_persistent = false;
+        self.pending_choice = None;
+        self.selected_option = 0;
     }
 }
 
 impl Component for PermissionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         match key.code {
-            crossterm::event::KeyCode::Esc => {
+            KeyCode::Esc => {
                 if self.confirm_persistent {
-                    self.confirm_persistent = false;
-                    self.selected_option = 0;
+                    self.cancel_confirm();
                     None
                 } else {
                     Some(TuiMsg::CloseDialog)
                 }
             }
-            crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+            KeyCode::Up | KeyCode::Char('k') => {
                 self.cursor_up();
                 None
             }
-            crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 self.cursor_down();
                 None
             }
-            crossterm::event::KeyCode::Enter => {
-                if self.confirm_persistent {
-                    if self.selected_option == 0 {
-                        self.confirm_persistent = false;
-                        let choice = self.pending_persistent.unwrap_or(1);
-                        self.pending_persistent = None;
-                        self.selected_option = 0;
-                        Some(TuiMsg::SubmitPermission {
-                            choice_index: choice,
-                        })
-                    } else {
-                        self.confirm_persistent = false;
-                        self.pending_persistent = None;
-                        self.selected_option = 0;
-                        None
-                    }
-                } else {
-                    let choice = self.selected_option;
-                    if choice == 1 || choice == 3 {
-                        self.confirm_persistent = true;
-                        self.pending_persistent = Some(choice);
-                        self.selected_option = 0;
-                        None
-                    } else {
-                        Some(TuiMsg::SubmitPermission {
-                            choice_index: choice,
-                        })
-                    }
-                }
+            KeyCode::Enter => {
+                let choice = self.selected_option;
+                self.commit(choice)
             }
-            _ => None,
+            code => match Self::option_for_key(code) {
+                // In the interstitial the direct keys answer the prompt
+                // itself (`y` confirms, `n` backs out) rather than re-arming it.
+                Some(choice) if self.confirm_persistent => {
+                    self.commit(if choice == 0 { 0 } else { 1 })
+                }
+                Some(choice) => self.commit(choice),
+                None => None,
+            },
         }
     }
 
@@ -362,5 +401,92 @@ impl Component for PermissionDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Permission
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dialog() -> PermissionDialog {
+        PermissionDialog::new(
+            PermissionRequest {
+                tool: "bash".to_string(),
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+                path: None,
+            },
+            Arc::new(Theme::default()),
+        )
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn direct_keys_map_to_codex_options() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('y'))),
+            Some(TuiMsg::SubmitPermission { choice_index: 0 })
+        );
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('n'))),
+            Some(TuiMsg::SubmitPermission { choice_index: 2 })
+        );
+    }
+
+    /// `p` must not grant standing permission on a single keypress; it arms
+    /// the same confirmation the "Always Allow" row does.
+    #[test]
+    fn p_arms_persistence_confirmation_instead_of_granting_immediately() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Char('p'))), None);
+        assert!(d.confirm_persistent);
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('y'))),
+            Some(TuiMsg::SubmitPermission { choice_index: 1 })
+        );
+    }
+
+    #[test]
+    fn n_cancels_out_of_the_persistence_confirmation() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('p')));
+        assert!(d.confirm_persistent);
+        assert_eq!(d.handle_key(key(KeyCode::Char('n'))), None);
+        assert!(!d.confirm_persistent);
+        assert_eq!(d.selected_option, 0);
+    }
+
+    /// Regression: the confirm branch used to read `pending_persistent` after
+    /// clearing it, silently degrading an "always" answer to "allow once".
+    #[test]
+    fn always_allow_survives_confirmation_and_always_deny_is_reachable() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(
+            d.handle_key(key(KeyCode::Enter)),
+            Some(TuiMsg::SubmitPermission { choice_index: 1 })
+        );
+
+        let mut d = dialog();
+        d.cursor_down();
+        d.cursor_down();
+        d.cursor_down(); // "Always Deny"
+        assert_eq!(d.selected_option, 3);
+        assert_eq!(d.handle_key(key(KeyCode::Enter)), None);
+        assert!(d.confirm_persistent);
+        assert_eq!(
+            d.handle_key(key(KeyCode::Enter)),
+            Some(TuiMsg::SubmitPermission { choice_index: 3 })
+        );
+    }
+
+    #[test]
+    fn esc_still_closes_when_no_confirmation_is_armed() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Esc)), Some(TuiMsg::CloseDialog));
     }
 }

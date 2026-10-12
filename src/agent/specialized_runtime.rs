@@ -268,13 +268,31 @@ pub fn finalize(
             Ok(())
         }
         PreparedSpecializedRuntime::Research { plan, ledger } => {
+            // Evidence sufficiency is a *coverage quality* gate, not an
+            // integrity gate. It used to hard-fail the turn, which discarded a
+            // model answer the user had already streamed into the transcript
+            // and reported the whole run as failed — the dominant "research is
+            // broken" symptom. Reachability made it worse: `QuickLookup` is the
+            // tolerant branch, but the caller always supplies a workspace
+            // scope, so every research turn hit the hard gate whenever no
+            // child produced schema-conforming evidence.
+            //
+            // The completed answer is real work and is now preserved; the gap
+            // is recorded so it stays observable. Integrity checks below
+            // (malformed JSON, out-of-ledger citations, bounds) still fail the
+            // turn, because those mean the contract itself was violated.
             if plan.kind != runtime::RequestKind::QuickLookup
                 && (ledger.evidence.is_empty()
                     || (plan.kind == runtime::RequestKind::MultiSource && ledger.sources.len() < 2))
             {
-                return Err(AppError::Other(anyhow::anyhow!(
-                    "research finalization failed: minimum evidence policy not met"
-                )));
+                tracing::warn!(
+                    target: "specialized_runtime",
+                    plan_kind = ?plan.kind,
+                    evidence = ledger.evidence.len(),
+                    sources = ledger.sources.len(),
+                    "research completed below the minimum evidence policy; \
+                     preserving the answer and recording the coverage gap"
+                );
             }
             let report: ResearchReport = serde_json::from_str(terminal.public_text.trim())
                 .map_err(|error| {

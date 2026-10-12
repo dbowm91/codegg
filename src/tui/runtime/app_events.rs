@@ -297,6 +297,23 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                 app.status_bar.set_thinking(false, None);
                 app.streaming_active = false;
 
+                // The turn is over, so any tool call still tracked as running
+                // cannot complete. Without this a turn that dies mid-tool-call
+                // (provider error, aborted stream) leaves `running_tool` set
+                // forever and the header shows a permanent spinner. Mark the
+                // orphaned call errored so the transcript is truthful too.
+                if let Some(running) = app.session_state.running_tool.take() {
+                    app.messages_state.messages.update_tool_call(
+                        &running.tool_id,
+                        "Tool did not complete: the turn ended before a result arrived."
+                            .to_string(),
+                        crate::session::message::ToolStatus::Error,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+
                 if let (Some(in_tok), Some(out_tok)) = (input_tokens, output_tokens) {
                     app.set_tokens(in_tok as u64, out_tok as u64);
                     if let Some(ct) = cached_tokens {

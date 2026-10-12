@@ -5272,6 +5272,75 @@ mod tests {
         }
     }
 
+    /// Regression: the local TUI receives `AppEvent::PermissionPending` straight
+    /// off the bus, where `perm_id` is the unprefixed `{tool_call_id}-{tool}`
+    /// form, and echoes it back verbatim. That reply used to be rejected with
+    /// `invalid_permission_id`, so the responder's oneshot was never completed
+    /// and — because the human wait is unbounded by default — the tool blocked
+    /// forever with no dialog and no error.
+    #[tokio::test]
+    async fn permission_respond_accepts_unprefixed_pending_id() {
+        let daemon = test_daemon().await;
+        let perm_id = format!("call_{}-bash", uuid::Uuid::new_v4().simple());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::bus::PermissionRegistry::register_with_session(
+            "default".to_string(),
+            None,
+            perm_id.clone(),
+            tx,
+        );
+
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-perm-bare".into(),
+                CoreRequest::PermissionRespond {
+                    id: perm_id.clone(),
+                    choice: "allow".into(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resp, CoreResponse::Ack),
+            "bare permission id must be accepted, got {resp:?}"
+        );
+        // The decisive assertion: the waiter is actually released.
+        let decision = rx.await.expect("permission waiter must be completed");
+        assert!(
+            matches!(decision, crate::bus::PermissionDecision::AllowOnce),
+            "expected an allow decision, got {decision:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn question_respond_accepts_unprefixed_pending_id() {
+        let daemon = test_daemon().await;
+        let question_id = format!("q-{}", uuid::Uuid::new_v4().simple());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::bus::QuestionRegistry::register_with_session(
+            "default".to_string(),
+            None,
+            question_id.clone(),
+            tx,
+        );
+
+        let resp = daemon
+            .handle_request(crate::core::new_request(
+                "req-q-bare".into(),
+                CoreRequest::QuestionRespond {
+                    id: question_id,
+                    answers: serde_json::json!("yes"),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resp, CoreResponse::Ack),
+            "bare question id must be accepted, got {resp:?}"
+        );
+        assert!(rx.await.is_ok(), "question waiter must be completed");
+    }
+
     #[tokio::test]
     async fn permission_respond_malformed_id() {
         let daemon = test_daemon().await;

@@ -157,6 +157,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             apply_asset_refresh_finished(app, report, error);
             app.refresh_project_command_registry();
         }
+        TuiCommand::PermissionResponseFinished { error } => {
+            if let Some(error) = error {
+                app.messages_state.toasts.error(&error);
+            }
+        }
         TuiCommand::LspPreviewApplyFinished {
             session_id,
             result,

@@ -105,6 +105,37 @@ is recorded.
 3. Check the permissions store is writable — `<config dir>/codegg/permissions.json` (`~/Library/Application Support/codegg/permissions.json` on macOS, `~/.config/codegg/permissions.json` on Linux)
 4. Restart the application
 
+### Approval accepted but the tool never runs
+
+**Symptoms:** You answer the approval prompt, the dialog closes, and the turn
+then sits there indefinitely. In earlier builds the reply could be dropped by
+the daemon and the human wait — unbounded by default — never woke up.
+
+**What to look for:** a red toast reading `Approval was not delivered
+(<code>): <detail>`. That means the reply reached the daemon but was refused;
+the code tells you why (`invalid_permission_id` = the request was no longer
+pending, usually because it already expired or was answered elsewhere).
+
+**Solutions:**
+1. Re-run the turn — a stale approval is not reusable
+2. If the daemon was restarted mid-turn, pending approvals do not survive it
+3. Run `/doctor` to confirm the daemon is reachable
+
+### Approval keys
+
+The permission box accepts direct keys as well as arrow/`j`/`k` + `Enter`:
+
+| Key | Effect |
+|---|---|
+| `y` | Allow once |
+| `p` | Always allow (asks for a second confirming keypress) |
+| `n` | Deny once |
+| `↑↓`/`j`/`k`, `Enter` | Navigate / commit the highlighted option |
+| `Esc` | Cancel, or back out of the confirm step |
+
+A standing grant ("Always Allow" / "Always Deny" / `p`) always requires the
+second `y`, so no single keypress creates a persistent permission.
+
 ### Permission always denied
 
 **Symptoms:** Even with "Always Allow", tools are denied.

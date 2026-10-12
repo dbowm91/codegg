@@ -67,6 +67,8 @@ static MARKDOWN_OPTIONS: Lazy<Options<'static>> = Lazy::new(|| {
 });
 const TOOL_OUTPUT_PREVIEW_LINES: usize = 8;
 const TOOL_INPUT_PREVIEW_LINES: usize = 4;
+/// Columns the renderer indents tool/shell output by (`Span::raw("    ")`).
+const TOOL_OUTPUT_INDENT: u16 = 4;
 const TOOL_SPINNER_FRAMES: [&str; 8] = ["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 fn tool_spinner_frame() -> &'static str {
@@ -428,6 +430,32 @@ fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
 }
 
 impl MessagesWidget {
+    /// Width available to a tool/shell output line after its indent.
+    ///
+    /// Tool output used to be emitted one unwrapped `Line` per logical line
+    /// while the widget rendered without `.wrap()`, so any line wider than the
+    /// viewport was clipped at the right edge with no way to reach the rest —
+    /// `scroll_left`/`scroll_right` are no-ops and there is no horizontal
+    /// scrollbar. Wrapping at this width is what makes the whole output
+    /// reachable by ordinary vertical scrolling.
+    fn tool_output_wrap_width(&self) -> u16 {
+        self.width.saturating_sub(TOOL_OUTPUT_INDENT)
+    }
+
+    /// Rendered line count for `text` once tool-output lines are wrapped.
+    /// Must stay in lockstep with the emit loops below so the layout cache and
+    /// the render agree and the scroll range remains accurate.
+    fn wrapped_output_line_count(&self, text: &str) -> usize {
+        let wrap_width = self.tool_output_wrap_width();
+        if wrap_width == 0 {
+            return text.lines().count().max(1);
+        }
+        text.lines()
+            .map(|line| crate::tui::wrap::wrap_count(line, wrap_width))
+            .sum::<usize>()
+            .max(1)
+    }
+
     pub fn estimate_msg_lines(&self, msg: &UIMessage) -> usize {
         // Returns the post-collapse line count for `msg`, matching what the
         // render path produces (after `collapse_blank_lines` is applied to the
@@ -469,7 +497,11 @@ impl MessagesWidget {
                     {
                         lines += 1;
                     } else if !output.is_empty() {
-                        let output_line_count = output.lines().count().max(1);
+                        // Count post-wrap rows, not logical lines: a long
+                        // output line occupies several viewport rows once
+                        // wrapped, and under-counting here is what made the
+                        // scrollbar stop short of the real content.
+                        let output_line_count = self.wrapped_output_line_count(output);
                         if *expanded {
                             if !input.is_empty() {
                                 lines += input.lines().count().min(TOOL_INPUT_PREVIEW_LINES);
@@ -480,7 +512,7 @@ impl MessagesWidget {
                             lines += output_line_count;
                         } else {
                             lines += output_line_count.min(TOOL_OUTPUT_PREVIEW_LINES);
-                            if output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
+                            if output.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
                                 lines += 1;
                             }
                         }
@@ -497,14 +529,13 @@ impl MessagesWidget {
                 } => {
                     lines += 1;
                     if *expanded {
-                        lines += stdout_preview.lines().count().max(1);
+                        lines += self.wrapped_output_line_count(stdout_preview);
                         if !stderr_preview.is_empty() {
-                            lines += stderr_preview.lines().count().max(1);
+                            lines += self.wrapped_output_line_count(stderr_preview);
                         }
                     } else {
-                        lines += stdout_preview
-                            .lines()
-                            .count()
+                        lines += self
+                            .wrapped_output_line_count(stdout_preview)
                             .min(TOOL_OUTPUT_PREVIEW_LINES);
                         if stdout_preview.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
                             lines += 1;
@@ -1396,8 +1427,25 @@ impl MessagesWidget {
         }
 
         if self.streaming_tokens.len() + token.len() > MAX_STREAMING_TOKENS_SIZE {
-            self.streaming_tokens
-                .truncate(MAX_STREAMING_TOKENS_SIZE / 2);
+            // Keep the *newest* half. Truncating to the first half (the old
+            // behaviour) silently discarded the most recent ~512 KiB, so the
+            // response appeared to stop mid-sentence with no indication —
+            // and `finalize_streaming` then persisted that lossy buffer as
+            // the finished assistant message. The drop is now marked
+            // explicitly at the head of the buffer so the gap is visible.
+            const DROPPED_MARKER: &str =
+                "[… earlier output dropped: response exceeded the 1 MiB buffer …]\n";
+            let keep = MAX_STREAMING_TOKENS_SIZE / 2;
+            let mut tail_start = self.streaming_tokens.len().saturating_sub(keep);
+            // `len() - keep` can land inside a multi-byte character; advance to
+            // the next char boundary instead of panicking on the slice.
+            while !self.streaming_tokens.is_char_boundary(tail_start) {
+                tail_start += 1;
+            }
+            let mut next = String::with_capacity(keep + DROPPED_MARKER.len() + token.len());
+            next.push_str(DROPPED_MARKER);
+            next.push_str(&self.streaming_tokens[tail_start..]);
+            self.streaming_tokens = next;
         }
         self.streaming_tokens.push_str(token);
         self.invalidate_layout_cache();
@@ -2092,14 +2140,22 @@ impl MessagesWidget {
                                 lines.push(Line::from(spans));
                             }
                         } else {
+                            let wrap_width = self.tool_output_wrap_width();
                             for output_line in output.lines().take(limit) {
-                                lines.push(Line::from(vec![
-                                    Span::raw("    "),
-                                    Span::styled(
-                                        output_line.to_string(),
-                                        Style::default().fg(self.theme.muted),
-                                    ),
-                                ]));
+                                // Wrap each logical line so long paths, URLs
+                                // and single-line JSON stay fully readable
+                                // instead of being cut off at the right edge.
+                                let wrapped = if wrap_width == 0 {
+                                    vec![output_line.to_string()]
+                                } else {
+                                    crate::tui::wrap::wrap_to_strings(output_line, wrap_width)
+                                };
+                                for row in wrapped {
+                                    lines.push(Line::from(vec![
+                                        Span::raw("    "),
+                                        Span::styled(row, Style::default().fg(self.theme.muted)),
+                                    ]));
+                                }
                             }
                         }
                         if !*expanded && output_line_count > TOOL_OUTPUT_PREVIEW_LINES {
@@ -2241,15 +2297,20 @@ impl MessagesWidget {
                         } else {
                             TOOL_OUTPUT_PREVIEW_LINES
                         };
+                        let wrap_width = self.tool_output_wrap_width();
                         if !stdout_preview.is_empty() {
                             for output_line in stdout_preview.lines().take(limit) {
-                                lines.push(Line::from(vec![
-                                    Span::raw("    "),
-                                    Span::styled(
-                                        output_line.to_string(),
-                                        Style::default().fg(self.theme.muted),
-                                    ),
-                                ]));
+                                let wrapped = if wrap_width == 0 {
+                                    vec![output_line.to_string()]
+                                } else {
+                                    crate::tui::wrap::wrap_to_strings(output_line, wrap_width)
+                                };
+                                for row in wrapped {
+                                    lines.push(Line::from(vec![
+                                        Span::raw("    "),
+                                        Span::styled(row, Style::default().fg(self.theme.muted)),
+                                    ]));
+                                }
                             }
                             let total_lines = stdout_preview.lines().count();
                             if !*expanded && total_lines > TOOL_OUTPUT_PREVIEW_LINES {
@@ -2269,13 +2330,17 @@ impl MessagesWidget {
                         }
                         if !stderr_preview.is_empty() {
                             for error_line in stderr_preview.lines().take(limit) {
-                                lines.push(Line::from(vec![
-                                    Span::raw("    "),
-                                    Span::styled(
-                                        error_line.to_string(),
-                                        Style::default().fg(self.theme.error),
-                                    ),
-                                ]));
+                                let wrapped = if wrap_width == 0 {
+                                    vec![error_line.to_string()]
+                                } else {
+                                    crate::tui::wrap::wrap_to_strings(error_line, wrap_width)
+                                };
+                                for row in wrapped {
+                                    lines.push(Line::from(vec![
+                                        Span::raw("    "),
+                                        Span::styled(row, Style::default().fg(self.theme.error)),
+                                    ]));
+                                }
                             }
                         }
                     }
@@ -3984,5 +4049,73 @@ mod tests {
                 "lost content while hard-breaking an overlong token"
             );
         }
+    }
+
+    /// Regression: tool output was emitted one unwrapped `Line` per logical
+    /// line while the widget renders without `.wrap()` and
+    /// `scroll_left`/`scroll_right` are no-ops. A long line (a path, a URL, a
+    /// single-line JSON blob) was clipped at the right edge with no way to
+    /// reach the rest. Wrapping must both emit multiple rows and keep the
+    /// layout cache in agreement, or the scroll range stops short.
+    #[test]
+    fn long_tool_output_lines_are_wrapped_and_counted() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        let long = "x".repeat(200);
+        let msg = UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::ToolCall {
+                id: "t1".to_string(),
+                name: "bash".to_string(),
+                input: "{}".to_string(),
+                output: long.clone(),
+                status: ToolStatus::Completed,
+                duration_ms: None,
+                exit_code: None,
+                output_lines: None,
+                expanded: true,
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        };
+        let estimated = widget.estimate_msg_lines(&msg);
+        // 200 chars at ~36 usable columns must occupy several rows.
+        assert!(
+            estimated >= 5,
+            "wrapped tool output should span multiple rows, got {estimated}"
+        );
+        assert!(
+            estimated > long.lines().count(),
+            "a single overlong line must wrap into more than one row"
+        );
+    }
+
+    #[test]
+    fn streaming_buffer_keeps_newest_output_and_discloses_the_drop() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        // Cross the 1 MiB buffer with a distinctive tail.
+        let filler = "a".repeat(1024 * 1024 + 16);
+        widget.add_streaming_token(&filler);
+        widget.add_streaming_token("THE-ACTUAL-ANSWER-ENDS-HERE");
+        let buffered = widget.streaming_tokens.clone();
+        assert!(
+            buffered.contains("THE-ACTUAL-ANSWER-ENDS-HERE"),
+            "the newest output must survive the buffer cap"
+        );
+        assert!(
+            buffered.contains("earlier output dropped"),
+            "losing the head must be disclosed, not silent"
+        );
+    }
+
+    #[test]
+    fn streaming_buffer_truncation_is_utf8_safe() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(80);
+        // Multi-byte characters straddling the cut point must not panic.
+        widget.add_streaming_token(&"é".repeat(1024 * 1024 / 2 + 8));
+        widget.add_streaming_token("tail");
+        assert!(widget.streaming_tokens.ends_with("tail"));
     }
 }

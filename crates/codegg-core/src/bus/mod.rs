@@ -256,6 +256,30 @@ impl PermissionRegistry {
             .collect()
     }
 
+    /// Resolve the owning `(session_id, turn_id)` of a pending permission
+    /// addressed by its **simple** (unprefixed) id.
+    ///
+    /// The daemon's `PermissionRespond` handler accepts both the scoped
+    /// `perm:<session>:<turn>:<simple>` protocol id and the bare simple id
+    /// that the local TUI receives verbatim from
+    /// `AppEvent::PermissionPending`. The bare form carries no session, so
+    /// ownership has to be recovered from the registry itself.
+    ///
+    /// Fails closed (`None`) when the id is unknown **or** when more than one
+    /// session currently owns the same simple id — an ambiguous answer must
+    /// never be routed to an arbitrary waiter.
+    pub fn resolve_pending_owner(perm_id: &str) -> Option<(String, Option<String>)> {
+        Self::cleanup_if_due();
+        let mut matches = PERMISSION_REGISTRY
+            .senders
+            .iter()
+            .filter(|e| e.key().as_str() == perm_id)
+            .map(|e| (e.value().session_id.clone(), e.value().turn_id.clone()));
+        let first = matches.next()?;
+        // A second owner with the same simple id makes the answer ambiguous.
+        matches.next().is_none().then_some(first)
+    }
+
     fn cleanup_if_due() {
         let Some(ttl) = PermissionRegistry::pending_ttl() else {
             return;
@@ -407,6 +431,23 @@ impl QuestionRegistry {
             .iter()
             .map(|entry| entry.key().clone())
             .collect()
+    }
+
+    /// Resolve the owning `(session_id, turn_id)` of a pending question
+    /// addressed by its **simple** (unprefixed) id.
+    ///
+    /// Mirrors [`PermissionRegistry::resolve_pending_owner`]: the bare id
+    /// carries no session, so ownership is recovered from the registry, and
+    /// an ambiguous id (more than one owner) fails closed.
+    pub fn resolve_pending_owner(question_id: &str) -> Option<(String, Option<String>)> {
+        Self::cleanup_if_due();
+        let mut matches = QUESTION_REGISTRY
+            .senders
+            .iter()
+            .filter(|e| e.key().as_str() == question_id)
+            .map(|e| (e.value().session_id.clone(), e.value().turn_id.clone()));
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
     }
 
     /// Return all pending questions for the given `session_id`, with full

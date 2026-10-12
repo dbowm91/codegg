@@ -310,6 +310,46 @@ Key methods:
 - `is_registered(perm_id)` / `is_registered_scoped(session_id, perm_id)`
 - `pending_permission_ids()` — all pending across sessions
 - `get_pending_for_session(session_id)` — session-scoped with metadata
+- `resolve_pending_owner(perm_id)` — recovers `(session_id, turn_id)` for a
+  **simple** (unprefixed) id; returns `None` when the id is unknown *or*
+  when more than one session owns it, so an ambiguous reply fails closed
+
+### Response Identifier Shapes
+
+`CoreRequest::PermissionRespond` / `QuestionRespond` accept two id forms:
+
+1. **Scoped (protocol form)** — `perm:<session_id>:<turn_id>:<perm_id>`. This
+   is what `AppEvent::PermissionPending` → `CoreEvent` re-prefixing
+   (`src/core/mod.rs`) produces, so remote/WS frontends echo it verbatim. The
+   session and turn are taken from the id itself.
+2. **Simple (bare)** — the unprefixed `{tool_call_id}-{tool}` id, which is what
+   `AppEvent::PermissionPending` carries on the bus and therefore exactly what
+   the **local TUI** receives and sends back. It carries no session, so
+   ownership is recovered via `resolve_pending_owner`.
+
+The controller-lease check runs against the *resolved* owner in both forms, so
+an opaque bare id cannot bypass session-control authority. Anything that
+resolves to no pending request is rejected with `invalid_permission_id` /
+`invalid_question_id` — and because the human wait is unbounded by default, the
+TUI surfaces that refusal as an error toast rather than letting the tool hang
+with no feedback (`TuiCommand::PermissionResponseFinished`).
+
+### Approval Dialog Keys
+
+The dialog accepts direct codex-style keys in addition to `↑↓`/`j`/`k` +
+`Enter`:
+
+| Key | Effect |
+|---|---|
+| `y` | Allow once |
+| `p` | Always allow — arms the `⚠ Confirm & Persist` interstitial |
+| `n` | Deny once (cancels out of the interstitial when it is open) |
+| `↑↓`/`j`/`k`, `Enter` | Navigate / commit the highlighted row |
+| `Esc` | Close, or back out of the interstitial |
+
+Persistent grants (the `Always Allow` / `Always Deny` rows and `p`) always
+require the interstitial's second keypress, so no single keypress creates a
+standing permission.
 
 ### Registration-Before-Publish Pattern
 

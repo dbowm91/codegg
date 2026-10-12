@@ -795,26 +795,40 @@ impl CoreDaemon {
                 // (which could route a response to the wrong session).
                 // The owning session/turn is resolved before the
                 // controller check so opaque IDs cannot bypass it.
-                let (session_id, turn_id, simple_perm_id) = match id.strip_prefix("perm:").and_then(
-                    |rest| {
+                //
+                // A bare simple id is also accepted. The local TUI receives
+                // `AppEvent::PermissionPending` straight off the bus, where
+                // `perm_id` is the unprefixed `{tool_call_id}-{tool}` form, and
+                // echoes it back verbatim. Previously that reply was rejected
+                // with `invalid_permission_id`, the responder's oneshot was
+                // never completed, and the human wait — unbounded by default —
+                // blocked the tool forever with no dialog and no error.
+                // Ownership is recovered from the registry (which fails closed
+                // when the id is unknown or ambiguous) so the controller check
+                // below still runs against the true owner.
+                let (session_id, turn_id, simple_perm_id) =
+                    match id.strip_prefix("perm:").and_then(|rest| {
                         let mut parts = rest.splitn(3, ':');
                         let sid = parts.next()?.to_string();
                         let turn = parts.next()?.to_string();
                         let pid = parts.next()?.to_string();
                         Some((sid, turn, pid))
-                    },
-                ) {
-                    Some(parsed) => parsed,
-                    None => {
-                        return Ok(CoreResponse::Error {
-                            code: "invalid_permission_id".to_string(),
-                            message: format!(
-                                "Permission ID '{}' is not in perm:<session_id>:<turn_id>:<perm_id> format",
-                                id
-                            ),
-                        });
-                    }
-                };
+                    }) {
+                        Some((sid, turn, pid)) => (sid, turn, pid),
+                        None => match crate::bus::PermissionRegistry::resolve_pending_owner(&id) {
+                            Some((sid, turn)) => (sid, turn.unwrap_or_default(), id.clone()),
+                            None => {
+                                return Ok(CoreResponse::Error {
+                                    code: "invalid_permission_id".to_string(),
+                                    message: format!(
+                                        "Permission ID '{}' matches no pending request; expected \
+                                     perm:<session_id>:<turn_id>:<perm_id> or a pending simple id",
+                                        id
+                                    ),
+                                });
+                            }
+                        },
+                    };
                 // M004: permission responses are in-flight human control.
                 // The capability gate for this Global operation is `none`,
                 // so the handler enforces the owning-session mutation
@@ -859,6 +873,11 @@ impl CoreDaemon {
                 // Extract session_id, turn_id, and simple question_id from
                 // protocol ID: question:{session_id}:{turn_id}:{question_id}.
                 // Reject malformed IDs explicitly.
+                //
+                // As with permissions, a bare simple id is accepted and its
+                // owner resolved from the registry, so the local TUI's
+                // verbatim echo of `AppEvent::QuestionPending` is not dropped
+                // on the floor (which left the questioner waiting forever).
                 let (session_id, turn_id, simple_question_id) = match id
                     .strip_prefix("question:")
                     .and_then(|rest| {
@@ -869,15 +888,19 @@ impl CoreDaemon {
                         Some((sid, turn, qid))
                     }) {
                     Some(parsed) => parsed,
-                    None => {
-                        return Ok(CoreResponse::Error {
-                            code: "invalid_question_id".to_string(),
-                            message: format!(
-                                "Question ID '{}' is not in question:<session_id>:<turn_id>:<question_id> format",
-                                id
-                            ),
-                        });
-                    }
+                    None => match crate::bus::QuestionRegistry::resolve_pending_owner(&id) {
+                        Some((sid, turn)) => (sid, turn.unwrap_or_default(), id.clone()),
+                        None => {
+                            return Ok(CoreResponse::Error {
+                                code: "invalid_question_id".to_string(),
+                                message: format!(
+                                    "Question ID '{}' matches no pending request; expected \
+                                     question:<session_id>:<turn_id>:<question_id> or a pending simple id",
+                                    id
+                                ),
+                            });
+                        }
+                    },
                 };
                 // M004: same in-flight control predicate as permissions.
                 if let Some(denial) = self
