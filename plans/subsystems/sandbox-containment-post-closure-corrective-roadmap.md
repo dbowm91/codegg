@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective Roadmap
 
-Status: conditionally closed (C001-C003 closed; C004 residual IPC/privilege evidence is explicit)
+Status: active integration-recovery corrective (C001-C003 closed; C004 conditionally closed; C005 ready; C006 blocked on C005)
 
 Repository baseline reviewed: `main` at `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
@@ -72,6 +72,8 @@ C002 (Landlock ABI/truncate correction; independent) ──> C003  |
 - C002: closed; ABI >=3 is the required guarantee tier for preventing truncation; older kernels are rejected for strict requests.
 - C003: closed; Linux ABI 4 and native Apple Silicon effective deny/write/scratch evidence passed.
 - C004: conditionally closed; effective read/write/network/FD contract and tool compatibility are measured and documented. Apple Events/Launch Services reachability, XPC/Mach reachability, and setuid transitions remain unqualified; no claim of full parity or complete IPC isolation.
+- C005: ready; branch caught up with main, but mixed ownership and lost planning continuity require repair. This is a narrow integration corrective, not a sandbox redesign.
+- C006: blocked on C005; final PR scope and exact hosted CI failures require a qualified final head.
 
 All four plan documents may be read in parallel, but hand off only dependency-ready ones for production changes.
 
@@ -83,6 +85,8 @@ All four plan documents may be read in parallel, but hand off only dependency-re
 | C002 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/002-landlock-abi-and-mutation-rights.md` | closed | Linux ABI>=3 protects truncation; older kernels receive truthful and safe disposition |
 | C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | closed | Linux ABI 4 and native Apple Silicon credential deny, scoped write, and scratch lifecycle evidence passed |
 | C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | conditionally closed | actual macOS read/write/network/FD limits and tooling compatibility qualified; IPC and privilege residuals remain explicit |
+| C005 | invariant/infrastructure | `plans/implementation/sandbox-containment-post-closure-corrective/005-integration-branch-ownership-and-base-reconciliation.md` | ready | preserve other workstreams and registered plans, separate sandbox PR ownership, reconcile without silent history loss |
+| C006 | invariant/infrastructure | `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md` | blocked on C005 | resolve owning-workstream Clippy/Desktop build blockers and qualify final focused PR head with normal hosted CI |
 
 Closure record for each: `plans/closure/sandbox-containment-post-closure-corrective/00N-status.md`.
 
@@ -106,6 +110,20 @@ Qualification: reuse `tests/sandbox_containment.rs`, `tests/sandbox_landlock.rs`
 - Landlock older ABIs cannot express every modern mutation right. Treat unsupported essential protections as unavailable in strict mode; do not claim `FullyEnforced` means rights absent from the chosen ABI have been covered.
 - If a network/IPC boundary change or new public sandbox mode requires durable authority redesign, stop and create an ADR rather than hide the security contract change inside a renderer.
 
-## 10. Completion rule
+## 10. Integration recovery corrective and observed red CI (2026-10-12)
+
+The C001-C003 production security corrections are **closed**, C004 stays **conditionally closed**. None is reopened merely because a later mixed integration branch failed unrelated whole-workspace gates. This new line corrects merge/ownership and CI handoff without weakening or silently expanding the sandbox guarantee.
+
+At verified baseline `e6950f5088dc1bb855c4c3c27ac7507b67fa07fd`, `planning/sandbox-containment-post-closure-corrective` is **37 ahead / 0 behind** `main` `7317a67ad604fe39fd5282ddca07496255faa4d1`, but its diff contains sandbox, human-shell, and LSP/editor implementation. PR [#110](https://github.com/dbowm91/codegg/pull/110) still advertises the obsolete planning-only scope. Earlier C005/C006 handoff documents registered at commit `baf9f228` disappeared from the active branch following history reconciliation; the current C005/C006 plans are recovered from that history and revised to current evidence.
+
+The branch's hosted `CI / verify` [38177378810](https://github.com/dbowm91/codegg/actions/runs/38177378810) failed **eight Clippy diagnostics** in `src/core/daemon_turns.rs`, `src/tui/commands/editor.rs`, and `src/core/daemon_lsp.rs`; workspace tests were skipped. Hosted `Desktop E2E` [38177378815](https://github.com/dbowm91/codegg/actions/runs/38177378815) failed two duplicate struct-field errors (`input_tokens`, `output_tokens`) in `apps/desktop/src-tauri/src/present.rs`; the built-app trajectory was skipped. These are real code failures, not an environmental verification loop.
+
+**C005 — ready, must be implemented first:** `plans/implementation/sandbox-containment-post-closure-corrective/005-integration-branch-ownership-and-base-reconciliation.md`. Deliver an immutable source/commit/file ownership matrix, preserve human-shell and editor development and closure evidence on independently reviewable branches/PRs or accepted prerequisites, and create a focused sandbox submission. A 0-behind branch and a successful rebase alone do **not** satisfy this. Keep recovered plans and registry on the surviving branch. Required closure: `plans/closure/sandbox-containment-post-closure-corrective/005-status.md`.
+
+**C006 — hard-blocked on C005:** `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md`. Once scope is correct, address the named CI errors in the corresponding owning workstreams (or ensure those unrelated code paths are excluded from the sandbox PR), obtain green normal hosted tests on the **final SHA**, assess existing native Landlock/Seatbelt evidence applicability, and update active PR metadata. Required closure: `plans/closure/sandbox-containment-post-closure-corrective/006-status.md`.
+
+Do not start another broad test campaign, change C004 conditional status, create new sandbox IPC claims, or merge an unattributed human-shell/editor diff under a sandbox PR. Native Linux 6.8/ABI 4 and macOS 15.7.9 evidence remain valid only to the extent the tested sandbox implementation semantics are unchanged.
+
+## 11. Completion rule
 
 All four closure records must establish real enforcement tests, fail-closed required behavior, scoped write and deny precedence, macOS Python correctness, and truthful residual limits. Historical predecessor conditional evidence stays independently unresolved until its own concrete evidence is supplied. Do not mark this workstream closed from unit-profile string assertions or an unsupported-host skip alone.
