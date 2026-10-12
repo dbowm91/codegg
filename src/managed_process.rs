@@ -2284,11 +2284,13 @@ mod tests {
             r#"type "%C013_DENY_ROOT%\created-after-lease.txt" >nul 2>nul && echo postLease=leaked || echo postLease=denied"#,
             r#"type nul > "%C013_DENY_ROOT%\created-after-launch.txt" 2>nul && echo new=created || echo new=creation-denied"#,
         ]
-        .join(" & ");
+        .join("\r\n");
+        let probe_script = workspace.join("c013-probe.cmd");
+        std::fs::write(&probe_script, script).expect("write disposable C013 probe script");
         let args = vec![
             OsString::from("/d"),
             OsString::from("/c"),
-            OsString::from(script),
+            probe_script.as_os_str().to_owned(),
         ];
         let request_for = |include_deny_root: bool| {
             let mut request = ManagedProcessRequest::new(
