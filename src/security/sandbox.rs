@@ -720,6 +720,7 @@ pub fn probe_landlock() -> Result<(), String> {
 /// Apply the Landlock backend. Prefer [`apply_backend`], which picks the
 /// host's backend for you.
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
+    validate_required_grant_paths(spec)?;
     landlock::apply(spec)?
         .abi
         .ok_or_else(|| "Landlock reported no effective ABI".to_string())
@@ -731,6 +732,7 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
 /// or a setup error is an error, never a silent downgrade to an uncontained
 /// exec.
 pub fn apply_backend(spec: &SandboxLaunchSpec) -> Result<SandboxLaunchOutcome, String> {
+    validate_required_grant_paths(spec)?;
     let selected = backend::select().map_err(|reasons| {
         reasons
             .into_iter()
@@ -741,6 +743,30 @@ pub fn apply_backend(spec: &SandboxLaunchSpec) -> Result<SandboxLaunchOutcome, S
     let enforcement = (selected.apply)(spec)
         .map_err(|reason| format!("{} setup failed: {reason}", selected.id))?;
     Ok(SandboxLaunchOutcome::enforced(selected.id, enforcement))
+}
+
+/// Ensure every requested grant can be resolved before backend normalization
+/// drops paths it cannot canonicalize. A missing read/write grant must not
+/// silently narrow the requested policy and then allow the target to run.
+fn validate_required_grant_paths(spec: &SandboxLaunchSpec) -> Result<(), String> {
+    for path in spec.read_paths.iter().chain(&spec.write_paths) {
+        match std::fs::canonicalize(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "required sandbox path does not exist: {}",
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "required sandbox path cannot be resolved {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 struct CachedPaths {
