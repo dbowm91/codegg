@@ -165,9 +165,12 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
   Docking is a **move**: `App::close_dialog` returns the component it
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
-  box's filter, cursor and scroll. A panel with nothing adopted renders a
-  placeholder naming its `/` loader — never an empty bordered box, which
-  reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
+  box's filter, cursor and scroll. Selecting an empty hosted panel loads it
+  in one step (`commands::panels::materialize_hosted_panel`, same seams as
+  its `/` command): a sync box is opened and adopted at once, a live-loading
+  box (Research, Task view) stays open with an `L`-to-dock toast, and a panel
+  with nothing to show keeps a placeholder naming its `/` loader — never an
+  empty bordered box, which reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
   `SidePanel::render` gets a `&mut Buffer`, `Component::render` needs a
   `&mut Frame`, and ratatui's `Frame` has no public constructor, so the
   widget renders into an in-memory backend sized to the column and is copied

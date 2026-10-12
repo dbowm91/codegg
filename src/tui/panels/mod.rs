@@ -435,7 +435,7 @@ impl SidePanelId {
             SidePanelId::Sessions => "/sessions",
             SidePanelId::Tasks => "/tasks",
             SidePanelId::Plan => "/plan",
-            SidePanelId::Goal => "/goal",
+            SidePanelId::Goal => "/goal show",
             SidePanelId::Collaborators => "/collaborators",
             SidePanelId::Memory => "/memory-search",
             SidePanelId::Research => "/research-show",

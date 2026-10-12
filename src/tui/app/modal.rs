@@ -185,6 +185,46 @@ impl App {
         }
     }
 
+    /// Open the `/stats` window from the current cached state.
+    ///
+    /// Shared by the `/stats` slash command and the side-panel manager's
+    /// single-step loader so the two cannot drift into different snapshots.
+    pub(crate) fn open_stats_dialog(&mut self) {
+        self.ui_state.command_mode = false;
+        let mut by_kind: Vec<(String, usize)> = self
+            .task_registry
+            .iter()
+            .fold(
+                std::collections::HashMap::<String, usize>::new(),
+                |mut acc, (_id, rec)| {
+                    *acc.entry(rec.kind.to_string()).or_insert(0) += 1;
+                    acc
+                },
+            )
+            .into_iter()
+            .collect();
+        by_kind.sort_by(|a, b| a.0.cmp(&b.0));
+        let oldest = self
+            .task_registry
+            .iter()
+            .min_by_key(|(_id, rec)| rec.started_at)
+            .map(|(_id, rec)| rec.name.to_string());
+        let task_summary = crate::tui::ui_builders::stats::TaskSummaryView {
+            active: self.task_registry.active_count(),
+            completed: self.task_registry.completed_count(),
+            cancelled: self.task_registry.cancelled_count(),
+            panicked: self.task_registry.panicked_count(),
+            by_kind,
+            oldest,
+        };
+        let node = crate::tui::ui_builders::stats::stats_node(
+            &self.ui_state.diagnostics,
+            &task_summary,
+            self.shell_handles.len(),
+        );
+        self.open_ui_node_dialog("TUI Stats".into(), node);
+    }
+
     /// Open the project picker dialog. Creates a fresh picker state
     /// scoped to the current catalog snapshot. Does not require the
     /// catalog to be loaded — the picker shows an explicit loading or

@@ -2276,9 +2276,23 @@ action.
   `App::close_dialog` returns the component it unmounted and
   `SidePanelHost::adopt` installs it in the target panel, so the column starts
   with the same filter, cursor, scroll offset and selection the box was
-  showing a frame earlier. A panel selected from the manager with nothing
-  adopted renders a placeholder naming the `/` command that loads it — an
-  empty bordered box is indistinguishable from a rendering bug.
+  showing a frame earlier. A panel with nothing adopted that cannot be
+  materialized (no pending plan confirmation, no security receipt) still
+  renders a placeholder naming the `/` command that loads it — an empty
+  bordered box is indistinguishable from a rendering bug.
+- **Selecting a hosted panel loads it: one step, not two.**
+  `commands::panels::select_panel` materializes an empty hosted panel before
+  selecting it, through the same seams as its `/` command
+  (`materialize_hosted_panel`/`open_panel_box`). A synchronous snapshot box
+  is opened and adopted immediately, so `Shift+S` + `Enter` lands on live
+  content with focus — the behaviour the four bespoke panels always had. A
+  live-loading box (Research, Task view) stays open as a modal instead:
+  adopting its spinner would freeze it and cancel the load, so the toast
+  names the one remaining step (`L` to dock). Panels with genuinely nothing
+  to show (Plan with no pending confirmation, Security with no receipt,
+  Workspace, which is a primary view) keep the placeholder and toast why.
+  `Shift+↑/↓` walking deliberately does not materialize: cycling all 32
+  entries would fire 28 loads for panels the user only glanced at.
 - **`render_hosted` is a bridge, not the destination.**
   `SidePanel::render` receives a `&mut Buffer` while every `Component::render`
   takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The
