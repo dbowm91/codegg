@@ -1610,13 +1610,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+S",
-            action: "Open the panel manager (filter, load, or bind Ctrl+1..Ctrl+0)",
+            action: "Open the side-panel manager: pick which panel the side column holds, and bind its Ctrl+1..Ctrl+0 hotkey",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Command,
             key: "/panels",
-            action: "Same panel manager, reachable while composing — the gesture above is the letter S in Insert",
+            action: "Same side-panel manager, reachable while composing — the gesture above is the letter S in Insert",
             condition: None,
         },
         HelpEntry {
