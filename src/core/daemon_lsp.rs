@@ -837,7 +837,10 @@ mod diagnostics_readiness_tests {
         let uri: crate::lsp::lsp_types::Uri = url.as_str().parse().expect("LSP URI");
 
         assert!(url.as_str().contains("%20"));
-        assert_eq!(uri_workspace_relative_path(&uri, &root), Some("file name.rs".into()));
+        assert_eq!(
+            uri_workspace_relative_path(&uri, &root),
+            Some("file name.rs".into())
+        );
     }
 
     #[cfg(unix)]
