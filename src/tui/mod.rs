@@ -524,6 +524,16 @@ mod shell_dispatch_tests {
             .expect("acceptance completion arrives")
             .expect("completion command")
         {
+            TuiCommand::TurnSubmissionFinished { error, .. } => {
+                assert!(error.is_none());
+            }
+            other => panic!("unexpected turn completion command: {other:?}"),
+        }
+        match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("promotion completion arrives")
+            .expect("promotion completion command")
+        {
             TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
                 assert!(error.is_none());
                 app.apply_shell_promotions_submitted(&promotions, error);
