@@ -288,6 +288,20 @@ pub(crate) fn validate_input_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Existing descendant objects can have explicit ACLs that are not made safe
+/// by leasing only their parent directory. Until the lease engine journals and
+/// verifies every descendant, deny roots with content are unsupported.
+pub(crate) fn validate_empty_deny_directory(path: &Path) -> io::Result<()> {
+    let mut entries = fs::read_dir(path)?;
+    if entries.next().transpose()?.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "deny roots with existing entries are unsupported by the root-only ACL lease",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_journal_root(path: &Path) -> io::Result<()> {
     identify_owned_directory(path).map(|_| ())
 }

@@ -881,8 +881,6 @@ async fn run_windows_test_restricted(
     }
 
     let started = Instant::now();
-    let profile =
-        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
     let mut acl_leases = Vec::new();
     let mut roots =
         std::collections::BTreeMap::<String, (PathBuf, windows_acl_lease::LeaseAccess)>::new();
@@ -906,6 +904,13 @@ async fn run_windows_test_restricted(
                 "ACL lease root is unavailable or unsupported: {error}"
             ))
         })?;
+        if access == windows_acl_lease::LeaseAccess::Deny {
+            windows_acl_lease::validate_empty_deny_directory(&path).map_err(|error| {
+                ManagedProcessError::SandboxFailed(format!(
+                    "ACL deny root is unavailable or unsupported: {error}"
+                ))
+            })?;
+        }
         let canonical = std::fs::canonicalize(&path).map_err(|error| {
             ManagedProcessError::SandboxFailed(format!("ACL lease root is unavailable: {error}"))
         })?;
@@ -935,6 +940,8 @@ async fn run_windows_test_restricted(
             conflicts.len()
         )));
     }
+    let profile =
+        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
     let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
     for (path, access) in roots.into_values() {
         acl_leases.push(

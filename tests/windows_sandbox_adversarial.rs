@@ -1,7 +1,7 @@
 #![cfg(all(windows, feature = "windows-sandbox-test-support"))]
 
 use codegg::managed_process::{
-    ManagedProcessRequest, ManagedProcessService, ProcessProvenance, SandboxExecutionOutcome,
+    ManagedProcessError, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
     SandboxRequest,
 };
 use codegg::security::sandbox::SandboxLaunchSpec;
@@ -19,7 +19,7 @@ fn powershell() -> PathBuf {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn appcontainer_cannot_read_preexisting_secret_through_reparse_hardlink_or_ads() {
+async fn nonempty_denied_tree_fails_before_child_creation() {
     let fixture = tempfile::tempdir().unwrap();
     let workspace = fixture.path().join("existing-workspace");
     let credentials = fixture.path().join("existing-credentials");
@@ -59,7 +59,9 @@ async fn appcontainer_cannot_read_preexisting_secret_through_reparse_hardlink_or
     let credentials_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&credentials).unwrap();
     let executable = powershell();
+    let marker = fixture.path().join("child-started.txt");
     let script = r#"
+$null = [IO.File]::WriteAllText($env:CODEGG_ADV_MARKER, 'started')
 $paths = @(
     $env:CODEGG_ADV_CREDENTIAL,
     $env:CODEGG_ADV_JUNCTION_CREDENTIAL,
@@ -110,6 +112,7 @@ $written = [IO.File]::ReadAllText($newFile).Trim()
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_ADV_ALLOWED", allowed_file.as_os_str())
         .with_var("CODEGG_ADV_WORKSPACE", workspace.as_os_str())
+        .with_var("CODEGG_ADV_MARKER", marker.as_os_str())
         .with_var("CODEGG_ADV_CREDENTIAL", secret_file.as_os_str())
         .with_var(
             "CODEGG_ADV_JUNCTION_CREDENTIAL",
@@ -118,32 +121,12 @@ $written = [IO.File]::ReadAllText($newFile).Trim()
         .with_var("CODEGG_ADV_HARDLINK_CREDENTIAL", hardlink.as_os_str())
         .with_var("CODEGG_ADV_ALTERNATE_STREAM", alternate_stream.as_os_str());
 
-    let result = ManagedProcessService::run(request)
-        .await
-        .expect("restricted child runs against existing disposable roots");
+    let result = ManagedProcessService::run(request).await;
     assert!(
-        result.exit_status.success(),
-        "{}",
-        result.stderr.to_string_lossy()
+        matches!(&result, Err(ManagedProcessError::SandboxFailed(_))),
+        "a nonempty denied tree must fail closed before launch: {result:?}"
     );
-    assert_eq!(
-        result.stdout.to_string_lossy(),
-        "denied|denied|denied|denied|workspace-readable|workspace-write"
-    );
-    assert!(matches!(
-        &result.sandbox,
-        SandboxExecutionOutcome::TestOnlyAppContainer {
-            token_verified: true,
-            job_verified: true,
-            ..
-        }
-    ));
-    assert!(result.cleanup.job_object_established);
-    assert!(!result.sandbox.is_contained());
-    assert_eq!(
-        std::fs::read_to_string(workspace.join("created-by-child.txt")).unwrap(),
-        "workspace-write"
-    );
+    assert!(!marker.exists(), "the rejected child must not have started");
     assert_eq!(
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&workspace).unwrap(),
         workspace_before
