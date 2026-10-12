@@ -1,8 +1,8 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: ready (C001 corrective contract closed by C004; eligible for handoff)
+Status: active
 
-Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b`
+Repository baseline: `2c2d6f130` (C004 and M006-C closures are on branch)
 
 Source roadmap: `plans/subsystems/human-execution-corrective-roadmap.md#c002--workspace-owned-finite-shell-dispatch`.
 
@@ -120,8 +120,7 @@ Do not conflate daemon-local workspace ownership with future remote execution ac
 
 C001's authoritative context/provenance dependency is satisfied by
 `plans/closure/human-execution-corrective/004-status.md` at implementation
-`6b18122d35e6e05d1f2113c78e77467848769f24`. This plan is now dependency-ready;
-the workspace-owned finite execution implementation has not started. Re-audit
-the current process, scheduler, authorization, and transport surfaces before
-editing because the original repository baseline above is historical planning
-evidence.
+`6b18122d35e6e05d1f2113c78e77467848769f24`. Implementation begins at the
+repository baseline above. Re-audit the current process, scheduler,
+authorization, and transport surfaces before editing because the original
+repository baseline in §3 is historical planning evidence.

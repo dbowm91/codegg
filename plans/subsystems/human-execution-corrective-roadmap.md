@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C001/C004 closed; C003 closed; C002 ready for handoff)
+Status: active (C001/C003/C004 closed; C002 active)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -61,7 +61,7 @@ interactive-process M001–M003 are closed.
 Class: invariant/capability. Plan: `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md`. Output from `!` stays private. Explicit promotion reaches exactly one correct next model-facing turn or, for `/shell-ask`, an explicitly submitted question turn; projection is bounded and redacted on every branch; reported success is backed by canonical acceptance. Verify advertised config.
 
 ### C002 — Workspace-owned finite shell dispatch
-Class: infrastructure/capability. Plan: `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`. Remove accidental frontend-local execution of workspace commands: daemon/execution owner authorizes, admits, streams and cancels finite human commands. Unsupported cross-node cases fail, not silently execute on client. Hard dependency: C001.
+Class: infrastructure/capability. Plan: `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`. **Active** at baseline `2c2d6f130`. Remove accidental frontend-local execution of workspace commands: daemon/execution owner authorizes, admits, streams and cancels finite human commands. Unsupported cross-node cases fail, not silently execute on client. Hard dependency C001/C004 is closed; remote-node federation remains out of scope.
 
 ### C003 — PTY keyboard and VT fidelity
 Class: capability/polish. Plan: `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md`. Deliver explicit focus exit and literal Esc forwarding, safe bounded VT screen interpretation, truthful resize/resync, and real PTY fixtures beyond `cat` echo. Independent of C001/C002.
@@ -90,6 +90,6 @@ C001–C003 each need an independent closure record including user-visible end-t
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
 | C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
-| C002 | ready | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001/C004 authoritative staging contract closed at `plans/closure/human-execution-corrective/004-status.md`; daemon/workspace execution remains unimplemented |
+| C002 | active | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001/C004 authoritative staging contract closed at `plans/closure/human-execution-corrective/004-status.md`; implementation began at `2c2d6f130` |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
 | C004 | closed (ADR-0017 Option A) | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; implementation `6b18122d`; hosted CI `38251214377` passed 12,778 tests (5 skipped), Desktop E2E `38251230731` passed, and `scripts/verify.sh quick` passed. C001's corrective obligation is discharged; C002 is ready. |
