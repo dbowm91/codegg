@@ -179,7 +179,7 @@ pub struct TurnAdmissionReceipt {
 pub enum TurnAdmissionOutcome {
     Admitted {
         receipt: TurnAdmissionReceipt,
-        controller: SessionControllerRecord,
+        controller: Box<SessionControllerRecord>,
         promotions: Vec<HumanShellPromotionRecord>,
     },
     Duplicate(TurnAdmissionReceipt),
@@ -719,7 +719,7 @@ impl SessionControllerStore {
                 accepted_at_ms: now_ms,
                 updated_at_ms: now_ms,
             },
-            controller: record,
+            controller: Box::new(record),
             promotions,
         })
     }
