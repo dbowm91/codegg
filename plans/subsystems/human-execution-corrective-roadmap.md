@@ -68,6 +68,9 @@ Class: capability/polish. Plan: `plans/implementation/human-execution-corrective
 ### C004 — Authoritative human-shell promotion staging
 Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. **Closed** at `plans/closure/human-execution-corrective/004-status.md` under ADR-0017 Option A. It provides stable turn-submission identity, durable receipts, duplicate retry handling, and interrupted/no-replay restart state.
 
+### C004 — Authoritative human-shell promotion staging
+Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. The WP-A ownership/API audit is complete. Implementation is blocked until maintainers select the durable admission and restart contract in proposed ADR-0017; do not add protocol or storage before that decision.
+
 ## 8. Cross-cutting requirements
 
 Storage: only authoritative session state owns model-visible promotion; raw PTY bytes not stored as session chat. Protocol: bounded typed requests, capabilities and backward compatibility, trusted server-side identity, unambiguous failure. Security: redaction and source provenance are mandatory for model-target output; command pattern warnings are not an OS sandbox; never send client environment/credentials as trusted execution authority. Lifecycle: stale tab/session, retry, reconnect, duplicate promotion, output truncation, cancellation and process restart must be handled explicitly. Tests: fake-provider context capture, multi-workspace daemon/client fixture, and real Unix PTY/VT fixtures. Reuse existing ownership guards and CI.
