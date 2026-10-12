@@ -1024,8 +1024,8 @@ fn describe_environment_block(block: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        last_error, wide, WindowsAppContainerProfile, WindowsJob, WindowsProcessAttributes,
-        WindowsStdioPipes, WindowsSuspendedAppContainerProcess,
+        last_error, verify_appcontainer_token, wide, WindowsAppContainerProfile, WindowsJob,
+        WindowsProcessAttributes, WindowsStdioPipes, WindowsSuspendedAppContainerProcess,
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     };
     use super::{FAIL_NEXT_JOB_ASSIGNMENT, FAIL_NEXT_PIPE_CREATION, FAIL_NEXT_RESUME};
@@ -1415,16 +1415,15 @@ mod tests {
         let system_root = std::env::var_os("SystemRoot")
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let cwd = PathBuf::from(system_root).join("System32");
-        let application = cwd.join("cmd.exe");
-        let argv = ["/D", "/C", "exit /b 0"]
-            .into_iter()
-            .map(OsString::from)
-            .collect::<Vec<_>>();
+        let application = cwd.join("whoami.exe");
+        let argv = Vec::new();
+        let profile = WindowsAppContainerProfile::create()?;
         let mut environment = crate::managed_process::EnvironmentPolicy::sanitized().entries();
         ProcessProvenance::new("environment-block-test", "attempt")
             .apply_environment(&mut environment);
-        let local_app_data = std::env::temp_dir().join("codegg-environment-block-local-app-data");
+        let local_app_data = profile.local_app_data_path()?;
         let temporary_directory = local_app_data.join("Temp");
+        std::fs::create_dir_all(&temporary_directory)?;
         let mut environment = super::super::windows_environment_block(
             environment,
             &cwd,
@@ -1434,7 +1433,8 @@ mod tests {
         .map_err(|error| io::Error::other(error.to_string()))?;
 
         let pipes = WindowsStdioPipes::create()?;
-        let mut attributes = WindowsProcessAttributes::new(1)?;
+        let mut attributes = WindowsProcessAttributes::new(2)?;
+        attributes.set_appcontainer(&profile)?;
         attributes.set_handle_list(&[
             pipes.child_stdin.as_raw_handle() as HANDLE,
             pipes.child_stdout.as_raw_handle() as HANDLE,
@@ -1455,7 +1455,9 @@ mod tests {
         drop((pipes.child_stdin, pipes.child_stdout, pipes.child_stderr));
 
         let mut job = WindowsJob::create()?;
-        job.assign_appcontainer_and_resume(&mut child, |_| Ok(()))?;
+        job.assign_appcontainer_and_resume(&mut child, |process| {
+            verify_appcontainer_token(process, profile.sid())
+        })?;
         if unsafe { WaitForSingleObject(child.process_handle(), 30_000) } != WAIT_OBJECT_0 {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
