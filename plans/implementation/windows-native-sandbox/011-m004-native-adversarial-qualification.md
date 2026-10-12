@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C011 — M004 Native Security Requalification and Closure
 
-Status: blocked (C010 strict closure verification; privileged disposable Windows VM)
+Status: active
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
@@ -27,7 +27,7 @@ Prove the full requested Windows `ReadOnly`/`WorkspaceWrite` security semantics 
 
 ## 2. Why this milestone is ready / dependency gate
 
-Hard: C008–C010 closed on hosted native evidence; a disposable Windows VM with suitable administrative rights and a provisioned test user/workspace is available for adversarial ACL/recovery testing. GitHub's hosted runner privilege probe passed (`Administrator role=True`, `High integrity token=True`; UAC is enabled but the process token is elevated). The hosted runner satisfies the operational privilege gate. C010's latest root-owner change is being corrected and requalified before C011 proceeds. M004 historical closure stays blocked until C010 strict closure and the adversarial matrix pass.
+Hard: C008–C010 closed on hosted native evidence. GitHub's hosted runner privilege probe passed (`Administrator role=True`, `High integrity token=True`; UAC is enabled but the process token is elevated), satisfying the operational privilege gate for disposable fixtures. C010's owner-SID correction passed same-revision Windows workflow `38215171043`. C011 is active; M004's historical closure stays blocked until the adversarial matrix passes and receives additive review.
 
 ## 3. Current implementation evidence and failed predecessor coverage
 

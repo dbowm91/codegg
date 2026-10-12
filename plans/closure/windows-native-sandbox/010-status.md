@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C010 — Closure Status
 
-Status: corrective pass required
+Status: closed (test-only infrastructure)
 
 Source implementation plan:
 
@@ -10,7 +10,7 @@ Source subsystem roadmap:
 
 - `plans/subsystems/windows-native-sandbox-roadmap.md#m004-corrective-execution-sequence`
 
-Repository baseline reviewed: `097a3f5b3f6c98c157c308fd1f97f7e0e24b9a86`
+Repository baseline reviewed: `83c29a1298c54a9b495b7656b8478cf2eb340ea0`
 
 Implementation commits or pull requests:
 
@@ -19,16 +19,17 @@ Implementation commits or pull requests:
 - `75a601b5` — report unavailable ACL lease roots as typed sandbox failures
 - `097a3f5b` — persist test-only ACL lease journals under the per-user daemon root
 - `1f3245ba` — record root owner SID and reject roots owned by unrelated principals
+- `83c29a12` — distinguish and accept only the elevated token's user or owner SID
 
 ## 1. Executive finding
 
-C010 has the ACL lease and recovery implementation, but strict closure is withheld
-pending a corrected owner-SID rule and same-revision Windows verification. Run
-`38211656312` exposed that an elevated GitHub runner assigns disposable roots to
+C010 closes as a bounded test-only ACL lease and recovery infrastructure milestone.
+Run `38211656312` exposed that an elevated GitHub runner assigns disposable roots to
 the token's default owner SID (the Administrators group), not the `runneradmin` user
-SID. The first owner-check implementation rejected both ACL integration fixtures.
-The corrective now accepts only the token user or its configured default owner SID;
-it must pass the next hosted run before C010 is closed.
+SID. Commit `83c29a12` now accepts a root only when its owner SID matches either the
+current token user or its configured default owner. Same-revision Windows Server
+2025 workflow `38215171043` passed the owner-bound ACL integrations and recovery
+suite. The closure remains limited to runner-owned disposable fixtures.
 
 The fixture remains explicitly test-only. It stores its journal under the per-user
 daemon root, and production Windows constrained-backend admission remains disabled.
@@ -48,14 +49,14 @@ gates; this closure does not change the historical blocked M004 record or claim
 | Run a restricted child against a leased disposable root; allow approved access and deny outside access | Two `windows_acl_lease` integration tests and six `windows_restricted_managed_process` tests in run `38209481698` | pass | Includes allowed write/read, read-only read and denied write, synthetic outside read/write denial, and cancellation cleanup. |
 | Restore exact DACL state and remove completed journal records | ACL integration tests in run `38209481698` | pass | The fixture asserts before/after descriptor equality and no remaining JSON lease records. |
 | Reject unavailable/missing lease roots before child creation | `missing_filesystem_root_fails_before_the_test_child_is_created`; run `38209481698` | pass | Returned as typed `SandboxFailed`. |
-| Accept roots owned by the elevated runner's configured token owner while rejecting unrelated owners | Run `38211656312` | fail, corrected pending | The elevated runner owns fixture roots as Administrators rather than the user SID; the implementation now checks both TokenUser and TokenOwner and needs same-revision verification. |
+| Accept roots owned by the elevated runner's user or configured token owner while rejecting unrelated owners | `current_user_sid`/`current_token_owner_sid`; run `38215171043` | pass | The owner comparison is bounded to the active token's two documented SID identities. |
 | Exercise actual daemon restart/startup recovery and protect the journal from another local principal | No production startup caller or cross-principal test exists | partial | The recovery engine is tested directly; production Windows backend remains disabled. C011 must integrate and qualify the privileged boundary before admission. |
 | Qualify existing user workspaces, credentials, daemon IPC, reparse points, hardlinks, ADS, and UNC paths | Not run | not run | Explicit C011/M004 adversarial scope; no hosted disposable-root result is inferred for these cases. |
 
 ## 3. Production implementation evidence
 
-The Windows ACL lease module is compiled for Windows builds and exposes a bounded
-crate-internal lease/recovery engine. A journal record binds the lease to a run,
+The Windows ACL lease module is compiled only for Windows test-support builds and
+exposes a bounded crate-internal lease/recovery engine. A journal record binds the lease to a run,
 AppContainer SID, canonical directory, volume serial, file index, original DACL,
 and expected leased DACL. Mutation writes the complete record first, applies only
 the scoped AppContainer ACE, and restores only after checking identity and expected
@@ -92,7 +93,7 @@ cargo fmt --check --all
 git diff --check
 ```
 
-### Results
+### Earlier results
 
 - GitHub Actions run [`38209481698`](https://github.com/dbowm91/codegg/actions/runs/38209481698) passed at the exact reviewed revision. Host: Microsoft Windows Server 2025 Datacenter, version `10.0.26100`, build `26100`; Rust `1.89.0 (29483883e 2025-08-04)`, target `x86_64-pc-windows-msvc`.
 - Windows counts: launcher 8; suspended-target failure injection 1; restricted stdio setup failures 3; managed environment 1; status-frame decoder 1; restricted service integration 6; ACL lease integration 2; ACL lease/recovery unit tests 6; AppContainer ordering/cleanup 5; and the selected policy/shell tests all passed.
@@ -100,6 +101,14 @@ git diff --check
 - Prior hosted attempts recorded during this work exposed and corrected descendant PID observation (`38200796202`), Windows path/assertion compile errors (`38202634103`), stale C009 status assertions (`38203699252`), and unavailable PowerShell module commands in AppContainer (`38205339461`). Run `38207255455` passed before the final daemon-root adjustment; same-revision run `38209481698` passed after it. Redundant run `38209010743` was cancelled.
 - Run `38214196715` passed the elevated-runner probe and baseline launcher tests but failed compiling the first feature-gated test: a concurrent upstream token-owner change combined with the local correction and duplicated `current_token_owner_sid` (`E0428`). The helper was deduplicated, `TokenUser` handling retained, and Windows GNU cross-target compilation passed before the next hosted run.
 - Privilege probe in run `38211656312`: identity `runnervmfi6oq\\runneradmin`; Administrator role `True`; high-integrity token `True`; UAC enabled `True`. The elevated token satisfies the disposable-runner privilege gate. That run later failed both ACL integration tests because the initial owner check recognized only the user SID.
+
+### Final owner-bound verification
+
+- GitHub Actions run [`38215171043`](https://github.com/dbowm91/codegg/actions/runs/38215171043) passed on revision `83c29a1298c54a9b495b7656b8478cf2eb340ea0`, Windows Server 2025 Datacenter build `26100`, Rust `1.89.0`, target `x86_64-pc-windows-msvc`.
+- The run passed launcher tests, suspended-target and restricted-stdio failure injection, managed environment and status-frame tests, six restricted managed-process integration tests, two ACL lease integration tests, six ACL/recovery unit tests, five AppContainer ordering/cleanup tests, and selected native shell/policy tests.
+- Its privilege probe reported Administrator role `True`, high-integrity token `True`, and UAC enabled `True`. ACL integration assertions verified the elevated runner-owned roots and exact descriptor restoration.
+- Run `38214196715` failed during Windows test-support compilation because the owner-SID correction duplicated `current_token_owner_sid` and referenced a missing `current_user_sid`. Commit `83c29a12` separates the TokenUser and TokenOwner queries; the final run above compiled and passed those paths.
+- The local Windows cross-target `cargo check` could not locate the target's `core` crate in the active toolchain. This does not replace or qualify the successful hosted Windows execution; earlier GNU cross-target and `verify.sh quick` evidence remains tied to revision `097a3f5b`.
 
 ## 5. Invariant review
 
@@ -166,14 +175,15 @@ they remain explicit blockers to C011/M004 and are not reported as resolved.
 
 ## 11. Roadmap disposition
 
-C010 strict closure is pending the same-revision owner-check rerun. The hosted
+C010 is closed for the disposable-root infrastructure acceptance above. The hosted
 runner meets C011's operational privilege gate (Administrator role and high token,
-with UAC enabled). M004 remains blocked; C010 does not establish filesystem
-enforcement or backend readiness.
+with UAC enabled). C011 is now eligible to proceed. M004 remains blocked; C010
+does not establish filesystem enforcement or backend readiness.
 
 ## 12. Registry updates
 
-- Keep C010 active until the corrected token-owner check passes on GitHub Actions.
-- Keep C011 blocked on C010 strict closure; its hosted-runner privilege gate is now
-  satisfied and should not be listed as an outstanding environment blocker.
+- Mark C010 closed for test-only infrastructure and move its implementation plan
+  to implemented.
+- Move C011 to active: C010 is closed and the elevated hosted-runner gate passed.
+  Keep unrun adversarial cases listed as C011 work, not as passed evidence.
 - Do not alter `plans/closure/windows-native-sandbox/004-status.md`.
