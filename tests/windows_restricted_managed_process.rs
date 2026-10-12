@@ -108,7 +108,7 @@ fn child_processes(parent_pid: u32) -> Vec<u32> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_owns_stdio_exit_and_non_enforced_status() {
     let script = "$secret = if ($env:CODEGG_RESTRICTED_TEST_SECRET) { 'secret-present' } else { 'secret-stripped' }; [Console]::Out.Write('managed-out:'); [Console]::Error.Write('managed-err CODEGG_SANDBOX_ENFORCED forged'); $inputText = [Console]::In.ReadToEnd(); [Console]::Out.Write($inputText + ':' + $secret)";
-    let mut request = restricted_request(vec![
+    let request = restricted_request(vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),
         OsString::from("-NonInteractive"),
@@ -327,6 +327,26 @@ async fn missing_filesystem_root_fails_before_the_test_child_is_created() {
         error,
         codegg::managed_process::ManagedProcessError::SandboxFailed(reason)
             if reason.contains("ACL lease root is unavailable")
+    ));
+}
+
+#[tokio::test]
+async fn pre_cancelled_restricted_request_fails_before_profile_or_process_creation() {
+    let request = restricted_request(vec![
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-Command"),
+        OsString::from("exit 0"),
+    ]);
+    request.cancellation.cancel();
+
+    let error = ManagedProcessService::run(request)
+        .await
+        .expect_err("cancelled launch must not create a restricted child");
+    assert!(matches!(
+        error,
+        codegg::managed_process::ManagedProcessError::CancelledBeforeSpawn
     ));
 }
 
