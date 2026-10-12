@@ -1,6 +1,6 @@
 # Desktop Frontend/IDE Post-Closure Corrective C003 — Diagnostics NotReady Contract
 
-Status: active
+Status: implemented
 
 Repository baseline: `d34354c37` (M006-C planning and ADR-0017 audit registered)
 

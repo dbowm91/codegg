@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 006-C — LSP Editor Presentation
 
-Status: blocked (desktop corrective C003 diagnostics readiness contract)
+Status: ready for handoff (desktop corrective C003 closed)
 
-Repository baseline: `e27efc11f` (M006-B strict closed)
+Repository baseline: `1c4a30563755056c9d16152e48b5bb56612de992` (C003 diagnostics readiness and Git timeout process-group correction hosted-green)
 
 Source roadmap:
 
@@ -38,6 +38,7 @@ One bounded outcome: an editor user can inspect current-file diagnostics and req
 
 - M006-A is strictly closed and supplies `Route::Editor`, `TuiDocumentSession`, and the controller-backed snapshot.
 - M006-B is strictly closed with accepted ADR-0012. Its diagnostics pull and read requests already exist in `codegg-protocol`, `codegg-client`, and the daemon.
+- C003 is strictly closed: unavailable/no-snapshot diagnostics are typed `NotReady`, while a complete empty set is `Ready`; older responses without the additive status fail closed to `NotReady`.
 - M006-D and M006-E are closed; this work does not change the tree or apply path.
 - Authorization is already enforced at `file.read`; this plan adds no operation or capability.
 
@@ -48,6 +49,7 @@ One bounded outcome: an editor user can inspect current-file diagnostics and req
 - `crates/codegg-protocol/src/lsp.rs` defines bounded `LspReadRequestDto`, response payloads, semantic-token DTOs, and diagnostic DTOs.
 - `src/core/daemon_lsp.rs` resolves reads through the daemon-owned warm `LspService`; cold services return `NotReady` and are not launched by reads.
 - `LspDiagnosticsGet` provides the authoritative complete diagnostics result. The subscribe response can provide a snapshot, but the production change publisher is currently undriven; this plan therefore does not promise or depend on ongoing push updates.
+- Hosted root CI `38231581158` passed on baseline `1c4a30563755056c9d16152e48b5bb56612de992`, including the complete 12,767-test workspace run. Local focused daemon unit-test linking is unavailable on this host because required native compression libraries are missing; the same tests passed in hosted CI.
 - `LspReadOperation` currently includes hover, definition, references, document/workspace symbols, and semantic tokens. It has no completion operation.
 
 Before changing code, verify these interfaces against the current baseline and inspect existing editor rendering/input and projection subscription seams. Repository evidence wins if a cited detail moved.
