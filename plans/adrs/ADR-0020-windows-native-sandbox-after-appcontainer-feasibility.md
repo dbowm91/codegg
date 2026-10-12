@@ -1,89 +1,85 @@
 # ADR-0020: Windows Native Sandbox After AppContainer Feasibility
 
-Status: proposed
+Status: accepted (**bounded successor feasibility comparison only; production mechanism not selected**)
 
 Date: 2026-10-12
-
 Decision owners: project maintainers
 
 Related specification sections:
-
 - `plans/000-long-term-specification.md#4-architectural-principles`
 - `plans/000-long-term-specification.md#17-job-scheduling-and-execution-backends`
 - `plans/000-long-term-specification.md#27-security-requirements`
 - `plans/000-long-term-specification.md#29-system-invariants`
 
-Affected subsystem roadmaps:
+Affected roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`.
+Related ADRs: `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md` and `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md`.
+Evidence: `plans/closure/windows-native-sandbox/011-status.md`, `013-status.md`, `014-status.md` and `research/windows-native-sandbox/adr-0020-harness-comparison.md`.
 
-- `plans/subsystems/windows-native-sandbox-roadmap.md`
+## Context and observations
 
-Related ADRs:
+C011 demonstrated direct/junction/hardlink reads of an explicitly denied synthetic host credential. C013 proved that modifying ACLs of populated original host trees can mutate hardlink-shared objects and leave descendant descriptor-control drift after rollback. ADR-0019 accepted *only* staged AppContainer feasibility. C014 then launched a real test-only child and read/wrote a disposable projection, but Git `init` failed opening `/dev/null` under the tested grants; alias, IPC, handle, Cargo and Python probes never executed. C014 is closed **negative**, and this does not prove all AppContainers are unusable nor that host-read denial works. C015–C018 are still blocked.
 
-- `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
-- `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md`
-
-## Context
-
-ADR-0019 selected a bounded AppContainer staged-projection experiment, with C014 as a hard feasibility gate. Exact-SHA Windows Server 2025 run `38316065754` showed a verified test-only AppContainer child could read and write a disposable projection, but Git initialization failed because the child could not open `/dev/null`. Git is the minimum tool required by C014. The host-alias, daemon IPC, inherited-handle, Cargo and Python probes did not run, so this result neither establishes a viable minimal toolchain nor qualifies host-read denial.
-
-C014 is closed negative, and C015–C018 remain blocked. The repository still rejects production Windows `SandboxRequest::Required`; no filesystem or network enforcement is claimed. A new decision is needed before authorizing account provisioning or another implementation line.
+The previous M007 Microsoft MXC experiment was deferred on an older pinned revision with no eligible Windows 11 runner. Upstream MXC v1.0.0 (2026-10-07) and VS Code's experimental Windows agent integration warrant fresh qualification, **not** untested trust in vendor claims. Codex and Anthropic separately demonstrate dedicated sandbox-account patterns; their use of `WRITE_RESTRICTED` or additive original-host ACEs is not proof of Codegg-level denied *read* semantics.
 
 ## Decision drivers
 
-- Keep constrained Windows execution unavailable unless each requested guarantee is actually enforced and independently reported.
-- Do not mutate existing workspace, profile, or daemon IPC ACLs to make a tool run.
-- Compare compatibility, operational setup, administrative consent, credential lifecycle, rollback, security boundaries and supported-host coverage.
-- Treat the C014 observation as evidence about the tested runner and grants, not a blanket AppContainer result.
-- Require an explicit new native feasibility gate before any snapshot, launch, or promotion implementation proceeds.
+1. A running child may be allowed to read/write only under a claimed and actually measured confinement mechanism; read and write guarantees are separate.
+2. Never alter original populated workspace/profile/daemon IPC DACLs, SACLs or integrity labels, nor broad host-device descriptors, merely to make tooling run.
+3. Preserve real Git/shell tool compatibility, controlled descendants, stable workspace/worktree authority and strict requested-versus-obtained reporting.
+4. Prefer a Windows-native, non-VM path where feasible; permit explicitly consented provisioning in a disposable experiment without requiring all product users to elevate.
+5. Evaluate host-version/edition, signed binaries, SDK/MSRV, administrator/credential lifecycle, persistent state, cleanup, latency and supported toolchains.
+6. Avoid another verification loop: two bounded candidate spikes with explicit positive/negative/blocked results and a separate decision, not automatic fixes.
 
 ## Considered options
 
-### Option A — Provision a dedicated low-privilege Windows identity
+### A. Native Windows process isolation through MXC v1 / process-security environment
 
-Evaluate a separate identity with bounded projection access, explicit runtime permissions, lifecycle management and optional identity-scoped network controls. This may improve compatibility with developer tools while keeping the child distinct from the interactive user. Costs include administrator provisioning, account and credential lifecycle, ACL design and recovery, supported-host requirements, and a new adversarial qualification matrix. No provisioning is authorized by this proposal.
+Candidate for C020. Pin exact MXC v1 SDK/binaries, check live host capability, selected backend/tier, requested-versus-honored rules and observed read/write/deny behavior. Validate Windows 11 serviced build and vendor release limitations. Reject an AppContainer+DACL fallback that relies on modifying original populated host objects. The stable v1 SDK interface alone does not demonstrate a qualified security boundary; preview policy warnings remain material. Avoid raising Codegg's Rust 1.89 MSRV for a spike.
 
-### Option B — Retain constrained Windows execution as unavailable
+### B. Separate low-privilege Windows local principal
 
-Keep current fail-closed behavior and continue to support only the existing FullHost contract. This avoids introducing an unqualified security principal or operational dependency. It leaves Windows constrained execution unsupported and may limit parity with macOS/Linux.
+Candidate for C021. Test administrator-consented disposable identity with restricted token and Job under existing ownership, small independent staging root and private user environment, informed by Codex/Anthropic Windows designs. A distinct SID and `WRITE_RESTRICTED` token are not read-confinement guarantees. Require observed host read denial through alternate paths and safe removal of every created identity, credential and ACE. No original source-tree ACE mutation.
 
-### Option C — Select another OS-managed isolation boundary
+### C. VM/Windows Sandbox/WSL2
 
-Assess a separately isolated VM or Windows Sandbox style boundary with explicit workspace import/export. This can offer a stronger machine boundary but adds virtualization requirements, startup and storage cost, host integration constraints, and a distinct output authorization path. It requires its own bounded feasibility plan and must not reuse the failed AppContainer result as proof.
+Deferred independent backend. Stronger host boundary is possible but introduces virtualization/Windows-edition requirements and native-toolchain differences. Retain if both native candidates fail or for future stronger risk tiers. A WSL/Linux sandbox must not claim native Win32 toolchain coverage.
 
-## Decision
+### D. Retain constrained Windows execution unavailable
 
-No implementation option is selected in this proposed ADR. Maintainers must choose an option or request a bounded comparison before new Windows sandbox work is marked ready. Until then, retain fail-closed unavailability for constrained Windows requests. If a new experiment is approved, it must independently prove the minimum useful tool subset and actual denied host access before any dependent snapshot or promotion work begins.
+Remains the production default and valid final decision if no candidate qualifies. Never silently fall back to unrestricted execution on denied/unavailable requests.
+
+### E. Restart old AppContainer original-root ACL lease or projection pipeline
+
+Rejected as a near-term implementation direction. C013/C014 historical failures remain. The `/dev/null` device hypothesis may be diagnosed in a disposable test VM, but must not justify global object security changes or automatically reopen C015.
+
+## Decision and exact gates
+
+1. **Accept only a bounded, test-only comparison:** C019 shared actual-child probe contract and C014 device diagnosis, followed by *independently closable* C020 (MXC v1 native feasibility) and C021 (dedicated-user feasibility), then C022 comparative disposition.
+2. C019 is dependency-ready with existing Windows fixture infrastructure. C020 and C021 each hard-depend on C019, are parallel to each other, and have independent **operational** host gates (serviced Windows 11 for native MXC; consented disposable admin VM for identity). C022 depends on both written dispositions; it may close as *blocked/no candidate* when operational evidence is missing, but may not recommend production admission based on a blocked result.
+3. **A positive candidate requires both:** at least Git + one native shell and representative scoped toolchain observation, **and** a real running-child deny matrix against original synthetic host data and IPC/handle aliases, with declared exceptions. No broad original-user credential/cache grants. Extra Python/Cargo capabilities require separate actual execution proof; missing them narrows support.
+4. For each test report observed successes/failures as independent findings: do **not** short-circuit the adversarial matrix after toolchain failure, except where no child can be created. An unrun operation is “not run,” not denied.
+5. C022 selects a *proposed integration route* based on evidence, with an explicit later maintainer production-admission decision. Only that later decision may register a production backend and re-sequence C015–C018 or dedicated-user/M005 foundations. C022 itself neither clears C011/M004 nor provides filesystem/network `Enforced`.
+6. Any production successor reuses canonical `ManagedProcessService` authority; no parallel unmanaged command runner, privileged agent-shell setup, silent FullHost fallback, or misreporting Job-only isolation as filesystem enforcement.
+7. Windows Server 2025 build 26100 is not automatically an eligible Windows 11 native-process-isolation host. Feature, OS edition, installed servicing, selected tier and exact dependency revisions must be measured on the host.
+8. Original host workspace hardlinks, ADS, reparse aliases, NTFS object identity, stale promotion and pre-opened handles are mandatory adversarial classes; developer-tool read allowances require narrowly evaluated host-secret exposure.
+9. Do not merge or declare unrelated branch work reviewed as part of this decision.
 
 ## Consequences
 
-### Positive
+Positive: converts the C014 stop into finite experimental options; preserves closed-negative findings; creates comparable evidence rather than accumulating speculative platform fixes; can favor OS-managed native isolation if available and a dedicated principal if necessary.
 
-- Makes the C014 negative result an explicit architecture gate instead of allowing C015 to proceed by momentum.
-- Preserves current production security behavior while alternatives are reviewed.
-- Records dedicated identity and VM isolation as candidates without approving account, ACL, firewall, or virtualization changes.
+Negative: may require a serviced Windows 11 VM, administrator-controlled disposable VM and extra test infrastructure; the two candidate paths may both fail or remain operationally blocked. Production Windows constrained execution stays unavailable.
 
-### Negative
+Deferred: production snapshot/promotion engineering, dedicated-user global setup/credential rotation, persistent Windows firewall rules, alternate VM/WSL backend, Windows product UX/settings or protocol changes.
 
-- Windows constrained execution remains unavailable while the proposal is unresolved.
-- A future alternative may require administrator consent, additional CI infrastructure, or a narrower supported tool set.
+## Compatibility, migration and security/reliability
 
-### Neutral or deferred
+This ADR authorizes **documentation and disposable feasibility experiments only**, not production account creation, source ACL edits, executable backend registration, public API/schema changes, or distribution changes. Any elevated experiment is manual, on isolated disposable host with operator consent, reversible inventory and teardown verification. No network containment until separately evidenced with real sockets/descendants, WFP/firewall policy and bypass/loopback tests. Process creation is suspended until all mandatory checks and Job association succeed; on error, terminate/reap before deleting owned resources. Capture cancellation, reboots, crash/recovery, concurrent worktree isolation, time/size limits and before/after descriptor integrity.
 
-- C015–C018 remain blocked. Their plans are not authorized for implementation unless a successor decision and strict-positive feasibility gate reopen the line.
-- C011/M004–M006 remain blocked independently; this proposal does not close any historical security finding.
+## Verification and stop criteria
 
-## Compatibility and migration
-
-No code, storage, protocol, configuration, account, ACL, firewall, or workspace migration is authorized by this proposal. Existing Windows FullHost behavior and Unix backends remain unchanged. Production Windows constrained requests continue to fail closed.
-
-## Security and reliability implications
-
-Do not infer host denial from the C014 run: its alias, IPC, and inherited-handle probes were not reached. Do not infer network isolation from an AppContainer token or a dedicated identity. Any accepted successor must qualify direct and aliased reads, writes, IPC, inherited handles, descendants, cancellation, restart/recovery, and the native OS build matrix, with no broad user-profile or credential grant.
-
-## Verification
-
-The proposal is based on closure `plans/closure/windows-native-sandbox/014-status.md` and exact-SHA workflow `38316065754`. No implementation verification is applicable until maintainers accept a decision and a new bounded implementation plan is registered.
+Evidence matrix in C019 applies identically to both candidates. Native true/false read/write, toolchain, descendant, IPC and leak probes, selected backend/tier, host permissions, cleanup and process supervision must have exact-SHA native output and pass/fail counts. Missing host produces blocked closure; positive/negative experiments are both legitimate closures. If denied resource reachable or unsafe persistent mutation required, close candidate negative. Do not use plain cwd copy, path normalization, runner status text or vendor marketing as a security proof.
 
 ## Supersession
 
-None. ADR-0019 remains an accepted historical decision to run the bounded experiment; its negative C014 result stops that line and does not alter its record.
+Supersedes the **undecided successor choice** in this ADR's earlier proposed draft, not the historical accepted bounded ADR-0019 experiment, which ended at C014. ADR-0016, C011 and M004 security gates continue unchanged.
