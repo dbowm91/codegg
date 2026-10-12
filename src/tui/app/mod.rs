@@ -3216,6 +3216,27 @@ impl App {
     /// return an application message, but unhandled keys are consumed while
     /// a modal is open and can never reach the prompt.
     fn handle_dialog_key(&mut self, key: KeyEvent) {
+        // One docking gesture for every box-capable modal, resolved before
+        // the component sees the key.
+        //
+        // A modal short-circuits key routing, so a box that wants to dock
+        // itself into the side panel has to recognise `Shift+L` in its own
+        // handler — which is 28 near-identical edits and 28 chances to drift.
+        // Instead the gesture is resolved here, once, for the whole set: if
+        // the open box is dockable *and* is a viewer, the directional means
+        // "move me into the column" and never reaches the widget.
+        //
+        // The viewer gate is what keeps this safe. A box that owns a filter
+        // buffer is not a viewer, so `Shift+L` stays the letter `L` there and
+        // those four dialogs keep their own Normal/Insert split — the same
+        // contract `HelpDialog` already follows. Without the gate this would
+        // silently break typing an uppercase letter into a filter.
+        if self.focus_manager.top_docks_as_viewer() && self.dock_target().is_some() {
+            if let Some(dir) = crate::tui::panels::direction_of(key) {
+                crate::tui::commands::panels::move_directionally(self, dir);
+                return;
+            }
+        }
         match self.focus_manager.active_dialog_type() {
             DialogType::ProjectPicker => {
                 self.handle_project_picker_key(key);
@@ -8426,7 +8447,14 @@ impl App {
         }
     }
 
-    pub(crate) fn close_dialog(&mut self) {
+    /// Close the topmost modal and return the component that was unmounted.
+    ///
+    /// The return value exists for one caller — the panel docking gesture,
+    /// which *moves* a box into the side column rather than discarding it.
+    /// Every other caller ignores it and behaves exactly as before.
+    pub(crate) fn close_dialog(
+        &mut self,
+    ) -> Option<Box<dyn crate::tui::components::component::Component>> {
         let closing_dialog = Dialog::from(self.focus_manager.active_dialog_type());
         // If the theme picker was live-previewing, revert to the
         // original theme before closing. Esc and Enter both fire
@@ -8576,19 +8604,23 @@ impl App {
             _ => {}
         }
 
-        self.focus_manager.pop();
+        let popped = self.focus_manager.pop();
         let active_type = self.focus_manager.active_dialog_type();
         if active_type != DialogType::None {
             self.ui_state.dialog = Dialog::from(active_type);
         } else {
             self.ui_state.dialog = Dialog::None;
         }
-
         // Project picker teardown: clear the picker state so stale
         // completions are dropped at apply time.
         if self.dialog_state.project_picker.is_some() {
             self.dialog_state.project_picker = None;
         }
+        // The unmounted component is handed back so a caller that is *moving*
+        // a box rather than discarding it — the panel docking gesture — can
+        // adopt it into the side column. Every other caller drops it, exactly
+        // as before; returning it costs one `Option` and changes no lifetime.
+        popped
     }
 
     /// Handle key events while the project picker dialog is open.
@@ -10955,13 +10987,43 @@ impl App {
     /// predict.
     pub fn dock_target(&self) -> Option<crate::tui::panels::SidePanelId> {
         use crate::tui::components::component::DialogType;
+        use crate::tui::panels::SidePanelId as P;
         match self.focus_manager.active_dialog_type() {
-            DialogType::ProjectChat => Some(crate::tui::panels::SidePanelId::Chat),
-            DialogType::Terminal => Some(crate::tui::panels::SidePanelId::Terminal),
-            DialogType::Help => Some(crate::tui::panels::SidePanelId::Help),
-            // Deliberately absent: a box with no panel counterpart. The
+            DialogType::ProjectChat => Some(P::Chat),
+            DialogType::Terminal => Some(P::Terminal),
+            DialogType::Help => Some(P::Help),
+            DialogType::Tree => Some(P::Tree),
+            DialogType::Session => Some(P::Sessions),
+            DialogType::TaskList => Some(P::Tasks),
+            DialogType::Plan => Some(P::Plan),
+            DialogType::GoalShow => Some(P::Goal),
+            DialogType::Collaborators => Some(P::Collaborators),
+            DialogType::MemoryResults => Some(P::Memory),
+            DialogType::ResearchBrowser => Some(P::Research),
+            DialogType::Logs => Some(P::Logs),
+            DialogType::Context => Some(P::Context),
+            DialogType::Cost => Some(P::Cost),
+            DialogType::Usage => Some(P::Usage),
+            DialogType::Stats => Some(P::Stats),
+            DialogType::DoctorReport => Some(P::Doctor),
+            DialogType::ShellShow => Some(P::ShellShow),
+            DialogType::SecurityReview => Some(P::Security),
+            DialogType::Model => Some(P::Models),
+            DialogType::Agent => Some(P::Agents),
+            DialogType::Mcp => Some(P::Mcp),
+            DialogType::Keybind => Some(P::Keybinds),
+            DialogType::Theme => Some(P::Themes),
+            DialogType::Plugin => Some(P::Plugins),
+            DialogType::Team => Some(P::Team),
+            DialogType::Control => Some(P::Control),
+            DialogType::WorkspaceDashboard => Some(P::Workspace),
+            DialogType::TaskView => Some(P::TaskView),
+            DialogType::Diff => Some(P::Diff),
+            DialogType::Review => Some(P::Review),
+            // Deliberately absent: boxes with no panel counterpart. The
             // gesture must say so rather than silently selecting a pane the
-            // user did not ask for.
+            // user did not ask for. Everything here is a *modal* box — the
+            // session sidebar has no box because it is always present.
             _ => None,
         }
     }

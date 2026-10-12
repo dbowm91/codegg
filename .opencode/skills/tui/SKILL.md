@@ -112,16 +112,30 @@ root and lifecycle modules.
   list; `Char` is the explicit non-configurable input exception.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
-  owns which `SidePanelId` is active and whether it holds focus. Four panels
-  ship: `Session`, `Chat`, `Terminal`, `Help`. Which one is loaded is chosen by
-  the **panel manager box** (`Ctrl+Alt+W`, or `Shift+S` in Normal mode) — a
-  dialog, which replaced the old in-column grid selector. To add a panel: an
-  enum variant, an entry in `SidePanelId::ALL`, `label`/`title`/`hint` arms, a
-  host field, and arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
-  Do not add a per-panel `if` to the render path. A focused panel owns *navigation* — arrows, `j`/`k`,
-  paging, its own verbs — and is consulted **only in Normal mode**, because
-  the host claims `Esc`/`q` as exits and would otherwise make `q` untypable
-  while composing. `PanelKey::PassThrough` exists only for panels that hold
+  owns which `SidePanelId` is active and whether it holds focus. 32 panels
+  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 28
+  **hosted** — one per `/` command that brings up a box. Which one is loaded
+  is chosen by the **panel manager box** (`Ctrl+Alt+W`, or `Shift+S` in
+  Normal mode), which renders `SidePanelId::ALL` directly — the list it shows
+  *is* the registry. To add a **hosted** panel (the common case): an enum
+  variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
+  `load_command`/`config_key` arms. The host builds its `HostPanel` from
+  `ALL`, so there is no host field, no `panel()` arm and no render-path
+  branch. To add a **bespoke** panel also write a `SidePanel` impl and add
+  arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  Docking is a **move**: `App::close_dialog` returns the component it
+  unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
+  box's filter, cursor and scroll. A panel with nothing adopted renders a
+  placeholder naming its `/` loader — never an empty bordered box, which
+  reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
+  `SidePanel::render` gets a `&mut Buffer`, `Component::render` needs a
+  `&mut Frame`, and ratatui's `Frame` has no public constructor, so the
+  widget renders into an in-memory backend sized to the column and is copied
+  out. Do not add per-panel branches to the render path. A focused panel owns
+  *navigation* — arrows, `j`/`k`, paging, its own verbs — and is consulted
+  **only in Normal mode**, because the host claims `Esc`/`q` as exits and
+  would otherwise make `q` untypable while composing.
+  `PanelKey::PassThrough` exists only for panels that hold
   no draft (the chat panel passes `i`/`a` to the composer); a panel with a
   live buffer must still consume everything. A verb that carries text to
   prefill cannot pass through — the chat panel's `r`/`e` emit
@@ -137,6 +151,16 @@ root and lifecycle modules.
   completions → change review → **side panel (Normal only)** → Workspace →
   Editor → composer. Hotkeys come before the panel because a panel that
   swallowed the only key that leaves it would trap the keyboard.
+- **Every dockable box answers the gesture from one place.**
+  `App::handle_dialog_key` intercepts `Shift+←/→/↑/↓` *before* the mounted
+  modal sees the key, gated on `Component::docks_as_viewer()`. A viewer box
+  owns no text buffer, so the directional is free to mean "dock me" — and 28
+  dialogs do not each re-implement the same check. `/models` and `/sessions`
+  own a live filter, declare `docks_as_viewer() == false`, and answer the
+  gesture themselves under the same "filter is empty" guard that already
+  governs their `j`/`k`. Never add a bespoke `direction_of` check to a
+  dialog that is a viewer box — the central gate already covers it, and a
+  second copy is a second rule that can drift.
 - **The directionals are one gesture family with two meanings.**
   `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
   `InputAction::Direction*` and then to one dispatcher,

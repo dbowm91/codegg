@@ -101,23 +101,25 @@ impl PanelHotkeys {
 /// the persisted form is the enum name in snake_case — the same vocabulary
 /// `SidePanelId` already uses.
 fn panel_key(panel: SidePanelId) -> String {
-    match panel {
-        SidePanelId::Session => "sessions".to_string(),
-        SidePanelId::Chat => "chat".to_string(),
-        SidePanelId::Terminal => "terminal".to_string(),
-        SidePanelId::Help => "help".to_string(),
-    }
+    // Derived from the registry so a new panel is persisted without touching
+    // this file; `SidePanelId::config_key` owns the stable spelling.
+    panel.config_key().to_string()
 }
 
 /// Inverse of [`panel_key`], tolerant of casing and of the plural.
 fn panel_from_key(key: &str) -> Option<SidePanelId> {
-    match key.trim().to_ascii_lowercase().as_str() {
-        "sessions" | "session" => Some(SidePanelId::Session),
-        "chat" => Some(SidePanelId::Chat),
-        "terminal" => Some(SidePanelId::Terminal),
-        "help" => Some(SidePanelId::Help),
-        _ => None,
+    let needle = key.trim().to_ascii_lowercase();
+    // Legacy spellings kept verbatim: `sessions` has always meant the
+    // sidebar panel and still does, so the `/sessions` box panel uses
+    // `session_switcher` rather than stealing it.
+    match needle.as_str() {
+        "sessions" | "session" => return Some(SidePanelId::Session),
+        _ => {}
     }
+    SidePanelId::ALL
+        .iter()
+        .copied()
+        .find(|panel| panel.config_key() == needle)
 }
 
 /// Map a `Ctrl`+digit key event onto its slot, if it is one.

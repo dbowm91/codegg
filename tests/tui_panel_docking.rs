@@ -67,6 +67,26 @@ fn choose_nth(app: &mut App, n: usize) {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
 
+/// Open the manager and select `id`, naming it rather than an offset.
+///
+/// The manager opens with its highlight on the *live* panel, so the press
+/// count is the distance from there. Counting `id.index()` presses outright
+/// — the obvious shortcut — is only correct while the live panel is the
+/// first one, and fails silently otherwise: the highlight walks past the
+/// intended row and the test asserts against the wrong panel.
+fn choose_by_label(app: &mut App, id: SidePanelId) {
+    let from = app.panel_host.active().index();
+    let to = id.index();
+    app.on_key(manager());
+    // The list wraps, so this is a forward distance rather than a
+    // subtraction that could go negative.
+    manager_down(
+        app,
+        (to + SidePanelId::ALL.len() - from) % SidePanelId::ALL.len(),
+    );
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+}
+
 /// Put the app in Normal mode.
 ///
 /// A focused panel only takes keys in Normal — in Insert the composer owns the
@@ -209,7 +229,7 @@ async fn the_docked_help_panel_scrolls_rather_than_filtering() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     to_normal_mode(&mut app);
-    choose_nth(&mut app, SidePanelId::Help.index());
+    choose_by_label(&mut app, SidePanelId::Help);
     assert!(app.panel_host.is_focused());
 
     assert_eq!(
@@ -233,7 +253,7 @@ async fn the_docked_help_panel_still_filters_on_demand() {
     let mut app = test_app();
     app.ui_state.sidebar_visible = true;
     to_normal_mode(&mut app);
-    choose_nth(&mut app, SidePanelId::Help.index());
+    choose_by_label(&mut app, SidePanelId::Help);
     app.on_key(plain('i'));
     for ch in "panel".chars() {
         app.on_key(plain(ch));
@@ -373,13 +393,13 @@ async fn reassigning_a_digit_rebinds_rather_than_failing() {
     let mut app = test_app();
     // Bind slot 3 to Chat, then rebind the same slot to Help. The manager
     // opens on the live panel each time, so walk from there.
-    choose_nth(&mut app, SidePanelId::Chat.index());
+    choose_by_label(&mut app, SidePanelId::Chat);
     app.on_key(manager());
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.panel_hotkeys.get('3'), Some(SidePanelId::Chat));
 
-    choose_nth(&mut app, SidePanelId::Help.index());
+    choose_by_label(&mut app, SidePanelId::Help);
     app.on_key(manager());
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
@@ -432,4 +452,100 @@ fn ctrl_digit_shaped_keys_are_recognised_and_other_keys_are_not() {
     );
     assert_eq!(digit_slot(plain('1')), None, "a bare digit is just text");
     assert_eq!(digit_slot(key(KeyCode::Char('1'), KeyModifiers::ALT)), None);
+}
+
+// ── Hosted panels: the generalisation, not the original three ─────────
+
+/// Every plain viewer box docks into its panel from one shared gesture.
+///
+/// `/chat`, `/terminal` and `/help` each carry their own handler, so a test
+/// over only those proves nothing about the 28 panels added later. These are
+/// the boxes that rely on the *central* gate in `handle_dialog_key`: none of
+/// them knows the gesture exists, and all of them must still land correctly.
+#[tokio::test(flavor = "current_thread")]
+async fn every_viewer_box_docks_from_the_one_shared_gesture() {
+    // Only boxes with a public door are listed. `/logs`, `/tasks`, `/goal`,
+    // `/memory-search`, `/collaborators` and `/doctor` are produced by
+    // `open_info_dialog` / dedicated helpers rather than by `open_dialog`,
+    // so a test cannot mount them without reaching into `dialog_state`.
+    // `Theme`/`Mcp`/`Keybind` are here alongside the `InfoDialog`-backed ones
+    // precisely so the gate is proven for a *focused* dialog too, not just
+    // the one widget that covers eleven panels.
+    let cases = [
+        (codegg::tui::Dialog::Cost, SidePanelId::Cost),
+        (codegg::tui::Dialog::Usage, SidePanelId::Usage),
+        (codegg::tui::Dialog::Context, SidePanelId::Context),
+        (codegg::tui::Dialog::Theme, SidePanelId::Themes),
+        (codegg::tui::Dialog::Mcp, SidePanelId::Mcp),
+        (codegg::tui::Dialog::Keybind, SidePanelId::Keybinds),
+    ];
+
+    for (dialog, expected) in cases {
+        let mut app = test_app();
+        app.open_dialog(dialog.clone());
+        assert!(
+            app.focus_manager.active_dialog_type() != DialogType::None,
+            "{dialog:?} must actually have mounted a box"
+        );
+
+        app.on_key(plain('L'));
+
+        assert_eq!(
+            app.focus_manager.active_dialog_type(),
+            DialogType::None,
+            "{dialog:?} must be closed after docking"
+        );
+        assert_eq!(
+            app.panel_host.active(),
+            expected,
+            "{dialog:?} must land on {expected:?}"
+        );
+        assert!(
+            app.panel_host.is_focused(),
+            "{dialog:?} must hand focus to the panel that took it"
+        );
+    }
+}
+
+/// The docked panel keeps the box it was given rather than restarting empty.
+///
+/// This is the whole point of adopting the unmounted component: the column
+/// starts showing the same surface the box was showing. Without it, "docking"
+/// would be a re-open that happens to look similar — the exact failure the
+/// chat box/panel pair is documented as having had.
+#[tokio::test(flavor = "current_thread")]
+async fn a_docked_panel_adopts_the_box_it_was_given() {
+    let mut app = test_app();
+    app.open_dialog(codegg::tui::Dialog::Cost);
+    assert!(app.focus_manager.has_dialog(DialogType::Cost));
+
+    app.on_key(plain('L'));
+
+    let active = app.panel_host.active();
+    assert_eq!(active, SidePanelId::Cost);
+    assert!(
+        app.panel_host
+            .hosted_panel_has_content(active)
+            .expect("Cost is a hosted panel"),
+        "docking must install the box, not an empty placeholder"
+    );
+}
+
+/// A box with no panel counterpart must still refuse the gesture.
+///
+/// The negative half of `dock_target`. If a box with no column to move into
+/// quietly selected a panel, `L` in some unrelated box would appear to do
+/// something the user never asked for.
+#[tokio::test(flavor = "current_thread")]
+async fn a_box_with_no_panel_refuses_the_gesture_instead_of_guessing() {
+    let mut app = test_app();
+    // `/share` is a one-shot action with no side-panel counterpart.
+    app.open_dialog(codegg::tui::Dialog::Share);
+    let before = app.panel_host.active();
+    app.on_key(plain('L'));
+    assert_eq!(
+        app.panel_host.active(),
+        before,
+        "a box with no panel must not move anything"
+    );
 }

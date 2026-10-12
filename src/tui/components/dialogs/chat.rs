@@ -505,6 +505,12 @@ impl ChatDialog {
 }
 
 impl Component for ChatDialog {
+    /// Answers the docking gesture itself, under its own mode check — in
+    /// Insert, `Shift+L` is the letter `L` and must reach the composer. The
+    /// host's central gate must therefore leave this dialog alone.
+    fn docks_as_viewer(&self) -> bool {
+        false
+    }
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
         // Ctrl+C closes the window; the browser owns every other Ctrl chord.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {

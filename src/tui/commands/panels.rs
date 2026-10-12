@@ -295,9 +295,18 @@ pub(crate) fn dock_open_box(app: &mut App) {
     };
     // Close first: `select_panel` reads sidebar visibility and focus, and a
     // box still mounted would keep claiming keys the panel is about to own.
-    app.close_dialog();
+    //
+    // `close_dialog` hands back the component it unmounted. For a hosted
+    // panel that component is the box itself — same filter, same cursor,
+    // same scroll offset — so docking is a move rather than a re-open that
+    // happens to look similar. The four bespoke panels have their own dock
+    // paths and ignore the returned component.
+    let unmounted = app.close_dialog();
     if !app.ui_state.sidebar_visible {
         app.ui_state.sidebar_visible = true;
+    }
+    if let Some(widget) = unmounted {
+        app.panel_host.adopt(id, widget);
     }
     select_panel(app, id);
     focus_panel(app);

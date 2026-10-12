@@ -1014,6 +1014,16 @@ fn test_enter_no_match_does_nothing() {
 
 impl Component for ModelDialog {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
+        // The panel docking gesture. Answered under exactly the guard that
+        // already makes `j`/`k` navigation below — "nothing is being
+        // typed" — so there is one rule in this dialog rather than two that
+        // can disagree. While a filter query or the add-model form is live,
+        // `Shift+L` is the letter `L` and must reach the buffer.
+        if self.filter.is_empty() && !self.adding_model {
+            if let Some(dir) = crate::tui::panels::direction_of(key) {
+                return Some(TuiMsg::MoveDirection(dir));
+            }
+        }
         match key.code {
             crossterm::event::KeyCode::Tab => {
                 if self.adding_model {

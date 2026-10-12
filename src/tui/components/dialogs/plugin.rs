@@ -48,6 +48,14 @@ impl PluginDialog {
 }
 
 impl Component for PluginDialog {
+    /// A plain viewer box: no composer, no live filter, no mode of its own,
+    /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
+    /// before this dialog sees the key.
+    fn docks_as_viewer(&self) -> bool {
+        {
+            true
+        }
+    }
     fn dialog_type(&self) -> DialogType {
         DialogType::Plugin
     }
