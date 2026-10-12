@@ -24,14 +24,21 @@ fn powershell() -> PathBuf {
 async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_acl() {
     let fixture = tempfile::tempdir().unwrap();
     let allowed = fixture.path().join("allowed");
+    let readonly = fixture.path().join("readonly");
     let outside = fixture.path().join("outside");
     std::fs::create_dir(&allowed).unwrap();
+    std::fs::create_dir(&readonly).unwrap();
     std::fs::create_dir(&outside).unwrap();
+    std::fs::write(readonly.join("seed.txt"), "readonly-content").unwrap();
     std::fs::write(outside.join("secret.txt"), "synthetic-secret").unwrap();
     let allowed_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&allowed).unwrap();
+    let readonly_before =
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&readonly).unwrap();
+    let outside_before =
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap();
     let executable = powershell();
-    let script = "$write = Join-Path $env:CODEGG_LEASE_ALLOWED 'created.txt'; Set-Content -LiteralPath $write -Value 'allowed-write'; $read = Get-Content -LiteralPath $write -Raw; try { Get-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_OUTSIDE 'secret.txt') -ErrorAction Stop | Out-Null; $outsideRead = 'unexpected-read' } catch { $outsideRead = 'read-denied' }; try { Set-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_OUTSIDE 'created.txt') -Value 'forbidden' -ErrorAction Stop; $outsideWrite = 'unexpected-write' } catch { $outsideWrite = 'write-denied' }; [Console]::Out.Write(($read.Trim() + '|' + $outsideRead + '|' + $outsideWrite))";
+    let script = "$write = Join-Path $env:CODEGG_LEASE_ALLOWED 'created.txt'; Set-Content -LiteralPath $write -Value 'allowed-write'; $read = Get-Content -LiteralPath $write -Raw; $readonly = Get-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_READONLY 'seed.txt') -Raw; try { Set-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_READONLY 'forbidden.txt') -Value 'forbidden' -ErrorAction Stop; $readonlyWrite = 'unexpected-write' } catch { $readonlyWrite = 'readonly-write-denied' }; try { Get-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_OUTSIDE 'secret.txt') -ErrorAction Stop | Out-Null; $outsideRead = 'unexpected-read' } catch { $outsideRead = 'read-denied' }; try { Set-Content -LiteralPath (Join-Path $env:CODEGG_LEASE_OUTSIDE 'created.txt') -Value 'forbidden' -ErrorAction Stop; $outsideWrite = 'unexpected-write' } catch { $outsideWrite = 'write-denied' }; [Console]::Out.Write(($read.Trim() + '|' + $readonly.Trim() + '|' + $readonlyWrite + '|' + $outsideRead + '|' + $outsideWrite))";
     let args = vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),
@@ -55,12 +62,13 @@ async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_ac
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
-        read_paths: vec![allowed.to_string_lossy().into_owned()],
+        read_paths: vec![readonly.to_string_lossy().into_owned()],
         write_paths: vec![allowed.to_string_lossy().into_owned()],
         deny_paths: vec![outside.to_string_lossy().into_owned()],
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_LEASE_ALLOWED", allowed.as_os_str())
+        .with_var("CODEGG_LEASE_READONLY", readonly.as_os_str())
         .with_var("CODEGG_LEASE_OUTSIDE", outside.as_os_str());
 
     let result = ManagedProcessService::run(request)
@@ -73,7 +81,7 @@ async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_ac
     );
     assert_eq!(
         result.stdout.to_string_lossy(),
-        "allowed-write|read-denied|write-denied"
+        "allowed-write|readonly-content|readonly-write-denied|read-denied|write-denied"
     );
     assert!(matches!(
         result.sandbox,
@@ -93,6 +101,14 @@ async fn windows_acl_lease_allows_owned_root_and_denies_sibling_then_restores_ac
     assert_eq!(
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&allowed).unwrap(),
         allowed_before
+    );
+    assert_eq!(
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&readonly).unwrap(),
+        readonly_before
+    );
+    assert_eq!(
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap(),
+        outside_before
     );
 }
 
