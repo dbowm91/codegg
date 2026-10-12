@@ -99,6 +99,8 @@ async fn windows_acl_lease_allows_owned_roots_and_denies_empty_sibling_then_rest
     std::fs::create_dir(&readonly).unwrap();
     std::fs::create_dir(&outside).unwrap();
     std::fs::write(readonly.join("seed.txt"), "readonly-content").unwrap();
+    // Deny leases currently accept only empty roots; C012 rejects nonempty trees
+    // before child creation because descendants can carry independent ACLs.
     let allowed_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&allowed).unwrap();
     let readonly_before =
