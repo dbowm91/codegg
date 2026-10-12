@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C009 — Restricted Launch Through ManagedProcessService
 
-Status: active
+Status: implemented
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 

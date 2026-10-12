@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C010 — Windows ACL Lease, Contention, and Crash Recovery
 
-Status: blocked (C009 strict closure)
+Status: active
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
@@ -122,7 +122,7 @@ The closure must record exact versions, run IDs, skipped coverage and failures. 
 
 ## 12. Documentation updates
 
-`architecture/security.md`, `architecture/testing.md`, Windows operations/ACL recovery documentation, M004 corrective roadmap, registry, and C010 closure.
+`architecture/security.md`, `architecture/testing.md`, `docs/windows-acl-leases.md`, M004 corrective roadmap, registry, and C010 closure.
 
 ## 13. Acceptance criteria
 

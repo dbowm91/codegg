@@ -345,6 +345,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Environment",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
 ] }
 
 [features]
@@ -375,6 +376,11 @@ required-features = ["lsp-test-support"]
 name = "document_lsp_integration"
 path = "tests/document_lsp_integration.rs"
 required-features = ["lsp-test-support"]
+
+[[test]]
+name = "windows_acl_lease"
+path = "tests/windows_acl_lease.rs"
+required-features = ["windows-sandbox-test-support"]
 
 [[test]]
 name = "projection_transport_real"

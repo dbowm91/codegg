@@ -35,6 +35,13 @@ use nix::unistd::setsid;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod windows;
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+mod windows_acl_lease;
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+pub fn windows_acl_lease_dacl_snapshot(path: &Path) -> std::io::Result<Vec<u8>> {
+    windows_acl_lease::dacl_snapshot(path)
+}
 
 use crate::security::sandbox::{
     decode_sandbox_status, SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
@@ -856,11 +863,6 @@ async fn run_windows_test_restricted(
             "restricted sandbox specification exceeds 64 KiB".into(),
         ));
     }
-    if !spec.read_paths.is_empty() || !spec.write_paths.is_empty() || !spec.deny_paths.is_empty() {
-        return Err(ManagedProcessError::SandboxFailed(
-            "test-only AppContainer process proof does not apply filesystem roots; ACL policy is not qualified".into(),
-        ));
-    }
     let requested_args = spec
         .args
         .iter()
@@ -880,6 +882,67 @@ async fn run_windows_test_restricted(
     let started = Instant::now();
     let profile =
         windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let mut acl_leases = Vec::new();
+    let mut roots =
+        std::collections::BTreeMap::<String, (PathBuf, windows_acl_lease::LeaseAccess)>::new();
+    for (path, access) in spec
+        .read_paths
+        .iter()
+        .map(|path| {
+            (
+                PathBuf::from(path.as_str()),
+                windows_acl_lease::LeaseAccess::Read,
+            )
+        })
+        .chain(spec.write_paths.iter().map(|path| {
+            (
+                PathBuf::from(path.as_str()),
+                windows_acl_lease::LeaseAccess::ReadWrite,
+            )
+        }))
+        .chain(spec.deny_paths.iter().map(|path| {
+            (
+                PathBuf::from(path.as_str()),
+                windows_acl_lease::LeaseAccess::Deny,
+            )
+        }))
+    {
+        let canonical = std::fs::canonicalize(&path).map_err(ManagedProcessError::Spawn)?;
+        let key = canonical.to_string_lossy().to_lowercase();
+        roots
+            .entry(key)
+            .and_modify(|(_, current)| {
+                if access == windows_acl_lease::LeaseAccess::Deny
+                    || (*current != windows_acl_lease::LeaseAccess::Deny
+                        && access == windows_acl_lease::LeaseAccess::ReadWrite)
+                {
+                    *current = access;
+                }
+            })
+            .or_insert((canonical, access));
+    }
+    let journal_root = std::env::temp_dir().join("CodeGG-test-acl-leases");
+    let conflicts =
+        windows_acl_lease::recover_all(&journal_root).map_err(ManagedProcessError::Spawn)?;
+    if !conflicts.is_empty() {
+        return Err(ManagedProcessError::SandboxFailed(format!(
+            "{} stale Windows ACL lease journal(s) need operator inspection",
+            conflicts.len()
+        )));
+    }
+    let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
+    for (path, access) in roots.into_values() {
+        acl_leases.push(
+            windows_acl_lease::WindowsAclLease::acquire(
+                &path,
+                &journal_root,
+                &lease_run_id,
+                profile.sid(),
+                access,
+            )
+            .map_err(ManagedProcessError::Spawn)?,
+        );
+    }
     let local_app_data = profile
         .local_app_data_path()
         .map_err(ManagedProcessError::Spawn)?;
@@ -910,9 +973,9 @@ async fn run_windows_test_restricted(
 
     // The status pipe is private to the service. The target cannot forge its
     // contents through stdout/stderr, and this fixture reports SetupError so
-    // no code path can misread the identity/Job proof as filesystem Enforced.
+    // the test-only ACL lease proof cannot be mistaken for production Enforced.
     let status_text =
-        "debug-only AppContainer token and Job verified; filesystem rights are unqualified";
+        "debug-only AppContainer token, Job, and disposable ACL leases verified; production filesystem rights remain unqualified";
     let status_bytes =
         crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::SetupError {
             reason: status_text.to_string(),
@@ -996,6 +1059,11 @@ async fn run_windows_test_restricted(
             "test-only status channel reported an unexpected enforcement outcome".into(),
         ));
     };
+    for lease in acl_leases.into_iter().rev() {
+        lease
+            .release()
+            .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    }
     drop(profile);
 
     Ok(ManagedProcessResult {
