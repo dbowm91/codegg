@@ -2261,7 +2261,7 @@ mod tests {
             String::from_utf8_lossy(&junction_result.stderr)
         );
 
-        let observed_objects = [&credentials, &credential, &protected, &hardlink];
+        let observed_objects = [&credentials, &credential, &protected, &hardlink, &junction];
         let before = observed_objects
             .iter()
             .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())

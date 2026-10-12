@@ -255,7 +255,12 @@ pub(crate) fn forensic_tree_snapshots(path: &Path, limit: usize) -> io::Result<V
                 "C013 forensic object limit exceeded",
             ));
         }
-        let snapshot = forensic_object_snapshot(&current)?;
+        let snapshot = forensic_object_snapshot(&current).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("C013 snapshot failed for {}: {error}", current.display()),
+            )
+        })?;
         let is_directory = snapshot.contains("directory=true");
         let is_reparse = snapshot.contains("reparse=true");
         snapshots.push(snapshot);
@@ -279,7 +284,8 @@ pub(crate) fn forensic_object_snapshot(path: &Path) -> io::Result<String> {
 
     let metadata = fs::symlink_metadata(path)?;
     let attributes = metadata.file_attributes();
-    let is_directory = metadata.is_dir();
+    let is_directory =
+        attributes & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY != 0;
     let name = wide(path);
     let handle = unsafe {
         CreateFileW(
