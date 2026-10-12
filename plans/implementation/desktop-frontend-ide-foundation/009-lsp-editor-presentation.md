@@ -1,8 +1,8 @@
 # Desktop Frontend and IDE Foundation Milestone 006-C — LSP Editor Presentation
 
-Status: blocked
+Status: active
 
-Repository baseline: `0498f7a25` (C003 closure pushed; branch rebased over `1b355309a`)
+Repository baseline: `6b18122d35e6e05d1f2113c78e77467848769f24` (C004 LSP location identity and human-shell admission correctives verified and closed)
 
 Source roadmap:
 
@@ -130,19 +130,29 @@ None. Use the exact M006-B pull request. Do not infer `Ready` from empty or abse
 
 Confirm client query APIs, diagnostics pull behavior, token encoding/legend, active workspace identity, and editor task completion patterns. Record a short state/generation table before implementation. Stop if any essential action requires a new protocol surface.
 
-#### WP-A audit result (2026-10-12)
+#### WP-A audit and C004 handoff (2026-10-12)
 
-The audit reached the plan's stop condition: the existing location DTOs do not retain a validated workspace-relative target path. `location_to_dto`, `location_link_to_dto`, and symbol conversion in `src/core/daemon_lsp.rs` intentionally omit paths because results may leave the project; document-symbol ranges may also carry an empty path. The TUI therefore cannot safely navigate to definition/reference/symbol results or bind those results to an active document identity. Adding a path/identity contract would change the protocol explicitly forbidden by this plan. No implementation package was started.
+The initial audit reached the plan's stop condition: the existing location DTOs
+did not retain a validated workspace-relative target path. Corrective C004 is
+now closed under accepted ADR-0018 Option A. `LspRangeDto` has an optional,
+serde-defaulted `workspace_relative_path`; daemon location, location-link, and
+symbol conversion populate it only after canonical containment under the
+authorized workspace. Outside or unprovable targets remain display-only. The
+existing basename display field remains intact. No M006-C presentation package
+was included in that corrective.
 
 | Surface/state | Existing identity available | Safe transition/presentation |
 |---|---|---|
 | Active editor document | Controller snapshot plus active workspace root | Can bind current document presentation to the active editor generation. |
 | Diagnostics pull | Document URI and `Ready`/`NotReady` completeness status | Can preserve stale diagnostics on `NotReady` and replace/clear on `Ready`, if this slice is separately replanned. |
 | Hover response | Bounded text, no authoritative workspace-relative target identity | Can show text for a request tied to the current generation; no navigation target. |
-| Definition/reference/symbol locations | URI/path omitted or insufficiently normalized in response DTOs | Cannot validate containment or open a target; discard as navigational results. |
-| Close/switch while request pending | Local generation can advance, but returned location lacks target identity | Late results can be discarded locally; current protocol cannot prove the returned location belongs to a safe target. |
+| Definition/reference/symbol locations | Optional normalized workspace-relative identity, absent for outside/unprovable targets | Open only a present locator through `DocumentOpen`; otherwise display-only. |
+| Close/switch while request pending | Local document generation plus validated target identity | Drop stale results; `DocumentOpen` rechecks workspace containment and `file.read` authority. |
 
-Status is blocked pending a separately approved protocol/ADR plan for workspace-relative location identity, or a bounded scope amendment that removes navigation and semantic styling and retains diagnostics/hover only. The current plan's full capability acceptance criteria cannot be met with the existing DTO contract.
+Status is dependency-ready after C004. Continue to bind every query and result
+to the active workspace/document generation; the locator is not authority, and
+`DocumentOpen` remains responsible for final containment and `file.read`
+authorization.
 
 ### WP-B — Diagnostics presentation and resync
 

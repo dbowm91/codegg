@@ -1,6 +1,6 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: blocked (handoff after C001 accepted context/provenance contract)
+Status: ready (C001 corrective contract closed by C004; eligible for handoff)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b`
 
@@ -115,3 +115,13 @@ Protocol/auth matrix, two independent client contexts and two-workspace cwd/envi
 ## 16. Handoff notes
 
 Do not conflate daemon-local workspace ownership with future remote execution across nodes. Recheck source baseline at start; preserve user changes and historical M001–M003 PTY closure.
+
+### Dependency disposition (2026-10-12)
+
+C001's authoritative context/provenance dependency is satisfied by
+`plans/closure/human-execution-corrective/004-status.md` at implementation
+`6b18122d35e6e05d1f2113c78e77467848769f24`. This plan is now dependency-ready;
+the workspace-owned finite execution implementation has not started. Re-audit
+the current process, scheduler, authorization, and transport surfaces before
+editing because the original repository baseline above is historical planning
+evidence.

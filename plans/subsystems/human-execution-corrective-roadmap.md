@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C003 closed; C004 active under accepted ADR-0017; C002 blocked on C001/C004 authoritative staging)
+Status: active (C001/C004 closed; C003 closed; C002 ready for handoff)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -48,7 +48,12 @@ The TUI remains a view and human-intent adapter. Human finite execution receives
 
 ## 6. Dependency graph
 
-`C001` requires a corrective pass because promotion is not yet durably staged. `C004` owns the corrective; ADR-0017 now selects durable turn admission, stable submission receipts, and interrupted/no-auto-replay recovery. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and remains blocked. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
+`C001`'s corrective obligation is discharged by closed C004: promotion
+admission is durable, idempotent, and recovers as interrupted without
+automatic replay. `C002` (workspace-owned human shell dispatch) is now ready
+because its C001 dependency is closed; it remains unimplemented. `C003` (PTY
+keyboard and VT presentation) is closed independently because original
+interactive-process M001–M003 are closed.
 
 ## 7. Milestones
 
@@ -85,6 +90,6 @@ C001–C003 each need an independent closure record including user-visible end-t
 | Milestone | Status | Implementation plan | Closure |
 |---|---|---|---|
 | C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
-| C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending; C001 authoritative staging contract is incomplete |
+| C002 | ready | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | C001/C004 authoritative staging contract closed at `plans/closure/human-execution-corrective/004-status.md`; daemon/workspace execution remains unimplemented |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | active (ADR-0017 Option A accepted) | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | The existing ledger atomically consumes promotions with controller admission, but stable submission identity, durable receipt lookup, duplicate retry response, and restart interruption recovery remain. C002 remains blocked. |
+| C004 | closed (ADR-0017 Option A) | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Closure `plans/closure/human-execution-corrective/004-status.md`; implementation `6b18122d`; hosted CI `38251214377` passed 12,778 tests (5 skipped), Desktop E2E `38251230731` passed, and `scripts/verify.sh quick` passed. C001's corrective obligation is discharged; C002 is ready. |

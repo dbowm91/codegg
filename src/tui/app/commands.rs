@@ -111,6 +111,21 @@ pub enum TuiCommand {
         error: Option<String>,
         state: codegg_client::DocumentState,
     },
+    /// Completion of an authoritative current-file diagnostics pull.
+    EditorDiagnosticsFinished {
+        request_id: u64,
+        scope: crate::tui::editor_lsp::EditorLspScope,
+        result: Option<crate::protocol::lsp::LspDiagnosticsResultDto>,
+        error: Option<String>,
+    },
+    /// Completion of one guarded existing LSP read operation.
+    EditorLspReadFinished {
+        request_id: u64,
+        scope: crate::tui::editor_lsp::EditorLspScope,
+        operation: crate::protocol::lsp::LspReadOperation,
+        result: Option<crate::protocol::lsp::LspReadResultDto>,
+        error: Option<String>,
+    },
     /// Completion of a bounded M006-D workspace tree walk. Carries the
     /// request id, the tree generation, and the root the walk was issued
     /// for, so a completion for a superseded walk or a workspace the user

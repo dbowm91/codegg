@@ -93,6 +93,22 @@ Do not build a workspace path from a display basename or open an LSP URI.
 
 ## Dialogs
 
+### M006-C editor LSP presentation
+
+The editor's F2–F7 actions consume existing daemon reads: F2 refreshes and
+lists diagnostics, F3 hover, F4 definition, F5 references, F6 document
+symbols, and F7 searches workspace symbols for the current word. Bind every
+completion to `EditorLspScope` and discard results after session/project/
+workspace/path/generation changes. Preserve complete diagnostics on
+`NotReady` or error and visibly mark the retained set stale. Do not add
+polling: the diagnostics publisher has no production driver.
+
+The LSP panel renders untrusted payloads as bounded text. Definition and
+symbol navigation requires the DTO's validated `workspace_relative_path`
+and must go through `open_editor`/`DocumentOpen`. Semantic spans are
+ephemeral, revision-bound, UTF-16 validated, and rejected as a whole on
+malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
+
 - `Dialog::Info` does NOT exist even though `components/dialogs/info.rs` does.
   Use `App::show_short_or_info(info_type, lines)`: toasts when <= 3 lines,
   otherwise opens a scrollable `InfoDialog`.

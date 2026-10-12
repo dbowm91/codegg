@@ -1680,6 +1680,27 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, operation, error, state,
             );
         }
+        TuiCommand::EditorDiagnosticsFinished {
+            request_id,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_diagnostics(
+                app, request_id, scope, result, error,
+            );
+        }
+        TuiCommand::EditorLspReadFinished {
+            request_id,
+            scope,
+            operation,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_lsp_read(
+                app, request_id, scope, operation, result, error,
+            );
+        }
         TuiCommand::FileTreeListed {
             request_id,
             generation,

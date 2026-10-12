@@ -268,6 +268,9 @@ pub struct EditorState {
     pub status: EditorStatus,
     /// Whether the attachment was opened requesting the writer lease.
     pub wants_writer: bool,
+    /// Diagnostics, read results, and semantic spans bound to this document
+    /// generation. Contains no document text.
+    pub lsp: crate::tui::editor_lsp::EditorLspState,
 }
 
 impl Default for EditorState {
@@ -281,6 +284,7 @@ impl Default for EditorState {
             notice: None,
             status: EditorStatus::Closed,
             wants_writer: false,
+            lsp: crate::tui::editor_lsp::EditorLspState::default(),
         }
     }
 }
@@ -343,6 +347,7 @@ impl EditorState {
         self.status = EditorStatus::Closed;
         self.notice = None;
         self.wants_writer = false;
+        self.lsp.reset();
     }
 }
 

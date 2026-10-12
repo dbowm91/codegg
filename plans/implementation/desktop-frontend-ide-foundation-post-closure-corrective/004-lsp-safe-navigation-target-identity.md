@@ -1,6 +1,6 @@
 # Desktop Frontend/IDE Post-Closure Corrective C004 — LSP Safe Navigation Target Identity
 
-Status: active
+Status: implemented; closed in `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/004-status.md`
 
 Repository baseline: `5fcfab317c446ec4d206a9b28c0cb22deb128368`
 

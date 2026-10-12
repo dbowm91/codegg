@@ -25,6 +25,14 @@ The current diagnostics change publisher has no production driver, so do not
 promise ongoing push updates or add implicit polling in a presentation-only
 change.
 
+The native TUI editor uses F2 for diagnostics, F3 for hover, F4 for
+definition, F5 for references, F6 for document symbols, and F7 for workspace
+symbol search. These are existing `LspDiagnosticsGet`/`LspReadGet` operations;
+bind results to the active editor identity and generation. Semantic tokens
+are only a presentation overlay for the exact controller revision that was
+queried; malformed UTF-16 ranges, overlap, unsupported types, or revision
+changes fall back to plain text.
+
 For location DTOs, preserve display `path` separately from optional
 `workspace_relative_path`. Only the daemon derives this locator after
 canonical containment under the session-authorized workspace. Treat it as

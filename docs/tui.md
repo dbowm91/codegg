@@ -289,6 +289,21 @@ security signal pipeline that can escalate them, are described in
 `docs/security-semantics.md`. The contracts are in
 `architecture/permission.md` and `architecture/security.md`.
 
+## Editor language features
+
+The editor can show current-file diagnostics and request hover, definition,
+references, document symbols, and workspace symbols from the daemon-owned
+language server. With the editor buffer focused, use F2 for diagnostics, F3
+for hover, F4 for definition, F5 for references, F6 for document symbols,
+and F7 to search workspace symbols for the word at the cursor. The result
+panel shows unavailable and not-ready states explicitly. A failed refresh
+keeps the previous complete diagnostics marked stale.
+
+Navigation opens only locations carrying the daemon-validated
+workspace-relative target; other results remain display-only. The TUI does
+not start language servers itself and does not claim live diagnostic push
+updates.
+
 ## Where to go next
 
 - `architecture/tui.md` — module map, async command pattern, focus model

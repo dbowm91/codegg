@@ -1,6 +1,6 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: active (Option A accepted in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
+Status: implemented; closed in `plans/closure/human-execution-corrective/004-status.md` (Option A accepted in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
 
 Repository baseline: `4c651b84` (C012 closeout/rebase; C004 ownership audit began 2026-10-12)
 
