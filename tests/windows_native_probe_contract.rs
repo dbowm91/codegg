@@ -10,6 +10,7 @@ use codegg::managed_process::{
 };
 use codegg::security::sandbox::SandboxLaunchSpec;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -31,12 +32,15 @@ enum Action {
     CargoVersion,
     DirectHostRead,
     JunctionHostRead,
+    CaseAliasHostRead,
+    ExtendedPathHostRead,
     HardlinkHostRead,
     AlternateStreamRead,
     SiblingHostRead,
     OutsideCreateWrite,
     PipeConnect,
     NullDeviceAccess,
+    UncHostReadUnavailable,
     InheritedHandleNotTransferred,
 }
 
@@ -54,7 +58,9 @@ enum State {
 struct Observation {
     backend: Backend,
     host_version: String,
+    host_privilege: String,
     token: String,
+    job_verified: bool,
     action: Action,
     state: State,
     expected: &'static str,
@@ -72,6 +78,8 @@ struct ProbeResources<'a> {
     hardlink: &'a Path,
     ads: &'a Path,
     sibling: &'a Path,
+    case_alias: &'a Path,
+    extended_path: &'a Path,
 }
 
 fn powershell() -> PathBuf {
@@ -88,6 +96,43 @@ fn find_executable(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+fn host_privilege() -> String {
+    std::env::var("CODEGG_C019_HOST_PRIVILEGE")
+        .unwrap_or_else(|_| "runner privilege metadata unavailable".to_owned())
+}
+
+fn resource_identity(path: &Path) -> String {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            let mut information = BY_HANDLE_FILE_INFORMATION::default();
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) }
+                == 0
+            {
+                return format!(
+                    "path={} identity_error={}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                );
+            }
+            let file_index = (u64::from(information.nFileIndexHigh) << 32)
+                | u64::from(information.nFileIndexLow);
+            format!(
+                "path={} volume={} file_index={} links={}",
+                path.display(),
+                information.dwVolumeSerialNumber,
+                file_index,
+                information.nNumberOfLinks
+            )
+        }
+        Err(error) => format!("path={} identity_error={error}", path.display()),
+    }
 }
 
 fn child_script(action: Action) -> &'static str {
@@ -109,6 +154,8 @@ fn child_script(action: Action) -> &'static str {
         }
         Action::DirectHostRead => "$p=$env:C019_CREDENTIAL",
         Action::JunctionHostRead => "$p=$env:C019_JUNCTION_CREDENTIAL",
+        Action::CaseAliasHostRead => "$p=$env:C019_CASE_ALIAS",
+        Action::ExtendedPathHostRead => "$p=$env:C019_EXTENDED_PATH",
         Action::HardlinkHostRead => "$p=$env:C019_HARDLINK",
         Action::AlternateStreamRead => "$p=$env:C019_ADS",
         Action::SiblingHostRead => "$p=$env:C019_SIBLING",
@@ -121,25 +168,29 @@ fn child_script(action: Action) -> &'static str {
         Action::NullDeviceAccess => {
             "$s=$null; try {$s=[IO.File]::Open('\\\\.\\NUL',[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); 'C019_RESULT=allowed'} catch { 'C019_RESULT=denied:'+$_.Exception.GetType().Name } finally {if ($s) {$s.Dispose()}}"
         }
+        Action::UncHostReadUnavailable => "'C019_RESULT=not_run'",
         Action::InheritedHandleNotTransferred => "'C019_RESULT=not_run'",
     }
 }
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
+    let token = "$whoami = Join-Path $env:SystemRoot 'System32\\whoami.exe'; $token = (& $whoami /all | ForEach-Object { $_.Trim() }) -join ';'; Write-Output ('C019_TOKEN=' + $token);";
     if matches!(
         action,
         Action::DirectHostRead
             | Action::JunctionHostRead
+            | Action::CaseAliasHostRead
+            | Action::ExtendedPathHostRead
             | Action::HardlinkHostRead
             | Action::AlternateStreamRead
             | Action::SiblingHostRead
     ) {
         format!(
-            "{base}; try {{ [IO.File]::ReadAllText($p) | Out-Null; 'C019_RESULT=leaked' }} catch {{ 'C019_RESULT=denied' }}"
+            "{token} {base}; try {{ [IO.File]::ReadAllText($p) | Out-Null; 'C019_RESULT=leaked' }} catch {{ 'C019_RESULT=denied' }}"
         )
     } else {
-        base.to_owned()
+        format!("{token} {base}")
     }
 }
 
@@ -155,6 +206,25 @@ async fn execute(
     pipe: &str,
     restricted: bool,
 ) -> Observation {
+    if matches!(action, Action::UncHostReadUnavailable) {
+        return Observation {
+            backend: Backend::TestOnlyAppContainer,
+            host_version: std::env::var("CODEGG_C019_HOST_VERSION")
+                .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
+            host_privilege: host_privilege(),
+            token: "not observed; UNC fixture unavailable".to_owned(),
+            job_verified: false,
+            action,
+            state: State::NotAvailable,
+            expected: "denied if a synthetic UNC resource is provisioned",
+            resource_identity: resource.display().to_string(),
+            child_evidence: String::new(),
+            provenance: format!("job=windows-c019 attempt={action:?}"),
+            error: Some("no isolated SMB fixture is configured on the hosted runner".to_owned()),
+            elapsed_ms: 0,
+            executed: false,
+        };
+    }
     let tool_available = match action {
         Action::GitInit | Action::GitStatus => git,
         Action::PythonVersion => python,
@@ -166,11 +236,13 @@ async fn execute(
             backend: Backend::TestOnlyAppContainer,
             host_version: std::env::var("CODEGG_C019_HOST_VERSION")
                 .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
+            host_privilege: host_privilege(),
             token: "not observed; tool unavailable".to_owned(),
+            job_verified: false,
             action,
             state: State::NotAvailable,
             expected: "allowed tool execution or denied protected resource",
-            resource_identity: resource.display().to_string(),
+            resource_identity: resource_identity(resource),
             child_evidence: String::new(),
             provenance: format!("job=windows-c019 attempt={action:?}"),
             error: Some("tool is not installed on this runner".to_owned()),
@@ -198,7 +270,7 @@ async fn execute(
         cwd,
         ProcessProvenance::new("windows-c019", format!("{action:?}")),
     );
-    request.timeout = Some(Duration::from_secs(15));
+    request.timeout = Some(Duration::from_secs(10));
     let mut environment = EnvironmentPolicy::sanitized()
         .with_var("C019_STAGE", stage.as_os_str())
         .with_var("C019_PIPE", pipe)
@@ -208,6 +280,8 @@ async fn execute(
             "C019_JUNCTION_CREDENTIAL",
             resources.junction_credential.as_os_str(),
         )
+        .with_var("C019_CASE_ALIAS", resources.case_alias.as_os_str())
+        .with_var("C019_EXTENDED_PATH", resources.extended_path.as_os_str())
         .with_var("C019_HARDLINK", resources.hardlink.as_os_str())
         .with_var("C019_ADS", resources.ads.as_os_str())
         .with_var("C019_SIBLING", resources.sibling.as_os_str())
@@ -239,11 +313,17 @@ async fn execute(
     };
 
     let started = std::time::Instant::now();
+    eprintln!("C019_START action={action:?} restricted={restricted}");
     let result = ManagedProcessService::run(request).await;
     let elapsed_ms = started.elapsed().as_millis();
-    let (state, evidence, error, executed) = match result {
+    let (state, evidence, error, executed, token) = match result {
         Ok(result) => {
             let output = result.stdout.to_string_lossy();
+            let token = output
+                .lines()
+                .find_map(|line| line.strip_prefix("C019_TOKEN="))
+                .unwrap_or("token details not emitted")
+                .to_owned();
             let state = if output.contains("C019_RESULT=allowed") {
                 State::Allowed
             } else if output.contains("C019_RESULT=denied") {
@@ -271,19 +351,23 @@ async fn execute(
             } else {
                 assert!(matches!(result.sandbox, SandboxExecutionOutcome::Disabled));
             }
-            (state, output, error, true)
+            (state, output, error, true, token)
         }
-        Err(error) => (State::Failed, String::new(), Some(error.to_string()), false),
+        Err(error) => (
+            State::Failed,
+            String::new(),
+            Some(error.to_string()),
+            false,
+            "child not started".to_owned(),
+        ),
     };
     Observation {
         backend,
         host_version: std::env::var("CODEGG_C019_HOST_VERSION")
             .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
-        token: if restricted {
-            "AppContainer package token verified; Job membership verified".to_owned()
-        } else {
-            "unrestricted managed child baseline".to_owned()
-        },
+        host_privilege: host_privilege(),
+        token,
+        job_verified: restricted && executed,
         action,
         state,
         expected: if matches!(
@@ -301,7 +385,7 @@ async fn execute(
         } else {
             "denied"
         },
-        resource_identity: resource.display().to_string(),
+        resource_identity: resource_identity(resource),
         child_evidence: evidence,
         provenance: format!("job=windows-c019 attempt={action:?}"),
         error,
@@ -323,8 +407,15 @@ async fn c019_shared_native_security_probe_contract() {
     std::fs::create_dir(&sibling).unwrap();
     let credential = host.join("synthetic-credential.txt");
     let sibling_secret = sibling.join("synthetic-sibling.txt");
+    let case_alias = host.join("SYNTHETIC-CREDENTIAL.TXT");
     std::fs::write(&credential, "synthetic-c019-secret").unwrap();
     std::fs::write(&sibling_secret, "synthetic-c019-sibling").unwrap();
+    let extended_path = PathBuf::from(format!(
+        r"\\?\{}",
+        std::fs::canonicalize(&credential)
+            .expect("canonical synthetic credential path")
+            .display()
+    ));
     let hardlink = host.join("credential-hardlink.txt");
     std::fs::hard_link(&credential, &hardlink).expect("synthetic hardlink");
     let ads = PathBuf::from(format!("{}:c019", credential.display()));
@@ -355,7 +446,13 @@ async fn c019_shared_native_security_probe_contract() {
         hardlink: &hardlink,
         ads: &ads,
         sibling: &sibling_secret,
+        case_alias: &case_alias,
+        extended_path: &extended_path,
     };
+    let host_dacl_before = codegg::managed_process::windows_acl_lease_dacl_snapshot(&host).unwrap();
+    let sibling_dacl_before =
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&sibling).unwrap();
+    let credential_before = std::fs::read(&credential).unwrap();
 
     let git = find_executable("git.exe");
     let python = find_executable("python.exe");
@@ -368,15 +465,22 @@ async fn c019_shared_native_security_probe_contract() {
         (Action::CargoVersion, Path::new("cargo.exe")),
         (Action::DirectHostRead, credential.as_path()),
         (Action::JunctionHostRead, Path::new("synthetic-junction")),
+        (Action::CaseAliasHostRead, case_alias.as_path()),
+        (Action::ExtendedPathHostRead, extended_path.as_path()),
         (Action::HardlinkHostRead, hardlink.as_path()),
         (Action::AlternateStreamRead, ads.as_path()),
         (Action::SiblingHostRead, sibling_secret.as_path()),
         (Action::OutsideCreateWrite, outside_write.as_path()),
         (Action::PipeConnect, Path::new("synthetic-c019-pipe")),
         (Action::NullDeviceAccess, Path::new(r"\Device\Null")),
+        (
+            Action::UncHostReadUnavailable,
+            Path::new("unc-synthetic-host-fixture-not-configured"),
+        ),
     ];
     let mut observations = Vec::with_capacity(actions.len());
     for (action, resource) in actions {
+        eprintln!("C019_FIXTURE action={action:?}");
         observations.push(
             execute(
                 action,
@@ -415,7 +519,9 @@ async fn c019_shared_native_security_probe_contract() {
         backend: Backend::TestOnlyAppContainer,
         host_version: std::env::var("CODEGG_C019_HOST_VERSION")
             .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
+        host_privilege: host_privilege(),
         token: "not observed; unsupported handle transfer probe".to_owned(),
+        job_verified: false,
         action: Action::InheritedHandleNotTransferred,
         state: State::NotAvailable,
         expected: "not transferred by the managed handle allowlist",
@@ -435,9 +541,27 @@ async fn c019_shared_native_security_probe_contract() {
     let summary = serde_json::json!({
         "contract": "codegg.windows_native_probe.v1",
         "host": "windows-hosted-runner",
+        "fixture_integrity": {
+            "host_dacl_before_sha256": format!("{:x}", Sha256::digest(&host_dacl_before)),
+            "sibling_dacl_before_sha256": format!("{:x}", Sha256::digest(&sibling_dacl_before)),
+            "host_credential_unchanged": std::fs::read(&credential).unwrap() == credential_before,
+            "host_dacl_unchanged": codegg::managed_process::windows_acl_lease_dacl_snapshot(&host).unwrap() == host_dacl_before,
+            "sibling_dacl_unchanged": codegg::managed_process::windows_acl_lease_dacl_snapshot(&sibling).unwrap() == sibling_dacl_before,
+            "credential_identity": resource_identity(&credential),
+            "hardlink_identity": resource_identity(&hardlink),
+        },
         "observations": observations,
     });
     eprintln!("C019_REPORT={}", serde_json::to_string(&summary).unwrap());
+    assert_eq!(std::fs::read(&credential).unwrap(), credential_before);
+    assert_eq!(
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&host).unwrap(),
+        host_dacl_before
+    );
+    assert_eq!(
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&sibling).unwrap(),
+        sibling_dacl_before
+    );
     assert!(
         observations.iter().any(|observation| observation.executed),
         "C019 must execute at least one actual child operation"

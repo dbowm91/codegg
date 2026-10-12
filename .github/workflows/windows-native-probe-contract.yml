@@ -41,6 +41,13 @@ jobs:
           "Version: $($os.Version)"
           "Build: $($os.BuildNumber)"
           "CODEGG_C019_HOST_VERSION=$($os.Caption) $($os.Version) build $($os.BuildNumber)" | Add-Content -LiteralPath $env:GITHUB_ENV
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          $high = [bool]((whoami /groups) | Select-String 'S-1-16-12288')
+          "Runner identity: $($identity.Name); Administrator: $admin; HighIntegrity: $high"
+          "CODEGG_C019_HOST_PRIVILEGE=identity=$($identity.Name); administrator=$admin; high_integrity=$high" | Add-Content -LiteralPath $env:GITHUB_ENV
+          Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' | Select-Object DisplayVersion, CurrentBuild, UBR
           Get-HotFix | Sort-Object InstalledOn | Select-Object -Last 8 | Format-Table -AutoSize
           rustc --version --verbose
           git --version
@@ -51,3 +58,8 @@ jobs:
         env:
           CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c019-daemon
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_native_probe_contract -- --nocapture --test-threads=1
+
+      - name: C019 restricted-child timeout, cancellation, and descendant coverage
+        env:
+          CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c019-lifecycle
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_restricted_managed_process -- --nocapture --test-threads=1
