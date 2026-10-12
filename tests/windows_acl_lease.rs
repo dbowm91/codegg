@@ -1,8 +1,8 @@
 #![cfg(all(windows, feature = "windows-sandbox-test-support"))]
 
 use codegg::managed_process::{
-    ManagedProcessOutputChunk, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
-    SandboxExecutionOutcome, SandboxRequest, TerminationReason,
+    ManagedProcessError, ManagedProcessOutputChunk, ManagedProcessRequest, ManagedProcessService,
+    ProcessProvenance, SandboxExecutionOutcome, SandboxRequest, TerminationReason,
 };
 use codegg::security::sandbox::SandboxLaunchSpec;
 use std::ffi::OsString;
@@ -18,6 +18,55 @@ fn powershell() -> PathBuf {
         .join("WindowsPowerShell")
         .join("v1.0")
         .join("powershell.exe")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windows_acl_lease_rejects_symlink_root_before_child_creation() {
+    let fixture = tempfile::tempdir().unwrap();
+    let target = fixture.path().join("actual-root");
+    let link = fixture.path().join("linked-root");
+    std::fs::create_dir(&target).unwrap();
+    std::os::windows::fs::symlink_dir(&target, &link)
+        .expect("elevated disposable Windows runner can create a directory symlink");
+    let marker = fixture.path().join("child-started.txt");
+    let executable = powershell();
+    let script = "[IO.File]::WriteAllText($env:CODEGG_CHILD_MARKER, 'started')";
+    let args = vec![
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-Command"),
+        OsString::from(script),
+    ];
+    let mut request = ManagedProcessRequest::new(
+        std::iter::once(executable.clone().into_os_string())
+            .chain(args.iter().cloned())
+            .collect(),
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32"),
+        ProcessProvenance::new("windows-acl-lease", "reparse-root"),
+    );
+    request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+        target: executable,
+        args: args
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect(),
+        read_paths: Vec::new(),
+        write_paths: vec![link],
+        deny_paths: Vec::new(),
+    });
+    request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
+        .with_var("CODEGG_CHILD_MARKER", marker.as_os_str());
+
+    let result = ManagedProcessService::run(request).await;
+    assert!(
+        matches!(&result, Err(ManagedProcessError::SandboxFailed(_))),
+        "reparse root must fail closed before child creation: {result:?}"
+    );
+    assert!(!marker.exists(), "rejected child must not have started");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

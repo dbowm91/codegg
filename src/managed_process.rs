@@ -901,6 +901,11 @@ async fn run_windows_test_restricted(
                 .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Deny)),
         )
     {
+        windows_acl_lease::validate_input_directory(&path).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "ACL lease root is unavailable or unsupported: {error}"
+            ))
+        })?;
         let canonical = std::fs::canonicalize(&path).map_err(|error| {
             ManagedProcessError::SandboxFailed(format!("ACL lease root is unavailable: {error}"))
         })?;

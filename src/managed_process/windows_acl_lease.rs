@@ -240,18 +240,51 @@ pub(crate) fn dacl_snapshot(path: &Path) -> io::Result<Vec<u8>> {
     get_dacl(path)
 }
 
-fn validate_journal_root(path: &Path) -> io::Result<()> {
-    identify_owned_directory(path).map(|_| ())
-}
-
-fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, Vec<u8>, u32, u64)> {
-    let link_metadata = fs::symlink_metadata(path)?;
-    if !link_metadata.is_dir() {
+/// Validate the caller's original path before canonicalization can hide a
+/// final-component symlink or junction from lease admission.
+pub(crate) fn validate_input_directory(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "ACL leases support only non-reparse directories",
         ));
     }
+    let name = wide(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as _, &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "ACL lease path is a reparse point",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_journal_root(path: &Path) -> io::Result<()> {
+    identify_owned_directory(path).map(|_| ())
+}
+
+fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, Vec<u8>, u32, u64)> {
+    validate_input_directory(path)?;
     let canonical = fs::canonicalize(path)?;
     let name = wide(&canonical);
     let handle = unsafe {
