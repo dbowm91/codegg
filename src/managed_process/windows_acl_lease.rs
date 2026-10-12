@@ -243,38 +243,47 @@ pub(crate) fn dacl_snapshot(path: &Path) -> io::Result<Vec<u8>> {
 /// Validate the caller's original path before canonicalization can hide a
 /// final-component symlink or junction from lease admission.
 pub(crate) fn validate_input_directory(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !path.is_absolute() {
         return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "ACL leases support only non-reparse directories",
+            io::ErrorKind::InvalidInput,
+            "ACL lease roots must be absolute paths",
         ));
     }
-    let name = wide(path);
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            ptr::null_mut(),
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
-    }
-    let handle = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
-    let mut information = BY_HANDLE_FILE_INFORMATION::default();
-    if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as _, &mut information) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "ACL lease path is a reparse point",
-        ));
+    for component in path.ancestors().filter(|part| !part.as_os_str().is_empty()) {
+        let metadata = fs::symlink_metadata(component)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "ACL leases support only non-reparse directory paths",
+            ));
+        }
+        let name = wide(component);
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as _, &mut information) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "ACL lease path contains a reparse point",
+            ));
+        }
     }
     Ok(())
 }

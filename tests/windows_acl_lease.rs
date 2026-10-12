@@ -28,7 +28,27 @@ async fn windows_acl_lease_rejects_symlink_root_before_child_creation() {
     std::fs::create_dir(&target).unwrap();
     std::os::windows::fs::symlink_dir(&target, &link)
         .expect("elevated disposable Windows runner can create a directory symlink");
-    let marker = fixture.path().join("child-started.txt");
+    assert_reparse_root_rejected(link, fixture.path().join("child-started.txt")).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn windows_acl_lease_rejects_reparse_ancestor_before_child_creation() {
+    let fixture = tempfile::tempdir().unwrap();
+    let target_parent = fixture.path().join("actual-parent");
+    let linked_parent = fixture.path().join("linked-parent");
+    std::fs::create_dir(&target_parent).unwrap();
+    let nested = target_parent.join("nested-root");
+    std::fs::create_dir(&nested).unwrap();
+    std::os::windows::fs::symlink_dir(&target_parent, &linked_parent)
+        .expect("elevated disposable Windows runner can create a directory symlink");
+    assert_reparse_root_rejected(
+        linked_parent.join("nested-root"),
+        fixture.path().join("child-started.txt"),
+    )
+    .await;
+}
+
+async fn assert_reparse_root_rejected(root: PathBuf, marker: PathBuf) {
     let executable = powershell();
     let script = "[IO.File]::WriteAllText($env:CODEGG_CHILD_MARKER, 'started')";
     let args = vec![
@@ -55,7 +75,7 @@ async fn windows_acl_lease_rejects_symlink_root_before_child_creation() {
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
         read_paths: Vec::new(),
-        write_paths: vec![link],
+        write_paths: vec![root],
         deny_paths: Vec::new(),
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
