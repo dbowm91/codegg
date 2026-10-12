@@ -3443,10 +3443,42 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         }
     }
 
+    // Resolve the launch directory into typed project/workspace identities
+    // before anything session-scoped runs. The TUI opens in a compatibility
+    // tab that only carries the directory, and the daemon resolves a
+    // directory locator by catalog lookup only — it never registers on a
+    // miss. Without this bootstrap, launching CodeGG for the first time in a
+    // directory left every session-scoped request failing with
+    // `project_context_required`, and the startup session create failed
+    // silently. Both registration steps are idempotent, so a known
+    // directory re-resolves to the same ids. Failures are non-fatal: the TUI
+    // still renders and reports the specific error.
+    if app.core_client.is_some() && app.active_project_id().is_none() {
+        match app
+            .bootstrap_launch_project_context(std::path::Path::new(&project_dir))
+            .await
+        {
+            Ok(context) => {
+                tracing::debug!(
+                    project_id = %context.project_id,
+                    workspace_id = %context.workspace_id,
+                    "launch project context resolved"
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: could not register {} as a project: {e}",
+                    project_dir
+                );
+            }
+        }
+    }
+
     // Deterministic integration seam: exercise ordinary daemon-client and
     // TUI initialization without entering the terminal event loop. This is
     // intentionally opt-in and test-only; normal invocations continue into
-    // the real event loop below.
+    // the real event loop below. It sits after the launch-directory bootstrap
+    // so the probe observes the same catalog registration a real launch does.
     if std::env::var_os("CODEGG_TUI_STARTUP_PROBE").is_some() {
         println!("TUI startup probe reached event-loop boundary");
         return Ok(());

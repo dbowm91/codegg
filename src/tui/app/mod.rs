@@ -602,6 +602,22 @@ pub enum InitialSessionRequest {
     None,
 }
 
+/// Daemon-assigned identities for the directory CodeGG was launched in.
+///
+/// Produced by [`App::bootstrap_launch_project_context`]. The ids are the
+/// canonical typed identities; `workspace_root` stays a locator and is never
+/// sent in an identity field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchProjectContext {
+    pub project_id: String,
+    pub workspace_id: String,
+}
+
+/// Registration source recorded for a directory CodeGG registered because it
+/// was launched there. Distinguishes launch-time bootstrap from an explicit
+/// "register this project" act in the project picker.
+pub const LAUNCH_REGISTRATION_SOURCE: &str = "tui-launch";
+
 impl App {
     pub fn new(project_dir: String) -> Self {
         Self::with_config(project_dir, None)
@@ -11819,20 +11835,33 @@ impl App {
                         }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
+                        // Surface this: the startup session create is the only
+                        // thing that makes the TUI usable in a fresh
+                        // directory, and a warn-only failure left the user
+                        // staring at an empty TUI with no explanation.
                         tracing::warn!(
                             "load_initial_session_via_core(New): core error {}: {}",
                             code,
                             message
                         );
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Session creation failed: {}: {}", code, message));
                     }
                     Ok(other) => {
                         tracing::warn!(
                             "load_initial_session_via_core(New): unexpected response {:?}",
                             other
                         );
+                        self.messages_state
+                            .toasts
+                            .error("Session creation failed: unexpected daemon response");
                     }
                     Err(e) => {
                         tracing::warn!("load_initial_session_via_core(New): request failed: {}", e);
+                        self.messages_state
+                            .toasts
+                            .error(&format!("Session creation failed: {}", e));
                     }
                 }
             }
@@ -11910,6 +11939,111 @@ impl App {
                 0
             }
         }
+    }
+
+    /// Resolve the launch directory into daemon project/workspace identities,
+    /// registering it on first use.
+    ///
+    /// The TUI opens in a compatibility tab that carries only
+    /// `workspace_root`, but every session-scoped request needs typed
+    /// identities. The daemon resolves a directory locator by catalog lookup
+    /// only (`ProjectContextResolver::resolve_directory`) and never registers
+    /// on a miss, so a directory CodeGG has not seen before could not create
+    /// a session at all: `SessionCreate` failed with
+    /// `project_context_required` and the TUI came up with no session and no
+    /// visible error.
+    ///
+    /// Both steps are idempotent — `WorkspaceRegistry::get_or_register`
+    /// returns the same workspace for a known root, and
+    /// `ProjectCatalog::register_local_project` returns the already-bound
+    /// project instead of creating a second one — so re-running this on every
+    /// launch in a known directory resolves to the same ids.
+    ///
+    /// The directory is the frontend's own launch directory, not a
+    /// client-supplied path, which is what the project picker gates: a remote
+    /// attach must not be able to name an arbitrary path on a daemon that may
+    /// share a different filesystem.
+    pub async fn bootstrap_launch_project_context(
+        &mut self,
+        directory: &std::path::Path,
+    ) -> Result<LaunchProjectContext, String> {
+        let core_client = self
+            .core_client
+            .clone()
+            .ok_or_else(|| "core client is not attached".to_string())?;
+        let root = directory.to_string_lossy().into_owned();
+
+        // Phase 1: workspace identity for the root. Idempotent.
+        let workspace_id = match core_client
+            .request(crate::core::new_request(
+                format!("launch-workspace-{}", uuid::Uuid::new_v4()),
+                CoreRequest::WorkspaceRegister { root: root.clone() },
+            ))
+            .await
+        {
+            Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
+            Ok(CoreResponse::Error { code, message }) => {
+                return Err(format!("workspace registration failed ({code}): {message}"))
+            }
+            Ok(other) => {
+                return Err(format!(
+                    "workspace registration returned an unexpected response: {other:?}"
+                ))
+            }
+            Err(e) => return Err(format!("workspace registration request failed: {e}")),
+        };
+
+        // Phase 2: project identity bound to that workspace. Idempotent —
+        // an existing binding returns the bound project unchanged.
+        let display_name = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| root.clone());
+        let project_id = match core_client
+            .request(crate::core::new_request(
+                format!("launch-project-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectRegister {
+                    request: crate::protocol::dto::ProjectRegisterRequestDto {
+                        workspace_id: workspace_id.clone(),
+                        display_name,
+                        description: None,
+                        tags: Vec::new(),
+                        repository_id: None,
+                        source: LAUNCH_REGISTRATION_SOURCE.to_string(),
+                    },
+                },
+            ))
+            .await
+        {
+            Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
+            Ok(CoreResponse::Error { code, message }) => {
+                return Err(format!("project registration failed ({code}): {message}"))
+            }
+            Ok(other) => {
+                return Err(format!(
+                    "project registration returned an unexpected response: {other:?}"
+                ))
+            }
+            Err(e) => return Err(format!("project registration request failed: {e}")),
+        };
+
+        // Keep the active tab's session binding; only the project/workspace
+        // identities are being established here.
+        let session_id = self
+            .project_tabs
+            .active()
+            .and_then(|tab| tab.session_id.clone());
+        self.project_tabs.set_active_identities(
+            Some(project_id.clone()),
+            Some(workspace_id.clone()),
+            session_id,
+        );
+
+        Ok(LaunchProjectContext {
+            project_id,
+            workspace_id,
+        })
     }
 
     /// Attach the SQLite-backed user-preferences store. Should be called

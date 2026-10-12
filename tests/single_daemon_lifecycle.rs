@@ -273,6 +273,133 @@ async fn plain_entrypoint_reaches_tui_startup_boundary_without_prestarted_daemon
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn plain_launch_registers_the_launch_directory_as_a_project() {
+    // The reported failure: launching CodeGG in a directory it had never seen
+    // left every session-scoped request failing with
+    // `project_context_required`, because the daemon resolves a directory
+    // locator by catalog lookup only. This drives the real binary against a
+    // real daemon over the real socket transport and asserts the catalog ends
+    // up holding both a workspace and a project for the launch directory.
+    let root = temp_root("launch-bootstrap");
+    let data_root = root.join("data");
+    let workspace = temp_root("launch-ws");
+    // `temp_root` only creates the labelled parent; the uuid leaf still has to
+    // exist because the probe runs with it as its cwd.
+    std::fs::create_dir_all(&workspace).expect("create launch workspace dir");
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+    // `codegg_binary()` may hand back a path relative to the test process's
+    // cwd (its last-resort branch probes `target/debug`). Setting
+    // `current_dir` would then resolve the program against the launch
+    // directory and fail to spawn, so pin it absolute first.
+    let bin = bin.canonicalize().unwrap_or(bin);
+
+    let output = Command::new(&bin)
+        .current_dir(&workspace)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .env("CODEGG_TUI_STARTUP_PROBE", "1")
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["--no-session"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "launch probe could not spawn {bin:?}: {e:?} (cwd {})",
+                workspace.display()
+            )
+        });
+    assert!(
+        output.status.success(),
+        "launch probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("could not register"),
+        "the launch directory must bootstrap cleanly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stop = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("stop launch-bootstrap daemon");
+    assert!(stop.status.success(), "launch-bootstrap daemon stop failed");
+
+    // Read the catalog straight out of the isolated daemon database.
+    // `DaemonPaths::default_data_root()` maps `CODEGG_DATA_HOME=<dir>` to
+    // `<dir>/codegg`, and the catalog lives at `<data root>/codegg.db`, so
+    // the override passed here is the already-resolved root, not the raw env
+    // value.
+    let db = codegg::storage::DaemonPaths::with_overrides(Some(data_root.join("codegg")), None)
+        .catalog_db_path();
+    assert!(
+        db.exists(),
+        "the daemon must have created its catalog at {}",
+        db.display()
+    );
+    let canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.clone());
+    let canonical = canonical.to_string_lossy().into_owned();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
+        .await
+        .expect("open isolated daemon database");
+
+    let workspaces: Vec<String> = sqlx::query_scalar("SELECT canonical_root FROM workspace")
+        .fetch_all(&pool)
+        .await
+        .expect("read workspace rows");
+    assert!(
+        workspaces.iter().any(|root| root == &canonical),
+        "the launch directory must be registered as a workspace; got {workspaces:?}"
+    );
+
+    let projects: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM logical_project WHERE archived_at IS NULL")
+            .fetch_one(&pool)
+            .await
+            .expect("read project rows");
+    assert_eq!(
+        projects, 1,
+        "the launch directory must be bound to exactly one project"
+    );
+
+    let bound: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workspace_project_binding wpb \
+         JOIN workspace w ON w.id = wpb.workspace_id \
+         WHERE w.canonical_root = ?",
+    )
+    .bind(&canonical)
+    .fetch_one(&pool)
+    .await
+    .expect("read binding rows");
+    assert_eq!(
+        bound, 1,
+        "the workspace must resolve to a bound project so directory lookup succeeds"
+    );
+
+    pool.close().await;
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::remove_dir_all(&workspace).ok();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn second_daemon_start_against_live_daemon_does_not_steal_lock() {
     let root = temp_root("second");
     let paths = DaemonPaths::with_root(root.clone());
