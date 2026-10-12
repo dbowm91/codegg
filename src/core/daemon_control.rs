@@ -255,9 +255,6 @@ impl CoreDaemon {
     /// holding the turn lock semantics of the caller. On store
     /// conflict the caller must roll back the in-memory turn (the
     /// store changed nothing for the loser).
-    // Keep the admission tuple explicit at this authority boundary: grouping
-    // these correlated identities into an untyped bag obscures the checks.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire_turn_controller_with_promotions(
         &self,
         admission: TurnControllerAdmission<'_>,
