@@ -120,10 +120,16 @@ root and lifecycle modules.
   the host claims `Esc`/`q` as exits and would otherwise make `q` untypable
   while composing. `PanelKey::PassThrough` exists only for panels that hold
   no draft (the chat panel passes `i`/`a` to the composer); a panel with a
-  live buffer must still consume everything. Panels get named borrows via
-  `PanelCtx` (never `&App`) and express every mutation as a `TuiMsg` routed
-  into an existing command seam. Project binding is resolved by
-  `commands/panels.rs`, not by the panel. Key precedence in `App::on_key`:
+  live buffer must still consume everything. A verb that carries text to
+  prefill cannot pass through — the chat panel's `r`/`e` emit
+  `TuiMsg::ChatComposerSeed` instead, so the reply target or replaced body
+  is not stranded. Panels get named borrows via `PanelCtx` (never `&App`)
+  and express every mutation as a `TuiMsg` routed into an existing command
+  seam. A panel declares its own keys through `SidePanel::composer_hints`,
+  which render on one contextual line directly above the composer — that is
+  the seam for adding the next panel, so do not grow per-panel footers.
+  Project binding is resolved by `commands/panels.rs`, not by the panel.
+  Key precedence in `App::on_key`:
   modals → timeline → command mode → completions → change review → **side
   panel (Normal only)** → Workspace → Editor → composer.
 - **Focus moves and the input target are Normal-mode, Shift-qualified, and
@@ -136,11 +142,39 @@ root and lifecycle modules.
   `Build` automatically. The composer renders `[NOR|INS] [agent] [BUILD]
   [CHAT]` and `send_prompt` reads the same value; when `Chat` is armed but
   unbound, text is dropped with a warning rather than rerouted to the agent.
-- **The chat panel is a viewer.** It has no composer buffer, no reply/edit
-  verbs, and never owns text — one bottom composer, two destinations. Its
-  destination row names the armed target and draws a `▸` marker only while
-  it holds the keyboard; when unbound it renders `No project bound` instead
-  of an armed-looking row.
+- **`/chat` and the chat panel are one implementation, not two.**
+  `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
+  viewport anchor, and the hints; each surface owns only its composer. They
+  were peers with a copied keymap and drifted until the panel could neither
+  reply nor edit — fix a verb in the browser, never in one surface. The
+  browser holds no text: a verb that needs typing returns
+  `ChatKeyAction::Compose` and the *host* materializes the editor (the
+  dialog's own composer, or `PromptState::chat_seed` for the shared one).
+- **The chat panel holds no composer buffer** — one bottom composer, two
+  destinations. Its destination row names the armed target and draws a `▸`
+  marker only while it holds the keyboard; when unbound it renders
+  `No project bound` instead of an armed-looking row.
+- **An armed chat seed outranks panel focus.** Pressing `r` seeds the
+  composer with `@author ` and a reply target; letting a later focus move
+  redirect that into an agent prompt would be the worst possible outcome, so
+  `App::input_target()` returns `Chat` while `PromptState::chat_seed` is set,
+  the badge shows `[REPLY]`/`[EDIT]`, and Normal-mode `Esc` cancels the
+  context without discarding the typed text.
+- **Selection uses `bg`, not `fg`.** `theme.selection` is a background; using
+  it as a foreground painted selected message authors dark-on-dark. Pair it
+  with `fg(theme.foreground)`. Unselected bodies are `foreground`, not
+  `muted` — dimming the whole transcript whenever nothing was unread made
+  the common case the unreadable one.
+- **Chat surfaces open on the newest message and follow the tail.**
+  `ChatBrowser::follow_tail` starts true; `k` unpins, `j` past the newest and
+  `G` re-pin. `sync` runs on every render and snapshot, not only on
+  navigation. A cursor starting at index 0 made a busy channel look empty.
+- **`@` is not the same trigger in both destinations.** `@` opens the
+  agent/file completion popup for the agent session and Enter accepts it;
+  against chat it is a mention, and `update_completions` skips that branch
+  when `input_target() == Chat`. Leaving it enabled made Enter insert an
+  agent name instead of sending — and `r` seeds `@author `, so it broke
+  every reply.
 - **Multi-modifier chords are `{CONTROL, ALT}` only.** The TUI never pushes
   keyboard-enhancement flags (`tui/terminal.rs` does raw mode, bracketed
   paste, mouse capture only), so the terminal is in legacy xterm encoding where

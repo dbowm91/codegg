@@ -153,6 +153,9 @@ impl App {
                     "This daemon does not support loading older chat history — restart or upgrade the daemon",
                 );
             }
+            TuiMsg::ChatComposerSeed(seed) => {
+                self.arm_chat_composer(seed);
+            }
             TuiMsg::ProjectInitApprove => {
                 let Some(draft) = self.dialog_state.project_init_draft.take() else {
                     return;

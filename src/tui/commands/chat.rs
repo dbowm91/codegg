@@ -1690,7 +1690,22 @@ pub(crate) fn route_composer_to_chat(app: &mut App, text: &str) -> bool {
     let Some(project_id) = app.chat_panel_project.clone() else {
         return false;
     };
-    start_chat_send(app, project_id, trimmed.to_string(), None);
+    // An armed seed decides what this send *means*: a body replacement or a
+    // threaded reply, rather than a plain message. Read it as a value and
+    // clear it after the seam runs, so a failed send still loses only the
+    // context — the body itself is restored into the project draft by the
+    // seam, exactly as an unseeded failed send would be.
+    let seed = app.prompt_state.chat_seed.clone();
+    match seed.as_ref().and_then(|seed| seed.edit_target.clone()) {
+        Some(message_id) => start_chat_edit(app, project_id, message_id, trimmed.to_string()),
+        None => start_chat_send(
+            app,
+            project_id,
+            trimmed.to_string(),
+            seed.and_then(|seed| seed.reply_to),
+        ),
+    }
+    app.prompt_state.chat_seed = None;
     app.prompt_state.prompt.clear();
     app.prompt_state.show_completions = false;
     true

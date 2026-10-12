@@ -251,6 +251,20 @@ pub struct PanelCtx<'a> {
 }
 
 /// A swappable side panel. See [`SidePanelId`] for the extension procedure.
+/// Read-only context for [`SidePanel::composer_hints`].
+///
+/// Deliberately narrower than [`PanelCtx`]: a hint is display-only, and
+/// taking the full panel context would force the caller to hand out
+/// `&mut` borrows of the sidebar and chat state just to read a string. The
+/// narrow shape also makes the seam cheap enough to call during render.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelHints<'a> {
+    /// Whether the panel currently owns the keyboard.
+    pub focused: bool,
+    /// Daemon project id the chat panel is bound to, if any.
+    pub chat_project: Option<&'a str>,
+}
+
 pub trait SidePanel {
     fn id(&self) -> SidePanelId;
 
@@ -281,6 +295,19 @@ pub trait SidePanel {
     /// command. The host drops focus only once the panel declines.
     fn owns_exit_key(&self, _key: KeyEvent) -> bool {
         false
+    }
+
+    /// The keys that apply to *this* panel, rendered on the shared hint line
+    /// directly above the composer while it holds the keyboard.
+    ///
+    /// This is the generalisation seam. A panel declares the verbs it owns
+    /// and the user reads them next to the input they modify, instead of
+    /// every surface growing its own footer — and adding the next panel is
+    /// still one enum variant, one `SidePanelId::ALL` entry, and one impl.
+    /// `None` means "no hints"; the default keeps an existing panel's
+    /// behavior unchanged.
+    fn composer_hints(&self, _hints: &PanelHints<'_>) -> Option<String> {
+        None
     }
 
     /// Called when this panel becomes active. Default: nothing.
@@ -368,6 +395,36 @@ impl SidePanelHost {
             InputTarget::Chat
         } else {
             InputTarget::Build
+        }
+    }
+
+    /// The contextual key line for whatever currently owns the keyboard.
+    ///
+    /// `None` when no panel is focused: the composer is aimed at the agent
+    /// session, and its hints belong to the session surface, not to a panel
+    /// the user is not in.
+    /// Selected-message index of the chat panel.
+    ///
+    /// Exposed so a caller can describe chat position (and so the parity
+    /// tests can observe the cursor without reaching through a private
+    /// panel field). Meaningless while the chat panel is not the active one.
+    pub fn chat_cursor(&self) -> usize {
+        self.chat.cursor()
+    }
+
+    pub fn composer_hints(&self, chat_project: Option<&str>) -> Option<String> {
+        if !self.is_focused() {
+            return None;
+        }
+        let hints = PanelHints {
+            focused: true,
+            chat_project,
+        };
+        // Read-only dispatch: a hint must not require an exclusive borrow of
+        // the panel, or the composer row could not ask for it during render.
+        match self.active {
+            SidePanelId::Session => self.session.composer_hints(&hints),
+            SidePanelId::Chat => self.chat.composer_hints(&hints),
         }
     }
 

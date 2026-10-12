@@ -103,26 +103,43 @@ impl App {
         // absorbs the difference. Carving them back out of the prompt chunk
         // instead would silently shrink the input by up to
         // `MAX_TODO_STRIP_TASKS` rows every time the list was expanded.
+        // The contextual key line sits directly above the input and is
+        // reserved from the prompt allocation for the same reason the todo
+        // strip is: carving it out afterwards would shrink the input every
+        // time a panel took focus.
+        let hint_rows = u16::from(self.composer_hint_text().is_some());
         let prompt_height = self
             .prompt_state
             .prompt
             .needed_height(max_prompt_height)
-            .saturating_add(todo_rows);
+            .saturating_add(todo_rows)
+            .saturating_add(hint_rows);
         let session_chunks = self
             .ui_state
             .layout
             .session_layout(pane_area, Some(prompt_height));
 
-        // Carve the todo strip off the top of the prompt chunk so it sits
-        // directly above the input.
-        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && session_chunks[2].height > todo_rows {
+        // Carve the hint line, then the todo strip, off the top of the
+        // prompt chunk. Order matters: hints belong closer to the input than
+        // the task strip does.
+        let mut available = session_chunks[2];
+        let mut hint_chunk = None;
+        if hint_rows > 0 && available.height > hint_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(hint_rows), Constraint::Min(1)])
+                .split(available);
+            hint_chunk = Some(split[0]);
+            available = split[1];
+        }
+        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
-                .split(session_chunks[2]);
+                .split(available);
             (split[1], Some(split[0]))
         } else {
-            (session_chunks[2], None)
+            (available, None)
         };
         self.todo_area = todo_chunk;
         self.viewport_area = Some(session_chunks[1]);
@@ -162,6 +179,7 @@ impl App {
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
+        self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
@@ -1059,6 +1077,39 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
+    /// The contextual key line for whatever currently owns the keyboard.
+    ///
+    /// Rendered from the panel's own `composer_hints`, so a panel advertises
+    /// its verbs once and they appear next to the input they modify. Kept out
+    /// of each panel's own chrome: inside the panel they described the
+    /// panel, while the keys actually operate on the shared composer.
+    fn render_composer_hints(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        let Some(area) = chunk else {
+            return;
+        };
+        if area.width < 4 || area.height == 0 {
+            return;
+        }
+        let Some(text) = self.composer_hint_text() else {
+            return;
+        };
+        let budget = usize::from(area.width).saturating_sub(4);
+        let theme = &self.ui_state.theme;
+        let line = Line::from(vec![
+            Span::styled(
+                " \u{258c} ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                crate::tui::wrap::ellipsize_to_width(&text, budget),
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
@@ -1119,14 +1170,34 @@ impl App {
             InputMode::Insert => "[INS]",
             InputMode::Normal => "[NOR]",
         };
+        // An armed chat reply/edit is a *third* state neither badge covers:
+        // `[CHAT]` says the destination but not that Enter will thread or
+        // replace a specific message, which is exactly what a user needs to
+        // be reminded of before pressing it.
+        let context_badge = self
+            .prompt_state
+            .chat_seed
+            .as_ref()
+            .filter(|seed| seed.is_contextual())
+            .map(|seed| {
+                Span::styled(
+                    format!("[{}] ", seed.label().to_uppercase()),
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
         // `[NOR] [agent] [BUILD] [CHAT]` — one row carrying the mode, the
-        // agent that will run the prompt, and both possible destinations.
-        let mode_indicator = Line::from(vec![
+        // agent that will run the prompt, and both possible destinations,
+        // plus the armed chat context when there is one.
+        let mut badge_spans = vec![
             Span::styled(mode_label.to_string(), mode_span_style),
             Span::styled(agent_badge.clone(), mode_span_style),
             target_badge.spans[0].clone(),
             target_badge.spans[1].clone(),
-        ]);
+        ];
+        badge_spans.extend(context_badge);
+        let mode_indicator = Line::from(badge_spans);
         let session_prefix = match &self.session_state.session_status {
             SessionStatus::Working => Span::styled(
                 " ● ",

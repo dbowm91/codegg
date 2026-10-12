@@ -18,7 +18,7 @@ use crate::tui::app::TuiMsg;
 use crate::tui::components::sidebar::SidebarActivation;
 use crate::tui::input::InputAction;
 
-use super::{PanelCtx, PanelKey, SidePanel, SidePanelId};
+use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
 
 /// Session projection panel. Stateless — all view state lives in
 /// `SidebarWidget`.
@@ -48,6 +48,12 @@ impl SidePanel for SessionPanel {
     /// always return to the composer.
     fn owns_exit_key(&self, _key: KeyEvent) -> bool {
         false
+    }
+
+    fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
+        hints.focused.then(|| {
+            "SESSIONS · jk move · ↵ open · space fold · hl collapse/expand · ^⌥W panel".to_string()
+        })
     }
 
     fn handle_key(

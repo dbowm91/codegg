@@ -810,6 +810,7 @@ impl App {
                 pending_task_create: None,
                 task_submit_started: false,
                 task_model_choice: None,
+                chat_seed: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1364,6 +1365,7 @@ impl App {
                 pending_task_create: None,
                 task_submit_started: false,
                 task_model_choice: None,
+                chat_seed: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -2937,6 +2939,14 @@ impl App {
                     } else {
                         crate::tui::commands::workspace_dashboard::leave_workspace_view(self);
                     }
+                } else if self.prompt_state.chat_seed.is_some()
+                    && self.ui_state.input_mode == InputMode::Normal
+                {
+                    // An armed reply/edit context is the shallowest thing to
+                    // leave, and Esc is where a user goes to back out of one.
+                    // The typed text is kept; only its meaning is dropped, so
+                    // the composer retargets from panel focus again.
+                    self.cancel_chat_composer();
                 } else {
                     self.cancel()
                 }
@@ -10333,27 +10343,41 @@ impl App {
             }
         }
 
-        if let Some(pos) = before_cursor.rfind('@') {
-            if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
-                self.prompt_state.completion_filter = before_cursor[pos..].to_string();
-                let query = self.prompt_state.completion_filter.trim_start_matches('@');
+        // `@` means two different things depending on where the composer is
+        // pointed. Against the agent session it is an agent/file trigger, and
+        // Enter accepts the highlighted completion. Against project chat it
+        // is a *mention*: there is no agent to invoke in a chat message, so
+        // opening the popup would put an agent picker over a conversation and
+        // — because the completion layer claims Enter first — make Enter
+        // insert an agent name instead of sending the message.
+        //
+        // That is not hypothetical: `r` on a selected message seeds the
+        // composer with `@author `, so every reply started by pressing one
+        // key would have had its Enter eaten.
+        let chat_target = self.input_target() == crate::tui::panels::InputTarget::Chat;
+        if !chat_target {
+            if let Some(pos) = before_cursor.rfind('@') {
+                if pos == 0 || before_cursor.chars().nth(pos.saturating_sub(1)) == Some(' ') {
+                    self.prompt_state.completion_filter = before_cursor[pos..].to_string();
+                    let query = self.prompt_state.completion_filter.trim_start_matches('@');
 
-                let is_agent_trigger =
-                    !query.contains('/') && !query.contains('\\') && !query.contains('.');
+                    let is_agent_trigger =
+                        !query.contains('/') && !query.contains('\\') && !query.contains('.');
 
-                if is_agent_trigger {
-                    self.prompt_state.completion_type = CompletionType::Agent;
-                    self.update_agent_completions();
-                    self.prompt_state.show_completions = true;
-                    debug_log!("update_completions: agent completion - show_completions=true");
-                } else {
-                    self.prompt_state.completion_type = CompletionType::File;
-                    self.update_file_completions();
-                    self.prompt_state.show_completions = true;
-                    debug_log!("update_completions: file completion - show_completions=true");
+                    if is_agent_trigger {
+                        self.prompt_state.completion_type = CompletionType::Agent;
+                        self.update_agent_completions();
+                        self.prompt_state.show_completions = true;
+                        debug_log!("update_completions: agent completion - show_completions=true");
+                    } else {
+                        self.prompt_state.completion_type = CompletionType::File;
+                        self.update_file_completions();
+                        self.prompt_state.show_completions = true;
+                        debug_log!("update_completions: file completion - show_completions=true");
+                    }
+                    self.prompt_state.completion_sel = 0;
+                    return;
                 }
-                self.prompt_state.completion_sel = 0;
-                return;
             }
         }
 
@@ -10749,8 +10773,73 @@ impl App {
     /// badge in the composer and the key that actually dispatches the send
     /// can never disagree — the failure mode this badge exists to prevent
     /// is a prompt silently landing in the team chat.
+    ///
+    /// An armed chat seed outranks panel focus. Pressing `r` in the chat
+    /// panel is an explicit "this is a reply to *that* message"; if focus
+    /// then moved to the session panel, honouring focus would turn the
+    /// pre-filled `@name ` into an agent prompt. The badge shows `[CHAT]`
+    /// for exactly as long as the seed is armed, so what the composer will
+    /// do stays visible, and cancelling restores focus-derived targeting.
     pub fn input_target(&self) -> crate::tui::panels::InputTarget {
+        if self.prompt_state.chat_seed.is_some() {
+            return crate::tui::panels::InputTarget::Chat;
+        }
         self.panel_host.input_target()
+    }
+
+    /// The contextual key line rendered directly above the composer.
+    ///
+    /// An armed chat seed wins, because that is the most specific context
+    /// available: it describes what Enter will do (`↵ send reply · Esc cancel
+    /// reply`) rather than what the focused panel's keys would do.
+    ///
+    /// `None` when no panel is focused and nothing is armed — the row is not
+    /// reserved at all in that case, so the prompt keeps its height.
+    pub fn composer_hint_text(&self) -> Option<String> {
+        if let Some(seed) = self.prompt_state.chat_seed.as_ref() {
+            return Some(format!(
+                "CHAT · {}",
+                crate::tui::chat_browser::input_hints(seed)
+            ));
+        }
+        self.panel_host
+            .composer_hints(self.chat_panel_project.as_deref())
+    }
+
+    /// Arm the shared composer for a chat reply or edit.
+    ///
+    /// Called from `TuiMsg::ChatComposerSeed`, which the chat side panel emits
+    /// for `r` and `e` because it holds no buffer of its own. The text is
+    /// placed in the prompt and Insert mode is entered, so the user lands in
+    /// an editor ready to type rather than in a Normal-mode composer that
+    /// silently swallows letters.
+    ///
+    /// The project binding is the panel's, resolved by the command layer; a
+    /// seed with no bound project is refused rather than armed against a
+    /// destination that does not exist.
+    pub(crate) fn arm_chat_composer(&mut self, seed: crate::tui::chat_browser::ChatComposeSeed) {
+        if self.chat_panel_project.is_none() {
+            self.messages_state
+                .toasts
+                .warning("Chat has no project bound — not arming the composer");
+            return;
+        }
+        let mut seed = seed;
+        if let Some(text) = seed.prefill.take() {
+            self.prompt_state.prompt.set_text(text);
+        }
+        self.prompt_state.chat_seed = Some(seed);
+        self.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+        self.prompt_state.show_completions = false;
+    }
+
+    /// Drop an armed chat context, leaving the typed text alone.
+    ///
+    /// Cancelling is not destructive: the user asked to reply, not to lose
+    /// what they wrote, so only the *meaning* of the text is cleared. The
+    /// composer then retargets from panel focus again.
+    pub(crate) fn cancel_chat_composer(&mut self) {
+        self.prompt_state.chat_seed = None;
     }
 
     /// Daemon-typed workspace id of the active tab, if known.

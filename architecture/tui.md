@@ -750,12 +750,25 @@ rules replace the original "consumes every key" contract:
    composer deliver to two destinations.
 2. **Navigation vs text.** While focused in Normal mode the panel consumes
    arrows, `j`/`k`, paging, channel switching and its own verbs, so a stray
-   `j` is never read as a keystroke elsewhere. It does not own text: `i` and
-   `a` return `PanelKey::PassThrough` so the shared composer's `FocusPrompt`
-   opens Insert mode. `PassThrough` is only legal for a panel that holds no
-   draft of its own — the chat panel has none, and a panel with a live buffer
-   must still consume everything so falling text is never edited in one
-   buffer while rendered in another.
+   `j` is never read as a keystroke elsewhere. It does not own text. A verb
+   with nothing to prefill (`i`, `a`, `Enter`) returns
+   `PanelKey::PassThrough` so the shared composer's `FocusPrompt` opens Insert
+   mode; a verb that carries context (`r`, `e`) returns
+   `PanelKey::Intent(TuiMsg::ChatComposerSeed)` instead, because falling
+   through would strand the reply target or the body being replaced.
+   `PassThrough` is only legal for a panel that holds no draft of its own —
+   the chat panel has none, and a panel with a live buffer must still consume
+   everything so falling text is never edited in one buffer while rendered in
+   another.
+
+**Panels advertise their own keys.** `SidePanel::composer_hints` is the
+generalisation seam: a panel declares the verbs it owns, and they appear on
+the shared hint line above the composer. It takes a narrow `PanelHints`
+(`focused`, `chat_project`) rather than the full `PanelCtx`, so the composer
+row can ask for a string during render without taking `&mut` borrows of the
+sidebar and chat state. Adding the next panel — a multiplexer-style region
+that brings up a box where `/chat` used to — is still an enum variant, an
+entry in `SidePanelId::ALL`, and one `SidePanel` impl.
 
 **Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
 timeline → command mode → completions → change review → **side panel (Normal
@@ -806,8 +819,8 @@ terminals disagree about how to encode a shifted letter. Binding both is safe
 legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
 `tests/modifier_chords.rs`.
 
-**The composer is the only input surface.** The chat panel is a viewer: it has
-no composer buffer, and `i` hands the keyboard to the bottom composer. The
+**The composer is the only input surface.** The chat panel holds no composer
+buffer; verbs that need text hand the keyboard to the bottom composer. The
 composer renders `[NOR|INS] [agent] [BUILD] [CHAT]` with the armed target
 emphasised, and `send_prompt` reads the same derived value, so the badge and
 the dispatch cannot disagree. When the chat target is armed, text routes
@@ -816,6 +829,73 @@ through `commands::chat::route_composer_to_chat` using
 target is armed but unbound the text is **dropped with a warning** rather than
 rerouted to the agent, since that silent reroute is the exact mistake the
 badge exists to prevent.
+
+### One chat browser, two surfaces (`src/tui/chat_browser.rs`)
+
+`/chat` (`ChatDialog`) and the chat side panel (`ChatPanel`) are two
+renderings of **one** browser. `ChatBrowser` owns everything the two
+previously duplicated: the message cursor, the channel highlight, the armed
+redact, the Normal-mode keymap and what each key means, row rendering, the
+viewport anchor, and the key hints.
+
+They were peers once, with the keymap copied between them, and drifted until
+the panel could neither reply nor edit and opened scrolled to the oldest
+message so a populated channel looked empty. A fix applied to one surface and
+not the other is a fix that comes back; there is now one place to fix.
+
+What the browser deliberately does not own is **text entry**. It holds no
+text. A verb that needs typing resolves to `ChatKeyAction::Compose` carrying a
+`ChatComposeSeed`, and the host materializes the editor:
+
+| Host | `Compose` becomes |
+|---|---|
+| `ChatDialog` | its own bounded composer (`ChatMode::Compose` / `Edit`) |
+| `ChatPanel` | `TuiMsg::ChatComposerSeed` — arms the shared composer |
+
+That is the entire difference between the surfaces: where the caret lives,
+not what the keys do.
+
+**The armed seed.** `PromptState::chat_seed` records what the composer's text
+*means* (a reply target, or a body being replaced with its captured
+revision) — not a second draft. While armed it **outranks panel focus** in
+`App::input_target`: pressing `r` means "this is a reply to *that* message",
+so honouring a later focus move would turn the pre-filled `@name ` into an
+agent prompt. The badge shows `[CHAT]` plus `[REPLY]`/`[EDIT]` for exactly as
+long as the seed is armed, and `Esc` in Normal mode cancels it — clearing the
+*meaning*, never the text. `route_composer_to_chat` consumes the seed and
+clears it after the `start_chat_send`/`start_chat_edit` seam runs, so the
+target belongs to exactly one send.
+
+**`@` is not the same trigger in both destinations.** Against the agent
+session `@` opens the agent/file completion popup and Enter accepts. Against
+chat it is a mention. The completion layer claims Enter first, so leaving the
+popup enabled in chat would make Enter insert an agent name instead of
+sending — and since `r` seeds the composer with `@author `, every reply
+started by one keypress would have had its Enter eaten. `update_completions`
+skips the `@` branch when `input_target() == Chat`.
+
+**Selection contrast.** `theme.selection` is a *background*; every selected
+surface in the TUI pairs it with a foreground. The chat surfaces used it as a
+foreground, which painted the author's name dark-on-dark — styled, and
+unreadable. Selection is now `fg(foreground).bg(selection)` and padded to the
+row width so it reads as a full-width bar. Unselected bodies are `foreground`
+rather than `muted`: dimming the whole transcript whenever nothing was unread
+made the common case the unreadable one.
+
+**Tail-follow.** `ChatBrowser::follow_tail` starts `true`, so a surface opens
+on the newest message and keeps following arrivals. `k` unpins (history stops
+moving under the user), `j` past the newest re-pins, `G` re-pins. `sync` runs
+on every render and every snapshot, not just on navigation, so a message
+arriving while the user is pinned moves them with it.
+
+**Contextual keys above the input.** `SidePanel::composer_hints` returns the
+verbs the focused panel owns; `App::composer_hint_text` prefers an armed seed
+(`↵ send reply · Esc cancel reply`) over panel hints, and `render.rs` reserves
+one row for the line directly above the composer — inside the prompt
+allocation, so focusing a panel cannot shrink the input. The row is not
+reserved at all when nothing is focused and nothing is armed. Panels advertise
+their keys once, next to the input those keys modify, rather than growing
+per-panel footers.
 
 **Selector overlay** (`Ctrl+Alt+W`): a two-column grid drawn *inside* the
 side column, not centred over the viewport — it describes the region it is
@@ -877,23 +957,27 @@ switch away and back without re-entering the view.
 
 ### Chat side panel (`src/tui/panels/chat.rs`)
 
-A peer of the `/chat` window (`components/dialogs/chat.rs`), not a
-replacement — the slash commands stay available so the two can be compared.
-Both read the same `ChatState` projection and emit the same `TuiMsg` intents
-through the same `start_chat_*` seams.
+A peer of the `/chat` window (`components/dialogs/chat.rs`) — the same
+workflow in a more convenient place — built on the **same**
+`ChatBrowser`, not a parallel implementation. The slash commands stay
+available so the two can be compared. Both read the same `ChatState`
+projection and emit the same `TuiMsg` intents through the same `start_chat_*`
+seams, and both have the full verb set: `j`/`k` move, `g`/`G`/`Home`/`End`
+jump, PageUp/PageDown and `Ctrl+U`/`Ctrl+D` page, `r` reply, `e` edit, `X`
+redact, `m` mark-read, `u` load older, `R` refresh, `[`/`]` switch channel.
 
-**The panel is a viewer, not a second window.** It deliberately has *no*
-composer buffer and no reply/edit verbs: the bottom composer is the single
-input surface for both targets, and two live text buffers would put two
-cursors on screen with nothing to say which one `Enter` would use. Its keys
-are `j`/`k` move, `g`/`G`/`Home`/`End` jump, PageUp/PageDown and
-`Ctrl+U`/`Ctrl+D` page, `X` redact, `m` mark-read, `u` load older, `[`/`]`
-switch channel, and `i`/`a` **passed through** to the composer. Reply, edit
-and redaction-by-message-management remain on the `/chat` window.
+**The panel holds no composer buffer — and that is the only difference.**
+The bottom composer is the single input surface for both targets, and two live
+text buffers would put two cursors on screen with nothing to say which one
+`Enter` would use. `i`/`a`/`Enter` (nothing to prefill) pass through to the
+composer; `r`/`e` emit `TuiMsg::ChatComposerSeed`, which arms the composer and
+switches it to Insert — see
+[One chat browser, two surfaces](#one-chat-browser-two-surfaces-src-tuichat_browserrs).
 
-The difference is presentation. Message bodies hard-wrap through
-`wrap::wrap_to_strings` with continuation lines indented under the first body
-column, and the keybar is one line of hints shown only while focused.
+Bodies hard-wrap through `wrap::wrap_to_strings` with continuation lines
+indented under the first body column. The panel has **no in-panel keybar**:
+the keys appear on the shared hint line above the composer, so they sit next
+to the input they modify rather than inside the panel they apply to.
 
 Invariants carried over from the window:
 
@@ -909,7 +993,9 @@ Invariants carried over from the window:
   message can span more rows than the body has, so anchoring on its first
   line would scroll the selection off-screen entirely.
 
-Three deliberate divergences from the `/chat` window:
+Deliberate presentation divergences from the `/chat` window — the
+*interaction* is now identical, and every one of these is about fitting a
+narrow column:
 
 - **Enter on an empty composer emits nothing.** `start_chat_send` rejects an
   empty body with a warning toast, so forwarding it would make a stray Enter
