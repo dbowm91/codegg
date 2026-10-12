@@ -232,6 +232,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 70 {
         migrate_and_record(pool, 70).await?;
     }
+    if current_version < 71 {
+        migrate_and_record(pool, 71).await?;
+    }
+    if current_version < 72 {
+        migrate_and_record(pool, 72).await?;
+    }
 
     Ok(())
 }
@@ -314,6 +320,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             68 => migrate_v68(&mut tx).await?,
             69 => migrate_v69(&mut tx).await?,
             70 => migrate_v70(&mut tx).await?,
+            71 => migrate_v71(&mut tx).await?,
+            72 => migrate_v72(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2848,6 +2856,78 @@ async fn migrate_v70(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Human execution C004: durable, bounded ownership for redacted shell
+/// projections explicitly staged for one session and authenticated principal.
+async fn migrate_v71(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS human_shell_promotion (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            projection TEXT NOT NULL,
+            projection_bytes INTEGER NOT NULL CHECK (projection_bytes >= 0 AND projection_bytes <= 32768),
+            projection_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'expired')),
+            created_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL,
+            consumed_turn_id TEXT,
+            consumed_at_ms INTEGER,
+            CHECK (
+                (status = 'pending' AND consumed_turn_id IS NULL AND consumed_at_ms IS NULL)
+                OR (status = 'consumed' AND consumed_turn_id IS NOT NULL AND consumed_at_ms IS NOT NULL)
+                OR status = 'expired'
+            ),
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_human_shell_promotion_pending \
+         ON human_shell_promotion(session_id, principal_id, status, expires_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Human execution C004: idempotent durable turn-admission receipts.
+async fn migrate_v72(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS turn_admission_receipt (
+            submission_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL UNIQUE,
+            request_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('accepted', 'completed', 'failed', 'interrupted')),
+            accepted_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_turn_admission_receipt_session \
+         ON turn_admission_receipt(session_id, principal_id, accepted_at_ms)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 

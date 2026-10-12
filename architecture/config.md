@@ -417,7 +417,10 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `mode` — named mode configurations
 - `hooks` — event hooks (shell commands)
 - `context` / `context_packer` / `context_policy` — context management
-- `human_shell` / `shell` — human shell feature config
+- `human_shell` / `shell` — human shell feature config. `shell.windows_shell`
+  optionally selects `powershell`, `cmd`, `git-bash`, or `wsl` for raw
+  model-shell commands on Windows; when absent, Windows PowerShell is used.
+  Unix ignores this field, and structured argv never enters a shell.
 - `deterministic_tools` / `preflight` — eggsact-backed tools
 - `command_intent` — command classification and routing
 - `daemon` / `scheduler` — daemon and scheduler settings

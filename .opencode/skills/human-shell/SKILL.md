@@ -47,7 +47,10 @@ capabilities as available unless a separate implementation lands.
 1. User types `!cargo test` in the prompt
 2. `classify_prompt_submission()` detects the `!` prefix, returns `PromptSubmissionKind::HumanShell { command: "cargo test", promote_after: false }`
 3. TUI dispatches `TuiCommand::RunHumanShell`
-4. `ShellRuntime::spawn()` creates a child process via `$SHELL -lc "cargo test"`
+4. The TUI negotiates `human_shell.v1` and submits a daemon request. The daemon
+   resolves workspace/project/session authority, checks `command.execute`,
+   applies the persisted sandbox profile, reserves scheduler admission, and
+   only then accepts a child process via daemon-host `$SHELL -lc "cargo test"`.
 5. stdout/stderr chunks stream as `ShellEvent::Stdout`/`ShellEvent::Stderr`
 6. `ShellOutputStore` captures output in `BoundedOutput` (head 256KB + tail 256KB)
 7. `ShellCell` renders in the message timeline with status, elapsed, exit code
@@ -56,14 +59,28 @@ capabilities as available unless a separate implementation lands.
    `killed X.Xs`, or `failed`, plus a ` [promoted]` marker once the entry has
    been promoted (`src/tui/commands/shell.rs:567-574`)
 9. `!` output is NOT added to model context. Explicit promotions use the shared
-   redactor, are capped at 32 KiB, and are sent only with a user-submitted turn.
+   redactor, are capped at 32 KiB, and are durably staged by the authoritative
+   session owner before the TUI reports them staged.
 
 ## Promotion Model
 
 - `!cmd` → `ShellCapturePolicy::StoreEphemeral`
 - `!!cmd` → `ShellCapturePolicy::StoreAndPromote` when
   `human_shell.auto_promote_bangbang` is enabled; otherwise the output stays private
-- `/shell-include <id>` → Stages an existing ephemeral entry for the next turn
+- `/shell-include <id>` → Requests daemon staging of a selected existing entry;
+  without an owner, leaves an unsubmitted composer draft
+
+Pending promotions are bound to authenticated principal, session, project, and
+workspace; at most 32 are pending and 256 retained per session, and each
+pending record expires after 24 hours.
+The next accepted turn claims selected identities atomically with the durable
+session controller lease. Reconnect queries the authoritative owner. Consumed
+records are not automatically replayed after restart. Expired payloads and
+tombstones are purged on stage/recovery access after a total 48-hour window.
+`/shell-ask` stages its
+question and evidence under one stable identity before submitting the turn.
+The WebSocket prompt-string transport retains its explicit unsubmitted-draft
+behavior and does not treat queue delivery as staging.
 
 **Both keep `origin: ShellOrigin::HumanEphemeral`**
 (`src/tui/commands/shell.rs:66`). `promote_after` only selects the capture
@@ -151,11 +168,16 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 `enabled`, `default_timeout_secs`, `confirm_dangerous`, `ansi`, and
 `auto_promote_bangbang` are resolved by the TUI at construction and config
 reload. Human model-context output always strips ANSI, applies the shared
-redactor, and is capped at 32 KiB. `!!` and `/shell-include` stage a user
-message for the next local turn; only the daemon's `Ack` changes the history
-entry's `promoted` flag. `/shell-ask` uses the session-scoped prompt-submit
-request and marks success only after its `Ack`. A remote TUI outbound queue
-does not itself prove server acceptance.
+redactor, and is capped at 32 KiB. `!!` and `/shell-include` wait for a typed
+daemon acknowledgement before showing the record as staged. The turn's
+controller lease, stable request-ID receipt, and promotion consumption commit
+in one database transaction. A retry reuses the same envelope `request_id` and
+returns the same receipt without starting another runtime turn. After restart,
+accepted-but-nonterminal receipts become `interrupted` and are not replayed.
+Only receipt-backed turn acceptance changes the history entry's `promoted` flag.
+`/shell-ask` waits for staging and session turn acceptance. A remote TUI
+outbound queue does not prove server acceptance and remains an unsubmitted
+composer draft.
 
 ## Command Routing (agent bash, not human shell)
 
@@ -176,7 +198,8 @@ disables one family.
   `StoreAndPromote`. Only the latter two are ever constructed
 - `ShellCommandId` — Newtype `u64`, monotonically allocated (`src/shell/types.rs:52`)
 - `ShellEvent` — Stream events: `Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`, `FailedToStart`
-- `ShellRuntime` — Spawns child processes via `$SHELL -lc` (falls back to `sh`; `src/shell/runtime.rs:16,108`)
+- `HumanShellRunService` — Daemon-owned bounded run registry with per-principal limits, cursor reads, cancellation, and ten-minute expiry (`src/shell/daemon.rs`)
+- `ShellRuntime` — ManagedProcessService adapter selected by the daemon; receives daemon-host shell and sanitized environment (`src/shell/runtime.rs`)
 - `ShellHandle` — Abort handle for killing running commands (`CancellationToken` + task `AbortHandle`)
 - `BoundedOutput` — Head/tail split storage with omitted byte tracking
 - `ShellOutputEntry` — Stores `exit_code: Option<i32>` alongside status, stdout, stderr, elapsed time, plus `promoted`/`promote_after`/`capture_policy` (`src/shell/store.rs:79`)

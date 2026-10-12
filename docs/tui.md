@@ -201,26 +201,35 @@ same effect.
 
 ## Human shell
 
-Prefix a prompt with `!` to run a command locally:
+Prefix a prompt with `!` to run a command on the selected workspace's daemon:
 
 ```text
 !cargo test
 !!cargo test
 ```
 
-The single bang runs the command and keeps its command and output out of the
-model's context. The double bang
+The daemon resolves the registered workspace and project binding, uses the
+daemon host's shell and filtered environment, and requires the project's
+`command.execute` capability. The TUI's current directory, shell, and
+environment are never sent as execution authority. Workspaces assigned to a
+remote execution node are refused until node execution is supported. The
+single bang keeps the command output out of the model's context. The double bang
 stages one bounded, redacted result in the conversation for the next submitted
 turn. It does not start inference on its own. `/shell-include` stages a selected
-view the same way; `/shell-ask` submits one question with the selected evidence
-to the bound session. Promotion requires a bound, non-observer session; failed
-submissions do not mark an output as promoted.
+view the same way; `/shell-ask` stages one question with the selected evidence
+before submitting it to the bound session. Promotion requires a bound,
+non-observer session; failed submissions do not mark an output as promoted.
 Human-shell output always passes the shared secret redactor and a 32 KiB limit,
-even when general shell projection redaction is configured `off`. Staged output
-remains in the active TUI until the next turn is accepted.
-The WebSocket TUI transport does not support a separate staged-context
-request, so approved output is placed in an empty composer for explicit
-submission; an existing draft is preserved.
+even when general shell projection redaction is configured `off`. The daemon
+acknowledges durable staging for the exact session before the TUI reports it as
+staged. Pending projections expire after 24 hours and return after reconnect;
+turn admission consumes them once with the controller lease and durable
+submission receipt. Reusing the same request ID returns that receipt instead
+of starting a duplicate turn. If the daemon restarts before the provider
+outcome is known, it marks the accepted turn interrupted and does not replay it.
+The WebSocket
+TUI transport does not support durable staging, so approved output is clearly
+identified as an unsubmitted composer draft; an existing draft is preserved.
 
 Classification happens before dispatch: `!!` is matched first. The effective
 `human_shell.auto_promote_bangbang` setting controls whether its output is
@@ -235,6 +244,16 @@ rather than dropped silently. The default per-command timeout is 300 seconds.
 Commands are also screened before they run: a blocked command is refused with
 a reason, and one classified as dangerous opens a confirmation dialog first
 (`confirm_dangerous`, default true).
+
+The daemon applies the caller's persisted sandbox profile and reserves a
+shared scheduler process slot before acceptance. Runs continue after a client
+disconnect until the configured timeout (300 seconds by default, capped at
+one hour); status and bounded output remain available for ten minutes to the
+same principal, project, workspace, and session. A daemon restart drops the
+ephemeral run and does not replay it. The typed `human_shell.v1` protocol
+returns an explicit unsupported
+response when an older daemon lacks this feature; the TUI never falls back to
+spawning on its own host.
 
 `/shell-list`, `/shell-show`, `/shell-include`, `/shell-ask`, `/shell-rerun`,
 and `/shell-kill` manage the history and the promote/include actions.
@@ -350,6 +369,21 @@ The permission rules that gate individual tool calls, and the deterministic
 security signal pipeline that can escalate them, are described in
 `docs/security-semantics.md`. The contracts are in
 `architecture/permission.md` and `architecture/security.md`.
+
+## Editor language features
+
+The editor can show current-file diagnostics and request hover, definition,
+references, document symbols, and workspace symbols from the daemon-owned
+language server. With the editor buffer focused, use F2 for diagnostics, F3
+for hover, F4 for definition, F5 for references, F6 for document symbols,
+and F7 to search workspace symbols for the word at the cursor. The result
+panel shows unavailable and not-ready states explicitly. A failed refresh
+keeps the previous complete diagnostics marked stale.
+
+Navigation opens only locations carrying the daemon-validated
+workspace-relative target; other results remain display-only. The TUI does
+not start language servers itself and does not claim live diagnostic push
+updates.
 
 ## Where to go next
 

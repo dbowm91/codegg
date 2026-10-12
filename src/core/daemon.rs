@@ -62,6 +62,9 @@ pub struct CoreDaemon {
     /// accounting as durable work. Handles and attachments are ephemeral
     /// and do not survive daemon restart.
     pub interactive_processes: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
+    /// Finite human shell runs execute on this daemon and share scheduler
+    /// process admission. State/output are ephemeral and owner-scoped.
+    pub human_shell_runs: Arc<crate::shell::daemon::HumanShellRunService>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -942,6 +945,9 @@ impl CoreDaemon {
             | CoreRequest::ProjectInitDraftGet { project_id, .. }
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
+            CoreRequest::HumanShellRunCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
+            CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
             CoreRequest::SessionCreate {
                 project_id: Some(project_id),
@@ -2868,6 +2874,9 @@ impl CoreDaemon {
     /// M003: `session_id` locator carried by one request, if any.
     fn session_id_for_request(request: &CoreRequest) -> Option<&str> {
         match request {
+            CoreRequest::HumanShellRunCreate { request } => request.session_id.as_deref(),
+            CoreRequest::HumanShellRunRead { request } => request.session_id.as_deref(),
+            CoreRequest::HumanShellRunCancel { request } => request.session_id.as_deref(),
             CoreRequest::SessionAttach { session_id }
             | CoreRequest::SessionLoad { session_id }
             | CoreRequest::SessionMessagesLoad { session_id }
@@ -2881,6 +2890,8 @@ impl CoreDaemon {
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }
             | CoreRequest::SessionPromptSubmit { session_id, .. }
+            | CoreRequest::HumanShellPromotionStage { session_id, .. }
+            | CoreRequest::HumanShellPromotionsGet { session_id }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -3174,6 +3185,7 @@ impl CoreDaemon {
             CoreRequest::SessionCreate { .. }
             | CoreRequest::JobSubmit { .. }
             | CoreRequest::ChatActionSubmit { .. }
+            | CoreRequest::HumanShellRunCreate { .. }
             | CoreRequest::AuditQuery { .. }
             | CoreRequest::AuditExport { .. } => return,
             // Work Orders M001: creation and mutation operations mint or
@@ -3342,6 +3354,20 @@ impl CoreDaemon {
                     "allow",
                 )
                 .with_run(run)
+            }
+            codegg_core::audit::AuditAction::HumanShellRun => {
+                let origin = match request {
+                    CoreRequest::HumanShellRunCancel { .. } => "cancel",
+                    _ => "unknown",
+                };
+                instr::human_shell_run_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    None,
+                    origin,
+                    "requested",
+                )
             }
             codegg_core::audit::AuditAction::FileMutate => {
                 let (digest_source, op) = match request {
@@ -3585,6 +3611,15 @@ impl CoreDaemon {
             &request.payload,
         ))
         .await;
+        if Self::is_human_shell_request(&request.payload) {
+            return Box::pin(self.handle_human_shell_request(
+                request,
+                trusted_client_id,
+                &authority,
+                &authz_decision,
+            ))
+            .await;
+        }
         // Collaboration M001: chat arms run in a dedicated handler so
         // the main dispatch future stays small (same rationale as the
         // boxed authorization preamble above). The M003 gate has already
@@ -3705,6 +3740,7 @@ impl CoreDaemon {
                 Box::pin(self.handle_turns_request(
                     payload,
                     &owned_request_id,
+                    None,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -3775,6 +3811,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team
             | super::daemon_family::DaemonRequestFamily::Interactive
+            | super::daemon_family::DaemonRequestFamily::HumanShell
             | super::daemon_family::DaemonRequestFamily::WorkOrders => {
                 // Unreachable: chat, team, interactive-process, and
                 // work-order envelopes return through their boxed
@@ -3807,6 +3844,16 @@ impl CoreDaemon {
                 | CoreRequest::InteractiveProcessResume { .. }
                 | CoreRequest::InteractiveProcessTerminate { .. }
                 | CoreRequest::InteractiveProcessRemove { .. }
+        )
+    }
+
+    fn is_human_shell_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::HumanShellRunCapabilities
+                | CoreRequest::HumanShellRunCreate { .. }
+                | CoreRequest::HumanShellRunRead { .. }
+                | CoreRequest::HumanShellRunCancel { .. }
         )
     }
 
@@ -4324,6 +4371,68 @@ mod tests {
             project.project_id.as_str().to_string(),
             workspace.id.as_str().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn poolless_standalone_human_shell_uses_registered_workspace() {
+        let daemon = CoreDaemon::new(None, None, None);
+        let root = tempfile::tempdir().unwrap();
+        let workspace = daemon
+            .workspaces
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "standalone-shell-create".into(),
+                CoreRequest::HumanShellRunCreate {
+                    request: codegg_protocol::human_shell::HumanShellRunCreateRequestDto {
+                        protocol_version:
+                            codegg_protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION,
+                        submission_id: "standalone-test-submission".into(),
+                        project_id: "local-project".into(),
+                        workspace_id: workspace.id.as_str().into(),
+                        session_id: None,
+                        origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
+                        confirmed_dangerous: false,
+                        command: "printf standalone".into(),
+                        timeout_secs: 300,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::HumanShellRunCreated { run, .. } = response else {
+            panic!("expected standalone human shell acceptance, got {response:?}");
+        };
+        assert_eq!(run.cwd, root.path().to_string_lossy());
+
+        let read = CoreRequest::HumanShellRunRead {
+            request: codegg_protocol::human_shell::HumanShellRunReadDto {
+                run_id: run.run_id,
+                project_id: "local-project".into(),
+                workspace_id: workspace.id.as_str().into(),
+                session_id: None,
+                from_sequence: 0,
+                max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
+            },
+        };
+        for _ in 0..30 {
+            let response = daemon
+                .handle_request(crate::core::new_request(
+                    "standalone-shell-read".into(),
+                    read.clone(),
+                ))
+                .await
+                .unwrap();
+            if let CoreResponse::HumanShellRunOutput { chunks, .. } = response {
+                if chunks.iter().any(|chunk| chunk.bytes == b"standalone") {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("standalone shell output was not delivered");
     }
 
     #[tokio::test]
@@ -5414,6 +5523,7 @@ mod tests {
                 session_id: session_id.clone(),
                 text: "hello".into(),
                 plan_mode: false,
+                human_shell_promotion_ids: vec![],
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
@@ -5422,7 +5532,7 @@ mod tests {
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
-        assert!(matches!(resp, CoreResponse::Ack));
+        assert!(matches!(resp, CoreResponse::TurnAdmissionReceipt { .. }));
 
         // The TurnStarted event should be in the log, identified by
         // session_id and a turn_id that starts with "turn-".
@@ -5574,6 +5684,7 @@ mod tests {
                         session_id: session_id.clone(),
                         text,
                         plan_mode: false,
+                        human_shell_promotion_ids: vec![],
                     },
                 ))
                 .await
@@ -5596,6 +5707,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5622,6 +5734,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5662,6 +5775,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5708,6 +5822,7 @@ mod tests {
                     session_id: session.id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5735,13 +5850,14 @@ mod tests {
                     session_id: session_id.clone(),
                     text: "hello from prompt submit".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
             .unwrap();
         assert!(
-            matches!(resp, CoreResponse::Ack),
-            "expected Ack, got {resp:?}"
+            matches!(resp, CoreResponse::TurnAdmissionReceipt { .. }),
+            "expected durable admission receipt, got {resp:?}"
         );
         let filter = EventFilter {
             session_id: Some(session_id.clone()),
@@ -5794,6 +5910,7 @@ mod tests {
                     session_id,
                     text: "duplicate".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -6100,13 +6217,15 @@ mod tests {
 
     /// A minimal fake turn runtime that records whether `run_turn` was called.
     struct FakeTurnRuntime {
-        called: std::sync::atomic::AtomicBool,
+        calls: std::sync::atomic::AtomicUsize,
+        captured_messages: std::sync::Mutex<Option<Vec<crate::protocol::dto::ProviderMessage>>>,
     }
 
     impl FakeTurnRuntime {
         fn new() -> Self {
             Self {
-                called: std::sync::atomic::AtomicBool::new(false),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                captured_messages: std::sync::Mutex::new(None),
             }
         }
     }
@@ -6115,9 +6234,10 @@ mod tests {
     impl crate::agent::turn_runtime::TurnRuntime for FakeTurnRuntime {
         async fn run_turn(
             &self,
-            _input: crate::agent::turn_runtime::TurnRunInput,
+            input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
-            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.captured_messages.lock().expect("capture lock") = Some(input.messages_dto);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -6138,7 +6258,7 @@ mod tests {
 
         let fake = Arc::new(FakeTurnRuntime::new());
         let pool = in_memory_pool().await;
-        let deps = CoreRuntimeDeps::new(Some(pool), None, None)
+        let deps = CoreRuntimeDeps::new(Some(pool.clone()), None, None)
             .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
         let daemon = CoreDaemon::with_deps(deps);
         daemon.hydrate_workspace_registry().await.unwrap();
@@ -6166,12 +6286,32 @@ mod tests {
             other => panic!("expected Session, got {:?}", other),
         };
 
+        let binding = daemon
+            .bind_runtime_for_session(&session_id)
+            .await
+            .expect("bind runtime for session");
+        let promotion_id = uuid::Uuid::new_v4().to_string();
+        codegg_core::session::HumanShellPromotionStore::new(pool)
+            .stage(codegg_core::session::NewHumanShellPromotion {
+                id: promotion_id.clone(),
+                source_id: "42".into(),
+                session_id: session_id.clone(),
+                principal_id: codegg_core::team::LOCAL_OWNER_PRINCIPAL_ID.into(),
+                project_id: binding.project_id.clone(),
+                workspace_id: binding.workspace_id.as_str().into(),
+                projection: "accepted-shell-marker [REDACTED:bearer-token]".into(),
+                created_at_ms: chrono::Utc::now().timestamp_millis(),
+            })
+            .await
+            .expect("stage redacted shell evidence");
+
         let req = crate::core::new_request(
             "req-inject".into(),
             CoreRequest::TurnSubmit {
-                session_id,
+                session_id: session_id.clone(),
                 text: "hello".into(),
                 plan_mode: false,
+                human_shell_promotion_ids: vec![promotion_id],
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
@@ -6179,12 +6319,27 @@ mod tests {
                 reasoning: None,
             },
         );
-        let resp = daemon.handle_request(req).await.unwrap();
-        assert!(matches!(resp, CoreResponse::Ack));
-        assert!(
-            fake.called.load(std::sync::atomic::Ordering::SeqCst),
-            "injected FakeTurnRuntime should have been invoked"
-        );
+        let resp = daemon.handle_request(req.clone()).await.unwrap();
+        let first_receipt = match resp {
+            CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+            other => panic!("expected durable admission receipt, got {other:?}"),
+        };
+        let retry = daemon.handle_request(req).await.unwrap();
+        let retry_receipt = match retry {
+            CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+            other => panic!("expected original receipt on retry, got {other:?}"),
+        };
+        assert_eq!(retry_receipt, first_receipt);
+        assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let captured = fake
+            .captured_messages
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("runtime captured provider messages");
+        let captured = serde_json::to_string(&captured).expect("serialize captured context");
+        assert_eq!(captured.matches("accepted-shell-marker").count(), 1);
+        assert_eq!(captured.matches("[REDACTED:bearer-token]").count(), 1);
         if let Some(value) = previous_openai_key {
             std::env::set_var("OPENAI_API_KEY", value);
         } else {

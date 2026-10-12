@@ -52,7 +52,9 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
 | `src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
 | `src/tool/bash.rs`, `src/scheduler/`, `src/python_script/` | Scheduler/adapter | Job admission and domain output remain local; accepted finite execution uses the canonical service. |
-| `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain local; streaming lifecycle uses the canonical service. |
+| `src/core/daemon_human_shell.rs`, `src/shell/daemon.rs` | Daemon human-shell owner | Resolves authenticated principal and registered workspace/project/session scope, applies human confirmation and persisted sandbox policy, reserves the shared scheduler process permit, and owns bounded run/read/cancel handles. Finite child lifecycle remains in `ManagedProcessService`; workspace-bound remote-node execution is refused. |
+| `src/tui/commands/shell.rs`, `src/tui/runtime/command_dispatch.rs` | Human-shell client adapter | Negotiates `human_shell.v1`, submits bounded typed create/read/cancel requests, and renders daemon results. It does not choose cwd or shell environment and has no local process fallback. |
+| `src/shell/runtime.rs` | Managed-process adapter | Preserves human `$SHELL -lc` command semantics and delegates finite streaming process lifecycle to `ManagedProcessService`; daemon human-shell dispatch supplies daemon-host shell, canonical workspace cwd, filtered environment, and sandbox launch policy. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
 | `src/hooks/` | Configured hook adapter | Hook-specific context remains local; finite command lifecycle uses the canonical service. |
 | `src/plugin/runtime/process.rs` | Deferred domain adapter | Plugin protocol/result mapping remains local; finite child lifecycle uses the canonical service. Plugin admission/lifecycle integration remains future domain work. |
@@ -61,7 +63,7 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/core/transport/stdio.rs` | Standalone compatibility | Deprecated stdio core transport owns protocol framing and child connection state. |
 | `crates/codegg-client/src/connect.rs` | Frontend daemon lifecycle adapter | Connect-or-start launches only the canonical `codegg daemon start` lifecycle; singleton lock and execution authority remain root-owned. |
 | `src/core/instance.rs`, `src/tui/app/`, `src/tts/`, `src/core/notification.rs`, `src/upgrade/` | Standalone/interactive exceptions | Daemon bootstrap, external editor, speech, and self-upgrade are explicit administrative or user-controlled surfaces. |
-| `src/bin/codegg-sandbox-helper.rs` | Service adapter | Installation-owned helper applies Landlock and replaces itself with the already-validated target; it is launched only by `ManagedProcessService`. |
+| `src/bin/codegg-sandbox-helper.rs` | Service adapter | Unix installation-owned helper applies Landlock/Seatbelt and replaces itself with the already-validated target; `ManagedProcessService` launches it only on supported Unix paths. The packaged Windows `.exe` remains an unavailable stub in M002; Windows FullHost children launch directly through the parent-owned suspended/Job path, and constrained requests fail before spawn until M004. |
 | `src/git_*.rs`, `crates/egggit/`, `crates/codegg-core/src/{worktree.rs,repository_lineage.rs}` | Deferred domain | Typed Git/worktree/read probes retain domain semantics and are tracked for M003 Git ownership convergence. Test-only fixtures are annotated separately. `worktree_service.rs` is not a manifest entry — it owns no direct spawn site. |
 
 Every exception is represented in the manifest with an owner and reason.
@@ -78,6 +80,52 @@ grace and reaping, cancellation and timeout classification, bounded
 head-plus-tail capture and streaming, sandbox-helper status isolation and
 Landlock behavior, secret-safe diagnostics, and existing authorization
 boundaries.
+
+On Windows, the finite-process owner creates each child suspended, assigns it
+to a private Job Object with kill-on-last-handle-close, and resumes it only
+after assignment succeeds. Cancellation and timeout terminate the Job; closing
+the Job after the root exits also terminates any descendants before output
+pipes are joined. `CleanupDiagnostics::job_object_established` reports this
+process-tree ownership fact. Sanitized Windows children retain the system
+runtime and temporary-directory variables (`SystemRoot`, `WINDIR`, `TEMP`,
+`TMP`) needed by native applications. The explicit Unicode environment block
+also preserves drive-current-directory entries and sets the requested cwd's
+drive entry to that cwd. This is process supervision only: Windows
+filesystem-constrained requests still fail before launch, and Job Objects do
+not provide filesystem or network containment. Native behavior is exercised
+by `tests/windows_process_launcher.rs` and the focused Windows workflow.
+The debug-only `windows-sandbox-test-support` feature also routes an explicit
+`Required` request through this same service using an owned `CreateProcessW`
+child, a three-handle stdio allowlist, token SID and Job verification before
+resume, and bounded output/status handling. Its result is explicitly
+`TestOnlyAppContainer`, never `Enforced`; release builds reject the feature.
+For that test-only path, the service obtains the AppContainer package-local
+data path from the profile, creates its `Temp` child, and supplies those paths
+as `LOCALAPPDATA`, `TEMP`, and `TMP`; it never forwards the host user's profile
+or temp directories. This test seam does not activate a production Windows
+sandbox backend. Its disposable-root ACL fixture captures directory identity
+and the exact original/leased DACLs before mutation, applies read, read/write,
+or deny ACEs, and restores only on exact identity/descriptor match. Startup
+reconciliation refuses drift and preserves conflicting journals. The
+test-only path stores records under the per-user daemon root at
+`sandbox/acl-leases`, with `CODEGG_DAEMON_HOME` as the normal root override.
+There is no production caller or operator repair command, and existing
+workspaces remain unqualified.
+
+Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
+while Windows defaults to the inbox Windows PowerShell executable and can opt
+into `cmd.exe`, Git Bash, or WSL with `shell.windows_shell`. PowerShell, cmd,
+and WSL resolve from the absolute Windows system directory; Git Bash resolves
+from `ProgramFiles`. None is searched through `PATH`; command text is passed as
+one argument to PowerShell, Git Bash, or WSL. Windows `cmd.exe` has its own
+command-line grammar, so `ManagedProcessRequest::raw_command` appends the
+explicitly selected shell text with Windows `raw_arg` handling; that field is
+accepted only for an absolute `cmd.exe` executable. Structured `NativeCommand`
+and managed argv dispatch never enter shell parsing. This selects command
+syntax, not a Windows sandbox backend.
+Raw Windows shell dispatch also supplies one unique TEMP/TMP directory per
+invocation and removes it after the managed child finishes; M004 must restrict
+write access to that exact directory before treating it as containment.
 
 Protocol children remain direct owners only where framing, persistence, or
 crate dependency direction makes finite-process capture the wrong abstraction.

@@ -7,6 +7,7 @@
 pub mod checkpoint;
 pub mod continuation;
 pub mod events;
+pub mod human_shell_promotion;
 pub mod legacy_resolution;
 pub mod message;
 pub mod schema;
@@ -33,6 +34,12 @@ pub use continuation::{
 pub use events::{
     AgentPlan, AgentPlanItem, ContextCompactedEvent, EventMeta, FileChangeKind, PlanItemStatus,
     SessionEvent, ToolRisk,
+};
+pub use human_shell_promotion::{
+    HumanShellPromotionError, HumanShellPromotionRecord, HumanShellPromotionStatus,
+    HumanShellPromotionStore, NewHumanShellPromotion, StageHumanShellPromotionOutcome,
+    HUMAN_SHELL_PROMOTION_MAX_BYTES, HUMAN_SHELL_PROMOTION_MAX_PENDING,
+    HUMAN_SHELL_PROMOTION_MAX_RETAINED_PER_SESSION, HUMAN_SHELL_PROMOTION_TTL_MS,
 };
 pub use models::{
     CreateSession, LegacyResolution, PermissionEntry, Session, SessionAnalytics,

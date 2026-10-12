@@ -136,6 +136,7 @@ impl App {
                             command,
                             promote_after,
                             cwd,
+                            confirmed_dangerous: false,
                         },
                     );
                 }

@@ -23,6 +23,27 @@ use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 
+pub(crate) struct TurnControllerAdmission<'a> {
+    pub(super) session_id: &'a str,
+    pub(super) turn_id: &'a str,
+    pub(super) authority: &'a codegg_core::transport_auth::RequestAuthorityContext,
+    pub(super) trusted_client_id: &'a str,
+    pub(super) project_id: &'a str,
+    pub(super) workspace_id: &'a str,
+    pub(super) promotion_ids: &'a [String],
+    pub(super) submission_id: &'a str,
+    pub(super) request_sha256: &'a str,
+    pub(super) now_ms: i64,
+}
+
+pub(crate) struct TurnControllerAdmissionResult {
+    pub controller_principal: Option<String>,
+    pub revision: u64,
+    pub promotions: Vec<codegg_core::session::HumanShellPromotionRecord>,
+    pub receipt: codegg_core::session_control::TurnAdmissionReceipt,
+    pub duplicate: bool,
+}
+
 impl CoreDaemon {
     /// `true` for session-control operations that mutate durable state.
     /// They skip the pre-side-effect audit emit and are recorded
@@ -244,26 +265,57 @@ impl CoreDaemon {
     /// holding the turn lock semantics of the caller. On store
     /// conflict the caller must roll back the in-memory turn (the
     /// store changed nothing for the loser).
-    pub(crate) async fn acquire_turn_controller(
+    pub(crate) async fn acquire_turn_controller_with_promotions(
         &self,
-        session_id: &str,
-        turn_id: &str,
-        authority: &codegg_core::transport_auth::RequestAuthorityContext,
-        trusted_client_id: &str,
-        now_ms: i64,
-    ) -> Result<(Option<String>, u64), AppError> {
+        admission: TurnControllerAdmission<'_>,
+    ) -> Result<
+        TurnControllerAdmissionResult,
+        codegg_core::session_control::SessionTurnAdmissionError,
+    > {
+        let TurnControllerAdmission {
+            session_id,
+            turn_id,
+            authority,
+            trusted_client_id,
+            project_id,
+            workspace_id,
+            promotion_ids,
+            submission_id,
+            request_sha256,
+            now_ms,
+        } = admission;
         let principal = authority.principal_id().clone();
         if let Some(store) = self.controller_store() {
-            let record = store
-                .acquire(
+            let outcome = store
+                .admit_with_promotions(
                     session_id,
+                    submission_id,
+                    request_sha256,
                     turn_id,
                     &principal,
                     Some(trusted_client_id),
+                    project_id,
+                    workspace_id,
+                    promotion_ids,
                     now_ms,
                 )
-                .await
-                .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+                .await?;
+            let (record, promotions, receipt, duplicate) = match outcome {
+                codegg_core::session_control::TurnAdmissionOutcome::Admitted {
+                    receipt,
+                    controller,
+                    promotions,
+                } => (controller, promotions, receipt, false),
+                codegg_core::session_control::TurnAdmissionOutcome::Duplicate(receipt) => {
+                    return Ok(TurnControllerAdmissionResult {
+                        controller_principal: None,
+                        revision: 0,
+                        promotions: Vec::new(),
+                        receipt,
+                        duplicate: true,
+                    });
+                }
+            };
             self.publish_control_changed(
                 session_id,
                 Some(turn_id),
@@ -272,12 +324,29 @@ impl CoreDaemon {
                 "acquired",
             )
             .await;
-            return Ok((
-                Some(record.controller_principal.as_str().to_owned()),
-                record.revision,
-            ));
+            return Ok(TurnControllerAdmissionResult {
+                controller_principal: Some(record.controller_principal.as_str().to_owned()),
+                revision: record.revision,
+                promotions,
+                receipt,
+                duplicate,
+            });
         }
-        Ok((Some(principal.as_str().to_owned()), 1))
+        if !promotion_ids.is_empty() {
+            return Err(
+                codegg_core::session_control::SessionTurnAdmissionError::Promotion(
+                    codegg_core::session::HumanShellPromotionError::Unavailable(
+                        "durable session storage is required for staged promotions".to_owned(),
+                    ),
+                ),
+            );
+        }
+        Err(
+            codegg_core::session_control::SessionControlError::Unavailable(
+                "durable turn admission receipts require session storage".to_owned(),
+            )
+            .into(),
+        )
     }
 
     /// Release the lease when a turn reaches a terminal state.
@@ -348,10 +417,6 @@ impl CoreDaemon {
                 };
                 let terminal = match &envelope.payload {
                     crate::protocol::core::CoreEvent::TurnCompleted {
-                        input_tokens: None,
-                        output_tokens: None,
-                        cached_tokens: None,
-                        reasoning_tokens: None,
                         session_id: sid,
                         turn_id: tid,
                         ..
@@ -370,6 +435,20 @@ impl CoreDaemon {
                     .clone()
                     .map(codegg_core::session_control::SessionControllerStore::new)
                 {
+                    let status = match &envelope.payload {
+                        crate::protocol::core::CoreEvent::TurnCompleted { .. } => "completed",
+                        _ => "failed",
+                    };
+                    if let Err(error) = store
+                        .finish_turn_receipt(
+                            &turn_id,
+                            status,
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %error, turn_id = %turn_id, "turn admission receipt completion failed");
+                    }
                     let _ = store.release(&session_id, &turn_id).await;
                 }
                 if let Some(runtime) = daemon_sessions.get(&session_id) {

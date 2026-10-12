@@ -907,6 +907,7 @@ dependencies = [
  "vt100",
  "walkdir",
  "wasmtime",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

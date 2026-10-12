@@ -1,0 +1,431 @@
+$ErrorActionPreference = 'Stop'
+
+if (-not $env:RUNNER_TEMP) {
+    throw 'RUNNER_TEMP is required; this proof must use an isolated temporary root.'
+}
+
+$source = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class AppContainerProofNative {
+    public static string ObservedAppContainerSid = "";
+    public static bool ObservedInJob = false;
+    public static bool ObservedDescendantInJob = false;
+    public static bool ObservedDescendantTerminated = false;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct ProcessEntry32 {
+        public uint dwSize, cntUsage, th32ProcessID;
+        public IntPtr th32DefaultHeapID;
+        public uint th32ModuleID, cntThreads, th32ParentProcessID;
+        public int pcPriClassBase;
+        public uint dwFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct StartupInfo {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars;
+        public int dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct StartupInfoEx {
+        public StartupInfo StartupInfo;
+        public IntPtr lpAttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SecurityCapabilities {
+        public IntPtr AppContainerSid;
+        public IntPtr Capabilities;
+        public uint CapabilityCount;
+        public uint Reserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ProcessInformation {
+        public IntPtr hProcess, hThread;
+        public uint dwProcessId, dwThreadId;
+    }
+
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode)]
+    public static extern int CreateAppContainerProfile(string name, string displayName,
+        string description, IntPtr capabilities, uint capabilityCount, out IntPtr appContainerSid);
+    [DllImport("userenv.dll", CharSet = CharSet.Unicode)]
+    public static extern int DeleteAppContainerProfile(string name);
+    [DllImport("advapi32.dll")]
+    public static extern IntPtr FreeSid(IntPtr sid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass,
+        IntPtr tokenInformation, uint tokenInformationLength, out uint returnLength);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr stringSid);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool InitializeProcThreadAttributeList(IntPtr list, int count,
+        int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags,
+        IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returnedSize);
+    [DllImport("kernel32.dll")]
+    public static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CreateProcess(string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
+        uint creationFlags, IntPtr environment, string currentDirectory,
+        ref StartupInfoEx startupInfo, out ProcessInformation processInformation);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, uint processId);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool Process32First(IntPtr snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool TerminateProcess(IntPtr process, uint exitCode);
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr LocalFree(IntPtr memory);
+
+    public static string GetAppContainerSid(IntPtr process) {
+        IntPtr token;
+        if (!OpenProcessToken(process, 0x0008, out token))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            uint required;
+            GetTokenInformation(token, 31, IntPtr.Zero, 0, out required);
+            if (required == 0)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr information = Marshal.AllocHGlobal((int)required);
+            try {
+                if (!GetTokenInformation(token, 31, information, required, out required))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                IntPtr packageSid = Marshal.ReadIntPtr(information);
+                if (packageSid == IntPtr.Zero)
+                    return "";
+                IntPtr sidText;
+                if (!ConvertSidToStringSid(packageSid, out sidText))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                try { return Marshal.PtrToStringUni(sidText); }
+                finally { LocalFree(sidText); }
+            } finally { Marshal.FreeHGlobal(information); }
+        } finally { CloseHandle(token); }
+    }
+
+    public static uint Run(string executable, string arguments, IntPtr appContainerSid) {
+        return Run(executable, arguments, appContainerSid, false);
+    }
+
+    public static uint Run(string executable, string arguments, IntPtr appContainerSid,
+            bool probeDescendant) {
+        IntPtr SecurityCapabilitiesAttribute = (IntPtr)0x00020009;
+        const uint ExtendedStartupInfoPresent = 0x00080000;
+        const uint CreateSuspended = 0x00000004;
+        const uint CreateNoWindow = 0x08000000;
+        IntPtr size = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+        if (size == IntPtr.Zero) throw new InvalidOperationException("Could not size attribute list.");
+        IntPtr attributes = Marshal.AllocHGlobal(size);
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) {
+            Marshal.FreeHGlobal(attributes);
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        bool attributesInitialized = false;
+        ProcessInformation process = new ProcessInformation();
+        try {
+            if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref size))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            attributesInitialized = true;
+            SecurityCapabilities capabilities = new SecurityCapabilities {
+                AppContainerSid = appContainerSid,
+                Capabilities = IntPtr.Zero,
+                CapabilityCount = 0,
+                Reserved = 0
+            };
+            IntPtr capabilitiesPtr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(SecurityCapabilities)));
+            try {
+                Marshal.StructureToPtr(capabilities, capabilitiesPtr, false);
+                if (!UpdateProcThreadAttribute(attributes, 0, SecurityCapabilitiesAttribute,
+                        capabilitiesPtr, (IntPtr)Marshal.SizeOf(typeof(SecurityCapabilities)),
+                        IntPtr.Zero, IntPtr.Zero))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                StartupInfoEx startup = new StartupInfoEx();
+                startup.StartupInfo.cb = Marshal.SizeOf(typeof(StartupInfoEx));
+                startup.lpAttributeList = attributes;
+                StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+                if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                        ExtendedStartupInfoPresent | CreateSuspended | CreateNoWindow, IntPtr.Zero,
+                        System.IO.Path.GetDirectoryName(executable), ref startup, out process))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (!AssignProcessToJobObject(job, process.hProcess))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                bool inJob;
+                if (!IsProcessInJob(process.hProcess, job, out inJob))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                ObservedInJob = inJob;
+                if (!inJob) throw new InvalidOperationException("AppContainer target was not assigned to its owner Job.");
+                ObservedAppContainerSid = GetAppContainerSid(process.hProcess);
+                uint previousSuspendCount = ResumeThread(process.hThread);
+                if (previousSuspendCount == 0xffffffff)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (previousSuspendCount != 1)
+                    throw new InvalidOperationException("AppContainer target had unexpected suspend count " + previousSuspendCount + ".");
+            } finally {
+                Marshal.FreeHGlobal(capabilitiesPtr);
+            }
+            uint wait = WaitForSingleObject(process.hProcess, 30000);
+            if (wait != 0) {
+                TerminateProcess(process.hProcess, 0xdead);
+                throw new TimeoutException("AppContainer child did not exit within 30 seconds.");
+            }
+            uint exitCode;
+            if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if (probeDescendant) {
+                IntPtr descendant = IntPtr.Zero;
+                uint descendantPid = 0;
+                DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                while (DateTime.UtcNow < deadline && descendant == IntPtr.Zero) {
+                    descendantPid = FindChildProcess(process.dwProcessId);
+                    if (descendantPid != 0)
+                        descendant = OpenProcess(0x00100001 | 0x1000, false, descendantPid);
+                    if (descendant == IntPtr.Zero) System.Threading.Thread.Sleep(50);
+                }
+                if (descendant == IntPtr.Zero)
+                    throw new InvalidOperationException("AppContainer target did not leave a live child process to inspect.");
+                try {
+                    bool descendantInJob;
+                    if (!IsProcessInJob(descendant, job, out descendantInJob))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    ObservedDescendantInJob = descendantInJob;
+                    if (!descendantInJob)
+                        throw new InvalidOperationException("AppContainer descendant escaped its owner Job.");
+                    if (!TerminateJobObject(job, 0xdead))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    ObservedDescendantTerminated = WaitForSingleObject(descendant, 5000) == 0;
+                    if (!ObservedDescendantTerminated)
+                        throw new InvalidOperationException("Owner Job termination did not stop the AppContainer descendant.");
+                } finally {
+                    if (WaitForSingleObject(descendant, 0) != 0) {
+                        TerminateProcess(descendant, 0xdead);
+                        WaitForSingleObject(descendant, 5000);
+                    }
+                    CloseHandle(descendant);
+                }
+            }
+            return exitCode;
+        } finally {
+            if (process.hProcess != IntPtr.Zero && WaitForSingleObject(process.hProcess, 0) != 0 &&
+                !TerminateJobObject(job, 0xdead))
+                TerminateProcess(process.hProcess, 0xdead);
+            if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+            if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            CloseHandle(job);
+            if (attributesInitialized) DeleteProcThreadAttributeList(attributes);
+            Marshal.FreeHGlobal(attributes);
+        }
+    }
+
+    private static uint FindChildProcess(uint parentPid) {
+        const uint TH32CS_SNAPPROCESS = 0x00000002;
+        IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snapshot == new IntPtr(-1))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            ProcessEntry32 entry = new ProcessEntry32();
+            entry.dwSize = (uint)Marshal.SizeOf(typeof(ProcessEntry32));
+            if (!Process32First(snapshot, ref entry))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            do {
+                if (entry.th32ParentProcessID == parentPid) return entry.th32ProcessID;
+            } while (Process32Next(snapshot, ref entry));
+            return 0;
+        } finally { CloseHandle(snapshot); }
+    }
+}
+'@
+
+Add-Type -TypeDefinition $source -Language CSharp
+
+function Restore-DisposableAclLease {
+    param(
+        [string]$path,
+        [System.Security.AccessControl.DirectorySecurity]$beforeAcl,
+        [string]$beforeSddl,
+        [string]$packageSid
+    )
+    # These directories were created by this fixture, so restoring their
+    # complete before-image cannot overwrite unrelated host ACL changes.
+    Set-Acl -LiteralPath $path -AclObject $beforeAcl
+    $afterAcl = Get-Acl -LiteralPath $path
+    $remainingOwnedRules = @($afterAcl.Access | Where-Object {
+        $_.IdentityReference.Value -eq $packageSid
+    })
+    if ($remainingOwnedRules.Count -ne 0) {
+        throw "Package-SID ACE remained after disposable ACL rollback on $path (current SDDL: $($afterAcl.Sddl))."
+    }
+    $afterSddl = $afterAcl.Sddl
+    if ($afterSddl -ne $beforeSddl) {
+        throw "ACL rollback did not restore the exact before-image for $path. Expected SDDL: $beforeSddl; actual SDDL: $afterSddl."
+    }
+    "ACL lease restored to exact before-image: $path"
+}
+
+function Protect-DisposableAclLeaseBase {
+    param([string]$path)
+    $acl = Get-Acl -LiteralPath $path
+    # Freeze the inherited runner-temp ACL as explicit entries before taking
+    # the before-image. Windows otherwise adds the DACL auto-inherited control
+    # flag when Set-Acl restores a descriptor that originally lacked it.
+    $acl.SetAccessRuleProtection($true, $true)
+    Set-Acl -LiteralPath $path -AclObject $acl
+}
+
+$name = 'CodeggM004-' + [Guid]::NewGuid().ToString('N')
+$root = Join-Path $env:RUNNER_TEMP ('codegg-m004-' + [Guid]::NewGuid().ToString('N'))
+$readRoot = Join-Path $root 'read-root'
+$writeRoot = Join-Path $root 'write-root'
+$secretRoot = Join-Path $root 'secret-root'
+$outsideRoot = Join-Path $root 'outside-root'
+$result = Join-Path $writeRoot 'read-result.txt'
+$secret = Join-Path $secretRoot 'credential-fixture.txt'
+$outsideWrite = Join-Path $outsideRoot 'outside.txt'
+$sid = [IntPtr]::Zero
+$profileCreated = $false
+
+try {
+    foreach ($path in @($readRoot, $writeRoot, $secretRoot, $outsideRoot)) {
+        [void][IO.Directory]::CreateDirectory($path)
+    }
+    Protect-DisposableAclLeaseBase $readRoot
+    Protect-DisposableAclLeaseBase $writeRoot
+    [IO.File]::WriteAllText($secret, 'synthetic-secret-marker')
+    if ([IO.File]::ReadAllText($secret) -ne 'synthetic-secret-marker') {
+        throw 'The ordinary runner principal could not read the synthetic secret control fixture.'
+    }
+    'ordinary runner principal can read the synthetic secret control fixture: passed'
+
+    $status = [AppContainerProofNative]::CreateAppContainerProfile(
+        $name, $name, 'Disposable CodeGG M004 ACL access proof', [IntPtr]::Zero, 0, [ref]$sid)
+    if ($status -lt 0 -or $sid -eq [IntPtr]::Zero) {
+        throw "CreateAppContainerProfile failed: HRESULT 0x$('{0:X8}' -f $status)"
+    }
+    $profileCreated = $true
+    $sidText = [System.Security.Principal.SecurityIdentifier]::new($sid).Value
+    $package = [System.Security.Principal.SecurityIdentifier]::new($sidText)
+
+    $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $readRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $package, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+    $writeRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $package, [System.Security.AccessControl.FileSystemRights]::Modify,
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow)
+    $readAclBefore = Get-Acl -LiteralPath $readRoot
+    $readAclBeforeSddl = $readAclBefore.Sddl
+    $writeAclBefore = Get-Acl -LiteralPath $writeRoot
+    $writeAclBeforeSddl = $writeAclBefore.Sddl
+    $readAcl = Get-Acl -LiteralPath $readRoot
+    $readAcl.AddAccessRule($readRule)
+    Set-Acl -LiteralPath $readRoot -AclObject $readAcl
+    $writeAcl = Get-Acl -LiteralPath $writeRoot
+    $writeAcl.AddAccessRule($writeRule)
+    Set-Acl -LiteralPath $writeRoot -AclObject $writeAcl
+    [IO.File]::WriteAllText((Join-Path $readRoot 'allowed.txt'), 'allowed-read-marker')
+
+    $readCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C type `"$(Join-Path $readRoot 'allowed.txt')`" `> `"$result`"", $sid)
+    if ($readCode -ne 0 -or [IO.File]::ReadAllText($result) -ne 'allowed-read-marker') {
+        throw "AppContainer could not read an explicitly allowed workspace fixture (exit $readCode)."
+    }
+    if ([AppContainerProofNative]::ObservedAppContainerSid -ne $sidText) {
+        throw "Child token package SID mismatch: expected $sidText, observed $([AppContainerProofNative]::ObservedAppContainerSid)."
+    }
+    'package SID present in child token: passed'
+    if (-not [AppContainerProofNative]::ObservedInJob) {
+        throw 'AppContainer target was not observed in the Job assigned before resume.'
+    }
+    'suspended AppContainer target assigned to Job before resume: passed'
+    'allowed workspace read: passed'
+
+    $timeout = Join-Path $env:SystemRoot 'System32\timeout.exe'
+    $descendantCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C start `"`" /B `"$timeout`" /T 20 /NOBREAK", $sid, $true)
+    if ($descendantCode -ne 0 -or -not [AppContainerProofNative]::ObservedDescendantInJob -or
+        -not [AppContainerProofNative]::ObservedDescendantTerminated) {
+        throw 'AppContainer descendant Job inheritance and cleanup proof failed.'
+    }
+    'AppContainer descendant inherited the owner Job: passed'
+    'owner Job termination stopped the descendant: passed'
+
+    $writeCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C echo allowed-write-marker `> `"$(Join-Path $writeRoot 'allowed.txt')`"", $sid)
+    if ($writeCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $writeRoot 'allowed.txt'))) {
+        throw "AppContainer could not write its explicitly allowed scratch fixture (exit $writeCode)."
+    }
+    'allowed scratch write: passed'
+
+    $secretCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C type `"$secret`" `> `"$result`"", $sid)
+    if ($secretCode -eq 0 -or [IO.File]::ReadAllText($result).Length -ne 0) {
+        throw "AppContainer read the secret fixture without a container ACE (exit $secretCode)."
+    }
+    'secret read denied: passed'
+
+    $outsideCode = [AppContainerProofNative]::Run($cmd,
+        "/D /C echo forbidden `> `"$outsideWrite`"", $sid)
+    if (Test-Path -LiteralPath $outsideWrite) {
+        throw "AppContainer wrote outside the approved roots (exit $outsideCode)."
+    }
+    'outside write denied: passed'
+
+    Restore-DisposableAclLease $readRoot $readAclBefore $readAclBeforeSddl $sidText
+    Restore-DisposableAclLease $writeRoot $writeAclBefore $writeAclBeforeSddl $sidText
+    'temporary ACL leases restored to exact before-images: passed'
+} finally {
+    if ($profileCreated) {
+        $deleteStatus = [AppContainerProofNative]::DeleteAppContainerProfile($name)
+        if ($deleteStatus -lt 0) {
+            Write-Error "DeleteAppContainerProfile failed: HRESULT 0x$('{0:X8}' -f $deleteStatus)"
+        }
+    }
+    if ($sid -ne [IntPtr]::Zero -and $null -ne $sid) {
+        [void][AppContainerProofNative]::FreeSid($sid)
+    }
+    if (Test-Path -LiteralPath $root) {
+        Remove-Item -LiteralPath $root -Recurse -Force
+    }
+}

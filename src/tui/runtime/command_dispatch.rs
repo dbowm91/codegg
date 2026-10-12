@@ -1702,6 +1702,27 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, operation, error, state,
             );
         }
+        TuiCommand::EditorDiagnosticsFinished {
+            request_id,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_diagnostics(
+                app, request_id, scope, result, error,
+            );
+        }
+        TuiCommand::EditorLspReadFinished {
+            request_id,
+            scope,
+            operation,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_lsp_read(
+                app, request_id, scope, operation, result, error,
+            );
+        }
         TuiCommand::FileTreeListed {
             request_id,
             generation,
@@ -1773,8 +1794,50 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             command,
             promote_after,
             cwd,
+            confirmed_dangerous,
         } => {
-            handle_run_human_shell(app, command, promote_after, cwd);
+            handle_run_human_shell(app, command, promote_after, cwd, confirmed_dangerous);
+        }
+        TuiCommand::RemoteShellRunAccepted {
+            local_id,
+            command,
+            cwd,
+            promote_after,
+            shell_binding,
+            binding,
+        } => {
+            let capture_policy = if promote_after {
+                crate::shell::types::ShellCapturePolicy::StoreAndPromote
+            } else {
+                crate::shell::types::ShellCapturePolicy::StoreEphemeral
+            };
+            let request = crate::shell::types::ShellRequest {
+                id: crate::shell::types::ShellCommandId(local_id),
+                origin: if promote_after {
+                    crate::shell::types::ShellOrigin::HumanPromoted
+                } else {
+                    crate::shell::types::ShellOrigin::HumanEphemeral
+                },
+                command,
+                cwd,
+                timeout: std::time::Duration::from_secs(300),
+                capture_policy,
+                env_policy: crate::shell::types::ShellEnvPolicy::Clean,
+            };
+            app.shell_store.insert_started(&request);
+            app.remote_shell_runs.insert(local_id, binding);
+            app.shell_command_bindings.insert(local_id, shell_binding);
+            let retained: std::collections::HashSet<u64> = app
+                .shell_store
+                .list_recent(usize::MAX)
+                .iter()
+                .map(|entry| entry.id.0)
+                .collect();
+            app.shell_command_bindings
+                .retain(|run_id, _| retained.contains(run_id));
+        }
+        TuiCommand::RemoteShellRunCancelResult { message } => {
+            app.messages_state.toasts.info(&message);
         }
         TuiCommand::TestRun { scope, args } => {
             start_test_run(app, scope, args);
@@ -1811,11 +1874,43 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellAsk { id, question } => {
             handle_shell_ask(app, id, question);
         }
-        TuiCommand::ShellAskSubmitted { id, text, error } => {
-            crate::tui::commands::shell::apply_shell_ask_submitted(app, id, text, error);
+        TuiCommand::ShellAskSubmitted {
+            id,
+            promotion_id,
+            text,
+            error,
+        } => {
+            crate::tui::commands::shell::apply_shell_ask_submitted(
+                app,
+                id,
+                promotion_id,
+                text,
+                error,
+            );
+        }
+        TuiCommand::ShellPromotionStaged { result } => {
+            app.apply_shell_promotion_staged(result);
+        }
+        TuiCommand::ShellPromotionsLoaded {
+            session_id,
+            workspace_id,
+            promotions,
+            error,
+        } => {
+            app.apply_shell_promotions_loaded(session_id, workspace_id, promotions, error);
         }
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);
+        }
+        TuiCommand::TurnSubmissionFinished { request_id, error } => {
+            if error.is_none()
+                && app
+                    .pending_turn_submission
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == request_id)
+            {
+                app.pending_turn_submission = None;
+            }
         }
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);

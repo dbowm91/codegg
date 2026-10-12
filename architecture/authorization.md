@@ -419,6 +419,10 @@ not a Core operation):
 | `interactive_process_resize` | global | `none` |
 | `interactive_process_resume` | global | `none` |
 | `interactive_process_terminate` | global | `none` |
+| `human_shell_run_cancel` | direct_project | `command.execute` |
+| `human_shell_run_capabilities` | global | `none` |
+| `human_shell_run_create` | direct_project | `command.execute` |
+| `human_shell_run_read` | direct_project | `command.execute` |
 | `job_attempts` | via_job | `session.read` |
 | `job_cancel` | via_job | `job.cancel` |
 | `job_get` | via_job | `session.read` |
@@ -537,6 +541,8 @@ not a Core operation):
 | `turn_cancel` | via_session | `agent.invoke` |
 | `turn_steer` | via_session | `agent.invoke` |
 | `turn_submit` | via_session | `agent.invoke` |
+| `human_shell_promotion_stage` | via_session | `agent.invoke` |
+| `human_shell_promotions_get` | via_session | `agent.invoke` |
 | `work_order_batch_create` | direct_project | `session.create` |
 | `work_order_bind_repository` | direct_project | `session.create` |
 | `work_order_cancel` | direct_project | `session.create` |

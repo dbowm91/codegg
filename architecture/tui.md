@@ -257,6 +257,30 @@ every iteration including idle.
 **Shutdown**: `App::prepare_shutdown()` cancels all registered tasks and
 kills shell handles.
 
+Human-shell promotion UI state is only a projection of the authoritative
+session owner. The TUI waits for the stage acknowledgement before presenting
+`!!` or `/shell-include` evidence as staged, reloads pending records when a
+session is attached, and sends stable promotion IDs with the next turn. The
+daemon claims those IDs in the same SQLite transaction as the session turn
+controller lease and durable turn-admission receipt. Turn retries reuse the
+request envelope ID and receive the same receipt, never a second runtime turn.
+After daemon restart, a committed but nonterminal receipt is marked interrupted
+and is not replayed; the event projection reports the failed turn. While
+pending, the TUI omits its display copy from submitted history because the
+daemon appends the canonical payload; after acceptance, the projection remains
+ordinary conversation history. A disconnected local owner or the WebSocket
+prompt-only transport leaves evidence in the composer as an unsubmitted draft.
+
+Finite `!`/`!!` execution is daemon-owned as well. The TUI negotiates the
+typed human-shell protocol and adapts bounded output cursors into existing
+`ShellEvent`/`ShellOutputStore` rendering. The daemon resolves workspace and
+project/session bindings, checks `command.execute`, applies the daemon user's
+sandbox profile, and shares scheduler process admission. The attaching TUI's
+cwd and environment are not sent. Remote-node workspaces are refused. The
+daemon retains handles/output ephemerally for ten minutes and expires commands
+after five minutes; restart drops them without replay. PTY operations remain
+under the separate `InteractiveProcess*` owner.
+
 **Diagnostics**: `/tui-stats` includes task registry stats and shell
 handle count.
 
@@ -2293,3 +2317,27 @@ arms), `TuiCommand` (203) and `InputAction` (50) counts, the 46-variant
 (`check_tui_project_authority.py` scanning `session_state.project_dir` and
 `std::env::current_dir()`; `check_tui_editor_text_authority.py` rejecting
 second text buffers and direct filesystem reads).
+### Editor LSP presentation (M006-C)
+
+The editor consumes the daemon-owned `LspDiagnosticsGet` and `LspReadGet`
+surfaces. Diagnostics are pulled when a document opens, after a successful
+save, and on F2. F2 opens a bounded list with severity, message, and source
+range; gutter markers identify lines with diagnostics. A `Ready` result
+replaces the complete current-file set, including clearing it when empty.
+`NotReady`, request failure, and transport loss preserve the last complete
+set and mark it stale where one exists. The UI does not poll or claim live
+push updates.
+
+F3 requests hover, F4 definition, F5 references, F6 document symbols, and F7
+workspace symbol search for the word at the cursor. Results are bounded and
+rendered as text. A location is navigable only when it includes the optional
+daemon-validated `workspace_relative_path`; the TUI passes that candidate to
+the existing `DocumentOpen`, which performs final containment and
+`file.read` authorization. Older or outside-workspace locations remain
+display-only.
+
+The presentation state is bound to session, project, workspace, path, and
+editor generation. Semantic-token overlays are accepted only for the same
+controller snapshot revision and valid non-overlapping UTF-16 ranges;
+unknown token types and malformed/stale results render as plain text. The
+TUI retains no document text outside the controller snapshot.

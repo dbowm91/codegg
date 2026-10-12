@@ -335,7 +335,7 @@ advertised):
 
 | Tool | Disclosure | File | Description |
 |------|------------|------|-------------|
-| **bash** | Core | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, Landlock). 120s timeout. Facade sequences policy → execution → result; see module headers for the pre-spawn order. |
+| **bash** | Core | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, platform sandbox when available). Raw shell uses `sh -c` on Unix and the configured Windows PowerShell, `cmd.exe`, Git Bash, or WSL on Windows; structured argv bypasses shell parsing. Windows shell calls receive a cleaned per-run TEMP/TMP directory, but shell selection does not enable filesystem containment. 120s timeout. Facade sequences policy → execution → result. |
 | **verify** | Core | `verify.rs` | Bounded Cargo `check`/`build`/`lint`/`typecheck`/`format_check`/`auto` facade delegating through `BashTool`. Takes no command/package/path field. |
 | **read** | Core | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
 | **write** | Core | `write.rs` | Create or overwrite files with auto-formatting. |

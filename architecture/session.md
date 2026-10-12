@@ -54,7 +54,7 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **73 CREATE TABLE statements** across
+Migrations create and evolve **74 CREATE TABLE statements** across
 these table groups:
 
 **Core session tables (v1):**
@@ -110,6 +110,25 @@ v43). v44 adds `agent_task.request_fingerprint`; v45 adds `goal.revision`.
 **Chat policy and session control (v64–v65):**
 `chat_project_policy` / `chat_channel_policy` and their override tables
 (v64), the turn-scoped controller lease (v65)
+
+**Human-shell staging and admission receipts (v71–v72):**
+`human_shell_promotion` stores only bounded, already-redacted projections,
+scoped to the authenticated principal and exact session/project/workspace.
+Pending payloads expire after 24 hours; old consumed/expired records are
+removed lazily on stage/recovery reads after an additional 24-hour
+idempotency-retention window. The store caps each session/principal at 32
+pending and 256 retained records. Turn admission claims
+selected IDs in the same transaction as the controller lease. The table
+never stores raw shell streams.
+
+`turn_admission_receipt` records the stable request ID, authenticated principal,
+session, request digest, accepted turn ID, and lifecycle status. The receipt,
+controller lease, and promotion consumption commit in one transaction. A retry
+with the same request ID and content returns the same receipt. Terminal
+receipts are retained for 24 hours for idempotency and capped at 256 per
+session/principal; still-accepted receipts are retained until terminal or
+restart recovery. Recovery marks any prior accepted receipt `interrupted`,
+which prevents replay after an unknown provider outcome.
 
 **Tool Programs (v33–v35):**
 `tool_program`, `tool_program_call` (v33),

@@ -65,6 +65,12 @@ root and lifecycle modules.
 
 ## Dispatch Rules
 
+For LSP navigation, preserve the result's display label separately from its
+optional `workspace_relative_path`. Missing identity means no navigation
+action. Pass a present candidate through the existing `DocumentOpen` request;
+the daemon remains responsible for containment and `file.read` authorization.
+Do not build a workspace path from a display basename or open an LSP URI.
+
 - **`dispatch_tui_command` is `pub(crate) async fn`**
   (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
   synchronous, but it contains five `.await` points, all of the same shape:
@@ -86,6 +92,22 @@ root and lifecycle modules.
      out-of-order completions must not corrupt state).
 
 ## Dialogs
+
+### M006-C editor LSP presentation
+
+The editor's F2–F7 actions consume existing daemon reads: F2 refreshes and
+lists diagnostics, F3 hover, F4 definition, F5 references, F6 document
+symbols, and F7 searches workspace symbols for the current word. Bind every
+completion to `EditorLspScope` and discard results after session/project/
+workspace/path/generation changes. Preserve complete diagnostics on
+`NotReady` or error and visibly mark the retained set stale. Do not add
+polling: the diagnostics publisher has no production driver.
+
+The LSP panel renders untrusted payloads as bounded text. Definition and
+symbol navigation requires the DTO's validated `workspace_relative_path`
+and must go through `open_editor`/`DocumentOpen`. Semantic spans are
+ephemeral, revision-bound, UTF-16 validated, and rejected as a whole on
+malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
 
 - `Dialog::Info` does NOT exist even though `components/dialogs/info.rs` does.
   Use `App::show_short_or_info(info_type, lines)`: toasts when <= 3 lines,
@@ -292,6 +314,11 @@ root and lifecycle modules.
   messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
+  Finite `!`/`!!` commands go through the daemon's versioned create/read/cancel
+  family. The TUI is only an adapter for output and cancellation: never spawn
+  locally or send frontend cwd/environment. Insert a run into shell history
+  only after daemon admission; preserve the captured session/workspace binding
+  so late output cannot be promoted into another tab.
 - **Interactive terminal keys** are modal input: focused Esc is forwarded to
   the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;

@@ -42,6 +42,8 @@ pub enum LspReadClientError {
 /// Whether a re-pull is required, and why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileDecision {
+    /// The daemon has no authoritative diagnostics snapshot yet.
+    NotReady,
     /// The streamed sequence is current; nothing to do.
     Current,
     /// The authoritative sequence is ahead of what the client last saw, so at
@@ -155,6 +157,9 @@ impl DiagnosticsReconciler {
     /// Decide whether the streamed view can be trusted against the
     /// authoritative set.
     pub fn reconcile(&self, authoritative: &LspDiagnosticsResultDto) -> ReconcileDecision {
+        if authoritative.status != codegg_protocol::lsp::LspDiagnosticsStatus::Ready {
+            return ReconcileDecision::NotReady;
+        }
         // Track the widest gap rather than the first one found: a caller that
         // re-pulls once should learn how far behind it actually was, so a
         // single re-pull is visibly sufficient.
@@ -187,6 +192,9 @@ impl DiagnosticsReconciler {
 
     /// Adopt the authoritative set wholesale, which is what a re-pull does.
     pub fn adopt(&mut self, authoritative: &LspDiagnosticsResultDto) {
+        if authoritative.status != codegg_protocol::lsp::LspDiagnosticsStatus::Ready {
+            return;
+        }
         self.seen.clear();
         for file in &authoritative.files {
             self.seen.insert(file.path.clone(), file.sequence);
@@ -230,6 +238,7 @@ mod tests {
     fn authoritative(files: Vec<LspFileDiagnosticsDto>) -> LspDiagnosticsResultDto {
         LspDiagnosticsResultDto {
             project_id: "project-1".to_string(),
+            status: codegg_protocol::lsp::LspDiagnosticsStatus::Ready,
             files,
             truncated: false,
         }
@@ -310,6 +319,41 @@ mod tests {
         reconciler.forget("src/lib.rs");
         assert_eq!(
             reconciler.reconcile(&authoritative(vec![file("src/lib.rs", 4)])),
+            ReconcileDecision::NoBaseline
+        );
+    }
+
+    #[test]
+    fn not_ready_pull_preserves_the_last_complete_diagnostics_baseline() {
+        let mut reconciler = DiagnosticsReconciler::new();
+        reconciler.accept_streamed(&file("src/lib.rs", 4));
+        let not_ready = LspDiagnosticsResultDto {
+            project_id: "project-1".into(),
+            status: codegg_protocol::lsp::LspDiagnosticsStatus::NotReady,
+            files: Vec::new(),
+            truncated: false,
+        };
+        assert_eq!(
+            reconciler.reconcile(&not_ready),
+            ReconcileDecision::NotReady
+        );
+        reconciler.adopt(&not_ready);
+        assert_eq!(
+            reconciler.reconcile(&authoritative(vec![file("src/lib.rs", 4)])),
+            ReconcileDecision::Current,
+            "NotReady must not erase the prior accepted sequence"
+        );
+    }
+
+    #[test]
+    fn ready_empty_pull_is_authoritative_and_clears_the_baseline() {
+        let mut reconciler = DiagnosticsReconciler::new();
+        reconciler.accept_streamed(&file("src/lib.rs", 4));
+        let empty = authoritative(Vec::new());
+        reconciler.adopt(&empty);
+        assert_eq!(reconciler.reconcile(&empty), ReconcileDecision::Current);
+        assert_eq!(
+            reconciler.reconcile(&authoritative(vec![file("src/lib.rs", 5)])),
             ReconcileDecision::NoBaseline
         );
     }

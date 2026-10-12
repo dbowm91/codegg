@@ -190,6 +190,10 @@ impl LspReadRequestDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRangeDto {
     pub path: String,
+    /// Daemon-validated target relative to the request's authorized workspace.
+    /// Missing values from older daemons remain display-only.
+    #[serde(default)]
+    pub workspace_relative_path: Option<String>,
     pub start_line: u32,
     pub start_column: u32,
     pub end_line: u32,
@@ -330,10 +334,23 @@ pub struct LspDiagnosticDto {
     pub source: Option<String>,
 }
 
+/// Whether a diagnostics response is a complete snapshot or not ready yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspDiagnosticsStatus {
+    Ready,
+    #[default]
+    NotReady,
+}
+
 /// The authoritative diagnostics for a project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspDiagnosticsResultDto {
     pub project_id: String,
+    /// Readiness is separate from the contents: an unavailable service must
+    /// never be interpreted as an authoritative empty diagnostic set.
+    #[serde(default)]
+    pub status: LspDiagnosticsStatus,
     pub files: Vec<LspFileDiagnosticsDto>,
     /// `true` when the file list itself was capped, so a client knows the set
     /// it received is not the whole project.
@@ -403,6 +420,25 @@ mod tests {
             column: Some(7),
             query: None,
         }
+    }
+
+    #[test]
+    fn diagnostics_without_readiness_field_fail_closed_to_not_ready() {
+        let result: LspDiagnosticsResultDto =
+            serde_json::from_str(r#"{"project_id":"project-1","files":[],"truncated":false}"#)
+                .expect("older daemon result remains deserializable");
+        assert_eq!(result.status, LspDiagnosticsStatus::NotReady);
+        assert!(result.files.is_empty());
+    }
+
+    #[test]
+    fn older_location_responses_default_to_non_navigable() {
+        let range: LspRangeDto = serde_json::from_str(
+            r#"{"path":"lib.rs","start_line":1,"start_column":2,"end_line":1,"end_column":3}"#,
+        )
+        .expect("older response remains deserializable");
+        assert_eq!(range.path, "lib.rs");
+        assert_eq!(range.workspace_relative_path, None);
     }
 
     #[test]

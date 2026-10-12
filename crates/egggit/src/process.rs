@@ -119,9 +119,26 @@ impl GitEnvPolicy {
     pub fn apply_sync(&self, argv: &[String], cwd: &Path) -> StdCommand {
         let mut cmd = StdCommand::new(&argv[0]);
         cmd.args(&argv[1..]).current_dir(cwd);
+        isolate_child_process_group(&mut cmd);
         apply_environment(&mut cmd, self);
         cmd
     }
+}
+
+/// Put commands that may need tree cleanup in a private process group.
+///
+/// `kill_process_tree` signals the child's process group on Unix. Without
+/// making the child its own group leader first, `getpgid(child)` can return
+/// the test runner or application process group and timeout cleanup would
+/// kill unrelated processes along with the child.
+fn isolate_child_process_group(cmd: &mut StdCommand) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
 }
 
 fn apply_environment<C>(cmd: &mut C, policy: &GitEnvPolicy)
@@ -236,6 +253,9 @@ fn run_command(
     timeout: Duration,
     rendered: &str,
 ) -> Result<StdOutput, EgggitError> {
+    // `run_command` is also exercised with directly constructed commands in
+    // tests, so enforce isolation here as well as in `GitEnvPolicy`.
+    isolate_child_process_group(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|error| EgggitError::Io(error.to_string()))?;

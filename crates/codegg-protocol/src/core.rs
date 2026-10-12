@@ -75,6 +75,8 @@ pub struct ProjectInitDraftDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
     pub protocol_version: u32,
+    /// For `TurnSubmit` and `SessionPromptSubmit`, this is the durable
+    /// submission identity. A retry after an uncertain response must reuse it.
     pub request_id: String,
     pub payload: T,
 }
@@ -1170,6 +1172,16 @@ pub enum CoreResponse {
         session_id: String,
         messages: Vec<crate::dto::Message>,
     },
+    HumanShellPromotionStaged {
+        promotion: HumanShellPromotionDto,
+        duplicate: bool,
+    },
+    HumanShellPromotions {
+        promotions: Vec<HumanShellPromotionDto>,
+    },
+    TurnAdmissionReceipt {
+        receipt: TurnAdmissionReceiptDto,
+    },
     SessionMessageCounts {
         counts: std::collections::HashMap<String, usize>,
     },
@@ -1600,6 +1612,23 @@ pub enum CoreResponse {
         attachment_id: String,
         handle: String,
     },
+    HumanShellRunCreated {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        duplicate: bool,
+    },
+    HumanShellRunCapabilities {
+        capabilities: crate::human_shell::HumanShellRunCapabilitiesDto,
+    },
+    HumanShellRunOutput {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        chunks: Vec<crate::human_shell::HumanShellOutputChunkDto>,
+        next_sequence: u64,
+        resync_required: bool,
+        output_truncated: bool,
+    },
+    HumanShellRunCancelled {
+        run_id: String,
+    },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Acknowledgement of a heartbeat with the server-computed expiry.
     PresenceHeartbeatAck {
@@ -1839,6 +1868,31 @@ pub enum CoreResponse {
         triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
         truncated: bool,
     },
+}
+
+/// Bounded projection metadata returned by the durable session promotion
+/// owner. Raw shell output is never represented by this DTO.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanShellPromotionDto {
+    pub id: String,
+    pub source_id: String,
+    pub session_id: String,
+    pub projection: String,
+    pub projection_bytes: usize,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub consumed_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnAdmissionReceiptDto {
+    pub submission_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub status: String,
+    pub accepted_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2113,6 +2167,10 @@ pub enum CoreRequest {
         /// the agent/model-profile default" — the pre-existing behavior.
         #[serde(default)]
         reasoning: Option<ReasoningOverride>,
+        /// Previously staged human-shell projections to include in this
+        /// accepted turn. Empty for ordinary turns.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -2125,6 +2183,19 @@ pub enum CoreRequest {
         session_id: String,
         text: String,
         plan_mode: bool,
+        /// Previously staged human-shell projections to include atomically
+        /// with this session-composed prompt.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
+    },
+    HumanShellPromotionStage {
+        session_id: String,
+        promotion_id: String,
+        source_id: String,
+        projection: String,
+    },
+    HumanShellPromotionsGet {
+        session_id: String,
     },
     TurnCancel {
         session_id: String,
@@ -2695,6 +2766,19 @@ pub enum CoreRequest {
     /// Requires attachment ownership plus terminate authority.
     InteractiveProcessRemove {
         attachment_id: String,
+    },
+    /// Create a bounded, daemon-owned human `!`/`!!` command run.
+    HumanShellRunCreate {
+        request: crate::human_shell::HumanShellRunCreateRequestDto,
+    },
+    HumanShellRunCapabilities,
+    /// Read a bounded slice of one human shell run's retained output.
+    HumanShellRunRead {
+        request: crate::human_shell::HumanShellRunReadDto,
+    },
+    /// Cancel a caller-owned human shell run.
+    HumanShellRunCancel {
+        request: crate::human_shell::HumanShellRunCancelDto,
     },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Capability negotiation for the presence surface. Unknown

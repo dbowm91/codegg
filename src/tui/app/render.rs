@@ -797,6 +797,7 @@ impl App {
                 writable,
                 busy,
                 snapshot: &snapshot,
+                lsp: &self.editor_state.lsp,
                 presentation: session.presentation_mut(),
                 theme,
             }

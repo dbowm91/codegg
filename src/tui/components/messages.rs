@@ -41,6 +41,7 @@ fn format_bytes(bytes: u64) -> String {
 
 #[derive(Debug, Clone, Default)]
 pub struct ShellCellUpdate {
+    pub cwd: Option<String>,
     pub status: Option<String>,
     pub stdout_preview: Option<String>,
     pub stderr_preview: Option<String>,
@@ -809,6 +810,7 @@ impl MessagesWidget {
             for part in &mut msg.parts {
                 if let MsgPart::ShellCell {
                     id: cell_id,
+                    cwd,
                     status,
                     stdout_preview,
                     stderr_preview,
@@ -826,6 +828,9 @@ impl MessagesWidget {
                 } = part
                 {
                     if *cell_id == id {
+                        if let Some(ref value) = update.cwd {
+                            *cwd = value.clone();
+                        }
                         if let Some(ref s) = update.status {
                             *status = s.clone();
                         }

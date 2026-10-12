@@ -1248,16 +1248,20 @@ async fn turn_submit_atomically_acquires_controller() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 reasoning: None,
+                human_shell_promotion_ids: Vec::new(),
             },
         ),
         "client-alice",
     ))
     .await
     .unwrap();
-    assert!(
-        matches!(response, CoreResponse::Ack),
-        "submit failed: {response:?}"
-    );
+    let receipt = match response {
+        CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+        other => panic!("submit failed: {other:?}"),
+    };
+    assert_eq!(receipt.submission_id, "req-submit-ctrl");
+    assert_eq!(receipt.session_id, session_id);
+    assert_eq!(receipt.status, "accepted");
     // The lease is established synchronously with acceptance.
     let store = SessionControllerStore::new(team.pool().clone());
     let record = store.get(&session_id).await.unwrap().expect("lease row");
@@ -1383,6 +1387,7 @@ async fn concurrent_submits_converge_on_one_controller() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 reasoning: None,
+                human_shell_promotion_ids: Vec::new(),
             },
         )
     };
@@ -1393,15 +1398,39 @@ async fn concurrent_submits_converge_on_one_controller() {
     let bob_out = bob_out.unwrap();
     // Exactly one submit wins; the loser observes turn contention and
     // leaves no second lease behind.
-    let acks = [&alice_out, &bob_out]
+    let admitted = [&alice_out, &bob_out]
         .iter()
-        .filter(|response| matches!(response, CoreResponse::Ack))
+        .filter(|response| {
+            matches!(
+                response,
+                CoreResponse::TurnAdmissionReceipt { receipt }
+                    if receipt.status == "accepted"
+            )
+        })
         .count();
-    assert_eq!(acks, 1, "one submit must win: {alice_out:?} vs {bob_out:?}");
+    assert_eq!(
+        admitted, 1,
+        "one submit must win: {alice_out:?} vs {bob_out:?}"
+    );
+    let loser = if matches!(
+        alice_out,
+        CoreResponse::TurnAdmissionReceipt { ref receipt } if receipt.status == "accepted"
+    ) {
+        &bob_out
+    } else {
+        &alice_out
+    };
+    assert!(
+        matches!(loser, CoreResponse::Error { code, .. } if code == "turn_already_active"),
+        "losing submit must observe turn contention: {loser:?}"
+    );
     let store = SessionControllerStore::new(team.pool().clone());
     let record = store.get(&session_id).await.unwrap().expect("lease row");
     assert_eq!(record.revision, 1);
-    if matches!(alice_out, CoreResponse::Ack) {
+    if matches!(
+        alice_out,
+        CoreResponse::TurnAdmissionReceipt { ref receipt } if receipt.status == "accepted"
+    ) {
         let alice_id = daemon
             .request_authority_for_client("client-alice")
             .principal_id()

@@ -1,5 +1,8 @@
 #![deny(unsafe_code)]
 
+#[cfg(all(feature = "windows-sandbox-test-support", not(debug_assertions)))]
+compile_error!("windows-sandbox-test-support is restricted to debug/test builds");
+
 // Extracted workspace crate re-exports.
 pub use codegg_config as config;
 pub use codegg_protocol as protocol;

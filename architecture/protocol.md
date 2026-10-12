@@ -22,6 +22,7 @@ crates/codegg-protocol/src/
 ├── frames.rs           # ClientHello/ServerHello, ClientCapabilities,
 │                      #   ServerCapabilities
 ├── interactive_process.rs # InteractiveProcess attach/stream DTOs
+├── human_shell.rs        # human_shell.v1 bounded daemon run DTOs
 ├── lsp.rs              # LSP preview-apply and read-surface DTOs
 ├── plugin.rs           # PluginManifestDto, PluginInvocation, PluginResponse
 ├── projection/         # Frontend-neutral session projection contract
@@ -57,6 +58,17 @@ event carries an `EventEnvelope<T>` with `protocol_version`, `event_seq`,
 stream (Unix domain socket on Unix, current-user named pipe on Windows).
 **Remote TUI (Server)**: WebSocket / HTTP through Axum, with `TuiMessage`
 events pushed to subscribed clients.
+
+### Human finite shell runs (`human_shell.v1`)
+
+`HumanShellRunCapabilities`, `HumanShellRunCreate`, `HumanShellRunRead`, and
+`HumanShellRunCancel` negotiate and operate bounded one-shot runs. Create
+requests carry command text, the selected 1–3600 second timeout, and project,
+workspace, and optional session locators. The daemon resolves authority and
+canonical cwd; request DTOs do not carry caller cwd, shell path, environment,
+principal, or execution-node claims. Output reads are sequence-based and
+capped at 64 KiB. The daemon retains run status/output ephemerally for ten
+minutes, and daemon restart invalidates handles without replay.
 
 ## Protocol Versions
 

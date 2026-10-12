@@ -27,6 +27,10 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
+use codegg_protocol::lsp::{
+    LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspReadOperation, LspReadRequestDto,
+    LspReadResultDto, LspReadStatus,
+};
 
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::tui::app::{App, TuiCommand};
@@ -36,6 +40,8 @@ use crate::tui::editor::{
     self, EditorCommand, EditorFocus, EditorMode, MAX_EDITOR_PENDING_COMMAND,
 };
 use crate::tui::task_lifecycle::TuiTaskKind;
+
+use super::super::editor_lsp::EditorLspScope;
 
 /// Maximum length of a workspace-relative path accepted by the open command.
 pub const MAX_EDITOR_RELATIVE_PATH: usize = 512;
@@ -265,6 +271,303 @@ pub(crate) fn apply_editor_opened(
         session.presentation_mut().reset_for_open();
     }
     app.editor_state.clear_notice();
+    refresh_editor_diagnostics(app);
+    start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+}
+
+fn current_lsp_scope(app: &App) -> Option<EditorLspScope> {
+    let context = app.project_execution_context().ok()?;
+    let session_id = context.session_id?;
+    let project_id = context.project_id?;
+    let workspace_id = context.workspace_id?;
+    let path = app.editor_state.path.clone()?;
+    let attachment = app.editor_state.session.as_ref()?.attachment_info()?;
+    if attachment.project_id != project_id
+        || attachment.workspace_id != workspace_id
+        || attachment.relative_path != path
+    {
+        return None;
+    }
+    Some(EditorLspScope {
+        generation: app.editor_state.generation,
+        session_id,
+        project_id,
+        workspace_id,
+        path,
+    })
+}
+
+/// Pull the authoritative complete diagnostics snapshot. Missing or failed
+/// results preserve the last complete display; only Ready replaces it.
+pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
+    let Some(scope) = current_lsp_scope(app) else {
+        return;
+    };
+    let Some(request_id) = app.editor_state.lsp.begin_diagnostics(&scope) else {
+        return;
+    };
+    let Some(client) = app.core_client.clone() else {
+        app.editor_state.lsp.diagnostics_loading = false;
+        app.editor_state.lsp.diagnostics_status =
+            crate::tui::editor_lsp::DiagnosticsViewStatus::Unavailable;
+        app.editor_state.lsp.diagnostics_stale = !app.editor_state.lsp.diagnostics.is_empty();
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|id| id.to_string());
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_lsp_diagnostics",
+        tab_id,
+        None,
+        None,
+        async move {
+            let response = client
+                .request(crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspDiagnosticsGet {
+                        request: LspDiagnosticsGetRequestDto {
+                            project_id: scope.project_id.clone(),
+                            session_id: scope.session_id.clone(),
+                        },
+                    },
+                ))
+                .await;
+            let (result, error) = match response {
+                Ok(crate::protocol::core::CoreResponse::LspDiagnosticsGetResult { result }) => {
+                    (Some(result), None)
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    (None, Some(message))
+                }
+                Ok(other) => (
+                    None,
+                    Some(format!("unexpected diagnostics response: {other:?}")),
+                ),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(TuiCommand::EditorDiagnosticsFinished {
+                request_id,
+                scope,
+                result,
+                error,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.lsp.diagnostics_loading = false;
+        app.editor_state.lsp.diagnostics_status =
+            crate::tui::editor_lsp::DiagnosticsViewStatus::Unavailable;
+        app.editor_state.lsp.diagnostics_stale = !app.editor_state.lsp.diagnostics.is_empty();
+    }
+}
+
+pub(crate) fn apply_editor_diagnostics(
+    app: &mut App,
+    request_id: u64,
+    scope: EditorLspScope,
+    result: Option<LspDiagnosticsResultDto>,
+    error: Option<String>,
+) {
+    if app.editor_state.generation != scope.generation
+        || current_lsp_scope(app).as_ref() != Some(&scope)
+    {
+        return;
+    }
+    app.editor_state
+        .lsp
+        .apply_diagnostics(request_id, &scope, result, error);
+}
+
+fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Option<String>) {
+    let Some(scope) = current_lsp_scope(app) else {
+        app.messages_state
+            .toasts
+            .warning("LSP is unavailable: select a session-bound workspace document first");
+        return;
+    };
+    let Some(request_id) = app.editor_state.lsp.begin_read(&scope) else {
+        app.messages_state
+            .toasts
+            .info("An LSP request is already running");
+        return;
+    };
+    if operation == LspReadOperation::SemanticTokens {
+        app.editor_state.lsp.semantic_revision = app
+            .editor_state
+            .session
+            .as_ref()
+            .and_then(|session| session.try_snapshot())
+            .map(|snapshot| snapshot.revision().get());
+    }
+    let Some(client) = app.core_client.clone() else {
+        app.editor_state.lsp.read_loading = false;
+        app.editor_state.lsp.read_error = Some("daemon unavailable".to_string());
+        app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        return;
+    };
+    let (line, column) = if operation.is_point() {
+        let Some(session) = app.editor_state.session.as_ref() else {
+            fail_lsp_read(app, "document attachment unavailable");
+            return;
+        };
+        let Some(snapshot) = session.try_snapshot() else {
+            fail_lsp_read(app, "document snapshot unavailable");
+            return;
+        };
+        let cursor = session.presentation().cursor_byte;
+        let line = crate::tui::editor::cursor_line(&snapshot, cursor);
+        let Some(start) = crate::tui::editor::line_start(&snapshot, line) else {
+            fail_lsp_read(app, "cursor position is invalid");
+            return;
+        };
+        let prefix = match snapshot.read_bytes(start, cursor.min(snapshot.len_bytes())) {
+            Ok(prefix) => prefix,
+            Err(_) => {
+                fail_lsp_read(app, "cursor position is not a valid text boundary");
+                return;
+            }
+        };
+        (
+            Some(u32::try_from(line).unwrap_or(u32::MAX)),
+            Some(u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX)),
+        )
+    } else {
+        (None, None)
+    };
+    let request = LspReadRequestDto {
+        operation,
+        session_id: scope.session_id.clone(),
+        path: if operation == LspReadOperation::WorkspaceSymbols {
+            String::new()
+        } else {
+            scope.path.clone()
+        },
+        line,
+        column,
+        query,
+    };
+    if let Err(error) = request.validate() {
+        app.editor_state.lsp.read_loading = false;
+        app.editor_state.lsp.read_error = Some(format!("invalid LSP query: {error:?}"));
+        app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+        return;
+    }
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|id| id.to_string());
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_lsp_read",
+        tab_id,
+        None,
+        None,
+        async move {
+            let response = client
+                .request(crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspReadGet { request },
+                ))
+                .await;
+            let (result, error) = match response {
+                Ok(crate::protocol::core::CoreResponse::LspReadResult { result }) => {
+                    (Some(result), None)
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    (None, Some(message))
+                }
+                Ok(other) => (None, Some(format!("unexpected LSP response: {other:?}"))),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(TuiCommand::EditorLspReadFinished {
+                request_id,
+                scope,
+                operation,
+                result,
+                error,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.lsp.read_loading = false;
+        app.editor_state.lsp.read_error = Some("TUI command channel unavailable".to_string());
+        app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+    }
+}
+
+fn fail_lsp_read(app: &mut App, message: &str) {
+    app.editor_state.lsp.read_loading = false;
+    app.editor_state.lsp.read_error = Some(message.to_string());
+    app.editor_state.lsp.panel = Some(crate::tui::editor_lsp::EditorLspPanel::ReadResult);
+}
+
+pub(crate) fn apply_editor_lsp_read(
+    app: &mut App,
+    request_id: u64,
+    scope: EditorLspScope,
+    operation: LspReadOperation,
+    result: Option<LspReadResultDto>,
+    error: Option<String>,
+) {
+    if app.editor_state.generation != scope.generation
+        || current_lsp_scope(app).as_ref() != Some(&scope)
+    {
+        return;
+    }
+    let (result, error) = match result {
+        Some(result) if result.operation == operation => (Some(result), error),
+        Some(_) => (None, Some("unexpected LSP response operation".to_string())),
+        None => (None, error),
+    };
+    if !app
+        .editor_state
+        .lsp
+        .apply_read(request_id, &scope, result, error)
+    {
+        return;
+    }
+    if operation == LspReadOperation::SemanticTokens {
+        let tokens = match app.editor_state.lsp.read_result.take() {
+            Some(LspReadResultDto {
+                status: LspReadStatus::Ready,
+                payload:
+                    Some(crate::protocol::lsp::LspReadPayloadDto::SemanticTokens { tokens, .. }),
+                ..
+            }) => tokens,
+            _ => Vec::new(),
+        };
+        let current_revision = app
+            .editor_state
+            .session
+            .as_ref()
+            .and_then(|session| session.try_snapshot())
+            .map(|snapshot| snapshot.revision().get());
+        app.editor_state.lsp.semantic_tokens =
+            if current_revision == app.editor_state.lsp.semantic_revision {
+                validate_semantic_tokens(app, tokens)
+            } else {
+                Vec::new()
+            };
+        app.editor_state.lsp.panel = None;
+    }
+}
+
+fn validate_semantic_tokens(
+    app: &App,
+    tokens: Vec<crate::protocol::lsp::LspSemanticTokenDto>,
+) -> Vec<crate::protocol::lsp::LspSemanticTokenDto> {
+    let Some(snapshot) = app
+        .editor_state
+        .session
+        .as_ref()
+        .and_then(|session| session.try_snapshot())
+    else {
+        return Vec::new();
+    };
+    crate::tui::editor_lsp::validate_semantic_tokens(&snapshot, tokens)
 }
 
 /// Close the attachment and leave the editor view.
@@ -473,6 +776,9 @@ pub(crate) fn apply_editor_operation_finished(
     }
     if operation == EditorOperation::Close {
         app.editor_state.detach();
+    } else if operation == EditorOperation::Save {
+        refresh_editor_diagnostics(app);
+        start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
     }
 }
 
@@ -535,6 +841,11 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 cursor_before,
                 anchor_before,
             );
+            state.lsp.semantic_tokens.clear();
+            state.lsp.semantic_revision = None;
+            if !state.lsp.diagnostics.is_empty() {
+                state.lsp.diagnostics_stale = true;
+            }
             state.status = EditorStatus::DirtyLocal;
             state.clear_notice();
         }
@@ -812,6 +1123,41 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         }
         return false;
     }
+    if handle_lsp_panel_key(app, key) {
+        return true;
+    }
+    match key.code {
+        KeyCode::F(2) => {
+            refresh_editor_diagnostics(app);
+            app.editor_state.lsp.open_diagnostics_panel();
+            return true;
+        }
+        KeyCode::F(3) => {
+            start_editor_lsp_read(app, LspReadOperation::Hover, None);
+            return true;
+        }
+        KeyCode::F(4) => {
+            start_editor_lsp_read(app, LspReadOperation::Definition, None);
+            return true;
+        }
+        KeyCode::F(5) => {
+            start_editor_lsp_read(app, LspReadOperation::References, None);
+            return true;
+        }
+        KeyCode::F(6) => {
+            start_editor_lsp_read(app, LspReadOperation::DocumentSymbols, None);
+            return true;
+        }
+        KeyCode::F(7) => {
+            let Some(query) = editor_word_at_cursor(&app.editor_state) else {
+                app.messages_state.toasts.info("No symbol at the cursor");
+                return true;
+            };
+            start_editor_lsp_read(app, LspReadOperation::WorkspaceSymbols, Some(query));
+            return true;
+        }
+        _ => {}
+    }
     // Lifecycle round trips stay on the App layer, so the buffer handler
     // reports the request instead of performing it.
     match editor_buffer_key(&mut app.editor_state, key) {
@@ -834,6 +1180,149 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
     }
+}
+
+fn handle_lsp_panel_key(app: &mut App, key: KeyEvent) -> bool {
+    use crate::tui::editor_lsp::EditorLspPanel;
+    let Some(panel) = app.editor_state.lsp.panel else {
+        return false;
+    };
+    match key.code {
+        KeyCode::Esc => app.editor_state.lsp.close_panel(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            let count = if panel == EditorLspPanel::Diagnostics {
+                app.editor_state.lsp.diagnostics.len()
+            } else {
+                lsp_result_count(&app.editor_state.lsp)
+            };
+            app.editor_state.lsp.selected_index = app
+                .editor_state
+                .lsp
+                .selected_index
+                .saturating_add(1)
+                .min(count.saturating_sub(1));
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.editor_state.lsp.selected_index =
+                app.editor_state.lsp.selected_index.saturating_sub(1)
+        }
+        KeyCode::Char('r') if panel == EditorLspPanel::Diagnostics => {
+            refresh_editor_diagnostics(app)
+        }
+        KeyCode::Enter if panel == EditorLspPanel::Diagnostics => {
+            jump_to_selected_diagnostic(&mut app.editor_state)
+        }
+        KeyCode::Enter if panel == EditorLspPanel::ReadResult => open_selected_lsp_target(app),
+        _ => return false,
+    }
+    true
+}
+
+fn lsp_result_count(state: &crate::tui::editor_lsp::EditorLspState) -> usize {
+    use crate::protocol::lsp::LspReadPayloadDto;
+    match state
+        .read_result
+        .as_ref()
+        .and_then(|result| result.payload.as_ref())
+    {
+        Some(LspReadPayloadDto::Locations { locations, .. }) => locations.len(),
+        Some(LspReadPayloadDto::Symbols { symbols, .. }) => symbols.len(),
+        _ => 0,
+    }
+}
+
+fn jump_to_selected_diagnostic(state: &mut EditorState) {
+    let Some(diagnostic) = state.lsp.diagnostics.get(state.lsp.selected_index) else {
+        return;
+    };
+    let Some(session) = state.session.as_ref() else {
+        return;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return;
+    };
+    let Some(start) = editor::line_start(&snapshot, diagnostic.range.start_line as usize) else {
+        return;
+    };
+    let Some(end) = editor::line_content_end(&snapshot, diagnostic.range.start_line as usize)
+    else {
+        return;
+    };
+    let Ok(line) = snapshot.read_bytes(start, end) else {
+        return;
+    };
+    let Some(column) =
+        crate::tui::editor_lsp::utf16_column_to_byte(&line, diagnostic.range.start_column)
+    else {
+        return;
+    };
+    if let Some(session) = state.session.as_mut() {
+        session.presentation_mut().cursor_byte = start + column;
+        session.presentation_mut().viewport_line = diagnostic.range.start_line as usize;
+    }
+    state.lsp.close_panel();
+}
+
+fn open_selected_lsp_target(app: &mut App) {
+    use crate::protocol::lsp::LspReadPayloadDto;
+    let target = app
+        .editor_state
+        .lsp
+        .read_result
+        .as_ref()
+        .and_then(|result| match result.payload.as_ref()? {
+            LspReadPayloadDto::Locations { locations, .. } => locations
+                .get(app.editor_state.lsp.selected_index)?
+                .workspace_relative_path
+                .clone(),
+            LspReadPayloadDto::Symbols { symbols, .. } => symbols
+                .get(app.editor_state.lsp.selected_index)?
+                .range
+                .workspace_relative_path
+                .clone(),
+            _ => None,
+        });
+    let Some(target) = target else {
+        app.messages_state
+            .toasts
+            .info("This result has no validated workspace-relative target");
+        return;
+    };
+    match normalize_relative_path(&target) {
+        Ok(path) => open_editor(app, &path),
+        Err(_) => app
+            .messages_state
+            .toasts
+            .warning("LSP target path is invalid; result remains display-only"),
+    }
+}
+
+fn editor_word_at_cursor(state: &EditorState) -> Option<String> {
+    let session = state.session.as_ref()?;
+    let snapshot = session.try_snapshot()?;
+    let line_index = editor::cursor_line(&snapshot, session.presentation().cursor_byte);
+    let start = editor::line_start(&snapshot, line_index)?;
+    let end = editor::line_content_end(&snapshot, line_index)?;
+    if end.saturating_sub(start) > 16 * 1024 {
+        return None;
+    }
+    let line = snapshot.read_bytes(start, end).ok()?;
+    let cursor = session
+        .presentation()
+        .cursor_byte
+        .saturating_sub(start)
+        .min(line.len());
+    let begin = line[..cursor]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_alphanumeric() && *ch != '_')
+        .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+    let finish = line[cursor..]
+        .char_indices()
+        .find(|(_, ch)| !ch.is_alphanumeric() && *ch != '_')
+        .map_or(line.len(), |(idx, _)| cursor + idx);
+    let word = line.get(begin..finish)?.trim();
+    (!word.is_empty()).then(|| word.chars().take(200).collect())
 }
 
 /// Leave the buffer, one step at a time: insert mode first, then focus.

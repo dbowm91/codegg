@@ -64,6 +64,10 @@ and invariants that are easy to violate.
 7. **Tool Programs get reads only.** Programs cannot call the multiplexed
    `git` tool (`DirectOnly`); the hidden `ProgrammaticOnly` `git_read`
    adapter exposes `status`/`diff`/`log`/`branches` with a 64 KiB cap.
+8. **Timeout cleanup is process-group scoped.** Unix children that may be
+   killed as a tree must become their own process-group leaders before spawn;
+   otherwise `getpgid(child)` can identify the caller's group and cleanup can
+   kill the caller.
 
 ## Static Guards
 

@@ -99,12 +99,7 @@ impl FakeTuiState {
                     self.pending_questions = self.pending_questions.saturating_sub(1);
                 }
             }
-            ProjectionEvent::TurnCompleted {
-                turn_id,
-                stop_reason: _,
-                completed_at: _,
-                ..
-            } => {
+            ProjectionEvent::TurnCompleted { turn_id, .. } => {
                 if self.active_turn_id.as_deref() == Some(turn_id.as_str()) {
                     self.active_turn_id = None;
                     self.active_turn_status = None;

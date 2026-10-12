@@ -459,8 +459,8 @@ mod tests {
 
     fn turn(id: &str) -> TurnProjection {
         TurnProjection {
-            input_tokens: None,
-            output_tokens: None,
+            input_tokens: Some(10),
+            output_tokens: Some(20),
             cached_tokens: None,
             reasoning_tokens: None,
             context_limit: None,
@@ -476,8 +476,6 @@ mod tests {
             pending_questions: VecDeque::new(),
             agent_tree: VecDeque::new(),
             subagent_count: 0,
-            input_tokens: Some(10),
-            output_tokens: Some(20),
         }
     }
 
