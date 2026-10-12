@@ -1,8 +1,8 @@
 # Windows Native Sandbox Corrective C014 — Projection/AppContainer Runtime Feasibility and OS Denial Proof
 
-Status: active
+Status: implemented (closed negative feasibility)
 
-Repository baseline: `d00f1274c844bde7055559f240c020ffb2f1ff46` (`work/windows-native-sandbox-foundation`), 2026-10-12.
+Repository baseline: `8ad76e640ba2e94308ad7361f65d33d5ccc5f213` (`work/windows-native-sandbox-foundation`), 2026-10-12.
 
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0019-projection-successor-milestones`
 
