@@ -767,7 +767,7 @@ Four panels ship:
 | `Help` | `[HELP]` | the keybinding reference |
 
 Which panel is loaded is chosen by the **panel manager box**
-(`Shift+S`, Normal mode) — a dialog, not an overlay drawn inside the column. It replaces the old two-column grid selector, which could
+(`Shift+S` in Normal mode, or the `/panels` command) — a dialog, not an overlay drawn inside the column. It replaces the old two-column grid selector, which could
 not be filtered and showed unlabelled buttons in 30 columns.
 
 Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, a
@@ -986,8 +986,16 @@ Three ordering rules, all load-bearing:
   short-circuit when the manager is the active dialog, and
   `commands::panels::handle_panel_key` matches it before delegating to the
   panel. This is load-bearing rather than tidy: `Ctrl+Alt+W` is retired, so
-  `Shift+S` is the *only* spelling of the manager, and a panel that consumed
-  it would leave no way to reach the switcher from inside a panel at all.
+  `Shift+S` is the only *chord*, and a panel that consumed it would leave no
+  way to reach the switcher from inside a panel at all. `/panels` is the
+  second route — the chord alone would strand the manager in Normal mode,
+  since `Shift+S` is the letter `S` in Insert and has to stay typeable.
+- **A toast's height is `wrapped_lines + 2`.** The live column is a fixed
+  60×10 overlay at the top right (`App::render`), so each row a toast spends
+  is a row of transcript it covers. The countdown bar that used to sit under
+  the message cost one row per toast to restate the expiry, and read as a
+  progress indicator for whatever was beside it. Nothing is lost: the
+  retained ring in `/logs` is the durable record.
 - **Opening the manager does not take focus; committing does.** If opening
   stole the keyboard, a user who pressed it from the composer and then
   cancelled would find their next keystroke going to a panel they never
@@ -1023,8 +1031,8 @@ no app access, so it would otherwise find the panel unbound and refuse to
 focus it, leaving the selection looking inert.
 
 `Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Alt+S`
-enters sidebar focus; `Shift+S` (Normal mode only)
-open the panel manager.
+enters sidebar focus; `Shift+S` (Normal mode only) or `/panels` from anywhere
+opens the panel manager.
 
 **Chord contract.** Multi-modifier chords are `{CONTROL, ALT}` only. A bare
 `Ctrl+<letter>` is unusable because every free bare Ctrl letter is a terminal

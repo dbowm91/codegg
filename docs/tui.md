@@ -116,11 +116,15 @@ read and scrolled before it is filtered: `j`/`k` and the arrow keys scroll
 immediately, and `i` takes you to the filter. The `/help` *box* opens in `INS`,
 because you opened it to type a query.
 
-The **panel manager** (`Shift+S`) lists every panel with a one-line
+The **panel manager** lists every panel with a one-line
 description; type to filter, `Enter` to load, and a digit (`1`-`9`, `0`) to
 bind that panel to `Ctrl+<digit>` so you can swap to it in one keystroke.
 Bindings are saved to `codegg.json` and survive a restart. `Ctrl` rather than
 `Cmd` because a terminal does not deliver a Cmd modifier.
+
+It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
+anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
+letter `S`, so it has to stay typeable.
 
 ### Where your input goes
 

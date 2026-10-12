@@ -191,7 +191,7 @@ fn manager_cursor(app: &mut codegg::tui::app::App) -> Option<usize> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ctrl_alt_w_opens_the_manager_without_stealing_the_composer() {
+async fn opening_the_manager_does_not_steal_the_composer() {
     let mut app = test_app();
     open_manager(&mut app);
     assert!(manager_open(&app));
@@ -201,6 +201,57 @@ async fn ctrl_alt_w_opens_the_manager_without_stealing_the_composer() {
          would find their next keystroke going to a panel they never chose"
     );
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_slash_command_reaches_the_manager_while_composing() {
+    // `⇧S` is Normal-mode only, and in Insert it is the letter `S`. With
+    // `Ctrl+Alt+W` retired that left the switcher unreachable in the middle
+    // of a prompt — the one moment you are most likely to want it. A typed
+    // route restores it.
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Insert;
+    for ch in "/panels".chars() {
+        app.on_key(plain(ch));
+    }
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "/panels",
+        "the whole name must land in the composer"
+    );
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(manager_open(&app), "/panels must open the same box as ⇧S");
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "",
+        "executing a command clears the composer, exactly like every other"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_slash_command_survives_inside_a_focused_panel() {
+    // The one place `⇧S` cannot be answered: a focused panel consumes every
+    // key by contract, so the *typed* route is the only way back into the
+    // manager from there once `Ctrl+Alt+W` is gone.
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    assert!(app.panel_host.is_focused(), "precondition: a focused panel");
+    // Leaving the panel is the same `⇧H` gesture a user performs, after
+    // which the typed route must still work.
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "precondition: back at the composer"
+    );
+    for ch in "/panels".chars() {
+        app.on_key(plain(ch));
+    }
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        manager_open(&app),
+        "the typed route still opens the manager"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

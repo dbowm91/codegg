@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 159 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 160 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 159 hardcoded commands (highest priority)
+1. **Built-in commands**: 160 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (159 total)
+### Built-in Commands (160 total)
 
 Representative built-ins:
 
@@ -262,6 +262,7 @@ Representative built-ins:
 | `/init` | | Preview and explicitly publish bounded root `AGENTS.md` guidance |
 | `/open` | | M006-A: open one workspace-relative document in the editor primary view (`/open <path>`) |
 | `/terminal` | `/term` | Open an interactive terminal in a box; `Shift+L` docks it into the side panel |
+| `/panels` | `/panel`, `/panel-manager` | Side-panel manager: choose which panel the side column holds and bind its `Ctrl+1..Ctrl+0` hotkey. Same box as `⇧S`, but typed — so it also works mid-prompt, where `⇧S` is the letter `S` |
 | `/terminal-clear` | | Clear a terminal's scrollback and screen; the process keeps running |
 | `/init` | | Preview and explicitly publish bounded root `AGENTS.md` guidance |
 | `/connect` | | Add/configure a provider connection (catalog selection + credential form; Eggpool is one optional upstream) |
@@ -385,7 +386,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 159**: Guarded by
+- **Built-in count is 160**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -415,22 +416,30 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 ## Source verification
 
-Verified 2026-10-10 against `src/tui/command.rs` and `src/command/mod.rs`:
+Verified 2026-10-12 against `src/tui/command.rs` and `src/command/mod.rs`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1131`) asserts 157, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 157 (the three
-former's matches are on lines 15, 23, and 256; the latter's on line 386).
-Also verified the 159 built-in registry length, `BuiltinSlashAction`
-(150 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+(`command.rs:1158`) asserts 160, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 160 (the three
+former's matches are on lines 15, 23, and 256; the latter's on line 388).
+Also verified the 160 built-in registry length, `BuiltinSlashAction`
+(153 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
-(5, `command.rs:272`), the TUI `Command` struct fields
-(`command.rs:281`), `CommandRegistry` (`command.rs:458`), core `Command`
+(5, `command.rs:287`), the TUI `Command` struct fields
+(`command.rs:296`), `CommandRegistry` (`command.rs:473`), core `Command`
 (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), `CommandConfig`
 (`crates/codegg-config/src/schema.rs:1416`), and that `/checkpoint` is
 absent from the registry (its only remaining occurrence is the
 `CommandDomain::Execution` keyword list).
+
+Corrected this pass: the paragraph above previously carried three mutually
+inconsistent figures ("asserts 157", "resolves to 157", "150 variants")
+alongside a stale registry total, left over from earlier partial updates.
+All now read from source on 2026-10-12. The bump is `/panels`, the second
+spelling of the side-panel manager: `⇧S` is the letter `S` in Insert mode,
+so without a typed route the switcher became unreachable mid-prompt once
+`Ctrl+Alt+W` was retired.
 
 Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
 ownership migration and M006 closure"), which added 30 lines near the top of

@@ -1615,6 +1615,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Command,
+            key: "/panels",
+            action: "Same panel manager, reachable while composing — the gesture above is the letter S in Insert",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
             key: "/terminal-create <cmd>",
             action: "Create an interactive workspace terminal",
             condition: None,

@@ -231,16 +231,24 @@ impl ToastManager {
                 ToastLevel::Error => " ERROR ",
             };
 
-            // Calculate height needed for the wrapped message
+            // Calculate height needed for the wrapped message.
             // Subtract 2 for borders. A toast narrower than 3 columns has
             // no usable inner width — `div_ceil(0)` panics — so clamp to
             // 1 column rather than dividing by zero.
+            //
+            // The height is exactly `wrap_lines + 2`: one row per wrapped
+            // message line plus the top/bottom border. There is no
+            // countdown row. The progress bar that used to sit under the
+            // message spent a whole extra row per toast — up to three
+            // stacked toasts ate 25% of a 24-row terminal — to communicate
+            // something the expiry itself already communicates, and a
+            // shrinking bar at the bottom edge of the frame reads as a
+            // progress indicator for whatever it sits beside rather than
+            // as the life of the notification. Toasts that mattered are
+            // retained in the `/logs` history after they expire.
             let inner_width = (max_width as usize).saturating_sub(2).max(1);
             let wrap_lines = wrapped_line_count(&toast.message, inner_width);
-            // Total height: title line (inside border) + wrap_lines + progress bar + 2 for top/bottom borders
-            // Actually Paragraph with wrap does this, but we need to know the height for Layout
-            // Title is in the block, so we need 1 for message lines + 1 for progress bar + 2 for borders
-            let toast_height = (wrap_lines as u16) + 3;
+            let toast_height = (wrap_lines as u16) + 2;
 
             if current_y + toast_height > area.y + area.height {
                 break;
@@ -253,28 +261,10 @@ impl ToastManager {
                 height: toast_height,
             };
 
-            let elapsed = toast.created_at.elapsed();
-            let remaining = toast.duration.saturating_sub(elapsed);
-            let progress = if remaining.is_zero() {
-                0.0
-            } else {
-                remaining.as_secs_f64() / toast.duration.as_secs_f64()
-            };
-            let bar_len = (progress * (max_width as f64 - 4.0).max(0.0)) as usize;
-            let bar = "█".repeat(bar_len)
-                + &"░".repeat(
-                    (max_width as usize)
-                        .saturating_sub(4)
-                        .saturating_sub(bar_len),
-                );
-
-            let lines = vec![
-                Line::from(Span::styled(
-                    &toast.message,
-                    Style::default().fg(ratatui::style::Color::White),
-                )),
-                Line::from(Span::styled(bar, Style::default().fg(color))),
-            ];
+            let lines = vec![Line::from(Span::styled(
+                toast.message.as_str(),
+                Style::default().fg(ratatui::style::Color::White),
+            ))];
 
             let paragraph = Paragraph::new(lines)
                 .wrap(ratatui::widgets::Wrap { trim: true })

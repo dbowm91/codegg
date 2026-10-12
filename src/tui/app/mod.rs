@@ -5059,6 +5059,18 @@ impl App {
                 self.prompt_state.show_completions = false;
                 crate::tui::commands::observe::stop_observing(self);
             }
+            B::Panels => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                // The second spelling of `⇧S`. `⇧S` is a Normal-mode
+                // gesture, so with `Ctrl+Alt+W` retired it was the *only*
+                // way into the manager while composing — and there the key
+                // is the letter `S` and must stay typeable. A slash
+                // command is typed, not chorded, so it opens the same box
+                // from Insert as well.
+                crate::tui::commands::panels::open_panel_manager(self);
+            }
             B::Chat => {
                 self.ui_state.command_mode = false;
                 self.prompt_state.prompt.clear();

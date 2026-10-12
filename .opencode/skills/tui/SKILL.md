@@ -159,15 +159,26 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   completions → change review → **side panel (Normal only)** → Workspace →
   Editor → composer. Hotkeys come before the panel because a panel that
   swallowed the only key that leaves it would trap the keyboard.
-- **`Shift+S` is the only spelling of the panel manager.** `Ctrl+Alt+W` is
-  retired: the manager is a Normal-mode surface exactly like the directionals
-  that drive the same panels, so one key per surface is one less chord to
-  decode in a legacy terminal. Because it is the *only* spelling,
-  `commands::panels::handle_panel_key` must answer it ahead of the panel — a
-  focused panel consumes everything by contract, so letting it take this key
-  would leave a user inside a panel with no way to reach the switcher for
-  the panel they are standing in. `App::on_key` answers it ahead of the
-  modal short-circuit for the same reason.
+- **`Shift+S` is the only *chord* of the panel manager; `/panels` is the
+  other route.** `Ctrl+Alt+W` is retired: the manager is a Normal-mode
+  surface exactly like the directionals that drive the same panels, so one
+  key per surface is one less chord to decode in a legacy terminal. A chord
+  alone, though, would make the manager unreachable in Insert — where
+  `Shift+S` is the letter `S` and must stay typeable — so `/panels` (aliases
+  `/panel`, `/panel-manager`) opens the same box. The key is answered ahead
+  of the focused panel because a panel consumes everything by contract:
+  `commands::panels::handle_panel_key` takes `OpenPanelManager` before
+  delegating, and `App::on_key` answers it ahead of the modal short-circuit
+  for the same reason. Keep the two spellings in lockstep — a third route is
+  a third thing to keep working.
+- **A toast is its message and a border, nothing else.** The live column is
+  a fixed 60×10 overlay at the top right (`App::render`), so every row a
+  toast spends is a row of transcript it hides. It previously drew a
+  countdown bar under the message, costing one row per toast for something
+  the expiry already says — and reading, at the bottom edge of the frame,
+  like a progress indicator for whatever sits beside it. Height is
+  `wrapped_lines + 2`; the durable record is the `/logs` toast history, so
+  nothing that matters is lost by making the live box cheap.
 - **A focused panel and the composer mode are one fact, not two.**
   `App::on_key` consults a focused panel **only in Normal mode**, so focus
   and mode must agree or the panel is silently dead: the badge and the hint
