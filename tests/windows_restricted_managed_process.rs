@@ -153,7 +153,7 @@ async fn restricted_service_owns_stdio_exit_and_non_enforced_status() {
     assert!(matches!(
         &result.sandbox,
         SandboxExecutionOutcome::TestOnlyAppContainer { status, .. }
-            if status.contains("filesystem rights are unqualified")
+            if status.contains("filesystem rights remain unqualified")
     ));
 }
 
@@ -305,7 +305,9 @@ Start-Sleep -Seconds 60
 }
 
 #[tokio::test]
-async fn unsupported_filesystem_roots_fail_before_the_test_child_is_created() {
+async fn missing_filesystem_root_fails_before_the_test_child_is_created() {
+    let missing_root =
+        std::env::temp_dir().join(format!("codegg-missing-acl-root-{}", uuid::Uuid::new_v4()));
     let mut request = restricted_request(vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),
@@ -316,15 +318,14 @@ async fn unsupported_filesystem_roots_fail_before_the_test_child_is_created() {
     let SandboxRequest::Required(spec) = &mut request.sandbox else {
         unreachable!();
     };
-    spec.write_paths.push(PathBuf::from("C:\\fixture-root"));
+    spec.write_paths.push(missing_root);
 
     let error = ManagedProcessService::run(request)
         .await
         .expect_err("test-only path must reject unqualified filesystem rights");
     assert!(matches!(
         error,
-        codegg::managed_process::ManagedProcessError::SandboxFailed(reason)
-            if reason.contains("does not apply filesystem roots")
+        codegg::managed_process::ManagedProcessError::Spawn(_)
     ));
 }
 
