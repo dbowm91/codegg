@@ -189,6 +189,28 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                                 close_requested: false,
                                 cancel_sent: false,
                             }),
+                            CoreResponse::TurnAdmissionReceipt { receipt }
+                                if receipt.status == "accepted" =>
+                            {
+                                active = Some(ActivePrompt {
+                                    request_id: request.id.unwrap_or(Value::Null),
+                                    session_id: sid,
+                                    submission_event_floor,
+                                    turn_id: Some(receipt.turn_id),
+                                    cancel_requested: false,
+                                    close_requested: false,
+                                    cancel_sent: false,
+                                })
+                            }
+                            CoreResponse::TurnAdmissionReceipt { receipt } => {
+                                write_error(
+                                    &stdout,
+                                    request.id.unwrap_or(Value::Null),
+                                    -32002,
+                                    &format!("turn admission was not accepted ({})", receipt.status),
+                                )
+                                .await?;
+                            }
                             other => write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?,
                         }
                     }

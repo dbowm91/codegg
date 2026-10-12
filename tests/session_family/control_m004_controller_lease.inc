@@ -1250,10 +1250,13 @@ async fn turn_submit_atomically_acquires_controller() {
     ))
     .await
     .unwrap();
-    assert!(
-        matches!(response, CoreResponse::Ack),
-        "submit failed: {response:?}"
-    );
+    let receipt = match response {
+        CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+        other => panic!("submit failed: {other:?}"),
+    };
+    assert_eq!(receipt.submission_id, "req-submit-ctrl");
+    assert_eq!(receipt.session_id, session_id);
+    assert_eq!(receipt.status, "accepted");
     // The lease is established synchronously with acceptance.
     let store = SessionControllerStore::new(team.pool().clone());
     let record = store.get(&session_id).await.unwrap().expect("lease row");
