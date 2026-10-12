@@ -253,6 +253,11 @@ pub(super) struct WindowsStdioPipes {
 
 impl WindowsStdioPipes {
     pub(super) fn create() -> io::Result<Self> {
+        #[cfg(test)]
+        if FAIL_NEXT_PIPE_CREATION.replace(false) {
+            return Err(io::Error::other("injected restricted pipe setup failure"));
+        }
+
         let (child_stdin, stdin_writer) = create_pipe_ends()?;
         let (stdout_reader, child_stdout) = create_pipe_ends()?;
         let (stderr_reader, child_stderr) = create_pipe_ends()?;
@@ -717,6 +722,8 @@ fn wide_os(value: &std::ffi::OsStr) -> Vec<u16> {
 #[cfg(test)]
 thread_local! {
     static FAIL_NEXT_JOB_ASSIGNMENT: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_PIPE_CREATION: Cell<bool> = const { Cell::new(false) };
+    static FAIL_NEXT_RESUME: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(super) struct WindowsJob {
@@ -820,6 +827,11 @@ impl WindowsJob {
     }
 
     fn resume_suspended(thread: windows_sys::Win32::Foundation::HANDLE) -> io::Result<()> {
+        #[cfg(test)]
+        if FAIL_NEXT_RESUME.replace(false) {
+            return Err(io::Error::other("injected ResumeThread failure"));
+        }
+
         let previous_suspend_count = unsafe { ResumeThread(thread) };
         if previous_suspend_count == u32::MAX {
             return Err(last_error());
@@ -902,11 +914,11 @@ fn describe_environment_block(block: &[u16]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::FAIL_NEXT_JOB_ASSIGNMENT;
     use super::{
         last_error, wide, WindowsAppContainerProfile, WindowsJob, WindowsProcessAttributes,
         WindowsSuspendedAppContainerProcess, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     };
+    use super::{FAIL_NEXT_JOB_ASSIGNMENT, FAIL_NEXT_PIPE_CREATION, FAIL_NEXT_RESUME};
     use crate::managed_process::{
         ManagedProcessError, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
     };
@@ -988,6 +1000,19 @@ mod tests {
         assert_ne!(handles[0], handles[2]);
         assert_ne!(handles[1], handles[2]);
         Ok(())
+    }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
+    #[test]
+    fn restricted_pipe_setup_failure_is_closed_before_process_creation() {
+        FAIL_NEXT_PIPE_CREATION.set(true);
+        let error = match super::WindowsStdioPipes::create() {
+            Ok(_) => panic!("injected pipe failure must abort restricted launch setup"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("injected restricted pipe setup failure"));
     }
 
     #[cfg(feature = "windows-sandbox-test-support")]
@@ -1209,6 +1234,36 @@ mod tests {
         drop(attributes);
         drop(job);
         drop(profile);
+        Ok(())
+    }
+
+    #[test]
+    fn appcontainer_resume_failure_keeps_target_suspended() -> io::Result<()> {
+        let profile = WindowsAppContainerProfile::create()?;
+        let mut job = WindowsJob::create()?;
+        let mut attributes = WindowsProcessAttributes::new(1)?;
+        attributes.set_appcontainer(&profile)?;
+
+        let executable = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32")
+            .join("cmd.exe");
+        let mut command_line = wide(&format!("\"{}\" /D /C exit 0", executable.display()));
+        let mut process = WindowsSuspendedAppContainerProcess::create(
+            &executable,
+            &mut command_line,
+            &attributes,
+        )?;
+        let process_handle = process.process_handle();
+        FAIL_NEXT_RESUME.set(true);
+        let error = job
+            .assign_appcontainer_and_resume(&mut process, |_| Ok(()))
+            .expect_err("injected resume failure must abort launch");
+        assert!(error.to_string().contains("injected ResumeThread failure"));
+        assert_eq!(
+            unsafe { WaitForSingleObject(process_handle, 0) },
+            windows_sys::Win32::Foundation::WAIT_TIMEOUT,
+            "resume failure must leave the target suspended until cleanup"
+        );
         Ok(())
     }
 }
