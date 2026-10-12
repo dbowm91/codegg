@@ -2331,7 +2331,13 @@ mod tests {
         let grant_only_result = run_windows_test_restricted_forensic(request_for(false))
             .await
             .expect("grant-only C013 fixture completes");
-        assert!(grant_only_result.exit_status.success());
+        assert!(
+            grant_only_result.exit_status.success(),
+            "C013 grant-only child exited {:?}; stdout={:?}; stderr={:?}",
+            grant_only_result.exit_status,
+            grant_only_result.stdout.to_string_lossy(),
+            grant_only_result.stderr.to_string_lossy()
+        );
         let grant_only = grant_only_result.stdout.to_string_lossy();
         eprintln!("C013 grant-only candidate results: {grant_only}");
         assert!(matches!(
@@ -2346,7 +2352,13 @@ mod tests {
         let result = run_windows_test_restricted_forensic(request_for(true))
             .await
             .expect("isolated C013 forensic child completes");
-        assert!(result.exit_status.success());
+        assert!(
+            result.exit_status.success(),
+            "C013 deny-lease child exited {:?}; stdout={:?}; stderr={:?}",
+            result.exit_status,
+            result.stdout.to_string_lossy(),
+            result.stderr.to_string_lossy()
+        );
         let observations = result.stdout.to_string_lossy();
         eprintln!("C013 restricted-child access results: {observations}");
         assert!(observations.contains("direct=leaked") || observations.contains("direct=denied"));
