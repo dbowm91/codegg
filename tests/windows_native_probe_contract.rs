@@ -42,6 +42,7 @@ enum Action {
     NullDeviceAccess,
     UncHostReadUnavailable,
     InheritedHandleNotTransferred,
+    RestartRecoveryUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -51,7 +52,9 @@ enum State {
     Denied,
     Leaked,
     Failed,
+    Blocked,
     NotAvailable,
+    NotRun,
 }
 
 #[derive(Debug, Serialize)]
@@ -170,6 +173,7 @@ fn child_script(action: Action) -> &'static str {
         }
         Action::UncHostReadUnavailable => "'C019_RESULT=not_run'",
         Action::InheritedHandleNotTransferred => "'C019_RESULT=not_run'",
+        Action::RestartRecoveryUnavailable => "'C019_RESULT=not_run'",
     }
 }
 
@@ -215,7 +219,7 @@ async fn execute(
             token: "not observed; UNC fixture unavailable".to_owned(),
             job_verified: false,
             action,
-            state: State::NotAvailable,
+            state: State::NotRun,
             expected: "denied if a synthetic UNC resource is provisioned",
             resource_identity: resource.display().to_string(),
             child_evidence: String::new(),
@@ -324,7 +328,7 @@ async fn execute(
                 .find_map(|line| line.strip_prefix("C019_TOKEN="))
                 .unwrap_or("token details not emitted")
                 .to_owned();
-            let state = if output.contains("C019_RESULT=allowed") {
+            let mut state = if output.contains("C019_RESULT=allowed") {
                 State::Allowed
             } else if output.contains("C019_RESULT=denied") {
                 State::Denied
@@ -335,26 +339,36 @@ async fn execute(
             } else {
                 State::Failed
             };
-            let error = (!result.exit_status.success()).then(|| result.stderr.to_string_lossy());
-            if restricted {
-                assert!(
-                    matches!(
-                        result.sandbox,
-                        SandboxExecutionOutcome::TestOnlyAppContainer {
-                            token_verified: true,
-                            job_verified: true,
-                            ..
-                        }
-                    ),
-                    "selected backend was not verified: {result:?}"
-                );
+            let mut error =
+                (!result.exit_status.success()).then(|| result.stderr.to_string_lossy());
+            let sandbox_verified = if restricted {
+                matches!(
+                    &result.sandbox,
+                    SandboxExecutionOutcome::TestOnlyAppContainer {
+                        token_verified: true,
+                        job_verified: true,
+                        ..
+                    }
+                )
             } else {
-                assert!(matches!(result.sandbox, SandboxExecutionOutcome::Disabled));
+                matches!(&result.sandbox, SandboxExecutionOutcome::Disabled)
+            };
+            if !sandbox_verified {
+                state = State::Failed;
+                let detail = format!("unexpected sandbox outcome: {:?}", result.sandbox);
+                error = Some(error.map_or(detail.clone(), |prior| format!("{prior}; {detail}")));
             }
             (state, output, error, true, token)
         }
         Err(error) => (
-            State::Failed,
+            if matches!(
+                &error,
+                codegg::managed_process::ManagedProcessError::SandboxFailed(_)
+            ) {
+                State::Blocked
+            } else {
+                State::Failed
+            },
             String::new(),
             Some(error.to_string()),
             false,
@@ -464,7 +478,7 @@ async fn c019_shared_native_security_probe_contract() {
         (Action::PythonVersion, Path::new("python.exe")),
         (Action::CargoVersion, Path::new("cargo.exe")),
         (Action::DirectHostRead, credential.as_path()),
-        (Action::JunctionHostRead, Path::new("synthetic-junction")),
+        (Action::JunctionHostRead, junction_credential.as_path()),
         (Action::CaseAliasHostRead, case_alias.as_path()),
         (Action::ExtendedPathHostRead, extended_path.as_path()),
         (Action::HardlinkHostRead, hardlink.as_path()),
@@ -523,13 +537,37 @@ async fn c019_shared_native_security_probe_contract() {
         token: "not observed; unsupported handle transfer probe".to_owned(),
         job_verified: false,
         action: Action::InheritedHandleNotTransferred,
-        state: State::NotAvailable,
+        state: State::NotRun,
         expected: "not transferred by the managed handle allowlist",
         resource_identity: "synthetic inherited host file handle".to_owned(),
         child_evidence: String::new(),
         provenance: "job=windows-c019 attempt=InheritedHandleNotTransferred".to_owned(),
         error: Some(
             "the canonical managed launcher explicitly passes only stdio handles; a hostile-handle transfer experiment is outside this fixture and remains not run".to_owned(),
+        ),
+        elapsed_ms: 0,
+        executed: false,
+    });
+    eprintln!(
+        "C019_PROBE={}",
+        serde_json::to_string(observations.last().unwrap()).unwrap()
+    );
+    observations.push(Observation {
+        backend: Backend::TestOnlyAppContainer,
+        host_version: std::env::var("CODEGG_C019_HOST_VERSION")
+            .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
+        host_privilege: host_privilege(),
+        token: "not applicable; fixture has no durable request state".to_owned(),
+        job_verified: false,
+        action: Action::RestartRecoveryUnavailable,
+        state: State::NotRun,
+        expected: "no interrupted durable sandbox request is replayed",
+        resource_identity: "ephemeral test fixture only".to_owned(),
+        child_evidence: String::new(),
+        provenance: "job=windows-c019 attempt=RestartRecoveryUnavailable".to_owned(),
+        error: Some(
+            "the test-only process fixture has no persisted request or startup recovery path"
+                .to_owned(),
         ),
         elapsed_ms: 0,
         executed: false,
