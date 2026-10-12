@@ -119,6 +119,14 @@ failed on Clippy's `derivable_impls` finding for the new status default. The
 enum now derives `Default` and marks `NotReady` as the default variant; retain
 that first result as a recorded failed attempt and rerun on the corrected SHA.
 
+Hosted attempt `38228801296` was active and reached Workspace Clippy, then
+failed on two findings: an existing `TurnCompleted` pattern named fields
+already covered by `..`, and the new diagnostics readiness test module sat
+before later module items. The pattern now names only `turn_id`, and the test
+module is at end of file. Focused local Clippy (`cargo clippy -p codegg --lib
+--tests --locked -- -D warnings`) completed with no issues; dispatch hosted CI
+again after pushing these corrections.
+
 ## 11. Documentation and closure evidence
 
 Update `architecture/lsp.md`, `.opencode/skills/lsp-ide/SKILL.md`, and `plans/registry.md`. Closure requires the empty-vs-missing state table, compatibility test, focused trajectories, relevant authorization checks, quick verification, and hosted CI result. Do not edit `plans/closure/desktop-frontend-ide-foundation/009-status.md`.

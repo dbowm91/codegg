@@ -387,36 +387,6 @@ fn diagnostics_result(
     }
 }
 
-#[cfg(test)]
-mod diagnostics_readiness_tests {
-    use super::*;
-
-    #[test]
-    fn unavailable_or_unobserved_diagnostics_are_not_ready() {
-        for result in [
-            diagnostics_result("project-1".into(), false, Some(Vec::new()), false),
-            diagnostics_result("project-1".into(), true, None, false),
-        ] {
-            assert_eq!(
-                result.status,
-                codegg_protocol::lsp::LspDiagnosticsStatus::NotReady
-            );
-            assert!(result.files.is_empty());
-            assert!(!result.truncated);
-        }
-    }
-
-    #[test]
-    fn an_observed_empty_set_is_ready_and_authoritative() {
-        let result = diagnostics_result("project-1".into(), true, Some(Vec::new()), false);
-        assert_eq!(
-            result.status,
-            codegg_protocol::lsp::LspDiagnosticsStatus::Ready
-        );
-        assert!(result.files.is_empty());
-    }
-}
-
 fn cap_locations<I: Iterator<Item = LspRangeDto>>(items: I) -> (Vec<LspRangeDto>, bool) {
     let cap = codegg_protocol::lsp::MAX_LSP_LOCATIONS;
     let mut collected: Vec<LspRangeDto> = items.take(cap + 1).collect();
@@ -787,5 +757,35 @@ impl CoreDaemon {
             cursor,
             retention_floor_seq,
         })
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_or_unobserved_diagnostics_are_not_ready() {
+        for result in [
+            diagnostics_result("project-1".into(), false, Some(Vec::new()), false),
+            diagnostics_result("project-1".into(), true, None, false),
+        ] {
+            assert_eq!(
+                result.status,
+                codegg_protocol::lsp::LspDiagnosticsStatus::NotReady
+            );
+            assert!(result.files.is_empty());
+            assert!(!result.truncated);
+        }
+    }
+
+    #[test]
+    fn an_observed_empty_set_is_ready_and_authoritative() {
+        let result = diagnostics_result("project-1".into(), true, Some(Vec::new()), false);
+        assert_eq!(
+            result.status,
+            codegg_protocol::lsp::LspDiagnosticsStatus::Ready
+        );
+        assert!(result.files.is_empty());
     }
 }
