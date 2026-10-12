@@ -16,11 +16,12 @@ Implementation commits:
 
 - `0c37cc9c8a5e3cd62075bd9cad9a487ea235c239` — daemon-owned finite human-shell protocol, admission, streaming, cancellation, TUI routing, and documentation.
 - `5448413a391735fb5d3fa7f1be72f08387c306f5` — Clippy corrections for compact scope-validation errors and bounded run pruning.
+- `1c8874f7cb000e9534037f302fabcff587850a3b` — honored the configured TUI timeout through daemon admission, bounded it to one hour, and added configured-timeout and cross-principal cancellation coverage.
 
-Hosted qualification on implementation SHA `5448413a391735fb5d3fa7f1be72f08387c306f5`:
+Hosted qualification on implementation SHA `1c8874f7cb000e9534037f302fabcff587850a3b`:
 
-- [Root CI run 38263761126](https://github.com/dbowm91/codegg/actions/runs/38263761126) — success; all guards, formatting, Workspace Clippy, and 12,789 tests passed (5 skipped).
-- [Desktop E2E run 38263761188](https://github.com/dbowm91/codegg/actions/runs/38263761188) — success, including the built-app WebDriver trajectory.
+- [Root CI run 38267230867](https://github.com/dbowm91/codegg/actions/runs/38267230867) — success; all guards, formatting, Workspace Clippy, and 12,790 tests passed (5 skipped).
+- [Desktop E2E run 38267230886](https://github.com/dbowm91/codegg/actions/runs/38267230886) — success, including the built-app WebDriver trajectory.
 
 ## 1. Executive finding
 
@@ -33,9 +34,9 @@ C002 is complete. Bang commands now run through the authorized workspace's daemo
 | Execution follows daemon-owned workspace authority, not frontend cwd or environment | `src/core/daemon_human_shell.rs`; typed DTO contains no client cwd/environment fields; daemon-handler test `poolless_standalone_human_shell_uses_registered_workspace` | pass | Workspace root is resolved from the daemon registry; pooled runs also require resolved project/workspace and optional session bindings. |
 | Foreign, archived, mismatched, or remote-node workspaces fail closed | Daemon scope validation and remote-node disposition in `src/core/daemon_human_shell.rs`; authorization matrix and hosted execution-ownership guards | pass | Remote-node federation remains outside this milestone. |
 | TUI submits human intent through the negotiated daemon capability, with no local spawn fallback | `src/tui/commands/shell.rs`, `src/tui/runtime/command_dispatch.rs`; capability negotiation and typed run operations | pass | Older peers return an unsupported-capability error. Captured workspace/session scope remains fixed across tab changes. |
-| Runs are finite, bounded, cancellable, and scheduler-admitted | `src/shell/daemon.rs`; 5 focused `shell::daemon` tests | pass | Uses the shared process admission controller, timeout, output/chunk bounds, cursor/truncation behavior, and cancellation. |
+| Runs are finite, bounded, cancellable, and scheduler-admitted | `src/shell/daemon.rs`; hosted test `configured_timeout_is_enforced_by_the_managed_process` and the focused `shell::daemon` suite | pass | Uses the shared process admission controller, the caller's configured timeout (300-second default, 1–3600-second accepted range), output/chunk bounds, cursor/truncation behavior, and cancellation. |
 | Duplicate submission is safe and scoped output cannot cross principals/workspaces | `two_principals_and_workspaces_keep_cwd_and_output_isolated`, `duplicate_admission_is_idempotent_and_changed_content_conflicts` | pass | Reuse of a submission ID with changed content or scope conflicts. |
-| Restart and disconnect semantics are explicit | `cancellation_terminates_the_managed_process_and_restart_loses_ephemeral_handle`; plan WP-A contract | pass | Runs may continue after disconnect only until the five-minute timeout; ephemeral status/output expires after ten minutes. Daemon restart invalidates handles and never replays a command. |
+| Restart and disconnect semantics are explicit | `cancellation_terminates_the_managed_process_and_restart_loses_ephemeral_handle`; plan WP-A contract | pass | Runs may continue after disconnect only until the configured timeout (300 seconds by default, capped at one hour); ephemeral status/output expires after ten minutes. Daemon restart invalidates handles and never replays a command. |
 | Sandbox and human confirmation policy remain daemon-owned | Persisted sandbox-profile lookup and `evaluate_command` in `src/core/daemon_human_shell.rs`; canonical managed-process launch specification | pass | Constrained profiles fail admission if the launcher cannot enforce them; explicit `FullHost` remains an operator-selected no-containment profile. |
 | C001 promotion and model-context boundaries remain intact | Existing C004 closure `plans/closure/human-execution-corrective/004-status.md`; origin DTO and audit digest do not project raw output | pass | Bang output remains private by default; promotion remains under the C004 durable admission contract. |
 | Existing PTY ownership and behavior remain separate | `src/tui/commands/shell.rs`, `src/interactive_process.rs`; hosted full workspace suite | pass | C002 does not change PTY DTOs or move PTY process ownership. |
@@ -73,8 +74,9 @@ cargo check -p codegg --features server --locked
 - Authorization, audit coverage/invariants, execution ownership, scheduler bypass, formatting, and `verify.sh quick` passed during implementation. The quick verification was run before the final Clippy-only cleanup; exact-SHA hosted CI then reran all configured guards, formatting, Clippy, and workspace tests on the final implementation SHA.
 - `cargo check -p codegg --features server --locked` passed. An unrelated existing deprecation warning in `src/server/ws.rs` was observed.
 - A local `cargo test --test interactive_terminal_tui --locked` attempt was interrupted during shared build-directory contention; it was not a test failure. The exact-SHA hosted workspace suite includes the integration target and passed.
-- Hosted CI run `38263761126` passed all configured guard and lint steps and the full sweep: 12,789 passed, 5 skipped, 0 failed; test sweep duration 394.816 seconds.
-- Hosted Desktop E2E run `38263761188` passed the production desktop checks and built-app WebDriver trajectory.
+- The six focused `shell::daemon` tests are included in the exact-SHA hosted workspace sweep; coverage includes configured timeout enforcement and rejection of cancellation by another principal.
+- Hosted CI run `38267230867` passed all configured guard and lint steps and the full sweep: 12,790 passed, 5 skipped, 0 failed; test sweep duration 401.028 seconds.
+- Hosted Desktop E2E run `38267230886` passed the production desktop checks and built-app WebDriver trajectory.
 
 ## 5. Invariant review
 
