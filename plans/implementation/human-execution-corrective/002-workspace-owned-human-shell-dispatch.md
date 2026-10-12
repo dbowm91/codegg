@@ -1,8 +1,8 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: active
+Status: active (C001 corrective contract closed by C004; implementation and verification in progress)
 
-Repository baseline: `2c2d6f130` (C004 and M006-C closures are on branch)
+Repository baseline: `2c2d6f130` (C004 and M006-C closures are on branch); implementation review at `91cbe784aa442ad268c95ed8aca709820d5413e2`.
 
 Source roadmap: `plans/subsystems/human-execution-corrective-roadmap.md#c002--workspace-owned-finite-shell-dispatch`.
 
@@ -120,7 +120,27 @@ Do not conflate daemon-local workspace ownership with future remote execution ac
 
 C001's authoritative context/provenance dependency is satisfied by
 `plans/closure/human-execution-corrective/004-status.md` at implementation
-`6b18122d35e6e05d1f2113c78e77467848769f24`. Implementation begins at the
-repository baseline above. Re-audit the current process, scheduler,
-authorization, and transport surfaces before editing because the original
-repository baseline in §3 is historical planning evidence.
+`6b18122d35e6e05d1f2113c78e77467848769f24`. The dependency is satisfied and
+workspace-owned finite execution implementation is in progress. The current
+process, scheduler, authorization, and transport surfaces were re-audited before
+implementation; the original repository baseline in §3 remains historical
+planning evidence.
+
+### WP-A support matrix (2026-10-12)
+
+| Topology | Execution authority | C002 disposition |
+|---|---|---|
+| Local daemon attached over the local socket | Daemon host, from registered workspace and project binding | Supported through the typed daemon run family. |
+| `--standalone` in-process core | Same process/core handler and registered workspace | Supported through the same adapter; no frontend spawn fallback. |
+| Remote-attached TUI | Authenticated daemon principal and daemon-owned workspace | Supported only when `command.execute` is granted for the resolved project. |
+| Workspace bound to a remote execution node | Node identity in the authoritative workspace binding | Refused with an explicit unsupported-target response; no local fallback or federation. |
+
+Execution uses a bounded continue-with-expiry disconnect contract: runs may
+continue after the submitting connection drops, but remain limited by the
+five-minute command timeout and a ten-minute ephemeral status/output retention
+window. Authenticated principal, session (when present), project, and workspace
+must still match for read/cancel after reconnect. Daemon restart invalidates
+handles and never replays a command. The daemon reads the caller's persisted
+sandbox profile; constrained profiles must be enforced by the canonical
+managed-process launcher or admission fails closed. `FullHost` remains an
+explicit user-selected no-containment profile.

@@ -513,6 +513,18 @@ pub enum TuiCommand {
         command: String,
         promote_after: bool,
         cwd: PathBuf,
+        confirmed_dangerous: bool,
+    },
+    RemoteShellRunAccepted {
+        local_id: u64,
+        command: String,
+        cwd: PathBuf,
+        promote_after: bool,
+        shell_binding: (Option<String>, Option<String>),
+        binding: crate::shell::daemon::RemoteShellRunBinding,
+    },
+    RemoteShellRunCancelResult {
+        message: String,
     },
     /// Run supervised tests from the /test slash command.
     TestRun {

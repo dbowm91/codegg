@@ -418,6 +418,10 @@ not a Core operation):
 | `interactive_process_resize` | global | `none` |
 | `interactive_process_resume` | global | `none` |
 | `interactive_process_terminate` | global | `none` |
+| `human_shell_run_cancel` | direct_project | `command.execute` |
+| `human_shell_run_capabilities` | global | `none` |
+| `human_shell_run_create` | direct_project | `command.execute` |
+| `human_shell_run_read` | direct_project | `command.execute` |
 | `job_attempts` | via_job | `session.read` |
 | `job_cancel` | via_job | `job.cancel` |
 | `job_get` | via_job | `session.read` |

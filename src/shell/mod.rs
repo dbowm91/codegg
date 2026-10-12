@@ -1,3 +1,4 @@
+pub mod daemon;
 pub mod digest;
 pub mod policy;
 pub mod projection;

@@ -257,6 +257,16 @@ daemon appends the canonical payload; after acceptance, the projection remains
 ordinary conversation history. A disconnected local owner or the WebSocket
 prompt-only transport leaves evidence in the composer as an unsubmitted draft.
 
+Finite `!`/`!!` execution is daemon-owned as well. The TUI negotiates the
+typed human-shell protocol and adapts bounded output cursors into existing
+`ShellEvent`/`ShellOutputStore` rendering. The daemon resolves workspace and
+project/session bindings, checks `command.execute`, applies the daemon user's
+sandbox profile, and shares scheduler process admission. The attaching TUI's
+cwd and environment are not sent. Remote-node workspaces are refused. The
+daemon retains handles/output ephemerally for ten minutes and expires commands
+after five minutes; restart drops them without replay. PTY operations remain
+under the separate `InteractiveProcess*` owner.
+
 **Diagnostics**: `/tui-stats` includes task registry stats and shell
 handle count.
 

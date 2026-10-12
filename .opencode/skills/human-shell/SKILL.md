@@ -47,7 +47,10 @@ capabilities as available unless a separate implementation lands.
 1. User types `!cargo test` in the prompt
 2. `classify_prompt_submission()` detects the `!` prefix, returns `PromptSubmissionKind::HumanShell { command: "cargo test", promote_after: false }`
 3. TUI dispatches `TuiCommand::RunHumanShell`
-4. `ShellRuntime::spawn()` creates a child process via `$SHELL -lc "cargo test"`
+4. The TUI negotiates `human_shell.v1` and submits a daemon request. The daemon
+   resolves workspace/project/session authority, checks `command.execute`,
+   applies the persisted sandbox profile, reserves scheduler admission, and
+   only then accepts a child process via daemon-host `$SHELL -lc "cargo test"`.
 5. stdout/stderr chunks stream as `ShellEvent::Stdout`/`ShellEvent::Stderr`
 6. `ShellOutputStore` captures output in `BoundedOutput` (head 256KB + tail 256KB)
 7. `ShellCell` renders in the message timeline with status, elapsed, exit code
@@ -195,7 +198,8 @@ disables one family.
   `StoreAndPromote`. Only the latter two are ever constructed
 - `ShellCommandId` — Newtype `u64`, monotonically allocated (`src/shell/types.rs:52`)
 - `ShellEvent` — Stream events: `Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`, `FailedToStart`
-- `ShellRuntime` — Spawns child processes via `$SHELL -lc` (falls back to `sh`; `src/shell/runtime.rs:16,108`)
+- `HumanShellRunService` — Daemon-owned bounded run registry with per-principal limits, cursor reads, cancellation, and ten-minute expiry (`src/shell/daemon.rs`)
+- `ShellRuntime` — ManagedProcessService adapter selected by the daemon; receives daemon-host shell and sanitized environment (`src/shell/runtime.rs`)
 - `ShellHandle` — Abort handle for killing running commands (`CancellationToken` + task `AbortHandle`)
 - `BoundedOutput` — Head/tail split storage with omitted byte tracking
 - `ShellOutputEntry` — Stores `exit_code: Option<i32>` alongside status, stdout, stderr, elapsed time, plus `promoted`/`promote_after`/`capture_policy` (`src/shell/store.rs:79`)

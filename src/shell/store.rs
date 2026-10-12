@@ -172,6 +172,13 @@ impl ShellOutputStore {
         }
     }
 
+    /// Replace the display cwd with the execution owner's resolved path.
+    pub fn update_cwd(&mut self, id: ShellCommandId, cwd: PathBuf) {
+        if let Some(entry) = self.find_mut(id) {
+            entry.cwd = cwd;
+        }
+    }
+
     pub fn append_stderr(&mut self, id: ShellCommandId, data: &[u8]) {
         if let Some(entry) = self.find_mut(id) {
             let retained_before = entry.stderr.head.len() + entry.stderr.tail.len();

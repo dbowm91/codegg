@@ -148,6 +148,11 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
+  Finite `!`/`!!` commands go through the daemon's versioned create/read/cancel
+  family. The TUI is only an adapter for output and cancellation: never spawn
+  locally or send frontend cwd/environment. Insert a run into shell history
+  only after daemon admission; preserve the captured session/workspace binding
+  so late output cannot be promoted into another tab.
 - **Interactive terminal keys** are modal input: focused Esc is forwarded to
   the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;

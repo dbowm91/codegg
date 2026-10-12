@@ -169,8 +169,13 @@ reason = "Frontend connect-or-start launches only the canonical codegg daemon st
 
 [[site]]
 path = "src/shell/runtime.rs"
-owner = "interactive"
-reason = "human shell commands use ManagedProcessService streaming; shell semantics remain interactive and are not durable scheduler work"
+owner = "definition_or_adapter"
+reason = "finite human shell runtime adapter is invoked only by the daemon-owned HumanShellRunService after project authority and shared scheduler process admission"
+
+[[site]]
+path = "src/shell/daemon.rs"
+owner = "scheduler"
+reason = "daemon-owned finite human shell runs reserve the shared AdmissionController process slot before invoking ShellRuntime and retain bounded ephemeral state"
 
 [[site]]
 path = "src/tui/app/mod.rs"

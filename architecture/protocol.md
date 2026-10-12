@@ -22,6 +22,7 @@ crates/codegg-protocol/src/
 ├── frames.rs           # ClientHello/ServerHello, ClientCapabilities,
 │                      #   ServerCapabilities
 ├── interactive_process.rs # InteractiveProcess attach/stream DTOs
+├── human_shell.rs        # human_shell.v1 bounded daemon run DTOs
 ├── lsp.rs              # LSP preview-apply and read-surface DTOs
 ├── plugin.rs           # PluginManifestDto, PluginInvocation, PluginResponse
 ├── projection/         # Frontend-neutral session projection contract

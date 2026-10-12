@@ -1606,6 +1606,23 @@ pub enum CoreResponse {
         attachment_id: String,
         handle: String,
     },
+    HumanShellRunCreated {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        duplicate: bool,
+    },
+    HumanShellRunCapabilities {
+        capabilities: crate::human_shell::HumanShellRunCapabilitiesDto,
+    },
+    HumanShellRunOutput {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        chunks: Vec<crate::human_shell::HumanShellOutputChunkDto>,
+        next_sequence: u64,
+        resync_required: bool,
+        output_truncated: bool,
+    },
+    HumanShellRunCancelled {
+        run_id: String,
+    },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Acknowledgement of a heartbeat with the server-computed expiry.
     PresenceHeartbeatAck {
@@ -2725,6 +2742,19 @@ pub enum CoreRequest {
     /// Requires attachment ownership plus terminate authority.
     InteractiveProcessRemove {
         attachment_id: String,
+    },
+    /// Create a bounded, daemon-owned human `!`/`!!` command run.
+    HumanShellRunCreate {
+        request: crate::human_shell::HumanShellRunCreateRequestDto,
+    },
+    HumanShellRunCapabilities,
+    /// Read a bounded slice of one human shell run's retained output.
+    HumanShellRunRead {
+        request: crate::human_shell::HumanShellRunReadDto,
+    },
+    /// Cancel a caller-owned human shell run.
+    HumanShellRunCancel {
+        request: crate::human_shell::HumanShellRunCancelDto,
     },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Capability negotiation for the presence surface. Unknown

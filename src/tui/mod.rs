@@ -244,6 +244,7 @@ mod shell_dispatch_tests {
             "echo must-not-run".to_string(),
             false,
             std::env::temp_dir(),
+            false,
         );
         assert!(app.shell_store.list_recent(1).is_empty());
         assert!(get_toasts(&app)

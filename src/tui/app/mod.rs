@@ -418,6 +418,9 @@ pub struct App {
     /// each command reaches a terminal state.
     pub command_run_bridge: crate::shell::ShellCommandRunBridge,
     pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
+    /// Daemon-owned finite shell runs keyed by the local display id.
+    pub remote_shell_runs:
+        std::collections::HashMap<u64, crate::shell::daemon::RemoteShellRunBinding>,
     /// Interactive terminal views (M003): projection of daemon M002
     /// handles/output. Owns no PTY/process state; every mutation goes
     /// through `CoreRequest::InteractiveProcess*` operations.
@@ -1023,6 +1026,7 @@ impl App {
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             remote_sequence: 0,
             shell_handles: std::collections::HashMap::new(),
+            remote_shell_runs: std::collections::HashMap::new(),
             interactive_terminals:
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
@@ -1543,6 +1547,7 @@ impl App {
             command_run_store: crate::shell::CommandOutputStore::new(),
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             shell_handles: std::collections::HashMap::new(),
+            remote_shell_runs: std::collections::HashMap::new(),
             interactive_terminals:
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),

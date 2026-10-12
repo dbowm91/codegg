@@ -144,15 +144,19 @@ same effect.
 
 ## Human shell
 
-Prefix a prompt with `!` to run a command locally:
+Prefix a prompt with `!` to run a command on the selected workspace's daemon:
 
 ```text
 !cargo test
 !!cargo test
 ```
 
-The single bang runs the command and keeps its command and output out of the
-model's context. The double bang
+The daemon resolves the registered workspace and project binding, uses the
+daemon host's shell and filtered environment, and requires the project's
+`command.execute` capability. The TUI's current directory, shell, and
+environment are never sent as execution authority. Workspaces assigned to a
+remote execution node are refused until node execution is supported. The
+single bang keeps the command output out of the model's context. The double bang
 stages one bounded, redacted result in the conversation for the next submitted
 turn. It does not start inference on its own. `/shell-include` stages a selected
 view the same way; `/shell-ask` stages one question with the selected evidence
@@ -183,6 +187,15 @@ rather than dropped silently. The default per-command timeout is 300 seconds.
 Commands are also screened before they run: a blocked command is refused with
 a reason, and one classified as dangerous opens a confirmation dialog first
 (`confirm_dangerous`, default true).
+
+The daemon applies the caller's persisted sandbox profile and reserves a
+shared scheduler process slot before acceptance. Runs continue after a client
+disconnect for at most the five-minute command timeout; status and bounded
+output remain available for ten minutes to the same principal, project,
+workspace, and session. A daemon restart drops the ephemeral run and does not
+replay it. The typed `human_shell.v1` protocol returns an explicit unsupported
+response when an older daemon lacks this feature; the TUI never falls back to
+spawning on its own host.
 
 `/shell-list`, `/shell-show`, `/shell-include`, `/shell-ask`, `/shell-rerun`,
 and `/shell-kill` manage the history and the promote/include actions.

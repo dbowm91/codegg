@@ -800,6 +800,24 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        R::HumanShellRunCreate { .. } => OperationDescriptor::new(
+            "human_shell_run_create",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
+        R::HumanShellRunCapabilities => {
+            OperationDescriptor::new("human_shell_run_capabilities", ScopeKind::Global, None)
+        }
+        R::HumanShellRunRead { .. } => OperationDescriptor::new(
+            "human_shell_run_read",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
+        R::HumanShellRunCancel { .. } => OperationDescriptor::new(
+            "human_shell_run_cancel",
+            ScopeKind::DirectProject,
+            Some(Capability::CommandExecute),
+        ),
         R::AuditQuery { .. } => OperationDescriptor::new(
             "audit_query",
             ScopeKind::DirectProject,
@@ -1855,6 +1873,37 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::InteractiveProcessRemove {
             attachment_id: String::new(),
+        },
+        R::HumanShellRunCreate {
+            request: codegg_protocol::human_shell::HumanShellRunCreateRequestDto {
+                protocol_version: 1,
+                submission_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+                origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
+                confirmed_dangerous: false,
+                command: String::new(),
+            },
+        },
+        R::HumanShellRunCapabilities,
+        R::HumanShellRunRead {
+            request: codegg_protocol::human_shell::HumanShellRunReadDto {
+                run_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+                from_sequence: 0,
+                max_bytes: 1,
+            },
+        },
+        R::HumanShellRunCancel {
+            request: codegg_protocol::human_shell::HumanShellRunCancelDto {
+                run_id: String::new(),
+                project_id: String::new(),
+                workspace_id: String::new(),
+                session_id: None,
+            },
         },
         R::PresenceCapabilities,
         R::PresenceHeartbeat {

@@ -62,6 +62,9 @@ pub struct CoreDaemon {
     /// accounting as durable work. Handles and attachments are ephemeral
     /// and do not survive daemon restart.
     pub interactive_processes: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
+    /// Finite human shell runs execute on this daemon and share scheduler
+    /// process admission. State/output are ephemeral and owner-scoped.
+    pub human_shell_runs: Arc<crate::shell::daemon::HumanShellRunService>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -939,6 +942,9 @@ impl CoreDaemon {
             | CoreRequest::ProjectInitDraftGet { project_id, .. }
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
+            CoreRequest::HumanShellRunCreate { request } => Some(request.project_id.as_str()),
+            CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
+            CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
             CoreRequest::SessionCreate {
                 project_id: Some(project_id),
@@ -2832,6 +2838,9 @@ impl CoreDaemon {
     /// M003: `session_id` locator carried by one request, if any.
     fn session_id_for_request(request: &CoreRequest) -> Option<&str> {
         match request {
+            CoreRequest::HumanShellRunCreate { request } => request.session_id.as_deref(),
+            CoreRequest::HumanShellRunRead { request } => request.session_id.as_deref(),
+            CoreRequest::HumanShellRunCancel { request } => request.session_id.as_deref(),
             CoreRequest::SessionAttach { session_id }
             | CoreRequest::SessionLoad { session_id }
             | CoreRequest::SessionMessagesLoad { session_id }
@@ -3140,6 +3149,7 @@ impl CoreDaemon {
             CoreRequest::SessionCreate { .. }
             | CoreRequest::JobSubmit { .. }
             | CoreRequest::ChatActionSubmit { .. }
+            | CoreRequest::HumanShellRunCreate { .. }
             | CoreRequest::AuditQuery { .. }
             | CoreRequest::AuditExport { .. } => return,
             // Work Orders M001: creation and mutation operations mint or
@@ -3308,6 +3318,20 @@ impl CoreDaemon {
                     "allow",
                 )
                 .with_run(run)
+            }
+            codegg_core::audit::AuditAction::HumanShellRun => {
+                let origin = match request {
+                    CoreRequest::HumanShellRunCancel { .. } => "cancel",
+                    _ => "unknown",
+                };
+                instr::human_shell_run_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    None,
+                    origin,
+                    "requested",
+                )
             }
             codegg_core::audit::AuditAction::FileMutate => {
                 let (digest_source, op) = match request {
@@ -3551,6 +3575,15 @@ impl CoreDaemon {
             &request.payload,
         ))
         .await;
+        if Self::is_human_shell_request(&request.payload) {
+            return Box::pin(self.handle_human_shell_request(
+                request,
+                trusted_client_id,
+                &authority,
+                &authz_decision,
+            ))
+            .await;
+        }
         // Collaboration M001: chat arms run in a dedicated handler so
         // the main dispatch future stays small (same rationale as the
         // boxed authorization preamble above). The M003 gate has already
@@ -3742,6 +3775,7 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team
             | super::daemon_family::DaemonRequestFamily::Interactive
+            | super::daemon_family::DaemonRequestFamily::HumanShell
             | super::daemon_family::DaemonRequestFamily::WorkOrders => {
                 // Unreachable: chat, team, interactive-process, and
                 // work-order envelopes return through their boxed
@@ -3774,6 +3808,16 @@ impl CoreDaemon {
                 | CoreRequest::InteractiveProcessResume { .. }
                 | CoreRequest::InteractiveProcessTerminate { .. }
                 | CoreRequest::InteractiveProcessRemove { .. }
+        )
+    }
+
+    fn is_human_shell_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::HumanShellRunCapabilities
+                | CoreRequest::HumanShellRunCreate { .. }
+                | CoreRequest::HumanShellRunRead { .. }
+                | CoreRequest::HumanShellRunCancel { .. }
         )
     }
 
@@ -4291,6 +4335,67 @@ mod tests {
             project.project_id.as_str().to_string(),
             workspace.id.as_str().to_string(),
         )
+    }
+
+    #[tokio::test]
+    async fn poolless_standalone_human_shell_uses_registered_workspace() {
+        let daemon = CoreDaemon::new(None, None, None);
+        let root = tempfile::tempdir().unwrap();
+        let workspace = daemon
+            .workspaces
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "standalone-shell-create".into(),
+                CoreRequest::HumanShellRunCreate {
+                    request: codegg_protocol::human_shell::HumanShellRunCreateRequestDto {
+                        protocol_version:
+                            codegg_protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION,
+                        submission_id: "standalone-test-submission".into(),
+                        project_id: "local-project".into(),
+                        workspace_id: workspace.id.as_str().into(),
+                        session_id: None,
+                        origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
+                        confirmed_dangerous: false,
+                        command: "printf standalone".into(),
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::HumanShellRunCreated { run, .. } = response else {
+            panic!("expected standalone human shell acceptance, got {response:?}");
+        };
+        assert_eq!(run.cwd, root.path().to_string_lossy());
+
+        let read = CoreRequest::HumanShellRunRead {
+            request: codegg_protocol::human_shell::HumanShellRunReadDto {
+                run_id: run.run_id,
+                project_id: "local-project".into(),
+                workspace_id: workspace.id.as_str().into(),
+                session_id: None,
+                from_sequence: 0,
+                max_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
+            },
+        };
+        for _ in 0..30 {
+            let response = daemon
+                .handle_request(crate::core::new_request(
+                    "standalone-shell-read".into(),
+                    read.clone(),
+                ))
+                .await
+                .unwrap();
+            if let CoreResponse::HumanShellRunOutput { chunks, .. } = response {
+                if chunks.iter().any(|chunk| chunk.bytes == b"standalone") {
+                    return;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("standalone shell output was not delivered");
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ use super::types::{ShellCommandId, ShellEvent, ShellRequest, DEFAULT_TIMEOUT_SEC
 pub struct ShellRuntime {
     shell: String,
     plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
+    sandbox: Option<crate::security::sandbox::SandboxLaunchSpec>,
 }
 
 impl ShellRuntime {
@@ -17,7 +18,24 @@ impl ShellRuntime {
         Self {
             shell,
             plugin_service: None,
+            sandbox: None,
         }
+    }
+
+    /// Construct with an execution-owner-selected shell binary. The value
+    /// must come from the daemon host, never from a request payload.
+    pub fn with_host_shell(shell: String) -> Self {
+        Self {
+            shell,
+            plugin_service: None,
+            sandbox: None,
+        }
+    }
+
+    /// Require the canonical managed-process sandbox launch specification.
+    pub fn with_sandbox(mut self, spec: crate::security::sandbox::SandboxLaunchSpec) -> Self {
+        self.sandbox = Some(spec);
+        self
     }
 
     /// Attach a plugin service for shell env lifecycle hooks.
@@ -35,6 +53,7 @@ impl ShellRuntime {
         Self {
             shell: shell.to_string(),
             plugin_service: None,
+            sandbox: None,
         }
     }
 
@@ -110,6 +129,9 @@ impl ShellRuntime {
             crate::managed_process::ProcessProvenance::default(),
         );
         process_request.environment_policy = environment_policy;
+        if let Some(spec) = self.sandbox.clone() {
+            process_request.sandbox = crate::managed_process::SandboxRequest::Required(spec);
+        }
         process_request.timeout = Some(timeout_dur);
         process_request.cancellation = cancellation.clone();
         process_request.output_policy =
