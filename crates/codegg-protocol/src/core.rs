@@ -75,6 +75,8 @@ pub struct ProjectInitDraftDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
     pub protocol_version: u32,
+    /// For `TurnSubmit` and `SessionPromptSubmit`, this is the durable
+    /// submission identity. A retry after an uncertain response must reuse it.
     pub request_id: String,
     pub payload: T,
 }
@@ -1171,6 +1173,9 @@ pub enum CoreResponse {
     HumanShellPromotions {
         promotions: Vec<HumanShellPromotionDto>,
     },
+    TurnAdmissionReceipt {
+        receipt: TurnAdmissionReceiptDto,
+    },
     SessionMessageCounts {
         counts: std::collections::HashMap<String, usize>,
     },
@@ -1837,6 +1842,16 @@ pub struct HumanShellPromotionDto {
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
     pub consumed_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnAdmissionReceiptDto {
+    pub submission_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub status: String,
+    pub accepted_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

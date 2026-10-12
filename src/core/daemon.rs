@@ -3671,6 +3671,7 @@ impl CoreDaemon {
                 Box::pin(self.handle_turns_request(
                     payload,
                     &owned_request_id,
+                    None,
                     trusted_client_id,
                     authority,
                     authz_decision,
@@ -5389,7 +5390,7 @@ mod tests {
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
-        assert!(matches!(resp, CoreResponse::Ack));
+        assert!(matches!(resp, CoreResponse::TurnAdmissionReceipt { .. }));
 
         // The TurnStarted event should be in the log, identified by
         // session_id and a turn_id that starts with "turn-".
@@ -5713,8 +5714,8 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(resp, CoreResponse::Ack),
-            "expected Ack, got {resp:?}"
+            matches!(resp, CoreResponse::TurnAdmissionReceipt { .. }),
+            "expected durable admission receipt, got {resp:?}"
         );
         let filter = EventFilter {
             session_id: Some(session_id.clone()),
@@ -6073,14 +6074,14 @@ mod tests {
 
     /// A minimal fake turn runtime that records whether `run_turn` was called.
     struct FakeTurnRuntime {
-        called: std::sync::atomic::AtomicBool,
+        calls: std::sync::atomic::AtomicUsize,
         captured_messages: std::sync::Mutex<Option<Vec<crate::protocol::dto::ProviderMessage>>>,
     }
 
     impl FakeTurnRuntime {
         fn new() -> Self {
             Self {
-                called: std::sync::atomic::AtomicBool::new(false),
+                calls: std::sync::atomic::AtomicUsize::new(0),
                 captured_messages: std::sync::Mutex::new(None),
             }
         }
@@ -6092,7 +6093,7 @@ mod tests {
             &self,
             input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
-            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             *self.captured_messages.lock().expect("capture lock") = Some(input.messages_dto);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
@@ -6175,12 +6176,18 @@ mod tests {
                 reasoning: None,
             },
         );
-        let resp = daemon.handle_request(req).await.unwrap();
-        assert!(matches!(resp, CoreResponse::Ack));
-        assert!(
-            fake.called.load(std::sync::atomic::Ordering::SeqCst),
-            "injected FakeTurnRuntime should have been invoked"
-        );
+        let resp = daemon.handle_request(req.clone()).await.unwrap();
+        let first_receipt = match resp {
+            CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+            other => panic!("expected durable admission receipt, got {other:?}"),
+        };
+        let retry = daemon.handle_request(req).await.unwrap();
+        let retry_receipt = match retry {
+            CoreResponse::TurnAdmissionReceipt { receipt } => receipt,
+            other => panic!("expected original receipt on retry, got {other:?}"),
+        };
+        assert_eq!(retry_receipt, first_receipt);
+        assert_eq!(fake.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         let captured = fake
             .captured_messages
             .lock()

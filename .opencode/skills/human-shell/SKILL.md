@@ -167,8 +167,11 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 reload. Human model-context output always strips ANSI, applies the shared
 redactor, and is capped at 32 KiB. `!!` and `/shell-include` wait for a typed
 daemon acknowledgement before showing the record as staged. The turn's
-controller lease and promotion consumption commit in one database transaction;
-only accepted turn submission changes the history entry's `promoted` flag.
+controller lease, stable request-ID receipt, and promotion consumption commit
+in one database transaction. A retry reuses the same envelope `request_id` and
+returns the same receipt without starting another runtime turn. After restart,
+accepted-but-nonterminal receipts become `interrupted` and are not replayed.
+Only receipt-backed turn acceptance changes the history entry's `promoted` flag.
 `/shell-ask` waits for staging and session turn acceptance. A remote TUI
 outbound queue does not prove server acceptance and remains an unsubmitted
 composer draft.

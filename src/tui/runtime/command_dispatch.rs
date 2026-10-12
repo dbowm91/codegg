@@ -1817,6 +1817,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);
         }
+        TuiCommand::TurnSubmissionFinished { request_id, error } => {
+            if error.is_none()
+                && app
+                    .pending_turn_submission
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == request_id)
+            {
+                app.pending_turn_submission = None;
+            }
+        }
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);
         }

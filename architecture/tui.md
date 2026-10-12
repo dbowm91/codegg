@@ -248,11 +248,14 @@ session owner. The TUI waits for the stage acknowledgement before presenting
 `!!` or `/shell-include` evidence as staged, reloads pending records when a
 session is attached, and sends stable promotion IDs with the next turn. The
 daemon claims those IDs in the same SQLite transaction as the session turn
-controller lease. While pending, the TUI omits its display copy from submitted
-history because the daemon appends the canonical payload; after acceptance,
-the projection remains ordinary conversation history. A disconnected local
-owner or the WebSocket prompt-only transport leaves evidence in the composer
-as an unsubmitted draft.
+controller lease and durable turn-admission receipt. Turn retries reuse the
+request envelope ID and receive the same receipt, never a second runtime turn.
+After daemon restart, a committed but nonterminal receipt is marked interrupted
+and is not replayed; the event projection reports the failed turn. While
+pending, the TUI omits its display copy from submitted history because the
+daemon appends the canonical payload; after acceptance, the projection remains
+ordinary conversation history. A disconnected local owner or the WebSocket
+prompt-only transport leaves evidence in the composer as an unsubmitted draft.
 
 **Diagnostics**: `/tui-stats` includes task registry stats and shell
 handle count.

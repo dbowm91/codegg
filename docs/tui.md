@@ -162,7 +162,11 @@ Human-shell output always passes the shared secret redactor and a 32 KiB limit,
 even when general shell projection redaction is configured `off`. The daemon
 acknowledges durable staging for the exact session before the TUI reports it as
 staged. Pending projections expire after 24 hours and return after reconnect;
-turn admission consumes them once with the controller lease. The WebSocket
+turn admission consumes them once with the controller lease and durable
+submission receipt. Reusing the same request ID returns that receipt instead
+of starting a duplicate turn. If the daemon restarts before the provider
+outcome is known, it marks the accepted turn interrupted and does not replay it.
+The WebSocket
 TUI transport does not support durable staging, so approved output is clearly
 identified as an unsubmitted composer draft; an existing draft is preserved.
 

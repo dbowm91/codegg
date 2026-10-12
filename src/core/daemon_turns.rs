@@ -7,10 +7,25 @@
 use std::sync::Arc;
 
 use crate::error::AppError;
-use crate::protocol::core::{CoreRequest, CoreResponse};
+use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 use super::event_log::EventFilter;
+
+fn turn_admission_receipt_response(
+    receipt: codegg_core::session_control::TurnAdmissionReceipt,
+) -> CoreResponse {
+    CoreResponse::TurnAdmissionReceipt {
+        receipt: crate::protocol::core::TurnAdmissionReceiptDto {
+            submission_id: receipt.submission_id,
+            session_id: receipt.session_id,
+            turn_id: receipt.turn_id,
+            status: receipt.status,
+            accepted_at_ms: receipt.accepted_at_ms,
+            updated_at_ms: receipt.updated_at_ms,
+        },
+    }
+}
 
 /// Narrow domain error for daemon-side prompt composition. Protocol
 /// response construction belongs to the `SessionPromptSubmit` boundary.
@@ -41,10 +56,16 @@ impl CoreDaemon {
         &self,
         request: CoreRequest,
         request_id: &str,
+        inherited_submission_digest: Option<String>,
         trusted_client_id: &str,
         authority: codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
+        let submission_digest = inherited_submission_digest.unwrap_or_else(|| {
+            use sha2::Digest;
+            let bytes = serde_json::to_vec(&request).unwrap_or_default();
+            format!("{:x}", sha2::Sha256::digest(bytes))
+        });
         // Session-control operations dispatch to the dedicated M004
         // handler (same Turns family, separate function to keep this
         // match small). The capability gate has already run; the
@@ -80,6 +101,29 @@ impl CoreDaemon {
                 reasoning,
                 ..
             } => {
+                if let Some(store) = self.controller_store() {
+                    match store.get_turn_receipt(request_id).await {
+                        Ok(Some(receipt)) => {
+                            if receipt.session_id != session_id
+                                || receipt.principal_id != authority.principal_id().as_str()
+                                || receipt.request_sha256 != submission_digest
+                            {
+                                return Ok(CoreResponse::Error {
+                                    code: "turn_submission_identity_conflict".to_owned(),
+                                    message: "turn submission identity was reused with different content or authority".to_owned(),
+                                });
+                            }
+                            return Ok(turn_admission_receipt_response(receipt));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: error.code().to_owned(),
+                                message: error.to_string(),
+                            })
+                        }
+                    }
+                }
                 if current_agent_idx >= agents.len() {
                     crate::bus::global::GlobalEventBus::publish(
                         crate::bus::events::AppEvent::Error {
@@ -350,10 +394,12 @@ impl CoreDaemon {
                 // behavior unchanged: the submitter controls its turn)
                 // so projection/presence stay coherent.
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                let admitted_promotions = match self
+                let (admitted_promotions, admission_receipt) = match self
                     .acquire_turn_controller_with_promotions(
                         super::daemon_control::TurnControllerAdmission {
                             session_id: &session_id,
+                            submission_id: request_id,
+                            request_sha256: &submission_digest,
                             turn_id: &turn_id,
                             authority: &authority,
                             trusted_client_id,
@@ -365,18 +411,34 @@ impl CoreDaemon {
                     )
                     .await
                 {
-                    Ok((controller, revision, promotions)) => {
+                    Ok(admission) if admission.duplicate => {
+                        if let Some(runtime) = self.sessions.get(&session_id) {
+                            let mut active = runtime.active_turn.write().await;
+                            if active
+                                .as_ref()
+                                .is_some_and(|handle| handle.turn_id == turn_id)
+                            {
+                                *active = None;
+                            }
+                            drop(active);
+                            *runtime.status.write().await =
+                                crate::core::session_runtime::RuntimeSessionStatus::Idle;
+                        }
+                        return Ok(turn_admission_receipt_response(admission.receipt));
+                    }
+                    Ok(admission) => {
                         self.mirror_controller_to_runtime(
                             &session_id,
                             &turn_id,
-                            controller
+                            admission
+                                .controller_principal
                                 .as_deref()
                                 .unwrap_or(authority.principal_id().as_str()),
                             Some(trusted_client_id),
-                            revision,
+                            admission.revision,
                         )
                         .await;
-                        promotions
+                        (admission.promotions, admission.receipt)
                     }
                     Err(error) => {
                         // Roll back: failed submissions must not leave a
@@ -581,7 +643,36 @@ impl CoreDaemon {
                     sandbox_profile,
                     credential_observer,
                 };
-                let turn_output = self.deps.turn_runtime.run_turn(turn_input).await?;
+                let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
+                    Ok(output) => output,
+                    Err(error) => {
+                        if let Some(store) = self.controller_store() {
+                            if let Err(receipt_error) = store
+                                .finish_turn_receipt(
+                                    &turn_id,
+                                    "failed",
+                                    chrono::Utc::now().timestamp_millis(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(error = %receipt_error, turn_id = %turn_id, "failed to close rejected runtime admission receipt");
+                            }
+                        }
+                        self.event_log
+                            .publish(
+                                Some(session_id.clone()),
+                                Some(turn_id.clone()),
+                                CoreEvent::TurnFailed {
+                                    session_id: session_id.clone(),
+                                    turn_id: Some(turn_id.clone()),
+                                    message: error.to_string(),
+                                },
+                            )
+                            .await;
+                        self.release_turn_controller(&session_id, &turn_id).await;
+                        return Err(error);
+                    }
+                };
 
                 // Update the TurnHandle with the runtime's cancel/steer channels.
                 {
@@ -592,7 +683,7 @@ impl CoreDaemon {
                     }
                 }
 
-                Ok(CoreResponse::Ack)
+                Ok(turn_admission_receipt_response(admission_receipt))
             }
             CoreRequest::SessionPromptSubmit {
                 session_id,
@@ -600,6 +691,29 @@ impl CoreDaemon {
                 plan_mode,
                 human_shell_promotion_ids,
             } => {
+                if let Some(store) = self.controller_store() {
+                    match store.get_turn_receipt(request_id).await {
+                        Ok(Some(receipt)) => {
+                            if receipt.session_id != session_id
+                                || receipt.principal_id != authority.principal_id().as_str()
+                                || receipt.request_sha256 != submission_digest
+                            {
+                                return Ok(CoreResponse::Error {
+                                    code: "turn_submission_identity_conflict".to_owned(),
+                                    message: "turn submission identity was reused with different content or authority".to_owned(),
+                                });
+                            }
+                            return Ok(turn_admission_receipt_response(receipt));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: error.code().to_owned(),
+                                message: error.to_string(),
+                            })
+                        }
+                    }
+                }
                 // M004 desktop session slice: resolve the composed
                 // turn daemon-side, then submit through the identical
                 // `TurnSubmit` path above (single recursion, no new
@@ -624,6 +738,7 @@ impl CoreDaemon {
                         human_shell_promotion_ids,
                     },
                     request_id,
+                    Some(submission_digest),
                     trusted_client_id,
                     authority,
                     authz_decision,

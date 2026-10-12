@@ -305,3 +305,126 @@ async fn turn_admission_consumes_atomically_and_busy_admission_preserves_pending
         .expect("pending read");
     assert!(pending.iter().any(|item| item.id == "promotion-3"));
 }
+
+#[tokio::test]
+async fn durable_submission_identity_returns_receipt_and_restart_marks_it_interrupted() {
+    let pool = isolated_pool().await;
+    ensure_session(&pool, "session-1").await;
+    let store = SessionControllerStore::new(pool.clone());
+    let promotions = HumanShellPromotionStore::new(pool.clone());
+    let principal = PrincipalId::parse("principal-1").expect("principal");
+    let now = chrono::Utc::now().timestamp_millis();
+    let digest = "a".repeat(64);
+    promotions
+        .stage(promotion("promotion-receipt", "redacted", now))
+        .await
+        .expect("stage promotion");
+
+    let admitted = store
+        .admit_with_promotions(
+            "session-1",
+            "submit-1",
+            &digest,
+            "turn-1",
+            &principal,
+            Some("client-1"),
+            "project-1",
+            "workspace-1",
+            &["promotion-receipt".to_owned()],
+            now,
+        )
+        .await
+        .expect("durable admission");
+    let codegg_core::session_control::TurnAdmissionOutcome::Admitted {
+        receipt,
+        promotions: claimed,
+        ..
+    } = admitted
+    else {
+        panic!("first submission unexpectedly duplicated")
+    };
+    assert_eq!(receipt.status, "accepted");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].consumed_turn_id.as_deref(), Some("turn-1"));
+
+    let duplicate = store
+        .admit_with_promotions(
+            "session-1",
+            "submit-1",
+            &digest,
+            "turn-random-retry",
+            &principal,
+            Some("client-1"),
+            "project-1",
+            "workspace-1",
+            &["promotion-receipt".to_owned()],
+            now + 1,
+        )
+        .await
+        .expect("duplicate returns receipt");
+    let codegg_core::session_control::TurnAdmissionOutcome::Duplicate(retry_receipt) = duplicate
+    else {
+        panic!("same submission identity was admitted twice")
+    };
+    assert_eq!(retry_receipt.turn_id, receipt.turn_id);
+
+    store
+        .interrupt_incomplete_turn_receipts(now + 2)
+        .await
+        .expect("restart recovery");
+    let recovered = store
+        .get_turn_receipt("submit-1")
+        .await
+        .expect("receipt lookup")
+        .expect("receipt exists");
+    assert_eq!(recovered.status, "interrupted");
+
+    let changed_content = store
+        .admit_with_promotions(
+            "session-1",
+            "submit-1",
+            &"b".repeat(64),
+            "turn-2",
+            &principal,
+            Some("client-1"),
+            "project-1",
+            "workspace-1",
+            &[],
+            now + 3,
+        )
+        .await;
+    assert!(matches!(
+        changed_content,
+        Err(
+            codegg_core::session_control::SessionTurnAdmissionError::Controller(
+                codegg_core::session_control::SessionControlError::Conflict(_)
+            )
+        )
+    ));
+
+    store
+        .release("session-1", "turn-1")
+        .await
+        .expect("release interrupted controller");
+    let after_retention = store
+        .admit_with_promotions(
+            "session-1",
+            "submit-1",
+            &"b".repeat(64),
+            "turn-after-retention",
+            &principal,
+            Some("client-1"),
+            "project-1",
+            "workspace-1",
+            &[],
+            now + codegg_core::session_control::TURN_ADMISSION_RECEIPT_IDEMPOTENCY_TTL_MS + 10,
+        )
+        .await
+        .expect("expired identity may be reused after retention");
+    let codegg_core::session_control::TurnAdmissionOutcome::Admitted { receipt, .. } =
+        after_retention
+    else {
+        panic!("expired receipt was still considered a duplicate")
+    };
+    assert_eq!(receipt.turn_id, "turn-after-retention");
+}

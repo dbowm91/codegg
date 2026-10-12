@@ -38,6 +38,9 @@ pub const SESSION_CONTROL_MAX_REASON_LEN: usize = 280;
 pub const SESSION_CONTROL_MAX_REQUESTS_PER_SESSION: usize = 20;
 /// Maximum rows returned by a control-request listing.
 pub const SESSION_CONTROL_MAX_LIST_LIMIT: usize = 20;
+/// Keep terminal turn-submission identities available for idempotent retry.
+pub const TURN_ADMISSION_RECEIPT_IDEMPOTENCY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+pub const TURN_ADMISSION_RECEIPT_MAX_RETAINED_PER_SESSION: i64 = 256;
 
 /// Last lease action, stored as an opaque string and degraded safely by readers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -156,6 +159,30 @@ pub enum SessionTurnAdmissionError {
     Controller(#[from] SessionControlError),
     #[error(transparent)]
     Promotion(#[from] HumanShellPromotionError),
+}
+
+/// Durable identity for one accepted turn submission. The request envelope's
+/// `request_id` is the submission identity; retries must reuse it.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct TurnAdmissionReceipt {
+    pub submission_id: String,
+    pub session_id: String,
+    pub principal_id: String,
+    pub turn_id: String,
+    pub request_sha256: String,
+    pub status: String,
+    pub accepted_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnAdmissionOutcome {
+    Admitted {
+        receipt: TurnAdmissionReceipt,
+        controller: SessionControllerRecord,
+        promotions: Vec<HumanShellPromotionRecord>,
+    },
+    Duplicate(TurnAdmissionReceipt),
 }
 
 impl SessionTurnAdmissionError {
@@ -543,6 +570,206 @@ impl SessionControllerStore {
         .await?;
         tx.commit().await?;
         Ok((record, claimed))
+    }
+
+    /// Atomically reserve a turn receipt, controller lease, and promotion
+    /// claims. A retry using the same request id and request digest returns
+    /// the original receipt without starting another runtime turn.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admit_with_promotions(
+        &self,
+        session_id: &str,
+        submission_id: &str,
+        request_sha256: &str,
+        turn_id: &str,
+        controller: &PrincipalId,
+        origin_client: Option<&str>,
+        project_id: &str,
+        workspace_id: &str,
+        promotion_ids: &[String],
+        now_ms: i64,
+    ) -> Result<TurnAdmissionOutcome, SessionTurnAdmissionError> {
+        validate_session_id(session_id)?;
+        validate_turn_id(submission_id)?;
+        validate_turn_id(turn_id)?;
+        if request_sha256.len() != 64
+            || !request_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(SessionControlError::Invalid {
+                field: "request_sha256",
+                message: "expected a SHA-256 hex digest".to_owned(),
+            }
+            .into());
+        }
+        if let Some(client) = origin_client {
+            validate_client_id(client)?;
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM turn_admission_receipt WHERE status != 'accepted' AND updated_at_ms <= ?",
+        )
+        .bind(now_ms.saturating_sub(TURN_ADMISSION_RECEIPT_IDEMPOTENCY_TTL_MS))
+        .execute(&mut *tx)
+        .await?;
+        let existing: Option<TurnAdmissionReceipt> = sqlx::query_as(
+            "SELECT submission_id, session_id, principal_id, turn_id, request_sha256, \
+             status, accepted_at_ms, updated_at_ms FROM turn_admission_receipt \
+             WHERE submission_id = ?",
+        )
+        .bind(submission_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(receipt) = existing {
+            if receipt.session_id != session_id
+                || receipt.principal_id != controller.as_str()
+                || receipt.request_sha256 != request_sha256
+            {
+                return Err(SessionControlError::Conflict(
+                    "turn submission identity was reused with different authority or content"
+                        .to_owned(),
+                )
+                .into());
+            }
+            tx.rollback().await?;
+            return Ok(TurnAdmissionOutcome::Duplicate(receipt));
+        }
+        let retained: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM turn_admission_receipt WHERE session_id = ? AND principal_id = ?",
+        )
+        .bind(session_id)
+        .bind(controller.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        if retained >= TURN_ADMISSION_RECEIPT_MAX_RETAINED_PER_SESSION {
+            return Err(SessionControlError::Conflict(
+                "turn submission receipt retention limit reached".to_owned(),
+            )
+            .into());
+        }
+
+        sqlx::query(
+            "INSERT INTO session_turn_controller \
+             (session_id, turn_id, controller_principal, origin_client, revision, \
+              created_at, updated_at, last_action, last_actor, last_reason) \
+             VALUES (?, ?, ?, ?, 1, ?, ?, 'acquired', ?, NULL) \
+             ON CONFLICT(session_id) DO NOTHING",
+        )
+        .bind(session_id)
+        .bind(turn_id)
+        .bind(controller.as_str())
+        .bind(origin_client)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(controller.as_str())
+        .execute(&mut *tx)
+        .await?;
+        let row: Option<ControllerRow> = sqlx::query_as(
+            "SELECT session_id, turn_id, controller_principal, origin_client, revision, \
+             created_at, updated_at, last_action, last_actor, last_reason \
+             FROM session_turn_controller WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let record = row.map(row_to_record).transpose()?.ok_or_else(|| {
+            SessionControlError::Storage(StorageError::Database(
+                "session control acquire lost".to_owned(),
+            ))
+        })?;
+        if record.turn_id != turn_id || record.controller_principal != *controller {
+            return Err(SessionControlError::Conflict(format!(
+                "session {session_id} already has an active controller turn"
+            ))
+            .into());
+        }
+        let promotions = human_shell_promotion::claim_for_turn(
+            &mut tx,
+            promotion_ids,
+            session_id,
+            controller.as_str(),
+            project_id,
+            workspace_id,
+            turn_id,
+            now_ms,
+        )
+        .await?;
+        sqlx::query(
+            "INSERT INTO turn_admission_receipt \
+             (submission_id, session_id, principal_id, turn_id, request_sha256, status, \
+              accepted_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+        )
+        .bind(submission_id)
+        .bind(session_id)
+        .bind(controller.as_str())
+        .bind(turn_id)
+        .bind(request_sha256)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(TurnAdmissionOutcome::Admitted {
+            receipt: TurnAdmissionReceipt {
+                submission_id: submission_id.to_owned(),
+                session_id: session_id.to_owned(),
+                principal_id: controller.as_str().to_owned(),
+                turn_id: turn_id.to_owned(),
+                request_sha256: request_sha256.to_owned(),
+                status: "accepted".to_owned(),
+                accepted_at_ms: now_ms,
+                updated_at_ms: now_ms,
+            },
+            controller: record,
+            promotions,
+        })
+    }
+
+    pub async fn finish_turn_receipt(
+        &self,
+        turn_id: &str,
+        status: &str,
+        now_ms: i64,
+    ) -> Result<(), SessionControlError> {
+        if !matches!(status, "completed" | "failed" | "interrupted") {
+            return Err(SessionControlError::Invalid {
+                field: "status",
+                message: "invalid terminal turn status".to_owned(),
+            });
+        }
+        sqlx::query("UPDATE turn_admission_receipt SET status = ?, updated_at_ms = ? WHERE turn_id = ? AND status = 'accepted'")
+            .bind(status).bind(now_ms).bind(turn_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Called once during daemon recovery. Any receipt still marked accepted
+    /// belongs to an earlier process and must not be replayed automatically.
+    pub async fn interrupt_incomplete_turn_receipts(
+        &self,
+        now_ms: i64,
+    ) -> Result<u64, SessionControlError> {
+        let result = sqlx::query(
+            "UPDATE turn_admission_receipt SET status = 'interrupted', updated_at_ms = ? \
+             WHERE status = 'accepted'",
+        )
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn get_turn_receipt(
+        &self,
+        submission_id: &str,
+    ) -> Result<Option<TurnAdmissionReceipt>, SessionControlError> {
+        validate_turn_id(submission_id)?;
+        Ok(sqlx::query_as(
+            "SELECT submission_id, session_id, principal_id, turn_id, request_sha256, \
+             status, accepted_at_ms, updated_at_ms FROM turn_admission_receipt \
+             WHERE submission_id = ?",
+        )
+        .bind(submission_id)
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     /// Release the lease when the turn reaches a terminal state.

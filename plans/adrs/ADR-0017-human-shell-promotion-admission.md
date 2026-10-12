@@ -34,13 +34,15 @@ acknowledgement. The daemon has no canonical promotion record or query operation
 
 `SessionPromptSubmit` is authenticated and session-scoped through the existing
 `AgentInvoke` authorization descriptor, but it carries no promotion identity.
-`TurnSubmit` carries provider messages without a stable client submission key.
-The daemon creates an in-memory active turn and separately writes a durable
-session-controller lease. That lease stores control ownership, not prompt data or
-an accepted-turn receipt. The runtime receives an ephemeral `TurnRunInput`, and
-the request handler returns `Ack` after runtime acceptance. There is no durable
-turn envelope that can resolve a daemon restart between admission and provider
-delivery.
+`TurnSubmit` carries provider messages without a durable receipt. Its request
+envelope already has a client-generated `request_id`; this decision promotes
+that field from correlation metadata to the stable submission identity for
+turn requests. The daemon creates an in-memory active turn and separately
+writes a durable session-controller lease. That lease stores control ownership,
+not prompt data or an accepted-turn receipt. The runtime receives an ephemeral
+`TurnRunInput`, and the request handler returns `Ack` after runtime acceptance.
+There is no durable receipt that resolves a daemon restart between admission
+and provider delivery.
 
 The session SQLite schema is at migration v70 and can support an additive narrow
 ledger. Reusing ordinary conversation messages would conflate a staged artifact
@@ -77,7 +79,9 @@ delivery/recovery subsystem.
 Add a dedicated session-scoped table for redacted pending promotions, with a
 stable promotion ID, authenticated principal, exact session/workspace binding,
 bounded payload, expiry, and lifecycle state. Add an idempotent turn-submission
-identity and an accepted-turn receipt. In one daemon-owned SQLite transaction,
+identity using `RequestEnvelope.request_id` and an accepted-turn receipt. A
+retry resends the same request ID and identical request content. In one
+daemon-owned SQLite transaction,
 validate the pending promotion set, reserve the accepted turn, and mark its
 promotion IDs consumed by that turn. Return an acknowledgement only after the
 receipt commits. Busy/rejected requests leave the stage pending; a retry with
@@ -158,11 +162,14 @@ a new turn.
 
 ## Compatibility and migration
 
-Use an additive SQLite migration after v70. Older daemons must
-advertise the new feature as unsupported; clients must not report a staged state
-without the typed server acknowledgement. Stage payloads are redacted UTF-8 and
-bounded to 32 KiB; only the stage ledger stores them. No legacy conversation
-rows are backfilled or reinterpreted.
+Use additive SQLite migrations after v70 (v71 promotion ledger, v72 turn
+admission receipts). The typed `TurnAdmissionReceipt` response identifies a
+daemon that implements durable receipt semantics; a legacy `Ack` remains
+ordinary prompt acceptance and must not be represented as receipt-backed
+idempotency. Older daemons cannot stage promotions and clients must not report
+a staged state without the typed stage acknowledgement. Stage payloads are
+redacted UTF-8 and bounded to 32 KiB; only the stage ledger stores them. No
+legacy conversation rows are backfilled or reinterpreted.
 
 ## Security and reliability implications
 

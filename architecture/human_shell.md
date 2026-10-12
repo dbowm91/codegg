@@ -36,10 +36,16 @@ redacted projection for the exact session when
 selected output view in the same way. The daemon acknowledges the durable
 record before the TUI presents it as staged. Pending records are principal,
 session, project, and workspace scoped, limited to 32 KiB each, 32 pending and
-256 retained per session, and expire after 24 hours. A submitted turn claims them atomically
-with the session controller lease; reconnect restores pending records, while
-consumed records are never replayed automatically. `/shell-ask` stages the
-question and evidence under a stable identity before submitting one
+256 retained per session, and expire after 24 hours. A submitted turn claims
+them atomically with the session controller lease and a durable admission
+receipt (SQLite migrations v71–v72). The request envelope's `request_id` is
+the stable submission identity; retry the identical request with the same ID
+to receive the original receipt without starting another turn. Receipt rows
+are retained for a bounded idempotency window. Daemon recovery marks
+still-accepted receipts interrupted and never replays them; turn
+completion/failure updates the receipt. Reconnect restores pending records,
+while consumed records are never replayed automatically. `/shell-ask` stages
+the question and evidence under a stable identity before submitting one
 session-scoped prompt turn.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal

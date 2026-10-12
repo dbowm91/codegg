@@ -402,6 +402,9 @@ pub struct App {
     /// Daemon-acknowledged, session-owned shell projections waiting for one
     /// accepted turn. The projection bytes are already redacted and bounded.
     pub pending_shell_promotions: Vec<PendingShellPromotion>,
+    /// Retained envelope identity for the last failed/uncertain turn submit.
+    /// An identical retry reuses this id so daemon receipts prevent replay.
+    pub pending_turn_submission: Option<PendingTurnSubmission>,
     /// Session/workspace authority captured when each human shell process
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
@@ -548,6 +551,26 @@ pub struct App {
     /// opens a review. This records what the user is being asked to approve
     /// and what the daemon said; it never decides whether an apply is legal.
     pub change_review_state: crate::tui::app::state::change_review::ChangeReviewState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTurnSubmission {
+    pub session_id: String,
+    pub request_id: String,
+    pub request_sha256: String,
+}
+
+fn turn_submission_request_id(
+    pending: Option<&PendingTurnSubmission>,
+    session_id: &str,
+    request_sha256: &str,
+) -> String {
+    pending
+        .filter(|pending| {
+            pending.session_id == session_id && pending.request_sha256 == request_sha256
+        })
+        .map(|pending| pending.request_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -964,6 +987,7 @@ impl App {
                 .map(crate::shell::ShellOutputStore::from_config)
                 .unwrap_or_default(),
             pending_shell_promotions: Vec::new(),
+            pending_turn_submission: None,
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: loaded_shell_cfg
                 .as_ref()
@@ -1508,6 +1532,7 @@ impl App {
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
             pending_shell_promotions: Vec::new(),
+            pending_turn_submission: None,
             shell_command_bindings: std::collections::HashMap::new(),
             shell_confirm_dangerous: true,
             shell_enabled: true,
@@ -2170,7 +2195,7 @@ impl App {
         }
     }
 
-    pub fn dispatch_turn_submit_request(&self, text: String) {
+    pub fn dispatch_turn_submit_request(&mut self, text: String) {
         let Some(client) = self.core_client.clone() else {
             return;
         };
@@ -2206,49 +2231,68 @@ impl App {
                     return;
                 }
             };
-        let request = crate::core::new_request(
-            uuid::Uuid::new_v4().to_string(),
-            CoreRequest::TurnSubmit {
-                session_id,
-                text,
-                plan_mode: self.agent_state.plan_mode,
-                model: self.agent_state.current_model.clone(),
-                agents,
-                current_agent_idx: self.agent_state.current_agent,
-                messages: crate::protocol_conversions::provider_messages_to_dtos(messages)
-                    .unwrap_or_else(|e| {
-                        tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
-                        Default::default()
-                    }),
-                reasoning: match self.ui_state.reasoning_mode {
-                    // `Inherit` sends `None`, which leaves the agent /
-                    // model-profile default untouched.
-                    crate::protocol::core::ReasoningMode::Inherit => None,
-                    crate::protocol::core::ReasoningMode::Effort(level) => {
-                        Some(crate::protocol::core::ReasoningOverride::Effort { level })
-                    }
-                    crate::protocol::core::ReasoningMode::Budget(tokens) => {
-                        Some(crate::protocol::core::ReasoningOverride::Budget { tokens })
-                    }
-                    crate::protocol::core::ReasoningMode::Off => {
-                        Some(crate::protocol::core::ReasoningOverride::Off)
-                    }
-                },
-                human_shell_promotion_ids: promotion_ids,
+        let payload = CoreRequest::TurnSubmit {
+            session_id: session_id.clone(),
+            text,
+            plan_mode: self.agent_state.plan_mode,
+            model: self.agent_state.current_model.clone(),
+            agents,
+            current_agent_idx: self.agent_state.current_agent,
+            messages: crate::protocol_conversions::provider_messages_to_dtos(messages)
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
+                    Default::default()
+                }),
+            reasoning: match self.ui_state.reasoning_mode {
+                // `Inherit` sends `None`, which leaves the agent /
+                // model-profile default untouched.
+                crate::protocol::core::ReasoningMode::Inherit => None,
+                crate::protocol::core::ReasoningMode::Effort(level) => {
+                    Some(crate::protocol::core::ReasoningOverride::Effort { level })
+                }
+                crate::protocol::core::ReasoningMode::Budget(tokens) => {
+                    Some(crate::protocol::core::ReasoningOverride::Budget { tokens })
+                }
+                crate::protocol::core::ReasoningMode::Off => {
+                    Some(crate::protocol::core::ReasoningOverride::Off)
+                }
             },
+            human_shell_promotion_ids: promotion_ids,
+        };
+        use sha2::Digest;
+        let request_bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let request_sha256 = format!("{:x}", sha2::Sha256::digest(request_bytes));
+        let request_id = turn_submission_request_id(
+            self.pending_turn_submission.as_ref(),
+            &session_id,
+            &request_sha256,
         );
+        self.pending_turn_submission = Some(PendingTurnSubmission {
+            session_id,
+            request_id: request_id.clone(),
+            request_sha256,
+        });
+        let request = crate::core::new_request(request_id.clone(), payload);
         let tui_tx = self.tui_cmd_tx.clone();
         tokio::spawn(async move {
             let error = match client.request(request).await {
                 Ok(crate::protocol::core::CoreResponse::Ack) => None,
+                Ok(crate::protocol::core::CoreResponse::TurnAdmissionReceipt { .. }) => None,
                 Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
                     Some(format!("{code}: {message}"))
                 }
                 Ok(_) => Some("unexpected response to turn.submit".to_string()),
                 Err(error) => Some(error.to_string()),
             };
-            if !promotions.is_empty() {
-                if let Some(tx) = tui_tx {
+            if let Some(tx) = tui_tx {
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::TurnSubmissionFinished {
+                        request_id,
+                        error: error.clone(),
+                    },
+                );
+                if !promotions.is_empty() {
                     let _ = send_tui(
                         &tx,
                         TuiCommand::ShellPromotionsSubmitted { promotions, error },
@@ -16026,5 +16070,26 @@ mod projection_adoption_tests {
         .expect("serializable");
         app.handle_remote_event(json);
         assert_eq!(app.projection_client.subscription_count(), 0);
+    }
+
+    #[test]
+    fn turn_submission_retries_reuse_identity_only_for_identical_payload() {
+        let pending = PendingTurnSubmission {
+            session_id: "session-1".into(),
+            request_id: "submit-1".into(),
+            request_sha256: "a".repeat(64),
+        };
+        assert_eq!(
+            turn_submission_request_id(Some(&pending), "session-1", &"a".repeat(64)),
+            "submit-1"
+        );
+        assert_ne!(
+            turn_submission_request_id(Some(&pending), "session-1", &"b".repeat(64)),
+            "submit-1"
+        );
+        assert_ne!(
+            turn_submission_request_id(Some(&pending), "session-2", &"a".repeat(64)),
+            "submit-1"
+        );
     }
 }

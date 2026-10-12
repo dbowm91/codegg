@@ -558,6 +558,10 @@ pub enum TuiCommand {
         promotions: Vec<(uuid::Uuid, u64)>,
         error: Option<String>,
     },
+    TurnSubmissionFinished {
+        request_id: String,
+        error: Option<String>,
+    },
     ShellExpand {
         id: u64,
         stream: String,

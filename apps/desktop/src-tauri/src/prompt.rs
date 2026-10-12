@@ -134,7 +134,7 @@ impl HostState {
         let response = client
             .request(RequestEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                request_id: uuid::Uuid::new_v4().to_string(),
+                request_id: intent.intent_id().to_owned(),
                 payload: CoreRequest::SessionPromptSubmit {
                     session_id,
                     text: intent.text().to_owned(),
@@ -173,6 +173,20 @@ impl HostState {
         }
         match response {
             CoreResponse::Ack => {
+                intent.accepted().map_err(|error| error.to_string())?;
+                let token = route.current_token();
+                route.prompt = None;
+                Ok(PromptSubmitView {
+                    intent_id: intent.intent_id().to_owned(),
+                    route_token: token,
+                })
+            }
+            CoreResponse::TurnAdmissionReceipt { receipt } => {
+                if receipt.submission_id != intent.intent_id() {
+                    let failure = "daemon returned a receipt for a different prompt submission";
+                    self.fail_locked_intent(&mut route, &mut intent, failure);
+                    return Err(failure.to_owned());
+                }
                 intent.accepted().map_err(|error| error.to_string())?;
                 let token = route.current_token();
                 route.prompt = None;
