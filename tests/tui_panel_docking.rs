@@ -57,11 +57,15 @@ fn manager_down(app: &mut App, n: usize) {
     }
 }
 
-/// Open the manager and commit the panel `n` rows below the live one.
+/// Open the manager and commit the panel at **absolute index** `n`.
 ///
-/// Deliberately counts presses rather than looping until the active panel
-/// matches: the highlight moves while the manager is open but the *active*
-/// panel does not, so a "until" loop here never terminates.
+/// Counts presses rather than looping until the active panel matches: the
+/// highlight moves while the manager is open but the *active* panel does
+/// not, so an "until" loop here never terminates.
+///
+/// `n` is an offset from the *first* entry, not from the live panel, which
+/// the manager opens on. Use [`choose_by_label`] when the live panel might
+/// not be the first one — this helper silently selects the wrong row then.
 /// The mode the open `/help` box is in.
 fn help_mode(app: &mut App) -> InputMode {
     app.focus_manager
@@ -407,13 +411,17 @@ async fn reassigning_a_digit_rebinds_rather_than_failing() {
     let mut app = test_app();
     // Bind slot 3 to Chat, then rebind the same slot to Help. The manager
     // opens on the live panel each time, so walk from there.
-    choose_nth(&mut app, SidePanelId::Chat.index());
+    choose_by_label(&mut app, SidePanelId::Chat);
+    // `Enter` above committed the panel and closed the manager; the digit
+    // only binds while the manager is up.
     open_manager(&mut app);
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.panel_hotkeys.get('3'), Some(SidePanelId::Chat));
 
-    choose_nth(&mut app, SidePanelId::Help.index());
+    // The manager opens on the *live* panel, which is Chat by now — so
+    // this cannot be an absolute index from the first entry.
+    choose_by_label(&mut app, SidePanelId::Help);
     open_manager(&mut app);
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
