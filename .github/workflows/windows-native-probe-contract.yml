@@ -1,0 +1,53 @@
+name: Windows native probe contract
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-native-probe-contract.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/managed_process/**'
+      - 'tests/windows_native_probe_contract.rs'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-native-probe-contract.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'src/managed_process/**'
+      - 'tests/windows_native_probe_contract.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-probe-contract:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Record host and toolchain
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          "CODEGG_C019_HOST_VERSION=$($os.Caption) $($os.Version) build $($os.BuildNumber)" | Add-Content -LiteralPath $env:GITHUB_ENV
+          Get-HotFix | Sort-Object InstalledOn | Select-Object -Last 8 | Format-Table -AutoSize
+          rustc --version --verbose
+          git --version
+          if (Get-Command python -ErrorAction SilentlyContinue) { python --version }
+          if (Get-Command cargo -ErrorAction SilentlyContinue) { cargo --version }
+
+      - name: C019 independent actual-child probe matrix
+        env:
+          CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c019-daemon
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_native_probe_contract -- --nocapture --test-threads=1

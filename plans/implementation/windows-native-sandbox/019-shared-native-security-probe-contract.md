@@ -1,6 +1,6 @@
 # Windows Native Sandbox C019 — Common Running-Child Adversarial Matrix and C014 Diagnosis
 
-Status: ready (ADR-0020 accepted; Windows Server 2025 fixture sufficient for baseline)
+Status: active (ADR-0020 accepted; Windows Server 2025 fixture sufficient for baseline)
 Date: 2026-10-12
 Primary class: infrastructure / security feasibility
 Objective: Freeze a reusable, backend-neutral, actual-child security/compatibility oracle and diagnose the C014 Git /dev/null failure without re-opening failed AppContainer implementation.
