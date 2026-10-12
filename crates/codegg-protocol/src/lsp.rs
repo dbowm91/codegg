@@ -190,6 +190,10 @@ impl LspReadRequestDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspRangeDto {
     pub path: String,
+    /// Daemon-validated target relative to the request's authorized workspace.
+    /// Missing values from older daemons remain display-only.
+    #[serde(default)]
+    pub workspace_relative_path: Option<String>,
     pub start_line: u32,
     pub start_column: u32,
     pub end_line: u32,
@@ -425,6 +429,16 @@ mod tests {
                 .expect("older daemon result remains deserializable");
         assert_eq!(result.status, LspDiagnosticsStatus::NotReady);
         assert!(result.files.is_empty());
+    }
+
+    #[test]
+    fn older_location_responses_default_to_non_navigable() {
+        let range: LspRangeDto = serde_json::from_str(
+            r#"{"path":"lib.rs","start_line":1,"start_column":2,"end_line":1,"end_column":3}"#,
+        )
+        .expect("older response remains deserializable");
+        assert_eq!(range.path, "lib.rs");
+        assert_eq!(range.workspace_relative_path, None);
     }
 
     #[test]

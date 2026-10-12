@@ -198,13 +198,14 @@ impl CoreDaemon {
         {
             return Ok(LspReadResultDto::not_ready(operation));
         }
-        self.lsp_point_read(&service, operation, &target, &request)
+        self.lsp_point_read(&service, &root, operation, &target, &request)
             .await
     }
 
     async fn lsp_point_read(
         &self,
         service: &Arc<LspService>,
+        root: &Path,
         operation: LspReadOperation,
         target: &Path,
         request: &LspReadRequestDto,
@@ -234,8 +235,9 @@ impl CoreDaemon {
             LspReadOperation::Definition => {
                 match operations.go_to_definition(target, line, column).await {
                     Ok(links) => {
-                        let (locations, truncated) =
-                            cap_locations(links.iter().map(location_link_to_dto));
+                        let (locations, truncated) = cap_locations(
+                            links.iter().map(|link| location_link_to_dto(link, root)),
+                        );
                         LspReadPayloadDto::Locations {
                             locations,
                             truncated,
@@ -247,8 +249,9 @@ impl CoreDaemon {
             LspReadOperation::References => {
                 match operations.find_references(target, line, column).await {
                     Ok(found) => {
-                        let (locations, truncated) =
-                            cap_locations(found.iter().map(location_to_dto));
+                        let (locations, truncated) = cap_locations(
+                            found.iter().map(|location| location_to_dto(location, root)),
+                        );
                         LspReadPayloadDto::Locations {
                             locations,
                             truncated,
@@ -259,8 +262,11 @@ impl CoreDaemon {
             }
             LspReadOperation::DocumentSymbols => match operations.document_symbols(target).await {
                 Ok(symbols) => {
-                    let (symbols, truncated) =
-                        cap_symbols(symbols.into_iter().map(document_symbol_to_dto));
+                    let (symbols, truncated) = cap_symbols(symbols.into_iter().map(|symbol| {
+                        let mut dto = document_symbol_to_dto(symbol);
+                        dto.range.workspace_relative_path = workspace_relative_target(root, target);
+                        dto
+                    }));
                     LspReadPayloadDto::Symbols { symbols, truncated }
                 }
                 Err(_) => return Err(LspReadDenial::OutsideWorkspace),
@@ -318,8 +324,11 @@ impl CoreDaemon {
         let operations = crate::lsp::operations::LspOperations::new(service.clone());
         match operations.workspace_symbols(query).await {
             Ok(symbols) => {
-                let (symbols, truncated) =
-                    cap_symbols(symbols.into_iter().map(symbol_information_to_dto));
+                let (symbols, truncated) = cap_symbols(
+                    symbols
+                        .into_iter()
+                        .map(|symbol| symbol_information_to_dto(symbol, root)),
+                );
                 Ok(LspReadResultDto::ready(
                     LspReadOperation::WorkspaceSymbols,
                     LspReadPayloadDto::Symbols { symbols, truncated },
@@ -406,6 +415,7 @@ fn cap_symbols<I: Iterator<Item = LspSymbolDto>>(items: I) -> (Vec<LspSymbolDto>
 fn range_to_dto(range: crate::lsp::lsp_types::Range) -> LspRangeDto {
     LspRangeDto {
         path: String::new(),
+        workspace_relative_path: None,
         start_line: range.start.line,
         start_column: range.start.character,
         end_line: range.end.line,
@@ -420,15 +430,17 @@ fn range_to_dto(range: crate::lsp::lsp_types::Range) -> LspRangeDto {
 /// legitimately returns hits in other crates — and relativizing against the
 /// wrong root would fabricate a path that does not exist. The file name is
 /// what can be reported without inventing authority over another root.
-fn location_to_dto(location: &crate::lsp::lsp_types::Location) -> LspRangeDto {
+fn location_to_dto(location: &crate::lsp::lsp_types::Location, root: &Path) -> LspRangeDto {
     let mut dto = range_to_dto(location.range);
     dto.path = uri_file_name(&location.uri);
+    dto.workspace_relative_path = uri_workspace_relative_path(&location.uri, root);
     dto
 }
 
-fn location_link_to_dto(link: &crate::lsp::lsp_types::LocationLink) -> LspRangeDto {
+fn location_link_to_dto(link: &crate::lsp::lsp_types::LocationLink, root: &Path) -> LspRangeDto {
     let mut dto = range_to_dto(link.target_selection_range);
     dto.path = uri_file_name(&link.target_uri);
+    dto.workspace_relative_path = uri_workspace_relative_path(&link.target_uri, root);
     dto
 }
 
@@ -445,13 +457,43 @@ fn document_symbol_to_dto(symbol: crate::lsp::lsp_types::DocumentSymbol) -> LspS
     }
 }
 
-fn symbol_information_to_dto(symbol: crate::lsp::lsp_types::SymbolInformation) -> LspSymbolDto {
+fn symbol_information_to_dto(
+    symbol: crate::lsp::lsp_types::SymbolInformation,
+    root: &Path,
+) -> LspSymbolDto {
     LspSymbolDto {
         name: symbol.name,
         kind: symbol_kind_number(symbol.kind),
         container: None,
-        range: range_to_dto(symbol.location.range),
+        range: {
+            let mut range = range_to_dto(symbol.location.range);
+            range.path = uri_file_name(&symbol.location.uri);
+            range.workspace_relative_path = uri_workspace_relative_path(&symbol.location.uri, root);
+            range
+        },
     }
+}
+
+fn uri_workspace_relative_path(uri: &crate::lsp::lsp_types::Uri, root: &Path) -> Option<String> {
+    let target = url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()?;
+    workspace_relative_target(root, &target)
+}
+
+fn workspace_relative_target(root: &Path, target: &Path) -> Option<String> {
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let canonical_target = std::fs::canonicalize(target).ok()?;
+    let relative = canonical_target.strip_prefix(canonical_root).ok()?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return None;
+        };
+        components.push(part.to_str()?);
+    }
+    if components.is_empty() {
+        return None;
+    }
+    Some(components.join("/"))
 }
 
 fn uri_file_name(uri: &crate::lsp::lsp_types::Uri) -> String {
@@ -628,6 +670,7 @@ fn map_diagnostics(
             codegg_protocol::lsp::LspDiagnosticDto {
                 range: codegg_protocol::lsp::LspRangeDto {
                     path: String::new(),
+                    workspace_relative_path: None,
                     start_line: entry.range.start.line,
                     start_column: entry.range.start.character,
                     end_line: entry.range.end.line,
@@ -763,6 +806,57 @@ impl CoreDaemon {
 #[cfg(test)]
 mod diagnostics_readiness_tests {
     use super::*;
+
+    #[test]
+    fn workspace_relative_target_requires_canonical_containment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("workspace");
+        let sibling = temp.path().join("workspace-sibling");
+        std::fs::create_dir_all(root.join("src")).expect("workspace directory");
+        std::fs::create_dir_all(&sibling).expect("sibling directory");
+        let inside = root.join("src/lib.rs");
+        let outside = sibling.join("secret.rs");
+        std::fs::write(&inside, "inside").expect("inside file");
+        std::fs::write(&outside, "outside").expect("outside file");
+
+        assert_eq!(
+            workspace_relative_target(&root, &inside),
+            Some("src/lib.rs".to_owned())
+        );
+        assert_eq!(workspace_relative_target(&root, &outside), None);
+    }
+
+    #[test]
+    fn uri_target_is_percent_decoded_only_after_containment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(&root).expect("workspace directory");
+        let target = root.join("file name.rs");
+        std::fs::write(&target, "source").expect("target file");
+        let url = url::Url::from_file_path(&target).expect("file URL");
+        let uri: crate::lsp::lsp_types::Uri = url.as_str().parse().expect("LSP URI");
+
+        assert!(url.as_str().contains("%20"));
+        assert_eq!(uri_workspace_relative_path(&uri, &root), Some("file name.rs".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_relative_target_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("workspace");
+        let outside = temp.path().join("outside.rs");
+        std::fs::create_dir_all(&root).expect("workspace directory");
+        std::fs::write(&outside, "outside").expect("outside file");
+        symlink(&outside, root.join("escape.rs")).expect("symlink");
+
+        assert_eq!(
+            workspace_relative_target(&root, &root.join("escape.rs")),
+            None
+        );
+    }
 
     #[test]
     fn unavailable_or_unobserved_diagnostics_are_not_ready() {

@@ -1,6 +1,6 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: blocked (architecture decision pending in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
+Status: active (Option A accepted in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
 
 Repository baseline: `4c651b84` (C012 closeout/rebase; C004 ownership audit began 2026-10-12)
 
@@ -51,7 +51,7 @@ The daemon's authorization decision already carries the authenticated `principal
 | Capability compatibility | `SessionPromptSubmit` has no per-feature capability probe; `ChatCapabilities` is for chat and does not advertise human-shell staging. | A new stage lifecycle needs explicit feature negotiation and a typed unsupported-daemon result before the UI reports staged. |
 | Restart and provider outcome | Frontend pending state disappears on restart. The server has no durable accepted-turn envelope/provider-delivery receipt; a provider request may have an unknown outcome if the daemon stops after runtime acceptance. | The storage owner cannot currently distinguish an unaccepted pending stage from an accepted turn whose provider delivery outcome is unknown. Choosing consume/replay semantics crosses the current session-storage and turn-runtime boundary. |
 
-**WP-A disposition:** authentication and binding have a viable existing owner, but no existing durable contract can make promotion consumption and accepted turn identity recoverable. `ADR-0017` is proposed to decide the durable lifecycle and restart semantics before WP-B adds a table or protocol. C004 is blocked pending that decision. Do not implement a generic context store or represent composer insertion as staging.
+**WP-A disposition:** authentication and binding have a viable existing owner. ADR-0017 now selects durable admission with an accepted-turn receipt and interrupted/no-auto-replay restart semantics. The current implementation has the bounded promotion ledger and atomic consume/controller claim, but still lacks stable turn-submission identity, durable receipt lookup, and restart interruption recovery. C004 is active; close only after those remaining contract pieces and their tests land. Do not implement a generic context store or represent composer insertion as staging.
 
 ## 4. Invariants that must not regress
 

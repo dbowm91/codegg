@@ -28,6 +28,7 @@ fn diagnostic(message: &str) -> LspDiagnosticDto {
     LspDiagnosticDto {
         range: LspRangeDto {
             path: "lib.rs".to_string(),
+            workspace_relative_path: None,
             start_line: 1,
             start_column: 2,
             end_line: 1,

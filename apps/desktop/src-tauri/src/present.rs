@@ -475,8 +475,6 @@ mod tests {
             pending_questions: VecDeque::new(),
             agent_tree: VecDeque::new(),
             subagent_count: 0,
-            input_tokens: Some(10),
-            output_tokens: Some(20),
         }
     }
 

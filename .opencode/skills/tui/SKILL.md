@@ -65,6 +65,12 @@ root and lifecycle modules.
 
 ## Dispatch Rules
 
+For LSP navigation, preserve the result's display label separately from its
+optional `workspace_relative_path`. Missing identity means no navigation
+action. Pass a present candidate through the existing `DocumentOpen` request;
+the daemon remains responsible for containment and `file.read` authorization.
+Do not build a workspace path from a display basename or open an LSP URI.
+
 - **`dispatch_tui_command` is `pub(crate) async fn`**
   (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
   synchronous, but it contains five `.await` points, all of the same shape:

@@ -5327,6 +5327,7 @@ mod tests {
                 diagnostics: vec![crate::protocol::lsp::LspDiagnosticDto {
                     range: crate::protocol::lsp::LspRangeDto {
                         path: "src/secret.rs".to_string(),
+                        workspace_relative_path: None,
                         start_line: 0,
                         start_column: 0,
                         end_line: 0,

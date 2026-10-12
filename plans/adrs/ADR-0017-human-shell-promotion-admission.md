@@ -1,8 +1,12 @@
 # ADR-0017: Human-Shell Promotion Staging and Turn Admission
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-12
+
+Accepted: 2026-10-12, by the project maintainer, selecting Option A: consume
+promotions at durable turn admission and mark accepted turns interrupted after
+restart without automatic replay.
 
 Decision owners: project maintainers
 
@@ -121,23 +125,13 @@ product deliberately lowers C004's contract.
 
 ## Decision
 
-Pending maintainer decision. The recommended choice is Option A below, but
-neither this proposal nor C004 may be treated as an accepted contract until
-maintainers explicitly select an option.
+Option A is accepted: use a narrow session-owned promotion ledger and durable
+admission receipt. Consume at durable admission. If the daemon stops after the
+receipt commits and before the provider outcome is known, mark the turn
+interrupted and do not automatically replay it. A human may explicitly submit
+a new turn.
 
-## Decision requested
-
-Choose whether C004 may implement Option A with consumption at durable turn
-admission and an explicit interrupted/no-auto-replay state, or whether accepted
-turns must survive daemon failure through a broader durable turn-delivery
-contract under Option B. If neither contract is acceptable, explicitly lower the
-promotion promise to frontend-local staging (Option C) and revise C001/C004
-acceptance before implementation.
-
-The recommended choice is Option A. It keeps promotion state narrow and makes
-the boundary explicit without claiming exactly-once external provider effects.
-
-## Consequences if Option A is accepted
+## Consequences
 
 ### Positive
 
@@ -164,7 +158,7 @@ the boundary explicit without claiming exactly-once external provider effects.
 
 ## Compatibility and migration
 
-If accepted, use an additive SQLite migration after v70. Older daemons must
+Use an additive SQLite migration after v70. Older daemons must
 advertise the new feature as unsupported; clients must not report a staged state
 without the typed server acknowledgement. Stage payloads are redacted UTF-8 and
 bounded to 32 KiB; only the stage ledger stores them. No legacy conversation
@@ -183,7 +177,7 @@ boundary; interrupted accepted turns are not replayed automatically.
 
 ## Verification
 
-If accepted, prove transactional stage and admission behavior for duplicate
+Prove transactional stage and admission behavior for duplicate
 stage, duplicate submit, busy/rejected admission, authorization denial, stale
 workspace/session, expiry, concurrent requests, reconnect/restart, and an
 interrupted accepted turn. Capture fake-provider input to prove the redacted

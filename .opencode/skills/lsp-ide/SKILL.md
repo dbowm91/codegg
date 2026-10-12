@@ -25,6 +25,12 @@ The current diagnostics change publisher has no production driver, so do not
 promise ongoing push updates or add implicit polling in a presentation-only
 change.
 
+For location DTOs, preserve display `path` separately from optional
+`workspace_relative_path`. Only the daemon derives this locator after
+canonical containment under the session-authorized workspace. Treat it as
+untrusted input and open targets only through `DocumentOpen`; a missing value
+means display-only. Never infer a path from the basename or trust an LSP URI.
+
 Use the root package's `lsp-test-support` feature and its
 `codegg-lsp-test-server` harness for deterministic integration scenarios.
 The `egglsp` crate also builds a separate `egglsp-test-server` binary; they
