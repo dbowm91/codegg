@@ -101,11 +101,30 @@ $readBack = [IO.File]::ReadAllText($projectFile)
 if ($readBack -ne 'staged-c014-content') {{ throw 'projection read/write mismatch' }}
 [Console]::WriteLine('projection=read-write-ok')
 [Console]::WriteLine('git=init-start')
-& $env:CODEGG_C014_GIT init --quiet $env:CODEGG_C014_PROJECTION
-if ($LASTEXITCODE -ne 0) {{ throw "git init failed: $LASTEXITCODE" }}
+$gitInfo = [Diagnostics.ProcessStartInfo]::new()
+$gitInfo.FileName = $env:CODEGG_C014_GIT
+$gitInfo.Arguments = 'init --quiet "' + $env:CODEGG_C014_PROJECTION + '"'
+$gitInfo.UseShellExecute = $false
+$gitInfo.RedirectStandardOutput = $true
+$gitInfo.RedirectStandardError = $true
+$gitProcess = [Diagnostics.Process]::Start($gitInfo)
+if ($null -eq $gitProcess) {{ throw 'Git process did not start' }}
+$gitStdout = $gitProcess.StandardOutput.ReadToEnd()
+$gitStderr = $gitProcess.StandardError.ReadToEnd()
+$gitProcess.WaitForExit()
+if ($gitStdout.Length -gt 0) {{ [Console]::WriteLine("git=stdout:$gitStdout") }}
+if ($gitStderr.Length -gt 0) {{ [Console]::WriteLine("git=stderr:$gitStderr") }}
+if ($gitProcess.ExitCode -ne 0) {{ throw "git init failed: $($gitProcess.ExitCode)" }}
 [Console]::WriteLine('git=init-ok')
-& $env:CODEGG_C014_GIT -C $env:CODEGG_C014_PROJECTION status --porcelain
-if ($LASTEXITCODE -ne 0) {{ throw "git status failed: $LASTEXITCODE" }}
+$gitInfo.Arguments = '-C "' + $env:CODEGG_C014_PROJECTION + '" status --porcelain'
+$gitProcess = [Diagnostics.Process]::Start($gitInfo)
+if ($null -eq $gitProcess) {{ throw 'Git status process did not start' }}
+$gitStdout = $gitProcess.StandardOutput.ReadToEnd()
+$gitStderr = $gitProcess.StandardError.ReadToEnd()
+$gitProcess.WaitForExit()
+if ($gitStdout.Length -gt 0) {{ [Console]::WriteLine("git=status:$gitStdout") }}
+if ($gitStderr.Length -gt 0) {{ [Console]::WriteLine("git=status-stderr:$gitStderr") }}
+if ($gitProcess.ExitCode -ne 0) {{ throw "git status failed: $($gitProcess.ExitCode)" }}
 [Console]::WriteLine('git=repository-status-ok')
 {}
 {}
