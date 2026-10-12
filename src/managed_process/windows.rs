@@ -974,7 +974,8 @@ fn describe_environment_block(block: &[u16]) -> String {
 mod tests {
     use super::{
         last_error, wide, WindowsAppContainerProfile, WindowsJob, WindowsProcessAttributes,
-        WindowsSuspendedAppContainerProcess, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        WindowsStdioPipes, WindowsSuspendedAppContainerProcess,
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     };
     use super::{FAIL_NEXT_JOB_ASSIGNMENT, FAIL_NEXT_PIPE_CREATION, FAIL_NEXT_RESUME};
     use crate::managed_process::{
@@ -1354,6 +1355,64 @@ mod tests {
             windows_sys::Win32::Foundation::WAIT_TIMEOUT,
             "resume failure must leave the target suspended until cleanup"
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
+    #[test]
+    fn managed_environment_block_is_accepted_by_create_process() -> io::Result<()> {
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
+        let cwd = PathBuf::from(system_root).join("System32");
+        let application = cwd.join("cmd.exe");
+        let argv = ["/D", "/C", "exit", "0"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+        let mut environment = crate::managed_process::EnvironmentPolicy::sanitized().entries();
+        ProcessProvenance::new("environment-block-test", "attempt")
+            .apply_environment(&mut environment);
+        let mut environment = super::super::windows_environment_block(environment, &cwd)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+
+        let pipes = WindowsStdioPipes::create()?;
+        let mut attributes = WindowsProcessAttributes::new(1)?;
+        attributes.set_handle_list(&[
+            pipes.child_stdin.as_raw_handle() as HANDLE,
+            pipes.child_stdout.as_raw_handle() as HANDLE,
+            pipes.child_stderr.as_raw_handle() as HANDLE,
+        ])?;
+        let mut command_line = super::windows_command_line(&application, &argv)?;
+        let mut child = WindowsSuspendedAppContainerProcess::create_with_stdio(
+            &application,
+            &mut command_line,
+            &attributes,
+            pipes.child_stdin.as_raw_handle() as HANDLE,
+            pipes.child_stdout.as_raw_handle() as HANDLE,
+            pipes.child_stderr.as_raw_handle() as HANDLE,
+            &cwd,
+            &mut environment,
+        )?;
+        drop(attributes);
+        drop((pipes.child_stdin, pipes.child_stdout, pipes.child_stderr));
+
+        let mut job = WindowsJob::create()?;
+        job.assign_appcontainer_and_resume(&mut child, |_| Ok(()))?;
+        if unsafe { WaitForSingleObject(child.process_handle(), 30_000) } != WAIT_OBJECT_0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "environment-block control child did not exit",
+            ));
+        }
+        let mut exit_code = u32::MAX;
+        if unsafe { GetExitCodeProcess(child.process_handle(), &mut exit_code) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if exit_code != 0 {
+            return Err(io::Error::other(format!(
+                "environment-block control child exited with code {exit_code}"
+            )));
+        }
         Ok(())
     }
 }
