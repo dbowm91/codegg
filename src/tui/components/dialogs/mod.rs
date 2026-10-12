@@ -13,6 +13,7 @@ pub mod info;
 pub mod keybind;
 pub mod mcp;
 pub mod model;
+pub mod panel_manager;
 pub mod permission;
 pub mod plan;
 pub mod plugin;

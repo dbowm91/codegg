@@ -1428,6 +1428,9 @@ pub(crate) fn open_chat_window(app: &mut App, project_id: &str) {
     } else {
         let mut dialog = ChatDialog::new(Arc::clone(&app.ui_state.theme), project_id.to_string());
         dialog.apply_snapshot(snapshot);
+        // Open ready to type. After the snapshot, not before, so the project
+        // draft is still adopted — see `ChatDialog::enter_insert_mode`.
+        dialog.enter_insert_mode();
         app.push_dialog(crate::tui::app::Dialog::ProjectChat, Box::new(dialog));
     }
 }

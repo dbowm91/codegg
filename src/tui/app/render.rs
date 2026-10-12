@@ -1533,6 +1533,8 @@ impl App {
                 .unwrap_or(0),
             session: &mut self.sidebar,
             chat: &mut self.chat,
+            terminal: &mut self.interactive_terminals,
+            vim_mode: self.ui_state.vim_mode,
             chat_project: self.chat_panel_project.as_deref(),
             area,
             focused: self.panel_host.is_focused(),

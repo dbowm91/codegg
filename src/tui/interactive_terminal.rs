@@ -912,6 +912,29 @@ impl InteractiveTerminalController {
             .is_some_and(|view| view.focus == TerminalFocus::Focused)
     }
 
+    /// Drop the scrollback window and reset the emulator for `handle`.
+    ///
+    /// The clear a user asks for is **local**: the daemon keeps streaming
+    /// from wherever it was, and the PTY keeps running. So `next_seq` is
+    /// deliberately preserved — resetting it would make the very next honest
+    /// chunk fail the gap check and print a "history expired" notice the user
+    /// did not cause and cannot act on. A clear must not manufacture a
+    /// resync event.
+    ///
+    /// Returns `false` for an unknown handle so a stale keypress cannot
+    /// silently do nothing.
+    pub fn clear_scrollback(&mut self, handle: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.scrollback.bytes.clear();
+        view.scrollback.truncated = false;
+        view.scrollback.notice = None;
+        view.screen.reset(view.rows, view.cols);
+        view.screen_degraded = false;
+        true
+    }
+
     /// Queue bounded input for a live terminal.
     ///
     /// Rejects input after exit, while gone/reconnecting/resyncing, for

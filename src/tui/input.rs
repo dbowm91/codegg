@@ -112,29 +112,39 @@ pub enum InputAction {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
-    /// Open the side-panel switcher (`Ctrl+Alt+W`).
+    /// Open the side-panel manager (`Ctrl+Alt+W`, in any mode).
     TogglePanelSelector,
-    /// Move keyboard focus from the main buffer into the side panel
-    /// (`Shift+Right`, Normal mode only).
+    /// Open the side-panel manager (`Shift+S`, Normal mode only).
     ///
-    /// Only the Chat panel arms the composer for chat delivery, so this is
-    /// also what re-targets the bottom composer at the project chat.
-    FocusSidePanel,
-    /// Return keyboard focus from the side panel to the main buffer
-    /// (`Shift+Left` / `Shift+H`, Normal mode only).
-    FocusMainBuffer,
-    /// Dock the open box into the side panel (`L` / `Shift+L`, Normal mode
-    /// only).
+    /// A *separate* action from [`TogglePanelSelector`](Self::TogglePanelSelector)
+    /// even though both open the same box, because the two need opposite mode
+    /// treatment: `Ctrl+Alt+W` is a chord that should work while composing,
+    /// while `Shift+S` must be Normal-only or it would steal the letter `S`
+    /// from every word the user is typing. Folding them together would force
+    /// one of those two behaviours to be wrong.
+    OpenPanelManager,
+    /// Directional pane gestures, Normal mode only.
     ///
-    /// The generalisation the panel host was built for: any box that has a
-    /// panel counterpart can be *moved* there rather than opened and closed
-    /// separately. `/chat` plus this key is the Chat panel, docked in place.
+    /// `Shift+Left/Right/Up/Down` and the vim `Shift+H/J/K/L` twins all
+    /// resolve here, and every one of them routes through the *same*
+    /// contextual dispatcher ([`crate::tui::commands::panels::move_directionally`])
+    /// rather than carrying its own meaning:
     ///
-    /// Deliberately separate from [`FocusSidePanel`](Self::FocusSidePanel):
-    /// that key moves the keyboard, this one moves the *content*, and a user
-    /// who pressed it in the middle of a chat box meant "I want this to keep
-    /// existing over there", not "I want to type in the panel now".
-    DockPanel,
+    /// * a dockable box is open → the box is **moved** into the side panel
+    ///   and the box goes away. The direction names the panel's side, which
+    ///   is right today and left when the layout grows a second column;
+    /// * no box is open → the direction **selects a pane**: `Right` takes
+    ///   the keyboard into the side panel, `Left` returns it to the main
+    ///   buffer, and `Up`/`Down` cycle which panel type is loaded.
+    ///
+    /// One gesture family with two meanings is the multiplexer contract: the
+    /// key says *which way*, the surface underneath says *what is there*.
+    /// Resolving it in one place is what keeps a box and its panel from
+    /// disagreeing about what `L` does.
+    DirectionLeft,
+    DirectionRight,
+    DirectionUp,
+    DirectionDown,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -209,20 +219,17 @@ pub enum ActionKey {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
-    /// Open the side-panel switcher (`Ctrl+Alt+W`).
+    /// Open the side-panel manager (`Ctrl+Alt+W`).
     TogglePanelSelector,
-    /// Move keyboard focus from the main buffer into the side panel
-    /// (`Shift+Right`, Normal mode only).
-    ///
-    /// Only the Chat panel arms the composer for chat delivery, so this is
-    /// also what re-targets the bottom composer at the project chat.
-    FocusSidePanel,
-    /// Return keyboard focus from the side panel to the main buffer
-    /// (`Shift+Left` / `Shift+H`, Normal mode only).
-    FocusMainBuffer,
-    /// Dock the open box into the side panel (`L` / `Shift+L`, Normal mode
-    /// only).
-    DockPanel,
+    /// Open the side-panel manager (`Shift+S`, Normal mode only).
+    OpenPanelManager,
+    /// Directional pane gestures. See
+    /// [`InputAction::DirectionLeft`] — all four share one contextual
+    /// dispatcher.
+    DirectionLeft,
+    DirectionRight,
+    DirectionUp,
+    DirectionDown,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -348,9 +355,11 @@ impl ActionKey {
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
             Self::TogglePanelSelector => InputAction::TogglePanelSelector,
-            Self::FocusSidePanel => InputAction::FocusSidePanel,
-            Self::FocusMainBuffer => InputAction::FocusMainBuffer,
-            Self::DockPanel => InputAction::DockPanel,
+            Self::OpenPanelManager => InputAction::OpenPanelManager,
+            Self::DirectionLeft => InputAction::DirectionLeft,
+            Self::DirectionRight => InputAction::DirectionRight,
+            Self::DirectionUp => InputAction::DirectionUp,
+            Self::DirectionDown => InputAction::DirectionDown,
             Self::ToggleSection => InputAction::ToggleSection,
             Self::CloseSession => InputAction::CloseSession,
             Self::Help => InputAction::Help,
@@ -407,10 +416,12 @@ impl ActionKey {
             Self::NewSession => "New session",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
-            Self::TogglePanelSelector => "Switch side panel",
-            Self::FocusSidePanel => "Focus side panel",
-            Self::FocusMainBuffer => "Focus main buffer",
-            Self::DockPanel => "Dock box into panel",
+            Self::TogglePanelSelector => "Open panel manager",
+            Self::OpenPanelManager => "Open panel manager (Shift+S)",
+            Self::DirectionLeft => "Pane left",
+            Self::DirectionRight => "Pane right",
+            Self::DirectionUp => "Previous panel",
+            Self::DirectionDown => "Next panel",
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
@@ -492,53 +503,75 @@ static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
 fn is_normal_only(action: &InputAction) -> bool {
     matches!(
         action,
-        InputAction::FocusSidePanel | InputAction::FocusMainBuffer | InputAction::DockPanel
+        InputAction::DirectionLeft
+            | InputAction::DirectionRight
+            | InputAction::DirectionUp
+            | InputAction::DirectionDown
+            // `Shift+S` is a letter the user is typing most of the time;
+            // `Ctrl+Alt+W` deliberately is NOT listed here, because a chord
+            // should keep working in Insert mode.
+            | InputAction::OpenPanelManager
     )
 }
 
-/// `Shift`-qualified moves between the main buffer and the side panel.
+/// `Shift`-qualified pane directions: `←/→/↑/↓` and the vim `H/J/K/L` twins.
 ///
-/// Shift-qualified on purpose: the bare arrows already scroll the transcript
-/// (`Up`/`Down`) and move the caret (`Left`/`Right`), and the user's contract
-/// was that focus switching must not disturb them. The vertical pair
-/// (`Shift+Up`/`Down`, `Shift+J`/`K`) is deliberately left unbound until a
-/// layout with stacked panels actually exists — binding keys that cannot
-/// change anything would advertise a capability the UI does not have.
+/// Shift-qualified on purpose. The bare arrows already scroll the transcript
+/// (`Up`/`Down`) and move the caret (`Left`/`Right`), and the bare letters
+/// `j`/`k` are bound to the same navigation; claiming any of them would take
+/// away an existing verb. Shift narrows the gesture to "I am moving between
+/// surfaces", which is a different intent from "I am moving within one".
 ///
-/// `L` moves to [`InputAction::DockPanel`] rather than to
-/// [`InputAction::FocusSidePanel`]. Both are one keystroke from anywhere in
-/// Normal mode, and "I have a box open and want it over there" is the more
-/// common intent once a box-capable panel exists; a bare `L` in a chat box
-/// doing nothing would strand the user with only `Shift+→` available. Panel
-/// focus keeps its arrow binding, which no terminal mis-encodes.
+/// The vertical pair used to be deliberately left unbound, reserved for a
+/// future stacked-pane layout. It is bound now because it is no longer inert:
+/// with a two-pane layout, `↑`/`↓` cycle which panel type is loaded in the
+/// side column. That is the same gesture a stacked layout would use to move
+/// between rows, so the key is now earning its place instead of advertising
+/// something the UI cannot do.
 ///
 /// Each letter is bound twice. Terminals disagree about how to encode a
 /// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
-/// with no modifier at all. Binding both is safe because uppercase `H`/`L` are
-/// otherwise unbound in Normal mode, and `is_normal_only` keeps Insert mode
-/// treating them as text. This is the same legacy-encoding hazard that made
-/// every `Ctrl+Shift+X` chord undecodable — see `tests/modifier_chords.rs`.
-fn insert_panel_focus_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
-    map.insert(
-        (KeyModifiers::SHIFT, KeyCode::Right),
-        InputAction::FocusSidePanel,
-    );
-    map.insert(
-        (KeyModifiers::SHIFT, KeyCode::Left),
-        InputAction::FocusMainBuffer,
-    );
+/// with no modifier at all. Binding both is safe because uppercase `H`/`J`/
+/// `K`/`L` are otherwise unbound in Normal mode, and `is_normal_only` keeps
+/// Insert mode treating them as text. This is the same legacy-encoding hazard
+/// that made every `Ctrl+Shift+X` chord undecodable — see
+/// `tests/modifier_chords.rs`.
+fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
+    for (key_code, action) in [
+        (KeyCode::Left, InputAction::DirectionLeft),
+        (KeyCode::Right, InputAction::DirectionRight),
+        (KeyCode::Up, InputAction::DirectionUp),
+        (KeyCode::Down, InputAction::DirectionDown),
+    ] {
+        map.insert((KeyModifiers::SHIFT, key_code), action);
+    }
+    // Uppercase letters only. `Char('l')` is a bare `l`, which is a
+    // withinsurface vim verb, not the directional gesture.
     for (letter, action) in [
-        ('L', InputAction::DockPanel),
-        ('H', InputAction::FocusMainBuffer),
+        ('H', InputAction::DirectionLeft),
+        ('J', InputAction::DirectionDown),
+        ('K', InputAction::DirectionUp),
+        ('L', InputAction::DirectionRight),
     ] {
         map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
         map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
     }
+    // The panel manager also answers to `Shift+S`. Bound under both encodings
+    // for the same legacy-terminal reason as the vim letters, and normal-only
+    // so it never claims an `S` mid-word.
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('S')),
+        InputAction::OpenPanelManager,
+    );
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('S')),
+        InputAction::OpenPanelManager,
+    );
 }
 
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
-    insert_panel_focus_bindings(&mut map);
+    insert_panel_direction_bindings(&mut map);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     // Ctrl+C is the unconditional exit; Esc only backs out of whatever is on
@@ -809,7 +842,7 @@ pub fn default_bindings() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 
 fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
-    insert_panel_focus_bindings(&mut map);
+    insert_panel_direction_bindings(&mut map);
 
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
@@ -1561,6 +1594,42 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Command,
             key: "/shell-kill <id>",
             action: "Kill running shell command",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal",
+            action: "Open an interactive terminal in a box (Shift+L docks it into the panel)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-clear",
+            action: "Clear a terminal's scrollback and screen; the process keeps running",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+L / Shift+Right",
+            action: "Dock the open box into the side panel, or select a pane when none is open",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+Left / Shift+H",
+            action: "Return the keyboard to the main buffer",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+Up / Shift+Down",
+            action: "Cycle which panel is loaded in the side column",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Ctrl+Alt+W / Shift+S",
+            action: "Open the panel manager (filter, load, or bind Ctrl+1..Ctrl+0)",
             condition: None,
         },
         HelpEntry {

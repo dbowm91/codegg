@@ -73,7 +73,7 @@ pub struct ChatComposeSeed {
 }
 
 impl ChatComposeSeed {
-    fn say() -> Self {
+    pub(crate) fn say() -> Self {
         Self::default()
     }
 
@@ -293,6 +293,20 @@ impl ChatBrowser {
             }
         }
 
+        // The directional gesture is resolved by the shared matcher, not by a
+        // `KeyCode` arm below, because its meaning depends on the modifier
+        // and because every box has to agree on what `Shift+L` means. It is
+        // checked before the match so it cannot be shadowed by a bare `H`,
+        // `J`, `K` or `L` verb, and after the Ctrl paging block because a
+        // chord is a different gesture.
+        //
+        // A box is why this browser has the keyboard, so the gesture always
+        // means "dock" here; the pane-selection branch of the same
+        // dispatcher is unreachable from this path by construction.
+        if let Some(dir) = crate::tui::panels::direction_of(key) {
+            return ChatKeyAction::Intent(TuiMsg::MoveDirection(dir));
+        }
+
         let last = view.message_count().saturating_sub(1);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => ChatKeyAction::Exit,
@@ -349,10 +363,6 @@ impl ChatBrowser {
                 TuiMsg::ChatPagingUnsupported
             }),
             KeyCode::Char('R') => ChatKeyAction::Intent(TuiMsg::ChatRefresh),
-            // `L` / `Shift+L` moves the whole browser into the side panel. Both
-            // encodings are bound because terminals disagree about shifted
-            // letters — see `tests/modifier_chords.rs`.
-            KeyCode::Char('L') | KeyCode::Char('l') => ChatKeyAction::Intent(TuiMsg::DockPanel),
             KeyCode::Char('[') => self.step_channel(view, -1),
             KeyCode::Char(']') => self.step_channel(view, 1),
             KeyCode::Char('?') => {

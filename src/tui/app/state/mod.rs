@@ -10,6 +10,7 @@ pub mod file_tree;
 pub mod manifest;
 pub mod messages;
 pub mod observe;
+pub mod panel_hotkeys;
 pub mod persistence;
 pub mod plugin_ui;
 pub mod presence;

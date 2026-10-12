@@ -9,6 +9,7 @@ pub enum Dialog {
     Theme,
     Question,
     Permission,
+    PanelManager,
     Mcp,
     Keybind,
     Share,
@@ -156,16 +157,48 @@ pub enum TuiMsg {
     CloseDialog,
     ProjectInitApprove,
     ToggleSidebar,
-    /// Move keyboard focus into the side panel (`Shift+Right`).
-    FocusSidePanel,
-    /// Move keyboard focus back to the main buffer (`Shift+Left` / `Shift+H`).
-    FocusMainBuffer,
-    /// Dock the open box into the side panel (`L` / `Shift+L`).
+    /// A directional pane gesture, resolved contextually.
     ///
-    /// Closes the box and activates the panel that can hold it, so `/chat`
-    /// followed by this key leaves the same browser running in the side column
-    /// instead of closed.
-    DockPanel,
+    /// Emitted by a box's own Normal-mode handler, because a modal
+    /// short-circuits key routing before the binding map is consulted — the
+    /// box has to recognise the gesture itself. Routed into the same
+    /// dispatcher the main buffer's `InputAction` arms reach, so both halves
+    /// of a box/panel pair resolve it identically.
+    MoveDirection(crate::tui::panels::PanelDirection),
+    /// The terminal panel took the PTY's keyboard.
+    ///
+    /// A panel cannot focus the terminal itself: the focus flag lives on the
+    /// controller the box also drives, and the toast that explains where
+    /// keystrokes now go needs the app's message state.
+    TerminalPanelFocus {
+        handle: String,
+    },
+    /// Hand the keyboard back to the host (the panel's `Ctrl-]`).
+    TerminalPanelBlur {
+        handle: String,
+    },
+    /// Forward bytes to a live PTY.
+    ///
+    /// Carries the payload rather than the side effect on purpose: the send
+    /// is a bounded daemon operation, and doing it in the command layer is
+    /// what keeps a panel from becoming an execution surface.
+    TerminalPanelInput {
+        handle: String,
+        bytes: Vec<u8>,
+    },
+    /// Clear the terminal's local scrollback and screen.
+    TerminalPanelClear {
+        handle: String,
+    },
+    /// Load `panel` into the side column and close the manager.
+    SelectPanel {
+        panel: crate::tui::panels::SidePanelId,
+    },
+    /// Bind `digit` to `panel` and persist it.
+    SavePanelHotkey {
+        digit: char,
+        panel: crate::tui::panels::SidePanelId,
+    },
     ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,

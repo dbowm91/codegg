@@ -730,14 +730,32 @@ inspection and cleanup continue through the existing authorized commands.
 ### Swappable side panel (`src/tui/panels/`)
 
 The right-hand column is a **panel host**, not a widget chosen by an `if` in
-`render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns three pieces
-of state: which `SidePanelId` is active, whether it holds keyboard focus, and
-the `Ctrl+Alt+W` selector overlay. Two panels ship: `Session` (the
-`SidebarWidget` projection) and `Chat` (interactive project chat).
+`render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns two pieces of
+state: which `SidePanelId` is active, and whether it holds keyboard focus.
+Four panels ship:
 
-Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, and one
-`SidePanel` impl. There is no per-panel branch left in the render path or the
-key handler.
+| Panel | Title badge | Holds |
+|---|---|---|
+| `Session` | `[SESSIONS]` | the `SidebarWidget` projection |
+| `Chat` | `[CHAT]` | interactive project chat |
+| `Terminal` | `[TERMINAL]` | the live PTY view |
+| `Help` | `[HELP]` | the keybinding reference |
+
+Which panel is loaded is chosen by the **panel manager box**
+(`Ctrl+Alt+W`, or `Shift+S` in Normal mode) — a dialog, not an overlay drawn
+inside the column. It replaces the old two-column grid selector, which could
+not be filtered and showed unlabelled buttons in 30 columns.
+
+Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, a
+`label`/`title`/`hint` arm each, a host field, and arms in `panel()`,
+`panel_is_empty()` and `composer_hints()`. There is no per-panel branch left
+in the render path or the key handler.
+
+`PanelCtx` grants a panel the state it renders from and nothing else. The
+Terminal panel is granted `&mut InteractiveTerminalController` — the *same*
+object the `/terminal` box drives, because two VT parsers for one PTY would
+disagree about what is on screen. That grant carries presentation state only:
+no client, no locator, no authority to choose a project or a terminal.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:
@@ -897,35 +915,57 @@ reserved at all when nothing is focused and nothing is armed. Panels advertise
 their keys once, next to the input those keys modify, rather than growing
 per-panel footers.
 
-**Selector overlay** (`Ctrl+Alt+W`): a two-column grid drawn *inside* the
-side column, not centred over the viewport — it describes the region it is
-switching, and staying in-column means the panel it will reveal is never
-covered. `h`/`l` move by column, `j`/`k` by row, both clamped rather than
-wrapped so a press at the grid edge is inert rather than teleporting the
-highlight. `Enter` commits, `Esc` cancels, and the selector is consulted
-before the active panel so the panel never sees a key aimed at the overlay.
-Opening is refused while the column is hidden.
+**Panel manager** (`Ctrl+Alt+W`, or `Shift+S`): a box listing every
+registered panel with its `label`, its `hint`, and the digit already bound to
+it. Type to filter; `j`/`k`/`↑`/`↓` move the highlight; `Enter` loads the
+highlighted panel and takes focus; `1`-`9`/`0` bind it to that digit and
+persist to `codegg.json`; `Esc` clears the filter, then closes. The highlight
+indexes [`SidePanelId::ALL`], not the filtered view, so filtering narrows
+what is *visible* without renumbering what `Enter` and the digits act on.
 
-Two ordering rules the host owns, both load-bearing:
+Three ordering rules, all load-bearing:
 
-- **The switcher hotkey is answered by the host, not by the panel.** If a
-  focused panel got first refusal it would swallow `Ctrl+Alt+W` — the only
-  way back to the switcher — and the user would be stuck inside the panel
-  they opened it to leave. The host matches the resolved
-  `InputAction::TogglePanelSelector` before delegating.
-- **Opening the overlay does not take focus; committing to one does.** If
-  opening stole the keyboard, a user who pressed it from the composer and
-  then cancelled would find their next keystroke going to a panel they never
-  chose. `App::on_key` therefore routes to the host when a panel is focused
-  *or* the overlay is up, and `SidePanelHost::handle_key` checks the overlay
-  before the focus gate.
+- **The manager hotkey is answered before the panel and before the modal.**
+  A focused panel would otherwise swallow `Ctrl+Alt+W` and trap the user
+  inside the panel they opened it to leave; a *dialog* would swallow it too
+  and stack a second manager behind the first. `App::on_key` therefore
+  intercepts `InputAction::TogglePanelSelector` ahead of the modal
+  short-circuit when the manager is the active dialog, and
+  `SidePanelHost::handle_key` matches it before delegating to the panel.
+- **Opening the manager does not take focus; committing does.** If opening
+  stole the keyboard, a user who pressed it from the composer and then
+  cancelled would find their next keystroke going to a panel they never
+  chose.
+- **Committed panels refuse focus when they cannot act.** Chat with no bound
+  project, or Terminal with no handle, leave the keyboard in the composer
+  rather than swallowing it.
+
+**Saved hotkeys.** The manager's digits persist as `panel_hotkeys` in
+`codegg.json` (`{"1": "chat"}`), written through `Config::save_global` — the
+theme's path, because a panel hotkey is a per-user preference and
+`Config::save` would confine it to the nearest project config. They are
+recalled with `Ctrl+1`…`Ctrl+0`, resolved in `App::on_key` *before* the
+focused panel: a panel that swallowed the only key that leaves it would trap
+the user. An unbound slot is consumed anyway, so the digit range stays the
+manager's and never leaks into the composer.
+
+These bindings are deliberately **not** in the static binding table. That
+table is keyed by key name and configurable via `ActionKey`; these are
+assigned at runtime by digit, which no `ActionKey` can express.
+
+**Why `Ctrl`, not `Cmd`.** `Cmd+1` is the natural spelling and it cannot work
+in a terminal — crossterm reports no Super/Meta modifier here, `parse_key`
+understands only CONTROL/SHIFT/ALT, and terminals that pass a meta byte
+through disagree about the encoding. `Ctrl` is the family that is reliably
+delivered, the same reason the chord family is `{CONTROL, ALT}`.
 
 Committing to Chat also re-resolves the project binding first: the host has
 no app access, so it would otherwise find the panel unbound and refuse to
 focus it, leaving the selection looking inert.
 
 `Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Alt+S`
-enters sidebar focus; `Ctrl+Alt+W` opens the selector.
+enters sidebar focus; `Ctrl+Alt+W` (any mode) and `Shift+S` (Normal mode only)
+open the panel manager.
 
 **Chord contract.** Multi-modifier chords are `{CONTROL, ALT}` only. A bare
 `Ctrl+<letter>` is unusable because every free bare Ctrl letter is a terminal
@@ -1885,7 +1925,7 @@ tui/
 │   └── tool_output.rs      # ToolOutput
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
-├── panels/                 # Swappable side-panel host (Ctrl+Alt+W switcher)
+├── panels/                 # Swappable side-panel host (Ctrl+Alt+W manager)
 │   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost, selector
 │   ├── chat.rs             # Interactive project-chat panel
 │   └── session.rs          # Session panel (delegates to SidebarWidget)
@@ -2014,13 +2054,67 @@ action.
   two badges about one axis, one of them permanently lit. A panel that has no
   title is a destination the user cannot name, so `title()` is mandatory for
   every `SidePanelId`, not decoration.
-- **`L` docks; it does not focus.** `L`/`Shift+L` (`InputAction::DockPanel`)
-  moves an open box into the side panel that can hold it and closes the box —
-  `/chat` then `L` leaves the same browser in the column. With no box open it
-  does nothing but a toast, rather than selecting a panel invisibly. Panel
-  focus keeps `Shift+Right`, the one chord no terminal mis-encodes. The
-  box→panel map is one `match` arm in `App::dock_target`, so `/help` gaining a
-  panel later needs no change to the docking machinery.
+- **The directionals are one gesture family with two meanings.** `Shift+←/→/↑/↓`
+  and the vim `Shift+H/J/K/L` twins all resolve to `InputAction::Direction*`
+  and then to a single contextual dispatcher,
+  `commands::panels::move_directionally`: **a dockable box is open → the box is
+  moved into the side panel and the box goes away**; **no box is open → the
+  direction selects a pane** (`→` takes the keyboard into the column, `←`
+  returns it to the main buffer, `↑`/`↓` cycle which panel type is loaded).
+  The key says *which way*; the surface underneath says *what is there*.
+  Resolving this once is what keeps a box and its panel from implementing the
+  same rule twice and drifting — and it is why `ChatDialog`, `HelpDialog` and
+  the terminal view can all be dockable without any of them knowing what
+  "dock" means.
+- **A modal short-circuits key routing, so a box must recognise the
+  directional itself.** `App::on_key` returns into `handle_dialog_key` before
+  the binding map is consulted whenever a dialog is open. A box therefore calls
+  the shared matcher `panels::direction_of` in its own Normal-mode handler and
+  emits `TuiMsg::MoveDirection`; the main buffer arrives at the same dispatcher
+  via the `InputAction` arms. One matcher, two doors.
+- **`Shift+Up/Down` and `Shift+J/K` are no longer reserved.** They used to be
+  deliberately left unbound for a stacked-pane layout, on the grounds that
+  binding an inert key advertises a capability the UI does not have. They are
+  bound now because they are no longer inert: with a two-pane layout `↑`/`↓`
+  cycle the loaded panel type. `the_vertical_pair_is_now_bound_rather_than_reserved`
+  in `tests/modifier_chords.rs` is the test that says so.
+- **Uppercase letters only; bare lowercase is never the directional.** A
+  terminal reports `Shift+L` as `Char('L')` with or without SHIFT, but never as
+  `Char('l')`. Binding lowercase would claim the plain within-surface vim verbs
+  for a gesture the user did not make.
+- **Boxes open in Insert, and that is why they track a mode.** `/chat` and
+  `/help` open ready to type: the box is opened in order to write in it or
+  search in it, and a mode switch before the first keystroke taxes the common
+  case. Normal exists for the gestures that need a non-typable key — above all
+  the directional, which in Insert is the letter `L` and must stay typeable so
+  it can be searched for. The mode badge (`INS`/`NOR`) is identical across the
+  chat and help boxes on purpose.
+- **`/chat` flips to Insert *after* the first snapshot.**
+  `ChatDialog::apply_snapshot` adopts the shared project draft only while the
+  window is in Normal mode — the guard that stops a live event from clobbering
+  a half-typed message. Flipping the mode first would silently drop a draft the
+  user wrote and never sent.
+- **The box→panel map is one `match` arm in `App::dock_target`.** `ProjectChat`,
+  `Terminal` and `Help` each map to their panel; everything else returns `None`
+  and the gesture warns rather than silently navigating. A dockable box with no
+  panel counterpart is a bug, not a silent no-op.
+- **A panel with nothing to show refuses focus.** Chat with no bound project,
+  Terminal with no handle: the host routes *every* key to the active panel, so
+  a panel that cannot act would swallow the composer's keystrokes. `select`
+  activates a panel *before* asking whether it is empty, so a panel that
+  adopts its content on activation (Terminal adopts the controller's active
+  handle) is not judged empty for exactly one frame.
+- **Clearing a terminal is local and must not fake a resync.**
+  `InteractiveTerminalController::clear_scrollback` drops the scrollback and
+  resets the emulator but deliberately preserves `next_seq`: the daemon keeps
+  streaming, and resetting the sequence would make the next honest chunk fail
+  the gap check and print a "history expired" notice the user did not cause.
+- **The help panel hosts the dialog, it does not reimplement it.**
+  `HelpPanel` owns a `HelpDialog` and paints it with `HelpDialog::render_into`,
+  a `Buffer`-level method `Component::render` adapts over. That is the whole
+  difference between "docking moves the box" and "docking gives you a similar
+  panel" — with a shared widget there is nothing to keep in sync, so the box
+  and the panel cannot drift the way the previous chat pair did.
 - **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
   enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,

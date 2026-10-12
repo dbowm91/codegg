@@ -1141,6 +1141,14 @@ pub(crate) fn apply_terminal_op_finished(
 // ── Dialog view ─────────────────────────────────────────────────────
 
 /// Render one terminal into the terminal dialog (`/terminal-show`).
+/// Show a terminal in the box. The one entry point for every caller that
+/// wants the terminal surface open — `/terminal`, `/terminal-show`, and the
+/// live-refresh path all land here so they cannot disagree about which
+/// handle is on screen.
+pub(crate) fn show_terminal(app: &mut App, handle: String) {
+    handle_terminal_show(app, handle);
+}
+
 pub(crate) fn handle_terminal_show(app: &mut App, handle: String) {
     if app.interactive_terminals.view(&handle).is_none() {
         app.messages_state
@@ -1232,6 +1240,58 @@ pub(crate) fn focus_terminal(app: &mut App, handle: Option<String>) {
     }
 }
 
+// ── Panel surface ───────────────────────────────────────────────────
+//
+// The side panel is a peer of the box, not a second implementation: it maps
+// keys through the same `map_key`/`classify_key` gate and sends through the
+// same `send_terminal_input`. These four functions are the only app-side
+// entry points, because focusing and reporting need message state the panel
+// deliberately cannot see.
+
+/// Take the PTY's keyboard for the terminal the panel is showing.
+pub(crate) fn focus_terminal_panel(app: &mut App, handle: &str) {
+    if app.interactive_terminals.view(handle).is_none() {
+        app.panel_host.forget_terminal(handle);
+        app.messages_state
+            .toasts
+            .warning("That terminal is gone — open another with /terminal");
+        return;
+    }
+    if app.interactive_terminals.focus(handle) {
+        app.messages_state.toasts.info(&format!(
+            "Terminal {handle} focused: keystrokes go to the process; Ctrl-] leaves focus"
+        ));
+    }
+}
+
+/// Return the keyboard to the host, leaving the PTY running.
+pub(crate) fn blur_terminal_panel(app: &mut App, handle: &str) {
+    app.interactive_terminals.escape(handle);
+    app.messages_state
+        .toasts
+        .info("Terminal unfocused: keystrokes go to the prompt; Shift+← leaves the panel");
+}
+
+/// Clear the local scrollback and screen for `handle`.
+///
+/// Local only: the process keeps running and the daemon keeps streaming.
+/// Sequence tracking is preserved by `clear_scrollback`, so the next chunk
+/// arrives as an ordinary continuation rather than a gap the user cannot
+/// explain.
+pub(crate) fn clear_terminal(app: &mut App, handle: &str) {
+    if app.interactive_terminals.clear_scrollback(handle) {
+        // A box may be showing the same view; repaint it so the clear is
+        // visible in whichever surface the user is actually looking at.
+        if app.dialog_state.terminal_detail_handle.as_deref() == Some(handle) {
+            refresh_terminal_dialog(app, handle);
+        }
+    } else {
+        app.messages_state
+            .toasts
+            .warning("No terminal selected to clear");
+    }
+}
+
 /// Close the terminal dialog. Detaches the viewed terminal (releasing
 /// the caller-owned attachment; the process keeps running) unless
 /// `terminate` is set by an explicit terminate-then-close flow.
@@ -1273,7 +1333,16 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
     }
 
     if !focused {
-        // Viewing: Esc closes (detach); navigation falls through to the
+        // Viewing: the directional gesture docks this box into the side
+        // panel. Handled here rather than by the dialog scroller below,
+        // which would swallow it — a modal short-circuits key routing
+        // before the binding map is consulted, so the box has to recognise
+        // the gesture itself.
+        if let Some(dir) = crate::tui::panels::direction_of(key) {
+            app.process_msg(crate::tui::app::TuiMsg::MoveDirection(dir));
+            return true;
+        }
+        // Esc closes (detach); navigation falls through to the
         // dialog scroller (return false); everything else is ignored here
         // and must not reach the prompt while the dialog is modal.
         if matches!(key.code, KeyCode::Esc) {
@@ -1306,7 +1375,11 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
 }
 
 /// Map a crossterm key event to the framework-neutral terminal key.
-fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
+///
+/// Shared with the side panel so both surfaces map a keystroke identically;
+/// the alternative is a panel that quietly disagrees with the box about what
+/// `Ctrl-]` or a literal `Esc` means.
+pub(crate) fn map_key(key: crossterm::event::KeyEvent) -> TerminalKey {
     use crossterm::event::{KeyCode, KeyModifiers};
     match key.code {
         KeyCode::Char(']') if key.modifiers.contains(KeyModifiers::CONTROL) => {

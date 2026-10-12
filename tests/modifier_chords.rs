@@ -208,7 +208,12 @@ fn panel_switcher_never_falls_through_to_close_session() {
     }
 }
 
-// ── Panel focus moves ─────────────────────────────────────────────────
+// ── Pane directions ───────────────────────────────────────────────────
+//
+// `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins are one gesture family.
+// Every one of them resolves to a `Direction*` action and is then handed to a
+// single contextual dispatcher, which docks an open box or selects a pane
+// depending on what is on screen.
 //
 // These are the only Shift-qualified bindings in the shipped maps, and they
 // carry a constraint the chords above do not: they must exist in Normal mode
@@ -217,124 +222,140 @@ fn panel_switcher_never_falls_through_to_close_session() {
 // `Shift+Right` unreachable for typing and `H` untypable while composing.
 
 #[test]
-fn shift_arrow_focus_moves_are_bound_in_every_map() {
+fn directional_arrows_are_bound_in_every_map() {
     for vim_mode in [false, true] {
         let map = build_bindings(None, vim_mode);
         let label = if vim_mode { "vim" } else { "default" };
+        for (code, expected) in [
+            (KeyCode::Left, InputAction::DirectionLeft),
+            (KeyCode::Right, InputAction::DirectionRight),
+            (KeyCode::Up, InputAction::DirectionUp),
+            (KeyCode::Down, InputAction::DirectionDown),
+        ] {
+            assert_eq!(
+                map.get(&(KeyModifiers::SHIFT, code)).cloned(),
+                Some(expected),
+                "Shift+{code:?} missing from the {label} map"
+            );
+        }
+    }
+}
+
+#[test]
+fn directions_fire_in_normal_mode_only() {
+    for (code, expected) in [
+        (KeyCode::Left, InputAction::DirectionLeft),
+        (KeyCode::Right, InputAction::DirectionRight),
+        (KeyCode::Up, InputAction::DirectionUp),
+        (KeyCode::Down, InputAction::DirectionDown),
+    ] {
         assert_eq!(
-            map.get(&(KeyModifiers::SHIFT, KeyCode::Right)).cloned(),
-            Some(InputAction::FocusSidePanel),
-            "Shift+Right missing from the {label} map"
+            press(code, KeyModifiers::SHIFT, InputMode::Normal),
+            Some(expected),
+            "Shift+{code:?} must be a pane direction in Normal mode"
         );
         assert_eq!(
-            map.get(&(KeyModifiers::SHIFT, KeyCode::Left)).cloned(),
-            Some(InputAction::FocusMainBuffer),
-            "Shift+Left missing from the {label} map"
+            press(code, KeyModifiers::SHIFT, InputMode::Insert),
+            None,
+            "Shift+{code:?} is caret movement while composing; it must not steal the key"
         );
     }
 }
 
 #[test]
-fn focus_moves_fire_in_normal_mode_only() {
-    assert_eq!(
-        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Normal),
-        Some(InputAction::FocusSidePanel),
-        "Shift+Right must move focus in Normal mode"
-    );
-    assert_eq!(
-        press(KeyCode::Left, KeyModifiers::SHIFT, InputMode::Normal),
-        Some(InputAction::FocusMainBuffer),
-        "Shift+Left must return focus in Normal mode"
-    );
-    assert_eq!(
-        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Insert),
-        None,
-        "Shift+Right is caret movement while composing; it must not steal the key"
-    );
-    assert_eq!(
-        press(KeyCode::Left, KeyModifiers::SHIFT, InputMode::Insert),
-        None,
-        "Shift+Left must remain caret movement while composing"
-    );
-}
-
-#[test]
-fn shift_letters_resolve_under_both_encodings() {
+fn shift_direction_letters_resolve_under_both_encodings() {
     // Terminals disagree about whether a shifted letter carries SHIFT. If
-    // only one form were bound, the action would work on one machine and
+    // only one form were bound, the gesture would work on one machine and
     // silently do nothing on another.
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
-        assert_eq!(
-            press(KeyCode::Char('L'), modifiers, InputMode::Normal),
-            Some(InputAction::DockPanel),
-            "L with {modifiers:?} must dock the open box into the side panel"
-        );
-        assert_eq!(
-            press(KeyCode::Char('H'), modifiers, InputMode::Normal),
-            Some(InputAction::FocusMainBuffer),
-            "H with {modifiers:?} must focus the main buffer"
-        );
+        for (letter, expected) in [
+            ('H', InputAction::DirectionLeft),
+            ('J', InputAction::DirectionDown),
+            ('K', InputAction::DirectionUp),
+            ('L', InputAction::DirectionRight),
+        ] {
+            assert_eq!(
+                press(KeyCode::Char(letter), modifiers, InputMode::Normal),
+                Some(expected),
+                "{letter} with {modifiers:?} must resolve as a pane direction"
+            );
+        }
     }
-    // Moving focus into the side column keeps its arrow binding. `L` was
-    // repointed at docking, and arrows are the one chord no terminal
-    // mis-encodes, so `FocusSidePanel` needs no letter twin.
-    assert_eq!(
-        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Normal),
-        Some(InputAction::FocusSidePanel),
-        "Shift+Right must still focus the side column"
-    );
 }
 
 #[test]
-fn uppercase_focus_letters_are_ordinary_text_in_insert_mode() {
+fn uppercase_direction_letters_are_ordinary_text_in_insert_mode() {
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
-        assert_eq!(
-            press(KeyCode::Char('L'), modifiers, InputMode::Insert),
-            Some(InputAction::Char('L')),
-            "an uppercase L while composing must type an L, not dock a box"
-        );
-        assert_eq!(
-            press(KeyCode::Char('H'), modifiers, InputMode::Insert),
-            Some(InputAction::Char('H')),
-            "an uppercase H while composing must type an H, not move focus"
-        );
+        for letter in ['H', 'J', 'K', 'L'] {
+            assert_eq!(
+                press(KeyCode::Char(letter), modifiers, InputMode::Insert),
+                Some(InputAction::Char(letter)),
+                "an uppercase {letter} while composing must type a {letter}, not move a pane"
+            );
+        }
     }
 }
 
 #[test]
 fn bare_arrows_keep_their_unmodified_meaning() {
-    // The user's contract was that focus switching must not disturb the
-    // existing arrow behaviour, so an unmodified arrow may never move focus.
+    // The user's contract was that pane switching must not disturb the
+    // existing arrow behaviour, so an unmodified arrow may never become a
+    // direction. These stay transcript scrolling and caret movement.
     for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right] {
         let action = press(code, KeyModifiers::NONE, InputMode::Normal);
         assert!(
-            !matches!(
-                action,
-                Some(InputAction::FocusSidePanel) | Some(InputAction::FocusMainBuffer)
-            ),
-            "an unmodified {code:?} must not have become a focus move, got {action:?}"
+            !is_direction(&action),
+            "an unmodified {code:?} must not have become a pane direction, got {action:?}"
         );
     }
 }
 
 #[test]
-fn the_vertical_focus_pair_is_deliberately_unbound() {
-    // Shift+Up/Down and Shift+J/K are reserved for a layout with stacked
-    // panels. Binding them to a no-op today would advertise a capability
-    // the UI does not have, so they must stay unclaimed in Normal mode.
-    for code in [
-        KeyCode::Up,
-        KeyCode::Down,
-        KeyCode::Char('J'),
-        KeyCode::Char('K'),
-    ] {
-        let action = press(code, KeyModifiers::SHIFT, InputMode::Normal);
+fn the_vertical_pair_is_now_bound_rather_than_reserved() {
+    // This pair used to be deliberately left unbound, reserved for a layout
+    // with stacked panels, on the grounds that binding an inert key would
+    // advertise a capability the UI did not have. They are bound now because
+    // they are no longer inert: `↑`/`↓` cycle which panel type is loaded.
+    assert_eq!(
+        press(KeyCode::Up, KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::DirectionUp),
+        "Shift+Up must cycle the loaded panel list"
+    );
+    assert_eq!(
+        press(KeyCode::Down, KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::DirectionDown),
+        "Shift+Down must cycle the loaded panel list"
+    );
+    assert_eq!(
+        press(KeyCode::Char('K'), KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::DirectionUp)
+    );
+    assert_eq!(
+        press(KeyCode::Char('J'), KeyModifiers::NONE, InputMode::Normal),
+        Some(InputAction::DirectionDown)
+    );
+}
+
+#[test]
+fn bare_lowercase_letters_are_not_the_directional_gesture() {
+    // A terminal reports `Shift+L` as `Char('L')`, with or without SHIFT. It
+    // never reports it as `Char('l')`, so binding lowercase would claim the
+    // plain within-surface vim verbs for a gesture the user did not make.
+    for letter in ['h', 'j', 'k', 'l'] {
+        let action = press(KeyCode::Char(letter), KeyModifiers::NONE, InputMode::Normal);
         assert!(
-            !matches!(
-                action,
-                Some(InputAction::FocusSidePanel) | Some(InputAction::FocusMainBuffer)
-            ),
-            "Shift+{code:?} is reserved and must not act as a focus move, got {action:?}"
+            !is_direction(&action),
+            "a bare `{letter}` must stay a within-surface verb, got {action:?}"
         );
     }
+}
+
+fn is_direction(action: &Option<InputAction>) -> bool {
+    matches!(
+        action,
+        &Some(InputAction::DirectionLeft)
+            | &Some(InputAction::DirectionRight)
+            | &Some(InputAction::DirectionUp)
+            | &Some(InputAction::DirectionDown)
+    )
 }

@@ -1,9 +1,11 @@
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use ratatui::widgets::{StatefulWidget, Widget};
 use ratatui::Frame;
 use std::sync::Arc;
 
@@ -56,12 +58,22 @@ impl HelpRow {
     }
 }
 
+#[derive(Debug)]
 pub struct HelpDialog {
     help_lines: Vec<String>,
     rows: Vec<HelpRow>,
     query: String,
     theme: Arc<Theme>,
     scroll: usize,
+    /// Whether the filter currently has the keyboard.
+    ///
+    /// **Insert is the default**, so `/help` opens ready to type: the box is
+    /// opened to look something up, and a mode switch before every query
+    /// would tax the common case. Normal exists for the gestures that need a
+    /// non-typable key — above all the directional that docks this box into
+    /// the side panel — because in Insert mode `Shift+L` is the letter `L`
+    /// and has to stay typeable so it can be searched for.
+    mode: InputMode,
 }
 
 impl Clone for HelpDialog {
@@ -72,6 +84,7 @@ impl Clone for HelpDialog {
             query: self.query.clone(),
             theme: Arc::clone(&self.theme),
             scroll: self.scroll,
+            mode: self.mode,
         }
     }
 }
@@ -86,6 +99,7 @@ impl HelpDialog {
             query: String::new(),
             theme,
             scroll: 0,
+            mode: InputMode::Insert,
         }
     }
 
@@ -103,6 +117,7 @@ impl HelpDialog {
             query: String::new(),
             theme,
             scroll: 0,
+            mode: InputMode::Insert,
         }
     }
 
@@ -119,6 +134,28 @@ impl HelpDialog {
 
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// Which mode the filter is in. Exposed for the parity tests, which
+    /// cannot see the badge the render draws.
+    pub fn input_mode(&self) -> InputMode {
+        self.mode
+    }
+
+    /// Return to Insert so the user can type again.
+    ///
+    /// The counterpart of `Esc`, and what a host calls when it adopts this
+    /// widget fresh — a docked reference should behave like a freshly typed
+    /// one.
+    pub fn enter_insert_mode(&mut self) {
+        self.mode = InputMode::Insert;
+    }
+
+    /// How many searchable rows exist. Zero for the pre-rendered
+    /// constructor, and the signal a host uses to know it still has to build
+    /// the real row set on first paint.
+    pub fn rows_len(&self) -> usize {
+        self.rows.len()
     }
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
@@ -159,6 +196,29 @@ impl HelpDialog {
         }
         let next = (self.scroll as isize + delta).clamp(0, total - 1);
         self.scroll = next as usize;
+    }
+
+    /// Inverse-video `INS`/`NOR` badge, matching the chat box's exactly.
+    ///
+    /// Deliberately identical rather than merely similar: this badge is one
+    /// piece of vocabulary shared by every dockable box, and a user who
+    /// learned `NOR` on `/chat` must not have to learn it again here to dock
+    /// this box.
+    fn mode_badge(&self, theme: &Arc<Theme>) -> Vec<Span<'static>> {
+        let (label, colour) = match self.mode {
+            InputMode::Normal => ("NOR", theme.muted),
+            InputMode::Insert => ("INS", theme.primary),
+        };
+        vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(theme.background)
+                    .bg(colour)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
     }
 }
 
@@ -231,32 +291,60 @@ fn searchable_help_rows(vim_mode: bool, active_mode: HelpMode) -> Vec<HelpRow> {
 impl Component for HelpDialog {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        // The directional gesture is a Normal-mode verb only. In Insert,
+        // `Shift+L` is the letter L and must stay typeable — it is how you
+        // search for the docking key itself. Checked ahead of the match so
+        // the printable arm below cannot shadow it with a bare `H`/`J`/`K`/`L`.
+        if self.mode == InputMode::Normal {
+            if let Some(dir) = crate::tui::panels::direction_of(key) {
+                return Some(TuiMsg::MoveDirection(dir));
+            }
+        }
+
         match key.code {
+            // Paging is live in both modes: arrows and page keys are not
+            // text, so there is no reason to take them away while typing.
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
             KeyCode::PageUp => self.scroll_by(-PAGE_STEP),
             KeyCode::PageDown => self.scroll_by(PAGE_STEP),
             KeyCode::Home => self.scroll = 0,
             KeyCode::End => self.scroll = self.result_count().saturating_sub(1),
-            KeyCode::Backspace => self.pop_query(),
+            KeyCode::Backspace if self.mode == InputMode::Insert => self.pop_query(),
             KeyCode::Esc => {
-                // Esc clears an active filter first and closes only when there
-                // is nothing to clear, so one Esc never discards a query the
-                // user is midway through typing.
-                if self.query.is_empty() {
+                if self.mode == InputMode::Insert {
+                    // Leave Insert the way every other box here does, with
+                    // the filter intact — that is where the directional and
+                    // the `q` exit live.
+                    self.mode = InputMode::Normal;
+                } else if self.query.is_empty() {
                     return Some(TuiMsg::CloseDialog);
+                } else {
+                    // Esc clears an active filter first and closes only when
+                    // there is nothing to clear, so one Esc never discards a
+                    // query the user is midway through typing.
+                    self.query.clear();
+                    self.scroll = 0;
                 }
-                self.query.clear();
-                self.scroll = 0;
             }
+            KeyCode::Enter => self.mode = InputMode::Insert,
+            KeyCode::Char('q') if self.mode == InputMode::Normal => {
+                return Some(TuiMsg::CloseDialog);
+            }
+            KeyCode::Char('i') | KeyCode::Char('a') if self.mode == InputMode::Normal => {
+                self.mode = InputMode::Insert;
+            }
+            // `j`/`k` are navigation *only* in Normal. While Insert is live
+            // they have to be typeable so `help` itself can be searched for.
+            KeyCode::Char('j') if self.mode == InputMode::Normal => self.scroll_by(1),
+            KeyCode::Char('k') if self.mode == InputMode::Normal => self.scroll_by(-1),
             KeyCode::Char(ch)
-                if key.modifiers == KeyModifiers::NONE
-                    || key.modifiers == KeyModifiers::SHIFT
-                    || key.modifiers.contains(KeyModifiers::ALT) =>
+                if self.mode == InputMode::Insert
+                    && (key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT
+                        || key.modifiers.contains(KeyModifiers::ALT)) =>
             {
-                // Printable keys filter. `j`/`k` are deliberately *not*
-                // navigation here: they have to be typeable to search for
-                // "jump", and the arrows plus PageUp/PageDown still scroll.
                 self.push_query(ch);
             }
             _ => {}
@@ -272,6 +360,25 @@ impl Component for HelpDialog {
     }
 
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
+        self.render_into(frame.buffer_mut(), area, theme, " Help ");
+    }
+
+    fn dialog_type(&self) -> DialogType {
+        DialogType::Help
+    }
+}
+
+// ── Buffer-level rendering ──────────────────────────────────────────
+
+impl HelpDialog {
+    /// Render into a raw [`Buffer`].
+    ///
+    /// Exists so the side panel paints the *same* widget rather than a
+    /// parallel implementation: the box and the panel must agree on every
+    /// row, on the filter, and on which keys are live, or docking the box
+    /// would quietly change the interface. [`Component::render`] is a thin
+    /// adapter over this.
+    pub fn render_into(&mut self, buf: &mut Buffer, area: Rect, theme: &Arc<Theme>, title: &str) {
         let chunks = Layout::vertical([
             Constraint::Length(3), // title
             Constraint::Length(3), // filter
@@ -287,10 +394,10 @@ impl Component for HelpDialog {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Help ")
+                .title(title.to_string())
                 .border_style(Style::default().fg(theme.border)),
         );
-        frame.render_widget(title, chunks[0]);
+        Widget::render(title, chunks[0], buf);
 
         // ── Filter row ──────────────────────────────────────────────────
         // Always visible, so it is discoverable without pressing anything
@@ -317,6 +424,11 @@ impl Component for HelpDialog {
                 Style::default().fg(theme.muted),
             )]
         };
+        // The badge rides the filter row because that is the surface it
+        // governs: without it, a user in Normal who presses `j` and gets
+        // nothing has no way to tell why.
+        let mut filter_spans = filter_spans;
+        filter_spans.extend(self.mode_badge(theme));
         let filter = Paragraph::new(Line::from(filter_spans)).block(
             Block::default()
                 .borders(Borders::ALL)
@@ -326,7 +438,7 @@ impl Component for HelpDialog {
                     theme.border
                 })),
         );
-        frame.render_widget(filter, chunks[1]);
+        Widget::render(filter, chunks[1], buf);
 
         // ── Content ─────────────────────────────────────────────────────
         let content_height = chunks[2].height as usize;
@@ -363,22 +475,32 @@ impl Component for HelpDialog {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border)),
         );
-        frame.render_widget(content, chunks[2]);
+        Widget::render(content, chunks[2], buf);
 
         let mut scrollbar_state = ScrollbarState::new(total_lines).position(self.scroll);
-        frame.render_stateful_widget(
+        StatefulWidget::render(
             Scrollbar::default()
                 .orientation(ScrollbarOrientation::VerticalRight)
                 .style(Style::default().fg(theme.primary)),
             chunks[2],
+            buf,
             &mut scrollbar_state,
         );
 
         // ── Footer ──────────────────────────────────────────────────────
-        let footer_text = if filtering {
-            "↑/↓ PgUp/PgDn scroll  |  Esc clear filter  |  Esc again close"
-        } else {
-            "type to filter  |  ↑/↓ PgUp/PgDn scroll  |  Esc close"
+        // Mode-specific, because the keys that differ are exactly the ones a
+        // user reaches for and then finds do nothing.
+        let footer_text = match (self.mode, filtering) {
+            (InputMode::Insert, true) => {
+                "Esc normal  |  ↑/↓ PgUp/PgDn scroll  |  Backspace edit filter"
+            }
+            (InputMode::Insert, false) => "type to filter  |  Esc normal  |  ↑/↓ PgUp/PgDn scroll",
+            (InputMode::Normal, true) => {
+                "i insert  |  ↑/↓ PgUp/PgDn scroll  |  Esc clear filter  |  q close"
+            }
+            (InputMode::Normal, false) => {
+                "i insert  |  ↑/↓ PgUp/PgDn scroll  |  Shift+L dock  |  q close"
+            }
         };
         let footer = Paragraph::new(Line::from(Span::styled(
             footer_text,
@@ -389,25 +511,18 @@ impl Component for HelpDialog {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border)),
         );
-        frame.render_widget(footer, chunks[3]);
-    }
-
-    fn dialog_type(&self) -> DialogType {
-        DialogType::Help
+        Widget::render(footer, chunks[3], buf);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::panels::PanelDirection;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn dialog() -> HelpDialog {
         HelpDialog::new_with_mode(Arc::new(Theme::dark()), false, InputMode::Normal)
-    }
-
-    fn key(code: KeyCode) -> Option<TuiMsg> {
-        dialog().handle_key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
     #[test]
@@ -535,19 +650,30 @@ mod tests {
     }
 
     #[test]
-    fn esc_clears_the_filter_before_closing() {
+    fn esc_leaves_insert_then_clears_the_filter_then_closes() {
         let mut d = dialog();
         for ch in "panel".chars() {
             d.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
-        // First Esc clears, and must NOT close.
+        // Esc from Insert leaves the mode, keeping the filter — that is where
+        // the directional that docks this box lives.
         assert!(
             d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
                 .is_none(),
-            "the first Esc must clear the filter, not close the dialog"
+            "Esc must leave Insert, not close the dialog"
+        );
+        assert_eq!(d.input_mode(), InputMode::Normal);
+        assert_eq!(d.query(), "panel", "the filter survives the mode change");
+
+        // A second Esc clears, and must NOT close.
+        assert!(
+            d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+                .is_none(),
+            "the next Esc must clear the filter, not close the dialog"
         );
         assert_eq!(d.query(), "");
-        // Second Esc closes.
+
+        // A third Esc closes.
         assert_eq!(
             d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
             Some(TuiMsg::CloseDialog)
@@ -555,8 +681,76 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_an_empty_query_closes_immediately() {
-        assert_eq!(key(KeyCode::Esc), Some(TuiMsg::CloseDialog));
+    fn esc_on_an_empty_query_closes_only_once_normal() {
+        // One Esc from Insert must not close, even with nothing typed: the
+        // user still has to be able to reach Normal mode, which is where
+        // `q` and the directional live.
+        let mut d = dialog();
+        assert!(d
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .is_none());
+        assert_eq!(d.input_mode(), InputMode::Normal);
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(TuiMsg::CloseDialog)
+        );
+    }
+
+    #[test]
+    fn q_closes_from_normal_mode_only() {
+        // `q` is the Normal-mode exit, the same shape every other panel uses.
+        // In Insert it must remain a searchable letter.
+        let mut d = dialog();
+        assert!(d
+            .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE))
+            .is_none());
+        assert_eq!(d.query(), "q", "q must stay typeable while filtering");
+        assert!(d
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .is_none());
+        d.query.clear();
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(TuiMsg::CloseDialog)
+        );
+    }
+
+    #[test]
+    fn the_directional_docks_only_from_normal_mode() {
+        // In Insert, `L` is the letter L and must be searchable; in Normal it
+        // is the gesture that moves this box into the side panel.
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            None,
+            "Insert must type the letter, not dock"
+        );
+        assert_eq!(d.query(), "L");
+
+        assert!(d
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .is_none());
+        d.query.clear();
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            Some(TuiMsg::MoveDirection(PanelDirection::Right))
+        );
+    }
+
+    #[test]
+    fn j_and_k_navigate_only_in_normal_mode() {
+        // They have to be typeable while Insert is live so `help` can be
+        // searched for.
+        let mut d = dialog();
+        d.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(d.query(), "j");
+        assert!(d
+            .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .is_none());
+        d.query.clear();
+        let before = d.scroll;
+        d.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(d.scroll > before, "j must move the highlight in Normal");
     }
 
     #[test]

@@ -268,6 +268,15 @@ pub struct Config {
     pub mode: Option<HashMap<String, ModeConfig>>,
     pub keybinds: Option<HashMap<String, String>>,
     pub vim_mode: Option<bool>,
+    /// Saved side-panel hotkeys: digit -> panel type.
+    ///
+    /// Written by the panel manager (`Ctrl+Alt+W` / `Shift+S`) when a digit
+    /// is assigned, and read back at startup so `Ctrl+1` means the same
+    /// panel in the next session. Values are the panel's config key
+    /// (`sessions`, `chat`, `terminal`, `help`); unknown values are dropped
+    /// on load rather than failing the boot, because a typo in a preference
+    /// is not worth refusing to start over.
+    pub panel_hotkeys: Option<HashMap<String, String>>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,

@@ -17,6 +17,9 @@ use codegg::protocol::core::{
 };
 use codegg::tui::app::state::WorkspaceFocus;
 use codegg::tui::app::TuiMsg;
+use codegg::tui::components::component::DialogType;
+use codegg::tui::components::dialogs::panel_manager::PanelManagerDialog;
+use codegg::tui::input::InputMode;
 use codegg::tui::panels::SidePanelId;
 use codegg::tui::route::Route;
 
@@ -163,56 +166,91 @@ fn session_panel_is_the_default_and_starts_unfocused() {
     );
 }
 
+/// The manager is a dialog, so these tests ask the dialog what it is
+/// showing rather than reaching into the host for a cursor.
+fn manager_open(app: &codegg::tui::app::App) -> bool {
+    app.focus_manager.has_dialog(DialogType::PanelManager)
+}
+
+fn manager_cursor(app: &mut codegg::tui::app::App) -> Option<usize> {
+    app.focus_manager
+        .with_component_mut::<PanelManagerDialog, _>(|dialog| dialog.cursor())
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn ctrl_alt_w_opens_the_selector_over_the_active_panel() {
+async fn ctrl_alt_w_opens_the_manager_without_stealing_the_composer() {
     let mut app = test_app();
     app.on_key(ctrl_alt('w'));
-    assert!(app.panel_host.selector_open());
+    assert!(manager_open(&app));
     assert!(
         !app.panel_host.is_focused(),
-        "opening the switcher must not steal the composer: a user who cancels \
+        "opening the manager must not steal the composer: a user who cancels \
          would find their next keystroke going to a panel they never chose"
     );
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn selector_commits_the_highlighted_panel_on_enter() {
+async fn shift_s_opens_the_same_manager_in_normal_mode_only() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
-    // `l` moves one column right in the two-column grid.
-    app.on_key(plain('l'));
-    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
-    assert!(app.panel_host.is_focused());
+    app.ui_state.input_mode = InputMode::Normal;
+    app.on_key(plain('S'));
+    assert!(manager_open(&app), "Shift+S is the vim-shaped spelling");
+
+    // In Insert it must stay the letter S.
+    let mut typing = test_app();
+    typing.ui_state.input_mode = InputMode::Insert;
+    typing.on_key(plain('S'));
     assert!(
-        !app.panel_host.selector_open(),
-        "the overlay must close once it has been answered"
+        !manager_open(&typing),
+        "the manager key must never claim a letter mid-word"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn selector_arrow_keys_match_the_vim_keys() {
+async fn the_manager_commits_the_highlighted_panel_on_enter() {
     let mut app = test_app();
     app.on_key(ctrl_alt('w'));
-    let before = app.panel_host.selector_cursor();
-    app.on_key(plain('l'));
-    let after_vim = app.panel_host.selector_cursor();
-
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    app.on_key(ctrl_alt('w'));
-    assert_eq!(app.panel_host.selector_cursor(), before);
-    app.on_key(key(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(app.panel_host.selector_cursor(), after_vim);
+    app.on_key(plain('j')); // Session -> Chat
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
+    assert!(
+        app.panel_host.is_focused(),
+        "focus follows the pick: the manager exists to get the user to a panel"
+    );
+    assert!(
+        !manager_open(&app),
+        "the box closes once it has been answered"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn escape_cancels_the_selector_and_keeps_the_current_panel() {
+async fn manager_arrow_keys_match_the_vim_keys() {
     let mut app = test_app();
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
+    let before = manager_cursor(&mut app);
+    app.on_key(plain('j'));
+    let after_vim = manager_cursor(&mut app);
+
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.panel_host.selector_open());
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.on_key(ctrl_alt('w'));
+    assert_eq!(
+        manager_cursor(&mut app),
+        before,
+        "reopens where it left off"
+    );
+    app.on_key(key(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(manager_cursor(&mut app), after_vim);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn escape_closes_the_manager_and_keeps_the_current_panel() {
+    let mut app = test_app();
+    app.on_key(ctrl_alt('w'));
+    app.on_key(plain('j'));
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!manager_open(&app));
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Session,
@@ -221,17 +259,60 @@ async fn escape_cancels_the_selector_and_keeps_the_current_panel() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn selector_keys_never_reach_the_composer() {
+async fn manager_keys_never_reach_the_composer() {
     let mut app = test_app();
     app.on_key(ctrl_alt('w'));
-    for ch in ['/', ':', 'j', 'k', 'h', 'l', 'x'] {
+    for ch in [':', 'j', 'k', 'x'] {
         app.on_key(plain(ch));
     }
     assert!(
         app.prompt_state.prompt.get_text().is_empty(),
-        "the overlay must swallow navigation keys: {:?}",
+        "the box must swallow its own keys: {:?}",
         app.prompt_state.prompt.get_text()
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_digit_binds_the_highlighted_panel_and_ctrl_recalls_it() {
+    let mut app = test_app();
+    app.on_key(ctrl_alt('w'));
+    app.on_key(plain('j')); // highlight Chat
+    app.on_key(plain('1')); // bind Ctrl+1 -> Chat
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.panel_hotkeys.get('1'),
+        Some(SidePanelId::Chat),
+        "the binding must survive being assigned"
+    );
+
+    // Now recall it. The box is gone, so this must switch panels.
+    app.on_key(key(KeyCode::Char('1'), KeyModifiers::CONTROL));
+    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_unbound_ctrl_digit_is_consumed_rather_than_leaking() {
+    // The digit range belongs to the manager. A `Ctrl+7` with nothing saved
+    // must not fall through into the composer or any other surface.
+    let mut app = test_app();
+    app.on_key(key(KeyCode::Char('7'), KeyModifiers::CONTROL));
+    assert!(app.panel_hotkeys.get('7').is_none());
+    assert!(
+        app.prompt_state.prompt.get_text().is_empty(),
+        "an unbound slot must still be swallowed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctrl_alt_w_toggles_the_manager_closed() {
+    let mut app = test_app();
+    app.on_key(ctrl_alt('w'));
+    assert!(manager_open(&app));
+    // The host answers the toggle itself, so it must work from inside the box
+    // too rather than stacking a second copy.
+    app.on_key(ctrl_alt('w'));
+    assert!(!manager_open(&app), "the same key must close it again");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -239,30 +320,19 @@ async fn switching_back_to_session_restores_prompt_input_immediately() {
     let mut app = test_app();
     seed_chat(&mut app);
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
+    app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
 
-    // Re-open the selector, step left to Session, commit.
+    // Re-open the manager, step back to Session, commit.
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('h'));
+    app.on_key(plain('k'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
 
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     app.on_key(plain('q'));
     assert!(!app.panel_host.is_focused());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn ctrl_b_is_refused_while_the_side_column_is_hidden() {
-    let mut app = test_app();
-    app.ui_state.sidebar_visible = false;
-    app.on_key(ctrl_alt('w'));
-    assert!(
-        !app.panel_host.selector_open(),
-        "the switcher describes the region it switches; with no region there is nothing to select into"
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -339,7 +409,9 @@ fn to_normal(app: &mut codegg::tui::app::App) {
 fn select_chat(app: &mut codegg::tui::app::App) {
     seed_chat(app);
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
+    // The manager opens on the live panel (Session) and steps with j/k, so
+    // one `j` lands on Chat.
+    app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
         app.panel_host.active(),

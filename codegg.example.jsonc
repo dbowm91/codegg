@@ -316,6 +316,18 @@
     "ctrl+p": "switch_agent"
   },
 
+  // Saved side-panel hotkeys: digit -> panel type. Assign these in the TUI
+  // (press Ctrl+Alt+W or Shift+S to open the panel manager, move to a panel,
+  // then press a digit); the TUI writes them here for you.
+  // Recalled with Ctrl+1 .. Ctrl+0 (0 is the tenth slot, after 1-9).
+  // Ctrl rather than Cmd because terminals do not deliver a Cmd modifier.
+  // Panel values: sessions, chat, terminal, help. An unrecognised value or
+  // a non-digit key is dropped on load rather than failing startup.
+  "panel_hotkeys": {
+    "1": "chat",
+    "2": "terminal"
+  },
+
   "instructions": [
     "Always write tests before committing code",
     "Use meaningful commit messages"

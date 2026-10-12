@@ -532,6 +532,14 @@ pub struct App {
     /// `ChatDialog` resolve against this project, and completions push a
     /// fresh snapshot into the window without a new fetch.
     pub chat_panel_project: Option<String>,
+    /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
+    /// and written back when the manager changes one.
+    ///
+    /// Kept out of the static binding table on purpose — these are assigned
+    /// at runtime by digit, which no `ActionKey` can express. See
+    /// [`panel_hotkeys`](crate::tui::app::state::panel_hotkeys) for why
+    /// `Ctrl` and not `Cmd`.
+    pub panel_hotkeys: crate::tui::app::state::panel_hotkeys::PanelHotkeys,
     /// M005: explicit input focus while `Route::Workspace` is active.
     /// `Composer` (default) keeps the ordinary Session/Task prompt
     /// editable; `Chat` routes printable keys + Enter to the side-panel
@@ -630,6 +638,17 @@ impl App {
             KeybindConfig { bindings }
         });
         let bindings = super::input::build_bindings(keybinds.as_ref(), vim_mode);
+        // Saved panel hotkeys, read the same way as keybinds and tolerant of
+        // a bad value: a stale or hand-edited entry drops one slot, it does
+        // not stop the TUI from starting.
+        let saved_panel_hotkeys = cfg
+            .and_then(|c| c.panel_hotkeys.as_ref())
+            .map(|raw| {
+                crate::tui::app::state::panel_hotkeys::PanelHotkeys::from_map(
+                    &raw.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                )
+            })
+            .unwrap_or_default();
         debug_log!(
             "loaded {} keybindings, custom config: {}",
             bindings.len(),
@@ -1024,6 +1043,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            panel_hotkeys: saved_panel_hotkeys,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
@@ -1549,6 +1569,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            panel_hotkeys: Default::default(),
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
             editor_state: crate::tui::app::state::EditorState::default(),
             file_tree_state: crate::tui::app::state::file_tree::FileTreeState::default(),
@@ -2793,6 +2814,23 @@ impl App {
             return;
         }
 
+        // The panel manager answers its own toggle while it is up, so the key that
+        // opened it can close it. This has to happen *before* the modal
+        // short-circuit below: the manager is a dialog, and a dialog would
+        // swallow the toggle and leave a second copy stacked behind the
+        // first. Scoped to the manager being open so `Ctrl+Alt+W` from some
+        // unrelated dialog still behaves as it did.
+        if self.focus_manager.active_dialog_type() == DialogType::PanelManager
+            && crate::tui::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            ) == Some(InputAction::TogglePanelSelector)
+        {
+            self.close_dialog();
+            return;
+        }
+
         // Modal dialogs own input while they are active.
         if !self.focus_manager.is_empty() {
             self.handle_dialog_key(key);
@@ -2837,8 +2875,17 @@ impl App {
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
         let panel_active = self.ui_state.sidebar_visible
-            && (self.panel_host.selector_open()
-                || (self.panel_host.is_focused() && self.ui_state.input_mode == InputMode::Normal));
+            && self.panel_host.is_focused()
+            && self.ui_state.input_mode == InputMode::Normal;
+        // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
+        // panel, because a panel that swallows it would trap the user in
+        // whichever panel they last selected — the only key that leaves is
+        // the one that cannot be reached. Unbound slots are consumed too, so
+        // the digit range stays the manager's and never leaks elsewhere.
+        if let Some(digit) = crate::tui::app::state::panel_hotkeys::digit_slot(key) {
+            crate::tui::commands::panels::recall_panel_hotkey(self, digit);
+            return;
+        }
         // M006-E: an open change review claims a strict subset of keys, and
         // only while it is focused. Anything unclaimed falls through, so a
         // review never silently swallows editor or composer input.
@@ -2974,14 +3021,27 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
-            Some(InputAction::FocusSidePanel) => {
-                crate::tui::commands::panels::focus_side_panel(self)
-            }
-            Some(InputAction::FocusMainBuffer) => {
-                crate::tui::commands::panels::focus_main_buffer(self)
-            }
-            Some(InputAction::DockPanel) => crate::tui::commands::panels::dock_open_box(self),
-            Some(InputAction::TogglePanelSelector) => {
+            // Every direction shares one contextual dispatcher: it docks the
+            // open box when there is one, and selects a pane when there is
+            // not. Resolved here rather than in the binding table because the
+            // meaning depends on what is on screen, which the table cannot see.
+            Some(InputAction::DirectionLeft) => crate::tui::commands::panels::move_directionally(
+                self,
+                crate::tui::panels::PanelDirection::Left,
+            ),
+            Some(InputAction::DirectionRight) => crate::tui::commands::panels::move_directionally(
+                self,
+                crate::tui::panels::PanelDirection::Right,
+            ),
+            Some(InputAction::DirectionUp) => crate::tui::commands::panels::move_directionally(
+                self,
+                crate::tui::panels::PanelDirection::Up,
+            ),
+            Some(InputAction::DirectionDown) => crate::tui::commands::panels::move_directionally(
+                self,
+                crate::tui::panels::PanelDirection::Down,
+            ),
+            Some(InputAction::TogglePanelSelector) | Some(InputAction::OpenPanelManager) => {
                 crate::tui::commands::panels::toggle_panel_selector(self);
             }
             Some(InputAction::ToggleTodoList) => {
@@ -7184,6 +7244,61 @@ impl App {
                     );
                 }
             }
+            B::Terminal => {
+                // The everyday spelling of "show me a terminal". The
+                // controller already knows which one is active, so this
+                // resolves it rather than asking the user to name a handle.
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    self.interactive_terminals
+                        .active_handle()
+                        .map(str::to_string)
+                } else {
+                    Some(args.to_string())
+                };
+                let Some(handle) = handle else {
+                    self.messages_state
+                        .toasts
+                        .warning("No terminal yet — /terminal-create <command>, then /terminal");
+                    return;
+                };
+                if self.interactive_terminals.view(&handle).is_none() {
+                    self.messages_state
+                        .toasts
+                        .warning("That terminal is gone — /terminal-list to see the rest");
+                    return;
+                }
+                crate::tui::commands::interactive_terminal::show_terminal(self, handle);
+            }
+            B::TerminalClear => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                // No argument means "whichever one I am looking at" — the
+                // box if it is open, else the panel, else the active view.
+                let handle = if args.is_empty() {
+                    self.dialog_state
+                        .terminal_detail_handle
+                        .clone()
+                        .or_else(|| self.panel_host.terminal_handle().map(str::to_string))
+                        .or_else(|| {
+                            self.interactive_terminals
+                                .active_handle()
+                                .map(str::to_string)
+                        })
+                } else {
+                    Some(args.to_string())
+                };
+                match handle {
+                    Some(handle) => {
+                        crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)
+                    }
+                    None => self
+                        .messages_state
+                        .toasts
+                        .warning("No terminal to clear — /terminal-list"),
+                }
+            }
             B::TerminalFocus => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
@@ -10823,6 +10938,11 @@ impl App {
         use crate::tui::components::component::DialogType;
         match self.focus_manager.active_dialog_type() {
             DialogType::ProjectChat => Some(crate::tui::panels::SidePanelId::Chat),
+            DialogType::Terminal => Some(crate::tui::panels::SidePanelId::Terminal),
+            DialogType::Help => Some(crate::tui::panels::SidePanelId::Help),
+            // Deliberately absent: a box with no panel counterpart. The
+            // gesture must say so rather than silently selecting a pane the
+            // user did not ask for.
             _ => None,
         }
     }

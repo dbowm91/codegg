@@ -28,6 +28,7 @@ pub enum DialogType {
     Tree,
     Theme,
     Permission,
+    PanelManager,
     Mcp,
     Question,
     Diff,
@@ -125,6 +126,7 @@ impl From<DialogType> for Dialog {
             DialogType::TriggerSecret => Dialog::TriggerSecret,
             DialogType::WorkspaceDashboard => Dialog::WorkspaceDashboard,
             DialogType::None => Dialog::None,
+            DialogType::PanelManager => Dialog::PanelManager,
         }
     }
 }
@@ -141,6 +143,7 @@ impl From<Dialog> for DialogType {
             Dialog::Theme => DialogType::Theme,
             Dialog::Question => DialogType::Question,
             Dialog::Permission => DialogType::Permission,
+            Dialog::PanelManager => DialogType::PanelManager,
             Dialog::Mcp => DialogType::Mcp,
             Dialog::Keybind => DialogType::Keybind,
             Dialog::Share => DialogType::Share,

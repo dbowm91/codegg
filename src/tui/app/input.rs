@@ -599,9 +599,32 @@ impl App {
                 self.close_dialog();
             }
             TuiMsg::ToggleSidebar => self.toggle_sidebar(),
-            TuiMsg::FocusSidePanel => crate::tui::commands::panels::focus_side_panel(self),
-            TuiMsg::FocusMainBuffer => crate::tui::commands::panels::focus_main_buffer(self),
-            TuiMsg::DockPanel => crate::tui::commands::panels::dock_open_box(self),
+            TuiMsg::MoveDirection(dir) => {
+                crate::tui::commands::panels::move_directionally(self, dir)
+            }
+            TuiMsg::TerminalPanelFocus { handle } => {
+                crate::tui::commands::interactive_terminal::focus_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelBlur { handle } => {
+                crate::tui::commands::interactive_terminal::blur_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelInput { handle, bytes } => {
+                crate::tui::commands::interactive_terminal::send_terminal_input(self, handle, bytes)
+            }
+            TuiMsg::TerminalPanelClear { handle } => {
+                crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)
+            }
+            TuiMsg::SelectPanel { panel } => {
+                // Focus follows the pick: the manager exists to get the user
+                // *to* a panel, and landing there without the keyboard would
+                // make the choice look inert.
+                self.close_dialog();
+                crate::tui::commands::panels::select_panel(self, panel);
+                crate::tui::commands::panels::focus_panel(self);
+            }
+            TuiMsg::SavePanelHotkey { digit, panel } => {
+                crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
+            }
             TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),

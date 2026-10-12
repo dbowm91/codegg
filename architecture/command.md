@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 157 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 159 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 157 hardcoded commands (highest priority)
+1. **Built-in commands**: 159 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (157 total)
+### Built-in Commands (159 total)
 
 Representative built-ins:
 
@@ -261,6 +261,8 @@ Representative built-ins:
 |---------|---------|-------------|
 | `/init` | | Preview and explicitly publish bounded root `AGENTS.md` guidance |
 | `/open` | | M006-A: open one workspace-relative document in the editor primary view (`/open <path>`) |
+| `/terminal` | `/term` | Open an interactive terminal in a box; `Shift+L` docks it into the side panel |
+| `/terminal-clear` | | Clear a terminal's scrollback and screen; the process keeps running |
 | `/init` | | Preview and explicitly publish bounded root `AGENTS.md` guidance |
 | `/connect` | | Add/configure a provider connection (catalog selection + credential form; Eggpool is one optional upstream) |
 | `/connections` | | Inspect/manage/select existing durable connections |
@@ -383,7 +385,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 157**: Guarded by
+- **Built-in count is 159**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -418,7 +420,7 @@ both count-guard tests pass — `built_in_command_count_matches_release_docs`
 (`command.rs:1131`) asserts 157, and every `(\d+)\s+(hardcoded|built-in|total)`
 plus `[Cc]ount is (\d+)` match in this document resolves to 157 (the three
 former's matches are on lines 15, 23, and 256; the latter's on line 386).
-Also verified the 157 built-in registry length, `BuiltinSlashAction`
+Also verified the 159 built-in registry length, `BuiltinSlashAction`
 (150 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
 (5, `command.rs:272`), the TUI `Command` struct fields

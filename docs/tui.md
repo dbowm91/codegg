@@ -95,9 +95,27 @@ Discover commands in-app instead:
 Keybindings with two modifiers use `Ctrl+Alt`, never `Ctrl+Shift`. CodeGG does
 not ask the terminal for enhanced key reporting, so a `Ctrl+Shift+<letter>`
 keystroke arrives indistinguishable from `Ctrl+<letter>` and fires that key's
-plain-`Ctrl` action instead. `Ctrl+Alt+W` opens the side-panel switcher,
-`Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move between
-project tabs.
+plain-`Ctrl` action instead. `Ctrl+Alt+W` (or `Shift+S`) opens the panel
+manager, `Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move
+between project tabs.
+
+### Moving between the box and the panel
+
+`Shift+L` — or `Shift+→` — is a **directional**: it means "move this to the
+panel on the right" when a box is open, and "select a pane" when one is not.
+`Shift+←` returns to the main buffer; `Shift+↑` / `Shift+↓` cycle which panel
+is loaded. The vim `Shift+H/J/K/L` do the same four things.
+
+So `/chat` then `Shift+L` closes the box and leaves the conversation running
+in the side column, `/help` then `Shift+L` does the same for the keybinding
+reference, and `/terminal` then `Shift+L` moves the terminal across. With no
+box open, the same keys move the keyboard instead.
+
+The **panel manager** (`Ctrl+Alt+W`) lists every panel with a one-line
+description; type to filter, `Enter` to load, and a digit (`1`-`9`, `0`) to
+bind that panel to `Ctrl+<digit>` so you can swap to it in one keystroke.
+Bindings are saved to `codegg.json` and survive a restart. `Ctrl` rather than
+`Cmd` because a terminal does not deliver a Cmd modifier.
 
 ### Where your input goes
 

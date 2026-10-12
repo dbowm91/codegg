@@ -162,7 +162,9 @@ fn to_normal(app: &mut codegg::tui::app::App) {
 fn focus_chat(app: &mut codegg::tui::app::App) {
     seed_chat(app);
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
+    // `j` steps down the manager's list; the manager opens on the live
+    // panel (Session), so one press lands on Chat.
+    app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
     assert!(app.panel_host.is_focused(), "precondition: focused panel");
@@ -521,7 +523,7 @@ async fn an_unbound_panel_advertises_nothing_and_takes_no_focus() {
     app.tui_cmd_tx = Some(tx);
 
     app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
+    app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
     to_normal(&mut app);
@@ -564,12 +566,64 @@ async fn the_chat_window_is_unaffected_by_the_panel_workflow() {
 // ── Docking a box into the side panel ─────────────────────────────────
 
 /// Commit the panel selector onto whichever panel `rows_up` sits above Chat.
-fn select_panel(app: &mut codegg::tui::app::App, rows_up: i8) {
+/// Open the manager and commit the panel `rows_down` places from Session.
+///
+/// The manager is a *box*, so committing has to close it — which is why
+/// every caller gets a clean panel afterwards rather than a live overlay.
+fn select_panel(app: &mut codegg::tui::app::App, rows_down: i8) {
     app.on_key(ctrl_alt('w'));
-    for _ in 0..rows_up {
-        app.on_key(plain('k'));
+    for _ in 0..rows_down {
+        app.on_key(plain('j'));
     }
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+/// Leave the chat box's Insert mode.
+///
+/// `/chat` now opens in Insert so the user can type immediately, which means
+/// `L` *is* a letter while the composer has the keyboard. Every docking test
+/// has to say so rather than assume Normal, because that assumption is
+/// exactly what the mode default changed.
+fn to_normal_mode(app: &mut codegg::tui::app::App) {
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_chat_box_opens_ready_to_type() {
+    // `/chat` is opened in order to write in it. Starting in Normal made the
+    // first keystroke navigation, so the user had to discover a second key
+    // before they could say anything.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.show_chat();
+    app.on_key(plain('h'));
+    assert!(
+        app.focus_manager
+            .has_dialog(codegg::tui::components::component::DialogType::ProjectChat),
+        "typing must not close the box"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_uppercase_l_types_in_insert_mode_and_docks_in_normal_mode() {
+    // The whole reason the box tracks a mode: in Insert, `L` is a letter you
+    // can filter for; in Normal, it is the directional that docks.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.show_chat();
+    app.on_key(plain('L'));
+    assert!(
+        app.focus_manager
+            .has_dialog(codegg::tui::components::component::DialogType::ProjectChat),
+        "L must type into the composer while Insert has the keyboard"
+    );
+    to_normal_mode(&mut app);
+    app.on_key(plain('L'));
+    assert!(
+        !app.focus_manager
+            .has_dialog(codegg::tui::components::component::DialogType::ProjectChat),
+        "and must dock once the box is in Normal mode"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -583,6 +637,7 @@ async fn docking_the_chat_window_moves_it_into_the_side_panel() {
     assert!(app
         .focus_manager
         .has_dialog(codegg::tui::components::component::DialogType::ProjectChat));
+    to_normal_mode(&mut app);
 
     app.on_key(plain('L'));
 
@@ -607,6 +662,7 @@ async fn a_shift_l_docks_exactly_like_a_bare_l() {
         let mut app = test_app();
         seed_chat(&mut app);
         app.show_chat();
+        to_normal_mode(&mut app);
         app.on_key(key(KeyCode::Char('L'), modifiers));
         assert_eq!(
             app.panel_host.active(),
@@ -617,27 +673,62 @@ async fn a_shift_l_docks_exactly_like_a_bare_l() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn docking_with_no_box_open_does_not_navigate() {
-    // A stray `L` in the transcript must not silently select a panel — that
-    // would be a navigation the user cannot predict and did not ask for.
+async fn the_same_key_selects_a_pane_when_no_box_is_open() {
+    // The contextual half of the gesture: with nothing to dock, `L` means
+    // "take the keyboard into the side panel". One key, two meanings, and
+    // which one applies is a fact the user can see.
     let mut app = test_app();
     seed_chat(&mut app);
-    select_panel(&mut app, 1); // Session
+    select_panel(&mut app, 0); // Session is already live — committing takes focus
     app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
-    let before = app.panel_host.active();
-    let focused_before = app.panel_host.is_focused();
+    // Return to the main buffer so the assertion below is about what `L`
+    // does rather than about the selector's focus behaviour.
+    app.on_key(plain('H'));
+    assert!(!app.panel_host.is_focused(), "starts in the main buffer");
 
     app.on_key(plain('L'));
 
     assert_eq!(
         app.panel_host.active(),
-        before,
-        "there is no box to dock; the panel must not change"
+        SidePanelId::Session,
+        "selecting a pane must not swap which panel is loaded"
     );
-    assert_eq!(
+    assert!(
         app.panel_host.is_focused(),
-        focused_before,
-        "and focus must not be silently stolen"
+        "with no box to dock, the directional takes the keyboard to the panel"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_leftward_direction_returns_to_the_main_buffer() {
+    let mut app = test_app();
+    seed_chat(&mut app);
+    select_panel(&mut app, 0); // Session is already live
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(plain('L'));
+    assert!(app.panel_host.is_focused());
+
+    app.on_key(plain('H'));
+
+    assert!(
+        !app.panel_host.is_focused(),
+        "the mirror gesture must be able to leave again"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_vertical_direction_cycles_the_loaded_panel() {
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    let before = app.panel_host.active();
+
+    app.on_key(plain('J'));
+
+    assert_ne!(
+        app.panel_host.active(),
+        before,
+        "the vertical direction must move through the panel list, not be inert"
     );
 }
 
@@ -649,6 +740,7 @@ async fn the_docked_panel_shows_the_same_conversation() {
     let mut app = test_app();
     seed_chat(&mut app);
     app.show_chat();
+    to_normal_mode(&mut app);
     app.on_key(plain('k'));
 
     app.on_key(plain('L'));
@@ -676,7 +768,7 @@ async fn the_composer_names_the_surface_that_has_the_keyboard() {
     assert_eq!(app.composer_destination_title(), "LLM");
 
     // The default panel.
-    select_panel(&mut app, 1);
+    select_panel(&mut app, 0);
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
     assert_eq!(
         app.composer_destination_title(),
@@ -709,7 +801,7 @@ async fn an_armed_reply_names_chat_even_when_a_panel_is_later_selected() {
         "precondition: r arms a reply"
     );
 
-    select_panel(&mut app, 1); // move to the Session panel
+    select_panel(&mut app, 0); // Session is already live; committing focuses it
     assert_eq!(
         app.composer_destination_title(),
         "CHAT",

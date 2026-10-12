@@ -261,6 +261,10 @@ pub enum BuiltinSlashAction {
     TerminalDetach,
     TerminalTerminate,
     TerminalRemove,
+    /// Bare `/terminal`: show the active interactive terminal in a box.
+    Terminal,
+    /// `/terminal-clear`: drop a terminal's local scrollback.
+    TerminalClear,
     PluginInfo,
     PluginEnable,
     PluginDisable,
@@ -749,6 +753,11 @@ impl CommandRegistry {
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
             Command::new("/shell-expand", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellExpand))
                 .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
+            Command::new("/terminal", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Terminal))
+                .with_description("Open an interactive terminal in a box (Shift+L docks it into the panel)")
+                .with_aliases(&["/term"]),
+            Command::new("/terminal-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalClear))
+                .with_description("Clear a terminal's scrollback and screen; the process keeps running (args: [handle])"),
             Command::new("/terminal-create", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalCreate))
                 .with_description("Create an interactive workspace terminal (args: <command> [args...])"),
             Command::new("/terminal-list", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalList))
@@ -1138,10 +1147,11 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 157th built-in is `/reasoning` (per-turn extended-thinking control);
-        // 156th was `/logs` (daemon log viewer). Keep
-        // `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 157);
+        // 159th and 158th are `/terminal` (bare interactive terminal box) and
+        // `/terminal-clear`; 157th was `/reasoning` (per-turn extended-thinking
+        // control). Keep `architecture/command.md` counts in sync when adding
+        // more.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 159);
     }
 
     #[test]
@@ -1437,6 +1447,8 @@ mod tests {
             B::TerminalDetach,
             B::TerminalTerminate,
             B::TerminalRemove,
+            B::Terminal,
+            B::TerminalClear,
             B::PluginInfo,
             B::PluginEnable,
             B::PluginDisable,

@@ -197,6 +197,7 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             experimental,
             keybinds,
             vim_mode,
+            panel_hotkeys,
             hooks,
             notifications,
             catalog,

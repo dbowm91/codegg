@@ -112,10 +112,13 @@ root and lifecycle modules.
   list; `Char` is the explicit non-configurable input exception.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
-  owns which `SidePanelId` is active, whether it holds focus, and the
-  `Ctrl+Alt+W` selector. To add a panel: an enum variant, an entry in
-  `SidePanelId::ALL`, and one `SidePanel` impl. Do not add a per-panel `if`
-  to the render path. A focused panel owns *navigation* — arrows, `j`/`k`,
+  owns which `SidePanelId` is active and whether it holds focus. Four panels
+  ship: `Session`, `Chat`, `Terminal`, `Help`. Which one is loaded is chosen by
+  the **panel manager box** (`Ctrl+Alt+W`, or `Shift+S` in Normal mode) — a
+  dialog, which replaced the old in-column grid selector. To add a panel: an
+  enum variant, an entry in `SidePanelId::ALL`, `label`/`title`/`hint` arms, a
+  host field, and arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  Do not add a per-panel `if` to the render path. A focused panel owns *navigation* — arrows, `j`/`k`,
   paging, its own verbs — and is consulted **only in Normal mode**, because
   the host claims `Esc`/`q` as exits and would otherwise make `q` untypable
   while composing. `PanelKey::PassThrough` exists only for panels that hold
@@ -130,14 +133,23 @@ root and lifecycle modules.
   the seam for adding the next panel, so do not grow per-panel footers.
   Project binding is resolved by `commands/panels.rs`, not by the panel.
   Key precedence in `App::on_key`:
-  modals → timeline → command mode → completions → change review → **side
-  panel (Normal only)** → Workspace → Editor → composer.
-- **Focus moves and the input target are Normal-mode, Shift-qualified, and
-  derived.** `Shift+→` focuses the side panel, `Shift+←`/`Shift+H` return to
-  the main buffer; bare arrows keep their existing meaning. They are gated by
-  `is_normal_only` because the binding map is shared across modes. `H` is bound
-  with *and* without `SHIFT` because terminals disagree on the encoding;
-  `FocusSidePanel` needs no letter twin because arrows encode reliably.
+  **Ctrl+digit hotkey recall** → modals → timeline → command mode →
+  completions → change review → **side panel (Normal only)** → Workspace →
+  Editor → composer. Hotkeys come before the panel because a panel that
+  swallowed the only key that leaves it would trap the keyboard.
+- **The directionals are one gesture family with two meanings.**
+  `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
+  `InputAction::Direction*` and then to one dispatcher,
+  `commands::panels::move_directionally`: a dockable box is open → the box is
+  *moved* into the panel; no box is open → the direction *selects a pane*
+  (`→` into the column, `←` back to the main buffer, `↑`/`↓` cycle the loaded
+  panel type). Resolve it there, never per surface, or a box and its panel will
+  drift. Normal-mode only via `is_normal_only`. Uppercase letters only —
+  `Char('l')` is a bare `l`, a within-surface verb, never the gesture — and
+  each is bound with *and* without `SHIFT` because terminals disagree on the
+  encoding. `Shift+Up/Down` and `Shift+J/K` were once reserved for a stacked
+  layout; they are bound now because `↑`/`↓` cycle the panel list, so the key
+  is no longer advertising an absent capability.
   `App::input_target()` is derived from panel focus on every read — never
   latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
   reads the same value; when `Chat` is armed but unbound, text is dropped with

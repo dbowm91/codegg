@@ -12,7 +12,10 @@
 //!   panel is one enum variant plus one [`SidePanel`] impl; there is no
 //!   per-panel `if` left in the render path.
 //! * [`SidePanelHost`] — which panel is active, whether it holds keyboard
-//!   focus, and the [`PanelSelector`] overlay opened by `Ctrl+Alt+W`.
+//!   focus. Which panel is loaded is chosen by the manager box
+//!   (`Ctrl+Alt+W` / `Shift+S`), which is a *dialog* rather than an overlay
+//!   drawn inside the column — a box can show what it is about to change,
+//!   which a 30-column overlay never could.
 //!
 //! ## Authority
 //!
@@ -44,18 +47,14 @@
 //! edited in one buffer while rendered in another.
 
 pub mod chat;
+pub mod help;
 pub mod session;
+pub mod terminal;
 
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
-};
+use ratatui::{buffer::Buffer, layout::Rect};
 
 use crate::tui::app::state::ChatState;
 use crate::tui::app::TuiMsg;
@@ -72,6 +71,78 @@ use crate::tui::theme::Theme;
 /// name every surface it can target, or it names none of them.
 pub const MAIN_BUFFER_TITLE: &str = "LLM";
 
+/// A direction the user can move in.
+///
+/// The four directions are **one gesture family with two meanings**, resolved
+/// in a single place ([`crate::tui::commands::panels::move_directionally`]):
+/// a dockable box is open, so the direction moves that box into the panel;
+/// otherwise the direction selects a pane. A box and its panel therefore
+/// cannot disagree about what `L` means, which is the whole point of having
+/// one seam instead of a per-surface rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl PanelDirection {
+    /// How far this direction moves through the loaded panel types.
+    ///
+    /// Vertical only. In a two-pane layout, `←`/`→` move the *keyboard*
+    /// between panes while `↑`/`↓` walk the panel list — each direction does
+    /// the one thing that still changes something. When the layout grows a
+    /// second column this becomes pure geometry again.
+    pub fn panel_step(self) -> i8 {
+        match self {
+            Self::Up => -1,
+            Self::Down => 1,
+            Self::Left | Self::Right => 0,
+        }
+    }
+}
+
+/// Resolve a `Shift`-qualified directional gesture: `←/→/↑/↓`, or the vim
+/// `H`/`J`/`K`/`L` twins.
+///
+/// One matcher, shared by every surface. A modal short-circuits key routing
+/// before the binding map is consulted, so a box has to recognise the gesture
+/// in its own key handler; the main buffer reaches the same actions *through*
+/// that handler's `InputAction`. Sharing the matcher is what makes the box and
+/// its panel one surface instead of two implementations that happen to agree
+/// today.
+///
+/// Returns `None` for everything else, deliberately including bare arrows and
+/// bare lowercase letters: those are within-surface navigation verbs and must
+/// keep meaning that.
+pub fn direction_of(key: KeyEvent) -> Option<PanelDirection> {
+    // A chord is a different gesture. `Ctrl+L` selects a model; letting it
+    // also move a pane would make one keystroke do two unrelated things.
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    // Arrows need the qualifier; letters carry it in the character itself.
+    let shifted = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Left if shifted => Some(PanelDirection::Left),
+        KeyCode::Right if shifted => Some(PanelDirection::Right),
+        KeyCode::Up if shifted => Some(PanelDirection::Up),
+        KeyCode::Down if shifted => Some(PanelDirection::Down),
+        // Uppercase only: a terminal may report `Shift+L` as `Char('L')`
+        // with or without SHIFT, but `Char('l')` is a bare `l` — a
+        // within-surface vim verb, never the directional gesture.
+        KeyCode::Char('H') => Some(PanelDirection::Left),
+        KeyCode::Char('J') => Some(PanelDirection::Down),
+        KeyCode::Char('K') => Some(PanelDirection::Up),
+        KeyCode::Char('L') => Some(PanelDirection::Right),
+        _ => None,
+    }
+}
+
 /// One swappable side panel.
 ///
 /// Adding a panel is an enum variant in [`SidePanelId`], an entry in
@@ -86,17 +157,30 @@ pub enum SidePanelId {
     /// Project chat: browse, compose, edit, reply, redact, mark-read, page,
     /// and switch channels without leaving the side column.
     Chat,
+    /// The interactive terminal, driven from the side column with the same
+    /// Viewing/Focused split the box uses.
+    Terminal,
+    /// The keybinding reference. Hosts the same [`HelpDialog`] the box does,
+    /// so a filter typed here behaves identically to one typed there.
+    Help,
 }
 
 impl SidePanelId {
-    /// Every registered panel, in selector order.
-    pub const ALL: &'static [SidePanelId] = &[SidePanelId::Session, SidePanelId::Chat];
+    /// Every registered panel, in manager order.
+    pub const ALL: &'static [SidePanelId] = &[
+        SidePanelId::Session,
+        SidePanelId::Chat,
+        SidePanelId::Terminal,
+        SidePanelId::Help,
+    ];
 
-    /// Short label shown in the title bar and the selector.
+    /// Short label shown in the title bar and the manager.
     pub fn label(self) -> &'static str {
         match self {
             SidePanelId::Session => "Session",
             SidePanelId::Chat => "Chat",
+            SidePanelId::Terminal => "Terminal",
+            SidePanelId::Help => "Help",
         }
     }
 
@@ -110,6 +194,8 @@ impl SidePanelId {
         match self {
             SidePanelId::Session => "SESSIONS",
             SidePanelId::Chat => "CHAT",
+            SidePanelId::Terminal => "TERMINAL",
+            SidePanelId::Help => "HELP",
         }
     }
 
@@ -118,6 +204,8 @@ impl SidePanelId {
         match self {
             SidePanelId::Session => 0,
             SidePanelId::Chat => 1,
+            SidePanelId::Terminal => 2,
+            SidePanelId::Help => 3,
         }
     }
 
@@ -130,97 +218,14 @@ impl SidePanelId {
         SidePanelId::ALL[index % len]
     }
 
-    /// Short blurb shown under the selector entry.
+    /// Short blurb shown under the manager entry.
     pub fn hint(self) -> &'static str {
         match self {
             SidePanelId::Session => "goal · todos · files",
             SidePanelId::Chat => "messages · channels",
+            SidePanelId::Terminal => "shell · commands",
+            SidePanelId::Help => "keys · filters",
         }
-    }
-}
-
-/// Columns in the selector grid.
-///
-/// Two keeps every entry legible inside the 30-column side column, and gives
-/// `h`/`l` a real meaning (move by column) distinct from `j`/`k`.
-pub const PANEL_SELECTOR_COLUMNS: usize = 2;
-
-/// The `Ctrl+Alt+W` overlay that picks which panel the side column shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelSelector {
-    /// Index into [`SidePanelId::ALL`].
-    cursor: usize,
-}
-
-impl Default for PanelSelector {
-    fn default() -> Self {
-        Self::opening(SidePanelId::Session)
-    }
-}
-
-impl PanelSelector {
-    /// Selector opened on the currently-active panel, so `Enter` with no
-    /// movement is a no-op rather than a silent jump.
-    pub fn opening(active: SidePanelId) -> Self {
-        Self {
-            cursor: active.index(),
-        }
-    }
-
-    pub fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    /// Selected panel, or `None` only if the registry were empty.
-    pub fn selected(&self) -> Option<SidePanelId> {
-        SidePanelId::ALL.get(self.cursor).copied()
-    }
-
-    /// Move by column. Clamped rather than wrapped: a press at the grid
-    /// edge should be inert, not teleport the highlight to the far side.
-    pub fn move_left(&mut self) {
-        if self.cursor % PANEL_SELECTOR_COLUMNS > 0 {
-            self.cursor -= 1;
-        }
-    }
-
-    /// Move by column; see [`PanelSelector::move_left`] for the no-wrap rule.
-    pub fn move_right(&mut self) {
-        let next = self.cursor + 1;
-        if next < SidePanelId::ALL.len() && next % PANEL_SELECTOR_COLUMNS != 0 {
-            self.cursor = next;
-        }
-    }
-
-    /// Move by row. Inert once the grid is a single row.
-    pub fn move_up(&mut self) {
-        self.cursor = self.cursor.saturating_sub(PANEL_SELECTOR_COLUMNS);
-    }
-
-    /// Move by row; inert once the grid is a single row.
-    pub fn move_down(&mut self) {
-        let next = self.cursor + PANEL_SELECTOR_COLUMNS;
-        if next < SidePanelId::ALL.len() {
-            self.cursor = next;
-        }
-    }
-
-    /// Route one key.
-    ///
-    /// Unlike a panel, the selector distinguishes *answers* from *noise*:
-    /// only `Enter` and `Esc` mean something, and the host has to act on
-    /// both. Everything else is moved or swallowed.
-    pub fn handle_key(&mut self, key: KeyEvent) -> SelectorKey {
-        match key.code {
-            KeyCode::Char('h') | KeyCode::Left => self.move_left(),
-            KeyCode::Char('l') | KeyCode::Right => self.move_right(),
-            KeyCode::Char('k') | KeyCode::Up => self.move_up(),
-            KeyCode::Char('j') | KeyCode::Down => self.move_down(),
-            KeyCode::Enter => return SelectorKey::Commit,
-            KeyCode::Esc => return SelectorKey::Cancel,
-            _ => return SelectorKey::Consumed,
-        }
-        SelectorKey::Moved
     }
 }
 
@@ -254,6 +259,17 @@ pub struct PanelCtx<'a> {
     /// Shared chat projection — the same one `/chat` reads, never a second
     /// cache.
     pub chat: &'a mut ChatState,
+    /// The interactive terminal controller — the same views, focus flags and
+    /// VT state the `/terminal` box drives.
+    ///
+    /// Granted for the same reason `chat` is: a panel must be able to render
+    /// the surface it hosts, and a second copy of the parser would disagree
+    /// with the box about what is on screen. It holds no client and no
+    /// locator, so it grants no authority — only presentation state.
+    pub terminal: &'a mut crate::tui::interactive_terminal::InteractiveTerminalController,
+    /// Global vim setting, so a panel that lists mode-gated keys (Help)
+    /// describes the mode actually in force.
+    pub vim_mode: bool,
     /// Project the chat panel is bound to, if any. Resolved by the command
     /// layer from the active tab or the Workspace selection; a panel never
     /// picks a project itself.
@@ -267,7 +283,7 @@ pub struct PanelCtx<'a> {
     /// The key resolver is invoked for panel keys in the panel's own mode,
     /// not the app's, so without this the host cannot tell a `Shift+H` meant
     /// as "type a capital H while composing" from one meant as "move focus".
-    /// `FocusMainBuffer`/`FocusSidePanel` are Normal-mode gestures by
+    /// `DirectionLeft`/`DirectionRight`/… are Normal-mode gestures by
     /// contract, and this is what enforces that even while a panel is focused.
     pub input_mode: crate::tui::input::InputMode,
 }
@@ -369,14 +385,14 @@ impl InputTarget {
     }
 }
 
-/// Which panel the side column shows, whether it holds focus, and the
-/// `Ctrl+Alt+W` selector.
+/// Which panel the side column shows, and whether it holds focus.
 pub struct SidePanelHost {
     active: SidePanelId,
     focused: bool,
-    selector: Option<PanelSelector>,
     session: session::SessionPanel,
     chat: chat::ChatPanel,
+    terminal: terminal::TerminalPanel,
+    help: help::HelpPanel,
 }
 
 impl Default for SidePanelHost {
@@ -393,9 +409,10 @@ impl SidePanelHost {
             // explicit "no project selected" until one exists.
             active: SidePanelId::Session,
             focused: false,
-            selector: None,
             session: session::SessionPanel,
             chat: chat::ChatPanel::default(),
+            terminal: terminal::TerminalPanel::default(),
+            help: help::HelpPanel::default(),
         }
     }
 
@@ -464,17 +481,9 @@ impl SidePanelHost {
         match self.active {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
+            SidePanelId::Terminal => self.terminal.composer_hints(&hints),
+            SidePanelId::Help => self.help.composer_hints(&hints),
         }
-    }
-
-    /// The selector swallows every other key, so the underlying panel must
-    /// not also react while it is up.
-    pub fn selector_open(&self) -> bool {
-        self.selector.is_some()
-    }
-
-    pub fn selector_cursor(&self) -> Option<usize> {
-        self.selector.map(|s| s.cursor())
     }
 
     /// Chat panel's composer buffer, so a keystroke can mirror it into the
@@ -492,12 +501,43 @@ impl SidePanelHost {
         self.chat = chat::ChatPanel::default();
     }
 
+    /// The terminal panel, so the command layer can point it at a handle and
+    /// learn when that handle goes away. Panels stay free of app access; this
+    /// is the same narrow grant the chat panel already has.
+    pub fn terminal_panel_mut(&mut self) -> &mut terminal::TerminalPanel {
+        &mut self.terminal
+    }
+
+    /// The handle the terminal panel is showing, if any. Used to resolve
+    /// "whichever terminal the user is looking at" for a command that takes
+    /// an optional handle.
+    pub fn terminal_handle(&self) -> Option<&str> {
+        self.terminal.handle()
+    }
+
+    /// Adopt `handle` in the terminal panel. Called after a terminal is
+    /// created or attached so docking `/terminal` shows something.
+    pub fn show_terminal(&mut self, handle: Option<&str>) {
+        self.terminal.show(handle);
+    }
+
+    /// Drop the terminal panel's handle when its view disappears.
+    pub fn forget_terminal(&mut self, handle: &str) {
+        self.terminal.forget(handle);
+    }
+
     /// True when the active panel has nothing to show. Focus is refused
     /// rather than stranding keys in a panel that cannot act on them.
     fn panel_is_empty(&self) -> bool {
         match self.active {
             SidePanelId::Session => false,
             SidePanelId::Chat => self.chat.is_unbound(),
+            // No terminal yet is the same condition as no bound project: the
+            // panel has nothing to show, so focus is refused rather than
+            // stranding keys in a region that cannot act on them.
+            SidePanelId::Terminal => self.terminal.is_empty(),
+            // Help always has rows, so it can always take focus.
+            SidePanelId::Help => false,
         }
     }
 
@@ -505,18 +545,9 @@ impl SidePanelHost {
         match self.active {
             SidePanelId::Session => &mut self.session,
             SidePanelId::Chat => &mut self.chat,
+            SidePanelId::Terminal => &mut self.terminal,
+            SidePanelId::Help => &mut self.help,
         }
-    }
-
-    /// Open the selector on the active panel. No-op when the side column is
-    /// hidden, since there would be nothing to select into.
-    pub fn open_selector(&mut self) {
-        self.selector = Some(PanelSelector::opening(self.active));
-    }
-
-    /// Dismiss the selector, leaving the active panel unchanged.
-    pub fn cancel_selector(&mut self) {
-        self.selector = None;
     }
 
     /// Switch to `id`. The previous panel is deactivated and the new one
@@ -529,12 +560,17 @@ impl SidePanelHost {
         }
         self.panel().on_deactivate(ctx);
         self.active = id;
-        // A panel that cannot act (chat with no bound project) must not
-        // appear to hold focus.
+        // Activate *before* asking whether the panel is empty. A panel that
+        // adopts its content on activation — the Terminal panel adopts the
+        // controller's active handle — would otherwise be judged empty for
+        // exactly one frame, refuse focus, and the first `/terminal` dock
+        // would land unfocused.
+        self.panel().on_activate(ctx);
+        // A panel that still cannot act (chat with no bound project, no
+        // terminal yet) must not appear to hold focus.
         if self.panel_is_empty() {
             self.focused = false;
         }
-        self.panel().on_activate(ctx);
     }
 
     /// Step `delta` panels, wrapping. Selecting from an unfocused host
@@ -552,21 +588,6 @@ impl SidePanelHost {
         self.focused = was_focused && !self.panel_is_empty();
     }
 
-    /// Commit the selector's highlighted panel and take focus.
-    ///
-    /// Focus is taken because the whole point of the overlay is "interact
-    /// with the panel I just picked"; leaving keys in the composer would
-    /// make the selection look inert.
-    pub fn commit_selector(&mut self, ctx: &mut PanelCtx<'_>) {
-        let Some(selector) = self.selector.take() else {
-            return;
-        };
-        if let Some(id) = selector.selected() {
-            self.select(id, ctx);
-            self.focused = !self.panel_is_empty();
-        }
-    }
-
     /// Take keyboard focus. Returns `false` when the active panel cannot
     /// act, leaving focus with the composer.
     pub fn focus(&mut self) -> bool {
@@ -581,37 +602,17 @@ impl SidePanelHost {
     /// Return keyboard focus to the composer.
     pub fn blur(&mut self) {
         self.focused = false;
-        self.selector = None;
     }
 
     /// Route one key while the host holds focus.
-    ///
-    /// Order matters: the selector overlays the panel, so it is consulted
-    /// first and the panel never sees a key the user aimed at the overlay.
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
         action: Option<InputAction>,
         ctx: &mut PanelCtx<'_>,
     ) -> Option<PanelKey> {
-        // The overlay is reachable whether or not a panel holds focus:
-        // opening it must not steal the keyboard, or a user who opens the
-        // switcher from the composer and cancels would find their next
-        // keystroke going to a panel they never chose.
-        if self.panel_is_empty() && self.selector.is_none() {
+        if self.panel_is_empty() {
             return None;
-        }
-        // The switcher's own hotkey is answered here, before any panel
-        // sees it. Delegating it would let a focused panel swallow the only
-        // key that can get the user back to the switcher, which is how
-        // "I opened the overlay and now I am stuck in chat" happens.
-        if action == Some(InputAction::TogglePanelSelector) {
-            if self.selector.is_some() {
-                self.cancel_selector();
-            } else {
-                self.open_selector();
-            }
-            return Some(PanelKey::Consumed);
         }
         // `Ctrl+B` hides the column this panel lives in, so it is the only
         // key that must work *from* inside a focused panel. Answering it here
@@ -624,31 +625,23 @@ impl SidePanelHost {
         if action == Some(InputAction::ToggleSidebar) {
             return Some(PanelKey::Intent(TuiMsg::ToggleSidebar));
         }
-        // The focus moves are answered here for the same reason: `Shift+H` /
-        // `Shift+Left` is the only way back out of a focused panel, and a
-        // panel that swallowed it would trap the keyboard. `Shift+L` /
-        // `Shift+Right` is idempotent — the panel already has focus, so
-        // re-focusing is a no-op rather than a toggle.
-        if ctx.input_mode == crate::tui::input::InputMode::Normal
-            && matches!(
-                action,
-                Some(InputAction::FocusMainBuffer | InputAction::FocusSidePanel)
-            )
-        {
-            let msg = if action == Some(InputAction::FocusSidePanel) {
-                TuiMsg::FocusSidePanel
-            } else {
-                TuiMsg::FocusMainBuffer
+        // The directions are answered here, before the panel, for the same
+        // reason: they are the only way out of a focused panel, and a panel
+        // that swallowed them would trap the keyboard. Answered as
+        // `MoveDirection` rather than as a resolved focus change so the
+        // contextual dispatcher still sees the whole picture — including the
+        // fact that no box is open, which is what makes this a pane move.
+        if ctx.input_mode == crate::tui::input::InputMode::Normal {
+            let dir = match action {
+                Some(InputAction::DirectionLeft) => Some(PanelDirection::Left),
+                Some(InputAction::DirectionRight) => Some(PanelDirection::Right),
+                Some(InputAction::DirectionUp) => Some(PanelDirection::Up),
+                Some(InputAction::DirectionDown) => Some(PanelDirection::Down),
+                _ => None,
             };
-            return Some(PanelKey::Intent(msg));
-        }
-        if let Some(selector) = self.selector.as_mut() {
-            match selector.handle_key(key) {
-                SelectorKey::Commit => self.commit_selector(ctx),
-                SelectorKey::Cancel => self.cancel_selector(),
-                SelectorKey::Moved | SelectorKey::Consumed => {}
+            if let Some(dir) = dir {
+                return Some(PanelKey::Intent(TuiMsg::MoveDirection(dir)));
             }
-            return Some(PanelKey::Consumed);
         }
         if !self.focused {
             return None;
@@ -668,12 +661,9 @@ impl SidePanelHost {
         Some(self.panel().handle_key(key, action, ctx))
     }
 
-    /// Paint the active panel, then the selector overlay if it is open.
+    /// Paint the active panel.
     pub fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         self.panel().render(ctx, buf, area);
-        if let Some(selector) = self.selector {
-            render_selector(buf, area, selector, &ctx.theme);
-        }
     }
 }
 
@@ -688,93 +678,6 @@ fn is_exit_key(key: KeyEvent) -> bool {
         return false;
     }
     matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
-}
-
-/// What one key meant to the selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectorKey {
-    /// The highlight moved; the panel is unchanged.
-    Moved,
-    /// Commit the highlighted panel and take focus.
-    Commit,
-    /// Dismiss without changing panels.
-    Cancel,
-    /// Swallowed, so the overlay never leaks keys to what is behind it.
-    Consumed,
-}
-
-/// Overlay listing every registered panel in a grid.
-///
-/// Drawn inside the side column rather than centred over the viewport: it
-/// describes the region it is switching, and staying in-column means the
-/// panel it will reveal is never covered while the overlay is up.
-fn render_selector(buf: &mut Buffer, area: Rect, selector: PanelSelector, theme: &Arc<Theme>) {
-    if area.width < 12 || area.height < 5 {
-        return;
-    }
-    let entries = SidePanelId::ALL.len();
-    let grid_rows = entries.div_ceil(PANEL_SELECTOR_COLUMNS) as u16;
-    // One border row top and bottom, one grid row per entry, one hint row.
-    let height = (grid_rows + 3).min(area.height);
-    let overlay = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height,
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.primary))
-        .title(" Panels ")
-        .title_style(
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD),
-        )
-        .style(Style::default().bg(theme.background));
-    let inner = block.inner(overlay);
-    Clear.render(overlay, buf);
-    block.render(overlay, buf);
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
-    let rows = Layout::vertical([
-        Constraint::Length(grid_rows.min(inner.height)),
-        Constraint::Length(1),
-    ])
-    .split(inner);
-
-    let cursor = selector.cursor();
-    let mut cells: Vec<Vec<Span>> = vec![Vec::new(); grid_rows as usize];
-    for (index, id) in SidePanelId::ALL.iter().copied().enumerate() {
-        let selected = index == cursor;
-        let style = if selected {
-            Style::default()
-                .fg(theme.primary)
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            Style::default().fg(theme.muted)
-        };
-        let text = if selected {
-            format!("▸{}", id.label())
-        } else {
-            format!(" {}", id.label())
-        };
-        cells[index / PANEL_SELECTOR_COLUMNS].push(Span::styled(text, style));
-    }
-    for (row, spans) in cells.iter().enumerate() {
-        let Some(row_area) = rows.get(row).copied() else {
-            break;
-        };
-        Paragraph::new(Line::from(spans.clone())).render(row_area, buf);
-    }
-    if let Some(hint) = rows.get(grid_rows as usize) {
-        Paragraph::new(Line::from(Span::styled(
-            " h/j/k/l · Enter ",
-            Style::default().fg(theme.muted),
-        )))
-        .render(*hint, buf);
-    }
 }
 
 #[cfg(test)]
@@ -797,108 +700,19 @@ mod tests {
         assert_eq!(SidePanelId::from_index(len + 3), SidePanelId::ALL[3 % len]);
     }
 
-    fn selector() -> PanelSelector {
-        PanelSelector::opening(SidePanelId::Session)
-    }
-
+    // The directional matcher itself is exercised end-to-end in
+    // `tests/tui_panel_docking.rs`; what matters *here* is that the registry
+    // stays internally consistent.
     #[test]
-    fn selector_starts_on_the_active_panel() {
-        let s = PanelSelector::opening(SidePanelId::Chat);
-        assert_eq!(s.selected(), Some(SidePanelId::Chat));
-    }
-
-    #[test]
-    fn selector_h_and_l_move_by_column_and_clamp_at_the_edges() {
-        let mut s = selector();
-        // Column 0: `h` is inert rather than wrapping to the last column.
-        s.move_left();
-        assert_eq!(s.cursor(), 0);
-        s.move_right();
-        assert_eq!(s.cursor(), 1);
-        // Last column of row 0: `l` is inert, it does not wrap to row 1.
-        s.move_right();
-        assert_eq!(s.cursor(), 1);
-        s.move_left();
-        assert_eq!(s.cursor(), 0);
-    }
-
-    #[test]
-    fn selector_j_and_k_are_inert_on_a_single_row_grid() {
-        let mut s = selector();
-        let before = s.cursor();
-        s.move_down();
-        assert_eq!(s.cursor(), before);
-        s.move_up();
-        assert_eq!(s.cursor(), before);
-    }
-
-    #[test]
-    fn selector_grid_moves_by_row_once_a_second_row_exists() {
-        // Exercise the row arithmetic directly against a 2-column grid so
-        // the j/k behaviour is covered before a third panel ships.
-        let mut cursor = 0usize;
-        let len = 4usize;
-        let down = cursor + PANEL_SELECTOR_COLUMNS;
-        if down < len {
-            cursor = down;
+    fn the_registry_is_internally_consistent() {
+        assert!(
+            SidePanelId::ALL.len() >= 2,
+            "a one-panel registry makes the vertical direction inert"
+        );
+        for panel in SidePanelId::ALL.iter().copied() {
+            assert!(!panel.label().is_empty());
+            assert!(!panel.title().is_empty());
+            assert!(!panel.hint().is_empty());
         }
-        assert_eq!(cursor, 2);
-        cursor = cursor.saturating_sub(PANEL_SELECTOR_COLUMNS);
-        assert_eq!(cursor, 0);
-    }
-
-    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
-        use crossterm::event::KeyEventKind;
-        KeyEvent {
-            code,
-            modifiers,
-            kind: KeyEventKind::Press,
-            state: crossterm::event::KeyEventState::NONE,
-        }
-    }
-
-    #[test]
-    fn selector_keys_route_vim_and_arrows_to_the_same_moves() {
-        let mut vim = selector();
-        let mut arrows = selector();
-        assert_eq!(
-            vim.handle_key(key(KeyCode::Char('l'), KeyModifiers::NONE)),
-            SelectorKey::Moved
-        );
-        assert_eq!(
-            arrows.handle_key(key(KeyCode::Right, KeyModifiers::NONE)),
-            SelectorKey::Moved
-        );
-        assert_eq!(vim.cursor(), arrows.cursor());
-    }
-
-    #[test]
-    fn selector_answers_enter_and_escape_and_swallows_everything_else() {
-        let mut s = selector();
-        assert_eq!(
-            s.handle_key(key(KeyCode::Enter, KeyModifiers::NONE)),
-            SelectorKey::Commit
-        );
-        assert_eq!(
-            s.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
-            SelectorKey::Cancel
-        );
-        assert_eq!(
-            s.handle_key(key(KeyCode::Char('z'), KeyModifiers::NONE)),
-            SelectorKey::Consumed,
-            "an unbound key is still consumed: the overlay must not leak to the composer"
-        );
-    }
-
-    #[test]
-    fn the_selector_has_no_private_hotkey_of_its_own() {
-        // The toggle is the host's job: it must be answered even when a
-        // panel (not the overlay) would otherwise consume the key.
-        let mut s = selector();
-        let hotkey = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert_eq!(
-            s.handle_key(key(KeyCode::Char('W'), hotkey)),
-            SelectorKey::Consumed
-        );
     }
 }

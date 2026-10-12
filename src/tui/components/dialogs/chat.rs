@@ -224,6 +224,25 @@ impl ChatDialog {
 
     // ── Mode transitions ──────────────────────────────────────────────
 
+    /// Open in Insert mode so the user can type immediately.
+    ///
+    /// A chat box is opened in order to write in it; starting in Normal
+    /// meant the first keystroke was swallowed as navigation and the user
+    /// had to discover a second key before they could say anything.
+    ///
+    /// Called *after* the first [`apply_snapshot`](Self::apply_snapshot),
+    /// deliberately. That method adopts the shared project draft only while
+    /// the window is in Normal mode — the guard that stops a live event from
+    /// clobbering a half-typed message. Flipping the mode first would silently
+    /// drop a draft the user had already written and never sent.
+    ///
+    /// Adopted through [`open_seed`](Self::open_seed) so this is the same
+    /// transition `i` performs, rather than a second path into the mode
+    /// fields that could disagree about what Compose implies.
+    pub fn enter_insert_mode(&mut self) {
+        self.open_seed(ChatComposeSeed::say());
+    }
+
     /// Open the composer for `seed`.
     ///
     /// The seed comes from the shared browser, so `r` and `e` behave

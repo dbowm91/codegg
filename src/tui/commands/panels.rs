@@ -22,7 +22,7 @@ use std::sync::Arc;
 use crate::tui::app::state::chat::ChatState;
 use crate::tui::app::App;
 use crate::tui::input::InputAction;
-use crate::tui::panels::{PanelCtx, PanelKey, SidePanelId};
+use crate::tui::panels::{PanelCtx, PanelDirection, PanelKey, SidePanelId};
 use crate::tui::theme::Theme;
 
 /// Resolve the project the chat panel should bind to right now.
@@ -53,41 +53,108 @@ pub(crate) fn sync_chat_panel_project(app: &mut App) {
     panel.set_bound(app.chat_panel_project.is_some());
 }
 
-/// Open the `Ctrl+Alt+W` panel switcher.
+/// Open the panel manager (`Ctrl+Alt+W`, and `Shift+S` in Normal mode).
 ///
-/// Refused when the side column is hidden: the switcher describes the
-/// region it is switching, and with no region there is nothing to select
-/// into.
-///
-/// Focus deliberately moves *only on commit*. Opening the overlay from the
-/// composer and pressing `Esc` must leave the composer focused, not strand
-/// the next keystroke in a panel the user never chose.
-pub(crate) fn open_panel_selector(app: &mut App) {
+/// A *box*, not an overlay drawn inside the column. The old grid selector
+/// showed two unlabelled buttons in 30 columns and could not be filtered;
+/// the manager names each panel, says what it is for, shows which digit is
+/// already bound, and offers the same type-to-filter the rest of the TUI
+/// uses. It also has somewhere to explain itself, which is what a switcher
+/// for a growing registry needs.
+pub(crate) fn open_panel_manager(app: &mut App) {
     if !app.ui_state.sidebar_visible {
-        app.messages_state
-            .toasts
-            .info("Side panel is hidden — Ctrl+B shows it");
-        return;
+        app.ui_state.sidebar_visible = true;
     }
-    // Resolve the chat binding now, before the host can commit to the Chat
-    // panel: the host has no app access and would otherwise find it
-    // unbound and refuse to focus it.
+    // Resolve the chat binding now, before the user can pick Chat: the host
+    // has no app access and would otherwise find it unbound and refuse focus.
     sync_chat_panel_project(app);
-    app.panel_host.open_selector();
-    sync_workspace_focus(app);
+    let dialog = crate::tui::components::dialogs::panel_manager::PanelManagerDialog::new(
+        Arc::clone(&app.ui_state.theme),
+        app.panel_hotkeys.clone(),
+        app.panel_host.active(),
+    );
+    app.push_dialog(crate::tui::app::Dialog::PanelManager, Box::new(dialog));
 }
 
-/// Toggle the switcher from the action arm.
+/// Toggle the manager from the action arm.
 ///
 /// Reached when no panel holds focus, so the key never reaches the host's
-/// own hotkey handling. When a panel *is* focused the host answers the same
+/// own key handling. When a panel *is* focused the host answers the same
 /// action itself, keeping one owner for the toggle.
 pub(crate) fn toggle_panel_selector(app: &mut App) {
-    if app.panel_host.selector_open() {
-        app.panel_host.cancel_selector();
-        sync_workspace_focus(app);
-    } else {
-        open_panel_selector(app);
+    open_panel_manager(app);
+}
+
+/// Apply a `Ctrl+digit` recall.
+///
+/// Returns `true` when the key was a slot and has been consumed, whether or
+/// not it was bound — an unbound slot is still the manager's digit range and
+/// must not fall through into the composer.
+pub(crate) fn recall_panel_hotkey(app: &mut App, digit: char) -> bool {
+    let Some(panel) = app.panel_hotkeys.get(digit) else {
+        app.messages_state.toasts.info(&format!(
+            "No panel bound to ^-{digit} — bind it in the panel manager (⇧S)"
+        ));
+        return true;
+    };
+    if !app.ui_state.sidebar_visible {
+        app.ui_state.sidebar_visible = true;
+    }
+    if panel == SidePanelId::Chat {
+        sync_chat_panel_project(app);
+    }
+    select_panel(app, panel);
+    // Focus follows, because the whole point of a saved hotkey is arriving
+    // at the panel ready to use it.
+    focus_panel(app);
+    true
+}
+
+/// Persist a new digit binding and confirm it in place.
+pub(crate) fn save_panel_hotkey(app: &mut App, digit: char, panel: SidePanelId) {
+    let replaced = app.panel_hotkeys.get(digit);
+    app.panel_hotkeys.set(digit, panel);
+    let notice = match replaced {
+        Some(previous) if previous != panel => {
+            format!(
+                "^-{digit} rebound: was {}, now {}",
+                previous.label(),
+                panel.label()
+            )
+        }
+        Some(_) => format!("^-{digit} already {} — unchanged", panel.label()),
+        None => format!("^-{digit} → {} (Ctrl+{digit})", panel.label()),
+    };
+    persist_panel_hotkeys(app);
+    app.messages_state.toasts.info(&notice);
+}
+
+/// Write the hotkey map back to the **global** config.
+///
+/// Mirrors the theme's persistence path rather than the keybind editor's:
+/// a panel hotkey is a per-user preference, so it belongs in the user-level
+/// config. `Config::save()` prefers the nearest project config, which would
+/// confine the binding to one checkout and could write it into a tracked
+/// file — exactly the problem that made the theme use `save_global`.
+///
+/// Failures are reported but never roll back the in-memory binding: the key
+/// works for this session either way, and a user who cannot write their
+/// config should still be able to use the panel they just bound.
+fn persist_panel_hotkeys(app: &mut App) {
+    let mut config = match crate::config::schema::Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            app.messages_state
+                .toasts
+                .error(&format!("Hotkey not saved: {error}"));
+            return;
+        }
+    };
+    config.panel_hotkeys = Some(app.panel_hotkeys.to_map().into_iter().collect());
+    if let Err(error) = config.save_global() {
+        app.messages_state
+            .toasts
+            .error(&format!("Hotkey not saved: {error}"));
     }
 }
 
@@ -101,6 +168,7 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) {
             panel_host,
             sidebar,
             chat,
+            interactive_terminals,
             chat_panel_project,
             sidebar_area,
             ui_state,
@@ -111,6 +179,7 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) {
             ui_state,
             sidebar,
             chat,
+            interactive_terminals,
             chat_panel_project,
             *sidebar_area,
             focused,
@@ -135,7 +204,79 @@ pub(crate) fn blur_panel(app: &mut App) {
     sync_workspace_focus(app);
 }
 
-/// Dock the open box into the side panel (`L` / `Shift+L`).
+/// Resolve one directional gesture (`Shift+←/→/↑/↓`, `Shift+H/J/K/L`).
+///
+/// This is the single meaning of those eight keys across every surface, and
+/// the branch at the top is the whole design:
+///
+/// * **A dockable box is open** → the gesture *moves the box* into the side
+///   panel and the box goes away. "I opened `/chat` and now I want it to keep
+///   existing over there."
+/// * **No box is open** → the gesture *selects a pane*: `→` takes the
+///   keyboard into the side panel, `←` returns it to the main buffer, and
+///   `↑`/`↓` cycle which panel type is loaded.
+///
+/// Reading the context here rather than at each call site is what keeps a box
+/// and its panel from implementing the same rule twice and drifting. A box
+/// calls this from its own Normal-mode handler (a modal short-circuits key
+/// routing before the binding map runs); the main buffer arrives via the
+/// [`InputAction`] arms in `App::on_key`.
+pub(crate) fn move_directionally(app: &mut App, dir: PanelDirection) {
+    if app.dock_target().is_some() {
+        dock_open_box(app);
+        return;
+    }
+    match dir {
+        PanelDirection::Left => focus_main_buffer(app),
+        PanelDirection::Right => focus_side_panel(app),
+        // Only the vertical pair walks the panel list; in a two-pane layout
+        // the horizontals already have a job and `panel_step` returns 0 for
+        // them, so this is the single call site rather than a silent no-op.
+        up_down => step_panel(app, up_down.panel_step()),
+    }
+}
+
+/// Cycle the loaded panel type by `delta`, keeping focus where it was.
+///
+/// Selecting a panel does not seize the keyboard: `↑`/`↓` is how a user walks
+/// the list while reading titles, and stealing the composer mid-scroll would
+/// send their next keystroke to a panel they only looked at. Focus follows
+/// only if it already had it.
+pub(crate) fn step_panel(app: &mut App, delta: i8) {
+    if delta == 0 || SidePanelId::ALL.len() < 2 {
+        return;
+    }
+    // Chat must be bound before it can be selected, and only this layer can
+    // resolve a project — the host has no app access.
+    sync_chat_panel_project(app);
+    {
+        let App {
+            panel_host,
+            sidebar,
+            chat,
+            interactive_terminals,
+            chat_panel_project,
+            sidebar_area,
+            ui_state,
+            ..
+        } = app;
+        let focused = panel_host.is_focused();
+        let mut ctx = panel_ctx(
+            ui_state,
+            sidebar,
+            chat,
+            interactive_terminals,
+            chat_panel_project,
+            *sidebar_area,
+            focused,
+            ui_state.input_mode,
+        );
+        panel_host.step(delta, &mut ctx);
+    }
+    sync_workspace_focus(app);
+}
+
+/// Dock the open box into the side panel.
 ///
 /// This is the multiplexer move: instead of "open the chat box, then separately
 /// open the chat panel", the box is *moved* into the panel and the box goes
@@ -201,18 +342,30 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
     if !app.ui_state.sidebar_visible {
         return false;
     }
-    // The host answers its own hotkey (a focused panel must not swallow the
-    // only way back to the switcher), and committing to Chat needs a bound
-    // project — which only this layer can resolve. So bind here, on the
-    // press that opens the overlay, rather than on every keystroke.
-    if !app.panel_host.selector_open() && action == Some(InputAction::TogglePanelSelector) {
+    // A focused panel must not swallow the only way back to the manager, so
+    // the host answers the toggle itself. Committing to Chat needs a bound
+    // project, which only this layer can resolve — so bind here, on the press
+    // that opens the box, rather than on every keystroke.
+    if action == Some(InputAction::TogglePanelSelector) {
+        // Toggle: pressing the key again with the manager up closes it,
+        // rather than stacking a second copy of the same box.
+        if app
+            .focus_manager
+            .has_dialog(crate::tui::components::component::DialogType::PanelManager)
+        {
+            app.close_dialog();
+            return true;
+        }
         sync_chat_panel_project(app);
+        open_panel_manager(app);
+        return true;
     }
     let outcome = {
         let App {
             panel_host,
             sidebar,
             chat,
+            interactive_terminals,
             chat_panel_project,
             sidebar_area,
             ui_state,
@@ -223,6 +376,7 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
             ui_state,
             sidebar,
             chat,
+            interactive_terminals,
             chat_panel_project,
             *sidebar_area,
             focused,
@@ -259,6 +413,7 @@ fn panel_ctx<'a>(
     ui_state: &'a crate::tui::app::state::ui::UiState,
     sidebar: &'a mut crate::tui::components::sidebar::SidebarWidget,
     chat: &'a mut ChatState,
+    terminal: &'a mut crate::tui::interactive_terminal::InteractiveTerminalController,
     chat_panel_project: &'a Option<String>,
     sidebar_area: Option<ratatui::layout::Rect>,
     focused: bool,
@@ -275,6 +430,8 @@ fn panel_ctx<'a>(
             .unwrap_or(0),
         session: sidebar,
         chat,
+        terminal,
+        vim_mode: ui_state.vim_mode,
         chat_project: chat_panel_project.as_deref(),
         area: sidebar_area.unwrap_or_default(),
         // Supplied by the caller: it holds `panel_host` mutably while the
