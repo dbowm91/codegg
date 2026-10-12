@@ -80,10 +80,10 @@ jobs:
         run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
 
       - name: Windows suspended-target failure injection
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::job_assignment_failure_never_runs -- --nocapture
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib failed_job_assignment_never_runs_the_suspended_target -- --nocapture
 
       - name: Restricted stdio setup failure injection
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib restricted_ -- --nocapture --test-threads=1
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::restricted_ -- --nocapture --test-threads=1
 
       - name: Managed environment block control test
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_environment_block_is_accepted_by_create_process -- --nocapture
