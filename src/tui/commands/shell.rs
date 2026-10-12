@@ -320,13 +320,13 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                     }
                     match project_for_model(&include_text) {
                         Ok(include_text) => {
-                            if !stage_remote_shell_projection(app, include_text.clone()) {
-                                if !stage_local_shell_projection(app, id.0, include_text.clone()) {
-                                    app.prompt_state.prompt.set_text(include_text);
-                                    app.messages_state.toasts.warning(
-                                        "Redacted shell evidence is an unsubmitted composer draft because no session owner is connected",
-                                    );
-                                }
+                            if !stage_remote_shell_projection(app, include_text.clone())
+                                && !stage_local_shell_projection(app, id.0, include_text.clone())
+                            {
+                                app.prompt_state.prompt.set_text(include_text);
+                                app.messages_state.toasts.warning(
+                                    "Redacted shell evidence is an unsubmitted composer draft because no session owner is connected",
+                                );
                             }
                         }
                         Err(error) => app.messages_state.toasts.error(&error),
