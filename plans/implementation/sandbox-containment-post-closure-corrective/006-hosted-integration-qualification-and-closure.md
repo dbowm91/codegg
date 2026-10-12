@@ -1,8 +1,8 @@
 # Sandbox Containment Post-Closure Corrective C006 — Hosted Integration Qualification and PR Closure
 
-Status: blocked (hard prerequisite C005; recovered from earlier lost planning branch, final CI red on current mixed head)
+Status: active (C005 conditionally closed; final hosted qualification running on focused PR #112)
 
-Repository baseline: `planning/sandbox-containment-post-closure-corrective` at `e6950f5088dc1bb855c4c3c27ac7507b67fa07fd`; `main` at `7317a67ad604fe39fd5282ddca07496255faa4d1`, with the branch 37 ahead / 0 behind (observed 2026-10-12, before recovered plan commits). Implementation must use C005's final candidate head, not these pre-handoff SHAs.
+Repository baseline: focused sandbox PR #112 at `e9ea2078718130229ef639af0658cab96fed191c`, based on `main` and merge base `7317a67ad604fe39fd5282ddca07496255faa4d1`; C005 closure is `f4f5308`. Hosted CI and Desktop E2E must be read against this exact head and any later source SHA.
 
 Source roadmap:
 - `plans/subsystems/sandbox-containment-post-closure-corrective-roadmap.md#7-milestones-and-useroperator-exits`
@@ -62,6 +62,12 @@ Treat these as **eight Clippy errors plus two compiler diagnostics**, not ten sa
 
 Do not downgrade the failures to "CI flake" or claim the tests passed: the Clippy job did not reach `Workspace tests`, and Desktop E2E never reached `Built-app WebDriver trajectory`. The earlier native sandbox helper run remains valid only for unchanged sandbox code.
 
+### Focused candidate follow-up (2026-10-12)
+
+C005 separated those owner paths from the sandbox PR. PR #111 now carries the human-shell/editor/desktop work; its hosted CI run `38275854474` and Desktop E2E run `38275854469` passed on `05090325e177a0142811a697d2fc5f339da5e066` (Windows process-launcher check was still running when observed). Focused sandbox PR #112 is based on current `main` and excludes those files.
+
+The first hosted run on sandbox head `c6a63a46e0efdb0e1b68b5258e03206db91e5dcb`, CI run `38276126795`, passed formatting and static guards then failed Workspace Clippy 1.99 on a redundant wildcard in the existing `tests/session_family/projection_consumer.inc`; Workspace tests were skipped. The same run also motivated Linux-gating the `BackendPolicy` import in `src/security/sandbox/landlock.rs` for non-Linux Clippy. Both narrow issues were corrected at `e9ea2078718130229ef639af0658cab96fed191c`; focused `cargo clippy -p codegg --test session_family --locked -- -D warnings` then passed locally. Exact-head CI and Desktop E2E on `e9ea207` are the remaining qualification gates.
+
 ## 4. Invariants and non-goals
 
 **Must preserve:** required sandbox failure is terminal before target exec; Linux Landlock ABI>=3 `TRUNCATE` rights, `no_new_privs` and credential carve; Seatbelt final deny ordering; no shared writable global cache; private per-launch scratch with lifecycle cleanup; Python three-mode execution; correct backend status; no raw-target fallback; existing daemon authority and managed-process cancellation. Existing human shell and LSP changes must remain with their independent owners.
@@ -107,6 +113,8 @@ If the errors are only in sibling workstreams that do not belong to the focused 
 
 Use the existing PR-triggered `CI / verify` workflow at the *exact final head SHA*. Run no extra permanent lane. Record run ID/URL, triggering event/PR, commit SHA, job and step outcomes, actual conclusion, and whether required format/check/Clippy/static guard/test phases completed.
 
+`Desktop E2E` is path-gated by `.github/workflows/desktop-e2e.yml` and does not run for a sandbox-only diff that changes none of its listed desktop/client/projection paths. In that case, verify those paths are absent from the final sandbox diff and cite the green sibling-owner Desktop E2E run instead; do not add a no-op desktop edit or another workflow trigger merely to manufacture a check on an unchanged surface. If any path in the workflow's trigger list is changed, require its run on the final candidate SHA.
+
 Failure rules:
 - a failing test, compiler error, Clippy/security guard, or inability to run a required check is a **real blocker**, not a passing CI record;
 - an unrelated flaky or runner-provisioning failure may receive one normal retry on the same SHA with the cause and outcome recorded; do not create more plans simply to re-run the same gate;
@@ -139,7 +147,7 @@ This is integration work, not a new runtime state machine. Confirm existing regr
 
 C006 is strictly closed **for integration** only when:
 1. C005's ownership matrix and final candidate/PR are accepted, no foreign uncontrolled work remains in the sandbox submission, and the final branch is current with its review base;
-2. required focused and existing hosted checks pass on the **final** candidate, with exact SHA/run identity recorded;
+2. required focused and existing hosted checks pass on the **final** candidate, with exact SHA/run identity recorded; `Desktop E2E` passes on that SHA when path-gated in, or the final diff is proven not to touch its trigger surface and the sibling-owner run is green;
 3. prior native Linux/macOS sandbox evidence remains applicable or a targeted qualified native rerun replaces it where implementation changed;
 4. no critical/high enforcement, provenance, authority or data-integrity finding remains;
 5. PR summary and review status accurately describe implemented behavior, scoped changes, tests and residual limitations;
@@ -150,4 +158,4 @@ Stop on a real security/owner boundary regression, unresolved mix of independent
 
 ## 8. Closure evidence and handoff
 
-Required record `plans/closure/sandbox-containment-post-closure-corrective/006-status.md`: C005 closure reference; final branch and PR URL; main/head/merge-base SHA and diffs; source evidence matrix; targeted commands pass/fail/skips; actual supported-Linux/macOS runs used and why applicable; final hosted CI run/job/check outcomes; observed PR mergeability and review status; unrelated workstream disposition; security/recovery/compatibility review; unresolved severity-ranked findings; exact recommendation (ready for review/merge, conditionally closed with explicit evidence blocker, or blocked). Link the final merged SHA only if a merge actually occurs.
+Required record `plans/closure/sandbox-containment-post-closure-corrective/006-status.md`: C005 closure reference; final branch and PR URL; main/head/merge-base SHA and diffs; source evidence matrix; targeted commands pass/fail/skips; actual supported-Linux/macOS runs used and why applicable; final hosted CI run/job/check outcomes; Desktop E2E exact-head result or path-filter exclusion plus sibling-owner result; observed PR mergeability and review status; unrelated workstream disposition; security/recovery/compatibility review; unresolved severity-ranked findings; exact recommendation (ready for review/merge, conditionally closed with explicit evidence blocker, or blocked). Link the final merged SHA only if a merge actually occurs.

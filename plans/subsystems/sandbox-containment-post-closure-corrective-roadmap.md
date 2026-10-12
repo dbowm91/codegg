@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective Roadmap
 
-Status: active integration-recovery corrective (C001-C003 closed; C004 conditionally closed; C005 conditionally closed; C006 ready)
+Status: active integration-recovery corrective (C001-C003 closed; C004 conditionally closed; C005 conditionally closed; C006 active)
 
 Repository baseline reviewed: `main` at `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10).
 
@@ -73,7 +73,7 @@ C002 (Landlock ABI/truncate correction; independent) ──> C003  |
 - C003: closed; Linux ABI 4 and native Apple Silicon effective deny/write/scratch evidence passed.
 - C004: conditionally closed; effective read/write/network/FD contract and tool compatibility are measured and documented. Apple Events/Launch Services reachability, XPC/Mach reachability, and setuid transitions remain unqualified; no claim of full parity or complete IPC isolation.
 - C005: conditionally closed; ownership-safe sandbox candidate is PR #112; local focused tests are blocked by the configured x86_64 macOS linker and final hosted qualification transfers to C006.
-- C006: ready; qualify PR #112's final head through normal hosted CI and Desktop E2E; retain C004's residual limitations.
+- C006: active; qualify PR #112's final head through normal hosted CI and Desktop E2E; retain C004's residual limitations.
 
 All four plan documents may be read in parallel, but hand off only dependency-ready ones for production changes.
 
@@ -86,7 +86,7 @@ All four plan documents may be read in parallel, but hand off only dependency-re
 | C003 | invariant | `plans/implementation/sandbox-containment-post-closure-corrective/003-policy-deny-precedence-and-scoped-tool-state.md` | closed | Linux ABI 4 and native Apple Silicon credential deny, scoped write, and scratch lifecycle evidence passed |
 | C004 | capability/invariant | `plans/implementation/sandbox-containment-post-closure-corrective/004-macos-confidentiality-and-cross-platform-qualification.md` | conditionally closed | actual macOS read/write/network/FD limits and tooling compatibility qualified; IPC and privilege residuals remain explicit |
 | C005 | invariant/infrastructure | `plans/implementation/sandbox-containment-post-closure-corrective/005-integration-branch-ownership-and-base-reconciliation.md` | conditionally closed | ownership-safe PR #112; local test linking blocked, with hosted evidence assigned to C006 |
-| C006 | invariant/infrastructure | `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md` | ready | qualify final PR #112 head through hosted CI and Desktop E2E; C004 residual limits remain unchanged |
+| C006 | invariant/infrastructure | `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md` | active | hosted CI and Desktop E2E are required on final PR #112 head; C004 residual limits remain unchanged |
 
 Closure record for each: `plans/closure/sandbox-containment-post-closure-corrective/00N-status.md`.
 
@@ -120,7 +120,7 @@ The mixed-head hosted `CI / verify` [38177378810](https://github.com/dbowm91/cod
 
 **C005 — conditionally closed:** `plans/implementation/sandbox-containment-post-closure-corrective/005-integration-branch-ownership-and-base-reconciliation.md`. The ownership matrix and focused PR #112 are recorded at `plans/closure/sandbox-containment-post-closure-corrective/005-status.md`. Local focused Rust tests could not link with the configured x86_64 macOS target; C006 owns exact-head hosted test evidence.
 
-**C006 — ready:** `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md`. The prior human-shell/editor/desktop diagnostics are excluded from #112 and retained on PR #111. A newly surfaced session-family Clippy warning received a semantics-preserving cleanup; obtain normal hosted CI and Desktop E2E on #112's final SHA and record the local linker limitation with hosted test evidence. Required closure: `plans/closure/sandbox-containment-post-closure-corrective/006-status.md`.
+**C006 — active:** `plans/implementation/sandbox-containment-post-closure-corrective/006-hosted-integration-qualification-and-closure.md`. The prior human-shell/editor/desktop diagnostics are excluded from #112 and retained on PR #111. A newly surfaced session-family Clippy warning received a semantics-preserving cleanup; normal hosted CI and Desktop E2E are running on #112's final SHA, with local linker limitations recorded for the closure. Required closure: `plans/closure/sandbox-containment-post-closure-corrective/006-status.md`.
 
 Do not start another broad test campaign, change C004 conditional status, create new sandbox IPC claims, or merge an unattributed human-shell/editor diff under a sandbox PR. Native Linux 6.8/ABI 4 and macOS 15.7.9 evidence remain valid only to the extent the tested sandbox implementation semantics are unchanged.
 
