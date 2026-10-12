@@ -301,7 +301,7 @@ Start-Sleep -Seconds 60
     assert_eq!(result.termination, TerminationReason::Cancelled);
     assert!(result.cleanup.job_object_established);
     assert!(result.cleanup.forced_signal_sent);
-    wait_for_process_exit(child_pid).await;
+    wait_for_process_exit(marker.unwrap().expect("descendant process was started")).await;
 }
 
 #[tokio::test]
