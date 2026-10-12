@@ -185,6 +185,8 @@ try {{
     let elapsed = started.elapsed();
     let output = result.stdout.to_string_lossy();
     eprintln!("C014 elapsed_ms={}", elapsed.as_millis());
+    eprintln!("C014 termination={:?}", result.termination);
+    eprintln!("C014 exit_status={:?}", result.exit_status);
     eprintln!("C014 child stdout:\n{output}");
     eprintln!("C014 child stderr:\n{}", result.stderr.to_string_lossy());
     assert!(

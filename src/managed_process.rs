@@ -1100,13 +1100,19 @@ async fn run_windows_test_restricted_inner(
         );
     }
     let launch_cwd = if cwd == profile_temp_projection {
-        temporary_directory.as_path()
+        // Keep the shell's startup directory on the already-readable OS
+        // runtime. C014 addresses the granted projection by its explicit
+        // path; C016 separately qualifies a staged projection as cwd.
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32")
     } else {
-        cwd.as_path()
+        cwd.clone()
     };
     let mut environment_block = windows_environment_block(
         environment,
-        launch_cwd,
+        &launch_cwd,
         &local_app_data,
         &temporary_directory,
     )?;
@@ -1114,7 +1120,7 @@ async fn run_windows_test_restricted_inner(
         &spec.target,
         &requested_args,
         &profile,
-        launch_cwd,
+        &launch_cwd,
         &mut environment_block,
         &cancellation,
     )
