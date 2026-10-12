@@ -352,14 +352,16 @@ impl CoreDaemon {
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let admitted_promotions = match self
                     .acquire_turn_controller_with_promotions(
-                        &session_id,
-                        &turn_id,
-                        &authority,
-                        trusted_client_id,
-                        &runtime.project_id,
-                        runtime.workspace_id.as_str(),
-                        &human_shell_promotion_ids,
-                        now_ms,
+                        super::daemon_control::TurnControllerAdmission {
+                            session_id: &session_id,
+                            turn_id: &turn_id,
+                            authority: &authority,
+                            trusted_client_id,
+                            project_id: &runtime.project_id,
+                            workspace_id: runtime.workspace_id.as_str(),
+                            promotion_ids: &human_shell_promotion_ids,
+                            now_ms,
+                        },
                     )
                     .await
                 {

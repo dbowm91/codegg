@@ -1243,6 +1243,7 @@ async fn turn_submit_atomically_acquires_controller() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 reasoning: None,
+                human_shell_promotion_ids: Vec::new(),
             },
         ),
         "client-alice",
@@ -1378,6 +1379,7 @@ async fn concurrent_submits_converge_on_one_controller() {
                 current_agent_idx: 0,
                 messages: Vec::new(),
                 reasoning: None,
+                human_shell_promotion_ids: Vec::new(),
             },
         )
     };

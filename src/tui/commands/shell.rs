@@ -649,14 +649,16 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
                         let _ = send_tui(
                             &tx,
                             app::TuiCommand::ShellPromotionStaged {
-                                source_id: id,
-                                promotion_id,
-                                session_id: session_id.clone(),
-                                workspace_id: workspace_id.clone(),
-                                projection: promotion.projection,
-                                duplicate,
-                                status: Some("pending".into()),
-                                error: None,
+                                result: app::ShellPromotionStageResult {
+                                    source_id: id,
+                                    promotion_id,
+                                    session_id: session_id.clone(),
+                                    workspace_id: workspace_id.clone(),
+                                    projection: promotion.projection,
+                                    duplicate,
+                                    status: Some("pending".into()),
+                                    error: None,
+                                },
                             },
                         );
                         None
@@ -886,16 +888,18 @@ fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: 
                             let _ = send_tui(
                                 &tx,
                                 app::TuiCommand::ShellPromotionStaged {
-                                    source_id,
-                                    promotion_id,
-                                    session_id,
-                                    workspace_id,
-                                    projection,
-                                    duplicate: false,
-                                    status: None,
-                                    error: Some(format!(
-                                        "could not confirm durable staging (the connected daemon may not support it): {first_error}; retry: {retry_error}"
-                                    )),
+                                    result: app::ShellPromotionStageResult {
+                                        source_id,
+                                        promotion_id,
+                                        session_id,
+                                        workspace_id,
+                                        projection,
+                                        duplicate: false,
+                                        status: None,
+                                        error: Some(format!(
+                                            "could not confirm durable staging (the connected daemon may not support it): {first_error}; retry: {retry_error}"
+                                        )),
+                                    },
                                 },
                             );
                             return;
@@ -908,17 +912,33 @@ fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: 
                     promotion,
                     duplicate,
                 } => app::TuiCommand::ShellPromotionStaged {
-                    source_id,
-                    promotion_id,
-                    session_id,
-                    workspace_id,
-                    projection: promotion.projection,
-                    duplicate,
-                    status: Some(promotion.status),
-                    error: None,
+                    result: app::ShellPromotionStageResult {
+                        source_id,
+                        promotion_id,
+                        session_id,
+                        workspace_id,
+                        projection: promotion.projection,
+                        duplicate,
+                        status: Some(promotion.status),
+                        error: None,
+                    },
                 },
                 crate::protocol::core::CoreResponse::Error { code, message } => {
                     app::TuiCommand::ShellPromotionStaged {
+                        result: app::ShellPromotionStageResult {
+                            source_id,
+                            promotion_id,
+                            session_id,
+                            workspace_id,
+                            projection,
+                            duplicate: false,
+                            status: None,
+                            error: Some(human_shell_stage_error(&code, &message)),
+                        },
+                    }
+                }
+                _ => app::TuiCommand::ShellPromotionStaged {
+                    result: app::ShellPromotionStageResult {
                         source_id,
                         promotion_id,
                         session_id,
@@ -926,18 +946,8 @@ fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: 
                         projection,
                         duplicate: false,
                         status: None,
-                        error: Some(human_shell_stage_error(&code, &message)),
-                    }
-                }
-                _ => app::TuiCommand::ShellPromotionStaged {
-                    source_id,
-                    promotion_id,
-                    session_id,
-                    workspace_id,
-                    projection,
-                    duplicate: false,
-                    status: None,
-                    error: Some("unexpected response to shell promotion staging".into()),
+                        error: Some("unexpected response to shell promotion staging".into()),
+                    },
                 },
             };
             let _ = send_tui(&tx, command);

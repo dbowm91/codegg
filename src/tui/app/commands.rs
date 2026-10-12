@@ -12,6 +12,18 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
+pub struct ShellPromotionStageResult {
+    pub source_id: u64,
+    pub promotion_id: uuid::Uuid,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
+    pub projection: String,
+    pub duplicate: bool,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum TuiCommand {
     DeleteSession {
         session_id: String,
@@ -532,14 +544,7 @@ pub enum TuiCommand {
     },
     /// The daemon durably staged a redacted shell projection, or rejected it.
     ShellPromotionStaged {
-        source_id: u64,
-        promotion_id: uuid::Uuid,
-        session_id: String,
-        workspace_id: Option<String>,
-        projection: String,
-        duplicate: bool,
-        status: Option<String>,
-        error: Option<String>,
+        result: ShellPromotionStageResult,
     },
     /// Pending promotions recovered from the authoritative session owner.
     ShellPromotionsLoaded {

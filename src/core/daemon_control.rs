@@ -23,6 +23,17 @@ use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 
 use super::daemon::CoreDaemon;
 
+pub(crate) struct TurnControllerAdmission<'a> {
+    pub(super) session_id: &'a str,
+    pub(super) turn_id: &'a str,
+    pub(super) authority: &'a codegg_core::transport_auth::RequestAuthorityContext,
+    pub(super) trusted_client_id: &'a str,
+    pub(super) project_id: &'a str,
+    pub(super) workspace_id: &'a str,
+    pub(super) promotion_ids: &'a [String],
+    pub(super) now_ms: i64,
+}
+
 impl CoreDaemon {
     /// `true` for session-control operations that mutate durable state.
     /// They skip the pre-side-effect audit emit and are recorded
@@ -249,14 +260,7 @@ impl CoreDaemon {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire_turn_controller_with_promotions(
         &self,
-        session_id: &str,
-        turn_id: &str,
-        authority: &codegg_core::transport_auth::RequestAuthorityContext,
-        trusted_client_id: &str,
-        project_id: &str,
-        workspace_id: &str,
-        promotion_ids: &[String],
-        now_ms: i64,
+        admission: TurnControllerAdmission<'_>,
     ) -> Result<
         (
             Option<String>,
@@ -265,6 +269,16 @@ impl CoreDaemon {
         ),
         codegg_core::session_control::SessionTurnAdmissionError,
     > {
+        let TurnControllerAdmission {
+            session_id,
+            turn_id,
+            authority,
+            trusted_client_id,
+            project_id,
+            workspace_id,
+            promotion_ids,
+            now_ms,
+        } = admission;
         let principal = authority.principal_id().clone();
         if let Some(store) = self.controller_store() {
             let (record, promotions) = store

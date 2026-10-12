@@ -21,7 +21,7 @@ mod render;
 mod types;
 
 pub(crate) use commands::send_tui;
-pub use commands::{SessionMutationOp, TuiCommand};
+pub use commands::{SessionMutationOp, ShellPromotionStageResult, TuiCommand};
 pub use types::{
     CompletionType, ConnectionLifecycleAction, Dialog, HistoryEntry, SessionStatus, TodoEntry,
     TuiMsg,
@@ -2287,15 +2287,18 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_shell_promotion_staged(
         &mut self,
-        source_id: u64,
-        promotion_id: uuid::Uuid,
-        session_id: String,
-        workspace_id: Option<String>,
-        projection: String,
-        duplicate: bool,
-        status: Option<String>,
-        error: Option<String>,
+        result: crate::tui::app::ShellPromotionStageResult,
     ) {
+        let crate::tui::app::ShellPromotionStageResult {
+            source_id,
+            promotion_id,
+            session_id,
+            workspace_id,
+            projection,
+            duplicate,
+            status,
+            error,
+        } = result;
         if let Some(error) = error {
             if self.prompt_state.prompt.get_text().is_empty() {
                 self.prompt_state.prompt.set_text(projection);

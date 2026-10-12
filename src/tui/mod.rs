@@ -120,7 +120,7 @@ pub mod theme;
 pub mod ui_builders;
 pub mod wrap;
 
-pub use app::{App, Dialog, SessionMutationOp, TuiCommand};
+pub use app::{App, Dialog, SessionMutationOp, ShellPromotionStageResult, TuiCommand};
 pub use input::InputAction;
 pub use route::Route;
 pub use terminal::{create_terminal, AppTerminal};
@@ -223,16 +223,16 @@ mod shell_dispatch_tests {
                 .as_ref()
                 .and_then(|session| session.workspace_id.clone())
         });
-        app.apply_shell_promotion_staged(
+        app.apply_shell_promotion_staged(crate::tui::ShellPromotionStageResult {
             source_id,
-            uuid::Uuid::new_v4(),
+            promotion_id: uuid::Uuid::new_v4(),
             session_id,
             workspace_id,
             projection,
-            false,
-            Some("pending".into()),
-            None,
-        );
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
     }
 
     #[test]
@@ -395,16 +395,16 @@ mod shell_dispatch_tests {
             "without an owner, output remains a draft"
         );
         app.prompt_state.prompt.clear();
-        app.apply_shell_promotion_staged(
-            1,
-            uuid::Uuid::new_v4(),
-            "shell-test-session".into(),
-            None,
+        app.apply_shell_promotion_staged(crate::tui::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
             projection,
-            false,
-            Some("pending".into()),
-            None,
-        );
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
         let msgs = get_user_messages(&app);
         assert!(
             msgs.iter().any(|m| m.contains("echo hello")),
@@ -490,16 +490,16 @@ mod shell_dispatch_tests {
         let projection = app.prompt_state.prompt.get_text().to_owned();
         assert!(!projection.is_empty());
         app.prompt_state.prompt.clear();
-        app.apply_shell_promotion_staged(
-            1,
-            uuid::Uuid::new_v4(),
-            "shell-test-session".into(),
-            None,
+        app.apply_shell_promotion_staged(crate::tui::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
             projection,
-            false,
-            Some("pending".into()),
-            None,
-        );
+            duplicate: false,
+            status: Some("pending".into()),
+            error: None,
+        });
         let staged_id = app.pending_shell_promotions[0].id.to_string();
         let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
         app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
@@ -589,25 +589,7 @@ mod shell_dispatch_tests {
             .expect("stage acknowledgement arrives")
             .expect("stage command");
         match stage_ack {
-            TuiCommand::ShellPromotionStaged {
-                source_id,
-                promotion_id,
-                session_id,
-                workspace_id,
-                projection,
-                duplicate,
-                status,
-                error,
-            } => app.apply_shell_promotion_staged(
-                source_id,
-                promotion_id,
-                session_id,
-                workspace_id,
-                projection,
-                duplicate,
-                status,
-                error,
-            ),
+            TuiCommand::ShellPromotionStaged { result } => app.apply_shell_promotion_staged(result),
             other => panic!("unexpected stage acknowledgement: {other:?}"),
         }
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
@@ -660,16 +642,16 @@ mod shell_dispatch_tests {
     #[test]
     fn unsupported_staging_acknowledgement_leaves_evidence_as_composer_draft() {
         let mut app = make_test_app();
-        app.apply_shell_promotion_staged(
-            1,
-            uuid::Uuid::new_v4(),
-            "shell-test-session".into(),
-            None,
-            "redacted evidence".into(),
-            false,
-            None,
-            Some("connected daemon does not support durable human-shell staging".into()),
-        );
+        app.apply_shell_promotion_staged(crate::tui::ShellPromotionStageResult {
+            source_id: 1,
+            promotion_id: uuid::Uuid::new_v4(),
+            session_id: "shell-test-session".into(),
+            workspace_id: None,
+            projection: "redacted evidence".into(),
+            duplicate: false,
+            status: None,
+            error: Some("connected daemon does not support durable human-shell staging".into()),
+        });
         assert_eq!(app.prompt_state.prompt.get_text(), "redacted evidence");
         assert!(app.pending_shell_promotions.is_empty());
         assert!(get_user_messages(&app).is_empty());

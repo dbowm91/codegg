@@ -1803,26 +1803,8 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
-        TuiCommand::ShellPromotionStaged {
-            source_id,
-            promotion_id,
-            session_id,
-            workspace_id,
-            projection,
-            duplicate,
-            status,
-            error,
-        } => {
-            app.apply_shell_promotion_staged(
-                source_id,
-                promotion_id,
-                session_id,
-                workspace_id,
-                projection,
-                duplicate,
-                status,
-                error,
-            );
+        TuiCommand::ShellPromotionStaged { result } => {
+            app.apply_shell_promotion_staged(result);
         }
         TuiCommand::ShellPromotionsLoaded {
             session_id,
