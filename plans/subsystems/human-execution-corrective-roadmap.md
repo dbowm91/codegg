@@ -69,7 +69,7 @@ Class: capability/polish. Plan: `plans/implementation/human-execution-corrective
 Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. **Closed** at `plans/closure/human-execution-corrective/004-status.md` under ADR-0017 Option A. It provides stable turn-submission identity, durable receipts, duplicate retry handling, and interrupted/no-replay restart state.
 
 ### C004 — Authoritative human-shell promotion staging
-Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. ADR-0017 is accepted; implement the missing stable turn-submission identity, durable receipt, duplicate retry handling, and restart interruption state. The existing stage ledger and atomic promotion/controller claim are prerequisites, not closure evidence.
+Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. **Closed** at `plans/closure/human-execution-corrective/004-status.md` under ADR-0017 Option A. It provides stable turn-submission identity, durable receipts, duplicate retry handling, and interrupted/no-replay restart state.
 
 ## 8. Cross-cutting requirements
 
