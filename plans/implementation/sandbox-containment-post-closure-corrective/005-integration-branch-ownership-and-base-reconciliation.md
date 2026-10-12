@@ -1,6 +1,6 @@
 # Sandbox Containment Post-Closure Corrective C005 — Integration Branch Ownership and Base Reconciliation
 
-Status: ready for handoff (restored after discarded planning-history reconciliation; implementation not yet closed)
+Status: implemented (conditionally closed; see `plans/closure/sandbox-containment-post-closure-corrective/005-status.md`)
 
 Repository baseline: `planning/sandbox-containment-post-closure-corrective` at `e6950f5088dc1bb855c4c3c27ac7507b67fa07fd`; `main` and merge base `7317a67ad604fe39fd5282ddca07496255faa4d1` (observed 2026-10-12). Re-evaluate refs before implementation; the branch is caught up but still mixes workstreams.
 
