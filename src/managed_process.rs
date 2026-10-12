@@ -888,24 +888,17 @@ async fn run_windows_test_restricted(
     for (path, access) in spec
         .read_paths
         .iter()
-        .map(|path| {
-            (
-                PathBuf::from(path.as_str()),
-                windows_acl_lease::LeaseAccess::Read,
-            )
-        })
-        .chain(spec.write_paths.iter().map(|path| {
-            (
-                PathBuf::from(path.as_str()),
-                windows_acl_lease::LeaseAccess::ReadWrite,
-            )
-        }))
-        .chain(spec.deny_paths.iter().map(|path| {
-            (
-                PathBuf::from(path.as_str()),
-                windows_acl_lease::LeaseAccess::Deny,
-            )
-        }))
+        .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Read))
+        .chain(
+            spec.write_paths
+                .iter()
+                .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::ReadWrite)),
+        )
+        .chain(
+            spec.deny_paths
+                .iter()
+                .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Deny)),
+        )
     {
         let canonical = std::fs::canonicalize(&path).map_err(ManagedProcessError::Spawn)?;
         let key = canonical.to_string_lossy().to_lowercase();
