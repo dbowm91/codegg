@@ -16,6 +16,8 @@ use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+#[cfg(test)]
+use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -26,9 +28,9 @@ use windows_sys::Win32::Security::Authorization::{
     SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, GetTokenInformation, TokenOwner, TokenUser, ACL, DACL_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_OWNER, TOKEN_QUERY,
-    TOKEN_USER,
+    GetLengthSid, GetSecurityDescriptorControl, GetTokenInformation, TokenOwner, TokenUser, ACL,
+    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -238,6 +240,138 @@ pub(crate) fn recover_all(journal_root: &Path) -> io::Result<Vec<PathBuf>> {
 
 pub(crate) fn dacl_snapshot(path: &Path) -> io::Result<Vec<u8>> {
     get_dacl(path)
+}
+
+/// Bounded native evidence for the C013 fixture. This is compiled only in the
+/// test harness and never participates in service admission or ACL recovery.
+#[cfg(test)]
+pub(crate) fn forensic_tree_snapshots(path: &Path, limit: usize) -> io::Result<Vec<String>> {
+    let mut pending = vec![path.to_path_buf()];
+    let mut snapshots = Vec::new();
+    while let Some(current) = pending.pop() {
+        if snapshots.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "C013 forensic object limit exceeded",
+            ));
+        }
+        let snapshot = forensic_object_snapshot(&current)?;
+        let is_directory = snapshot.contains("directory=true");
+        let is_reparse = snapshot.contains("reparse=true");
+        snapshots.push(snapshot);
+        if is_directory && !is_reparse {
+            let mut entries = fs::read_dir(&current)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<io::Result<Vec<_>>>()?;
+            entries.sort();
+            pending.extend(entries.into_iter().rev());
+        }
+    }
+    Ok(snapshots)
+}
+
+#[cfg(test)]
+pub(crate) fn forensic_object_snapshot(path: &Path) -> io::Result<String> {
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let metadata = fs::symlink_metadata(path)?;
+    let attributes = metadata.file_attributes();
+    let is_directory = metadata.is_dir();
+    let name = wide(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            (if is_directory {
+                FILE_FLAG_BACKUP_SEMANTICS
+            } else {
+                0
+            }) | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as _, &mut information) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut owner = ptr::null_mut();
+    let mut dacl = ptr::null_mut::<ACL>();
+    let mut descriptor = ptr::null_mut();
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            &mut dacl,
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    let _descriptor = LocalAllocation(descriptor.cast());
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    if unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let owner_len = unsafe { GetLengthSid(owner) } as usize;
+    if owner_len == 0 || owner_len > MAX_SID_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "C013 owner SID length is outside the supported bound",
+        ));
+    }
+    let owner = unsafe { std::slice::from_raw_parts(owner.cast::<u8>(), owner_len) };
+    let dacl_bytes = if dacl.is_null() {
+        Vec::new()
+    } else {
+        let size = unsafe { (*dacl).AclSize as usize };
+        if size < std::mem::size_of::<ACL>() || size > u16::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "C013 DACL size is invalid",
+            ));
+        }
+        unsafe { std::slice::from_raw_parts(dacl.cast::<u8>(), size) }.to_vec()
+    };
+    let file_index =
+        (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+    let dacl_hex = dacl_bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let owner_hex = owner
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(
+        "path={} directory={} reparse={} volume={:08x} file_id={:016x} hardlinks={} owner_sid={} sd_control={:04x} sd_revision={} dacl={}",
+        path.display(),
+        is_directory,
+        attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        information.dwVolumeSerialNumber,
+        file_index,
+        information.nNumberOfLinks,
+        owner_hex,
+        control,
+        revision,
+        dacl_hex
+    ))
 }
 
 /// Validate the caller's original path before canonicalization can hide a

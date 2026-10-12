@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C013 — Existing-Object Access and Alias Containment
 
-Status: ready for handoff (bounded C011 follow-up)
+Status: active (native existing-object forensic diagnosis)
 
 Repository baseline: `265146ac451a74c1c8b41acdc50df993c38e6b9a` on `work/windows-native-sandbox-foundation` (2026-10-12).
 

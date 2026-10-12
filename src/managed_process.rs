@@ -835,6 +835,23 @@ async fn run_windows_test_restricted(
     request: ManagedProcessRequest,
     output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    run_windows_test_restricted_inner(request, output_tx, false).await
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+#[cfg(test)]
+async fn run_windows_test_restricted_forensic(
+    request: ManagedProcessRequest,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
+    run_windows_test_restricted_inner(request, None, true).await
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn run_windows_test_restricted_inner(
+    request: ManagedProcessRequest,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
+    forensic_populated_deny_roots: bool,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
     use std::os::windows::ffi::OsStrExt;
 
     let ManagedProcessRequest {
@@ -916,7 +933,7 @@ async fn run_windows_test_restricted(
                 "ACL lease root is unavailable or unsupported: {error}"
             ))
         })?;
-        if access == windows_acl_lease::LeaseAccess::Deny {
+        if access == windows_acl_lease::LeaseAccess::Deny && !forensic_populated_deny_roots {
             windows_acl_lease::validate_empty_deny_directory(&path).map_err(|error| {
                 ManagedProcessError::SandboxFailed(format!(
                     "ACL deny root is unavailable or unsupported: {error}"
@@ -966,6 +983,15 @@ async fn run_windows_test_restricted(
             )
             .map_err(ManagedProcessError::Spawn)?,
         );
+    }
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        for path in spec.deny_paths.iter().take(8) {
+            windows_acl_lease::forensic_tree_snapshots(path, 64)
+                .map_err(ManagedProcessError::Spawn)?
+                .into_iter()
+                .for_each(|snapshot| eprintln!("C013 post-lease object: {snapshot}"));
+        }
     }
     let local_app_data = profile
         .local_app_data_path()
@@ -2114,5 +2140,157 @@ mod tests {
             run(request).await,
             Err(ManagedProcessError::EmptyArgv)
         ));
+    }
+
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn c013_forensic_existing_object_acl_and_alias_probe() {
+        let fixture = tempfile::tempdir().expect("C013 disposable fixture");
+        let workspace = fixture.path().join("workspace");
+        let credentials = fixture.path().join("credentials");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&credentials).unwrap();
+        let credential = credentials.join("synthetic-secret.txt");
+        let protected = credentials.join("protected-secret.txt");
+        std::fs::write(&credential, "synthetic-c013-secret").unwrap();
+        std::fs::write(&protected, "synthetic-protected-secret").unwrap();
+
+        let protect = std::process::Command::new("icacls.exe")
+            .args(["/inheritance:d"])
+            .arg(&protected)
+            .output()
+            .expect("icacls is available on the native Windows runner");
+        assert!(
+            protect.status.success(),
+            "failed to make the synthetic child DACL protected: {}",
+            String::from_utf8_lossy(&protect.stderr)
+        );
+
+        let hardlink = workspace.join("hardlink-secret.txt");
+        std::fs::hard_link(&credential, &hardlink).expect("NTFS hardlink fixture");
+        let alternate_stream = PathBuf::from(format!("{}:c013", credential.display()));
+        std::fs::write(&alternate_stream, "synthetic-c013-ads").expect("NTFS ADS fixture");
+        let junction = workspace.join("credential-junction");
+        let junction_result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&credentials)
+            .output()
+            .expect("cmd.exe is present on the native Windows runner");
+        assert!(
+            junction_result.status.success(),
+            "failed to create disposable junction: {}",
+            String::from_utf8_lossy(&junction_result.stderr)
+        );
+
+        let observed_objects = [&credentials, &credential, &protected, &hardlink];
+        let before = observed_objects
+            .iter()
+            .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())
+            .collect::<Vec<_>>();
+        for snapshot in &before {
+            eprintln!("C013 pre-lease object: {snapshot}");
+        }
+
+        let executable = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        let script = r#"
+function ReadResult($path) {
+  try { [IO.File]::ReadAllText($path) | Out-Null; return 'leaked' }
+  catch { return 'denied' }
+}
+$direct = ReadResult $env:C013_DIRECT
+$junction = ReadResult $env:C013_JUNCTION
+$hardlink = ReadResult $env:C013_HARDLINK
+$protected = ReadResult $env:C013_PROTECTED
+$ads = ReadResult $env:C013_ADS
+$newPath = [IO.Path]::Combine($env:C013_DENY_ROOT, 'created-after-launch.txt')
+try { [IO.File]::WriteAllText($newPath, 'synthetic'); $new = 'created' }
+catch { $new = 'creation-denied' }
+[Console]::Out.Write("direct=$direct|junction=$junction|hardlink=$hardlink|protected=$protected|ads=$ads|new=$new")
+"#;
+        let args = vec![
+            OsString::from("-NoLogo"),
+            OsString::from("-NoProfile"),
+            OsString::from("-NonInteractive"),
+            OsString::from("-Command"),
+            OsString::from(script),
+        ];
+        let mut request = ManagedProcessRequest::new(
+            std::iter::once(executable.clone().into_os_string())
+                .chain(args.iter().cloned())
+                .collect(),
+            std::env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .expect("SystemRoot is set")
+                .join("System32"),
+            ProcessProvenance::new("windows-c013-forensic", "existing-object-access"),
+        );
+        request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            target: executable,
+            args: args
+                .iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect(),
+            read_paths: Vec::new(),
+            write_paths: vec![workspace.clone()],
+            deny_paths: vec![credentials.clone()],
+        });
+        request.environment_policy = EnvironmentPolicy::sanitized()
+            .with_var("C013_DIRECT", credential.as_os_str())
+            .with_var(
+                "C013_JUNCTION",
+                junction.join("synthetic-secret.txt").as_os_str(),
+            )
+            .with_var("C013_HARDLINK", hardlink.as_os_str())
+            .with_var("C013_PROTECTED", protected.as_os_str())
+            .with_var("C013_ADS", alternate_stream.as_os_str())
+            .with_var("C013_DENY_ROOT", credentials.as_os_str());
+
+        let result = run_windows_test_restricted_forensic(request)
+            .await
+            .expect("isolated C013 forensic child completes");
+        assert!(result.exit_status.success());
+        let observations = result.stdout.to_string_lossy();
+        eprintln!("C013 restricted-child access results: {observations}");
+        assert!(observations.contains("direct=leaked") || observations.contains("direct=denied"));
+        assert!(
+            observations.contains("junction=leaked") || observations.contains("junction=denied")
+        );
+        assert!(
+            observations.contains("hardlink=leaked") || observations.contains("hardlink=denied")
+        );
+        assert!(
+            observations.contains("protected=leaked") || observations.contains("protected=denied")
+        );
+        assert!(observations.contains("ads=leaked") || observations.contains("ads=denied"));
+        assert!(
+            observations.contains("new=created") || observations.contains("new=creation-denied")
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::TestOnlyAppContainer {
+                token_verified: true,
+                job_verified: true,
+                ..
+            }
+        ));
+
+        let after = observed_objects
+            .iter()
+            .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())
+            .collect::<Vec<_>>();
+        for snapshot in &after {
+            eprintln!("C013 post-restore object: {snapshot}");
+        }
+        assert_eq!(
+            after, before,
+            "C013 must preserve each synthetic object ACL and identity"
+        );
     }
 }
