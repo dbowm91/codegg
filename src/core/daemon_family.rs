@@ -133,6 +133,8 @@ impl DaemonRequestFamily {
             CoreRequest::TurnSteer { .. } => Self::Turns,
             CoreRequest::TurnSubmit { .. } => Self::Turns,
             CoreRequest::SessionPromptSubmit { .. } => Self::Turns,
+            CoreRequest::HumanShellPromotionStage { .. } => Self::Turns,
+            CoreRequest::HumanShellPromotionsGet { .. } => Self::Turns,
             CoreRequest::SessionControlGet { .. } => Self::Turns,
             CoreRequest::SessionControlRequest { .. } => Self::Turns,
             CoreRequest::SessionControlTransfer { .. } => Self::Turns,

@@ -124,9 +124,12 @@ change-triggered (`ls scripts/check_*` for the full list):
   is in-process core; the `server` requires `--standalone-core`.
 - Command intent defaults to `Observe` (classify only); kill switch
   `CODEGG_ROUTING_DISABLE=1`.
-- Human `!cmd` stays out of model context; `!!cmd` and `/shell-include` stage
-  bounded/redacted output for a user-submitted turn, and `/shell-ask` submits
-  one question through the bound session. PTY bytes remain private local output.
+- Human `!cmd` stays out of model context; `!!cmd` and `/shell-include` require
+  daemon acknowledgement for bounded/redacted, session-owned staging before
+  the next turn can consume them. `/shell-ask` stages its question/evidence
+  before submitting through the bound session. Staging expires after 24 hours;
+  PTY bytes remain private local output. Remote prompt-only transport keeps an
+  explicitly unsubmitted composer draft.
 - Slow TUI handlers use `spawn_tui_task` + `finish(request_id)`/`fail(request_id, err)`
   guard with a stale-completion test (see `src/tui/async_cmd.rs`). Note
   `dispatch_tui_command` itself is `pub(crate) async` with five `.await` points in

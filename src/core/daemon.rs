@@ -2845,6 +2845,8 @@ impl CoreDaemon {
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }
             | CoreRequest::SessionPromptSubmit { session_id, .. }
+            | CoreRequest::HumanShellPromotionStage { session_id, .. }
+            | CoreRequest::HumanShellPromotionsGet { session_id }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -5378,6 +5380,7 @@ mod tests {
                 session_id: session_id.clone(),
                 text: "hello".into(),
                 plan_mode: false,
+                human_shell_promotion_ids: vec![],
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
@@ -5538,6 +5541,7 @@ mod tests {
                         session_id: session_id.clone(),
                         text,
                         plan_mode: false,
+                        human_shell_promotion_ids: vec![],
                     },
                 ))
                 .await
@@ -5560,6 +5564,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5586,6 +5591,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5626,6 +5632,7 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5672,6 +5679,7 @@ mod tests {
                     session_id: session.id,
                     text: "hello".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5699,6 +5707,7 @@ mod tests {
                     session_id: session_id.clone(),
                     text: "hello from prompt submit".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -5758,6 +5767,7 @@ mod tests {
                     session_id,
                     text: "duplicate".into(),
                     plan_mode: false,
+                    human_shell_promotion_ids: vec![],
                 },
             ))
             .await
@@ -6064,12 +6074,14 @@ mod tests {
     /// A minimal fake turn runtime that records whether `run_turn` was called.
     struct FakeTurnRuntime {
         called: std::sync::atomic::AtomicBool,
+        captured_messages: std::sync::Mutex<Option<Vec<crate::protocol::dto::ProviderMessage>>>,
     }
 
     impl FakeTurnRuntime {
         fn new() -> Self {
             Self {
                 called: std::sync::atomic::AtomicBool::new(false),
+                captured_messages: std::sync::Mutex::new(None),
             }
         }
     }
@@ -6078,9 +6090,10 @@ mod tests {
     impl crate::agent::turn_runtime::TurnRuntime for FakeTurnRuntime {
         async fn run_turn(
             &self,
-            _input: crate::agent::turn_runtime::TurnRunInput,
+            input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            *self.captured_messages.lock().expect("capture lock") = Some(input.messages_dto);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -6101,7 +6114,7 @@ mod tests {
 
         let fake = Arc::new(FakeTurnRuntime::new());
         let pool = in_memory_pool().await;
-        let deps = CoreRuntimeDeps::new(Some(pool), None, None)
+        let deps = CoreRuntimeDeps::new(Some(pool.clone()), None, None)
             .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
         let daemon = CoreDaemon::with_deps(deps);
         daemon.hydrate_workspace_registry().await.unwrap();
@@ -6129,12 +6142,32 @@ mod tests {
             other => panic!("expected Session, got {:?}", other),
         };
 
+        let binding = daemon
+            .bind_runtime_for_session(&session_id)
+            .await
+            .expect("bind runtime for session");
+        let promotion_id = uuid::Uuid::new_v4().to_string();
+        codegg_core::session::HumanShellPromotionStore::new(pool)
+            .stage(codegg_core::session::NewHumanShellPromotion {
+                id: promotion_id.clone(),
+                source_id: "42".into(),
+                session_id: session_id.clone(),
+                principal_id: codegg_core::team::LOCAL_OWNER_PRINCIPAL_ID.into(),
+                project_id: binding.project_id.clone(),
+                workspace_id: binding.workspace_id.as_str().into(),
+                projection: "accepted-shell-marker [REDACTED:bearer-token]".into(),
+                created_at_ms: chrono::Utc::now().timestamp_millis(),
+            })
+            .await
+            .expect("stage redacted shell evidence");
+
         let req = crate::core::new_request(
             "req-inject".into(),
             CoreRequest::TurnSubmit {
-                session_id,
+                session_id: session_id.clone(),
                 text: "hello".into(),
                 plan_mode: false,
+                human_shell_promotion_ids: vec![promotion_id],
                 model: "openai/gpt-4o".into(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
@@ -6148,6 +6181,15 @@ mod tests {
             fake.called.load(std::sync::atomic::Ordering::SeqCst),
             "injected FakeTurnRuntime should have been invoked"
         );
+        let captured = fake
+            .captured_messages
+            .lock()
+            .expect("capture lock")
+            .clone()
+            .expect("runtime captured provider messages");
+        let captured = serde_json::to_string(&captured).expect("serialize captured context");
+        assert_eq!(captured.matches("accepted-shell-marker").count(), 1);
+        assert_eq!(captured.matches("[REDACTED:bearer-token]").count(), 1);
         if let Some(value) = previous_openai_key {
             std::env::set_var("OPENAI_API_KEY", value);
         } else {

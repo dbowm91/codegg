@@ -526,7 +526,26 @@ pub enum TuiCommand {
     /// A session owner accepted or rejected one explicit shell evidence ask.
     ShellAskSubmitted {
         id: u64,
+        promotion_id: Option<uuid::Uuid>,
         text: String,
+        error: Option<String>,
+    },
+    /// The daemon durably staged a redacted shell projection, or rejected it.
+    ShellPromotionStaged {
+        source_id: u64,
+        promotion_id: uuid::Uuid,
+        session_id: String,
+        workspace_id: Option<String>,
+        projection: String,
+        duplicate: bool,
+        status: Option<String>,
+        error: Option<String>,
+    },
+    /// Pending promotions recovered from the authoritative session owner.
+    ShellPromotionsLoaded {
+        session_id: String,
+        workspace_id: Option<String>,
+        promotions: Vec<crate::protocol::core::HumanShellPromotionDto>,
         error: Option<String>,
     },
     /// A normal next turn accepted or rejected staged shell evidence.

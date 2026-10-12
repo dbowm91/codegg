@@ -338,6 +338,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
+        R::HumanShellPromotionStage { .. } => OperationDescriptor::new(
+            "human_shell_promotion_stage",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellPromotionsGet { .. } => OperationDescriptor::new(
+            "human_shell_promotions_get",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::TurnCancel { .. } => OperationDescriptor::new(
             "turn_cancel",
             ScopeKind::ViaSession,
@@ -1441,11 +1451,22 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             current_agent_idx: 0,
             messages: Vec::new(),
             reasoning: None,
+            human_shell_promotion_ids: Vec::new(),
         },
         R::SessionPromptSubmit {
             session_id: String::new(),
             text: String::new(),
             plan_mode: false,
+            human_shell_promotion_ids: Vec::new(),
+        },
+        R::HumanShellPromotionStage {
+            session_id: String::new(),
+            promotion_id: String::new(),
+            source_id: String::new(),
+            projection: String::new(),
+        },
+        R::HumanShellPromotionsGet {
+            session_id: String::new(),
         },
         R::TurnCancel {
             session_id: String::new(),

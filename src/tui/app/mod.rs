@@ -399,9 +399,9 @@ pub struct App {
     /// once such a mechanism exists. No schema migration in this pass.
     pub latest_security_review: Option<crate::security::workflow::SecurityReviewReceipt>,
     pub shell_store: crate::shell::ShellOutputStore,
-    /// Shell outputs inserted into the local conversation projection but not
-    /// yet acknowledged by the daemon as part of an accepted turn.
-    pub pending_shell_promotions: Vec<(u64, String, uuid::Uuid)>,
+    /// Daemon-acknowledged, session-owned shell projections waiting for one
+    /// accepted turn. The projection bytes are already redacted and bounded.
+    pub pending_shell_promotions: Vec<PendingShellPromotion>,
     /// Session/workspace authority captured when each human shell process
     /// starts, used to reject late output after navigation changes context.
     pub shell_command_bindings: std::collections::HashMap<u64, (Option<String>, Option<String>)>,
@@ -548,6 +548,15 @@ pub struct App {
     /// opens a review. This records what the user is being asked to approve
     /// and what the daemon said; it never decides whether an apply is legal.
     pub change_review_state: crate::tui::app::state::change_review::ChangeReviewState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingShellPromotion {
+    pub source_id: u64,
+    pub projection: String,
+    pub id: uuid::Uuid,
+    pub session_id: String,
+    pub workspace_id: Option<String>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1877,6 +1886,9 @@ impl App {
         self.tui_cmd_tx = Some(tx);
         self.tui_cmd_rx = Some(rx);
         if self.session_state.session.is_some() {
+            if let Some(session_id) = self.active_session_id().map(str::to_owned) {
+                self.load_human_shell_promotions(session_id);
+            }
             crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
         }
     }
@@ -1916,6 +1928,52 @@ impl App {
                 tracing::warn!(%error, "failed to narrow the event stream to the active session");
             }
         });
+    }
+
+    pub(crate) fn load_human_shell_promotions(&mut self, session_id: String) {
+        let Some(client) = self.core_client.clone() else {
+            return;
+        };
+        let Some(tx) = self.tui_cmd_tx.clone() else {
+            return;
+        };
+        let workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        let request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::HumanShellPromotionsGet {
+                session_id: session_id.clone(),
+            },
+        );
+        self.task_registry
+            .spawn(TuiTaskKind::Command, "load_shell_promotions", async move {
+                let (promotions, error) = match client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::HumanShellPromotions {
+                        promotions,
+                    }) => (promotions, None),
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        (Vec::new(), Some(format!("{code}: {message}")))
+                    }
+                    Ok(_) => (
+                        Vec::new(),
+                        Some("unexpected promotion recovery response".into()),
+                    ),
+                    Err(error) => (Vec::new(), Some(error.to_string())),
+                };
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::ShellPromotionsLoaded {
+                        session_id,
+                        workspace_id,
+                        promotions,
+                        error,
+                    },
+                );
+            });
     }
 
     /// Store the latest completed security review receipt. Subsequent
@@ -2125,6 +2183,21 @@ impl App {
         // this connection looks identical to a turn that never ends.
         self.ensure_session_event_stream(&session_id);
         let messages = self.build_provider_context();
+        let workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        let promotions: Vec<(uuid::Uuid, u64)> = self
+            .pending_shell_promotions
+            .iter()
+            .filter(|promotion| {
+                promotion.session_id == session_id && promotion.workspace_id == workspace_id
+            })
+            .map(|promotion| (promotion.id, promotion.source_id))
+            .collect();
+        let promotion_ids = promotions.iter().map(|(id, _)| id.to_string()).collect();
         let agents =
             match crate::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()) {
                 Ok(agents) => agents,
@@ -2161,19 +2234,9 @@ impl App {
                         Some(crate::protocol::core::ReasoningOverride::Off)
                     }
                 },
+                human_shell_promotion_ids: promotion_ids,
             },
         );
-        let promotions: Vec<(uuid::Uuid, u64)> = self
-            .pending_shell_promotions
-            .iter()
-            .filter(|(_, text, _)| {
-                self.messages_state.messages.messages.iter().any(|message| {
-                    message.role == crate::tui::components::messages::MessageRole::User
-                        && message.text_content() == text.as_str()
-                })
-            })
-            .map(|(id, _, token)| (*token, *id))
-            .collect();
         let tui_tx = self.tui_cmd_tx.clone();
         tokio::spawn(async move {
             let error = match client.request(request).await {
@@ -2212,13 +2275,170 @@ impl App {
             self.shell_store
                 .mark_promoted(crate::shell::types::ShellCommandId(*id));
         }
-        self.pending_shell_promotions
-            .retain(|(_, _, token)| !promotions.iter().any(|(submitted, _)| submitted == token));
+        self.pending_shell_promotions.retain(|promotion| {
+            !promotions
+                .iter()
+                .any(|(submitted, _)| submitted == &promotion.id)
+        });
+    }
+
+    pub(crate) fn apply_shell_promotion_staged(
+        &mut self,
+        source_id: u64,
+        promotion_id: uuid::Uuid,
+        session_id: String,
+        workspace_id: Option<String>,
+        projection: String,
+        duplicate: bool,
+        status: Option<String>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            if self.prompt_state.prompt.get_text().is_empty() {
+                self.prompt_state.prompt.set_text(projection);
+            }
+            self.messages_state
+                .toasts
+                .error(&format!("Shell output was not staged: {error}"));
+            return;
+        }
+        if status.as_deref() != Some("pending") {
+            if self.prompt_state.prompt.get_text().is_empty() {
+                self.prompt_state.prompt.set_text(projection);
+            }
+            self.messages_state.toasts.warning(
+                "This shell promotion was already consumed or expired; review the composer before retrying",
+            );
+            return;
+        }
+        if !self
+            .pending_shell_promotions
+            .iter()
+            .any(|pending| pending.id == promotion_id)
+        {
+            self.pending_shell_promotions.push(PendingShellPromotion {
+                source_id,
+                projection: projection.clone(),
+                id: promotion_id,
+                session_id: session_id.clone(),
+                workspace_id: workspace_id.clone(),
+            });
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        let current_workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|s| s.workspace_id.clone())
+        });
+        if Some(session_id.as_str()) == current_session_id
+            && workspace_id == current_workspace_id
+            && !self.messages_state.messages.messages.iter().any(|message| {
+                message.role == crate::tui::components::messages::MessageRole::User
+                    && message.text_content() == projection
+            })
+        {
+            self.messages_state
+                .messages
+                .add_user_message(projection, Some(false));
+        }
+        self.messages_state.toasts.info(if duplicate {
+            "Previously staged shell output is ready for the next submitted turn"
+        } else {
+            "Redacted shell output staged by the session; it will be included once in the next accepted turn"
+        });
+    }
+
+    pub(crate) fn apply_shell_promotions_loaded(
+        &mut self,
+        session_id: String,
+        workspace_id: Option<String>,
+        promotions: Vec<crate::protocol::core::HumanShellPromotionDto>,
+        error: Option<String>,
+    ) {
+        if let Some(error) = error {
+            tracing::debug!(%error, %session_id, "could not recover staged shell promotions");
+            self.messages_state.toasts.warning(&format!(
+                "Could not recover staged shell evidence for this session: {error}"
+            ));
+            return;
+        }
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
+        let current_workspace_id = self.active_workspace_id().map(str::to_owned).or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .and_then(|s| s.workspace_id.clone())
+        });
+        if Some(session_id.as_str()) != current_session_id || workspace_id != current_workspace_id {
+            return;
+        }
+        for promotion in promotions {
+            if promotion.status != "pending" || promotion.session_id != session_id {
+                continue;
+            }
+            let Ok(id) = uuid::Uuid::parse_str(&promotion.id) else {
+                continue;
+            };
+            let Ok(source_id) = promotion.source_id.parse::<u64>() else {
+                continue;
+            };
+            if self
+                .pending_shell_promotions
+                .iter()
+                .any(|pending| pending.id == id)
+            {
+                continue;
+            }
+            if !self.messages_state.messages.messages.iter().any(|message| {
+                message.role == crate::tui::components::messages::MessageRole::User
+                    && message.text_content() == promotion.projection
+            }) {
+                self.messages_state
+                    .messages
+                    .add_user_message(promotion.projection.clone(), Some(false));
+            }
+            self.pending_shell_promotions.push(PendingShellPromotion {
+                source_id,
+                projection: promotion.projection,
+                id,
+                session_id: session_id.clone(),
+                workspace_id: workspace_id.clone(),
+            });
+        }
     }
 
     pub(crate) fn build_provider_context(&self) -> Vec<crate::provider::Message> {
         let mut out = Vec::new();
+        let current_session_id = self.active_session_id().or_else(|| {
+            self.session_state
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str())
+        });
         for m in &self.messages_state.messages.messages {
+            let is_daemon_staged_promotion = m.role
+                == crate::tui::components::messages::MessageRole::User
+                && (self.pending_shell_promotions.iter().any(|promotion| {
+                    Some(promotion.session_id.as_str()) == current_session_id
+                        && promotion.projection == m.text_content()
+                }));
+            if is_daemon_staged_promotion {
+                // The daemon appends the durable projection after atomically
+                // claiming its identity with the accepted turn. Do not also
+                // send the UI transcript copy from this frontend.
+                continue;
+            }
             let mut content: Vec<crate::provider::ContentPart> = Vec::new();
             let mut tool_calls: Vec<crate::provider::ToolCall> = Vec::new();
             let mut tool_results: Vec<crate::provider::Message> = Vec::new();
@@ -10509,6 +10729,7 @@ impl App {
             .is_empty();
         self.session_state.session = Some(sess);
         self.ensure_session_event_stream(&sess_id);
+        self.load_human_shell_promotions(sess_id.clone());
         self.ui_state
             .routes
             .navigate_to(Route::Session(sess_id.clone()));

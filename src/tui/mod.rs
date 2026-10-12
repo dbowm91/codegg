@@ -152,8 +152,31 @@ mod shell_dispatch_tests {
             &self,
             request: crate::protocol::core::RequestEnvelope<crate::protocol::core::CoreRequest>,
         ) -> Result<crate::protocol::core::CoreResponse, crate::error::AppError> {
-            let _ = self.0.send(request.payload);
-            Ok(crate::protocol::core::CoreResponse::Ack)
+            let _ = self.0.send(request.payload.clone());
+            match request.payload {
+                crate::protocol::core::CoreRequest::HumanShellPromotionStage {
+                    session_id,
+                    promotion_id,
+                    source_id,
+                    projection,
+                } => Ok(
+                    crate::protocol::core::CoreResponse::HumanShellPromotionStaged {
+                        promotion: crate::protocol::core::HumanShellPromotionDto {
+                            id: promotion_id,
+                            source_id,
+                            session_id,
+                            projection_bytes: projection.len(),
+                            projection,
+                            status: "pending".into(),
+                            created_at_ms: 1,
+                            expires_at_ms: 2,
+                            consumed_turn_id: None,
+                        },
+                        duplicate: false,
+                    },
+                ),
+                _ => Ok(crate::protocol::core::CoreResponse::Ack),
+            }
         }
 
         fn subscribe(
@@ -175,6 +198,41 @@ mod shell_dispatch_tests {
             ..Default::default()
         });
         app
+    }
+
+    fn acknowledge_composer_shell_promotion(app: &mut App, source_id: u64) {
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(
+            !projection.is_empty(),
+            "prepared shell projection is available"
+        );
+        app.prompt_state.prompt.clear();
+        let session_id = app
+            .active_session_id()
+            .map(str::to_owned)
+            .or_else(|| {
+                app.session_state
+                    .session
+                    .as_ref()
+                    .map(|session| session.id.clone())
+            })
+            .unwrap_or_default();
+        let workspace_id = app.active_workspace_id().map(str::to_owned).or_else(|| {
+            app.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        app.apply_shell_promotion_staged(
+            source_id,
+            uuid::Uuid::new_v4(),
+            session_id,
+            workspace_id,
+            projection,
+            false,
+            Some("pending".into()),
+            None,
+        );
     }
 
     #[test]
@@ -331,6 +389,22 @@ mod shell_dispatch_tests {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 1, "echo hello", b"hello\n", b"", Some(0));
         handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(
+            !projection.is_empty(),
+            "without an owner, output remains a draft"
+        );
+        app.prompt_state.prompt.clear();
+        app.apply_shell_promotion_staged(
+            1,
+            uuid::Uuid::new_v4(),
+            "shell-test-session".into(),
+            None,
+            projection,
+            false,
+            Some("pending".into()),
+            None,
+        );
         let msgs = get_user_messages(&app);
         assert!(
             msgs.iter().any(|m| m.contains("echo hello")),
@@ -358,8 +432,8 @@ mod shell_dispatch_tests {
             .collect();
         assert_eq!(
             staged_user_text.len(),
-            1,
-            "the staged output appears exactly once in provider-facing context"
+            0,
+            "the frontend omits the projection because the daemon appends it from durable staging"
         );
         let toasts = get_toasts(&app);
         assert!(
@@ -369,14 +443,36 @@ mod shell_dispatch_tests {
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
         assert!(!entry.promoted, "staging is not daemon acceptance");
         assert_eq!(app.pending_shell_promotions.len(), 1);
-        assert_eq!(app.pending_shell_promotions[0].0, 1);
-        let receipt = (app.pending_shell_promotions[0].2, 1);
+        assert_eq!(app.pending_shell_promotions[0].source_id, 1);
+        let receipt = (app.pending_shell_promotions[0].id, 1);
         app.apply_shell_promotions_submitted(&[receipt], Some("busy".into()));
         assert!(!app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
         assert_eq!(app.pending_shell_promotions.len(), 1);
         app.apply_shell_promotions_submitted(&[receipt], None);
         assert!(app.shell_store.get(ShellCommandId(1)).unwrap().promoted);
         assert!(app.pending_shell_promotions.is_empty());
+        let later_context = app.build_provider_context();
+        assert_eq!(
+            later_context
+                .iter()
+                .flat_map(|message| match message {
+                    crate::provider::Message::User { content } => content
+                        .iter()
+                        .filter_map(|part| match part {
+                            crate::provider::ContentPart::Text { text }
+                                if text.contains("echo hello") =>
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .count(),
+            1,
+            "consumed evidence remains once as conversation history"
+        );
     }
 
     #[tokio::test]
@@ -391,6 +487,20 @@ mod shell_dispatch_tests {
             Some(0),
         );
         handle_shell_include(&mut app, 1, "all".to_string(), None);
+        let projection = app.prompt_state.prompt.get_text().to_owned();
+        assert!(!projection.is_empty());
+        app.prompt_state.prompt.clear();
+        app.apply_shell_promotion_staged(
+            1,
+            uuid::Uuid::new_v4(),
+            "shell-test-session".into(),
+            None,
+            projection,
+            false,
+            Some("pending".into()),
+            None,
+        );
+        let staged_id = app.pending_shell_promotions[0].id.to_string();
         let (request_tx, mut request_rx) = tokio::sync::mpsc::unbounded_channel();
         app.attach_core_client(std::sync::Arc::new(CapturingTurnClient(request_tx)));
         let (tui_tx, mut tui_rx) = tokio::sync::mpsc::channel(4);
@@ -403,13 +513,12 @@ mod shell_dispatch_tests {
             .expect("turn request arrives")
             .expect("captured request");
         let wire = serde_json::to_string(&request).expect("serialize provider-facing request");
-        assert_eq!(wire.matches("provider-shell-marker").count(), 1);
-        assert!(wire.contains("[REDACTED:bearer-token]"));
+        assert!(!wire.contains("provider-shell-marker"));
+        assert!(!wire.contains("[REDACTED:bearer-token]"));
         assert!(!wire.contains("secret-value-1234567890"));
-        assert!(matches!(
-            request,
-            crate::protocol::core::CoreRequest::TurnSubmit { .. }
-        ));
+        assert!(
+            matches!(request, crate::protocol::core::CoreRequest::TurnSubmit { human_shell_promotion_ids, .. } if human_shell_promotion_ids == vec![staged_id])
+        );
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
             .await
             .expect("acceptance completion arrives")
@@ -442,30 +551,89 @@ mod shell_dispatch_tests {
 
         handle_shell_ask(&mut app, 2, "explain this result".into());
 
+        let stage_request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("stage request arrives")
+            .expect("captured stage request");
+        let (staged_projection, staged_id) = match stage_request {
+            crate::protocol::core::CoreRequest::HumanShellPromotionStage {
+                promotion_id,
+                projection,
+                ..
+            } => (projection, promotion_id),
+            other => panic!("expected stage request, got {other:?}"),
+        };
+        assert!(staged_projection.contains("ask-shell-marker"));
+        assert!(staged_projection.contains("explain this result"));
+        assert!(staged_projection.contains("[REDACTED:bearer-token]"));
+        assert!(!staged_projection.contains("ask-secret-value-1234567890"));
         let request = tokio::time::timeout(Duration::from_secs(2), request_rx.recv())
             .await
             .expect("ask request arrives")
             .expect("captured request");
-        let text = match request {
-            crate::protocol::core::CoreRequest::SessionPromptSubmit { text, .. } => text,
-            other => panic!("expected one session prompt submit, got {other:?}"),
+        let (text, promotion_ids) = match request {
+            crate::protocol::core::CoreRequest::SessionPromptSubmit {
+                text,
+                human_shell_promotion_ids,
+                ..
+            } => (text, human_shell_promotion_ids),
+            other => panic!("expected session prompt submit, got {other:?}"),
         };
-        assert_eq!(text.matches("ask-shell-marker").count(), 1);
-        assert!(text.contains("explain this result"));
-        assert!(text.contains("[REDACTED:bearer-token]"));
-        assert!(!text.contains("ask-secret-value-1234567890"));
+        assert_eq!(
+            text,
+            "Answer the question contained in the attached human-shell evidence."
+        );
+        assert_eq!(promotion_ids, vec![staged_id]);
+        let stage_ack = tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
+            .await
+            .expect("stage acknowledgement arrives")
+            .expect("stage command");
+        match stage_ack {
+            TuiCommand::ShellPromotionStaged {
+                source_id,
+                promotion_id,
+                session_id,
+                workspace_id,
+                projection,
+                duplicate,
+                status,
+                error,
+            } => app.apply_shell_promotion_staged(
+                source_id,
+                promotion_id,
+                session_id,
+                workspace_id,
+                projection,
+                duplicate,
+                status,
+                error,
+            ),
+            other => panic!("unexpected stage acknowledgement: {other:?}"),
+        }
         match tokio::time::timeout(Duration::from_secs(2), tui_rx.recv())
             .await
             .expect("acceptance completion arrives")
             .expect("completion command")
         {
-            TuiCommand::ShellAskSubmitted { id: 2, text, error } => {
+            TuiCommand::ShellAskSubmitted {
+                id: 2,
+                promotion_id,
+                text,
+                error,
+            } => {
                 assert!(error.is_none());
-                crate::tui::commands::shell::apply_shell_ask_submitted(&mut app, 2, text, error);
+                crate::tui::commands::shell::apply_shell_ask_submitted(
+                    &mut app,
+                    2,
+                    promotion_id,
+                    text,
+                    error,
+                );
             }
             other => panic!("unexpected completion command: {other:?}"),
         }
         assert!(app.shell_store.get(ShellCommandId(2)).unwrap().promoted);
+        assert!(app.pending_shell_promotions.is_empty());
     }
 
     #[test]
@@ -490,6 +658,27 @@ mod shell_dispatch_tests {
     }
 
     #[test]
+    fn unsupported_staging_acknowledgement_leaves_evidence_as_composer_draft() {
+        let mut app = make_test_app();
+        app.apply_shell_promotion_staged(
+            1,
+            uuid::Uuid::new_v4(),
+            "shell-test-session".into(),
+            None,
+            "redacted evidence".into(),
+            false,
+            None,
+            Some("connected daemon does not support durable human-shell staging".into()),
+        );
+        assert_eq!(app.prompt_state.prompt.get_text(), "redacted evidence");
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_user_messages(&app).is_empty());
+        assert!(get_toasts(&app)
+            .iter()
+            .any(|toast| toast.contains("does not support durable human-shell staging")));
+    }
+
+    #[test]
     fn shell_include_stdout_mode() {
         let mut app = make_test_app();
         insert_completed_entry(
@@ -501,6 +690,7 @@ mod shell_dispatch_tests {
             Some(0),
         );
         handle_shell_include(&mut app, 1, "stdout".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
         let msgs = get_user_messages(&app);
         assert!(
             msgs.iter().any(|m| m.contains("checking...")),
@@ -520,6 +710,7 @@ mod shell_dispatch_tests {
             Some(1),
         );
         handle_shell_include(&mut app, 1, "stderr".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
         let msgs = get_user_messages(&app);
         assert!(
             msgs.iter().any(|m| m.contains("error[E0308]")),
@@ -540,6 +731,7 @@ mod shell_dispatch_tests {
             Some(1),
         );
         handle_shell_include(&mut app, 1, "tail 5".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
         let msgs = get_user_messages(&app);
         let included = msgs.iter().find(|m| m.contains("tail 5")).unwrap();
         assert!(
@@ -626,24 +818,19 @@ mod shell_dispatch_tests {
     }
 
     #[test]
-    fn shell_include_promotes_only_once() {
+    fn shell_include_without_owner_keeps_unsubmitted_composer_draft() {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 1, "echo test", b"test\n", b"", Some(0));
         handle_shell_include(&mut app, 1, "all".to_string(), None);
         handle_shell_include(&mut app, 1, "all".to_string(), None);
-        let msgs = get_user_messages(&app);
-        let include_count = msgs.iter().filter(|m| m.contains("echo test")).count();
-        assert_eq!(
-            include_count, 2,
-            "each /shell-include creates a new message"
-        );
+        assert!(app.prompt_state.prompt.get_text().contains("echo test"));
+        assert!(get_user_messages(&app).is_empty());
         let entry = app.shell_store.get(ShellCommandId(1)).unwrap();
-        assert!(!entry.promoted, "entry awaits turn acceptance");
-        assert_eq!(app.pending_shell_promotions.len(), 2);
-        assert!(app
-            .pending_shell_promotions
+        assert!(!entry.promoted, "entry awaits a connected owner and turn");
+        assert!(app.pending_shell_promotions.is_empty());
+        assert!(get_toasts(&app)
             .iter()
-            .all(|(id, _, _)| *id == 1));
+            .any(|toast| toast.contains("unsubmitted composer draft")));
     }
 
     #[test]
@@ -704,6 +891,7 @@ mod shell_dispatch_tests {
             Some(101),
         );
         handle_shell_include(&mut app, 1, "summary".to_string(), None);
+        acknowledge_composer_shell_promotion(&mut app, 1);
         let msgs = get_user_messages(&app);
         let included = msgs.iter().find(|m| m.contains("cargo test")).unwrap();
         assert!(

@@ -1164,6 +1164,13 @@ pub enum CoreResponse {
         session_id: String,
         messages: Vec<crate::dto::Message>,
     },
+    HumanShellPromotionStaged {
+        promotion: HumanShellPromotionDto,
+        duplicate: bool,
+    },
+    HumanShellPromotions {
+        promotions: Vec<HumanShellPromotionDto>,
+    },
     SessionMessageCounts {
         counts: std::collections::HashMap<String, usize>,
     },
@@ -1817,6 +1824,21 @@ pub enum CoreResponse {
     },
 }
 
+/// Bounded projection metadata returned by the durable session promotion
+/// owner. Raw shell output is never represented by this DTO.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanShellPromotionDto {
+    pub id: String,
+    pub source_id: String,
+    pub session_id: String,
+    pub projection: String,
+    pub projection_bytes: usize,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub consumed_turn_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSnapshot {
     pub session_id: String,
@@ -2089,6 +2111,10 @@ pub enum CoreRequest {
         /// the agent/model-profile default" — the pre-existing behavior.
         #[serde(default)]
         reasoning: Option<ReasoningOverride>,
+        /// Previously staged human-shell projections to include in this
+        /// accepted turn. Empty for ordinary turns.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -2101,6 +2127,19 @@ pub enum CoreRequest {
         session_id: String,
         text: String,
         plan_mode: bool,
+        /// Previously staged human-shell projections to include atomically
+        /// with this session-composed prompt.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
+    },
+    HumanShellPromotionStage {
+        session_id: String,
+        promotion_id: String,
+        source_id: String,
+        projection: String,
+    },
+    HumanShellPromotionsGet {
+        session_id: String,
     },
     TurnCancel {
         session_id: String,

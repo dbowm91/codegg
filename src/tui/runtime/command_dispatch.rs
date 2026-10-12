@@ -1789,8 +1789,48 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellAsk { id, question } => {
             handle_shell_ask(app, id, question);
         }
-        TuiCommand::ShellAskSubmitted { id, text, error } => {
-            crate::tui::commands::shell::apply_shell_ask_submitted(app, id, text, error);
+        TuiCommand::ShellAskSubmitted {
+            id,
+            promotion_id,
+            text,
+            error,
+        } => {
+            crate::tui::commands::shell::apply_shell_ask_submitted(
+                app,
+                id,
+                promotion_id,
+                text,
+                error,
+            );
+        }
+        TuiCommand::ShellPromotionStaged {
+            source_id,
+            promotion_id,
+            session_id,
+            workspace_id,
+            projection,
+            duplicate,
+            status,
+            error,
+        } => {
+            app.apply_shell_promotion_staged(
+                source_id,
+                promotion_id,
+                session_id,
+                workspace_id,
+                projection,
+                duplicate,
+                status,
+                error,
+            );
+        }
+        TuiCommand::ShellPromotionsLoaded {
+            session_id,
+            workspace_id,
+            promotions,
+            error,
+        } => {
+            app.apply_shell_promotions_loaded(session_id, workspace_id, promotions, error);
         }
         TuiCommand::ShellPromotionsSubmitted { promotions, error } => {
             app.apply_shell_promotions_submitted(&promotions, error);

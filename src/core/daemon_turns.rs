@@ -74,7 +74,8 @@ impl CoreDaemon {
                 model,
                 agents,
                 current_agent_idx,
-                messages,
+                mut messages,
+                human_shell_promotion_ids,
                 plan_mode,
                 reasoning,
                 ..
@@ -349,17 +350,20 @@ impl CoreDaemon {
                 // behavior unchanged: the submitter controls its turn)
                 // so projection/presence stay coherent.
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                match self
-                    .acquire_turn_controller(
+                let admitted_promotions = match self
+                    .acquire_turn_controller_with_promotions(
                         &session_id,
                         &turn_id,
                         &authority,
                         trusted_client_id,
+                        &runtime.project_id,
+                        runtime.workspace_id.as_str(),
+                        &human_shell_promotion_ids,
                         now_ms,
                     )
                     .await
                 {
-                    Ok((controller, revision)) => {
+                    Ok((controller, revision, promotions)) => {
                         self.mirror_controller_to_runtime(
                             &session_id,
                             &turn_id,
@@ -370,6 +374,7 @@ impl CoreDaemon {
                             revision,
                         )
                         .await;
+                        promotions
                     }
                     Err(error) => {
                         // Roll back: failed submissions must not leave a
@@ -386,10 +391,25 @@ impl CoreDaemon {
                             *status = crate::core::session_runtime::RuntimeSessionStatus::Idle;
                         }
                         return Ok(CoreResponse::Error {
-                            code: "turn_already_active".to_string(),
-                            message: format!("turn submission raced active control: {error}"),
+                            code: match &error {
+                                codegg_core::session_control::SessionTurnAdmissionError::Controller(_) => {
+                                    "turn_already_active"
+                                }
+                                codegg_core::session_control::SessionTurnAdmissionError::Promotion(promotion) => {
+                                    promotion.code()
+                                }
+                            }
+                            .to_string(),
+                            message: format!("turn submission could not claim session state: {error}"),
                         });
                     }
+                };
+                for promotion in admitted_promotions {
+                    messages.push(crate::protocol::dto::ProviderMessage::User {
+                        content: vec![crate::protocol::dto::ContentPart::Text {
+                            text: promotion.projection,
+                        }],
+                    });
                 }
                 // The terminal transition wins over later transfer: the
                 // reaper releases the lease on the first TurnCompleted /
@@ -576,6 +596,7 @@ impl CoreDaemon {
                 session_id,
                 text,
                 plan_mode,
+                human_shell_promotion_ids,
             } => {
                 // M004 desktop session slice: resolve the composed
                 // turn daemon-side, then submit through the identical
@@ -598,6 +619,7 @@ impl CoreDaemon {
                         current_agent_idx: 0,
                         messages,
                         reasoning: None,
+                        human_shell_promotion_ids,
                     },
                     request_id,
                     trusted_client_id,
@@ -605,6 +627,28 @@ impl CoreDaemon {
                     authz_decision,
                 ))
                 .await;
+            }
+            CoreRequest::HumanShellPromotionStage {
+                session_id,
+                promotion_id,
+                source_id,
+                projection,
+            } => {
+                return Ok(self
+                    .stage_human_shell_promotion(
+                        &session_id,
+                        &promotion_id,
+                        &source_id,
+                        &projection,
+                        &authority,
+                        &authz_decision,
+                    )
+                    .await);
+            }
+            CoreRequest::HumanShellPromotionsGet { session_id } => {
+                return Ok(self
+                    .get_human_shell_promotions(&session_id, &authority)
+                    .await);
             }
             CoreRequest::PermissionRespond { id, choice } => {
                 let parsed = match choice.as_str() {
@@ -1314,6 +1358,154 @@ impl CoreDaemon {
     /// with `turn_already_active` instead of spawning a second turn.
     pub(crate) const SESSION_PROMPT_MAX_TEXT_CHARS: usize = 200_000;
 
+    async fn stage_human_shell_promotion(
+        &self,
+        session_id: &str,
+        promotion_id: &str,
+        source_id: &str,
+        projection: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> CoreResponse {
+        let Some(pool) = self.pool.clone() else {
+            return promotion_error_response(
+                "human_shell_promotion_unavailable",
+                "durable session storage is required for promotion staging",
+            );
+        };
+        if projection.len() > codegg_core::session::HUMAN_SHELL_PROMOTION_MAX_BYTES {
+            return promotion_error_response(
+                "human_shell_promotion_invalid",
+                "projection exceeds the 32 KiB storage bound",
+            );
+        }
+        let runtime = match self.bind_runtime_for_session(session_id).await {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                return promotion_error_response(
+                    "human_shell_promotion_stale_binding",
+                    "session has no current workspace binding",
+                )
+            }
+        };
+        let sanitized =
+            crate::shell::sanitize_ansi(projection, crate::config::schema::AnsiMode::Strip);
+        let redacted = crate::shell::redactor::Redactor::default().redact(&sanitized);
+        if redacted.text.trim().is_empty()
+            || redacted.text.len() > codegg_core::session::HUMAN_SHELL_PROMOTION_MAX_BYTES
+        {
+            return promotion_error_response(
+                "human_shell_promotion_invalid",
+                "redacted projection is empty or exceeds the 32 KiB storage bound",
+            );
+        }
+        let input = codegg_core::session::NewHumanShellPromotion {
+            id: promotion_id.to_owned(),
+            source_id: source_id.to_owned(),
+            session_id: session_id.to_owned(),
+            principal_id: authority.principal_id().as_str().to_owned(),
+            project_id: runtime.project_id.clone(),
+            workspace_id: runtime.workspace_id.as_str().to_owned(),
+            projection: redacted.text,
+            created_at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        match codegg_core::session::HumanShellPromotionStore::new(pool)
+            .stage(input)
+            .await
+        {
+            Ok(codegg_core::session::StageHumanShellPromotionOutcome::Staged(record)) => {
+                self.record_human_shell_promotion_stage(
+                    authority,
+                    authz_decision,
+                    &record,
+                    "staged",
+                )
+                .await;
+                CoreResponse::HumanShellPromotionStaged {
+                    promotion: promotion_record_to_dto(record),
+                    duplicate: false,
+                }
+            }
+            Ok(codegg_core::session::StageHumanShellPromotionOutcome::Duplicate(record)) => {
+                CoreResponse::HumanShellPromotionStaged {
+                    promotion: promotion_record_to_dto(record),
+                    duplicate: true,
+                }
+            }
+            Err(error) => promotion_error_response(error.code(), &error.to_string()),
+        }
+    }
+
+    async fn record_human_shell_promotion_stage(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        record: &codegg_core::session::HumanShellPromotionRecord,
+        outcome: &str,
+    ) {
+        let provenance = codegg_core::authorization::audit_provenance(decision);
+        let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+        chain.project = decision.project_id.clone();
+        chain.session_id = Some(record.session_id.clone());
+        let builder = codegg_core::audit::AuditEventBuilder::new(
+            codegg_core::audit::AuditAction::PromptSubmit,
+            authority.principal(),
+            &provenance,
+        )
+        .with_visibility(codegg_core::audit::AuditVisibility::Project)
+        .with_metadata("human_shell_promotion.id", &record.id)
+        .with_metadata("human_shell_promotion.outcome", outcome)
+        .with_metadata(
+            "human_shell_promotion.projection_bytes",
+            record.projection_bytes.to_string().as_str(),
+        )
+        .with_metadata("decision.id", provenance.decision_id())
+        .with_metadata("decision.outcome", "allow");
+        let builder = codegg_core::audit_instrumentation::apply_chain(
+            builder,
+            &chain,
+            chain.project.as_ref(),
+        );
+        self.append_audit_event(builder).await;
+    }
+
+    async fn get_human_shell_promotions(
+        &self,
+        session_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+    ) -> CoreResponse {
+        let Some(pool) = self.pool.clone() else {
+            return promotion_error_response(
+                "human_shell_promotion_unavailable",
+                "durable session storage is required for promotion recovery",
+            );
+        };
+        let runtime = match self.bind_runtime_for_session(session_id).await {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                return promotion_error_response(
+                    "human_shell_promotion_stale_binding",
+                    "session has no current workspace binding",
+                )
+            }
+        };
+        match codegg_core::session::HumanShellPromotionStore::new(pool)
+            .list_pending(
+                session_id,
+                authority.principal_id().as_str(),
+                &runtime.project_id,
+                runtime.workspace_id.as_str(),
+                chrono::Utc::now().timestamp_millis(),
+            )
+            .await
+        {
+            Ok(records) => CoreResponse::HumanShellPromotions {
+                promotions: records.into_iter().map(promotion_record_to_dto).collect(),
+            },
+            Err(error) => promotion_error_response(error.code(), &error.to_string()),
+        }
+    }
+
     async fn resolve_prompt_submit_composition(
         &self,
         session_id: &str,
@@ -1418,6 +1610,29 @@ impl CoreDaemon {
             }],
         }];
         Ok((model, agents, messages))
+    }
+}
+
+fn promotion_error_response(code: &str, message: &str) -> CoreResponse {
+    CoreResponse::Error {
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+fn promotion_record_to_dto(
+    record: codegg_core::session::HumanShellPromotionRecord,
+) -> crate::protocol::core::HumanShellPromotionDto {
+    crate::protocol::core::HumanShellPromotionDto {
+        id: record.id,
+        source_id: record.source_id,
+        session_id: record.session_id,
+        projection: record.projection,
+        projection_bytes: record.projection_bytes,
+        status: record.status.as_str().to_owned(),
+        created_at_ms: record.created_at_ms,
+        expires_at_ms: record.expires_at_ms,
+        consumed_turn_id: record.consumed_turn_id,
     }
 }
 
@@ -1635,6 +1850,7 @@ mod tests {
                 session_id: session_id.to_string(),
                 text: "hello".into(),
                 plan_mode: false,
+                human_shell_promotion_ids: vec![],
                 model: model.to_string(),
                 agents: vec![crate::protocol_conversions::agent_to_dto(agent).expect("agent dto")],
                 current_agent_idx: 0,

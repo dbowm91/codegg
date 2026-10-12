@@ -30,10 +30,17 @@ and a promotion model that keeps ephemeral commands out of model context.
 
 A human `!` command is not model context unless the user explicitly
 promotes it. `!command` runs ephemerally (command and output hidden from model).
-`!!command` runs and stages bounded/redacted output for the next submitted
-turn when `human_shell.auto_promote_bangbang` is enabled. `/shell-include`
-stages a selected output view in the same way. `/shell-ask` submits one
-question and its redacted evidence through the session-scoped prompt API.
+`!!command` runs and asks the authoritative daemon to stage a bounded,
+redacted projection for the exact session when
+`human_shell.auto_promote_bangbang` is enabled. `/shell-include` stages a
+selected output view in the same way. The daemon acknowledges the durable
+record before the TUI presents it as staged. Pending records are principal,
+session, project, and workspace scoped, limited to 32 KiB each, 32 pending and
+256 retained per session, and expire after 24 hours. A submitted turn claims them atomically
+with the session controller lease; reconnect restores pending records, while
+consumed records are never replayed automatically. `/shell-ask` stages the
+question and evidence under a stable identity before submitting one
+session-scoped prompt turn.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal
 `!` chat message.
@@ -42,13 +49,10 @@ Human-shell promotion always runs the shared secret redactor and fails closed
 if redaction does not report an applied state, regardless of
 `redact_model_visible_output`; the general shell projection `off` setting does
 not disable this human-consent boundary. Projection text is ANSI-stripped and
-limited to 32 KiB before it is inserted into provider-facing user context.
-The TUI marks an entry promoted only after the session turn API acknowledges
-acceptance. A staged message remains local to its current TUI session until
-that turn is accepted. The WebSocket TUI transport accepts prompt strings
-only, so it places approved evidence in an empty composer for explicit
-submission; it preserves a non-empty draft and does not claim remote acceptance
-from queue delivery.
+limited to 32 KiB before staging. Without a connected authoritative owner, the
+TUI leaves the evidence as an unsubmitted composer draft. The WebSocket TUI
+transport accepts prompt strings only, so it also uses an explicitly labeled
+composer draft and makes no staging or acceptance claim from queue delivery.
 
 ### Execution Flow
 
@@ -69,11 +73,11 @@ from queue delivery.
 Human model-context promotions pass through one redaction hook regardless of
 the general shell-output redaction setting and are capped at 32 KiB. `!`
 output remains private. Local `!!`/include entries are marked promoted only
-after the next submitted turn receives a daemon `Ack`; `/shell-ask` waits for
-the session-scoped submission `Ack`. Remote TUI queue acceptance is not
-session acceptance, so the current remote path does not claim promotion
-success. Finite command execution still runs in the frontend and is being
-corrected separately by C002 at
+after a turn is accepted and the durable stage is claimed. `/shell-ask` waits
+for both stage acknowledgement and session turn acceptance. Remote TUI queue
+acceptance is not session acceptance, so the remote path remains an
+unsubmitted composer draft. Finite command execution still runs in the
+frontend and is being corrected separately by C002 at
 `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
 
 ### Projection Pipeline (Phases 1–10)

@@ -536,6 +536,8 @@ not a Core operation):
 | `turn_cancel` | via_session | `agent.invoke` |
 | `turn_steer` | via_session | `agent.invoke` |
 | `turn_submit` | via_session | `agent.invoke` |
+| `human_shell_promotion_stage` | via_session | `agent.invoke` |
+| `human_shell_promotions_get` | via_session | `agent.invoke` |
 | `work_order_batch_create` | direct_project | `session.create` |
 | `work_order_bind_repository` | direct_project | `session.create` |
 | `work_order_cancel` | direct_project | `session.create` |

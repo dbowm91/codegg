@@ -56,14 +56,28 @@ capabilities as available unless a separate implementation lands.
    `killed X.Xs`, or `failed`, plus a ` [promoted]` marker once the entry has
    been promoted (`src/tui/commands/shell.rs:567-574`)
 9. `!` output is NOT added to model context. Explicit promotions use the shared
-   redactor, are capped at 32 KiB, and are sent only with a user-submitted turn.
+   redactor, are capped at 32 KiB, and are durably staged by the authoritative
+   session owner before the TUI reports them staged.
 
 ## Promotion Model
 
 - `!cmd` → `ShellCapturePolicy::StoreEphemeral`
 - `!!cmd` → `ShellCapturePolicy::StoreAndPromote` when
   `human_shell.auto_promote_bangbang` is enabled; otherwise the output stays private
-- `/shell-include <id>` → Stages an existing ephemeral entry for the next turn
+- `/shell-include <id>` → Requests daemon staging of a selected existing entry;
+  without an owner, leaves an unsubmitted composer draft
+
+Pending promotions are bound to authenticated principal, session, project, and
+workspace; at most 32 are pending and 256 retained per session, and each
+pending record expires after 24 hours.
+The next accepted turn claims selected identities atomically with the durable
+session controller lease. Reconnect queries the authoritative owner. Consumed
+records are not automatically replayed after restart. Expired payloads and
+tombstones are purged on stage/recovery access after a total 48-hour window.
+`/shell-ask` stages its
+question and evidence under one stable identity before submitting the turn.
+The WebSocket prompt-string transport retains its explicit unsubmitted-draft
+behavior and does not treat queue delivery as staging.
 
 **Both keep `origin: ShellOrigin::HumanEphemeral`**
 (`src/tui/commands/shell.rs:66`). `promote_after` only selects the capture
@@ -151,11 +165,13 @@ streamed length. The head/tail split is not a 3-way split of the budget.
 `enabled`, `default_timeout_secs`, `confirm_dangerous`, `ansi`, and
 `auto_promote_bangbang` are resolved by the TUI at construction and config
 reload. Human model-context output always strips ANSI, applies the shared
-redactor, and is capped at 32 KiB. `!!` and `/shell-include` stage a user
-message for the next local turn; only the daemon's `Ack` changes the history
-entry's `promoted` flag. `/shell-ask` uses the session-scoped prompt-submit
-request and marks success only after its `Ack`. A remote TUI outbound queue
-does not itself prove server acceptance.
+redactor, and is capped at 32 KiB. `!!` and `/shell-include` wait for a typed
+daemon acknowledgement before showing the record as staged. The turn's
+controller lease and promotion consumption commit in one database transaction;
+only accepted turn submission changes the history entry's `promoted` flag.
+`/shell-ask` waits for staging and session turn acceptance. A remote TUI
+outbound queue does not prove server acceptance and remains an unsubmitted
+composer draft.
 
 ## Command Routing (agent bash, not human shell)
 

@@ -321,17 +321,12 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                     match project_for_model(&include_text) {
                         Ok(include_text) => {
                             if !stage_remote_shell_projection(app, include_text.clone()) {
-                                app.messages_state
-                                    .messages
-                                    .add_user_message(include_text.clone(), Some(false));
-                                app.pending_shell_promotions.push((
-                                    id.0,
-                                    include_text,
-                                    uuid::Uuid::new_v4(),
-                                ));
-                                app.messages_state.toasts.info(
-                                    "Redacted shell output staged for the next submitted turn",
-                                );
+                                if !stage_local_shell_projection(app, id.0, include_text.clone()) {
+                                    app.prompt_state.prompt.set_text(include_text);
+                                    app.messages_state.toasts.warning(
+                                        "Redacted shell evidence is an unsubmitted composer draft because no session owner is connected",
+                                    );
+                                }
                             }
                         }
                         Err(error) => app.messages_state.toasts.error(&error),
@@ -511,14 +506,12 @@ pub(crate) fn handle_shell_include(
                 if stage_remote_shell_projection(app, include_text.clone()) {
                     return;
                 }
-                app.messages_state
-                    .messages
-                    .add_user_message(include_text.clone(), Some(false));
-                app.pending_shell_promotions
-                    .push((id, include_text, uuid::Uuid::new_v4()));
-                app.messages_state
-                    .toasts
-                    .info("Redacted shell output staged for the next submitted turn");
+                if !stage_local_shell_projection(app, id, include_text.clone()) {
+                    app.prompt_state.prompt.set_text(include_text);
+                    app.messages_state.toasts.warning(
+                        "Redacted shell evidence is an unsubmitted composer draft because no session owner is connected",
+                    );
+                }
             }
             Err(error) => app.messages_state.toasts.error(&error),
         }
@@ -602,26 +595,98 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
             return;
         };
         let submitted_text = text.clone();
+        let promotion_id = uuid::Uuid::new_v4();
+        let workspace_id = app.active_workspace_id().map(str::to_owned).or_else(|| {
+            app.session_state
+                .session
+                .as_ref()
+                .and_then(|session| session.workspace_id.clone())
+        });
+        let stage_request = crate::core::new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::HumanShellPromotionStage {
+                session_id: session_id.clone(),
+                promotion_id: promotion_id.to_string(),
+                source_id: id.to_string(),
+                projection: text.clone(),
+            },
+        );
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             CoreRequest::SessionPromptSubmit {
-                session_id,
-                text,
+                session_id: session_id.clone(),
+                text: "Answer the question contained in the attached human-shell evidence.".into(),
                 plan_mode: app.agent_state.plan_mode,
+                human_shell_promotion_ids: vec![promotion_id.to_string()],
             },
         );
         app.task_registry
             .spawn(TuiTaskKind::Command, "shell_ask_submit", async move {
-                let error = match client.request(request).await {
-                    Ok(CoreResponse::Ack) => None,
-                    Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
-                    Ok(_) => Some("unexpected response to shell question".to_string()),
-                    Err(error) => Some(error.to_string()),
+                let stage_response = match client.request(stage_request).await {
+                    Ok(response) => Ok(response),
+                    Err(first_error) => {
+                        let retry = crate::core::new_request(
+                            uuid::Uuid::new_v4().to_string(),
+                            CoreRequest::HumanShellPromotionStage {
+                                session_id: session_id.clone(),
+                                promotion_id: promotion_id.to_string(),
+                                source_id: id.to_string(),
+                                projection: submitted_text.clone(),
+                            },
+                        );
+                        client.request(retry).await.map_err(|retry_error| {
+                            format!(
+                                "could not confirm durable staging (the connected daemon may not support it): {first_error}; retry: {retry_error}"
+                            )
+                        })
+                    }
+                };
+                let stage_error = match stage_response {
+                    Ok(CoreResponse::HumanShellPromotionStaged {
+                        promotion,
+                        duplicate,
+                    }) if promotion.status == "pending" => {
+                        let _ = send_tui(
+                            &tx,
+                            app::TuiCommand::ShellPromotionStaged {
+                                source_id: id,
+                                promotion_id,
+                                session_id: session_id.clone(),
+                                workspace_id: workspace_id.clone(),
+                                projection: promotion.projection,
+                                duplicate,
+                                status: Some("pending".into()),
+                                error: None,
+                            },
+                        );
+                        None
+                    }
+                    Ok(CoreResponse::HumanShellPromotionStaged { promotion, .. }) => {
+                        Some(format!("promotion is already {}", promotion.status))
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(human_shell_stage_error(&code, &message))
+                    }
+                    Ok(_) => Some("unexpected response while staging shell question".to_string()),
+                    Err(error) => Some(error),
+                };
+                let error = if let Some(error) = stage_error {
+                    Some(error)
+                } else {
+                    match client.request(request).await {
+                        Ok(CoreResponse::Ack) => None,
+                        Ok(CoreResponse::Error { code, message }) => {
+                            Some(format!("{code}: {message}"))
+                        }
+                        Ok(_) => Some("unexpected response to shell question".to_string()),
+                        Err(error) => Some(error.to_string()),
+                    }
                 };
                 let _ = send_tui(
                     &tx,
                     app::TuiCommand::ShellAskSubmitted {
                         id,
+                        promotion_id: Some(promotion_id),
                         text: submitted_text,
                         error,
                     },
@@ -656,11 +721,12 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
 pub(crate) fn apply_shell_ask_submitted(
     app: &mut app::App,
     id: u64,
+    promotion_id: Option<uuid::Uuid>,
     text: String,
     error: Option<String>,
 ) {
     if let Some(error) = error {
-        if app.prompt_state.prompt.get_text().is_empty() {
+        if promotion_id.is_none() && app.prompt_state.prompt.get_text().is_empty() {
             app.prompt_state.prompt.set_text(text);
         }
         app.messages_state
@@ -670,6 +736,10 @@ pub(crate) fn apply_shell_ask_submitted(
     }
     app.shell_store
         .mark_promoted(crate::shell::types::ShellCommandId(id));
+    if let Some(promotion_id) = promotion_id {
+        app.pending_shell_promotions
+            .retain(|pending| pending.id != promotion_id);
+    }
     if app.prompt_state.prompt.get_text() == text {
         app.prompt_state.prompt.clear();
     }
@@ -750,6 +820,140 @@ fn stage_remote_shell_projection(app: &mut app::App, text: String) -> bool {
         );
     }
     true
+}
+
+/// Send a prepared projection to the authoritative daemon session owner.
+/// The UI must wait for the typed response before displaying it as staged.
+fn stage_local_shell_projection(app: &mut app::App, source_id: u64, projection: String) -> bool {
+    let Some(client) = app.core_client.clone() else {
+        return false;
+    };
+    let Some(session_id) = app.active_session_id().map(str::to_owned).or_else(|| {
+        app.session_state
+            .session
+            .as_ref()
+            .map(|session| session.id.clone())
+    }) else {
+        return false;
+    };
+    if app.observer.blocks_prompt_submit() {
+        app.messages_state
+            .toasts
+            .warning("Observer sessions cannot stage shell output for model context");
+        return true;
+    }
+    let Some(tx) = app.tui_cmd_tx.clone() else {
+        app.messages_state
+            .toasts
+            .error("Cannot stage shell output: TUI command channel is unavailable");
+        return true;
+    };
+    let workspace_id = app.active_workspace_id().map(str::to_owned).or_else(|| {
+        app.session_state
+            .session
+            .as_ref()
+            .and_then(|session| session.workspace_id.clone())
+    });
+    let promotion_id = uuid::Uuid::new_v4();
+    let request = crate::core::new_request(
+        uuid::Uuid::new_v4().to_string(),
+        crate::protocol::core::CoreRequest::HumanShellPromotionStage {
+            session_id: session_id.clone(),
+            promotion_id: promotion_id.to_string(),
+            source_id: source_id.to_string(),
+            projection: projection.clone(),
+        },
+    );
+    app.task_registry
+        .spawn(TuiTaskKind::Command, "stage_shell_promotion", async move {
+            let response = match client.request(request).await {
+                Ok(response) => response,
+                Err(first_error) => {
+                    // A lost response is ambiguous. Retry the same durable
+                    // identity so the owner can return its prior outcome.
+                    let retry = crate::core::new_request(
+                        uuid::Uuid::new_v4().to_string(),
+                        crate::protocol::core::CoreRequest::HumanShellPromotionStage {
+                            session_id: session_id.clone(),
+                            promotion_id: promotion_id.to_string(),
+                            source_id: source_id.to_string(),
+                            projection: projection.clone(),
+                        },
+                    );
+                    match client.request(retry).await {
+                        Ok(response) => response,
+                        Err(retry_error) => {
+                            let _ = send_tui(
+                                &tx,
+                                app::TuiCommand::ShellPromotionStaged {
+                                    source_id,
+                                    promotion_id,
+                                    session_id,
+                                    workspace_id,
+                                    projection,
+                                    duplicate: false,
+                                    status: None,
+                                    error: Some(format!(
+                                        "could not confirm durable staging (the connected daemon may not support it): {first_error}; retry: {retry_error}"
+                                    )),
+                                },
+                            );
+                            return;
+                        }
+                    }
+                }
+            };
+            let command = match response {
+                crate::protocol::core::CoreResponse::HumanShellPromotionStaged {
+                    promotion,
+                    duplicate,
+                } => app::TuiCommand::ShellPromotionStaged {
+                    source_id,
+                    promotion_id,
+                    session_id,
+                    workspace_id,
+                    projection: promotion.projection,
+                    duplicate,
+                    status: Some(promotion.status),
+                    error: None,
+                },
+                crate::protocol::core::CoreResponse::Error { code, message } => {
+                    app::TuiCommand::ShellPromotionStaged {
+                        source_id,
+                        promotion_id,
+                        session_id,
+                        workspace_id,
+                        projection,
+                        duplicate: false,
+                        status: None,
+                        error: Some(human_shell_stage_error(&code, &message)),
+                    }
+                }
+                _ => app::TuiCommand::ShellPromotionStaged {
+                    source_id,
+                    promotion_id,
+                    session_id,
+                    workspace_id,
+                    projection,
+                    duplicate: false,
+                    status: None,
+                    error: Some("unexpected response to shell promotion staging".into()),
+                },
+            };
+            let _ = send_tui(&tx, command);
+        });
+    true
+}
+
+fn human_shell_stage_error(code: &str, message: &str) -> String {
+    if matches!(
+        code,
+        "invalid_request" | "unknown_request" | "unsupported_capability"
+    ) {
+        format!("connected daemon does not support durable human-shell staging ({code})")
+    } else {
+        format!("{code}: {message}")
+    }
 }
 
 pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {

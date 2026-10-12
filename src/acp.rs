@@ -177,6 +177,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx: 0,
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
                             reasoning: None,
+                            human_shell_promotion_ids: Vec::new(),
                         })).await?;
                         match response {
                             CoreResponse::Ack => active = Some(ActivePrompt {

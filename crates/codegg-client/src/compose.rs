@@ -101,6 +101,7 @@ pub fn compose_turn_submit(input: TurnSubmitInput) -> Result<CoreRequest, Compos
         current_agent_idx: input.current_agent_idx,
         messages: input.messages,
         reasoning: None,
+        human_shell_promotion_ids: Vec::new(),
     })
 }
 

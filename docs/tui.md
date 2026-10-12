@@ -155,15 +155,16 @@ The single bang runs the command and keeps its command and output out of the
 model's context. The double bang
 stages one bounded, redacted result in the conversation for the next submitted
 turn. It does not start inference on its own. `/shell-include` stages a selected
-view the same way; `/shell-ask` submits one question with the selected evidence
-to the bound session. Promotion requires a bound, non-observer session; failed
-submissions do not mark an output as promoted.
+view the same way; `/shell-ask` stages one question with the selected evidence
+before submitting it to the bound session. Promotion requires a bound,
+non-observer session; failed submissions do not mark an output as promoted.
 Human-shell output always passes the shared secret redactor and a 32 KiB limit,
-even when general shell projection redaction is configured `off`. Staged output
-remains in the active TUI until the next turn is accepted.
-The WebSocket TUI transport does not support a separate staged-context
-request, so approved output is placed in an empty composer for explicit
-submission; an existing draft is preserved.
+even when general shell projection redaction is configured `off`. The daemon
+acknowledges durable staging for the exact session before the TUI reports it as
+staged. Pending projections expire after 24 hours and return after reconnect;
+turn admission consumes them once with the controller lease. The WebSocket
+TUI transport does not support durable staging, so approved output is clearly
+identified as an unsubmitted composer draft; an existing draft is preserved.
 
 Classification happens before dispatch: `!!` is matched first. The effective
 `human_shell.auto_promote_bangbang` setting controls whether its output is

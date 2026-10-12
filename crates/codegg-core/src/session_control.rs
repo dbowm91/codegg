@@ -24,6 +24,9 @@ use thiserror::Error;
 
 use crate::error::StorageError;
 use crate::identity::PrincipalId;
+use crate::session::human_shell_promotion::{
+    self, HumanShellPromotionError, HumanShellPromotionRecord,
+};
 
 /// Version of the session-control protocol surface.
 pub const SESSION_CONTROL_PROTOCOL_VERSION: u32 = 1;
@@ -143,6 +146,31 @@ pub enum SessionControlError {
     Unavailable(String),
     #[error("session control storage error: {0}")]
     Storage(#[from] StorageError),
+}
+
+/// Failure while admitting a turn and atomically consuming its staged human
+/// shell projections.
+#[derive(Debug, Error)]
+pub enum SessionTurnAdmissionError {
+    #[error(transparent)]
+    Controller(#[from] SessionControlError),
+    #[error(transparent)]
+    Promotion(#[from] HumanShellPromotionError),
+}
+
+impl SessionTurnAdmissionError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Controller(error) => error.code(),
+            Self::Promotion(error) => error.code(),
+        }
+    }
+}
+
+impl From<sqlx::Error> for SessionTurnAdmissionError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Controller(SessionControlError::from(error))
+    }
 }
 
 impl SessionControlError {
@@ -443,6 +471,78 @@ impl SessionControllerStore {
         Err(SessionControlError::Conflict(format!(
             "session {session_id} already has an active controller turn"
         )))
+    }
+
+    /// Acquire a turn controller and bind each pending promotion to that turn
+    /// in one transaction. A conflict or invalid promotion rolls back both
+    /// the controller row and every partial claim.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn acquire_with_promotions(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        controller: &PrincipalId,
+        origin_client: Option<&str>,
+        project_id: &str,
+        workspace_id: &str,
+        promotion_ids: &[String],
+        now_ms: i64,
+    ) -> Result<(SessionControllerRecord, Vec<HumanShellPromotionRecord>), SessionTurnAdmissionError>
+    {
+        validate_session_id(session_id)?;
+        validate_turn_id(turn_id)?;
+        if let Some(client) = origin_client {
+            validate_client_id(client)?;
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO session_turn_controller \
+             (session_id, turn_id, controller_principal, origin_client, revision, \
+              created_at, updated_at, last_action, last_actor, last_reason) \
+             VALUES (?, ?, ?, ?, 1, ?, ?, 'acquired', ?, NULL) \
+             ON CONFLICT(session_id) DO NOTHING",
+        )
+        .bind(session_id)
+        .bind(turn_id)
+        .bind(controller.as_str())
+        .bind(origin_client)
+        .bind(now_ms)
+        .bind(now_ms)
+        .bind(controller.as_str())
+        .execute(&mut *tx)
+        .await?;
+        let row: Option<ControllerRow> = sqlx::query_as(
+            "SELECT session_id, turn_id, controller_principal, origin_client, revision, \
+             created_at, updated_at, last_action, last_actor, last_reason \
+             FROM session_turn_controller WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let record = row.map(row_to_record).transpose()?.ok_or_else(|| {
+            SessionControlError::Storage(StorageError::Database(
+                "session control acquire lost".to_owned(),
+            ))
+        })?;
+        if record.turn_id != turn_id || record.controller_principal != *controller {
+            return Err(SessionControlError::Conflict(format!(
+                "session {session_id} already has an active controller turn"
+            ))
+            .into());
+        }
+        let claimed = human_shell_promotion::claim_for_turn(
+            &mut tx,
+            promotion_ids,
+            session_id,
+            controller.as_str(),
+            project_id,
+            workspace_id,
+            turn_id,
+            now_ms,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((record, claimed))
     }
 
     /// Release the lease when the turn reaches a terminal state.

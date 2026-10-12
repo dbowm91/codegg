@@ -544,6 +544,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_fork", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
+    ("human_shell_promotion_stage", "prompt_submit"),
     ("turn_steer", "prompt_submit"),
     ("turn_cancel", "job_cancel"),
     ("agent_select", "agent_delegate"),
@@ -679,6 +680,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
 /// credential, bearer-mint, config) to this list merely to pass the
 /// guard; instrument it instead.
 pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
+    "human_shell_promotions_get",
     "asset_refresh_capabilities",
     "asset_refresh_status",
     "audit_capabilities",

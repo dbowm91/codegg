@@ -244,26 +244,38 @@ impl CoreDaemon {
     /// holding the turn lock semantics of the caller. On store
     /// conflict the caller must roll back the in-memory turn (the
     /// store changed nothing for the loser).
-    pub(crate) async fn acquire_turn_controller(
+    pub(crate) async fn acquire_turn_controller_with_promotions(
         &self,
         session_id: &str,
         turn_id: &str,
         authority: &codegg_core::transport_auth::RequestAuthorityContext,
         trusted_client_id: &str,
+        project_id: &str,
+        workspace_id: &str,
+        promotion_ids: &[String],
         now_ms: i64,
-    ) -> Result<(Option<String>, u64), AppError> {
+    ) -> Result<
+        (
+            Option<String>,
+            u64,
+            Vec<codegg_core::session::HumanShellPromotionRecord>,
+        ),
+        codegg_core::session_control::SessionTurnAdmissionError,
+    > {
         let principal = authority.principal_id().clone();
         if let Some(store) = self.controller_store() {
-            let record = store
-                .acquire(
+            let (record, promotions) = store
+                .acquire_with_promotions(
                     session_id,
                     turn_id,
                     &principal,
                     Some(trusted_client_id),
+                    project_id,
+                    workspace_id,
+                    promotion_ids,
                     now_ms,
                 )
-                .await
-                .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+                .await?;
             self.publish_control_changed(
                 session_id,
                 Some(turn_id),
@@ -275,9 +287,19 @@ impl CoreDaemon {
             return Ok((
                 Some(record.controller_principal.as_str().to_owned()),
                 record.revision,
+                promotions,
             ));
         }
-        Ok((Some(principal.as_str().to_owned()), 1))
+        if !promotion_ids.is_empty() {
+            return Err(
+                codegg_core::session_control::SessionTurnAdmissionError::Promotion(
+                    codegg_core::session::HumanShellPromotionError::Unavailable(
+                        "durable session storage is required for staged promotions".to_owned(),
+                    ),
+                ),
+            );
+        }
+        Ok((Some(principal.as_str().to_owned()), 1, Vec::new()))
     }
 
     /// Release the lease when a turn reaches a terminal state.
