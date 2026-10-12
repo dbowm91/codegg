@@ -2,20 +2,26 @@
 //!
 //! The `title` built-in agent (`assets/agents/title.toml`,
 //! `runtime_kind = "title"`) exists so turns can produce a concise
-//! human-readable session title, but nothing ever invoked it: new
-//! sessions default to `"Untitled"` (`SessionStore::create`) and only a
-//! manual `SessionRename` changed the title afterwards.
+//! human-readable session title. After a turn completes, the turn runtime
+//! fires a best-effort background task that generates a title from the
+//! turn's in-memory user request + assistant outcome and persists it when
+//! the session is still `"Untitled"` (see `maybe_auto_title_session`).
+//! Failures are logged and never fail the turn; the next completed turn
+//! in the same session retries naturally, since the title is still the
+//! creation default.
 //!
 //! This module wires the agent's contract to a lightweight one-shot
 //! provider call (no tools, no sub-agent dispatch, no scheduler work).
-//! After a turn completes, the turn runtime fires a best-effort
-//! background task that generates a title from the turn's in-memory
-//! user request + assistant outcome and persists it when the session
-//! is still `"Untitled"`. Failures are logged and never fail the turn.
 //!
 //! The excerpt comes from the completed turn rather than the message table:
 //! the title task fires while the run is finishing, before
 //! [`crate::agent::transcript`] persists the turn.
+//!
+//! A truncated stream still names the session: this call is capped at a
+//! handful of tokens, so a length-cut terminator arrives as a stream error
+//! *after* the title text, and the provider wire layer escalates that
+//! terminator to a hard failure. `generate_title_via_provider` salvages the
+//! received prefix through the same sanitizer instead of discarding it.
 
 use std::sync::Arc;
 
@@ -45,7 +51,10 @@ const MAX_EXCERPT_SIDE_CHARS: usize = 1000;
 
 /// Bounded one-shot title call.
 const TITLE_TIMEOUT_SECS: u64 = 30;
-const TITLE_MAX_TOKENS: usize = 32;
+/// Headroom above the ~15-20 tokens a 60-char title needs: chatty models
+/// spend tokens on preamble the sanitizer strips, and hitting the cap
+/// mid-title ends the stream with an incomplete-response terminator.
+const TITLE_MAX_TOKENS: usize = 64;
 const TITLE_TEMPERATURE: f64 = 0.7;
 
 /// System prompt implementing the `title` agent contract
@@ -190,22 +199,38 @@ pub(crate) async fn generate_title_via_provider(
     })??;
     let mut text = String::new();
     let mut stream = events;
+    // A truncated stream still carries a usable prefix (see module docs):
+    // remember the failure, drain no further, and let the sanitizer decide.
+    // A stream that produced nothing usable still reports the original error.
+    let mut stream_error: Option<AppError> = None;
     while let Some(event) = stream.next().await {
         match event {
             Ok(crate::provider::ChatEvent::TextDelta(delta)) => text.push_str(&delta),
             Ok(crate::provider::ChatEvent::Finish { .. }) => break,
             Ok(crate::provider::ChatEvent::Error(message)) => {
-                return Err(AppError::Other(anyhow::anyhow!(
+                stream_error = Some(AppError::Other(anyhow::anyhow!(
                     "title generation failed: {message}"
                 )));
+                break;
             }
             Ok(_) => {}
-            Err(error) => return Err(AppError::Other(anyhow::anyhow!("{error}"))),
+            Err(error) => {
+                stream_error = Some(AppError::Other(anyhow::anyhow!("{error}")));
+                break;
+            }
         }
     }
-    sanitize_title(&text).ok_or_else(|| {
-        AppError::Other(anyhow::anyhow!("title generation produced no usable title"))
-    })
+    match sanitize_title(&text) {
+        Some(title) => Ok(title),
+        None => Err(stream_error.unwrap_or_else(|| {
+            // Carry the raw output so the daemon log tells us *what* the
+            // model returned next time, not just that it was unusable.
+            AppError::Other(anyhow::anyhow!(
+                "title generation produced no usable title from {:?}",
+                truncate_chars(text.trim(), 200)
+            ))
+        })),
+    }
 }
 
 /// `SessionSummaryProvider` backed by a one-shot provider call.
@@ -531,6 +556,139 @@ mod tests {
             generate_title_via_provider(&provider, "fake/model", "  ", "", Default::default())
                 .await
                 .is_err()
+        );
+    }
+
+    /// A provider stub replaying text deltas followed by an optional
+    /// terminal event, including stream failures like the length-cut
+    /// `ResponseIncomplete` terminator the wire layer surfaces as an error.
+    #[derive(Clone)]
+    struct ScriptedTitleProvider {
+        texts: Vec<String>,
+        finish: bool,
+        error: Option<(String, String)>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ScriptedTitleProvider {
+        fn id(&self) -> &str {
+            "scripted-title"
+        }
+
+        fn name(&self) -> &str {
+            "scripted-title"
+        }
+
+        fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+            Box::new(self.clone())
+        }
+
+        async fn stream(
+            &self,
+            _request: &crate::provider::ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            let mut events: Vec<
+                Result<crate::provider::ChatEvent, crate::provider::ProviderError>,
+            > = self
+                .texts
+                .iter()
+                .map(|text| {
+                    Ok(crate::provider::ChatEvent::TextDelta(Arc::new(
+                        text.clone(),
+                    )))
+                })
+                .collect();
+            if self.finish {
+                events.push(Ok(crate::provider::ChatEvent::Finish {
+                    stop_reason: Arc::new("stop".to_string()),
+                    usage: Default::default(),
+                }));
+            }
+            if let Some((code, message)) = self.error.clone() {
+                events.push(Err(crate::provider::ProviderError::api(code, message)));
+            }
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The 32-token cap era ended streams with an incomplete-response
+    /// terminator *after* the title text: the session must still be named.
+    #[tokio::test]
+    async fn truncated_stream_salvages_usable_prefix() {
+        let provider = ScriptedTitleProvider {
+            texts: vec!["Fix login redirect loop".to_string()],
+            finish: false,
+            error: Some((
+                "provider_stream".to_string(),
+                "provider stream tool-call state was invalid: provider stream reported incomplete response".to_string(),
+            )),
+        };
+        let title = generate_title_via_provider(
+            &provider,
+            "fake/model",
+            "fix login",
+            "done",
+            Default::default(),
+        )
+        .await
+        .expect("usable prefix survives truncation");
+        assert_eq!(title, "Fix login redirect loop");
+    }
+
+    /// A stream that fails before producing anything usable still fails —
+    /// and the original error survives so the daemon log stays diagnosable.
+    #[tokio::test]
+    async fn stream_error_without_text_still_fails() {
+        let provider = ScriptedTitleProvider {
+            texts: Vec::new(),
+            finish: false,
+            error: Some((
+                "provider_stream".to_string(),
+                "provider stream reported incomplete response".to_string(),
+            )),
+        };
+        let error = generate_title_via_provider(
+            &provider,
+            "fake/model",
+            "fix login",
+            "done",
+            Default::default(),
+        )
+        .await
+        .expect_err("no text means no salvage");
+        assert!(
+            error.to_string().contains("incomplete response"),
+            "original error preserved, got: {error}"
+        );
+    }
+
+    /// An empty stream is a sanitizer rejection, and the error now carries
+    /// the (empty) raw output for the log.
+    #[tokio::test]
+    async fn unusable_output_reports_what_the_model_returned() {
+        let provider = ScriptedTitleProvider {
+            texts: Vec::new(),
+            finish: true,
+            error: None,
+        };
+        let error = generate_title_via_provider(
+            &provider,
+            "fake/model",
+            "fix login",
+            "done",
+            Default::default(),
+        )
+        .await
+        .expect_err("empty output is unusable");
+        assert!(
+            error.to_string().contains("no usable title"),
+            "got: {error}"
         );
     }
 }
