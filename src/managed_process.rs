@@ -2213,30 +2213,20 @@ mod tests {
             .map(PathBuf::from)
             .expect("SystemRoot is set")
             .join("System32")
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe");
-        let script = r#"
-function ReadResult($path) {
-  try { [IO.File]::ReadAllText($path) | Out-Null; return 'leaked' }
-  catch { return 'denied' }
-}
-$direct = ReadResult $env:C013_DIRECT
-$junction = ReadResult $env:C013_JUNCTION
-$hardlink = ReadResult $env:C013_HARDLINK
-$protected = ReadResult $env:C013_PROTECTED
-$ads = ReadResult $env:C013_ADS
-$postLease = ReadResult ([IO.Path]::Combine($env:C013_DENY_ROOT, 'created-after-lease.txt'))
-$newPath = [IO.Path]::Combine($env:C013_DENY_ROOT, 'created-after-launch.txt')
-try { [IO.File]::WriteAllText($newPath, 'synthetic'); $new = 'created' }
-catch { $new = 'creation-denied' }
-[Console]::Out.Write("direct=$direct|junction=$junction|hardlink=$hardlink|protected=$protected|ads=$ads|postLease=$postLease|new=$new")
-"#;
+            .join("cmd.exe");
+        let script = [
+            r#"type "%C013_DIRECT%" >nul 2>nul && echo direct=leaked || echo direct=denied"#,
+            r#"type "%C013_JUNCTION%" >nul 2>nul && echo junction=leaked || echo junction=denied"#,
+            r#"type "%C013_HARDLINK%" >nul 2>nul && echo hardlink=leaked || echo hardlink=denied"#,
+            r#"type "%C013_PROTECTED%" >nul 2>nul && echo protected=leaked || echo protected=denied"#,
+            r#"type "%C013_ADS%" >nul 2>nul && echo ads=leaked || echo ads=denied"#,
+            r#"type "%C013_DENY_ROOT%\created-after-lease.txt" >nul 2>nul && echo postLease=leaked || echo postLease=denied"#,
+            r#"type nul > "%C013_DENY_ROOT%\created-after-launch.txt" 2>nul && echo new=created || echo new=creation-denied"#,
+        ]
+        .join(" & ");
         let args = vec![
-            OsString::from("-NoLogo"),
-            OsString::from("-NoProfile"),
-            OsString::from("-NonInteractive"),
-            OsString::from("-Command"),
+            OsString::from("/d"),
+            OsString::from("/c"),
             OsString::from(script),
         ];
         let request_for = |include_deny_root: bool| {
