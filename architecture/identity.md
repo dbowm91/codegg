@@ -112,6 +112,13 @@ and rejects archived, mismatched, unresolved, or stale contexts. A directory is
 only a compatibility locator for a unique existing binding; it never creates an
 identity.
 
+Because that resolver never registers on a miss, identity creation for a
+previously unseen directory belongs to the frontend bootstrap, not the
+resolver. `App::bootstrap_launch_project_context` (see `architecture/core.md`)
+performs the idempotent workspace-then-project registration for the TUI's own
+launch directory before any session-scoped request, which is what makes a first
+launch in a new directory usable.
+
 ## Team principal, membership, role, and capability domain
 
 Identity, authorization, and audit M001 adds `codegg_core::team`, the durable

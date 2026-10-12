@@ -125,6 +125,24 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
 
 ## Other Invariants
 
+- **The launch directory is registered at startup.** `ProjectContextResolver`
+  resolves a directory by catalog lookup only and never registers on a miss, so
+  a directory CodeGG has not seen before has no executable project context.
+  `App::bootstrap_launch_project_context` runs from `main.rs` before any
+  session-scoped request: `WorkspaceRegister` then `ProjectRegister` for the
+  launch directory (both idempotent), writing the resulting pair onto the
+  active tab via `set_active_identities`. New code must not move identity
+  creation into the resolver, and must not send a path in an identity field —
+  `SessionCreate` takes a `(project_id, workspace_id)` **pair**, so a
+  directory-shaped `project_id` with no workspace is rejected by construction.
+  `ProjectExecutionContext::project_key()` exists for legacy single-field
+  requests only; do not use it for `SessionCreate`. Bootstrap failure is
+  non-fatal but must stay visible (stderr warning at startup, toast for the
+  startup session create) — a warn-only failure leaves an empty TUI with no
+  explanation. Raw-path registration through the project picker stays gated to
+  `AppMode::Embedded`; the bootstrap differs because its path is the
+  frontend's own cwd, not user-supplied remote text.
+
 - **Command discovery metadata**: `CommandRegistry` is the only command
   catalog. Its domain/source/scope/keywords fields are presentation metadata;
   they do not authorize or execute commands. The palette searches those fields

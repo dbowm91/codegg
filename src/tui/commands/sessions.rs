@@ -1821,7 +1821,14 @@ pub(crate) fn start_new_session(app: &mut App) {
     let project_dir = app
         .active_workspace_root()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let project_id = app.active_project_key();
+    // Send the typed identities only. `active_project_key()` falls back to
+    // the workspace root when the tab has no daemon project id, and
+    // `SessionCreate` takes a `(project_id, workspace_id)` pair — sending a
+    // path as `project_id` could only ever be rejected with
+    // "project_id and workspace_id must be provided together". Both stay
+    // `None` when the launch bootstrap has not run yet, which sends the
+    // daemon down its directory-locator path instead.
+    let project_id = app.active_project_id().map(|id| id.to_string());
     let workspace_id = app.active_workspace_id().map(|id| id.to_string());
 
     spawn_registered_tui_task(
