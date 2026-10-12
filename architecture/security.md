@@ -185,8 +185,14 @@ path identity and the expected descriptor still match. It returns a distinct
 `TestOnlyAppContainer` result and never `Enforced`; release builds fail
 compilation if this feature is enabled. The fixture does not establish
 production journal protection, existing-workspace authority, adversarial path
-safety, or backend availability. See `tests/windows_restricted_managed_process.rs`,
-`tests/windows_acl_lease.rs`, and `docs/windows-acl-leases.md`.
+safety, or backend availability. The test-only lease rejects a deny root that
+already contains an entry before child creation: root-only DACL leasing allowed
+a child to read a synthetic denied file through its direct path, a junction, and
+a hardlink in hosted run `38220136385`. Empty deny roots and separate positive
+workspace fixtures remain testable, but this fail-closed restriction is not a
+production capability or complete existing-tree policy. See
+`tests/windows_restricted_managed_process.rs`, `tests/windows_acl_lease.rs`, and
+`docs/windows-acl-leases.md`.
 - Any host with no registered backend: constrained Bash requests report
   `FilesystemEnforcement::Unavailable` and fail before process creation
   (never `FullHost` or an uncontained fallback). Python's separately

@@ -230,14 +230,16 @@ The workflow also runs an AppContainer control launch with the service's
 profile-local environment block and the status-frame rejection tests. It does
 The same workflow runs `tests/windows_acl_lease.rs` and the ACL lease unit
 tests. They verify AppContainer read/write on a runner-owned disposable root,
-read-only grants, read/write denial on a sibling root with a test-only deny
-lease, exact descriptor restoration after normal exit and cancellation,
-simulated parent-crash recovery, and refusal to overwrite concurrent descriptor
-drift.
-These are test-only disposable-root infrastructure checks; they do not qualify
-production journal protection, existing-workspace authority, reparse/hardlink
-safety, or full M004 security. C011 owns the remaining privileged adversarial
-qualification.
+read-only grants, denial on an empty sibling root, exact descriptor restoration
+after normal exit and cancellation, simulated parent-crash recovery, and refusal
+to overwrite concurrent descriptor drift. A hosted existing-root adversarial
+test found that a nonempty denied tree allowed synthetic credential reads via
+its direct path, a junction, and a hardlink (`38220136385`). The test-only path
+now rejects deny roots containing entries before child creation; separate
+positive fixtures cover allowed workspace access. These checks remain test-only
+and do not qualify production journal protection, existing-workspace authority,
+reparse/hardlink safety, or full M004 security. C011 and C012 retain the
+remaining privileged adversarial qualification.
 
 The same workflow exercises the native shell argv builder and Windows policy
 input fixtures for system roots, profile credential denies, PATH-independent

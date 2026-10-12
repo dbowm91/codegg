@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C012 — Existing-Tree Deny Lease Correction
 
-Status: active
+Status: conditionally closed (test-only preflight; path-replacement race remains unqualified)
 
 Repository baseline: `6efc0f92ab50fbadd10f3e1188e3639a4202afcd`, branch `work/windows-native-sandbox-foundation`, 2026-10-12.
 

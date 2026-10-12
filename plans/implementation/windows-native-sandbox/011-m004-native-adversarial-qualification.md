@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C011 — M004 Native Security Requalification and Closure
 
-Status: blocked (high-severity existing-file read leak; C012 corrective required)
+Status: blocked (high-severity existing-file read leak; full privileged matrix outstanding after C012)
 
 Repository baseline: `17ef5e09b46fa364a520c8dc8793ab866020674f`, branch `work/windows-native-sandbox-foundation`, 2026-10-11.
 
