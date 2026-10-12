@@ -118,7 +118,7 @@ async fn restricted_service_timeout_closes_the_job_and_reaps_the_child() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
-    let script = "[Console]::Out.Write('child-started'); Start-Sleep -Seconds 60";
+    let script = "[Console]::Out.WriteLine('child-started'); [Console]::Out.Flush(); Start-Sleep -Seconds 60";
     let mut request = restricted_request(vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),

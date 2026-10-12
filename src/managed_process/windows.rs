@@ -519,6 +519,64 @@ pub(super) struct WindowsTestRestrictedProcess {
 }
 
 #[cfg(feature = "windows-sandbox-test-support")]
+pub(super) fn inherited_drive_directories() -> io::Result<Vec<(Vec<u16>, Vec<u16>)>> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::System::Environment::{
+        FreeEnvironmentStringsW, GetEnvironmentStringsW,
+    };
+
+    let environment = unsafe { GetEnvironmentStringsW() };
+    if environment.is_null() {
+        return Err(last_error());
+    }
+    struct EnvironmentGuard(*const u16);
+    impl Drop for EnvironmentGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = FreeEnvironmentStringsW(self.0);
+            }
+        }
+    }
+    let _guard = EnvironmentGuard(environment);
+
+    let mut entries = Vec::new();
+    let mut cursor = environment;
+    loop {
+        let mut length = 0;
+        unsafe {
+            while *cursor.add(length) != 0 {
+                length += 1;
+            }
+        }
+        if length == 0 {
+            break;
+        }
+        let entry = unsafe { std::slice::from_raw_parts(cursor, length) };
+        if entry.len() >= 4
+            && entry[0] == b'=' as u16
+            && ((b'A' as u16..=b'Z' as u16).contains(&entry[1])
+                || (b'a' as u16..=b'z' as u16).contains(&entry[1]))
+            && entry[2] == b':' as u16
+            && entry[3] == b'=' as u16
+        {
+            let mut name = std::ffi::OsString::from_wide(&entry[..3]);
+            if let Some(drive) = name.encode_wide().nth(1) {
+                let normalized = if (b'a' as u16..=b'z' as u16).contains(&drive) {
+                    drive - (b'a' - b'A') as u16
+                } else {
+                    drive
+                };
+                name = std::ffi::OsString::from_wide(&[b'=' as u16, normalized, b':' as u16]);
+            }
+            let value = std::ffi::OsString::from_wide(&entry[4..]);
+            entries.push((name.encode_wide().collect(), value.encode_wide().collect()));
+        }
+        cursor = unsafe { cursor.add(length + 1) };
+    }
+    Ok(entries)
+}
+
+#[cfg(feature = "windows-sandbox-test-support")]
 impl WindowsTestRestrictedProcess {
     pub(super) fn launch(
         application: &Path,

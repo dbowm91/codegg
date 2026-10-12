@@ -1018,9 +1018,12 @@ fn windows_environment_block(
     let mut block = Vec::new();
 
     // A supplied Windows environment block does not inherit the special
-    // per-drive current-directory entries from the parent. Preserve the
-    // requested working drive explicitly so CreateProcessW can initialize
-    // the child environment consistently with lpCurrentDirectory.
+    // per-drive current-directory entries from the parent. Preserve those
+    // entries because CreateProcessW and child libraries use them when
+    // resolving drive-relative paths. Override the requested working drive
+    // so it agrees with lpCurrentDirectory.
+    let mut drive_directories = windows::inherited_drive_directories()
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
     let cwd_wide = cwd.as_os_str().encode_wide().collect::<Vec<_>>();
     let drive = cwd_wide.first().copied();
     if cwd_wide.len() >= 3
@@ -1037,8 +1040,15 @@ fn windows_environment_block(
         } else {
             drive
         };
-        block.extend([b'=' as u16, drive, b':' as u16, b'=' as u16]);
-        block.extend(cwd_wide);
+        let mut name = vec![b'=' as u16, drive, b':' as u16];
+        drive_directories.retain(|(existing, _)| existing != &name);
+        name.push(b'=' as u16);
+        drive_directories.push((name, cwd_wide));
+    }
+    drive_directories.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (name, value) in drive_directories {
+        block.extend(name);
+        block.extend(value);
         block.push(0);
     }
 
