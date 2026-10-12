@@ -2980,6 +2980,7 @@ impl App {
             Some(InputAction::FocusMainBuffer) => {
                 crate::tui::commands::panels::focus_main_buffer(self)
             }
+            Some(InputAction::DockPanel) => crate::tui::commands::panels::dock_open_box(self),
             Some(InputAction::TogglePanelSelector) => {
                 crate::tui::commands::panels::toggle_panel_selector(self);
             }
@@ -10785,6 +10786,45 @@ impl App {
             return crate::tui::panels::InputTarget::Chat;
         }
         self.panel_host.input_target()
+    }
+
+    /// The composer badge naming the surface that currently has the keyboard.
+    ///
+    /// One badge, one meaning. It previously rendered `[BUILD]` *and* `[CHAT]`
+    /// side by side with the agent name, which produced rows like
+    /// `[INS] [build][BUILD] [CHAT]` — three badges, two of them about the
+    /// same axis, and one (`[CHAT]`) permanently lit regardless of where focus
+    /// actually was. Naming the *selected* surface instead answers the question
+    /// the badge exists for — "which panel am I typing into?" — and every panel
+    /// already has a title, so adding one is a single `match` arm.
+    ///
+    /// An armed chat seed outranks panel focus for the same reason it does in
+    /// [`input_target`](Self::input_target): the seed is the more specific
+    /// statement of intent.
+    pub fn composer_destination_title(&self) -> &'static str {
+        if self.prompt_state.chat_seed.is_some() {
+            return crate::tui::panels::SidePanelId::Chat.title();
+        }
+        self.panel_host.destination_title()
+    }
+
+    /// The side panel that can hold the currently open box, if any.
+    ///
+    /// The single place a box is associated with a panel, and the reason the
+    /// `L` key generalises for free: `/chat` → Chat today, `/help` → a Help
+    /// panel later is one arm here plus one `SidePanel` impl, with no change
+    /// to the close/show/focus logic in `commands::panels::dock_open_box`.
+    ///
+    /// `DialogType::None` (no box open) is deliberately *not* dockable. There
+    /// is nothing to move, and silently selecting a panel would turn a stray
+    /// `L` in the transcript into an invisible navigation the user cannot
+    /// predict.
+    pub fn dock_target(&self) -> Option<crate::tui::panels::SidePanelId> {
+        use crate::tui::components::component::DialogType;
+        match self.focus_manager.active_dialog_type() {
+            DialogType::ProjectChat => Some(crate::tui::panels::SidePanelId::Chat),
+            _ => None,
+        }
     }
 
     /// The contextual key line rendered directly above the composer.

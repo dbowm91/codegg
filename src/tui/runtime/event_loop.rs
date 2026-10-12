@@ -24,6 +24,32 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 /// remainder is picked up on the next pass.
 const CORE_EVENT_DRAIN_LIMIT: usize = 64;
 
+/// Time left until the render throttle allows another frame, if throttled.
+///
+/// The subtraction sits behind `then`, not `then_some`, and that distinction
+/// is the whole bug this function exists to prevent. `then_some` takes its
+/// value **eagerly**, so `cond.then_some(a - b)` evaluates `a - b` even when
+/// `cond` is false — and `Duration`'s `Sub` impl panics on underflow rather
+/// than wrapping.
+///
+/// It fired on the first message of a new session. `elapsed` is read twice per
+/// iteration: once for `should_render`, once here. Between those reads the loop
+/// can start a turn or dispatch a submit, so the second read is routinely the
+/// larger one. Streaming moved `render_interval` from zero to 16ms, the two
+/// reads diverged past it, and the eager `16ms - elapsed` panicked with
+/// `overflow when subtracting durations` — outside the render's `catch_unwind`,
+/// so it killed the TUI outright instead of degrading.
+///
+/// `saturating_sub` is kept alongside the lazy closure: laziness fixes the
+/// underflow, and saturation means a future refactor that reorders these two
+/// lines cannot reintroduce a crash.
+fn render_delay_after(last_render: Option<Instant>, render_interval: Duration) -> Option<Duration> {
+    last_render.and_then(|last| {
+        let elapsed = last.elapsed();
+        (elapsed < render_interval).then(|| render_interval.saturating_sub(elapsed))
+    })
+}
+
 fn render_app(
     terminal: &mut AppTerminal,
     app: &mut app::App,
@@ -247,10 +273,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
             None
         };
         let render_delay = if needs_render {
-            last_render.and_then(|last| {
-                let elapsed = last.elapsed();
-                (elapsed < render_interval).then_some(render_interval - elapsed)
-            })
+            render_delay_after(last_render, render_interval)
         } else {
             animation_interval
         };
@@ -501,4 +524,45 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
 
     terminal_guard.restore();
     Ok(())
+}
+
+#[cfg(test)]
+mod render_delay_tests {
+    use super::*;
+
+    #[test]
+    fn a_stale_last_render_reports_no_delay_instead_of_underflowing() {
+        // Regression: this used to be written as
+        // `(elapsed < render_interval).then_some(render_interval - elapsed)`.
+        // `then_some` is eager, so the subtraction ran on this stale `elapsed`
+        // regardless of the guard and panicked with "overflow when subtracting
+        // durations", taking the TUI down on the first message of a new
+        // session. `elapsed` is read twice per loop iteration and the work
+        // between the two reads is what makes them diverge.
+        let long_gone = Instant::now() - Duration::from_millis(500);
+        assert_eq!(
+            render_delay_after(Some(long_gone), STREAM_RENDER_INTERVAL),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zero_interval_never_subtracts() {
+        // Not streaming: the throttle is zero, so no delay is ever owed.
+        let just_now = Instant::now();
+        assert_eq!(render_delay_after(Some(just_now), Duration::ZERO), None);
+    }
+
+    #[test]
+    fn a_recent_render_owes_the_remainder_of_the_interval() {
+        let just_now = Instant::now();
+        let delay = render_delay_after(Some(just_now), Duration::from_millis(16))
+            .expect("still inside the throttle window");
+        assert!(delay <= Duration::from_millis(16), "{delay:?}");
+    }
+
+    #[test]
+    fn no_previous_render_owes_nothing() {
+        assert_eq!(render_delay_after(None, STREAM_RENDER_INTERVAL), None);
+    }
 }

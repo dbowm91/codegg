@@ -394,19 +394,27 @@ async fn shift_right_focuses_the_panel_and_shift_left_returns() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn shift_letters_move_focus_either_encoding() {
+async fn shift_h_returns_focus_either_encoding() {
     // Terminals disagree on whether a shifted letter carries SHIFT. Both
     // forms must reach the same action, or the focus move is a keypress
     // that works on one machine and not another.
+    //
+    // `L` is not here any more: it now docks an open box into the panel
+    // (`dock_*` tests), which is a different intent from moving the
+    // keyboard. `Shift+Right` owns panel focus.
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
         let mut app = test_app();
         select_chat(&mut app);
         to_normal(&mut app);
         app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
-        app.on_key(key(KeyCode::Char('L'), modifiers));
+        assert!(
+            !app.panel_host.is_focused(),
+            "precondition: focus starts in the main buffer"
+        );
+        app.on_key(key(KeyCode::Right, KeyModifiers::SHIFT));
         assert!(
             app.panel_host.is_focused(),
-            "L/{modifiers:?} must focus the panel"
+            "Shift+Right must focus the panel"
         );
         app.on_key(key(KeyCode::Char('H'), modifiers));
         assert!(

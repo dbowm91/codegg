@@ -601,6 +601,7 @@ impl App {
             TuiMsg::ToggleSidebar => self.toggle_sidebar(),
             TuiMsg::FocusSidePanel => crate::tui::commands::panels::focus_side_panel(self),
             TuiMsg::FocusMainBuffer => crate::tui::commands::panels::focus_main_buffer(self),
+            TuiMsg::DockPanel => crate::tui::commands::panels::dock_open_box(self),
             TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),

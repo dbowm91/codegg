@@ -1770,7 +1770,17 @@ pub(crate) fn apply_session_messages_loaded(
         return;
     }
 
-    app.messages_state.messages.clear();
+    // An empty authoritative load must not destroy unsynced local state.
+    //
+    // A brand-new session returns zero rows: nothing has been persisted for it
+    // yet, because the turn that would write the first one has not finished.
+    // Clearing unconditionally erased the prompt the user had just sent, so the
+    // transcript went blank mid-turn and looked like the message was lost. A
+    // genuinely empty session has no local rows to protect, so skipping the
+    // clear here cannot leave a stale transcript behind.
+    if !messages.is_empty() || app.messages_state.messages.messages.is_empty() {
+        app.messages_state.messages.clear();
+    }
 
     for msg in messages {
         let role = transcript_role(&msg);

@@ -156,10 +156,16 @@ pub enum TuiMsg {
     CloseDialog,
     ProjectInitApprove,
     ToggleSidebar,
-    /// Move keyboard focus into the side panel (`Shift+Right` / `Shift+L`).
+    /// Move keyboard focus into the side panel (`Shift+Right`).
     FocusSidePanel,
     /// Move keyboard focus back to the main buffer (`Shift+Left` / `Shift+H`).
     FocusMainBuffer,
+    /// Dock the open box into the side panel (`L` / `Shift+L`).
+    ///
+    /// Closes the box and activates the panel that can hold it, so `/chat`
+    /// followed by this key leaves the same browser running in the side column
+    /// instead of closed.
+    DockPanel,
     ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,

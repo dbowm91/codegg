@@ -1119,30 +1119,26 @@ impl App {
         // without opening the agent picker. Bounded so a long agent name
         // cannot crowd out the prompt's own prefix row.
         //
-        // Both send targets are always shown, with the armed one emphasised,
-        // because the composer is a single input surface for two very
-        // different destinations. Showing only the active target would make
-        // the badge useless for the question it exists to answer — "where
-        // am I about to send this?"
+        // The destination badge names the surface that currently has the
+        // keyboard — `[LLM]`, `[CHAT]`, `[SESSIONS]` — rather than listing
+        // every reachable destination. Showing both send targets at once was
+        // meant to answer "where am I about to send this?", but it rendered
+        // `[CHAT]` unconditionally and put a second `[BUILD]` beside the agent
+        // name, so the row read as three badges about two axes and answered
+        // the question worse than a single accurate one does.
         let target = self.input_target();
-        let (build_style, chat_style) = match target {
-            crate::tui::panels::InputTarget::Build => (
-                Style::default()
-                    .fg(self.ui_state.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-                Style::default().fg(self.ui_state.theme.muted),
-            ),
-            crate::tui::panels::InputTarget::Chat => (
-                Style::default().fg(self.ui_state.theme.muted),
-                Style::default()
-                    .fg(self.ui_state.theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        // One destination badge, naming the surface that currently has the
+        // keyboard. See `App::composer_destination_title`.
+        let destination_title = self.composer_destination_title();
+        let destination_style = if target == crate::tui::panels::InputTarget::Chat {
+            Style::default()
+                .fg(self.ui_state.theme.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(self.ui_state.theme.primary)
+                .add_modifier(Modifier::BOLD)
         };
-        let target_badge = Line::from(vec![
-            Span::styled("[BUILD] ", build_style),
-            Span::styled("[CHAT]", chat_style),
-        ]);
         // The agent only runs a prompt; naming it while chat is armed would
         // imply a delivery that is not going to happen.
         let agent_badge = match target {
@@ -1187,14 +1183,13 @@ impl App {
                         .add_modifier(Modifier::BOLD),
                 )
             });
-        // `[NOR] [agent] [BUILD] [CHAT]` — one row carrying the mode, the
-        // agent that will run the prompt, and both possible destinations,
+        // `[NOR] [agent] [LLM]` — one row carrying the mode, the agent that
+        // will run the prompt, and the single surface this text is aimed at,
         // plus the armed chat context when there is one.
         let mut badge_spans = vec![
             Span::styled(mode_label.to_string(), mode_span_style),
             Span::styled(agent_badge.clone(), mode_span_style),
-            target_badge.spans[0].clone(),
-            target_badge.spans[1].clone(),
+            Span::styled(format!("[{}] ", destination_title), destination_style),
         ];
         badge_spans.extend(context_badge);
         let mode_indicator = Line::from(badge_spans);

@@ -63,6 +63,15 @@ use crate::tui::components::sidebar::SidebarWidget;
 use crate::tui::input::InputAction;
 use crate::tui::theme::Theme;
 
+/// Composer badge for the main agent buffer, shown when no panel owns the
+/// keyboard.
+///
+/// A side panel is a *destination* the user can move into and out of; the main
+/// transcript is one too, and it is the one they are in most of the time. It
+/// gets a name for the same reason the panels do — the composer's badge has to
+/// name every surface it can target, or it names none of them.
+pub const MAIN_BUFFER_TITLE: &str = "LLM";
+
 /// One swappable side panel.
 ///
 /// Adding a panel is an enum variant in [`SidePanelId`], an entry in
@@ -88,6 +97,19 @@ impl SidePanelId {
         match self {
             SidePanelId::Session => "Session",
             SidePanelId::Chat => "Chat",
+        }
+    }
+
+    /// The composer's destination badge for this panel, e.g. `[CHAT]`.
+    ///
+    /// Distinct from [`label`](Self::label): that one is prose for the title
+    /// bar, this one is the uppercase token the bottom input uses to answer
+    /// "what does Enter send this to?". Every panel needs one — a destination
+    /// the user cannot name is a destination they cannot trust.
+    pub fn title(self) -> &'static str {
+        match self {
+            SidePanelId::Session => "SESSIONS",
+            SidePanelId::Chat => "CHAT",
         }
     }
 
@@ -395,6 +417,23 @@ impl SidePanelHost {
             InputTarget::Chat
         } else {
             InputTarget::Build
+        }
+    }
+
+    /// Badge title for whatever currently owns the composer.
+    ///
+    /// Derived from the same focus state as [`input_target`](Self::input_target)
+    /// rather than stored, so the badge cannot drift from the surface it is
+    /// reporting. Note this is *narrower* than the delivery target: selecting
+    /// the Session panel still delivers to the agent, but the badge reads
+    /// `[SESSIONS]` because that is the panel the keyboard is now in — the
+    /// user needs to know which panel they are driving, and both facts are
+    /// true at once.
+    pub fn destination_title(&self) -> &'static str {
+        if self.is_focused() {
+            self.active.title()
+        } else {
+            MAIN_BUFFER_TITLE
         }
     }
 

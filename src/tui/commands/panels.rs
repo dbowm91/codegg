@@ -135,7 +135,34 @@ pub(crate) fn blur_panel(app: &mut App) {
     sync_workspace_focus(app);
 }
 
-/// Move keyboard focus into the side panel (`Shift+Right` / `Shift+L`).
+/// Dock the open box into the side panel (`L` / `Shift+L`).
+///
+/// This is the multiplexer move: instead of "open the chat box, then separately
+/// open the chat panel", the box is *moved* into the panel and the box goes
+/// away. Both surfaces run the same [`crate::tui::chat_browser`], so nothing
+/// is lost in the transfer — only the frame it draws in changes.
+///
+/// Adding the next box-capable surface is one `match` arm in
+/// [`dock_target`](App::dock_target) plus one `SidePanel` impl; the close,
+/// show, focus and binding-order logic below is shared by all of them.
+pub(crate) fn dock_open_box(app: &mut App) {
+    let Some(id) = app.dock_target() else {
+        app.messages_state
+            .toasts
+            .warning("No panel for this box — open a panel-capable box first");
+        return;
+    };
+    // Close first: `select_panel` reads sidebar visibility and focus, and a
+    // box still mounted would keep claiming keys the panel is about to own.
+    app.close_dialog();
+    if !app.ui_state.sidebar_visible {
+        app.ui_state.sidebar_visible = true;
+    }
+    select_panel(app, id);
+    focus_panel(app);
+}
+
+/// Move keyboard focus into the side panel (`Shift+Right`).
 ///
 /// Shows the column when it is hidden rather than refusing: the key is the
 /// only way to reach the panel, and a toast telling the user to press

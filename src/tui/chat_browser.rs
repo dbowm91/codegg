@@ -349,6 +349,10 @@ impl ChatBrowser {
                 TuiMsg::ChatPagingUnsupported
             }),
             KeyCode::Char('R') => ChatKeyAction::Intent(TuiMsg::ChatRefresh),
+            // `L` / `Shift+L` moves the whole browser into the side panel. Both
+            // encodings are bound because terminals disagree about shifted
+            // letters — see `tests/modifier_chords.rs`.
+            KeyCode::Char('L') | KeyCode::Char('l') => ChatKeyAction::Intent(TuiMsg::DockPanel),
             KeyCode::Char('[') => self.step_channel(view, -1),
             KeyCode::Char(']') => self.step_channel(view, 1),
             KeyCode::Char('?') => {
@@ -593,18 +597,34 @@ fn row_style(selected: bool, theme: &Theme) -> Style {
     }
 }
 
-/// The `height` rows ending at `selected_end`.
+/// The `height` rows around the selected message.
 ///
-/// Anchoring on the selected message's *last* wrapped row matters: a long
-/// message can span more rows than the body has, and anchoring on its first
-/// line would scroll it off-screen entirely.
+/// The viewport is *centred* on the selection and then clamped to the row
+/// range. It used to end exactly on the selected message's last row, which
+/// made every message after the selection unreachable: scrolling up moved a
+/// full screen of blank rows into view *below* the selection and cut the rest
+/// of the conversation off entirely, so a partially-read history looked
+/// padded rather than scrollable.
+///
+/// Anchoring on the selected message's *last* wrapped row still matters — a
+/// long message can span more rows than the body has, and anchoring on its
+/// first line would scroll it off-screen — but it is now only the centre of
+/// the window, not its lower bound. Clamping at both edges keeps the
+/// tail-follow landing on the newest message exactly as before.
 pub fn window(rows_len: usize, selected_end: usize, height: usize) -> std::ops::Range<usize> {
     if rows_len == 0 || height == 0 {
         return 0..0;
     }
-    let selected_end = selected_end.min(rows_len.saturating_sub(1));
-    let start = selected_end.saturating_sub(height.saturating_sub(1));
-    start..(selected_end + 1)
+    let selected_end = selected_end.min(rows_len - 1);
+    // A viewport taller than the content shows all of it; without this the
+    // clamp below would underflow on `rows_len - height`.
+    let height = height.min(rows_len);
+    if height == rows_len {
+        return 0..rows_len;
+    }
+    let above = (height - 1) / 2;
+    let start = selected_end.saturating_sub(above).min(rows_len - height);
+    start..(start + height)
 }
 
 /// Last row belonging to the selected message.
@@ -620,9 +640,9 @@ pub fn selected_row_end(rows: &[ChatRow], cursor: usize) -> usize {
 /// verbs for the same keymap.
 pub fn normal_hints(show_help: bool) -> &'static str {
     if show_help {
-        "jk move · i compose · r reply · e edit · X redact · m read · u older · R refresh · [ ] channel · ? hide help"
+        "jk move · i compose · r reply · e edit · X redact · m read · u older · R refresh · [ ] channel · L dock · ? hide help"
     } else {
-        "jk move · r reply · e edit · X redact · m read · u older · [ ] channel · ? help"
+        "jk move · r reply · e edit · X redact · m read · u older · [ ] channel · L dock · ? help"
     }
 }
 
@@ -1025,20 +1045,47 @@ mod tests {
     }
 
     #[test]
-    fn window_ends_on_the_selected_message_even_when_it_wraps() {
+    fn window_keeps_the_selected_message_visible_when_it_wraps() {
         let long = "word ".repeat(400);
         let messages = VecDeque::from(vec![
             message("m1", 1, "alice", "one line"),
             message("m2", 2, "bob", &long),
+            message("m3", 3, "alice", "three line"),
         ]);
         let channels = seed().1;
         let view = view(&messages, &channels);
         let rows = rows(&view, 1, 30, &Theme::dark());
         let selected_end = selected_row_end(&rows, 1);
-        assert_eq!(selected_end, rows.len() - 1);
         let window = window(rows.len(), selected_end, 20);
-        assert_eq!(window.end, selected_end + 1);
-        assert_eq!(window.start, selected_end - 19);
+        assert_eq!(window.end - window.start, 20);
+        assert!(
+            window.contains(&selected_end),
+            "wrapped selection scrolled out of view: {window:?} of {selected_end}"
+        );
+    }
+
+    #[test]
+    fn window_shows_context_on_both_sides_of_the_selection() {
+        // Regression: the viewport used to *end* on the selected message, so
+        // scrolling up left blank rows below it and made everything after the
+        // selection unreachable.
+        let window = window(100, 50, 20);
+        assert!(window.start < 50, "nothing above: {window:?}");
+        assert!(window.end > 51, "nothing below: {window:?}");
+        assert_eq!(window.end - window.start, 20);
+    }
+
+    #[test]
+    fn window_clamps_at_both_edges_so_tail_still_lands_at_the_bottom() {
+        // Following the newest message must still leave it at the bottom edge,
+        // or every stream would appear to end one screen early.
+        assert_eq!(window(100, 99, 20), 80..100);
+        assert_eq!(window(100, 0, 20), 0..20);
+    }
+
+    #[test]
+    fn window_wider_than_the_content_returns_everything() {
+        assert_eq!(window(3, 2, 20), 0..3);
     }
 
     #[test]

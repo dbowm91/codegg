@@ -1984,6 +1984,43 @@ action.
 
 ## Invariants & Gotchas
 
+- **`bool::then_some` is eager; `bool::then` is not.** This killed the TUI on
+  the first message of a new session. The render throttle read `elapsed` twice
+  per loop iteration — once for `should_render`, once to compute how long
+  remained — and the work in between (starting a turn, dispatching a submit)
+  makes the second read larger. Written as
+  `(elapsed < render_interval).then_some(render_interval - elapsed)`, the
+  subtraction ran *before* its own guard, and `Duration`'s `Sub` panics on
+  underflow rather than wrapping: `overflow when subtracting durations`. It is
+  `render_delay_after` in `runtime/event_loop.rs` now, lazy *and*
+  `saturating_sub`. Two rules follow: never put arithmetic in `then_some`, and
+  remember that the render's `catch_unwind` only covers `render_app` — the
+  throttle maths sits outside it, so a panic there takes the process down
+  rather than degrading.
+- **An empty authoritative load must not delete local rows.**
+  `apply_session_messages_loaded` used to `clear()` unconditionally. A
+  brand-new session has no persisted rows yet, so the first load after sending
+  returned zero and erased the optimistically-rendered prompt. It now clears
+  only when the load carries rows, or when there is nothing local to lose.
+- **The chat viewport is centred on the selection, not clamped to it.** It
+  used to end on the selected message's last row, so scrolling up left a
+  screen of blank rows *below* the selection and made every later message
+  unreachable. `chat_browser::window` centres and clamps; tail-follow still
+  lands on the newest message.
+- **The composer names one destination: the surface with the keyboard.**
+  `App::composer_destination_title` → `[LLM]` / `[CHAT]` / `[SESSIONS]`, via
+  `SidePanelId::title`. The row used to render `[BUILD]` *and* `[CHAT]`
+  unconditionally alongside the agent name (`[INS] [build][BUILD] [CHAT]`):
+  two badges about one axis, one of them permanently lit. A panel that has no
+  title is a destination the user cannot name, so `title()` is mandatory for
+  every `SidePanelId`, not decoration.
+- **`L` docks; it does not focus.** `L`/`Shift+L` (`InputAction::DockPanel`)
+  moves an open box into the side panel that can hold it and closes the box —
+  `/chat` then `L` leaves the same browser in the column. With no box open it
+  does nothing but a toast, rather than selecting a panel invisibly. Panel
+  focus keeps `Shift+Right`, the one chord no terminal mis-encodes. The
+  box→panel map is one `match` arm in `App::dock_target`, so `/help` gaining a
+  panel later needs no change to the docking machinery.
 - **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
   enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,

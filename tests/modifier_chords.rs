@@ -261,13 +261,13 @@ fn focus_moves_fire_in_normal_mode_only() {
 #[test]
 fn shift_letters_resolve_under_both_encodings() {
     // Terminals disagree about whether a shifted letter carries SHIFT. If
-    // only one form were bound, the focus move would work on one machine and
+    // only one form were bound, the action would work on one machine and
     // silently do nothing on another.
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
         assert_eq!(
             press(KeyCode::Char('L'), modifiers, InputMode::Normal),
-            Some(InputAction::FocusSidePanel),
-            "L with {modifiers:?} must focus the side panel"
+            Some(InputAction::DockPanel),
+            "L with {modifiers:?} must dock the open box into the side panel"
         );
         assert_eq!(
             press(KeyCode::Char('H'), modifiers, InputMode::Normal),
@@ -275,6 +275,14 @@ fn shift_letters_resolve_under_both_encodings() {
             "H with {modifiers:?} must focus the main buffer"
         );
     }
+    // Moving focus into the side column keeps its arrow binding. `L` was
+    // repointed at docking, and arrows are the one chord no terminal
+    // mis-encodes, so `FocusSidePanel` needs no letter twin.
+    assert_eq!(
+        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::FocusSidePanel),
+        "Shift+Right must still focus the side column"
+    );
 }
 
 #[test]
@@ -283,7 +291,7 @@ fn uppercase_focus_letters_are_ordinary_text_in_insert_mode() {
         assert_eq!(
             press(KeyCode::Char('L'), modifiers, InputMode::Insert),
             Some(InputAction::Char('L')),
-            "an uppercase L while composing must type an L, not move focus"
+            "an uppercase L while composing must type an L, not dock a box"
         );
         assert_eq!(
             press(KeyCode::Char('H'), modifiers, InputMode::Insert),

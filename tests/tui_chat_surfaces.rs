@@ -560,3 +560,179 @@ async fn the_chat_window_is_unaffected_by_the_panel_workflow() {
         "the window's composer is local; it must not arm the shared one"
     );
 }
+
+// ── Docking a box into the side panel ─────────────────────────────────
+
+/// Commit the panel selector onto whichever panel `rows_up` sits above Chat.
+fn select_panel(app: &mut codegg::tui::app::App, rows_up: i8) {
+    app.on_key(ctrl_alt('w'));
+    for _ in 0..rows_up {
+        app.on_key(plain('k'));
+    }
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn docking_the_chat_window_moves_it_into_the_side_panel() {
+    // The multiplexer move: `/chat` + `L` should leave the same browser
+    // running in the side column, not closed. The point is that the box is
+    // *moved*, so the panel keeps the channel, the cursor and the messages.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.show_chat();
+    assert!(app
+        .focus_manager
+        .has_dialog(codegg::tui::components::component::DialogType::ProjectChat));
+
+    app.on_key(plain('L'));
+
+    assert!(
+        !app.focus_manager
+            .has_dialog(codegg::tui::components::component::DialogType::ProjectChat),
+        "docking must close the box, not stack a copy of it"
+    );
+    assert_eq!(
+        app.panel_host.active(),
+        SidePanelId::Chat,
+        "docking must land on the panel that can hold the box"
+    );
+    assert!(app.panel_host.is_focused(), "the docked panel takes focus");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_shift_l_docks_exactly_like_a_bare_l() {
+    // Terminals disagree on whether a shifted letter carries SHIFT; both
+    // encodings must reach the same command.
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        let mut app = test_app();
+        seed_chat(&mut app);
+        app.show_chat();
+        app.on_key(key(KeyCode::Char('L'), modifiers));
+        assert_eq!(
+            app.panel_host.active(),
+            SidePanelId::Chat,
+            "L/{modifiers:?} must dock"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn docking_with_no_box_open_does_not_navigate() {
+    // A stray `L` in the transcript must not silently select a panel — that
+    // would be a navigation the user cannot predict and did not ask for.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    select_panel(&mut app, 1); // Session
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    let before = app.panel_host.active();
+    let focused_before = app.panel_host.is_focused();
+
+    app.on_key(plain('L'));
+
+    assert_eq!(
+        app.panel_host.active(),
+        before,
+        "there is no box to dock; the panel must not change"
+    );
+    assert_eq!(
+        app.panel_host.is_focused(),
+        focused_before,
+        "and focus must not be silently stolen"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_docked_panel_shows_the_same_conversation() {
+    // Docking swaps the frame the browser draws in, not the conversation: the
+    // panel is a different host with its own browser instance, so it opens at
+    // the live tail rather than inheriting the window's cursor position.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    app.show_chat();
+    app.on_key(plain('k'));
+
+    app.on_key(plain('L'));
+
+    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
+    assert!(
+        app.panel_host.is_focused(),
+        "the conversation the box was showing is now in the panel"
+    );
+    assert_eq!(
+        app.panel_host.chat_cursor(),
+        2,
+        "the docked panel opens at the live tail, like any panel does"
+    );
+}
+
+// ── The composer names one destination ───────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_composer_names_the_surface_that_has_the_keyboard() {
+    let mut app = test_app();
+    seed_chat(&mut app);
+
+    // Nothing focused: the main agent transcript.
+    assert_eq!(app.composer_destination_title(), "LLM");
+
+    // The default panel.
+    select_panel(&mut app, 1);
+    assert_eq!(app.panel_host.active(), SidePanelId::Session);
+    assert_eq!(
+        app.composer_destination_title(),
+        "SESSIONS",
+        "the badge must name the panel that is selected, not always CHAT"
+    );
+
+    // The chat panel.
+    focus_chat(&mut app);
+    assert_eq!(app.composer_destination_title(), "CHAT");
+
+    // Back to the main buffer. The focus move is a Normal-mode gesture, and
+    // the panel is still in Insert after the selector committed it.
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert_eq!(app.composer_destination_title(), "LLM");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_armed_reply_names_chat_even_when_a_panel_is_later_selected() {
+    // The seed outranks panel focus for delivery, so the badge has to agree:
+    // an armed reply must never render as if it were aimed at the agent.
+    let mut app = test_app();
+    seed_chat(&mut app);
+    focus_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(plain('r'));
+    assert!(
+        app.prompt_state.chat_seed.is_some(),
+        "precondition: r arms a reply"
+    );
+
+    select_panel(&mut app, 1); // move to the Session panel
+    assert_eq!(
+        app.composer_destination_title(),
+        "CHAT",
+        "an armed reply outranks a later focus move"
+    );
+}
+
+#[test]
+fn every_panel_has_a_distinct_uppercase_title() {
+    // A destination the user cannot name is a destination they cannot trust.
+    let titles: Vec<&str> = SidePanelId::ALL.iter().map(|p| p.title()).collect();
+    for title in &titles {
+        assert!(
+            title.chars().all(|c| c.is_ascii_uppercase()),
+            "title {title} must be an uppercase badge token"
+        );
+    }
+    let mut unique = titles.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        titles.len(),
+        "two panels share a title, so the badge cannot say which is selected: {titles:?}"
+    );
+}

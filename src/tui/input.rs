@@ -115,7 +115,7 @@ pub enum InputAction {
     /// Open the side-panel switcher (`Ctrl+Alt+W`).
     TogglePanelSelector,
     /// Move keyboard focus from the main buffer into the side panel
-    /// (`Shift+Right` / `Shift+L`, Normal mode only).
+    /// (`Shift+Right`, Normal mode only).
     ///
     /// Only the Chat panel arms the composer for chat delivery, so this is
     /// also what re-targets the bottom composer at the project chat.
@@ -123,6 +123,18 @@ pub enum InputAction {
     /// Return keyboard focus from the side panel to the main buffer
     /// (`Shift+Left` / `Shift+H`, Normal mode only).
     FocusMainBuffer,
+    /// Dock the open box into the side panel (`L` / `Shift+L`, Normal mode
+    /// only).
+    ///
+    /// The generalisation the panel host was built for: any box that has a
+    /// panel counterpart can be *moved* there rather than opened and closed
+    /// separately. `/chat` plus this key is the Chat panel, docked in place.
+    ///
+    /// Deliberately separate from [`FocusSidePanel`](Self::FocusSidePanel):
+    /// that key moves the keyboard, this one moves the *content*, and a user
+    /// who pressed it in the middle of a chat box meant "I want this to keep
+    /// existing over there", not "I want to type in the panel now".
+    DockPanel,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -200,7 +212,7 @@ pub enum ActionKey {
     /// Open the side-panel switcher (`Ctrl+Alt+W`).
     TogglePanelSelector,
     /// Move keyboard focus from the main buffer into the side panel
-    /// (`Shift+Right` / `Shift+L`, Normal mode only).
+    /// (`Shift+Right`, Normal mode only).
     ///
     /// Only the Chat panel arms the composer for chat delivery, so this is
     /// also what re-targets the bottom composer at the project chat.
@@ -208,6 +220,9 @@ pub enum ActionKey {
     /// Return keyboard focus from the side panel to the main buffer
     /// (`Shift+Left` / `Shift+H`, Normal mode only).
     FocusMainBuffer,
+    /// Dock the open box into the side panel (`L` / `Shift+L`, Normal mode
+    /// only).
+    DockPanel,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -335,6 +350,7 @@ impl ActionKey {
             Self::TogglePanelSelector => InputAction::TogglePanelSelector,
             Self::FocusSidePanel => InputAction::FocusSidePanel,
             Self::FocusMainBuffer => InputAction::FocusMainBuffer,
+            Self::DockPanel => InputAction::DockPanel,
             Self::ToggleSection => InputAction::ToggleSection,
             Self::CloseSession => InputAction::CloseSession,
             Self::Help => InputAction::Help,
@@ -394,6 +410,7 @@ impl ActionKey {
             Self::TogglePanelSelector => "Switch side panel",
             Self::FocusSidePanel => "Focus side panel",
             Self::FocusMainBuffer => "Focus main buffer",
+            Self::DockPanel => "Dock box into panel",
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
@@ -475,7 +492,7 @@ static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
 fn is_normal_only(action: &InputAction) -> bool {
     matches!(
         action,
-        InputAction::FocusSidePanel | InputAction::FocusMainBuffer
+        InputAction::FocusSidePanel | InputAction::FocusMainBuffer | InputAction::DockPanel
     )
 }
 
@@ -487,6 +504,13 @@ fn is_normal_only(action: &InputAction) -> bool {
 /// (`Shift+Up`/`Down`, `Shift+J`/`K`) is deliberately left unbound until a
 /// layout with stacked panels actually exists — binding keys that cannot
 /// change anything would advertise a capability the UI does not have.
+///
+/// `L` moves to [`InputAction::DockPanel`] rather than to
+/// [`InputAction::FocusSidePanel`]. Both are one keystroke from anywhere in
+/// Normal mode, and "I have a box open and want it over there" is the more
+/// common intent once a box-capable panel exists; a bare `L` in a chat box
+/// doing nothing would strand the user with only `Shift+→` available. Panel
+/// focus keeps its arrow binding, which no terminal mis-encodes.
 ///
 /// Each letter is bound twice. Terminals disagree about how to encode a
 /// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
@@ -504,7 +528,7 @@ fn insert_panel_focus_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputA
         InputAction::FocusMainBuffer,
     );
     for (letter, action) in [
-        ('L', InputAction::FocusSidePanel),
+        ('L', InputAction::DockPanel),
         ('H', InputAction::FocusMainBuffer),
     ] {
         map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());

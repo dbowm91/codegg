@@ -1003,6 +1003,57 @@ mod async_cmd_tests {
     }
 
     #[test]
+    fn an_empty_load_does_not_erase_the_prompt_a_new_session_just_sent() {
+        // Regression: `send_prompt` renders the user's message immediately and
+        // only then asks the daemon for the transcript. A brand-new session has
+        // no persisted rows yet, so that first load returns zero — and an
+        // unconditional `clear()` deleted the prompt the user had just sent,
+        // so the transcript went blank mid-turn and the message looked lost.
+        let mut app = make_test_app();
+        app.session_state.session = Some(crate::session::Session {
+            id: "session-new".into(),
+            ..test_session()
+        });
+        let request_id = app.dialog_state.session_messages_request.begin();
+        app.messages_state
+            .messages
+            .add_user_message("first message".to_string(), None);
+
+        apply_session_messages_loaded(&mut app, request_id, "session-new".into(), Vec::new(), None);
+
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "an empty load must not destroy the prompt still in flight"
+        );
+    }
+
+    #[test]
+    fn an_empty_load_never_discards_local_rows() {
+        // The other half of the guard: the fix above must not degenerate into
+        // "only clear when the session is empty", which would make a stale
+        // transcript permanent. Any load that carries nothing leaves the local
+        // rows alone; only a load with rows replaces them.
+        let mut app = make_test_app();
+        app.session_state.session = Some(crate::session::Session {
+            id: "session-old".into(),
+            ..test_session()
+        });
+        let request_id = app.dialog_state.session_messages_request.begin();
+        app.messages_state
+            .messages
+            .add_user_message("stale local message".to_string(), None);
+
+        apply_session_messages_loaded(&mut app, request_id, "session-old".into(), Vec::new(), None);
+
+        assert_eq!(
+            app.messages_state.messages.message_count(),
+            1,
+            "an empty load carries no authority to delete local rows"
+        );
+    }
+
+    #[test]
     fn apply_session_messages_loaded_with_error_preserves_old_messages() {
         let mut app = make_test_app();
         let request_id = app.dialog_state.session_messages_request.begin();

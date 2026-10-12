@@ -133,15 +133,48 @@ root and lifecycle modules.
   modals → timeline → command mode → completions → change review → **side
   panel (Normal only)** → Workspace → Editor → composer.
 - **Focus moves and the input target are Normal-mode, Shift-qualified, and
-  derived.** `Shift+→`/`Shift+L` focus the side panel, `Shift+←`/`Shift+H`
-  return to the main buffer; bare arrows keep their existing meaning. They
-  are gated by `is_normal_only` because the binding map is shared across
-  modes. Each shifted letter is bound with *and* without `SHIFT` because
-  terminals disagree on the encoding. `App::input_target()` is derived from
-  panel focus on every read — never latched — so leaving the panel re-arms
-  `Build` automatically. The composer renders `[NOR|INS] [agent] [BUILD]
-  [CHAT]` and `send_prompt` reads the same value; when `Chat` is armed but
-  unbound, text is dropped with a warning rather than rerouted to the agent.
+  derived.** `Shift+→` focuses the side panel, `Shift+←`/`Shift+H` return to
+  the main buffer; bare arrows keep their existing meaning. They are gated by
+  `is_normal_only` because the binding map is shared across modes. `H` is bound
+  with *and* without `SHIFT` because terminals disagree on the encoding;
+  `FocusSidePanel` needs no letter twin because arrows encode reliably.
+  `App::input_target()` is derived from panel focus on every read — never
+  latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
+  reads the same value; when `Chat` is armed but unbound, text is dropped with
+  a warning rather than rerouted to the agent.
+- **Every surface the composer can target needs a name.** The badge row reads
+  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
+  destination is `App::composer_destination_title`: the focused panel's
+  `SidePanelId::title`, or `MAIN_BUFFER_TITLE` (`LLM`) when nothing is focused,
+  or `CHAT` while a seed is armed. It previously rendered `[BUILD]` *and*
+  `[CHAT]` unconditionally, giving `[INS] [build][BUILD] [CHAT]` — two badges
+  on one axis and one permanently lit. Adding a panel means adding a `title()`
+  arm; a destination the user cannot name is one they cannot trust.
+- **`L` docks a box into a panel; it does not move focus.** `L`/`Shift+L`
+  (`InputAction::DockPanel`) closes the open box and activates the panel that
+  can hold it, so `/chat` then `L` leaves the same browser running in the
+  column. The association lives in one `match` arm in `App::dock_target` — a
+  `/help` panel later is one arm plus one `SidePanel` impl, with no change to
+  `commands::panels::dock_open_box`. With no box open it warns instead of
+  silently navigating.
+- **Never put arithmetic in `bool::then_some`.** `then_some` takes its value
+  eagerly, so `cond.then_some(a - b)` evaluates `a - b` even when `cond` is
+  false — and `Duration`'s `Sub` panics on underflow. This crashed the TUI on
+  the first message of a new session, in the render throttle's
+  `render_delay_after`, because `elapsed` is read twice per loop iteration and
+  the work between the reads makes the second one larger. Use `then(|| ..)`
+  and `saturating_sub`. Note the render's `catch_unwind` covers only
+  `render_app`: the throttle maths is outside it, so a panic there kills the
+  process instead of degrading.
+- **An empty authoritative load must not delete local rows.**
+  `apply_session_messages_loaded` clears only when the load carries rows or
+  there is nothing local to lose. A brand-new session returns zero rows until
+  its first turn is persisted, and an unconditional `clear()` erased the
+  prompt the user had just sent.
+- **The chat viewport centres the selection.** `chat_browser::window` used to
+  end on the selected message's last row, so scrolling up filled the screen
+  with blank rows *below* the selection and made every later message
+  unreachable. Centre, then clamp — tail-follow still lands on the newest.
 - **`/chat` and the chat panel are one implementation, not two.**
   `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
   viewport anchor, and the hints; each surface owns only its composer. They
