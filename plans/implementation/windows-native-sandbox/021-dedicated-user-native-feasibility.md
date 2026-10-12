@@ -14,7 +14,7 @@ Objective: Independently prove or reject a separately provisioned Windows princi
 **Closure convention:** report exact code SHA, Windows edition/build/installed KB, host privilege, target tool versions, child token/identity/backend, selected nonzero test count, logs proving *running-child* allowed and prohibited operations, skipped tests and reasons, provenance of isolated VM evidence, and before/after host security descriptors where applicable. A missing native/privileged host is **blocked**, an observed incompatibility or privilege escape is **closed negative**, and a passing compile or preflight is never positive security evidence. Close with `plans/closure/windows-native-sandbox/021-status.md`; update roadmap and registry on actual evidence only.
 
 
-Long-term references: `plans/000-long-term-specification.md` ``4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` `8.
+Long-term references: `plans/000-long-term-specification.md` (sections 4, 17, 27 and 29) and `plans/001-terminology-and-domain-model.md` (section 8).
 
 ## Evidence and reference architecture
 
