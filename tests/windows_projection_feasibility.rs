@@ -94,13 +94,16 @@ async fn c014_projection_tool_smoke_and_unprojected_host_denials() {
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
+Write-Output 'probe=started'
 $projectFile = Join-Path $env:CODEGG_C014_PROJECTION 'staged-input.txt'
 Set-Content -LiteralPath $projectFile -Value 'staged-c014-content' -NoNewline
 $readBack = Get-Content -LiteralPath $projectFile -Raw
 if ($readBack -ne 'staged-c014-content') {{ throw 'projection read/write mismatch' }}
 Write-Output 'projection=read-write-ok'
+Write-Output 'git=init-start'
 & $env:CODEGG_C014_GIT init --quiet $env:CODEGG_C014_PROJECTION
 if ($LASTEXITCODE -ne 0) {{ throw "git init failed: $LASTEXITCODE" }}
+Write-Output 'git=init-ok'
 & $env:CODEGG_C014_GIT -C $env:CODEGG_C014_PROJECTION status --porcelain
 if ($LASTEXITCODE -ne 0) {{ throw "git status failed: $LASTEXITCODE" }}
 Write-Output 'git=repository-status-ok'
@@ -112,7 +115,16 @@ Write-Output 'git=repository-status-ok'
 $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '{}', [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
 try {{ $pipe.Connect(1000); Write-Output 'daemon-pipe=connected' }} catch {{ Write-Output "daemon-pipe=denied:$($_.Exception.GetType().Name)" }} finally {{ $pipe.Dispose() }}
 $rawHandle = [IntPtr]([Int64]$env:C014_INHERITED_HANDLE)
-try {{ $safeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($rawHandle, $false); $stream = [System.IO.FileStream]::new($safeHandle, [System.IO.FileAccess]::Read); $contents = [System.IO.StreamReader]::new($stream).ReadToEnd(); if ($contents.Contains('synthetic-c014-credential')) {{ Write-Output 'inherited-handle=leaked' }} else {{ Write-Output 'inherited-handle=unavailable' }} }} catch {{ Write-Output "inherited-handle=denied:$($_.Exception.GetType().Name)" }}
+try {{
+  $safeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($rawHandle, $false)
+  $stream = [System.IO.FileStream]::new($safeHandle, [System.IO.FileAccess]::Read)
+  if ($stream.CanSeek) {{
+    $buffer = [byte[]]::new(256)
+    $count = $stream.Read($buffer, 0, $buffer.Length)
+    $contents = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $count)
+    if ($contents.Contains('synthetic-c014-credential')) {{ Write-Output 'inherited-handle=leaked' }} else {{ Write-Output 'inherited-handle=unavailable' }}
+  }} else {{ Write-Output 'inherited-handle=unavailable' }}
+}} catch {{ Write-Output "inherited-handle=denied:$($_.Exception.GetType().Name)" }}
 "#,
         probe("C014_CREDENTIAL", "direct"),
         probe("C014_JUNCTION", "junction"),
