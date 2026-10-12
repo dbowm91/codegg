@@ -2261,6 +2261,7 @@ mod tests {
                     .join("System32"),
                 ProcessProvenance::new("windows-c013-forensic", "existing-object-access"),
             );
+            request.timeout = Some(Duration::from_secs(15));
             request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
                 target: executable.clone(),
                 args: args
