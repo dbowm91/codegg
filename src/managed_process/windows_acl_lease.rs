@@ -401,7 +401,7 @@ fn owner_sid(path: &Path) -> io::Result<Vec<u8>> {
     sid_bytes(owner, "ACL lease root has no owner SID")
 }
 
-fn current_token_owner_sid() -> io::Result<Vec<u8>> {
+fn current_user_sid() -> io::Result<Vec<u8>> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = ptr::null_mut();
@@ -413,23 +413,23 @@ fn current_token_owner_sid() -> io::Result<Vec<u8>> {
     unsafe {
         let _ = GetTokenInformation(
             token.as_raw_handle() as _,
-            TokenOwner,
+            TokenUser,
             ptr::null_mut(),
             0,
             &mut bytes,
         );
     }
-    if bytes < std::mem::size_of::<TOKEN_OWNER>() as u32 {
+    if bytes < std::mem::size_of::<TOKEN_USER>() as u32 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "current process token owner information is invalid",
+            "current process token user information is invalid",
         ));
     }
     let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
     if unsafe {
         GetTokenInformation(
             token.as_raw_handle() as _,
-            TokenOwner,
+            TokenUser,
             storage.as_mut_ptr().cast(),
             bytes,
             &mut bytes,
@@ -438,8 +438,8 @@ fn current_token_owner_sid() -> io::Result<Vec<u8>> {
     {
         return Err(io::Error::last_os_error());
     }
-    let owner = unsafe { &*storage.as_ptr().cast::<TOKEN_OWNER>() };
-    sid_bytes(owner.Owner, "current process token has no owner SID")
+    let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
+    sid_bytes(user.User.Sid, "current process token has no user SID")
 }
 
 fn current_token_owner_sid() -> io::Result<Vec<u8>> {
