@@ -58,6 +58,11 @@ pub const EXECUTOR_HOOK_OWNER_PINS: &[ExecutorHookPin] = &[
         emit_symbol: "emit_interactive_create_audit",
     },
     ExecutorHookPin {
+        action: "command_execute",
+        owner_file: "src/core/daemon.rs",
+        emit_symbol: "run_human_shell_request",
+    },
+    ExecutorHookPin {
         action: "git_operation",
         owner_file: "src/git_mutations.rs",
         emit_symbol: "emit_git_operation",

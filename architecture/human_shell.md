@@ -8,12 +8,13 @@ and a promotion model that keeps ephemeral commands out of model context.
 
 ## Where It Lives
 
-`src/shell/` — 11 files:
+`src/shell/` — 12 files:
 
 | File | Contents |
 |------|----------|
 | `types.rs` | `ShellOrigin`, `ShellCapturePolicy`, `ShellCommandId`, `ShellRequest`, `ShellEvent`, `ShellStatus`, `ShellPromotionMode`, `ShellEnvPolicy`, `PromptSubmissionKind`, `classify_prompt_submission()` |
 | `runtime.rs` | `ShellRuntime` (streams `$SHELL -lc` through `ManagedProcessService`), `ShellHandle` (cancellation handle) |
+| `human_dispatch.rs` | Daemon-owned finite run registry, bounded output cursors, idempotency, shared scheduler admission, cancellation, and owner/session-scoped access |
 | `store.rs` | `ShellOutputStore` (bounded VecDeque), `BoundedOutput` (head/tail split), `ShellOutputEntry` |
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
@@ -32,8 +33,10 @@ A human `!` command is not model context unless the user explicitly
 promotes it. `!command` runs ephemerally (command and output hidden from model).
 `!!command` runs and stages bounded/redacted output for the next submitted
 turn when `human_shell.auto_promote_bangbang` is enabled. `/shell-include`
-stages a selected output view in the same way. `/shell-ask` submits one
-question and its redacted evidence through the session-scoped prompt API.
+stages a selected output view in the same way. The session owner durably stores
+only the redacted projection, keyed by an idempotent promotion ID and bound to
+the authenticated principal, session, project, and workspace. `/shell-ask`
+stages evidence and submits one question through a single owner request.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal
 `!` chat message.
@@ -42,39 +45,71 @@ Human-shell promotion always runs the shared secret redactor and fails closed
 if redaction does not report an applied state, regardless of
 `redact_model_visible_output`; the general shell projection `off` setting does
 not disable this human-consent boundary. Projection text is ANSI-stripped and
-limited to 32 KiB before it is inserted into provider-facing user context.
-The TUI marks an entry promoted only after the session turn API acknowledges
-acceptance. A staged message remains local to its current TUI session until
-that turn is accepted. The WebSocket TUI transport accepts prompt strings
-only, so it places approved evidence in an empty composer for explicit
-submission; it preserves a non-empty draft and does not claim remote acceptance
-from queue delivery.
+limited to 32 KiB before it is staged. Pending records expire after one hour,
+are retained for at most 24 hours after terminal state, and are limited to 16
+pending / 64 retained rows per session. A reconnect queries the owner and
+restores only pending projections. Rejected or busy turns leave them pending;
+an accepted turn includes each requested projection once and clears its stored
+payload. Raw stdout/stderr remain in the governed shell-output store.
+
+The TUI marks evidence staged only after a typed daemon acknowledgement and
+marks it promoted after turn acceptance. Unsupported daemons report staging as
+unavailable. The WebSocket TUI transport accepts prompt strings only, so it
+places approved evidence in an empty composer as an unsubmitted draft, keeps a
+non-empty draft unchanged, and does not claim staged or accepted state.
 
 ### Execution Flow
 
 1. User input parsed by `classify_prompt_submission()` →
-   `PromptSubmissionKind::HumanShell { command, promote_after }`.
-2. `ShellRuntime::spawn()` submits `$SHELL -lc <command>` to
-   `ManagedProcessService::run_streaming()` with inherited-but-filtered
-   environment, explicit cwd, timeout (default 300s), and bounded
-   stdout/stderr. Returns `ShellHandle` with cancellation capability.
-3. Shell events (`Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`,
-   `FailedToStart`) stream over `mpsc::Sender<ShellEvent>`.
-4. `ShellOutputStore` receives bounded head/tail for TUI rendering.
-5. `ShellCommandRunBridge` mirrors events into `CommandOutputStore` for
-   projection/expansion.
-6. Policy gate (`evaluate_command()`) blocks destructive commands,
-   warns on risky ones, before execution.
+   `PromptSubmissionKind::HumanShell { command, promote_after }`; the TUI
+   keeps `evaluate_command()` as a warn/block confirmation step.
+2. TUI negotiates `HumanShellRunCapabilities` and sends an idempotent create
+   request through `CoreClient`. It sends the registered `workspace_id`, the
+   bound session when present, command text, timeout and a random retry key.
+   It sends no client cwd, shell name, environment, principal, or execution
+   node claim.
+3. `CoreDaemon` requires a Human or LocalOwner principal. Authenticated human
+   callers need `agent.invoke` through the bound session; the daemon verifies
+   that session and registered workspace agree. Missing or archived workspaces
+   fail closed. There is no local-TUI fallback or cross-node forwarding.
+4. `HumanShellRunProtocol` builds an immutable `ExecutionContext` from the
+   registered workspace, resolves only a relative cwd under that root, takes
+   the shared scheduler process permit, and invokes `ShellRuntime` on the
+   daemon. `$SHELL` and the filtered inherited environment come from the
+   execution owner. `ManagedProcessService` owns process groups, timeout,
+   cancellation, output draining and reaping.
+5. The TUI polls bounded sequence cursors and maps output into the existing
+   `ShellEvent`, `ShellOutputStore`, `ShellCell`, and
+   `ShellCommandRunBridge` surfaces. Reconnect can resume the same run id for
+   the same principal/session while the daemon lives. A daemon restart drops
+   the ephemeral handle and kills outstanding processes; it does not fabricate
+   recovered output.
+
+The wire run contract is versioned and capability-gated. It allows 64 KiB
+commands, timeouts up to 300 seconds, 1 MiB retained output per run, 64 KiB
+reads, four active runs per principal, sixteen retained runs per principal,
+and 100 daemon-wide records. Completed records expire after ten minutes.
+Create retries with the same principal/session/key and command return the same
+run; conflicting reuse is refused. Output and cancellation lookup require the
+same principal and session; unknown and foreign IDs share one `gone` result.
+Daemon shutdown cancels every live handle.
+
+`ShellRuntime` submits `$SHELL -lc <command>` to
+`ManagedProcessService::run_streaming()` with `EnvironmentPolicy::human_shell`:
+shell-useful owner variables only, excluding credentials, loader injection and
+all `GIT_*` values. It uses null stdin, a 300-second maximum timeout and bounded
+stdout/stderr. Run events (`Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`,
+`FailedToStart`) feed the existing local TUI stores. Raw output is ephemeral
+and never enters generic daemon audit or session storage.
 
 Human model-context promotions pass through one redaction hook regardless of
 the general shell-output redaction setting and are capped at 32 KiB. `!`
-output remains private. Local `!!`/include entries are marked promoted only
-after the next submitted turn receives a daemon `Ack`; `/shell-ask` waits for
-the session-scoped submission `Ack`. Remote TUI queue acceptance is not
-session acceptance, so the current remote path does not claim promotion
-success. Finite command execution still runs in the frontend and is being
-corrected separately by C002 at
-`plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
+output remains private. Local `!!`/include entries are durably staged before
+the next submitted turn; a turn rejection preserves them for retry. `/shell-ask`
+stages and submits in one idempotent owner operation. Remote composer content
+is an unsubmitted draft because the WebSocket protocol has no canonical stage
+request. Finite command execution runs on the daemon that owns the registered
+workspace; an attached TUI never executes the command on its own host.
 
 ### Projection Pipeline (Phases 1–10)
 
@@ -127,7 +162,7 @@ double-compression prevention.
 pub enum ShellOrigin { HumanEphemeral, HumanPromoted, AgentTool }
 pub enum ShellCapturePolicy { DisplayOnly, StoreEphemeral, StoreAndPromote }
 pub enum ShellPromotionMode { Full, Tail { lines: usize }, StdoutOnly, StderrOnly, Summary, FailureDigest }
-pub enum ShellEnvPolicy { Inherit, Clean }
+pub enum ShellEnvPolicy { Inherit, InheritHumanOwner, Clean }
 pub struct ShellCommandId(pub u64);  // monotonic, allocated by store
 pub enum ShellStatus { Running, Exited, TimedOut, FailedToStart, Killed }
 pub enum PromptSubmissionKind { Chat(String), Slash(String), HumanShell { command: String, promote_after: bool } }

@@ -95,8 +95,13 @@ impl CoreDaemon {
                 }),
             },
             CoreRequest::LspDiagnosticsGet { request } => {
-                let result = self.lsp_diagnostics_get(request).await;
-                Ok(CoreResponse::LspDiagnosticsGetResult { result })
+                match self.lsp_diagnostics_get(request).await {
+                    Ok(result) => Ok(CoreResponse::LspDiagnosticsGetResult { result }),
+                    Err(denial) => Ok(CoreResponse::Error {
+                        code: denial.code().into(),
+                        message: denial.message().into(),
+                    }),
+                }
             }
             CoreRequest::LspDiagnosticsSubscribe { request } => {
                 self.lsp_diagnostics_subscribe(request, trusted_client_id)
@@ -198,7 +203,7 @@ impl CoreDaemon {
         {
             return Ok(LspReadResultDto::not_ready(operation));
         }
-        self.lsp_point_read(&service, operation, &target, &request)
+        self.lsp_point_read(&service, operation, &root, &target, &request)
             .await
     }
 
@@ -206,6 +211,7 @@ impl CoreDaemon {
         &self,
         service: &Arc<LspService>,
         operation: LspReadOperation,
+        root: &Path,
         target: &Path,
         request: &LspReadRequestDto,
     ) -> Result<LspReadResultDto, LspReadDenial> {
@@ -234,8 +240,11 @@ impl CoreDaemon {
             LspReadOperation::Definition => {
                 match operations.go_to_definition(target, line, column).await {
                     Ok(links) => {
-                        let (locations, truncated) =
-                            cap_locations(links.iter().map(location_link_to_dto));
+                        let (locations, truncated) = cap_locations(
+                            links
+                                .iter()
+                                .filter_map(|link| location_link_to_dto(link, root)),
+                        );
                         LspReadPayloadDto::Locations {
                             locations,
                             truncated,
@@ -247,8 +256,11 @@ impl CoreDaemon {
             LspReadOperation::References => {
                 match operations.find_references(target, line, column).await {
                     Ok(found) => {
-                        let (locations, truncated) =
-                            cap_locations(found.iter().map(location_to_dto));
+                        let (locations, truncated) = cap_locations(
+                            found
+                                .iter()
+                                .filter_map(|location| location_to_dto(location, root)),
+                        );
                         LspReadPayloadDto::Locations {
                             locations,
                             truncated,
@@ -331,46 +343,43 @@ impl CoreDaemon {
 
     /// The authoritative current diagnostics for a project.
     ///
-    /// This is the resync authority ADR-0012 §2 depends on. It reads the
-    /// publisher's recorded sets, **not** `DiagnosticsCollector::
-    /// get_diagnostics_for_file`: that accessor debounces and can return an
-    /// *empty* set with `diagnostics_may_still_be_warming: false`, which as an
-    /// authority would wipe a client's diagnostics on every reconciliation.
-    ///
-    /// Only files the daemon is already publishing for this project are
-    /// reported. A file the publisher has not observed has no sequence, and
-    /// inventing `0` would make "no data yet" indistinguishable from "a clean
-    /// file with no diagnostics".
+    /// This is the resync authority ADR-0012 §2 depends on. It first verifies
+    /// a warm daemon-owned client, then runs the same bounded publisher pass
+    /// used for stream updates and returns the resulting complete snapshot.
+    /// A cold client is an error, never an empty result that could look clean.
     async fn lsp_diagnostics_get(
         &self,
         request: LspDiagnosticsGetRequestDto,
-    ) -> LspDiagnosticsResultDto {
-        let empty = LspDiagnosticsResultDto {
-            project_id: request.project_id.clone(),
-            files: Vec::new(),
-            truncated: false,
-        };
+    ) -> Result<LspDiagnosticsResultDto, LspReadDenial> {
         if request.project_id.is_empty() {
-            return empty;
+            return Err(LspReadDenial::IncoherentRequest);
         }
-        // Gate on the service too: a daemon with no LSP cannot be
-        // authoritative about diagnostics, and an empty set would read as
-        // "this project is clean".
-        if self.lsp_service().is_err() {
-            return empty;
+        let root = self.lsp_workspace_root(&request.session_id).await?;
+        let Some(pool) = self.pool.as_ref() else {
+            return Err(LspReadDenial::ServiceUnavailable);
+        };
+        let session_project =
+            sqlx::query_scalar::<_, String>("SELECT project_id FROM session WHERE id = ?")
+                .bind(&request.session_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|_| LspReadDenial::SessionNotFound)?
+                .ok_or(LspReadDenial::SessionNotFound)?;
+        if session_project != request.project_id {
+            return Err(LspReadDenial::SessionNotFound);
         }
-        self.lsp_diagnostics
-            .lock()
-            .files_for(&request.project_id)
-            .map(|files| LspDiagnosticsResultDto {
-                project_id: request.project_id.clone(),
-                files,
-                truncated: self
-                    .lsp_diagnostics
-                    .lock()
-                    .tracker_saturated(&request.project_id),
-            })
-            .unwrap_or(empty)
+        let service = self.lsp_service()?;
+        service
+            .find_existing_client_for_root_hint(Some(&root), None)
+            .await
+            .map_err(|_| LspReadDenial::ServiceUnavailable)?;
+        publish_changed_diagnostics(self, &request.project_id, &request.session_id).await;
+        let store = self.lsp_diagnostics.lock();
+        Ok(LspDiagnosticsResultDto {
+            project_id: request.project_id.clone(),
+            files: store.files_for(&request.project_id).unwrap_or_default(),
+            truncated: store.tracker_saturated(&request.project_id),
+        })
     }
 }
 
@@ -400,23 +409,22 @@ fn range_to_dto(range: crate::lsp::lsp_types::Range) -> LspRangeDto {
     }
 }
 
-/// Convert a `Location` to a DTO, keeping only its file name.
-///
-/// A full workspace-relative path would be more useful, but a location can
-/// point outside the requesting session's project — `find_references`
-/// legitimately returns hits in other crates — and relativizing against the
-/// wrong root would fabricate a path that does not exist. The file name is
-/// what can be reported without inventing authority over another root.
-fn location_to_dto(location: &crate::lsp::lsp_types::Location) -> LspRangeDto {
+/// Convert an in-workspace `Location` to a DTO. Locations outside the
+/// daemon-resolved root are omitted so a read result cannot disclose or
+/// navigate to another workspace's path.
+fn location_to_dto(location: &crate::lsp::lsp_types::Location, root: &Path) -> Option<LspRangeDto> {
     let mut dto = range_to_dto(location.range);
-    dto.path = uri_file_name(&location.uri);
-    dto
+    dto.path = workspace_relative_path_for_uri(location.uri.as_str(), root)?;
+    Some(dto)
 }
 
-fn location_link_to_dto(link: &crate::lsp::lsp_types::LocationLink) -> LspRangeDto {
+fn location_link_to_dto(
+    link: &crate::lsp::lsp_types::LocationLink,
+    root: &Path,
+) -> Option<LspRangeDto> {
     let mut dto = range_to_dto(link.target_selection_range);
-    dto.path = uri_file_name(&link.target_uri);
-    dto
+    dto.path = workspace_relative_path_for_uri(link.target_uri.as_str(), root)?;
+    Some(dto)
 }
 
 fn document_symbol_to_dto(symbol: crate::lsp::lsp_types::DocumentSymbol) -> LspSymbolDto {
@@ -441,17 +449,25 @@ fn symbol_information_to_dto(symbol: crate::lsp::lsp_types::SymbolInformation) -
     }
 }
 
-fn uri_file_name(uri: &crate::lsp::lsp_types::Uri) -> String {
-    // Parsed the same way `egglsp::client` parses a URI, so percent-decoding
-    // behaves identically on both sides.
-    url::Url::parse(uri.as_str())
+fn workspace_relative_path_for_uri(uri: &str, root: &Path) -> Option<String> {
+    url::Url::parse(uri)
         .ok()
         .and_then(|parsed| parsed.to_file_path().ok())
         .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
+            let root = root.canonicalize().ok()?;
+            let path = path.canonicalize().ok()?;
+            let relative = path.strip_prefix(root).ok()?;
+            let mut parts = Vec::new();
+            for component in relative.components() {
+                match component {
+                    std::path::Component::Normal(part) => {
+                        parts.push(part.to_string_lossy().into_owned());
+                    }
+                    _ => return None,
+                }
+            }
+            (!parts.is_empty()).then(|| parts.join("/"))
         })
-        .unwrap_or_default()
 }
 
 /// The server's own numeric `SymbolKind`.
@@ -466,6 +482,38 @@ fn symbol_kind_number(kind: crate::lsp::lsp_types::SymbolKind) -> u32 {
         .and_then(|value| value.as_u64())
         .and_then(|number| u32::try_from(number).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod diagnostics_path_tests {
+    use super::diagnostics_relative_path_in_root;
+
+    #[test]
+    fn diagnostic_uri_keeps_workspace_relative_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("crate-a/src/lib.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap();
+        assert_eq!(
+            diagnostics_relative_path_in_root(uri.as_str(), directory.path()),
+            Some("crate-a/src/lib.rs".into())
+        );
+    }
+
+    #[test]
+    fn diagnostic_uri_outside_workspace_is_omitted() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let file = outside.path().join("src/lib.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap();
+        assert_eq!(
+            diagnostics_relative_path_in_root(uri.as_str(), root.path()),
+            None
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +548,23 @@ pub async fn publish_changed_diagnostics(
 ) -> usize {
     use crate::core::lsp_diagnostics_store::DiagnosticsChange;
 
+    let Ok(root) = daemon.lsp_workspace_root(session_id).await else {
+        return 0;
+    };
+    let Some(pool) = daemon.pool.as_ref() else {
+        return 0;
+    };
+    let session_project =
+        sqlx::query_scalar::<_, String>("SELECT project_id FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    if session_project.as_deref() != Some(project_id) {
+        return 0;
+    }
+
     let Some(service) = daemon.deps.lsp_service.clone() else {
         return 0;
     };
@@ -510,7 +575,7 @@ pub async fn publish_changed_diagnostics(
             continue;
         };
         for (uri, diagnostics) in per_file {
-            let Some(relative) = diagnostics_relative_path(&uri) else {
+            let Some(relative) = diagnostics_relative_path_in_root(&uri, &root) else {
                 continue;
             };
             let mapped = map_diagnostics(&diagnostics);
@@ -568,21 +633,11 @@ pub async fn publish_changed_diagnostics(
     published
 }
 
-/// The file name a diagnostic URI belongs to.
-///
-/// Diagnostics are keyed by URI, but the protocol reports workspace-relative
-/// paths so a client can join them to its own file list. A URI that will not
-/// convert is skipped rather than reported under a fabricated path, because a
-/// wrong-but-present path is worse for a client than an absent one.
-fn diagnostics_relative_path(uri: &str) -> Option<String> {
-    url::Url::parse(uri)
-        .ok()
-        .and_then(|parsed| parsed.to_file_path().ok())
-        .and_then(|path| {
-            path.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .filter(|name| !name.is_empty())
+/// Convert an in-workspace diagnostic URI to a normalized workspace-relative
+/// path. A URI that is outside the daemon-resolved root is skipped rather than
+/// reported under a fabricated path.
+fn diagnostics_relative_path_in_root(uri: &str, root: &Path) -> Option<String> {
+    workspace_relative_path_for_uri(uri, root)
 }
 
 fn map_diagnostics(

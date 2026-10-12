@@ -39,8 +39,8 @@ attempt; it is not a second scheduler or job authority.
 ## Disposition of production process sites
 
 The machine-readable inventory in `docs/execution-ownership.toml` is the
-complete guard input; it currently declares **54 entries** (14 `scheduler`,
-12 `definition_or_adapter`, 10 `standalone_compat`, 9 `interactive`,
+complete guard input; it currently declares **55 entries** (14 `scheduler`,
+12 `definition_or_adapter`, 10 `standalone_compat`, 10 `interactive`,
 8 `deferred_domain_executor`, 1 `test_only`). The table below summarizes its
 production dispositions and additionally lists the M003 TUI projection
 surfaces, which spawn nothing and so are deliberately not manifest entries:
@@ -52,7 +52,8 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
 | `src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
 | `src/tool/bash.rs`, `src/scheduler/`, `src/python_script/` | Scheduler/adapter | Job admission and domain output remain local; accepted finite execution uses the canonical service. |
-| `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain local; streaming lifecycle uses the canonical service. |
+| `src/shell/human_dispatch.rs` | Daemon-owned human shell protocol | Resolves the registered workspace and principal, acquires shared scheduler admission, and owns bounded ephemeral run/output handles; invokes `ShellRuntime` for finite lifecycle. |
+| `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain the domain mapping; streaming lifecycle uses the canonical service under the daemon-owned run protocol. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
 | `src/hooks/` | Configured hook adapter | Hook-specific context remains local; finite command lifecycle uses the canonical service. |
 | `src/plugin/runtime/process.rs` | Deferred domain adapter | Plugin protocol/result mapping remains local; finite child lifecycle uses the canonical service. Plugin admission/lifecycle integration remains future domain work. |

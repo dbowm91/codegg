@@ -87,6 +87,8 @@ pub enum TuiCommand {
         generation: u64,
         result: Option<String>,
         state: codegg_client::DocumentState,
+        diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+        diagnostics_error: Option<String>,
     },
     /// Completion of a guarded editor lifecycle operation (save,
     /// reload, resync, close). `operation` decides whether the
@@ -98,6 +100,18 @@ pub enum TuiCommand {
         operation: crate::tui::app::state::EditorOperation,
         error: Option<String>,
         state: codegg_client::DocumentState,
+        diagnostics: Option<Vec<crate::protocol::lsp::LspDiagnosticDto>>,
+        diagnostics_error: Option<String>,
+    },
+    /// Completion of a bounded definition lookup. The result is still only
+    /// navigable when the active bounded project tree contains the exact
+    /// workspace-relative path.
+    EditorNavigationResolved {
+        editor_generation: u64,
+        navigation_generation: u64,
+        operation: crate::protocol::lsp::LspReadOperation,
+        results: Vec<crate::protocol::lsp::LspRangeDto>,
+        error: Option<String>,
     },
     /// Completion of a bounded M006-D workspace tree walk. Carries the
     /// request id, the tree generation, and the root the walk was issued
@@ -504,6 +518,10 @@ pub enum TuiCommand {
         id: u64,
         handle: crate::shell::runtime::ShellHandle,
     },
+    RegisterHumanShellRun {
+        id: u64,
+        run_id: String,
+    },
     ShellInclude {
         id: u64,
         mode: String,
@@ -527,11 +545,28 @@ pub enum TuiCommand {
     ShellAskSubmitted {
         id: u64,
         text: String,
+        projection: String,
+        promotion_id: uuid::Uuid,
         error: Option<String>,
     },
     /// A normal next turn accepted or rejected staged shell evidence.
     ShellPromotionsSubmitted {
         promotions: Vec<(uuid::Uuid, u64)>,
+        error: Option<String>,
+    },
+    ShellPromotionStageSubmitted {
+        session_id: String,
+        command_id: u64,
+        promotion_id: uuid::Uuid,
+        projection: String,
+        error: Option<String>,
+    },
+    ShellPromotionListLoad {
+        session_id: String,
+    },
+    ShellPromotionListSubmitted {
+        session_id: String,
+        promotions: Vec<crate::protocol::human_shell::HumanShellPromotionDto>,
         error: Option<String>,
     },
     ShellExpand {

@@ -12,7 +12,7 @@ pub(crate) fn handle_run_human_shell(
     app: &mut app::App,
     command: String,
     promote_after: bool,
-    cwd: std::path::PathBuf,
+    _cwd: std::path::PathBuf,
 ) {
     use crate::shell::policy::evaluate_command;
 
@@ -34,7 +34,7 @@ pub(crate) fn handle_run_human_shell(
         crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
             let confirm_enabled = app.shell_confirm_dangerous;
             if confirm_enabled {
-                app.dialog_state.pending_shell_command = Some((command, promote_after, cwd));
+                app.dialog_state.pending_shell_command = Some((command, promote_after, _cwd));
                 let title = "Dangerous Command".to_string();
                 let msg = format!("{}\n\nRun this command anyway?", reason);
                 app.ui_state.dialog = crate::tui::Dialog::Confirm;
@@ -51,16 +51,31 @@ pub(crate) fn handle_run_human_shell(
         crate::shell::policy::HumanShellPolicyDecision::Allow => {}
     }
 
-    spawn_human_shell(app, command, promote_after, cwd);
+    spawn_human_shell(app, command, promote_after, _cwd);
 }
 
 pub(crate) fn spawn_human_shell(
     app: &mut app::App,
     command: String,
     promote_after: bool,
-    cwd: std::path::PathBuf,
+    _cwd: std::path::PathBuf,
 ) {
     use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
+
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .error("Daemon connection unavailable; human shell cannot run");
+        return;
+    };
+    let (session_id, workspace_id) = current_shell_binding(app);
+    let Some(workspace_id) = workspace_id else {
+        app.messages_state
+            .toasts
+            .error("Select a registered workspace before running a shell command");
+        return;
+    };
+    let display_cwd = std::path::PathBuf::from(format!("workspace:{workspace_id}"));
 
     let promote_after = promote_after && app.shell_auto_promote_bangbang;
 
@@ -74,51 +89,223 @@ pub(crate) fn spawn_human_shell(
         id,
         origin: ShellOrigin::HumanEphemeral,
         command: command.clone(),
-        cwd: cwd.clone(),
+        cwd: display_cwd.clone(),
         timeout: std::time::Duration::from_secs(app.shell_default_timeout_secs),
         capture_policy,
-        env_policy: ShellEnvPolicy::Inherit,
+        env_policy: ShellEnvPolicy::InheritHumanOwner,
     };
     app.shell_store.insert_started(&req);
     capture_shell_binding(app, id.0);
 
     app.messages_state
         .messages
-        .add_shell_cell(id.0, &command, &cwd.to_string_lossy());
+        .add_shell_cell(id.0, &command, &display_cwd.to_string_lossy());
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(128);
-    let runtime = crate::shell::ShellRuntime::new();
+    let timeout_secs = app.shell_default_timeout_secs.clamp(1, 300);
     let tui_cmd_tx = app.tui_cmd_tx.clone();
     app.task_registry
-        .spawn(TuiTaskKind::Shell, "shell_event_forwarding", async move {
-            match runtime.spawn(req, tx.clone()).await {
-                Ok(handle) => {
-                    if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = send_tui(
-                            ttx,
-                            app::TuiCommand::RegisterShellHandle {
-                                id: handle.id.0,
-                                handle,
-                            },
-                        );
-                    }
-                    while let Some(event) = rx.recv().await {
-                        if let Some(ref ttx) = tui_cmd_tx {
-                            let _ = send_tui(ttx, app::TuiCommand::ShellEvent(event));
+        .spawn(TuiTaskKind::Shell, "daemon_shell_run", async move {
+            let send_event = |event| {
+                if let Some(ref ttx) = tui_cmd_tx {
+                    let _ = send_tui(ttx, app::TuiCommand::ShellEvent(event));
+                }
+            };
+            let capabilities = crate::core::new_request(
+                format!("human-shell-capabilities-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::HumanShellRunCapabilities,
+            );
+            match core_client.request(capabilities).await {
+                Ok(crate::protocol::core::CoreResponse::HumanShellRunCapabilities {
+                    capabilities,
+                }) if capabilities.version
+                    == crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION => {}
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("{code}: {message}"),
+                    });
+                    return;
+                }
+                Ok(_) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: "daemon does not support workspace-owned human shell".to_string(),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("daemon capability request failed: {error}"),
+                    });
+                    return;
+                }
+            }
+            let create = crate::core::new_request(
+                format!("human-shell-create-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::HumanShellRunCreate {
+                    request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                        protocol_version:
+                            crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                        idempotency_key: uuid::Uuid::new_v4().to_string(),
+                        workspace_id,
+                        session_id: session_id.clone(),
+                        cwd_relative: None,
+                        command: req.command.clone(),
+                        timeout_secs,
+                    },
+                },
+            );
+            let snapshot = match core_client.request(create).await {
+                Ok(crate::protocol::core::CoreResponse::HumanShellRunCreated {
+                    snapshot, ..
+                }) => snapshot,
+                Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("{code}: {message}"),
+                    });
+                    return;
+                }
+                Ok(_) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: "unexpected daemon shell-create response".to_string(),
+                    });
+                    return;
+                }
+                Err(error) => {
+                    send_event(crate::shell::ShellEvent::FailedToStart {
+                        id,
+                        error: format!("daemon shell-create request failed: {error}"),
+                    });
+                    return;
+                }
+            };
+            if let Some(ref ttx) = tui_cmd_tx {
+                let _ = send_tui(
+                    ttx,
+                    app::TuiCommand::RegisterHumanShellRun {
+                        id: id.0,
+                        run_id: snapshot.run_id.clone(),
+                    },
+                );
+            }
+            send_event(crate::shell::ShellEvent::Started {
+                id,
+                command: req.command.clone(),
+                cwd: req.cwd.clone(),
+            });
+            let started = std::time::Instant::now();
+            let mut cursor = 0;
+            let mut truncation_reported = false;
+            loop {
+                let read = crate::core::new_request(
+                    format!("human-shell-read-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::HumanShellRunRead {
+                        session_id: session_id.clone(),
+                        run_id: snapshot.run_id.clone(),
+                        from_cursor: cursor,
+                        max_bytes: Some(
+                            crate::protocol::human_shell::HUMAN_SHELL_RUN_MAX_READ_BYTES,
+                        ),
+                    },
+                );
+                match core_client.request(read).await {
+                    Ok(crate::protocol::core::CoreResponse::HumanShellRunRead {
+                        snapshot,
+                        outputs,
+                        resync_required,
+                    }) => {
+                        if snapshot.truncated && !truncation_reported {
+                            send_event(crate::shell::ShellEvent::OutputTruncated { id });
+                            truncation_reported = true;
+                        }
+                        if resync_required && outputs.is_empty() {
+                            cursor = snapshot.next_cursor;
+                        }
+                        for output in outputs {
+                            cursor = output.sequence.saturating_add(1);
+                            let event = match output.stream {
+                                crate::protocol::human_shell::HumanShellRunStreamDto::Stdout => {
+                                    crate::shell::ShellEvent::Stdout {
+                                        id,
+                                        bytes: output.bytes,
+                                    }
+                                }
+                                crate::protocol::human_shell::HumanShellRunStreamDto::Stderr => {
+                                    crate::shell::ShellEvent::Stderr {
+                                        id,
+                                        bytes: output.bytes,
+                                    }
+                                }
+                            };
+                            send_event(event);
+                        }
+                        match snapshot.status {
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Starting => {}
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Running => {}
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Exited => {
+                                send_event(crate::shell::ShellEvent::Exited {
+                                    id,
+                                    status: snapshot.exit_code,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::TimedOut => {
+                                send_event(crate::shell::ShellEvent::TimedOut {
+                                    id,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Cancelled => {
+                                send_event(crate::shell::ShellEvent::Exited {
+                                    id,
+                                    status: None,
+                                    elapsed: started.elapsed(),
+                                });
+                                break;
+                            }
+                            crate::protocol::human_shell::HumanShellRunStatusDto::Failed => {
+                                send_event(crate::shell::ShellEvent::FailedToStart {
+                                    id,
+                                    error: "daemon shell process failed".to_string(),
+                                });
+                                break;
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = send_tui(
-                            ttx,
-                            app::TuiCommand::ShellEvent(crate::shell::ShellEvent::FailedToStart {
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        send_event(crate::shell::ShellEvent::FailedToStart {
+                            id,
+                            error: format!("{code}: {message}"),
+                        });
+                        break;
+                    }
+                    Ok(_) => {
+                        send_event(crate::shell::ShellEvent::FailedToStart {
+                            id,
+                            error: "unexpected daemon shell-read response".to_string(),
+                        });
+                        break;
+                    }
+                    Err(error) => {
+                        if started.elapsed() > std::time::Duration::from_secs(timeout_secs + 5) {
+                            send_event(crate::shell::ShellEvent::FailedToStart {
                                 id,
-                                error: e,
-                            }),
-                        );
+                                error: format!(
+                                    "daemon shell run expired or became unavailable: {error}"
+                                ),
+                            });
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        continue;
                     }
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         });
 }
@@ -201,6 +388,11 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 cell.stderr_preview = Some(stderr_preview);
             });
         }
+        crate::shell::ShellEvent::OutputTruncated { id } => {
+            app.messages_state.messages.update_shell_cell(id.0, |cell| {
+                cell.truncated = Some(true);
+            });
+        }
         crate::shell::ShellEvent::Exited {
             id,
             status,
@@ -213,6 +405,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 }
             }
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_exited(*id, *status, *elapsed);
             let elapsed_ms = elapsed.as_millis() as u64;
             let exit_code = *status;
@@ -321,17 +514,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                     match project_for_model(&include_text) {
                         Ok(include_text) => {
                             if !stage_remote_shell_projection(app, include_text.clone()) {
-                                app.messages_state
-                                    .messages
-                                    .add_user_message(include_text.clone(), Some(false));
-                                app.pending_shell_promotions.push((
-                                    id.0,
-                                    include_text,
-                                    uuid::Uuid::new_v4(),
-                                ));
-                                app.messages_state.toasts.info(
-                                    "Redacted shell output staged for the next submitted turn",
-                                );
+                                stage_shell_promotion(app, id.0, include_text);
                             }
                         }
                         Err(error) => app.messages_state.toasts.error(&error),
@@ -341,6 +524,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_timeout(*id, *elapsed);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("timed_out".to_string());
@@ -349,6 +533,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
             app.shell_handles.remove(&id.0);
+            app.human_shell_run_ids.remove(&id.0);
             app.shell_store.mark_failed_to_start(*id);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("failed".to_string());
@@ -511,14 +696,7 @@ pub(crate) fn handle_shell_include(
                 if stage_remote_shell_projection(app, include_text.clone()) {
                     return;
                 }
-                app.messages_state
-                    .messages
-                    .add_user_message(include_text.clone(), Some(false));
-                app.pending_shell_promotions
-                    .push((id, include_text, uuid::Uuid::new_v4()));
-                app.messages_state
-                    .toasts
-                    .info("Redacted shell output staged for the next submitted turn");
+                stage_shell_promotion(app, id, include_text);
             }
             Err(error) => app.messages_state.toasts.error(&error),
         }
@@ -527,6 +705,200 @@ pub(crate) fn handle_shell_include(
             .toasts
             .error(&format!("Shell command {} not found", id));
     }
+}
+
+fn stage_shell_promotion(app: &mut app::App, command_id: u64, projection: String) {
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+    let Some(client) = app.core_client.clone() else {
+        app.messages_state.toasts.warning(
+            "This connection cannot durably stage shell evidence; projection remains local",
+        );
+        return;
+    };
+    let Some(session_id) = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.clone())
+    else {
+        app.messages_state
+            .toasts
+            .warning("Select a session before staging shell evidence");
+        return;
+    };
+    let Some(tx) = app.tui_cmd_tx.clone() else {
+        app.messages_state
+            .toasts
+            .error("Cannot stage shell evidence: TUI command channel is unavailable");
+        return;
+    };
+    let promotion_id = uuid::Uuid::new_v4();
+    let request = crate::core::new_request(
+        uuid::Uuid::new_v4().to_string(),
+        CoreRequest::ShellPromotionStage {
+            session_id: session_id.clone(),
+            promotion: crate::protocol::human_shell::HumanShellPromotionStageDto {
+                promotion_id: promotion_id.to_string(),
+                source_command_id: command_id.to_string(),
+                projection: projection.clone(),
+                source_exit_code: None,
+                source_truncated: false,
+            },
+        },
+    );
+    app.task_registry
+        .spawn(TuiTaskKind::Command, "shell_promotion_stage", async move {
+            let error = match client.request(request).await {
+                Ok(CoreResponse::ShellPromotionStaged { promotion, .. })
+                    if promotion.state
+                        == crate::protocol::human_shell::HumanShellPromotionStateDto::Pending =>
+                {
+                    None
+                }
+                Ok(CoreResponse::ShellPromotionStaged { .. }) => {
+                    Some("promotion is no longer pending".to_string())
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                Ok(_) => Some("daemon does not support durable shell staging".to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            let _ = send_tui(
+                &tx,
+                app::TuiCommand::ShellPromotionStageSubmitted {
+                    session_id,
+                    command_id,
+                    promotion_id,
+                    projection,
+                    error,
+                },
+            );
+        });
+}
+
+pub(crate) fn apply_shell_promotion_stage(
+    app: &mut app::App,
+    session_id: String,
+    command_id: u64,
+    promotion_id: uuid::Uuid,
+    projection: String,
+    error: Option<String>,
+) {
+    if app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.as_str())
+        != Some(session_id.as_str())
+    {
+        return;
+    }
+    if let Some(error) = error {
+        app.messages_state
+            .toasts
+            .error(&format!("Shell evidence was not staged: {error}"));
+        return;
+    }
+    if !app
+        .pending_shell_promotions
+        .iter()
+        .any(|(_, _, id)| *id == promotion_id)
+    {
+        app.pending_shell_promotions
+            .push((command_id, projection, promotion_id));
+    }
+    app.messages_state
+        .toasts
+        .info("Redacted shell evidence staged for the next submitted turn");
+}
+
+pub(crate) fn load_shell_promotions(app: &mut app::App, session_id: String) {
+    use crate::protocol::core::{CoreRequest, CoreResponse};
+    let Some(client) = app.core_client.clone() else {
+        return;
+    };
+    let Some(tx) = app.tui_cmd_tx.clone() else {
+        return;
+    };
+    let request = crate::core::new_request(
+        uuid::Uuid::new_v4().to_string(),
+        CoreRequest::ShellPromotionList {
+            session_id: session_id.clone(),
+        },
+    );
+    app.task_registry
+        .spawn(TuiTaskKind::Command, "shell_promotion_list", async move {
+            let (promotions, error) = match client.request(request).await {
+                Ok(CoreResponse::ShellPromotionList { promotions }) => (promotions, None),
+                Ok(CoreResponse::Error { code, message }) => {
+                    (Vec::new(), Some(format!("{code}: {message}")))
+                }
+                Ok(_) => (
+                    Vec::new(),
+                    Some("daemon does not support durable shell staging".to_string()),
+                ),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
+            let _ = send_tui(
+                &tx,
+                app::TuiCommand::ShellPromotionListSubmitted {
+                    session_id,
+                    promotions,
+                    error,
+                },
+            );
+        });
+}
+
+pub(crate) fn apply_shell_promotion_list(
+    app: &mut app::App,
+    session_id: String,
+    promotions: Vec<crate::protocol::human_shell::HumanShellPromotionDto>,
+    error: Option<String>,
+) {
+    if app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.as_str())
+        != Some(session_id.as_str())
+    {
+        return;
+    }
+    let Some(error) = error else {
+        let expired = promotions
+            .iter()
+            .filter(|promotion| {
+                promotion.state
+                    == crate::protocol::human_shell::HumanShellPromotionStateDto::Expired
+            })
+            .count();
+        app.pending_shell_promotions = promotions
+            .into_iter()
+            .filter_map(|promotion| {
+                if promotion.state
+                    == crate::protocol::human_shell::HumanShellPromotionStateDto::Pending
+                {
+                    Some((
+                        promotion.source_command_id.parse().ok()?,
+                        promotion.projection?,
+                        promotion.promotion_id.parse().ok()?,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if expired > 0 {
+            app.messages_state.toasts.warning(&format!(
+                "{expired} staged shell promotion(s) expired and were not attached to a turn"
+            ));
+        }
+        return;
+    };
+    app.pending_shell_promotions.clear();
+    app.messages_state
+        .toasts
+        .warning(&format!("Could not recover staged shell evidence: {error}"));
 }
 
 pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
@@ -565,14 +937,11 @@ pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
             &entry.stdout,
             &entry.stderr,
         );
-        let include_text = format!(
-            "Using the attached shell output, answer: {}\n\n{}",
-            question,
-            digest.render()
-        );
-        match project_for_model(&include_text) {
-            Ok(include_text) => {
-                submit_shell_ask(app, id, include_text);
+        let question_with_context = format!("Using the attached shell output, answer: {question}");
+        match project_for_model(&digest.render()) {
+            Ok(projection) => {
+                let remote_draft = format!("{question_with_context}\n\n{projection}");
+                submit_shell_ask(app, id, question_with_context, projection, remote_draft);
             }
             Err(error) => app.messages_state.toasts.error(&error),
         }
@@ -583,37 +952,65 @@ pub(crate) fn handle_shell_ask(app: &mut app::App, id: u64, question: String) {
     }
 }
 
-fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
+fn submit_shell_ask(
+    app: &mut app::App,
+    id: u64,
+    text: String,
+    projection: String,
+    remote_draft: String,
+) {
     use crate::protocol::core::{CoreRequest, CoreResponse};
 
     if let Some(client) = app.core_client.clone() {
         let Some(session_id) = app.session_state.session.as_ref().map(|s| s.id.clone()) else {
-            app.prompt_state.prompt.set_text(text);
+            app.prompt_state.prompt.set_text(remote_draft);
             app.messages_state
                 .toasts
                 .warning("Select a session before asking about shell output; evidence remains in the composer");
             return;
         };
         let Some(tx) = app.tui_cmd_tx.clone() else {
-            app.prompt_state.prompt.set_text(text);
+            app.prompt_state.prompt.set_text(remote_draft);
             app.messages_state
                 .toasts
                 .error("Cannot submit shell question: TUI command channel is unavailable");
             return;
         };
         let submitted_text = text.clone();
+        let submitted_projection = projection.clone();
+        let promotion_id = uuid::Uuid::new_v4();
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             CoreRequest::SessionPromptSubmit {
                 session_id,
                 text,
                 plan_mode: app.agent_state.plan_mode,
+                shell_promotion_ids: Vec::new(),
+                shell_promotion: Some(crate::protocol::human_shell::HumanShellPromotionStageDto {
+                    promotion_id: promotion_id.to_string(),
+                    source_command_id: id.to_string(),
+                    projection: projection.clone(),
+                    source_exit_code: None,
+                    source_truncated: false,
+                }),
             },
         );
         app.task_registry
             .spawn(TuiTaskKind::Command, "shell_ask_submit", async move {
                 let error = match client.request(request).await {
-                    Ok(CoreResponse::Ack) => None,
+                    Ok(CoreResponse::ShellPromptSubmitResult { accepted: true, .. }) => None,
+                    Ok(CoreResponse::ShellPromptSubmitResult {
+                        accepted: false,
+                        error_code,
+                        error_message,
+                        ..
+                    }) => Some(format!(
+                        "{}: {}",
+                        error_code.unwrap_or_else(|| "not_accepted".to_string()),
+                        error_message.unwrap_or_else(|| {
+                            "the session is busy; evidence remains staged".to_string()
+                        })
+                    )),
                     Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
                     Ok(_) => Some("unexpected response to shell question".to_string()),
                     Err(error) => Some(error.to_string()),
@@ -623,6 +1020,8 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
                     app::TuiCommand::ShellAskSubmitted {
                         id,
                         text: submitted_text,
+                        projection: submitted_projection,
+                        promotion_id,
                         error,
                     },
                 );
@@ -630,24 +1029,19 @@ fn submit_shell_ask(app: &mut app::App, id: u64, text: String) {
         return;
     }
 
-    if let Some(tx) = app.remote_send_tx.as_ref() {
-        match tx.try_send(crate::protocol::tui::TuiMessage::Input { text }) {
-            Ok(()) => {
-                let _ = id;
-                app.messages_state
-                    .toasts
-                    .info("Redacted shell question sent; remote session acceptance is pending");
-            }
-            Err(error) => {
-                app.messages_state.toasts.error(&format!(
-                    "Shell question was not submitted; retry when the remote connection is ready: {error}"
-                ));
-            }
-        }
+    if matches!(
+        app.ui_state.mode,
+        crate::tui::app::state::AppMode::RemoteCore { .. }
+    ) && app.remote_send_tx.is_some()
+    {
+        app.prompt_state.prompt.set_text(remote_draft);
+        app.messages_state.toasts.info(
+            "Remote shell question is an unsubmitted composer draft; this daemon cannot confirm durable staging",
+        );
         return;
     }
 
-    app.prompt_state.prompt.set_text(text);
+    app.prompt_state.prompt.set_text(remote_draft);
     app.messages_state
         .toasts
         .error("Cannot submit shell question without a session connection; evidence remains in the composer");
@@ -657,9 +1051,19 @@ pub(crate) fn apply_shell_ask_submitted(
     app: &mut app::App,
     id: u64,
     text: String,
+    projection: String,
+    promotion_id: uuid::Uuid,
     error: Option<String>,
 ) {
     if let Some(error) = error {
+        if !app
+            .pending_shell_promotions
+            .iter()
+            .any(|(_, _, existing)| *existing == promotion_id)
+        {
+            app.pending_shell_promotions
+                .push((id, projection, promotion_id));
+        }
         if app.prompt_state.prompt.get_text().is_empty() {
             app.prompt_state.prompt.set_text(text);
         }
@@ -784,6 +1188,65 @@ pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
 }
 
 pub(crate) fn handle_shell_kill(app: &mut app::App, id: u64) {
+    if let Some(run_id) = app.human_shell_run_ids.remove(&id) {
+        let Some(core_client) = app.core_client.clone() else {
+            app.messages_state
+                .toasts
+                .error("Daemon connection unavailable; shell cancellation was not confirmed");
+            app.human_shell_run_ids.insert(id, run_id);
+            return;
+        };
+        let session_id = app
+            .shell_command_bindings
+            .get(&id)
+            .and_then(|binding| binding.0.clone());
+        let tx = app.tui_cmd_tx.clone();
+        let cmd_id = crate::shell::types::ShellCommandId(id);
+        let elapsed = app
+            .shell_store
+            .get(cmd_id)
+            .map(|e| e.started_at.elapsed().unwrap_or(std::time::Duration::ZERO))
+            .unwrap_or(std::time::Duration::ZERO);
+        app.shell_store.mark_killed(cmd_id, elapsed);
+        app.messages_state.messages.update_shell_cell(id, |cell| {
+            cell.status = Some("killed".to_string());
+            cell.elapsed_ms = Some(elapsed.as_millis() as u64);
+        });
+        app.task_registry
+            .spawn(TuiTaskKind::Command, "human_shell_cancel", async move {
+                let request = crate::core::new_request(
+                    format!("human-shell-cancel-{}", uuid::Uuid::new_v4()),
+                    crate::protocol::core::CoreRequest::HumanShellRunCancel { session_id, run_id },
+                );
+                let event = match core_client.request(request).await {
+                    Ok(crate::protocol::core::CoreResponse::HumanShellRunCancelled { .. }) => {
+                        crate::shell::ShellEvent::Exited {
+                            id: cmd_id,
+                            status: None,
+                            elapsed,
+                        }
+                    }
+                    Ok(crate::protocol::core::CoreResponse::Error { code, message }) => {
+                        crate::shell::ShellEvent::FailedToStart {
+                            id: cmd_id,
+                            error: format!("{code}: {message}"),
+                        }
+                    }
+                    Ok(_) => crate::shell::ShellEvent::FailedToStart {
+                        id: cmd_id,
+                        error: "unexpected daemon shell-cancel response".to_string(),
+                    },
+                    Err(error) => crate::shell::ShellEvent::FailedToStart {
+                        id: cmd_id,
+                        error: format!("daemon shell-cancel request failed: {error}"),
+                    },
+                };
+                if let Some(ref tx) = tx {
+                    let _ = send_tui(tx, app::TuiCommand::ShellEvent(event));
+                }
+            });
+        return;
+    }
     if let Some(handle) = app.shell_handles.remove(&id) {
         handle.kill();
         let cmd_id = crate::shell::types::ShellCommandId(id);

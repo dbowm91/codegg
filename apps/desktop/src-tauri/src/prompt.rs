@@ -139,6 +139,8 @@ impl HostState {
                     session_id,
                     text: intent.text().to_owned(),
                     plan_mode,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             })
             .await

@@ -15,8 +15,8 @@
 #
 #   scheduler               — production daemon path that routes through
 #                             `JobSubmissionService`. Heavy work.
-#   interactive              — long-lived user-controlled PTY / REPL /
-#                             editor session.
+#   interactive              — user-controlled foreground process flow,
+#                             including PTY sessions and finite human shell.
 #   standalone_compat        — explicit `--standalone`, `--stdio`, or
 #                             test harness surface, documented outside
 #                             the daemon singleton guarantee.
@@ -348,3 +348,9 @@ reason = "Experiment-only release qualification owns five bounded child-process 
 path = "src/tool_advisor/late_interaction.rs"
 owner = "standalone_compat"
 reason = "Experiment-only M001 measurement owns one bounded rustc --version identity probe for receipt toolchain metadata; no user-turn or daemon execution path"
+
+[[site]]
+path = "src/shell/human_dispatch.rs"
+owner = "interactive"
+reason = "Daemon-owned finite human shell protocol; resolves workspace authority, acquires shared scheduler admission before spawn, and retains only bounded ephemeral run/output handles"
+entrypoint = "HumanShellRunProtocol::create"

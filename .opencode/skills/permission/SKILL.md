@@ -46,6 +46,10 @@ skill covers the ordering and isolation invariants that are easy to break.
   process runs under. Never derive one from the other.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
+- **Sandbox backend names do not imply parity.** Linux Landlock is a filesystem
+  allowlist with `no_new_privs`; macOS Seatbelt confines writes but allows broad
+  reads, network access, inherited descriptors, and Apple Events / Launch
+  Services channels. Keep backend limits visible in `architecture/security.md`.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
 

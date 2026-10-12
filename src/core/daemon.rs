@@ -62,6 +62,12 @@ pub struct CoreDaemon {
     /// accounting as durable work. Handles and attachments are ephemeral
     /// and do not survive daemon restart.
     pub interactive_processes: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
+    /// Daemon-owned finite human-shell runs. Missing only for legacy daemons
+    /// without scheduler admission; those daemons refuse shell dispatch.
+    pub human_shell_runs: Option<Arc<crate::shell::human_dispatch::HumanShellRunProtocol>>,
+    /// Effective daemon-side human shell enable switch. Frontend settings
+    /// are presentation; this owner-side value is the execution gate.
+    pub human_shell_enabled: bool,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -2845,6 +2851,23 @@ impl CoreDaemon {
             | CoreRequest::SessionExport { session_id }
             | CoreRequest::TurnSubmit { session_id, .. }
             | CoreRequest::SessionPromptSubmit { session_id, .. }
+            | CoreRequest::ShellPromotionStage { session_id, .. }
+            | CoreRequest::ShellPromotionList { session_id }
+            | CoreRequest::HumanShellRunCreate {
+                request:
+                    crate::protocol::human_shell::HumanShellRunCreateDto {
+                        session_id: Some(session_id),
+                        ..
+                    },
+            }
+            | CoreRequest::HumanShellRunRead {
+                session_id: Some(session_id),
+                ..
+            }
+            | CoreRequest::HumanShellRunCancel {
+                session_id: Some(session_id),
+                ..
+            }
             | CoreRequest::TurnCancel { session_id, .. }
             | CoreRequest::TurnSteer { session_id, .. }
             | CoreRequest::SessionControlGet { session_id }
@@ -3186,6 +3209,10 @@ impl CoreDaemon {
                     CoreRequest::SessionPromptSubmit {
                         session_id, text, ..
                     } => (session_id.clone(), text.clone()),
+                    CoreRequest::ShellPromotionStage {
+                        session_id,
+                        promotion,
+                    } => (session_id.clone(), promotion.projection.clone()),
                     CoreRequest::TurnSteer {
                         session_id, text, ..
                     } => (session_id.clone(), text.clone()),
@@ -3631,6 +3658,32 @@ impl CoreDaemon {
                 AppError::Other(anyhow::anyhow!("interactive request task failed: {error}"))
             })?;
         }
+        if Self::is_human_shell_run_request(&request.payload) {
+            let protocol = self.human_shell_runs.clone();
+            let workspaces = self.workspaces.clone();
+            let sessions = self.sessions.clone();
+            let human_shell_enabled = self.human_shell_enabled;
+            let authority = authority.clone();
+            let audit =
+                Self::execution_audit_context(&authority, &authz_decision, &request.payload);
+            let emitter = self.audit_emitter();
+            let join = tokio::spawn(async move {
+                Self::run_human_shell_request(
+                    protocol,
+                    workspaces,
+                    sessions,
+                    human_shell_enabled,
+                    authority,
+                    audit,
+                    emitter,
+                    request,
+                )
+                .await
+            });
+            return join.await.map_err(|error| {
+                AppError::Other(anyhow::anyhow!("human shell request task failed: {error}"))
+            })?;
+        }
         let owned_request_id = request.request_id.clone();
         let payload = request.payload;
         let family = super::daemon_family::DaemonRequestFamily::of(&payload);
@@ -3739,9 +3792,10 @@ impl CoreDaemon {
             super::daemon_family::DaemonRequestFamily::Chat
             | super::daemon_family::DaemonRequestFamily::Team
             | super::daemon_family::DaemonRequestFamily::Interactive
+            | super::daemon_family::DaemonRequestFamily::HumanShell
             | super::daemon_family::DaemonRequestFamily::WorkOrders => {
                 // Unreachable: chat, team, interactive-process, and
-                // work-order envelopes return through their boxed
+                // human-shell, work-order envelopes return through their boxed
                 // pre-router paths above, which preserve their stack and
                 // cancellation semantics. Keep the historical
                 // unimplemented contract as defense in depth.
@@ -3772,6 +3826,146 @@ impl CoreDaemon {
                 | CoreRequest::InteractiveProcessTerminate { .. }
                 | CoreRequest::InteractiveProcessRemove { .. }
         )
+    }
+
+    fn is_human_shell_run_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::HumanShellRunCapabilities
+                | CoreRequest::HumanShellRunCreate { .. }
+                | CoreRequest::HumanShellRunRead { .. }
+                | CoreRequest::HumanShellRunCancel { .. }
+        )
+    }
+
+    async fn run_human_shell_request(
+        protocol: Option<Arc<crate::shell::human_dispatch::HumanShellRunProtocol>>,
+        workspaces: Arc<WorkspaceRegistry>,
+        sessions: Arc<crate::core::session_runtime::SessionRuntimeRegistry>,
+        human_shell_enabled: bool,
+        authority: codegg_core::transport_auth::RequestAuthorityContext,
+        audit: codegg_core::audit_instrumentation::TrustedExecutionAuditContext,
+        emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
+        request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        use crate::protocol::human_shell::{
+            HumanShellRunCapabilitiesDto, HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+        };
+        use codegg_core::team::PrincipalKind;
+        let Some(protocol) = protocol else {
+            return Ok(CoreResponse::Error {
+                code: "human_shell_unavailable".to_owned(),
+                message: "daemon scheduler admission is unavailable".to_owned(),
+            });
+        };
+        let principal = authority.principal();
+        if !matches!(
+            principal.kind(),
+            PrincipalKind::Human | PrincipalKind::LocalOwner
+        ) {
+            return Ok(CoreResponse::Error {
+                code: "human_shell_forbidden".to_owned(),
+                message: "human shell requires a human principal".to_owned(),
+            });
+        }
+        let owner = principal.principal_id().as_str().to_owned();
+        match request.payload {
+            CoreRequest::HumanShellRunCapabilities => {
+                Ok(CoreResponse::HumanShellRunCapabilities {
+                    capabilities: HumanShellRunCapabilitiesDto::current(),
+                })
+            }
+            CoreRequest::HumanShellRunCreate { request } => {
+                if !human_shell_enabled {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_disabled".to_owned(),
+                        message: "human shell execution is disabled by daemon configuration".to_owned(),
+                    });
+                }
+                if request.session_id.is_none() && principal.kind() != PrincipalKind::LocalOwner {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_forbidden".to_owned(),
+                        message: "authenticated human shell requires a bound session".to_owned(),
+                    });
+                }
+                if let Some(session_id) = request.session_id.as_deref() {
+                    let Some(runtime) = sessions.get(session_id) else {
+                        return Ok(CoreResponse::Error {
+                            code: "human_shell_invalid_session".to_owned(),
+                            message: "shell session is unavailable".to_owned(),
+                        });
+                    };
+                    if runtime.workspace_id.as_str() != request.workspace_id {
+                        return Ok(CoreResponse::Error {
+                            code: "human_shell_invalid_session".to_owned(),
+                            message: "shell session is not bound to the requested workspace".to_owned(),
+                        });
+                    }
+                }
+                let workspace_id = match codegg_core::workspace::WorkspaceId::parse(&request.workspace_id) {
+                    Ok(id) => id,
+                    Err(_) => return Ok(CoreResponse::Error {
+                        code: "human_shell_invalid_workspace".to_owned(),
+                        message: "workspace is unavailable".to_owned(),
+                    }),
+                };
+                let Some(workspace) = workspaces.resolve(&workspace_id).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_invalid_workspace".to_owned(),
+                        message: "workspace is unavailable".to_owned(),
+                    });
+                };
+                if workspace.is_archived() {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_invalid_workspace".to_owned(),
+                        message: "workspace is archived".to_owned(),
+                    });
+                }
+                let context = codegg_core::workspace::ExecutionContext::new(
+                    workspace,
+                    request.session_id.clone(),
+                    tokio_util::sync::CancellationToken::new(),
+                );
+                let response = protocol.create(&owner, &request, context).await;
+                if let CoreResponse::HumanShellRunCreated { snapshot, .. } = &response {
+                    let digest = codegg_core::audit_instrumentation::structural_digest(
+                        request.command.as_bytes(),
+                    );
+                    crate::live_execution_audit::emit_command_execute(
+                        &emitter,
+                        &audit,
+                        &digest,
+                        "human_shell",
+                        crate::live_execution_audit::OUTCOME_SUCCESS,
+                        &format!("{}:success", snapshot.run_id),
+                    )
+                    .await;
+                }
+                Ok(response)
+            }
+            CoreRequest::HumanShellRunRead { session_id, run_id, from_cursor, max_bytes } => {
+                if principal.kind() != PrincipalKind::LocalOwner && session_id.is_none() {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_forbidden".to_owned(),
+                        message: "authenticated human shell requires a bound session".to_owned(),
+                    });
+                }
+                Ok(protocol.read(&owner, session_id.as_deref(), &run_id, from_cursor, max_bytes))
+            }
+            CoreRequest::HumanShellRunCancel { session_id, run_id } => {
+                if principal.kind() != PrincipalKind::LocalOwner && session_id.is_none() {
+                    return Ok(CoreResponse::Error {
+                        code: "human_shell_forbidden".to_owned(),
+                        message: "authenticated human shell requires a bound session".to_owned(),
+                    });
+                }
+                Ok(protocol.cancel(&owner, session_id.as_deref(), &run_id))
+            }
+            _ => Ok(CoreResponse::Error {
+                code: "human_shell_invalid_request".to_owned(),
+                message: format!("unsupported human shell operation (protocol {HUMAN_SHELL_RUN_PROTOCOL_VERSION})"),
+            }),
+        }
     }
 
     /// Interactive Process Sessions M002: dispatch one attach/resume
@@ -4261,6 +4455,181 @@ mod tests {
     async fn test_daemon() -> CoreDaemon {
         let pool = in_memory_pool().await;
         CoreDaemon::new(Some(pool), None, None)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn human_shell_dispatch_uses_registered_daemon_workspace() {
+        let daemon = test_daemon().await;
+        let workspace_root = tempfile::tempdir().unwrap();
+        let workspace = daemon
+            .workspaces
+            .get_or_register(workspace_root.path())
+            .await
+            .expect("register daemon workspace");
+        let response = daemon
+            .handle_request(crate::core::new_request(
+                "human-shell-create".into(),
+                CoreRequest::HumanShellRunCreate {
+                    request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                        protocol_version:
+                            crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                        idempotency_key: "daemon-workspace-test".into(),
+                        workspace_id: workspace.id.as_str().to_owned(),
+                        session_id: None,
+                        cwd_relative: None,
+                        command: "pwd; printf daemon-workspace-marker".into(),
+                        timeout_secs: 10,
+                    },
+                },
+            ))
+            .await
+            .expect("dispatch human shell create");
+        let CoreResponse::HumanShellRunCreated { snapshot, .. } = response else {
+            panic!("expected human shell run create response: {response:?}");
+        };
+
+        let mut output = Vec::new();
+        for _ in 0..100 {
+            let response = daemon
+                .handle_request(crate::core::new_request(
+                    "human-shell-read".into(),
+                    CoreRequest::HumanShellRunRead {
+                        session_id: None,
+                        run_id: snapshot.run_id.clone(),
+                        from_cursor: 0,
+                        max_bytes: None,
+                    },
+                ))
+                .await
+                .expect("read human shell output");
+            let CoreResponse::HumanShellRunRead {
+                snapshot: latest,
+                outputs,
+                ..
+            } = response
+            else {
+                panic!("expected human shell read response: {response:?}");
+            };
+            for chunk in outputs {
+                output.extend_from_slice(&chunk.bytes);
+            }
+            if latest.status == crate::protocol::human_shell::HumanShellRunStatusDto::Exited {
+                let output = String::from_utf8_lossy(&output);
+                assert!(output.contains(&workspace_root.path().display().to_string()));
+                assert!(output.contains("daemon-workspace-marker"));
+
+                let unknown_workspace = daemon
+                    .handle_request(crate::core::new_request(
+                        "human-shell-unknown-workspace".into(),
+                        CoreRequest::HumanShellRunCreate {
+                            request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                                protocol_version:
+                                    crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                                idempotency_key: "unknown-workspace".into(),
+                                workspace_id: "unknown-workspace".into(),
+                                session_id: None,
+                                cwd_relative: None,
+                                command: "printf must-not-run".into(),
+                                timeout_secs: 10,
+                            },
+                        },
+                    ))
+                    .await
+                    .expect("dispatch unknown workspace request");
+                assert!(matches!(
+                    unknown_workspace,
+                    CoreResponse::Error { code, .. } if code == "human_shell_invalid_workspace"
+                ));
+
+                let unbound_session = daemon
+                    .handle_request(crate::core::new_request(
+                        "human-shell-unbound-session".into(),
+                        CoreRequest::HumanShellRunCreate {
+                            request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                                protocol_version:
+                                    crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                                idempotency_key: "unbound-session".into(),
+                                workspace_id: workspace.id.as_str().to_owned(),
+                                session_id: Some("unknown-session".into()),
+                                cwd_relative: None,
+                                command: "printf must-not-run".into(),
+                                timeout_secs: 10,
+                            },
+                        },
+                    ))
+                    .await
+                    .expect("dispatch unbound session request");
+                assert!(matches!(
+                    unbound_session,
+                    CoreResponse::Error { code, .. } if code == "human_shell_invalid_session"
+                ));
+
+                daemon
+                    .workspaces
+                    .archive(&workspace.id)
+                    .await
+                    .expect("archive daemon workspace");
+                let archived_workspace = daemon
+                    .handle_request(crate::core::new_request(
+                        "human-shell-archived-workspace".into(),
+                        CoreRequest::HumanShellRunCreate {
+                            request: crate::protocol::human_shell::HumanShellRunCreateDto {
+                                protocol_version:
+                                    crate::protocol::human_shell::HUMAN_SHELL_RUN_PROTOCOL_VERSION,
+                                idempotency_key: "archived-workspace".into(),
+                                workspace_id: workspace.id.as_str().to_owned(),
+                                session_id: None,
+                                cwd_relative: None,
+                                command: "printf must-not-run".into(),
+                                timeout_secs: 10,
+                            },
+                        },
+                    ))
+                    .await
+                    .expect("dispatch archived workspace request");
+                assert!(matches!(
+                    archived_workspace,
+                    CoreResponse::Error { code, .. } if code == "human_shell_invalid_workspace"
+                ));
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("daemon-owned shell run did not exit");
+    }
+
+    #[tokio::test]
+    async fn non_human_transport_cannot_negotiate_or_create_human_shell() {
+        let daemon = test_daemon().await;
+        let client_id = "non-human-client";
+        daemon.clients.register_with_principal(
+            client_id.to_owned(),
+            "non-human test client".to_owned(),
+            None,
+            codegg_core::transport_auth::AuthenticatedPrincipal::reconstructed(
+                codegg_core::identity::PrincipalId::parse("test-service-account")
+                    .expect("valid test principal id"),
+                codegg_core::team::PrincipalKind::ServiceAccount,
+                codegg_core::transport_auth::AuthMethod::PersonalToken,
+                codegg_core::transport_auth::TransportClass::AuthenticatedRemote,
+                client_id,
+            ),
+        );
+        let response = daemon
+            .handle_request_for_client(
+                crate::core::new_request(
+                    "human-shell-capabilities-foreign".into(),
+                    CoreRequest::HumanShellRunCapabilities,
+                ),
+                client_id,
+            )
+            .await
+            .expect("dispatch capabilities request");
+        assert!(
+            matches!(response, CoreResponse::Error { .. }),
+            "non-human transport unexpectedly received shell capabilities: {response:?}"
+        );
     }
 
     async fn seed_test_context(daemon: &CoreDaemon, root: &std::path::Path) -> (String, String) {
@@ -5383,6 +5752,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                shell_promotion_ids: Vec::new(),
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();
@@ -5445,6 +5815,73 @@ mod tests {
             other => panic!("expected Session, got {:?}", other),
         };
         (workspace_dir, session_id)
+    }
+
+    #[tokio::test]
+    async fn human_shell_promotion_stage_is_idempotent_and_recovers_after_daemon_rebuild() {
+        let daemon = test_daemon().await;
+        let (_workspace, session_id) = prompt_submit_session(&daemon).await;
+        let stage = crate::protocol::human_shell::HumanShellPromotionStageDto {
+            promotion_id: "shell-promotion-recovery-1".into(),
+            source_command_id: "42".into(),
+            projection: "safe evidence Authorization: Bearer shell-stage-secret-1234567890".into(),
+            source_exit_code: Some(1),
+            source_truncated: false,
+        };
+        let request = || {
+            crate::core::new_request(
+                "shell-stage-retry".into(),
+                CoreRequest::ShellPromotionStage {
+                    session_id: session_id.clone(),
+                    promotion: stage.clone(),
+                },
+            )
+        };
+        let first = daemon.handle_request(request()).await.unwrap();
+        assert!(matches!(
+            first,
+            CoreResponse::ShellPromotionStaged {
+                outcome: crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Staged,
+                ..
+            }
+        ));
+        let duplicate = daemon.handle_request(request()).await.unwrap();
+        assert!(matches!(
+            duplicate,
+            CoreResponse::ShellPromotionStaged {
+                outcome:
+                    crate::protocol::human_shell::HumanShellPromotionStageOutcomeDto::Duplicate,
+                ..
+            }
+        ));
+
+        // A fresh daemon facade over the same authoritative database models a
+        // TUI/daemon reconnect; the pending projection remains recoverable.
+        let reconnected = CoreDaemon::new(daemon.pool.clone(), None, None);
+        let recovered = reconnected
+            .handle_request(crate::core::new_request(
+                "shell-stage-list".into(),
+                CoreRequest::ShellPromotionList {
+                    session_id: session_id.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::ShellPromotionList { promotions } = recovered else {
+            panic!("expected promotion list after reconnect, got {recovered:?}");
+        };
+        assert_eq!(promotions.len(), 1);
+        assert_eq!(promotions[0].promotion_id, stage.promotion_id);
+        let projection = promotions[0]
+            .projection
+            .as_deref()
+            .expect("pending payload");
+        assert!(projection.contains("[REDACTED:bearer-token]"));
+        assert!(!projection.contains("shell-stage-secret-1234567890"));
+        assert_eq!(
+            promotions[0].state,
+            crate::protocol::human_shell::HumanShellPromotionStateDto::Pending
+        );
     }
 
     /// M004: seed one healthy `openai` connection plus a `gpt-4o`
@@ -5538,6 +5975,8 @@ mod tests {
                         session_id: session_id.clone(),
                         text,
                         plan_mode: false,
+                        shell_promotion_ids: Vec::new(),
+                        shell_promotion: None,
                     },
                 ))
                 .await
@@ -5560,6 +5999,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5586,6 +6027,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5626,6 +6069,8 @@ mod tests {
                     session_id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5672,6 +6117,8 @@ mod tests {
                     session_id: session.id,
                     text: "hello".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5699,6 +6146,8 @@ mod tests {
                     session_id: session_id.clone(),
                     text: "hello from prompt submit".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -5758,6 +6207,8 @@ mod tests {
                     session_id,
                     text: "duplicate".into(),
                     plan_mode: false,
+                    shell_promotion_ids: Vec::new(),
+                    shell_promotion: None,
                 },
             ))
             .await
@@ -6140,6 +6591,7 @@ mod tests {
                 current_agent_idx: 0,
                 messages: vec![],
                 reasoning: None,
+                shell_promotion_ids: Vec::new(),
             },
         );
         let resp = daemon.handle_request(req).await.unwrap();

@@ -26,3 +26,9 @@ are distinct targets. Real-server tests require separately installed servers
 and are excluded from default workspace sweeps; follow the exact feature
 guidance in `AGENTS.md`. Keep navigation and diagnostics read-only unless a
 separately planned edit contract authorizes mutation.
+
+The TUI editor consumes the daemon-owned read surface through the native
+`CoreClient`. Diagnostics pulls are bounded and distinguish a missing snapshot
+from an empty published set. Definition/reference paths are workspace-relative
+and must be matched against the active bounded file tree before opening; do not
+turn an LSP URI or basename directly into a filesystem path.

@@ -338,6 +338,19 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::ViaSession,
             Some(Capability::AgentInvoke),
         ),
+        R::ShellPromotionCapabilities => {
+            OperationDescriptor::new("shell_promotion_capabilities", ScopeKind::Opaque, None)
+        }
+        R::ShellPromotionStage { .. } => OperationDescriptor::new(
+            "shell_promotion_stage",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::ShellPromotionList { .. } => OperationDescriptor::new(
+            "shell_promotion_list",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         R::TurnCancel { .. } => OperationDescriptor::new(
             "turn_cancel",
             ScopeKind::ViaSession,
@@ -844,6 +857,24 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::InteractiveProcessRemove { .. } => {
             OperationDescriptor::new("interactive_process_remove", ScopeKind::Global, None)
         }
+        R::HumanShellRunCapabilities => {
+            OperationDescriptor::new("human_shell_run_capabilities", ScopeKind::Global, None)
+        }
+        R::HumanShellRunCreate { .. } => OperationDescriptor::new(
+            "human_shell_run_create",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellRunRead { .. } => OperationDescriptor::new(
+            "human_shell_run_read",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::HumanShellRunCancel { .. } => OperationDescriptor::new(
+            "human_shell_run_cancel",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
         // ── Presence and Observation M001: Project-Scoped Presence Leases ──
         //
         // Heartbeat writes only the caller's own contribution (principal
@@ -1441,11 +1472,28 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             current_agent_idx: 0,
             messages: Vec::new(),
             reasoning: None,
+            shell_promotion_ids: Vec::new(),
         },
         R::SessionPromptSubmit {
             session_id: String::new(),
             text: String::new(),
             plan_mode: false,
+            shell_promotion_ids: Vec::new(),
+            shell_promotion: None,
+        },
+        R::ShellPromotionCapabilities,
+        R::ShellPromotionStage {
+            session_id: String::new(),
+            promotion: codegg_protocol::human_shell::HumanShellPromotionStageDto {
+                promotion_id: String::new(),
+                source_command_id: String::new(),
+                projection: String::new(),
+                source_exit_code: None,
+                source_truncated: false,
+            },
+        },
+        R::ShellPromotionList {
+            session_id: String::new(),
         },
         R::TurnCancel {
             session_id: String::new(),

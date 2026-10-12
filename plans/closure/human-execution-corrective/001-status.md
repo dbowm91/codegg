@@ -103,3 +103,11 @@ Corrective implementation plan required. Keep C001 active until the authoritativ
 ## 12. Registry updates
 
 Register the C001 corrective implementation plan, retain C001 as active/corrective, leave C002 blocked, and mark independent C003 closed. Do not claim that the C002 dependency has been discharged.
+
+## 13. Additive corrective disposition (2026-10-11)
+
+The outstanding durable-staging finding is resolved by C004 at
+`plans/closure/human-execution-corrective/004-status.md`. C001's accepted
+context/provenance contract is now complete, so C001 is closed and C002 is
+eligible. Sections above preserve the original C001 closure-time findings as
+historical evidence.

@@ -46,10 +46,15 @@ capabilities as available unless a separate implementation lands.
 
 1. User types `!cargo test` in the prompt
 2. `classify_prompt_submission()` detects the `!` prefix, returns `PromptSubmissionKind::HumanShell { command: "cargo test", promote_after: false }`
-3. TUI dispatches `TuiCommand::RunHumanShell`
-4. `ShellRuntime::spawn()` creates a child process via `$SHELL -lc "cargo test"`
-5. stdout/stderr chunks stream as `ShellEvent::Stdout`/`ShellEvent::Stderr`
-6. `ShellOutputStore` captures output in `BoundedOutput` (head 256KB + tail 256KB)
+3. TUI dispatches `TuiCommand::RunHumanShell` and negotiates the versioned
+   `HumanShellRun` capability through `CoreClient`.
+4. The daemon verifies the human/local-owner authority and resolves the
+   registered workspace into its immutable execution context.
+5. The daemon's `HumanShellRunProtocol` acquires the shared scheduler process
+   permit and starts `$SHELL -lc "cargo test"` through `ShellRuntime` and
+   `ManagedProcessService`, using the daemon owner's filtered environment.
+6. The TUI reads bounded sequence cursors and maps stdout/stderr into
+   `ShellEvent`s; `ShellOutputStore` retains its existing head/tail projection.
 7. `ShellCell` renders in the message timeline with status, elapsed, exit code
 8. `/shell-list` displays the last 10 commands as `[id] <status> $ command`,
    where `<status>` is `done exit=N X.Xs`, `running X.Xs`, `timeout Xs`,
@@ -57,6 +62,12 @@ capabilities as available unless a separate implementation lands.
    been promoted (`src/tui/commands/shell.rs:567-574`)
 9. `!` output is NOT added to model context. Explicit promotions use the shared
    redactor, are capped at 32 KiB, and are sent only with a user-submitted turn.
+
+The connected daemon is the execution owner for local, standalone, and
+remote-attached TUI topologies. The TUI never falls back to a local spawn when
+the daemon does not recognize the workspace. Run handles are process-local and
+ephemeral; reconnect can resume a live daemon run, while daemon shutdown kills
+live handles and daemon restart reports them unavailable.
 
 ## Promotion Model
 
@@ -211,17 +222,16 @@ stands: `BoundedOutput` retains 512 KiB of head+tail, not the full 1 MB
 budget; the middle is dropped and counted in `omitted_bytes`, and eviction
 is oldest-first via `VecDeque::pop_front` (`src/shell/store.rs:253-255`).
 
-Re-verified 2026-10-10 against the human execution corrective work: the TUI
-now reads `enabled`, `default_timeout_secs`, `auto_promote_bangbang`, and
-`ansi` during construction and config reload. `!!` stages only after a
-successful, redacted projection; an accepted turn submit marks it promoted.
-Promotion requires a bound non-observer session; shell-cell command and output
-previews are excluded from provider context.
-`/shell-ask` uses `SessionPromptSubmit` only when a session is bound. Remote
-queue acceptance is explicitly not represented as session acceptance.
-Human-shell promotion always applies the shared redactor and a 32 KiB bound;
-the general projection `redact_model_visible_output = "off"` setting cannot
-disable it. A pending staged message currently lives in the active TUI until
-the next accepted turn. WebSocket TUI transport places approved evidence in
-an empty composer because it has no separate staged-context request; it
-preserves existing draft text and does not treat queue delivery as acceptance.
+Re-verified 2026-10-11 against human-shell corrective C004: the TUI reads
+`enabled`, `default_timeout_secs`, `auto_promote_bangbang`, and `ansi` during
+construction and config reload. A typed daemon acknowledgement establishes
+staged state. The daemon stores only the bounded redacted projection, bound to
+the authenticated principal, session, project, and workspace. It expires after
+one hour, recovers after reconnect, and is consumed once by an accepted turn;
+rejected admission leaves it pending. Promotion requires a bound non-observer
+session; shell-cell command and output previews are excluded from provider
+context. `/shell-ask` stages and submits through one idempotent
+`SessionPromptSubmit` operation. Human-shell promotion always applies the
+shared redactor and a 32 KiB bound; the general projection
+`redact_model_visible_output = "off"` setting cannot disable it. WebSocket
+composer insertion is an unsubmitted draft and carries no staged status.

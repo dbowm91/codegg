@@ -45,6 +45,9 @@ impl ShellPromotionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellEnvPolicy {
     Inherit,
+    /// Inherit a small shell-useful set from the process owner, excluding
+    /// credentials, loader injection, and command-bearing Git variables.
+    InheritHumanOwner,
     Clean,
 }
 
@@ -76,6 +79,9 @@ pub enum ShellEvent {
     Stderr {
         id: ShellCommandId,
         bytes: Vec<u8>,
+    },
+    OutputTruncated {
+        id: ShellCommandId,
     },
     Exited {
         id: ShellCommandId,

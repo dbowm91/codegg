@@ -1,8 +1,8 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: blocked (handoff after C001 accepted context/provenance contract)
+Status: implemented
 
-Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b`
+Repository baseline: `eb960763da34e6992682d4173381c272939619d2`
 
 Source roadmap: `plans/subsystems/human-execution-corrective-roadmap.md#c002--workspace-owned-finite-shell-dispatch`.
 
@@ -16,13 +16,45 @@ Primary class: infrastructure/capability.
 
 Run finite human `!` commands on the authoritative execution node of the selected workspace, never accidentally on the machine hosting a remote TUI, while retaining no-agent semantics, explicit human authorization, finite process cancellation and bounded output. Integrate C001's trusted session/context-promotion contract unchanged.
 
-## 2. Why this milestone is blocked but implementable after C001
+## 2. Dependency disposition
 
-Process management, daemon `CoreClient`, workspace execution context, scheduler admission and bounded interactive process wire patterns are available. However, moving raw command execution must not create a competing model-context store/projection identity before C001 settles that ownership. C001 is a strict hard dependency; once closed, no outside code is required for daemon-local execution. New remote-execution fabric is not part of the milestone.
+C001 is closed at `plans/closure/human-execution-corrective/001-status.md`, with its accepted staging/reconnect contract completed by C004 at `plans/closure/human-execution-corrective/004-status.md`. The hard dependency is satisfied. Process management, daemon `CoreClient`, workspace execution context, scheduler admission and bounded interactive process wire patterns are present. New remote-execution fabric is not part of this milestone.
 
 ## 3. Current implementation evidence and earlier test gap
 
 `src/tui/app/prompt_turn.rs` resolves a composer workspace root then emits `TuiCommand::RunHumanShell`. `src/tui/commands/shell.rs::spawn_human_shell` instantiates `ShellRuntime::new()` in the frontend, and `src/shell/runtime.rs` uses `ManagedProcessService::run_streaming` there for `$SHELL -lc`. On remote frontend/daemon topologies, the selected path can refer to a different machine and the inherited `SHELL`/environment comes from the client. By contrast, `/terminal-*` calls `CoreRequest::InteractiveProcess*` on the daemon. Prior human shell tests exercised a local process and checked cwd/output, not an independent daemon/client identity.
+
+### Work package A — topology and support matrix
+
+The accepted operation remains daemon-local. `InteractiveProcessCreate` resolves a registered `WorkspaceId` through the daemon `WorkspaceRegistry` and builds `ExecutionContext` from the registered record; the frontend supplies only the workspace locator. PTY create then enters the daemon-owned interactive protocol and shared admission controller. The TUI's `CoreClient` can target the in-process standalone core or the user-scoped daemon; a remote-attached TUI still sends requests to that daemon. There is no execution-node federation or remote-workspace forwarding contract in the current protocol.
+
+| Topology | C002 support | Authority and disposition |
+|---|---|---|
+| Local TUI attached to its user-scoped daemon | supported | Daemon resolves registered workspace, host shell and environment; TUI supplies command intent and workspace ID only. |
+| `--standalone` TUI/core | supported | In-process CoreClient routes through the same CoreDaemon handler and process service. |
+| Remote-attached TUI selecting a workspace registered on the connected daemon | supported | Connected daemon is execution owner; client cwd, shell and environment are ignored. |
+| Remote-attached TUI naming a workspace unknown to the connected daemon | refused | No registry record means no execution context; no frontend-local fallback. |
+| Workspace whose execution target is another node | unsupported/refused | No cross-node transport or target ownership contract exists; this plan does not add one. |
+
+### Implemented slice
+
+The additive `HumanShellRun` protocol is capability-gated and daemon-owned.
+The TUI sends only workspace/session identity, command, timeout and an
+idempotency key; the request cannot carry a client shell, cwd, environment,
+principal or execution node. The daemon validates Human/LocalOwner authority,
+session/workspace binding and archived/unknown workspaces, builds the trusted
+`ExecutionContext`, reserves shared process admission, and dispatches through
+`ShellRuntime`/`ManagedProcessService`. Run records are process-local, bounded,
+owner/session-scoped and cancelled on daemon shutdown. The TUI uses bounded
+cursor reads and identifies the daemon workspace in its shell history.
+
+The deterministic qualification uses two principal/workspace contexts and a
+daemon-dispatch fixture. Client cwd/environment are unrepresentable on the
+wire; daemon workspace `pwd` output proves the execution root, while a separate
+environment-policy test proves the allowlist/secret-deny rules. This does not
+claim a live remote host or cross-node execution test.
+
+Transport identity is already bound to CoreDaemon dispatch (`client_id`). The finite shell handler requires a Human or LocalOwner principal, while create/read/cancel also pass the `ViaSession + agent.invoke` authorization gate for authenticated session-bound use; PTY attachment ownership is not reused as authority. Existing `ManagedProcessService` owns finite spawn, process-tree cancellation, timeout and bounded output. `InteractiveProcessService` owns PTY processes. The finite handler acquires the shared `AdmissionController` before process creation and does not route one-shot runs through the PTY service.
 
 ## 4. Invariants
 
@@ -77,9 +109,9 @@ Shell syntax and human output-history semantics remain. New protocol features ar
 
 ## 10. Required tests
 
-- Two-client fixture with frontend cwd/environment intentionally differing from daemon workspace; `pwd`/sentinel prove only authoritative execution-root identity is used. Two workspaces isolate cwd, env, command handles and output under concurrency.
-- Negative: forged workspace/principal, observer, unbound/archived workspace, unknown execution node, oversized command, invalid env, absent protocol capability and remote-only target fail closed.
-- Timeout, output caps, streaming order/lag, process tree cleanup, cancel/late exit, duplicate start ID, connection loss and daemon restart.
+- Two principal/workspace contexts plus daemon dispatch: `pwd`/sentinel prove the registered daemon root; foreign owner/session reads return the same typed `gone` response. Client cwd, environment and execution-node claims cannot be supplied by the wire DTO; the daemon environment allowlist has a focused secret-deny test.
+- Negative: non-human transport, unbound session, unknown workspace, oversized command and unsupported capability fail closed. Archived workspace and remote-only target do not resolve to an executable target in this protocol; cross-node execution remains unsupported.
+- One-second timeout, retained-output cap, concurrent active-run cap, cancellation, idempotent retry/conflicting reuse, daemon shutdown cleanup and permit release. Reconnect reads use the same process-local run id/cursor; restart has no recovered record.
 - C001 regression: `!` never enters model; `!!`/include project only authenticated bounded redacted output in the intended session and survive the relocation.
 - Existing `tests/interactive_terminal_tui.rs` remains passing, proving no effect on PTY owner.
 

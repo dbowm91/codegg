@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static guard: production sandbox policy wiring (M005).
+"""Static guard: production sandbox policy wiring and containment invariants.
 
 M005 makes the resolved SandboxProfile a production execution property.
 This guard ensures the wiring is not silently dropped:
@@ -13,6 +13,9 @@ This guard ensures the wiring is not silently dropped:
    and threads the narrowed profile into the child registry/loop.
 4. Legacy DangerFullAccess is compat-only: no new production construction
    outside src/security/sandbox.rs.
+5. Effective credential denies survive broad roots and writable re-allows,
+   and managed launches use private scoped scratch instead of shared temp/cache
+   grants.
 
 Run:
   python3 scripts/check_sandbox_policy_wiring.py
@@ -95,6 +98,29 @@ def check_backend_registry() -> list[str]:
     errors: list[str] = []
     sandbox_dir = ROOT / "src/security/sandbox"
 
+    # Required constrained commands cannot be routed around the helper when
+    # a capability probe fails. Python uses the same backend registry on macOS
+    # and Linux; portable post-run checks are not an execution boundary.
+    managed_process = ROOT / "src/managed_process.rs"
+    if "DegradedUncontained" in managed_process.read_text():
+        errors.append("managed_process.rs: degraded uncontained launch path is forbidden")
+    bash_process = ROOT / "src/tool/bash/process.rs"
+    if not re.search(r"SandboxExecutionPath::Unavailable\s*\{\s*reason\s*\}[^}]*return Err", bash_process.read_text(), re.DOTALL):
+        errors.append("bash/process.rs: unavailable containment must refuse before launch")
+    python_sandbox = ROOT / "src/python_script/sandbox.rs"
+    python_text = python_sandbox.read_text()
+    if re.search(r"#\[cfg\(target_os\s*=\s*\"linux\"\)\]\s*\{\s*let capability", python_text):
+        errors.append("python_script/sandbox.rs: backend negotiation must not be Linux-only")
+    if "SandboxBackend::Unavailable" not in python_text:
+        errors.append("python_script/sandbox.rs: missing unavailable containment disposition")
+    python_executor = ROOT / "src/python_script/executor.rs"
+    if not re.search(
+        r"sandbox_requirement\s*!=\s*super::types::SandboxRequirement::None"
+        r"[\s\S]{0,180}!matches!\(policy\.enforcement_backend,\s*SandboxBackend::Os",
+        python_executor.read_text(),
+    ):
+        errors.append("python_script/executor.rs: unavailable containment must refuse Python")
+
     registry = sandbox_dir / "backend.rs"
     for pattern, what in [
         (r"pub const BACKENDS:\s*&\[SandboxBackend\]", "backend registry table"),
@@ -124,6 +150,29 @@ def check_backend_registry() -> list[str]:
     )
     if err:
         errors.append(err)
+    policy_text = policy.read_text()
+    if not all(token in policy_text for token in ("fn carve_denied", "read_roots,", "read_dir_roots,", "write_roots: Self::carve_denied")):
+        errors.append("policy.rs: Landlock grants must be carved around denied descendants")
+    if "fn normalized_denies" not in policy_text or "nearest existing canonical parent" not in policy_text:
+        errors.append("policy.rs: absent deny paths must be preserved relative to an existing parent")
+    if not re.search(r"pub fn tool_write_allowances\(\)[\s\S]*?\{\s*Vec::new\(\)", policy_text):
+        errors.append("policy.rs: shared temp and global HOME caches must not be writable grants")
+
+    seatbelt = (sandbox_dir / "seatbelt.rs").read_text()
+    if not re.search(
+        r"for path in &policy\.write_roots[\s\S]*?for path in &policy\.denied_roots",
+        seatbelt,
+    ):
+        errors.append("seatbelt.rs: credential denies must follow writable-root re-allows")
+
+    managed = managed_process.read_text()
+    if not re.search(
+        r"tempdir\(\)[\s\S]{0,900}spec\.write_paths\.push\(scratch_path\.clone\(\)\)[\s\S]{0,300}with_var\(\"TMPDIR\"",
+        managed,
+    ):
+        errors.append("managed_process.rs: constrained launches must receive private scoped TMPDIR")
+    if not re.search(r"validate_denied_paths\(&spec\.deny_paths\)", managed):
+        errors.append("managed_process.rs: hardlinked denied files must fail before launch")
     err = check_contains(
         policy,
         r"pub fn tool_write_allowances\(\)\s*->\s*Vec<PathBuf>",

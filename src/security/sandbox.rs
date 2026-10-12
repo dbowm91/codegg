@@ -242,8 +242,7 @@ pub fn platform_sandbox_capability() -> SandboxCapability {
 ///
 /// `Unconstrained` is only ever reached when no containment was requested
 /// (an explicit `FullHost` profile, or no policy at all). A constrained
-/// request on a host without containment takes the explicitly named
-/// [`SandboxExecutionPath::DegradedUncontained`] path — it never degrades
+/// request on a host without containment is refused — it never degrades
 /// into `Unconstrained`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SandboxExecutionPath {
@@ -251,15 +250,14 @@ pub enum SandboxExecutionPath {
     Unconstrained,
     /// The child helper will enforce the policy before exec.
     Contained { backend: BackendId },
-    /// Containment was requested but this host cannot provide it. The
-    /// command still runs, uncontained, and must be reported to the
-    /// operator and recorded distinctly in the audit/authorization trail.
-    DegradedUncontained { reason: String },
+    /// Containment was requested but this host cannot provide it. The caller
+    /// must refuse to launch the command.
+    Unavailable { reason: String },
 }
 
 impl SandboxExecutionPath {
-    pub fn is_degraded(&self) -> bool {
-        matches!(self, Self::DegradedUncontained { .. })
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable { .. })
     }
 
     pub fn is_contained(&self) -> bool {
@@ -275,8 +273,8 @@ impl SandboxExecutionPath {
             Self::Contained { backend } => {
                 format!("filesystem contained ({backend} helper)")
             }
-            Self::DegradedUncontained { reason } => {
-                format!("filesystem UNCONTAINED (degraded: {reason})")
+            Self::Unavailable { reason } => {
+                format!("filesystem containment unavailable (refused: {reason})")
             }
         }
     }
@@ -293,9 +291,7 @@ pub fn sandbox_execution_path(config: Option<&SandboxConfig>) -> SandboxExecutio
     }
     match platform_sandbox_capability() {
         SandboxCapability::Available { backend } => SandboxExecutionPath::Contained { backend },
-        SandboxCapability::Unavailable { reason } => {
-            SandboxExecutionPath::DegradedUncontained { reason }
-        }
+        SandboxCapability::Unavailable { reason } => SandboxExecutionPath::Unavailable { reason },
     }
 }
 
@@ -440,12 +436,8 @@ impl SandboxConfig {
         let write_roots = roots.clone();
         let mut read_paths = roots;
         read_paths.push(target.clone());
-        // Tool-compatible read allowances: without these a sandboxed command
-        // cannot resolve a hostname, read its own toolchain, or find its
-        // package cache, and every invocation fails. See `policy`. Only
-        // existing paths are kept: the curated sets name locations for both
-        // platforms (`/private/etc` on macOS, `/proc` on Linux), and a rule
-        // naming a missing path is a hard Landlock setup error.
+        // Curated system/runtime and read-only toolchain inputs. Shared user
+        // configuration and cache ancestors are deliberately excluded.
         read_paths.extend(
             policy::tool_read_allowances()
                 .into_iter()
@@ -472,17 +464,21 @@ impl SandboxConfig {
                 .into_iter()
                 .filter(|path| path.exists()),
         );
-        // Operator-declared denies are config strings; the backend's own
-        // sensitive-path set is paths. Both land in one list.
-        //
-        // Canonicalized like the allow sets, and deliberately best-effort: a
-        // deny path that does not exist denies nothing, so dropping it is
-        // correct, whereas an uncanonicalized deny is a rule the backend
-        // cannot match (`/etc/sudoers` vs the resolved `/private/etc/...`).
+        // Operator-declared denies are resolved against the launch cwd and
+        // retained even when absent. Policy normalization resolves the nearest
+        // existing parent so future-created sensitive paths stay excluded.
+        let base = cwd.unwrap_or_else(|| Path::new("."));
         let mut deny_paths: Vec<PathBuf> = self
             .deny_paths
             .iter()
-            .filter_map(|raw| std::fs::canonicalize(raw).ok())
+            .map(|raw| {
+                let path = PathBuf::from(raw);
+                if path.is_absolute() {
+                    path
+                } else {
+                    base.join(path)
+                }
+            })
             .collect();
         deny_paths.extend(policy::sensitive_deny_paths());
         Ok(SandboxLaunchSpec {
@@ -892,7 +888,7 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("directory fixture");
         let access =
-            landlock_access_for_path(directory.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+            landlock_access_for_path(directory.path(), AccessFs::from_read(ABI::V3), ABI::V3)
                 .expect("directory classification");
 
         assert!(access.contains(AccessFs::ReadDir));
@@ -905,7 +901,7 @@ mod tests {
         use ::landlock::{AccessFs, ABI};
 
         let file = tempfile::NamedTempFile::new().expect("file fixture");
-        let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+        let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V3), ABI::V3)
             .expect("regular-file classification");
 
         assert!(!access.contains(AccessFs::ReadDir));
@@ -921,7 +917,7 @@ mod tests {
         if !path.exists() {
             return;
         }
-        let access = landlock_access_for_path(path, AccessFs::from_all(ABI::V1), ABI::V1)
+        let access = landlock_access_for_path(path, AccessFs::from_all(ABI::V3), ABI::V3)
             .expect("special-file classification");
 
         assert!(!access.contains(AccessFs::ReadDir));
@@ -935,7 +931,7 @@ mod tests {
         use ::landlock::{AccessFs, ABI};
 
         let path = Path::new("/definitely/missing/codegg-sandbox-path");
-        let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V1), ABI::V1)
+        let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V3), ABI::V3)
             .expect_err("missing path classification must fail");
 
         assert!(error.contains("classify sandbox path"));
@@ -1147,19 +1143,19 @@ mod tests {
             SandboxCapability::Available { backend } => {
                 assert_eq!(path, SandboxExecutionPath::Contained { backend });
                 assert!(path.is_contained());
-                assert!(!path.is_degraded());
+                assert!(!path.is_unavailable());
             }
             SandboxCapability::Unavailable { reason } => {
                 assert_eq!(
                     path,
-                    SandboxExecutionPath::DegradedUncontained {
+                    SandboxExecutionPath::Unavailable {
                         reason: reason.clone()
                     }
                 );
-                assert!(path.is_degraded());
+                assert!(path.is_unavailable());
                 assert!(!path.is_contained());
                 // The degraded path must name itself and its reason.
-                assert!(path.describe().contains("UNCONTAINED"));
+                assert!(path.describe().contains("unavailable"));
                 assert!(path.describe().contains(&reason));
                 // It must never masquerade as the explicit FullHost path.
                 assert_ne!(path, SandboxExecutionPath::Unconstrained);

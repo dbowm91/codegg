@@ -22,7 +22,8 @@ Enforces the CodeGG-owned boundaries from
      finalizes a bound plan calls ``finalize_closure``.
   5. No code copies the repository-local ``.eggplan`` state root into a
      managed worktree.
-  6. The v68 migration exists and adds the three binding tables.
+  6. The v68 migration exists and adds the three binding tables; the current
+     storage layout remains at or above that migration.
 
 Run:
 
@@ -200,8 +201,9 @@ def main() -> int:
                 f"crates/codegg-core/src/work_plan/repository_binding.rs: missing table {table}"
             )
     storage = read("crates/codegg-core/src/storage/mod.rs")
-    if not re.search(r"STORAGE_LAYOUT_VERSION:\s*u32\s*=\s*68", storage):
-        fail("crates/codegg-core/src/storage/mod.rs: STORAGE_LAYOUT_VERSION must be 68")
+    layout = re.search(r"STORAGE_LAYOUT_VERSION:\s*u32\s*=\s*(\d+)", storage)
+    if layout is None or int(layout.group(1)) < 68:
+        fail("crates/codegg-core/src/storage/mod.rs: STORAGE_LAYOUT_VERSION must be at least 68")
 
     if FAILURES:
         print("repository-binding ownership check failed:")

@@ -1,8 +1,8 @@
 # Python Scripting
 
 First-class Python script execution with AST-first risk analysis, three execution
-modes, OS-level sandbox enforcement (Landlock on Linux), and managed-process
-subprocess management.
+modes, OS-level sandbox enforcement (Landlock on Linux, Seatbelt on macOS), and
+managed-process subprocess management.
 
 ## Purpose
 
@@ -36,8 +36,9 @@ safely. The module is the domain authority for Python execution semantics.
    to string scanning if Python is unavailable or parsing fails.
 2. **Policy resolution**: `resolve_policy()` runs risk analysis, builds a capability
    profile via `PythonCapabilityProfile::from_mode_risk_and_context()`, cross-checks
-   risk against profile for violations, resolves the enforcement backend (Landlock on
-   supported Linux, PortableFallback elsewhere), and produces a `PythonPolicyDecision`.
+   risk against profile for violations, resolves the host backend through the shared
+   sandbox registry (Landlock on supported Linux, Seatbelt on supported macOS), and
+   produces a `PythonPolicyDecision`. An unavailable backend refuses execution.
 3. **Pre-execution check**: Denied capabilities block execution before any child
    process is spawned. Legacy `derive_envelope()` + `check_compatibility()` run for
    backward compatibility.
@@ -49,11 +50,11 @@ safely. The module is the domain authority for Python execution semantics.
    - Minimal environment isolation via `python_environment_policy()` (allows PATH,
      HOME, LANG, LC_ALL, VIRTUAL_ENV, PYTHONPATH, DYLD_LIBRARY_PATH)
    - Cancellation token support
-   - On Linux with Landlock: the parent sends a bounded launch spec to
-     `codegg-sandbox-helper`; the helper applies ABI-aware landlock rules, verifies
-     `FullyEnforced` and `no_new_privs`, then `exec`s Python.
-   - Portable fallback: env clearing + cwd containment + snapshot-based post-hoc
-     change detection.
+   - On supported Linux or macOS: the parent sends a bounded launch spec to
+     `codegg-sandbox-helper`; the helper applies Landlock or Seatbelt, confirms the
+     private status channel, then `exec`s Python.
+   - If no OS backend is available or helper setup fails, Python is not launched.
+     Environment clearing, cwd validation and snapshots remain defense in depth.
 7. **Post-execution snapshot and diff**:
    - Analyze/Verify: any file change is a policy violation → exit code -2
    - Transform: file changes are allowed and reported; textual diff generated
@@ -99,6 +100,12 @@ pub struct PythonScriptRequest {
 
 `workspace_root` provides the authoritative workspace boundary for CWD containment.
 Falls back to process cwd when `None`.
+
+The script source and runtime temp files live in a private collision-resistant
+per-run directory. Under an OS sandbox, that directory is the only generic
+writable scratch root for Analyze/Verify; Transform additionally receives the
+approved workspace write root. Shared `/tmp` and global user cache directories
+are not writable sandbox roots.
 
 ### PythonRiskAssessment (`types.rs:437`)
 
@@ -184,7 +191,8 @@ pub struct PythonPolicyDecision {
 
 ### SandboxBackend (`types.rs:183`)
 
-`Landlock | PortableFallback | None`
+`Os { backend } | Unavailable | PortableFallback | None` (the legacy
+`PortableFallback` value is not selected for constrained execution)
 
 ### SandboxOutcome (`types.rs:205`)
 
@@ -368,8 +376,9 @@ The legacy `PythonCapabilityEnvelope::from_mode_and_risk()` does the same.
 
 ### Sandbox failure is terminal
 
-If the Landlock helper setup fails, the launch is aborted. Python code is NOT
-started after a failed helper setup. `SandboxOutcome::Failed` is recorded.
+If OS containment is unavailable or helper setup fails, the launch is aborted.
+Python code is NOT started without confirmed helper enforcement.
+`SandboxOutcome::Failed` is recorded.
 
 ### Post-execution snapshot enforcement
 

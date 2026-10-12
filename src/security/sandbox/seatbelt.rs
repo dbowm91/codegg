@@ -98,11 +98,6 @@ pub fn sbpl_profile(policy: &BackendPolicy) -> String {
     // writes are what we actually take back below.
     profile.push_str("(allow default)\n");
 
-    for path in &policy.denied_roots {
-        push_subpath(&mut profile, "deny", "file-read*", path);
-        push_subpath(&mut profile, "deny", "file-write*", path);
-    }
-
     if policy.write_roots.is_empty() {
         // ReadOnly: no writes at all, anywhere.
         profile.push_str("(deny file-write*)\n");
@@ -111,6 +106,13 @@ pub fn sbpl_profile(policy: &BackendPolicy) -> String {
         for path in &policy.write_roots {
             push_subpath(&mut profile, "allow", "file-write*", path);
         }
+    }
+    // Seatbelt's profile evaluation is order-sensitive: emit sensitive
+    // exclusions after every broad deny and writable-root reallow so a
+    // workspace/cache ancestor cannot re-enable credential access.
+    for path in &policy.denied_roots {
+        push_subpath(&mut profile, "deny", "file-read*", path);
+        push_subpath(&mut profile, "deny", "file-write*", path);
     }
     profile
 }
@@ -296,14 +298,18 @@ mod tests {
     }
 
     #[test]
-    fn deny_rules_precede_allow_rules_so_last_rule_wins() {
+    fn credential_denies_follow_writable_reallow_rules() {
         let dir = TempDir::new().expect("workspace fixture");
         let profile = sbpl_profile(&policy(&dir, true));
-        let deny_at = profile.find("(deny file-write*)").expect("deny present");
-        let allow_at = profile.find("(allow file-write*").expect("allow present");
+        let deny_at = profile
+            .rfind("(deny file-write* (subpath")
+            .expect("credential deny present");
+        let allow_at = profile
+            .rfind("(allow file-write*")
+            .expect("write reallow present");
         assert!(
-            deny_at < allow_at,
-            "SBPL is last-rule-wins; re-allows must come after the blanket deny:\n{profile}"
+            deny_at > allow_at,
+            "SBPL is last-rule-wins; credential denies must follow re-allows:\n{profile}"
         );
     }
 

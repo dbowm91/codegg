@@ -232,6 +232,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 70 {
         migrate_and_record(pool, 70).await?;
     }
+    if current_version < 71 {
+        migrate_and_record(pool, 71).await?;
+    }
 
     Ok(())
 }
@@ -314,6 +317,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             68 => migrate_v68(&mut tx).await?,
             69 => migrate_v69(&mut tx).await?,
             70 => migrate_v70(&mut tx).await?,
+            71 => migrate_v71(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2848,6 +2852,44 @@ async fn migrate_v70(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Durable, bounded staging for explicitly promoted human-shell projections.
+/// Raw stdout/stderr remains in its existing execution-local owner.
+async fn migrate_v71(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS human_shell_promotion (
+            promotion_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            source_command_id TEXT NOT NULL,
+            projection TEXT NOT NULL,
+            projection_bytes INTEGER NOT NULL CHECK (projection_bytes BETWEEN 0 AND 32768),
+            source_exit_code INTEGER,
+            source_truncated INTEGER NOT NULL CHECK (source_truncated IN (0, 1)),
+            created_at_ms INTEGER NOT NULL,
+            expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms >= created_at_ms),
+            state TEXT NOT NULL CHECK (state IN ('pending','reserved','consumed','expired')),
+            consumed_turn_id TEXT,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_human_shell_promotion_session_state \
+         ON human_shell_promotion(session_id, state, created_at_ms DESC)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 

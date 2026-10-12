@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(unix)]
 type SandboxStatusWriter = OwnedFd;
@@ -92,6 +94,29 @@ impl EnvironmentPolicy {
         }
     }
 
+    /// Inherit only the execution-owner variables needed for an ordinary
+    /// human shell. Credentials, loader injection, and every `GIT_*` value
+    /// are excluded even if present in the daemon environment.
+    pub fn human_shell() -> Self {
+        let mut inherited = BTreeSet::new();
+        for (name, _) in std::env::vars_os() {
+            let Some(name_text) = name.to_str() else {
+                continue;
+            };
+            if human_shell_env_name_allowed(name_text) {
+                inherited.insert(name);
+            }
+        }
+        Self {
+            inherited,
+            overrides: BTreeMap::new(),
+            denied: codegg_git::ALWAYS_STRIPPED_ENV_VARS
+                .iter()
+                .map(OsString::from)
+                .collect(),
+        }
+    }
+
     /// Add a variable to the inherited allowlist.
     pub fn allow_inherited_var(mut self, name: impl Into<OsString>) -> Self {
         self.inherited.insert(name.into());
@@ -141,6 +166,44 @@ impl EnvironmentPolicy {
             .env("GIT_PAGER", "cat")
             .env("PAGER", "cat");
     }
+}
+
+fn human_shell_env_name_allowed(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let shell_useful = matches!(
+        upper.as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "SHELL"
+            | "TERM"
+            | "COLORTERM"
+            | "LANG"
+            | "TMPDIR"
+            | "TMP"
+            | "TEMP"
+            | "EDITOR"
+            | "VISUAL"
+            | "XDG_CONFIG_HOME"
+            | "XDG_CACHE_HOME"
+            | "XDG_DATA_HOME"
+            | "XDG_STATE_HOME"
+            | "XDG_RUNTIME_DIR"
+    ) || upper.starts_with("LC_");
+    let sensitive = [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "CREDENTIAL",
+        "API_KEY",
+        "AUTH",
+        "COOKIE",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle));
+    let loader = upper.starts_with("LD_") || upper.starts_with("DYLD_");
+    shell_useful && !sensitive && !loader && !upper.starts_with("GIT_")
 }
 
 /// Overflow behavior for a bounded output stream.
@@ -294,14 +357,6 @@ pub enum SandboxRequest {
     #[default]
     Disabled,
     Required(SandboxLaunchSpec),
-    /// Containment was requested but this host cannot provide any. The child
-    /// runs *without* OS filesystem containment instead of failing, and the
-    /// run is recorded as [`SandboxExecutionOutcome::Uncontained`] so a
-    /// reviewer can tell it apart from both a contained run and an explicit
-    /// `FullHost` request. Never use this variant to mean `Disabled`.
-    DegradedUncontained {
-        reason: String,
-    },
 }
 
 impl ProcessProvenance {
@@ -390,12 +445,6 @@ pub enum SandboxExecutionOutcome {
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
-    /// The requested containment was not applied because the host cannot
-    /// provide it. Distinct from `Disabled` (nothing was requested) so the
-    /// audit trail never reads an uncontained run as an unconstrained one.
-    Uncontained {
-        reason: String,
-    },
 }
 
 impl SandboxExecutionOutcome {
@@ -404,18 +453,11 @@ impl SandboxExecutionOutcome {
         matches!(self, Self::Enforced { .. })
     }
 
-    /// True when the caller asked for containment and the host could not
-    /// deliver it.
-    pub fn is_degraded_uncontained(&self) -> bool {
-        matches!(self, Self::Uncontained { .. })
-    }
-
-    /// Audit/authorization token distinguishing contained from uncontained.
+    /// Audit/authorization token distinguishing contained from disabled.
     pub fn audit_token(&self) -> &'static str {
         match self {
             Self::Disabled => "sandbox_disabled",
             Self::Enforced { .. } => "sandbox_enforced",
-            Self::Uncontained { .. } => "sandbox_uncontained_degraded",
         }
     }
 }
@@ -529,7 +571,7 @@ async fn run_inner(
         executable,
         argv,
         cwd,
-        environment_policy,
+        mut environment_policy,
         stdin,
         timeout: process_timeout,
         cancellation,
@@ -556,6 +598,34 @@ async fn run_inner(
     }
     if cancellation.is_cancelled() {
         return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+
+    // Every constrained launch receives a collision-resistant 0700 scratch
+    // directory. It is the only generic writable temporary root exposed to
+    // the target and remains owned by this future until the process tree is
+    // reaped, including timeout and cancellation paths.
+    let mut sandbox_scratch = None;
+    let mut sandbox = sandbox;
+    if let SandboxRequest::Required(spec) = &mut sandbox {
+        crate::security::sandbox::policy::validate_denied_paths(&spec.deny_paths)
+            .map_err(ManagedProcessError::SandboxFailed)?;
+        let scratch = tempfile::Builder::new()
+            .prefix("codegg-run-")
+            .tempdir()
+            .map_err(|error| {
+                ManagedProcessError::SandboxFailed(format!("create private scratch: {error}"))
+            })?;
+        #[cfg(unix)]
+        std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| ManagedProcessError::SandboxFailed(format!("secure private scratch: {error}")),
+        )?;
+        let scratch_path = std::fs::canonicalize(scratch.path()).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!("resolve private scratch: {error}"))
+        })?;
+        spec.read_paths.push(scratch_path.clone());
+        spec.write_paths.push(scratch_path.clone());
+        environment_policy = environment_policy.with_var("TMPDIR", scratch_path.as_os_str());
+        sandbox_scratch = Some(scratch);
     }
 
     let (launch_argv, _sandbox_file, status_reader, status_writer) = prepare_launch_argv(
@@ -671,6 +741,7 @@ async fn run_inner(
         None
     };
     let sandbox = interpret_sandbox_status(sandbox_status.as_deref(), &sandbox)?;
+    drop(sandbox_scratch);
 
     Ok(ManagedProcessResult {
         exit_status,
@@ -702,11 +773,6 @@ fn prepare_launch_argv(
         .collect::<Vec<_>>();
     match sandbox {
         SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
-        // Named degraded path: the caller already reported that this host has
-        // no OS containment. Run the target directly (no helper, no status
-        // pipe) and let `interpret_sandbox_status` record the fact as
-        // `Uncontained`. Nothing here is allowed to look enforced.
-        SandboxRequest::DegradedUncontained { .. } => Ok((full_argv, None, None, None)),
         SandboxRequest::Required(spec) => {
             #[cfg(not(unix))]
             {
@@ -1030,14 +1096,6 @@ fn interpret_sandbox_status(
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }
-    // The degraded path runs without a helper, so there is no status frame.
-    // Record the uncontained fact explicitly rather than reporting the run
-    // as unconstrained.
-    if let SandboxRequest::DegradedUncontained { reason } = sandbox {
-        return Ok(SandboxExecutionOutcome::Uncontained {
-            reason: reason.clone(),
-        });
-    }
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
     })?;
@@ -1072,6 +1130,26 @@ fn interpret_sandbox_status(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn human_shell_environment_name_filter_keeps_shell_basics_and_drops_secrets() {
+        assert!(human_shell_env_name_allowed("PATH"));
+        assert!(human_shell_env_name_allowed("LC_CTYPE"));
+        assert!(human_shell_env_name_allowed("XDG_CONFIG_HOME"));
+        for denied in [
+            "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY",
+            "GIT_DIR",
+            "LD_PRELOAD",
+            "DYLD_INSERT_LIBRARIES",
+            "SSH_AUTH_SOCK",
+        ] {
+            assert!(
+                !human_shell_env_name_allowed(denied),
+                "{denied} must be filtered"
+            );
+        }
+    }
 
     fn request(script: &str) -> ManagedProcessRequest {
         ManagedProcessRequest::new(
@@ -1135,14 +1213,19 @@ mod tests {
 
         let directory = tempfile::tempdir().expect("helper fixture directory");
         let helper = directory.path().join("fake-helper");
-        std::fs::write(&helper, b"#!/bin/sh\nexit 0\n").expect("fake helper");
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\nprintf 'CODEGG_SANDBOX_ENFORCED abi=9\\n' >&2\nexit 0\n",
+        )
+        .expect("fake helper");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
             .expect("fake helper executable permissions");
+        let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
             deny_paths: Vec::new(),
             target: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_string(), "true".to_string()],
+            args: vec!["-c".to_string(), format!("touch {}", marker.display())],
             read_paths: Vec::new(),
             write_paths: Vec::new(),
         });
@@ -1153,63 +1236,46 @@ mod tests {
         assert!(
             matches!(error, ManagedProcessError::SandboxFailed(reason) if reason.contains("status"))
         );
-    }
-
-    #[test]
-    fn degraded_request_runs_uncontained_but_records_the_fact() {
-        let reason = "Landlock is only available on Linux".to_string();
-        let outcome =
-            interpret_sandbox_status(None, &SandboxRequest::DegradedUncontained { reason })
-                .expect("degraded path must not fail closed");
-        assert_eq!(
-            outcome,
-            SandboxExecutionOutcome::Uncontained {
-                reason: "Landlock is only available on Linux".to_string()
-            }
-        );
-        assert!(outcome.is_degraded_uncontained());
-        assert!(!outcome.is_contained());
-        // Never confusable with an unconstrained run or a contained one.
-        assert_ne!(outcome, SandboxExecutionOutcome::Disabled);
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Disabled.audit_token()
-        );
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Enforced {
-                backend: crate::security::sandbox::BackendId::LANDLOCK,
-                abi: Some(1),
-                guarantees: vec![],
-                limits: vec![],
-            }
-            .audit_token()
+        assert!(
+            !marker.exists(),
+            "target must not run without helper status"
         );
     }
 
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn degraded_request_executes_the_target_without_a_helper() {
-        let mut request = request("printf uncontained-ok");
-        request.sandbox = SandboxRequest::DegradedUncontained {
-            reason: "no OS containment on this host".to_string(),
-        };
+    async fn hardlinked_denied_path_fails_before_target_launch() {
+        let directory = tempfile::tempdir().expect("hardlink fixture directory");
+        let denied = directory.path().join("credential");
+        let alias = directory.path().join("workspace-alias");
+        std::fs::write(&denied, "secret").expect("credential fixture");
+        std::fs::hard_link(&denied, &alias).expect("credential hardlink alias");
+        let marker = directory.path().join("target-ran");
+        let mut request = request("true");
+        request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), format!("touch {}", marker.display())],
+            read_paths: vec![directory.path().to_path_buf()],
+            write_paths: vec![directory.path().to_path_buf()],
+            deny_paths: vec![denied],
+        });
 
-        let result = run_inner(request, None, None)
+        let error = run(request)
             .await
-            .expect("degraded path must still execute the command");
-
-        assert_eq!(result.stdout.to_string_lossy(), "uncontained-ok");
-        assert!(result.exit_status.success());
-        assert!(result.sandbox.is_degraded_uncontained());
-        assert!(!result.sandbox.is_contained());
+            .expect_err("path-based policy cannot safely exclude a hardlinked file");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("hardlinked denied file")),
+            "unexpected hardlink policy result: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran despite hardlink preflight refusal"
+        );
     }
 
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
-        // The degraded path is chosen by the caller *before* launch. A
-        // `Required` request that loses containment mid-flight must NOT fall
-        // through to it.
+        // A `Required` request that loses containment mid-flight must fail.
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {
@@ -1279,6 +1345,135 @@ mod tests {
         assert_eq!(
             result.stderr.to_string_lossy(),
             "CODEGG_SANDBOX_ENFORCED abi=9\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constrained_launch_gets_private_tmpdir_removed_after_reap() {
+        if crate::security::sandbox::probe_landlock().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let command =
+            "printf '%s|%s' \"$TMPDIR\" \"$(stat -c %a \"$TMPDIR\")\"; test -w \"$TMPDIR\"";
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().to_string()]);
+        let mut spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".to_string(), command.to_string()],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        // This test isolates scratch creation and cleanup. Credential deny
+        // fixtures are covered by the sandbox policy/helper tests; avoiding
+        // host-home inspection here keeps the test portable to containers
+        // where HOME points at a directory the runner cannot inspect.
+        spec.deny_paths.clear();
+        let mut request = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), command.into()],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("target debug directory")
+            .join("codegg-sandbox-helper");
+
+        let result = run_inner(request, None, Some(&helper))
+            .await
+            .expect("contained process succeeds");
+        assert!(
+            result.exit_status.success(),
+            "{}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { .. }
+        ));
+        let stdout = result.stdout.to_string_lossy();
+        let (scratch, mode) = stdout.split_once('|').expect("TMPDIR and mode");
+        let scratch_root = Path::new(scratch)
+            .parent()
+            .expect("private scratch has a parent");
+        assert_eq!(
+            std::fs::canonicalize(scratch_root).expect("scratch parent canonicalizes"),
+            std::fs::canonicalize(std::env::temp_dir()).expect("system temp root canonicalizes"),
+            "scratch must be created under the system temporary root: {scratch}"
+        );
+        assert_eq!(mode, "700", "scratch permissions must be private: {stdout}");
+        assert!(
+            !Path::new(scratch).exists(),
+            "private scratch should be removed after the target is reaped"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn constrained_launch_gets_private_tmpdir_removed_after_reap_on_macos() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let command =
+            "printf '%s|%s' \"$TMPDIR\" \"$(stat -f %Lp \"$TMPDIR\")\"; test -w \"$TMPDIR\"";
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().to_string()]);
+        let mut spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".to_string(), command.to_string()],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        // The helper sandbox tests cover credential denials. This lifecycle
+        // probe isolates the managed scratch contract from host-home access.
+        spec.deny_paths.clear();
+        let mut request = ManagedProcessRequest::new(
+            vec!["/bin/sh".into(), "-c".into(), command.into()],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("target debug directory")
+            .join("codegg-sandbox-helper");
+
+        let result = run_inner(request, None, Some(&helper))
+            .await
+            .expect("contained process succeeds");
+        assert!(
+            result.exit_status.success(),
+            "{}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { .. }
+        ));
+        let stdout = result.stdout.to_string_lossy();
+        let (scratch, mode) = stdout.split_once('|').expect("TMPDIR and mode");
+        let scratch_root = Path::new(scratch)
+            .parent()
+            .expect("private scratch has a parent");
+        assert_eq!(
+            std::fs::canonicalize(scratch_root).expect("scratch parent canonicalizes"),
+            std::fs::canonicalize(std::env::temp_dir()).expect("system temp root canonicalizes"),
+            "scratch must be created under the system temporary root: {scratch}"
+        );
+        assert_eq!(mode, "700", "scratch permissions must be private: {stdout}");
+        assert!(
+            !Path::new(scratch).exists(),
+            "private scratch should be removed after the target is reaped"
         );
     }
 

@@ -21,6 +21,13 @@ The TUI routes session, history, task, memory, and worktree actions through
 `CoreClient` so the same logic can run in-process, over stdio, or over a
 socket transport.
 
+Human-shell promotions use the daemon-owned session lifecycle described in
+`architecture/human_shell.md`: stage and list requests are typed, reconnect
+restores pending projection IDs, and a submitted turn carries only those IDs.
+TUI state changes to staged only after daemon acknowledgement. WebSocket prompt
+insertion remains an unsubmitted draft because that transport has no canonical
+staging request.
+
 ### Daemon event stream (socket mode)
 
 `CoreClient::subscribe()` is the TUI's only view of daemon-pushed state. In
@@ -104,6 +111,13 @@ locally. Remote/team transports carrying a team principal receive the
 canonical daemon denial (`authorization_scope_required`) as a bounded picker
 error rather than a silent fallback to local path interpretation; no process
 `cwd` inference is reintroduced.
+
+Human `!` commands follow the same workspace authority boundary. The TUI
+negotiates and creates a versioned `HumanShellRun` through `CoreClient`, then
+projects bounded daemon reads into its existing shell store and cell. The
+connected daemon resolves the registered workspace, owns process admission,
+and supplies the shell environment; a remote-attached TUI never starts the
+command on its own host. Run handles are ephemeral to that daemon process.
 
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
@@ -1145,6 +1159,18 @@ when they are absent. The command performs only a *lexical* path check — no
 filesystem access, no path resolution; containment, `file.read`
 authorization, and symlink policy remain the daemon's decision in
 `DocumentOpen`.
+
+**LSP presentation (M006-C).** Opening, saving, or reloading a document pulls
+the daemon's bounded diagnostics snapshot through `CoreRequest`. A missing or
+unavailable snapshot is shown as pending/unavailable, never as a clean file.
+Severity markers use the line gutter; the status area shows a diagnostic on
+the cursor line. Local edits clear the snapshot until the next save so stale
+markers are not attached to changed text. Visible lines use bounded `syntect`
+syntax highlighting. In normal mode, `Ctrl+]` requests a definition and
+`Ctrl+Shift+]` cycles references. Point results carry workspace-relative paths;
+navigation opens a result only when that exact path is present in the active
+workspace's bounded file tree, through the existing `open_editor` path. The
+renderer performs no LSP or filesystem I/O.
 
 ### Project-scoped file tree (M006-D)
 

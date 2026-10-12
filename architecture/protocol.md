@@ -102,7 +102,7 @@ pub struct EventEnvelope<T> {
 
 ### CoreRequest (`core.rs:1857`)
 
-Tagged enum with 234 variants. Major groups:
+Tagged enum with 238 variants. Major groups:
 
 **Asset Refresh (3)**: `AssetRefresh`, `AssetRefreshStatus`,
 `AssetRefreshCapabilities`
@@ -212,11 +212,20 @@ Groups present in `CoreRequest` but not enumerated above (see
 `InteractiveProcess*` (10), `Presence*` (3), `Chat*` (19), `Team*` (11),
 approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
 `SandboxProfileSet`, `RuntimePolicySet`, `TaskModelPreferenceSet`,
-`ExecutionPolicyGet`), and `WorkOrder*` (22).
+`ExecutionPolicyGet`), `WorkOrder*` (22), and `HumanShellRun*` (4:
+capabilities, create, read, cancel).
+
+The `HumanShellRun*` family is versioned and capability-gated. Create names a
+registered workspace and optional bound session, with bounded command, timeout
+and idempotency key; it carries no client cwd, shell, environment, principal or
+execution-node claim. The daemon resolves workspace authority and owns the
+finite process. Reads use bounded sequence cursors; cancellation and output
+access are scoped to the creating principal and session. Run records and raw
+output remain process-local and ephemeral.
 
 ### CoreResponse (`core.rs:1041`)
 
-Tagged enum with 149 variants. Major groups:
+Tagged enum with 153 variants. Major groups:
 
 **Connection Responses**: `EggpoolConnectionCreated` (shared result shape,
 also aliased as `CreateProviderConnectionResult`),
@@ -570,8 +579,8 @@ Verified 2026-10-10 against `crates/codegg-protocol/src/lib.rs`,
 `core.rs`, `frames.rs`, `tui.rs`, `document.rs`, and `projection/`, plus
 `crates/codegg-core/src/authorization/policy.rs` for the capability split.
 - Confirmed the three wire totals by counting variant declarations, not by
-  estimation: **CoreRequest 234** (211 struct-bodied + 23 unit, `core.rs:1857`
-  through `core.rs:3196`), **CoreResponse 149** (148 struct-bodied plus the
+  estimation: **CoreRequest 238** (215 struct-bodied + 23 unit, `core.rs:1857`
+  through `core.rs:3196`), **CoreResponse 153** (152 struct-bodied plus the
   unit `Ack`, `core.rs:1041` through `core.rs:1822`), **CoreEvent 87**
   (`core.rs:3199` onward), and `TuiMessage` 40 (`tui.rs:19`).
   An earlier review pass reported 110 / 76 for `CoreResponse` / `CoreEvent`;

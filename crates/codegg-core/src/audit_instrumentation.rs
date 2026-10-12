@@ -544,6 +544,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_fork", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
+    ("shell_promotion_stage", "prompt_submit"),
     ("turn_steer", "prompt_submit"),
     ("turn_cancel", "job_cancel"),
     ("agent_select", "agent_delegate"),
@@ -690,6 +691,13 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "connection_list_detail",
     "eggpool_connection_cancel",
     "eggpool_connection_status",
+    // Human shell create emits command_execute at the daemon execution owner
+    // after successful admission; capability/read/cancel carry no separate
+    // audit action and remain process-local observations.
+    "human_shell_run_capabilities",
+    "human_shell_run_create",
+    "human_shell_run_read",
+    "human_shell_run_cancel",
     "job_attempts",
     "job_get",
     "job_list",
@@ -747,6 +755,10 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "session_selection_get",
     "session_selection_list",
     "session_selection_models",
+    // Human-shell capability negotiation and caller-scoped pending-state
+    // recovery are bounded reads. Staging itself is mapped to prompt_submit.
+    "shell_promotion_capabilities",
+    "shell_promotion_list",
     "snapshot_daemon",
     "snapshot_models",
     "snapshot_session",
