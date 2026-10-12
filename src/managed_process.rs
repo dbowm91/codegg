@@ -963,6 +963,10 @@ async fn run_windows_test_restricted_inner(
             format!("prepare daemon-owned ACL journal root: {error}"),
         ))
     })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: daemon journal root ready");
+    }
     let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
     let conflicts = windows_acl_lease::recover_all(&journal_root).map_err(|error| {
         ManagedProcessError::Spawn(std::io::Error::new(
@@ -970,6 +974,10 @@ async fn run_windows_test_restricted_inner(
             format!("recover Windows ACL lease journal: {error}"),
         ))
     })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: existing ACL journals recovered");
+    }
     if !conflicts.is_empty() {
         return Err(ManagedProcessError::SandboxFailed(format!(
             "{} stale Windows ACL lease journal(s) need operator inspection",
@@ -982,6 +990,10 @@ async fn run_windows_test_restricted_inner(
             format!("create restricted AppContainer profile: {error}"),
         ))
     })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: AppContainer profile created");
+    }
     let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
     for (path, access) in roots.into_values() {
         acl_leases.push(
@@ -1002,6 +1014,14 @@ async fn run_windows_test_restricted_inner(
                 ))
             })?,
         );
+        #[cfg(test)]
+        if forensic_populated_deny_roots {
+            eprintln!(
+                "C013 stage: {:?} ACL lease applied to {}",
+                access,
+                path.display()
+            );
+        }
     }
     #[cfg(test)]
     if forensic_populated_deny_roots {
@@ -1028,6 +1048,7 @@ async fn run_windows_test_restricted_inner(
                 .into_iter()
                 .for_each(|snapshot| eprintln!("C013 post-lease object: {snapshot}"));
         }
+        eprintln!("C013 stage: post-lease object snapshots complete");
     }
     let local_app_data = profile.local_app_data_path().map_err(|error| {
         ManagedProcessError::Spawn(std::io::Error::new(
@@ -1042,6 +1063,10 @@ async fn run_windows_test_restricted_inner(
             format!("create AppContainer temporary directory: {error}"),
         ))
     })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: AppContainer temp directory ready");
+    }
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
     let mut environment_block =
@@ -1060,6 +1085,10 @@ async fn run_windows_test_restricted_inner(
             format!("launch restricted AppContainer child: {error}"),
         ))
     })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: restricted child created");
+    }
     let job_verified = child.job_established();
     if !job_verified {
         let _ = child.terminate(1);
