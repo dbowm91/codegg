@@ -21,6 +21,7 @@ on:
       - 'crates/egggit/src/**'
       - 'tests/windows_process_launcher.rs'
       - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_projection_feasibility.rs'
       - 'tests/windows_acl_lease.rs'
       - 'tests/windows_sandbox_adversarial.rs'
       - 'research/windows-native-sandbox/**'
@@ -110,6 +111,11 @@ jobs:
           "Version: $($os.Version)"
           "Build: $($os.BuildNumber)"
           rustc --version --verbose
+
+      - name: C014 projection tool smoke and host-denial proof
+        env:
+          CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c014-daemon
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_projection_feasibility -- --nocapture --test-threads=1
 
       - name: Windows managed process launcher tests
         run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
