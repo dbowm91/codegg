@@ -723,3 +723,116 @@ async fn a_box_with_no_panel_refuses_the_gesture_instead_of_guessing() {
         "a box with no panel must not move anything"
     );
 }
+
+// ── Single-step selection: the manager loads the panel ───────────────
+
+/// Picking an empty hosted panel from the manager fills it in one step.
+///
+/// Before the single-step loader, `Shift+S` + `Enter` on an empty panel
+/// landed on a placeholder that refused focus — the panel "did not work"
+/// while Chat/Help (bespoke, always live) did. Now the selection opens
+/// the panel's box through the same seam as its `/` command and docks it.
+#[tokio::test(flavor = "current_thread")]
+async fn selecting_an_empty_sync_panel_materializes_and_focuses_it() {
+    for id in [
+        SidePanelId::Tree,
+        SidePanelId::Context,
+        SidePanelId::Logs,
+        SidePanelId::Review,
+    ] {
+        let mut app = test_app();
+        app.ui_state.sidebar_visible = true;
+        to_normal_mode(&mut app);
+        assert_eq!(
+            app.panel_host.hosted_panel_has_content(id),
+            Some(false),
+            "{id:?} precondition: nothing adopted yet"
+        );
+        choose_by_label(&mut app, id);
+        assert_eq!(app.panel_host.active(), id, "{id:?} must be loaded");
+        assert!(
+            app.panel_host
+                .hosted_panel_has_content(id)
+                .expect("hosted panel"),
+            "{id:?} must hold the box it opened, not a placeholder"
+        );
+        assert!(
+            app.panel_host.is_focused(),
+            "{id:?} must take focus like Chat/Help do"
+        );
+    }
+}
+
+/// Panels with genuinely nothing to show stay on their placeholder.
+///
+/// A plan panel with no pending confirmation and a security panel with no
+/// receipt have no box to open. Selecting them must not invent one, and
+/// must not strand the keyboard: focus stays in the composer.
+#[tokio::test(flavor = "current_thread")]
+async fn panels_with_no_content_keep_their_placeholder_and_the_composer() {
+    for id in [SidePanelId::Plan, SidePanelId::Security] {
+        let mut app = test_app();
+        app.ui_state.sidebar_visible = true;
+        to_normal_mode(&mut app);
+        choose_by_label(&mut app, id);
+        assert_eq!(app.panel_host.active(), id);
+        assert_eq!(
+            app.panel_host.hosted_panel_has_content(id),
+            Some(false),
+            "{id:?} must stay empty rather than invent a box"
+        );
+        assert!(
+            !app.panel_host.is_focused(),
+            "{id:?} must refuse focus so keys stay with the composer"
+        );
+    }
+}
+
+/// A live-loading box stays open instead of docking frozen.
+///
+/// Research opens its browser and *then* fetches the run list. Adopting
+/// the loading spinner would freeze it there (and cancel the fetch), so
+/// the selection leaves the box live and keeps the current panel. `L`
+/// docks it once it has something to show.
+#[tokio::test(flavor = "current_thread")]
+async fn a_live_loading_box_stays_open_instead_of_docking_frozen() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    to_normal_mode(&mut app);
+    let before = app.panel_host.active();
+    choose_by_label(&mut app, SidePanelId::Research);
+    assert!(
+        app.focus_manager.has_dialog(DialogType::ResearchBrowser),
+        "the research box must be open and live"
+    );
+    assert_eq!(
+        app.panel_host.active(),
+        before,
+        "the panel must not switch to a box that has not loaded"
+    );
+    assert_eq!(
+        app.panel_host
+            .hosted_panel_has_content(SidePanelId::Research),
+        Some(false),
+        "nothing is adopted until the user docks the loaded box"
+    );
+}
+
+/// `/tasks` without a project has no box to open, so the panel waits.
+///
+/// `start_tasks_command` falls back to the async schedule list, which
+/// toasts and opens nothing synchronously. The selection must land on
+/// the placeholder (naming the loader) rather than on a stray surface.
+#[tokio::test(flavor = "current_thread")]
+async fn tasks_without_a_project_lands_on_its_placeholder() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    to_normal_mode(&mut app);
+    choose_by_label(&mut app, SidePanelId::Tasks);
+    assert_eq!(app.panel_host.active(), SidePanelId::Tasks);
+    assert_eq!(
+        app.panel_host.hosted_panel_has_content(SidePanelId::Tasks),
+        Some(false)
+    );
+    assert!(!app.panel_host.is_focused());
+}
