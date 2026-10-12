@@ -987,6 +987,16 @@ async fn run_windows_test_restricted_inner(
     #[cfg(test)]
     if forensic_populated_deny_roots {
         for path in spec.deny_paths.iter().take(8) {
+            let child_created_after_lease = path.join("created-after-lease.txt");
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&child_created_after_lease)
+                .and_then(|mut file| {
+                    use std::io::Write;
+                    file.write_all(b"synthetic-c013-created-after-lease")
+                })
+                .map_err(ManagedProcessError::Spawn)?;
             windows_acl_lease::forensic_tree_snapshots(path, 64)
                 .map_err(ManagedProcessError::Spawn)?
                 .into_iter()
@@ -2209,10 +2219,11 @@ $junction = ReadResult $env:C013_JUNCTION
 $hardlink = ReadResult $env:C013_HARDLINK
 $protected = ReadResult $env:C013_PROTECTED
 $ads = ReadResult $env:C013_ADS
+$postLease = ReadResult ([IO.Path]::Combine($env:C013_DENY_ROOT, 'created-after-lease.txt'))
 $newPath = [IO.Path]::Combine($env:C013_DENY_ROOT, 'created-after-launch.txt')
 try { [IO.File]::WriteAllText($newPath, 'synthetic'); $new = 'created' }
 catch { $new = 'creation-denied' }
-[Console]::Out.Write("direct=$direct|junction=$junction|hardlink=$hardlink|protected=$protected|ads=$ads|new=$new")
+[Console]::Out.Write("direct=$direct|junction=$junction|hardlink=$hardlink|protected=$protected|ads=$ads|postLease=$postLease|new=$new")
 "#;
         let args = vec![
             OsString::from("-NoLogo"),
@@ -2269,6 +2280,9 @@ catch { $new = 'creation-denied' }
             observations.contains("protected=leaked") || observations.contains("protected=denied")
         );
         assert!(observations.contains("ads=leaked") || observations.contains("ads=denied"));
+        assert!(
+            observations.contains("postLease=leaked") || observations.contains("postLease=denied")
+        );
         assert!(
             observations.contains("new=created") || observations.contains("new=creation-denied")
         );
