@@ -1,9 +1,8 @@
-//! Journaled ACL leases for runner-owned Windows test directories.
+//! Journaled ACL leases for daemon-owned Windows directories.
 //!
 //! This module is only compiled with `windows-sandbox-test-support`. It is
-//! not a production sandbox backend. Callers must place the journal in a
-//! daemon-owned protected directory before reusing this mechanism in a
-//! production path.
+//! not a production sandbox backend. Its test caller stores journals below
+//! the per-user daemon root and only leases fresh disposable roots.
 
 #![cfg(all(windows, feature = "windows-sandbox-test-support"))]
 #![allow(unsafe_code)]
@@ -27,7 +26,8 @@ use windows_sys::Win32::Security::Authorization::{
     SET_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
-    GetLengthSid, ACL, DACL_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    GetLengthSid, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -36,7 +36,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 
-const JOURNAL_VERSION: u32 = 1;
+const JOURNAL_VERSION: u32 = 2;
 const MAX_JOURNAL_BYTES: u64 = 256 * 1024;
 const MAX_RUN_ID_BYTES: usize = 256;
 const MAX_SID_BYTES: usize = 68;
@@ -61,6 +61,7 @@ struct JournalRecord {
     run_id: String,
     appcontainer_sid: Vec<u8>,
     canonical_path: PathBuf,
+    owner_sid: Vec<u8>,
     volume_serial: u32,
     file_index: u64,
     original_dacl: Vec<u8>,
@@ -99,7 +100,9 @@ impl WindowsAclLease {
         let appcontainer_sid_bytes =
             unsafe { std::slice::from_raw_parts(appcontainer_sid.cast::<u8>(), sid_len).to_vec() };
         fs::create_dir_all(journal_root)?;
-        let (canonical_path, volume_serial, file_index) = identify_owned_directory(path)?;
+        validate_journal_root(journal_root)?;
+        let (canonical_path, owner_sid, volume_serial, file_index) =
+            identify_owned_directory(path)?;
         let key = path_key(&canonical_path);
         let lock_path = journal_root.join(format!("{key}.lock"));
         let record_path = journal_root.join(format!("{key}.json"));
@@ -125,6 +128,7 @@ impl WindowsAclLease {
             run_id: run_id.to_string(),
             appcontainer_sid: appcontainer_sid_bytes,
             canonical_path: canonical_path.clone(),
+            owner_sid,
             volume_serial,
             file_index,
             original_dacl,
@@ -187,6 +191,7 @@ pub(crate) fn recover_all(journal_root: &Path) -> io::Result<Vec<PathBuf>> {
     if !journal_root.exists() {
         return Ok(Vec::new());
     }
+    validate_journal_root(journal_root)?;
     let mut conflicts = Vec::new();
     for entry in fs::read_dir(journal_root)? {
         let entry = entry?;
@@ -234,7 +239,11 @@ pub(crate) fn dacl_snapshot(path: &Path) -> io::Result<Vec<u8>> {
     get_dacl(path)
 }
 
-fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, u32, u64)> {
+fn validate_journal_root(path: &Path) -> io::Result<()> {
+    identify_owned_directory(path).map(|_| ())
+}
+
+fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, Vec<u8>, u32, u64)> {
     let link_metadata = fs::symlink_metadata(path)?;
     if !link_metadata.is_dir() {
         return Err(io::Error::new(
@@ -271,12 +280,26 @@ fn identify_owned_directory(path: &Path) -> io::Result<(PathBuf, u32, u64)> {
     }
     let file_index =
         (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
-    Ok((canonical, information.dwVolumeSerialNumber, file_index))
+    let owner_sid = owner_sid(&canonical)?;
+    if owner_sid != current_user_sid()? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "ACL lease root is not owned by the current daemon user",
+        ));
+    }
+    Ok((
+        canonical,
+        owner_sid,
+        information.dwVolumeSerialNumber,
+        file_index,
+    ))
 }
 
 fn restore_record(record: &JournalRecord) -> io::Result<()> {
-    let (canonical, volume_serial, file_index) = identify_owned_directory(&record.canonical_path)?;
+    let (canonical, owner_sid, volume_serial, file_index) =
+        identify_owned_directory(&record.canonical_path)?;
     if canonical != record.canonical_path
+        || owner_sid != record.owner_sid
         || volume_serial != record.volume_serial
         || file_index != record.file_index
     {
@@ -296,6 +319,84 @@ fn restore_record(record: &JournalRecord) -> io::Result<()> {
         ));
     }
     set_dacl(&canonical, &record.original_dacl)
+}
+
+fn owner_sid(path: &Path) -> io::Result<Vec<u8>> {
+    let name = wide(path);
+    let mut owner = ptr::null_mut();
+    let mut descriptor = ptr::null_mut();
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    let _descriptor = LocalAllocation(descriptor.cast());
+    sid_bytes(owner, "ACL lease root has no owner SID")
+}
+
+fn current_user_sid() -> io::Result<Vec<u8>> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token as RawHandle) };
+    let mut bytes = 0u32;
+    unsafe {
+        let _ = GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenUser,
+            ptr::null_mut(),
+            0,
+            &mut bytes,
+        );
+    }
+    if bytes < std::mem::size_of::<TOKEN_USER>() as u32 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "current process token user information is invalid",
+        ));
+    }
+    let mut storage = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as _,
+            TokenUser,
+            storage.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
+    sid_bytes(user.User.Sid, "current process token has no user SID")
+}
+
+fn sid_bytes(sid: windows_sys::Win32::Security::PSID, message: &str) -> io::Result<Vec<u8>> {
+    if sid.is_null() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, message));
+    }
+    let length = unsafe { GetLengthSid(sid) } as usize;
+    if length == 0 || length > MAX_SID_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Windows SID length is outside the supported bound",
+        ));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), length) }.to_vec())
 }
 
 fn write_new_record(path: &Path, record: &JournalRecord) -> io::Result<()> {
