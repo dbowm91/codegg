@@ -2,8 +2,8 @@
 //!
 //! Covers the contract that the panel *host* owns: which panel is active,
 //! when it may take keyboard focus, that a focused panel never leaks a key
-//! to the composer, and that the `Ctrl+Alt+W` selector switches panels
-//! without a second owner of the side column's focus state.
+//! to the composer, and that the panel manager switches panels without a
+//! second owner of the side column's focus state.
 //!
 //! These tests use only the public `App` surface (`on_key`, `process_msg`,
 //! public state fields) plus the public `SidePanelHost` accessors, so they
@@ -381,10 +381,10 @@ async fn the_manager_key_toggles_the_box_closed() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn the_manager_key_is_reachable_from_inside_a_focused_panel() {
-    // `Ctrl+Alt+W` is retired, so `Shift+S` is the only spelling of the
-    // manager. A focused panel consumes everything by contract, so if it
-    // also swallowed this key a user standing in a panel would have no way
-    // to reach the switcher for the panel they are standing in.
+    // `Ctrl+Alt+W` is retired, so `Shift+S` is the manager's only *chord*.
+    // A focused panel consumes everything by contract, so if it also
+    // swallowed this key a user standing in a panel would have no chord at
+    // all for the switcher they are standing in.
     let mut app = test_app();
     select_chat(&mut app);
     to_normal(&mut app);

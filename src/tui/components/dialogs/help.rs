@@ -307,6 +307,12 @@ fn searchable_help_rows(vim_mode: bool, active_mode: HelpMode) -> Vec<HelpRow> {
 }
 
 impl Component for HelpDialog {
+    /// Answers the docking gesture itself, under its own mode check — in
+    /// Insert, `Shift+L` is the letter `L` and must reach the filter. The
+    /// host's central gate must therefore leave this dialog alone.
+    fn docks_as_viewer(&self) -> bool {
+        false
+    }
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         use crossterm::event::{KeyCode, KeyModifiers};
 

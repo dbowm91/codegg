@@ -48,6 +48,7 @@
 
 pub mod chat;
 pub mod help;
+pub mod hosted;
 pub mod session;
 pub mod terminal;
 
@@ -61,6 +62,76 @@ use crate::tui::app::TuiMsg;
 use crate::tui::components::sidebar::SidebarWidget;
 use crate::tui::input::InputAction;
 use crate::tui::theme::Theme;
+
+/// Paint `widget` into `buf` at `area`, bridging `Component::render`'s
+/// `&mut Frame` to the host's `&mut Buffer`.
+///
+/// ratatui's `Frame` has no public constructor, so the widget is rendered into
+/// an in-memory backend sized to the column and the result is copied out.
+/// `TestBackend` is used for what it actually is — a `Backend` over a plain
+/// `Buffer` — not as a test harness; nothing here asserts.
+///
+/// This exists so a dockable box can be adopted into the column without
+/// rewriting that box's render path. It is the one place this bridge is
+/// allowed, so a widget that needs real cursor or clipping semantics inside
+/// the column can grow a native `render_into(&mut Buffer, ..)` — as
+/// `HelpDialog` did — and the host can prefer it.
+pub fn render_hosted(
+    widget: &mut dyn crate::tui::components::component::Component,
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Arc<Theme>,
+    title: &str,
+) {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // A scratch terminal, rebuilt each frame. The column is small and the
+    // alternative — caching one per panel — would let ratatui's buffer
+    // diffing retain cells a shrunken widget no longer paints, which is the
+    // one failure mode worse than the allocation.
+    // `TestBackend`'s error type is `Infallible`, so this never fails; `.ok()`
+    // rather than `expect` keeps the render path panic-free without tripping
+    // the irrefutable-let-pattern lint that a direct `let Ok(..) else` hits.
+    let Some(mut terminal) = Terminal::new(TestBackend::new(area.width, area.height)).ok() else {
+        return;
+    };
+    let _ = terminal.draw(|frame| {
+        frame.render_widget(
+            ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title(title.to_string())
+                .border_style(ratatui::style::Style::default().fg(theme.border)),
+            frame.area(),
+        );
+        widget.render(frame, frame.area(), theme);
+    });
+
+    // Copy cell-for-cell. The regions are the same size by construction, so
+    // this is an index-wise copy rather than a merge.
+    let scratch = terminal.backend().buffer();
+    let dst = buf.area.intersection(scratch.area);
+    if dst.is_empty() {
+        return;
+    }
+    let dx = scratch.area.x as i32;
+    let dy = scratch.area.y as i32;
+    for y in dst.y..dst.bottom() {
+        for x in dst.x..dst.right() {
+            let sx = (x as i32 - dx) as u16;
+            let sy = (y as i32 - dy) as u16;
+            let (Some(src_cell), Some(dst_cell)) = (scratch.cell((sx, sy)), buf.cell_mut((x, y)))
+            else {
+                continue;
+            };
+            dst_cell.set_symbol(src_cell.symbol());
+            dst_cell.set_style(src_cell.style());
+        }
+    }
+}
 
 /// Composer badge for the main agent buffer, shown when no panel owns the
 /// keyboard.
@@ -163,15 +234,109 @@ pub enum SidePanelId {
     /// The keybinding reference. Hosts the same [`HelpDialog`] the box does,
     /// so a filter typed here behaves identically to one typed there.
     Help,
+    /// `/tree` — workspace file tree.
+    Tree,
+    /// `/sessions` — session switcher.
+    Sessions,
+    /// `/tasks` — running, waiting and attention-capped project tasks.
+    Tasks,
+    /// `/plan` — the task plan.
+    Plan,
+    /// `/goal` — the active long-running goal.
+    Goal,
+    /// `/collaborators` — project presence.
+    Collaborators,
+    /// `/memory-search` — memory results.
+    Memory,
+    /// `/research-runs` — recent research runs.
+    Research,
+    /// `/logs` — bounded daemon log tail plus notification history.
+    Logs,
+    /// `/context` — context window usage.
+    Context,
+    /// `/cost` — token usage and cost.
+    Cost,
+    /// `/usage` — rate limits and quota.
+    Usage,
+    /// `/stats` — session analytics and cost breakdown.
+    Stats,
+    /// `/doctor` — diagnostics report.
+    Doctor,
+    /// `/shell-list` — recent shell commands.
+    ShellShow,
+    /// `/security-review` — enriched security review findings.
+    Security,
+    /// `/models` — model switcher.
+    Models,
+    /// `/agents` — agent switcher.
+    Agents,
+    /// `/mcps` — MCP server management.
+    Mcp,
+    /// `/keybinds` — keybinding customisation.
+    Keybinds,
+    /// `/themes` — theme picker.
+    Themes,
+    /// `/plugins` — installed and built-in plugins.
+    Plugins,
+    /// `/team` — project team membership.
+    Team,
+    /// `/control` — active-turn controller.
+    Control,
+    /// `/workspace` — global Workspace dashboard.
+    Workspace,
+    /// `/task` — the project Task view (WorkOrders).
+    TaskView,
+    /// `/diff` — diff for a file.
+    Diff,
+    /// `/review` — review changed files.
+    Review,
 }
 
 impl SidePanelId {
     /// Every registered panel, in manager order.
+    ///
+    /// Order is *load-bearing* in two places and neither may drift:
+    /// [`index`](Self::index) is derived from this list (so `↑`/`↓` walking
+    /// and the manager's cursor agree), and `PanelManagerDialog` renders this
+    /// list directly — there is no second registry to keep in sync.
+    ///
+    /// The four bespoke panels lead, then every box that can dock into the
+    /// column. A panel appears here only if it is reachable: either the box
+    /// that fills it exists, or selecting it renders a placeholder that names
+    /// the command to run.
     pub const ALL: &'static [SidePanelId] = &[
         SidePanelId::Session,
         SidePanelId::Chat,
         SidePanelId::Terminal,
         SidePanelId::Help,
+        SidePanelId::Tree,
+        SidePanelId::Sessions,
+        SidePanelId::Tasks,
+        SidePanelId::Plan,
+        SidePanelId::Goal,
+        SidePanelId::Collaborators,
+        SidePanelId::Memory,
+        SidePanelId::Research,
+        SidePanelId::Logs,
+        SidePanelId::Context,
+        SidePanelId::Cost,
+        SidePanelId::Usage,
+        SidePanelId::Stats,
+        SidePanelId::Doctor,
+        SidePanelId::ShellShow,
+        SidePanelId::Security,
+        SidePanelId::Models,
+        SidePanelId::Agents,
+        SidePanelId::Mcp,
+        SidePanelId::Keybinds,
+        SidePanelId::Themes,
+        SidePanelId::Plugins,
+        SidePanelId::Team,
+        SidePanelId::Control,
+        SidePanelId::Workspace,
+        SidePanelId::TaskView,
+        SidePanelId::Diff,
+        SidePanelId::Review,
     ];
 
     /// Short label shown in the title bar and the manager.
@@ -181,6 +346,34 @@ impl SidePanelId {
             SidePanelId::Chat => "Chat",
             SidePanelId::Terminal => "Terminal",
             SidePanelId::Help => "Help",
+            SidePanelId::Tree => "Tree",
+            SidePanelId::Sessions => "Sessions",
+            SidePanelId::Tasks => "Tasks",
+            SidePanelId::Plan => "Plan",
+            SidePanelId::Goal => "Goal",
+            SidePanelId::Collaborators => "Present",
+            SidePanelId::Memory => "Memory",
+            SidePanelId::Research => "Research",
+            SidePanelId::Logs => "Logs",
+            SidePanelId::Context => "Context",
+            SidePanelId::Cost => "Cost",
+            SidePanelId::Usage => "Usage",
+            SidePanelId::Stats => "Stats",
+            SidePanelId::Doctor => "Doctor",
+            SidePanelId::ShellShow => "Shells",
+            SidePanelId::Security => "Security",
+            SidePanelId::Models => "Models",
+            SidePanelId::Agents => "Agents",
+            SidePanelId::Mcp => "MCP",
+            SidePanelId::Keybinds => "Keys",
+            SidePanelId::Themes => "Themes",
+            SidePanelId::Plugins => "Plugins",
+            SidePanelId::Team => "Team",
+            SidePanelId::Control => "Control",
+            SidePanelId::Workspace => "Workspace",
+            SidePanelId::TaskView => "Task View",
+            SidePanelId::Diff => "Diff",
+            SidePanelId::Review => "Review",
         }
     }
 
@@ -196,17 +389,136 @@ impl SidePanelId {
             SidePanelId::Chat => "CHAT",
             SidePanelId::Terminal => "TERMINAL",
             SidePanelId::Help => "HELP",
+            SidePanelId::Tree => "TREE",
+            SidePanelId::Sessions => "SWITCHER",
+            SidePanelId::Tasks => "TASKS",
+            SidePanelId::Plan => "PLAN",
+            SidePanelId::Goal => "GOAL",
+            SidePanelId::Collaborators => "PRESENT",
+            SidePanelId::Memory => "MEMORY",
+            SidePanelId::Research => "RESEARCH",
+            SidePanelId::Logs => "LOGS",
+            SidePanelId::Context => "CONTEXT",
+            SidePanelId::Cost => "COST",
+            SidePanelId::Usage => "USAGE",
+            SidePanelId::Stats => "STATS",
+            SidePanelId::Doctor => "DOCTOR",
+            SidePanelId::ShellShow => "SHELLS",
+            SidePanelId::Security => "SECURITY",
+            SidePanelId::Models => "MODELS",
+            SidePanelId::Agents => "AGENTS",
+            SidePanelId::Mcp => "MCP",
+            SidePanelId::Keybinds => "KEYS",
+            SidePanelId::Themes => "THEMES",
+            SidePanelId::Plugins => "PLUGINS",
+            SidePanelId::Team => "TEAM",
+            SidePanelId::Control => "CONTROL",
+            SidePanelId::Workspace => "WORKSPACE",
+            SidePanelId::TaskView => "ORDERS",
+            SidePanelId::Diff => "DIFF",
+            SidePanelId::Review => "REVIEW",
+        }
+    }
+
+    /// The `/` command whose box fills this panel.
+    ///
+    /// Used by the placeholder a panel shows before anything is docked into
+    /// it. A panel that cannot name its own loader cannot tell the user how to
+    /// make itself useful.
+    pub fn load_command(self) -> &'static str {
+        match self {
+            SidePanelId::Session => "/sidebar",
+            SidePanelId::Chat => "/chat",
+            SidePanelId::Terminal => "/terminal",
+            SidePanelId::Help => "/help",
+            SidePanelId::Tree => "/tree",
+            SidePanelId::Sessions => "/sessions",
+            SidePanelId::Tasks => "/tasks",
+            SidePanelId::Plan => "/plan",
+            SidePanelId::Goal => "/goal",
+            SidePanelId::Collaborators => "/collaborators",
+            SidePanelId::Memory => "/memory-search",
+            SidePanelId::Research => "/research-show",
+            SidePanelId::Logs => "/logs",
+            SidePanelId::Context => "/context",
+            SidePanelId::Cost => "/cost",
+            SidePanelId::Usage => "/usage",
+            SidePanelId::Stats => "/stats",
+            SidePanelId::Doctor => "/doctor",
+            SidePanelId::ShellShow => "/shell-list",
+            SidePanelId::Security => "/security-review-show",
+            SidePanelId::Models => "/models",
+            SidePanelId::Agents => "/agents",
+            SidePanelId::Mcp => "/mcps",
+            SidePanelId::Keybinds => "/keybinds",
+            SidePanelId::Themes => "/themes",
+            SidePanelId::Plugins => "/plugins",
+            SidePanelId::Team => "/team",
+            SidePanelId::Control => "/control",
+            SidePanelId::Workspace => "/workspace",
+            SidePanelId::TaskView => "/task",
+            SidePanelId::Diff => "/diff",
+            SidePanelId::Review => "/review",
+        }
+    }
+
+    /// The stable config spelling of a panel, used for persisted `Ctrl+digit`
+    /// hotkey bindings.
+    ///
+    /// These strings are user-visible: they are written into the user's
+    /// global config and read back on a later run, so they are **not**
+    /// derived from [`label`](Self::label) — rewording a title must not
+    /// orphan an existing binding.
+    ///
+    /// `Session` keeps its original `sessions` spelling, and the `/sessions`
+    /// box panel therefore takes `session_switcher` rather than colliding
+    /// with it.
+    pub fn config_key(self) -> &'static str {
+        match self {
+            SidePanelId::Session => "sessions",
+            SidePanelId::Chat => "chat",
+            SidePanelId::Terminal => "terminal",
+            SidePanelId::Help => "help",
+            SidePanelId::Tree => "tree",
+            SidePanelId::Sessions => "session_switcher",
+            SidePanelId::Tasks => "tasks",
+            SidePanelId::Plan => "plan",
+            SidePanelId::Goal => "goal",
+            SidePanelId::Collaborators => "collaborators",
+            SidePanelId::Memory => "memory",
+            SidePanelId::Research => "research",
+            SidePanelId::Logs => "logs",
+            SidePanelId::Context => "context",
+            SidePanelId::Cost => "cost",
+            SidePanelId::Usage => "usage",
+            SidePanelId::Stats => "stats",
+            SidePanelId::Doctor => "doctor",
+            SidePanelId::ShellShow => "shells",
+            SidePanelId::Security => "security",
+            SidePanelId::Models => "models",
+            SidePanelId::Agents => "agents",
+            SidePanelId::Mcp => "mcp",
+            SidePanelId::Keybinds => "keybinds",
+            SidePanelId::Themes => "themes",
+            SidePanelId::Plugins => "plugins",
+            SidePanelId::Team => "team",
+            SidePanelId::Control => "control",
+            SidePanelId::Workspace => "workspace",
+            SidePanelId::TaskView => "task_view",
+            SidePanelId::Diff => "diff",
+            SidePanelId::Review => "review",
         }
     }
 
     /// Position in [`SidePanelId::ALL`].
+    ///
+    /// Derived by searching [`Self::ALL`] rather than hand-numbered. A
+    /// hand-numbered match is a 32-arm match that silently disagrees with the
+    /// list the moment a panel is inserted, and the disagreement is invisible:
+    /// the manager cursor and the `↑`/`↓` walk would each be *self-consistent*
+    /// and would simply select different panels.
     pub fn index(self) -> usize {
-        match self {
-            SidePanelId::Session => 0,
-            SidePanelId::Chat => 1,
-            SidePanelId::Terminal => 2,
-            SidePanelId::Help => 3,
-        }
+        Self::ALL.iter().position(|id| *id == self).unwrap_or(0)
     }
 
     /// Inverse of [`SidePanelId::index`], wrapping.
@@ -225,6 +537,34 @@ impl SidePanelId {
             SidePanelId::Chat => "messages · channels",
             SidePanelId::Terminal => "shell · commands",
             SidePanelId::Help => "keys · filters",
+            SidePanelId::Tree => "files · folders",
+            SidePanelId::Sessions => "switch · resume",
+            SidePanelId::Tasks => "running · waiting",
+            SidePanelId::Plan => "steps · blockers",
+            SidePanelId::Goal => "active goal · budget",
+            SidePanelId::Collaborators => "present · online",
+            SidePanelId::Memory => "recall · search",
+            SidePanelId::Research => "runs · artifacts",
+            SidePanelId::Logs => "daemon · notices",
+            SidePanelId::Context => "window · usage",
+            SidePanelId::Cost => "tokens · spend",
+            SidePanelId::Usage => "rate limits · quota",
+            SidePanelId::Stats => "analytics · cost",
+            SidePanelId::Doctor => "diagnostics · health",
+            SidePanelId::ShellShow => "recent commands",
+            SidePanelId::Security => "findings · severity",
+            SidePanelId::Models => "switch · provider",
+            SidePanelId::Agents => "switch · roles",
+            SidePanelId::Mcp => "servers · tools",
+            SidePanelId::Keybinds => "map · customise",
+            SidePanelId::Themes => "colours · reload",
+            SidePanelId::Plugins => "installed · trust",
+            SidePanelId::Team => "members · roles",
+            SidePanelId::Control => "turn · handoff",
+            SidePanelId::Workspace => "projects · attention",
+            SidePanelId::TaskView => "orders · triggers",
+            SidePanelId::Diff => "hunks · files",
+            SidePanelId::Review => "changed files",
         }
     }
 }
@@ -393,6 +733,14 @@ pub struct SidePanelHost {
     chat: chat::ChatPanel,
     terminal: terminal::TerminalPanel,
     help: help::HelpPanel,
+    /// Every box-derived panel, in [`SidePanelId::ALL`] order from index 4 on.
+    ///
+    /// A `Vec` rather than 28 named fields: these panels share one
+    /// implementation ([`hosted::HostPanel`]), so a field per panel would be
+    /// 28 declarations that all say the same thing. Ordering is not relied on
+    /// — lookup is by [`SidePanelId`] — but keeping it parallel to `ALL`
+    /// makes a debugger dump of the host readable in registry order.
+    hosted: Vec<hosted::HostPanel>,
 }
 
 impl Default for SidePanelHost {
@@ -413,6 +761,59 @@ impl SidePanelHost {
             chat: chat::ChatPanel::default(),
             terminal: terminal::TerminalPanel::default(),
             help: help::HelpPanel::default(),
+            hosted: SidePanelId::ALL
+                .iter()
+                .copied()
+                .filter(|id| {
+                    !matches!(
+                        id,
+                        SidePanelId::Session
+                            | SidePanelId::Chat
+                            | SidePanelId::Terminal
+                            | SidePanelId::Help
+                    )
+                })
+                .map(hosted::HostPanel::placeholder)
+                .collect(),
+        }
+    }
+
+    /// The hosted panel for `id`, if it is one.
+    fn hosted_mut(&mut self, id: SidePanelId) -> Option<&mut hosted::HostPanel> {
+        self.hosted.iter_mut().find(|panel| panel.id() == id)
+    }
+
+    /// Whether a hosted panel currently has a real box adopted into it, as
+    /// opposed to the placeholder it shows when nothing has been docked.
+    ///
+    /// `None` for the four bespoke panels, which are not hosted. Exposed so a
+    /// test can observe adoption without reaching through a private field.
+    pub fn hosted_panel_has_content(&self, id: SidePanelId) -> Option<bool> {
+        self.hosted
+            .iter()
+            .find(|panel| panel.id() == id)
+            .map(hosted::HostPanel::has_content)
+    }
+
+    /// Hand a just-unmounted box to the panel that can hold it.
+    ///
+    /// This is what makes docking a *move* rather than a copy: the component
+    /// [`FocusManager::pop`] returned is the very one the box was painting, so
+    /// the panel starts with the same filter, cursor, scroll offset and
+    /// selection. Returns `false` for a panel that is not hosted (the four
+    /// bespoke ones), which is a programming error rather than a runtime
+    /// condition — those panels have their own dock paths.
+    pub fn adopt(
+        &mut self,
+        id: SidePanelId,
+        widget: Box<dyn crate::tui::components::component::Component>,
+    ) -> bool {
+        match self.hosted_mut(id) {
+            Some(panel) => {
+                panel.adopt(widget);
+                true
+            }
+            None => false,
         }
     }
 
@@ -483,6 +884,11 @@ impl SidePanelHost {
             SidePanelId::Chat => self.chat.composer_hints(&hints),
             SidePanelId::Terminal => self.terminal.composer_hints(&hints),
             SidePanelId::Help => self.help.composer_hints(&hints),
+            other => self
+                .hosted
+                .iter()
+                .find(|panel| panel.id() == other)
+                .and_then(|panel| panel.composer_hints(&hints)),
         }
     }
 
@@ -545,6 +951,16 @@ impl SidePanelHost {
             SidePanelId::Terminal => self.terminal.is_empty(),
             // Help always has rows, so it can always take focus.
             SidePanelId::Help => false,
+            // A hosted panel with nothing adopted into it is empty, and
+            // refusing focus is what leaves the keyboard in the composer —
+            // where the user can immediately type the `/` command that fills
+            // it. Taking focus instead would hand every key to a widget that
+            // has no verbs, which is the dead end the rule exists to avoid.
+            other => self
+                .hosted
+                .iter()
+                .find(|panel| panel.id() == other)
+                .is_none_or(|panel| !panel.has_content()),
         }
     }
 
@@ -554,6 +970,10 @@ impl SidePanelHost {
             SidePanelId::Chat => &mut self.chat,
             SidePanelId::Terminal => &mut self.terminal,
             SidePanelId::Help => &mut self.help,
+            other => self
+                .hosted_mut(other)
+                .expect("every non-bespoke panel is constructed from SidePanelId::ALL")
+                as &mut dyn SidePanel,
         }
     }
 
@@ -720,6 +1140,85 @@ mod tests {
             assert!(!panel.label().is_empty());
             assert!(!panel.title().is_empty());
             assert!(!panel.hint().is_empty());
+        }
+    }
+
+    /// Every panel must be constructible by name and nameable on disk.
+    ///
+    /// `load_command` is what a placeholder tells the user to run, and
+    /// `config_key` is what a persisted `Ctrl+digit` binding is stored under.
+    /// A variant that forgets either one is reachable from the manager but
+    /// cannot say how to fill itself or survive a restart.
+    #[test]
+    fn every_panel_names_its_loader_and_its_config_spelling() {
+        for panel in SidePanelId::ALL.iter().copied() {
+            let command = panel.load_command();
+            assert!(
+                command.starts_with('/'),
+                "{panel:?} has no `/` loader, got {command:?}"
+            );
+            assert!(
+                !panel.config_key().is_empty(),
+                "{panel:?} has no persisted config spelling"
+            );
+            assert!(
+                panel
+                    .config_key()
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{panel:?} config spelling must be snake_case"
+            );
+        }
+    }
+
+    /// Persisted hotkey spellings are user data: two panels sharing one
+    /// means a binding silently retargets on reload.
+    #[test]
+    fn config_keys_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for panel in SidePanelId::ALL.iter().copied() {
+            assert!(
+                seen.insert(panel.config_key()),
+                "duplicate persisted panel spelling: {}",
+                panel.config_key()
+            );
+        }
+    }
+
+    /// Titles are the composer's destination badge. Two panels sharing one
+    /// makes `[X]` ambiguous about which surface has the keyboard.
+    #[test]
+    fn composer_badges_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for panel in SidePanelId::ALL.iter().copied() {
+            assert!(
+                seen.insert(panel.title()),
+                "duplicate composer badge: {}",
+                panel.title()
+            );
+        }
+    }
+
+    /// The hosted adapter is the implementation for every box-derived panel,
+    /// so the host must have constructed one for each of them. A panel in
+    /// `ALL` with no backing `HostPanel` would make `panel()` panic the first
+    /// time it is selected.
+    #[test]
+    fn every_box_derived_panel_has_a_hosted_instance() {
+        let host = SidePanelHost::new();
+        for panel in SidePanelId::ALL.iter().copied() {
+            let bespoke = matches!(
+                panel,
+                SidePanelId::Session
+                    | SidePanelId::Chat
+                    | SidePanelId::Terminal
+                    | SidePanelId::Help
+            );
+            let hosted = host.hosted.iter().any(|candidate| candidate.id() == panel);
+            assert_eq!(
+                bespoke, !hosted,
+                "{panel:?} must be exactly one of bespoke-or-hosted"
+            );
         }
     }
 }

@@ -817,7 +817,9 @@ inspection and cleanup continue through the existing authorized commands.
 The right-hand column is a **panel host**, not a widget chosen by an `if` in
 `render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns two pieces of
 state: which `SidePanelId` is active, and whether it holds keyboard focus.
-Four panels ship:
+
+Four panels are **bespoke** — they own live projections or a controller and
+need their own key model:
 
 | Panel | Title badge | Holds |
 |---|---|---|
@@ -826,14 +828,28 @@ Four panels ship:
 | `Terminal` | `[TERMINAL]` | the live PTY view |
 | `Help` | `[HELP]` | the keybinding reference |
 
-Which panel is loaded is chosen by the **panel manager box**
-(`Shift+S` in Normal mode, or the `/panels` command) — a dialog, not an overlay drawn inside the column. It replaces the old two-column grid selector, which could
-not be filtered and showed unlabelled buttons in 30 columns.
+The other **28** are **hosted**: each is a `/` command that brings up a box,
+and the panel holds that box's component rather than a lookalike. They are one
+implementation (`panels/hosted.rs`), not 28:
 
-Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, a
-`label`/`title`/`hint` arm each, a host field, and arms in `panel()`,
-`panel_is_empty()` and `composer_hints()`. There is no per-panel branch left
-in the render path or the key handler.
+| Group | Panels |
+|---|---|
+| Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
+| Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
+| Pickers | `Models` `Agents` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+
+Which panel is loaded is chosen by the **panel manager box**
+(`Shift+S` in Normal mode, or `/panels`) — a dialog, not an overlay drawn
+inside the column. It replaces the old two-column grid selector, which could
+not be filtered and showed unlabelled buttons in 30 columns. It renders
+[`SidePanelId::ALL`] directly, so the list it shows *is* the registry.
+
+Adding a **hosted** panel is an enum variant, an entry in `SidePanelId::ALL`,
+and `label`/`title`/`hint`/`load_command`/`config_key` arms — the host
+constructs the backing `HostPanel` from `ALL`, so there is no host field, no
+`panel()` arm and no render-path branch. Adding a **bespoke** panel
+additionally needs a `SidePanel` impl, a host field, and arms in `panel()`,
+`panel_is_empty()` and `composer_hints()`.
 
 **A box and its panel open in different modes.** `HelpDialog::new_with_mode`
 takes the starting mode from its caller, and the two callers disagree on
@@ -2223,10 +2239,22 @@ action.
   window is in Normal mode — the guard that stops a live event from clobbering
   a half-typed message. Flipping the mode first would silently drop a draft the
   user wrote and never sent.
-- **The box→panel map is one `match` arm in `App::dock_target`.** `ProjectChat`,
-  `Terminal` and `Help` each map to their panel; everything else returns `None`
-  and the gesture warns rather than silently navigating. A dockable box with no
-  panel counterpart is a bug, not a silent no-op.
+- **The box→panel map is one `match` arm in `App::dock_target`.** Thirty-one
+  boxes each map to their panel; everything else returns `None` and the
+  gesture warns rather than silently navigating. A dockable box with no panel
+  counterpart is a bug, not a silent no-op. `DialogType::Control` exists
+  separately from `DialogType::Team` for exactly this reason — both are
+  `InfoDialog`, but they are different panels, so they cannot share an
+  identity.
+- **The docking gesture is intercepted once, for every box.**
+  `App::handle_dialog_key` resolves `Shift+←/→/↑/↓` before handing a key to
+  the mounted modal, gated on `Component::docks_as_viewer()`. A viewer box
+  owns no text buffer, so `Shift+L` is free to mean "dock me" — and 28
+  dialogs do not each re-implement the same check. Two boxes (`/models`,
+  `/sessions`) own a live filter, so they declare `docks_as_viewer() == false`
+  and answer the gesture themselves under the same "filter is empty" guard
+  that already governs their `j`/`k`. That guard is the dialog's existing
+  rule, not a second one.
 - **A panel with nothing to show refuses focus.** Chat with no bound project,
   Terminal with no handle: the host routes *every* key to the active panel, so
   a panel that cannot act would swallow the composer's keystrokes. `select`
@@ -2244,6 +2272,21 @@ action.
   difference between "docking moves the box" and "docking gives you a similar
   panel" — with a shared widget there is nothing to keep in sync, so the box
   and the panel cannot drift the way the previous chat pair did.
+- **Docking a hosted box is a move, not a re-open.**
+  `App::close_dialog` returns the component it unmounted and
+  `SidePanelHost::adopt` installs it in the target panel, so the column starts
+  with the same filter, cursor, scroll offset and selection the box was
+  showing a frame earlier. A panel selected from the manager with nothing
+  adopted renders a placeholder naming the `/` command that loads it — an
+  empty bordered box is indistinguishable from a rendering bug.
+- **`render_hosted` is a bridge, not the destination.**
+  `SidePanel::render` receives a `&mut Buffer` while every `Component::render`
+  takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The
+  bridge renders the widget into an in-memory backend the size of the column
+  and copies the cells out, so a dockable box can be adopted without
+  rewriting that box's render path. A widget needing real cursor or clipping
+  semantics in the column should still grow its own `render_into`, as
+  `HelpDialog` did.
 - **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
   enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
   `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,

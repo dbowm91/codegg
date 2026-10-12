@@ -49,6 +49,10 @@ pub enum Dialog {
     /// view (durable membership management). FocusManager-owned; see
     /// `team.rs`. `/collaborators` remains ephemeral presence.
     Team,
+    /// `/control` inspector. Split from `Team` because the panel host reads
+    /// the discriminator to decide where a box docks; see
+    /// [`crate::tui::components::component::DialogType::Control`].
+    Control,
     /// M003: one-time device-token plaintext display (transient,
     /// secret-safe; see `device_secret.rs`). FocusManager-owned.
     TeamTokenSecret,
