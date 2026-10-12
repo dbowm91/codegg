@@ -111,6 +111,18 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 /// mistaken for a stall.
 pub const TURN_STALL_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// How long a single in-flight tool call is trusted before the turn is
+/// declared stalled anyway.
+///
+/// This is a backstop, not a working budget: every tool call is bounded by
+/// its own timeout (the `bash` default is 120s and its hard ceiling is one
+/// hour), so the core will always report a tool that overruns. The grace
+/// exists only so a genuinely wedged call cannot suppress the watchdog
+/// forever. It matches the shell ceiling rather than inventing a third
+/// number: any value above the slowest legal tool is indistinguishable
+/// from "never", and any value below it would kill a legal long call.
+pub const TURN_STALL_TOOL_GRACE: Duration = Duration::from_secs(3600);
+
 /// Capacity of the frontend command channel.
 ///
 /// Owned by [`App::ensure_tui_cmd_channel`] so startup can enqueue before the
@@ -121,6 +133,13 @@ pub const TUI_CMD_CHANNEL_CAPACITY: usize = 100;
 /// Bounds the strip so a long list cannot crowd out the chat viewport; the
 /// header always reports the true total.
 pub const MAX_TODO_STRIP_TASKS: usize = 9;
+
+/// Maximum subagent rows drawn in the working strip above the composer.
+///
+/// Bounded so a wide fan-out cannot crowd out the chat viewport. The strip
+/// adds a `… +N more` row when it truncates, so the count the user sees is
+/// never silently wrong.
+pub const MAX_WORKING_STRIP_SUBAGENTS: usize = 6;
 
 /// Maximum serialized size of a `UiNode` body included in a remote
 /// snapshot. Mirrors [`crate::protocol::ui::UiLimits::max_snapshot_body_bytes`]
@@ -217,7 +236,13 @@ pub enum ClickTarget {
     Dialog,
     Completion,
     Sidebar,
-    Scrollbar { track_y: u16, track_height: u16 },
+    Scrollbar {
+        track_y: u16,
+        track_height: u16,
+    },
+    /// The working strip above the composer: the throbber row and the
+    /// clickable subagent rows below it.
+    Working,
     None,
 }
 
@@ -777,11 +802,14 @@ impl App {
                 tts_via_daemon: false,
                 diagnostics: Default::default(),
                 plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
+                subagents: Default::default(),
+                working_area: None,
             },
             session_state: SessionState {
                 session: None,
                 session_status: SessionStatus::Idle,
                 working_since: None,
+                running_tool: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1333,11 +1361,14 @@ impl App {
                 tts_via_daemon: false,
                 diagnostics: Default::default(),
                 plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities::all_supported(),
+                subagents: Default::default(),
+                working_area: None,
             },
             session_state: SessionState {
                 session: None,
                 session_status: SessionStatus::Idle,
                 working_since: None,
+                running_tool: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1640,6 +1671,18 @@ impl App {
         if since.elapsed() < TURN_STALL_TIMEOUT {
             return false;
         }
+        // A tool call in flight means the turn is demonstrably still alive.
+        // `bash` in particular delivers its output only on completion, so a
+        // legitimate multi-minute build produces no events at all and the
+        // silence this watchdog measures is not evidence of a wedge. Re-arm
+        // and keep waiting while the call stays inside its grace; a call that
+        // outlives the grace falls through and is still failed.
+        if let Some(running) = &self.session_state.running_tool {
+            if running.elapsed() < TURN_STALL_TOOL_GRACE {
+                self.session_state.working_since = Some(Instant::now());
+                return false;
+            }
+        }
         self.session_state.working_since = None;
         self.session_state.session_status = SessionStatus::Error;
         self.messages_state.toasts.error(
@@ -1684,7 +1727,20 @@ impl App {
             }
             E::TurnReasoningDelta { delta, .. } => {
                 self.messages_state.messages.begin_activity("thinking");
-                self.messages_state.messages.add_assistant_text(delta);
+                // Reasoning deltas must go to `add_reasoning`, which opens a
+                // real `MsgPart::Reasoning` block. This arm used to call
+                // `add_assistant_text`, which is a parser for *literal*
+                // `<think>` tags: a raw delta carries no such tag, so it fell
+                // through to `MsgPart::Text` and the model's thinking was
+                // rendered as ordinary assistant prose with no "Thought for"
+                // header — and no way to collapse it. The standalone
+                // `AppEvent::ReasoningDelta` arm has always used
+                // `add_reasoning`; the two transports must agree. This arm
+                // deliberately does not set `streaming_active`: no daemon arm
+                // clears that flag, so setting it here would latch the 16ms
+                // render interval on for the life of the process. The 80ms
+                // animation pump runs while `Working` either way.
+                self.messages_state.messages.add_reasoning(delta);
                 true
             }
             E::ToolStarted {
@@ -1700,6 +1756,11 @@ impl App {
                 self.messages_state
                     .messages
                     .begin_activity(format!("running {tool_name}"));
+                self.session_state.running_tool =
+                    Some(crate::tui::app::state::session::RunningTool::new(
+                        tool_id.clone(),
+                        tool_name.clone(),
+                    ));
                 self.messages_state.messages.finalize_streaming();
                 let args = serde_json::from_str::<serde_json::Value>(&arguments)
                     .unwrap_or(serde_json::Value::Null);
@@ -1723,6 +1784,18 @@ impl App {
                     crate::session::message::ToolStatus::Error
                 };
                 self.messages_state.messages.end_activity();
+                // Clear only on a match: tool results can arrive out of
+                // order under parallel dispatch, and a late result for an
+                // earlier call must not un-track the call that is genuinely
+                // still running.
+                if self
+                    .session_state
+                    .running_tool
+                    .as_ref()
+                    .is_some_and(|running| running.tool_id == tool_id)
+                {
+                    self.session_state.running_tool = None;
+                }
                 self.messages_state
                     .messages
                     .update_tool_call(&tool_id, output, status, None, None, None);
@@ -2845,6 +2918,21 @@ impl App {
             }
             self.handle_dialog_key(key);
             return;
+        }
+
+        // An open subagent buffer is a view *over* the main buffer, so Esc
+        // returns to the transcript. It sits below the modal short-circuit
+        // so Esc still closes a dialog in front of it, and above everything
+        // else so no later handler can consume the key that dismisses it.
+        if self.ui_state.subagents.open.is_some() {
+            if let Some(InputAction::Cancel) = crate::tui::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            ) {
+                self.ui_state.subagents.close();
+                return;
+            }
         }
 
         if self.ui_state.timeline_visible {
@@ -7526,6 +7614,9 @@ impl App {
                     "j/k: Scroll | Enter: Read more".to_string()
                 }
             }
+            ClickTarget::Working => {
+                "Click a subagent: Open its buffer | Esc: Back to main buffer".to_string()
+            }
             ClickTarget::Prompt => {
                 "Enter: Send | Shift+Enter: New line | Tab: Complete".to_string()
             }
@@ -7542,11 +7633,18 @@ impl App {
 
         let target = self.clickable_area_at(event.column, event.row);
 
-        // Text selection takes priority over click-to-focus inside the
-        // message viewport. Mouse reporting suppresses the terminal's own
-        // drag-select, so without this the output of a tool call cannot be
-        // copied at all. Any other surface (sidebar, scrollbar, dialogs,
-        // completion popup, prompt) keeps its existing click behaviour.
+        // Text selection and click-to-act share the message viewport, and the
+        // only thing that distinguishes them is whether the pointer moved
+        // between press and release. So the viewport defers its press: `Down`
+        // only arms a potential selection, `Drag` extends it, and `Up` decides
+        // — a release on the anchor cell is a click and reaches the click
+        // handler (which is what expands reasoning and tool output), and a
+        // release elsewhere is a drag that copies. Resolving on `Down` instead
+        // made every click a selection and left click-to-expand unreachable.
+        // Mouse reporting suppresses the terminal's own drag-select, so
+        // without this arm the output of a tool call cannot be copied at all.
+        // Any other surface (sidebar, scrollbar, dialogs, completion popup,
+        // prompt) keeps its immediate press behaviour.
         let selecting = matches!(target, ClickTarget::Viewport)
             && matches!(
                 event.kind,
@@ -7559,8 +7657,6 @@ impl App {
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.selection_anchor = Some((event.column, event.row));
                     self.selection_focus = Some((event.column, event.row));
-                    self.last_click_time = None;
-                    self.last_click_target = None;
                     return;
                 }
                 MouseEventKind::Drag(MouseButton::Left) if self.selection_anchor.is_some() => {
@@ -7569,7 +7665,15 @@ impl App {
                 }
                 MouseEventKind::Up(MouseButton::Left) if self.selection_anchor.is_some() => {
                     self.selection_focus = Some((event.column, event.row));
-                    self.copy_selection_to_clipboard();
+                    if self.selection_anchor == self.selection_focus {
+                        // Press and release on the same cell: a click, not a
+                        // one-character selection. Drop the highlight and let
+                        // the click handler run.
+                        self.clear_selection();
+                        self.dispatch_click(&target, event.column, event.row);
+                    } else {
+                        self.copy_selection_to_clipboard();
+                    }
                     return;
                 }
                 _ => {}
@@ -7577,33 +7681,14 @@ impl App {
         }
 
         match event.kind {
-            MouseEventKind::Down(btn) => {
-                let is_double_click = self
-                    .last_click_target
-                    .as_ref()
-                    .map(|t| t == &target)
-                    .unwrap_or(false)
-                    && self
-                        .last_click_time
-                        .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
-                        .unwrap_or(false);
-
-                self.last_click_time = Some(Instant::now());
-                self.last_click_target = Some(target.clone());
-
-                match btn {
-                    MouseButton::Left | MouseButton::Right => {
-                        if is_double_click {
-                            self.on_double_click(&target);
-                        } else {
-                            self.on_click(&target, event.column, event.row);
-                        }
-                    }
-                    MouseButton::Middle => {
-                        self.on_scroll_up(&target);
-                    }
+            MouseEventKind::Down(btn) => match btn {
+                MouseButton::Left | MouseButton::Right => {
+                    self.dispatch_click(&target, event.column, event.row);
                 }
-            }
+                MouseButton::Middle => {
+                    self.on_scroll_up(&target);
+                }
+            },
             MouseEventKind::Up(btn) => {
                 match btn {
                     MouseButton::Left | MouseButton::Right => {
@@ -7747,6 +7832,14 @@ impl App {
                 return ClickTarget::Completion;
             }
         }
+        // The working strip is carved out of the prompt chunk, so it is
+        // tested first: without this a click on a subagent row resolves to
+        // the composer and the row is unclickable.
+        if let Some(ref area) = self.ui_state.working_area {
+            if Self::in_rect(x, y, *area) {
+                return ClickTarget::Working;
+            }
+        }
         if let Some(ref area) = self.prompt_area {
             if Self::in_rect(x, y, *area) {
                 return ClickTarget::Prompt;
@@ -7778,6 +7871,32 @@ impl App {
 
     fn in_rect(x: u16, y: u16, rect: Rect) -> bool {
         x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+    }
+
+    /// Run one press as a click: record it for double-click detection, then
+    /// dispatch to the single- or double-click handler.
+    ///
+    /// Shared by the immediate path (every surface but the viewport) and by
+    /// the viewport's deferred release, so both resolve a click the same way.
+    fn dispatch_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
+        let is_double_click = self
+            .last_click_target
+            .as_ref()
+            .map(|t| t == target)
+            .unwrap_or(false)
+            && self
+                .last_click_time
+                .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+                .unwrap_or(false);
+
+        self.last_click_time = Some(Instant::now());
+        self.last_click_target = Some(target.clone());
+
+        if is_double_click {
+            self.on_double_click(target);
+        } else {
+            self.on_click(target, x, y);
+        }
     }
 
     fn on_click(&mut self, target: &ClickTarget, x: u16, y: u16) {
@@ -7850,6 +7969,17 @@ impl App {
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
+            ClickTarget::Working => {
+                // Throbber row (or a gap between rows) has nothing to open.
+                if let Some(index) = self.ui_state.subagents.hit_at(x, y) {
+                    if self.ui_state.subagents.open_row(index) {
+                        let agent = self.ui_state.subagents.rows[index].agent.clone();
+                        self.messages_state.toasts.info(&format!(
+                            "Subagent buffer: {agent} · Esc returns to the main buffer"
+                        ));
+                    }
+                }
+            }
             ClickTarget::Scrollbar {
                 track_y,
                 track_height,
@@ -7898,7 +8028,10 @@ impl App {
 
     fn on_scroll_up(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
+            ClickTarget::Viewport
+            | ClickTarget::Prompt
+            | ClickTarget::Working
+            | ClickTarget::None => {
                 self.messages_state.messages.scroll_up();
             }
             ClickTarget::Sidebar => {
@@ -7928,7 +8061,10 @@ impl App {
 
     fn on_scroll_down(&mut self, target: &ClickTarget) {
         match target {
-            ClickTarget::Viewport | ClickTarget::Prompt | ClickTarget::None => {
+            ClickTarget::Viewport
+            | ClickTarget::Prompt
+            | ClickTarget::Working
+            | ClickTarget::None => {
                 self.messages_state.messages.scroll_down();
             }
             ClickTarget::Sidebar => {

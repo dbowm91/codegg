@@ -5,6 +5,7 @@
 //! filesystem, daemon, network, process, or other blocking work.
 
 use super::*;
+use crate::tui::app::state::subagents::SubagentRow;
 use ratatui::style::Color;
 
 /// Maximum display width of the agent name shown beside the input-mode badge.
@@ -108,21 +109,38 @@ impl App {
         // strip is: carving it out afterwards would shrink the input every
         // time a panel took focus.
         let hint_rows = u16::from(self.composer_hint_text().is_some());
+        // The working strip sits closest to the transcript, so a turn in
+        // flight reads as part of the buffer rather than as chrome. It is
+        // reserved from the prompt allocation for the same reason the hint
+        // line and todo strip are: carving it afterwards would shrink the
+        // input every time the agent started working.
+        let working_rows = self.working_strip_rows();
         let prompt_height = self
             .prompt_state
             .prompt
             .needed_height(max_prompt_height)
             .saturating_add(todo_rows)
-            .saturating_add(hint_rows);
+            .saturating_add(hint_rows)
+            .saturating_add(working_rows);
         let session_chunks = self
             .ui_state
             .layout
             .session_layout(pane_area, Some(prompt_height));
 
-        // Carve the hint line, then the todo strip, off the top of the
-        // prompt chunk. Order matters: hints belong closer to the input than
-        // the task strip does.
+        // Carve the hint line, then the todo strip, then the working strip,
+        // off the top of the prompt chunk. Order matters: hints belong closer
+        // to the input than the task strip does, and the working strip closer
+        // to the transcript than both.
         let mut available = session_chunks[2];
+        let mut working_chunk = None;
+        if working_rows > 0 && available.height > working_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(working_rows), Constraint::Min(1)])
+                .split(available);
+            working_chunk = Some(split[0]);
+            available = split[1];
+        }
         let mut hint_chunk = None;
         if hint_rows > 0 && available.height > hint_rows {
             let split = Layout::default()
@@ -167,6 +185,13 @@ impl App {
                     panic!("injected messages render panic");
                 }
                 self.render_viewport(frame, session_chunks[1]);
+                // An open subagent buffer replaces the transcript in the
+                // same rect rather than opening a modal over it: Esc then has
+                // exactly one meaning — return to the main buffer — instead of
+                // being ambiguous between "close a dialog" and "go back".
+                if self.ui_state.subagents.open.is_some() {
+                    self.render_subagent_view(frame, session_chunks[1]);
+                }
                 Ok(())
             }));
         if let Err(err) = viewport_result {
@@ -179,6 +204,7 @@ impl App {
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
+        self.render_working_strip(frame, working_chunk);
         self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
         self.render_prompt(frame, prompt_chunk);
@@ -1077,6 +1103,209 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
+    /// Render the open subagent buffer over the transcript.
+    ///
+    /// Shows only what the projection actually vouches for — the agent, its
+    /// task description, the lifecycle status, and the canonical ids needed
+    /// to reach durable run detail. It deliberately does not synthesize
+    /// progress text: the projection adapter hardcodes `progress: None`, so
+    /// an invented "working on step 3" line would be a lie the user acts on.
+    fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(view) = self.ui_state.subagents.open.clone() else {
+            return;
+        };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        let status_style = if view.row.is_running() {
+            Style::default().fg(theme.primary)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            format!(" Subagent · {}", view.row.agent),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", view.row.status),
+            status_style,
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Task",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   {}", view.row.description),
+            Style::default().fg(theme.foreground),
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Identity",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   task {}", view.row.task_id),
+            Style::default().fg(theme.foreground),
+        )));
+        if let Some(run_id) = &view.row.run_id {
+            lines.push(Line::from(Span::styled(
+                format!("   run  {run_id}"),
+                Style::default().fg(theme.foreground),
+            )));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Esc returns to the main buffer".to_string(),
+            Style::default().fg(theme.muted),
+        )));
+
+        let width = area.width.saturating_sub(1);
+        let paragraph = Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((view.scroll, 0));
+        frame.render_widget(paragraph, Rect { width, ..area });
+    }
+
+    /// Rows the working strip needs, or `0` when it has nothing to say.
+    fn working_strip_rows(&self) -> u16 {
+        if !self.should_show_working_strip() {
+            return 0;
+        }
+        let total = self.ui_state.subagents.rows.len();
+        let shown = total.min(MAX_WORKING_STRIP_SUBAGENTS);
+        // Reserve a row for the overflow marker when the list is truncated.
+        // Without the reservation the marker has nowhere to draw — the rows
+        // exactly fill the strip — so a wide fan-out would silently drop
+        // subagents with no indication that any were hidden.
+        let overflow = u16::from(total > shown);
+        1 + shown as u16 + overflow
+    }
+
+    /// Whether a turn is in flight and the strip should be drawn.
+    fn should_show_working_strip(&self) -> bool {
+        matches!(self.session_state.session_status, SessionStatus::Working)
+    }
+
+    /// Draw the working strip: a throbber with elapsed time and the current
+    /// phase, followed by one clickable row per advertised subagent.
+    ///
+    /// Hit rects are recorded as they are drawn so a click resolves to the
+    /// row the user actually saw rather than a recomputed layout.
+    fn render_working_strip(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        let Some(area) = chunk else {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        };
+        if area.width == 0 || area.height == 0 {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        }
+        if !self.should_show_working_strip() {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        }
+
+        self.ui_state.working_area = Some(area);
+        // Rebuilt from scratch each frame: a stale rect from a previous
+        // layout would let a click land on a row that has since moved.
+        self.ui_state.subagents.hits.clear();
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Row 0: the throbber. `ActivityIndicator::line` derives its glyph
+        // from whole elapsed seconds, so it animates on the 80ms pump without
+        // depending on render cadence.
+        let phase = self
+            .messages_state
+            .messages
+            .activity
+            .as_ref()
+            .map(|activity| activity.line())
+            .unwrap_or_else(|| self.working_elapsed_fallback());
+        let running_subs = self.ui_state.subagents.running_count();
+        let mut head = phase;
+        if running_subs > 0 {
+            head.push_str(&format!(" · {running_subs} subagent"));
+            if running_subs != 1 {
+                head.push('s');
+            }
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {head}"),
+            Style::default().fg(theme.primary),
+        )));
+
+        for (index, sub) in self
+            .ui_state
+            .subagents
+            .rows
+            .iter()
+            .take(MAX_WORKING_STRIP_SUBAGENTS)
+            .enumerate()
+        {
+            let summary = sub.summary_line(area.width as usize);
+            lines.push(Line::from(Span::styled(
+                summary,
+                Style::default().fg(if sub.is_running() {
+                    theme.foreground
+                } else {
+                    theme.muted
+                }),
+            )));
+            // Row 1 is the throbber, so subagent row `index` sits one line
+            // below the top of the strip.
+            let y = area.y + 1 + index as u16;
+            if y < area.y + area.height {
+                self.ui_state
+                    .subagents
+                    .hits
+                    .push((index, Rect::new(area.x, y, area.width, 1)));
+            }
+        }
+
+        // Rows that did not fit are summarized rather than silently dropped:
+        // a user who cannot see how many subagents are left has no way to
+        // tell the difference between "all done" and "off screen".
+        let hidden = self
+            .ui_state
+            .subagents
+            .rows
+            .len()
+            .saturating_sub(MAX_WORKING_STRIP_SUBAGENTS);
+        if hidden > 0 && lines.len() < area.height as usize {
+            lines.push(Line::from(Span::styled(
+                format!(" … +{hidden} more"),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// A phase line for a working turn that has no `ActivityIndicator` yet.
+    ///
+    /// The strip must not blink out during the window between the turn being
+    /// marked `Working` and the first event that names a phase, so this
+    /// falls back to the turn's own elapsed time.
+    fn working_elapsed_fallback(&self) -> String {
+        let secs = self
+            .session_state
+            .working_since
+            .map(|since| since.elapsed().as_secs())
+            .unwrap_or(0);
+        format!("⠋ working {secs}s")
+    }
+
     /// The contextual key line for whatever currently owns the keyboard.
     ///
     /// Rendered from the panel's own `composer_hints`, so a panel advertises
@@ -1617,6 +1846,14 @@ impl App {
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
 
+        // Derive the subagent rows first and let the snapshot borrow end
+        // here: the sidebar writes below all need `&mut self`, so holding the
+        // snapshot across them would conflict.
+        let subagent_rows = self
+            .projection_client
+            .active_snapshot()
+            .and_then(|(_, snapshot)| Self::sync_subagents_from_snapshot(snapshot));
+
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
             use crate::tui::components::sidebar::{
@@ -1692,6 +1929,72 @@ impl App {
             self.sidebar.set_agent_tree(Vec::new());
             self.sidebar.set_convergences(Vec::new());
         }
+
+        // Only a snapshot that *arrives* replaces the rows. A missing
+        // snapshot is not evidence that no subagents exist — it means the
+        // projection stream has not spoken yet or just hiccupped — so
+        // clearing on it would blank the strip mid-turn and hide work that
+        // is genuinely in flight. An arriving snapshot with no tree is
+        // authoritative emptiness and does clear.
+        if let Some(rows) = subagent_rows {
+            self.ui_state.subagents.set_rows(rows);
+        }
+    }
+
+    /// Project the snapshot's agent tree into the main buffer's subagent rows.
+    ///
+    /// Reads the same `active_turn` (falling back to the newest
+    /// `recent_turns`) tree the sidebar renders, so the two surfaces cannot
+    /// disagree about which delegated runs exist. Durable runs are joined by
+    /// exact canonical task id — the one identity both sides agree on — purely
+    /// to attach a `run_id` for the detail view; a task with no matching run
+    /// still gets a row rather than being hidden, because the agent tree is
+    /// the authoritative record that the task was dispatched.
+    ///
+    /// Returns `None` when there is no snapshot to read at all, which is not
+    /// the same as an empty tree: the caller keeps the rows it already has
+    /// rather than blanking the strip mid-turn.
+    fn sync_subagents_from_snapshot(
+        snapshot: &crate::protocol::projection::SessionProjectionSnapshot,
+    ) -> Option<Vec<SubagentRow>> {
+        use crate::protocol::projection::dto::AgentTreeStatus;
+
+        let tree = snapshot
+            .active_turn
+            .as_ref()
+            .or_else(|| snapshot.recent_turns.front());
+
+        let Some(tree) = tree else {
+            // The snapshot arrived and carries no agent tree at all: that is
+            // authoritative, so it clears rather than keeps the last set.
+            return Some(Vec::new());
+        };
+
+        Some(
+            tree.agent_tree
+                .iter()
+                .map(|node| {
+                    let task_id = node.task_id.to_string();
+                    SubagentRow {
+                        // Exact canonical join against `AgentRunSummary::task_id`.
+                        run_id: snapshot
+                            .agent_runs
+                            .iter()
+                            .find(|run| run.task_id == task_id)
+                            .map(|run| run.run_id.clone()),
+                        task_id,
+                        agent: node.agent.clone(),
+                        description: node.description.clone(),
+                        status: match node.status {
+                            AgentTreeStatus::Running => "running",
+                            AgentTreeStatus::Completed => "completed",
+                            AgentTreeStatus::Failed => "failed",
+                        }
+                        .to_string(),
+                    }
+                })
+                .collect(),
+        )
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {
