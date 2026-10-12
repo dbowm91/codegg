@@ -880,9 +880,15 @@ async fn run_windows_test_restricted(
     let started = Instant::now();
     let profile =
         windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let local_app_data = profile
+        .local_app_data_path()
+        .map_err(ManagedProcessError::Spawn)?;
+    let temporary_directory = local_app_data.join("Temp");
+    std::fs::create_dir_all(&temporary_directory).map_err(ManagedProcessError::Spawn)?;
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
-    let mut environment_block = windows_environment_block(environment, &cwd)?;
+    let mut environment_block =
+        windows_environment_block(environment, &cwd, &local_app_data, &temporary_directory)?;
     let mut child = windows::WindowsTestRestrictedProcess::launch(
         &spec.target,
         &requested_args,
@@ -1011,8 +1017,17 @@ async fn run_windows_test_restricted(
 fn windows_environment_block(
     environment: BTreeMap<OsString, OsString>,
     cwd: &Path,
+    local_app_data: &Path,
+    temporary_directory: &Path,
 ) -> Result<Vec<u16>, ManagedProcessError> {
     use std::os::windows::ffi::OsStrExt;
+    let mut environment = environment;
+    // AppContainer process creation needs the package-local profile paths to
+    // build its isolated environment. Never pass the host user's profile or
+    // temporary directories through this restricted launch path.
+    environment.insert("LOCALAPPDATA".into(), local_app_data.as_os_str().to_owned());
+    environment.insert("TEMP".into(), temporary_directory.as_os_str().to_owned());
+    environment.insert("TMP".into(), temporary_directory.as_os_str().to_owned());
     let mut environment = environment.into_iter().collect::<Vec<_>>();
     environment.sort_by_key(|(name, _)| name.to_string_lossy().to_ascii_uppercase());
     let mut block = Vec::new();

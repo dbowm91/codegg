@@ -92,6 +92,57 @@ impl WindowsAppContainerProfile {
     pub(super) fn sid(&self) -> windows_sys::Win32::Security::PSID {
         self.sid
     }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
+    pub(super) fn local_app_data_path(&self) -> io::Result<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+        use windows_sys::Win32::Security::Isolation::GetAppContainerFolderPath;
+        use windows_sys::Win32::System::Com::CoTaskMemFree;
+
+        let mut sid_text = ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(self.sid, &mut sid_text) } == 0 {
+            return Err(last_error());
+        }
+        struct LocalString(*mut u16);
+        impl Drop for LocalString {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = LocalFree(self.0.cast());
+                }
+            }
+        }
+        let _sid_text = LocalString(sid_text);
+
+        let mut folder = ptr::null_mut();
+        let result = unsafe { GetAppContainerFolderPath(sid_text, &mut folder) };
+        if result < 0 {
+            return Err(io::Error::from_raw_os_error(result));
+        }
+        struct TaskString(*mut u16);
+        impl Drop for TaskString {
+            fn drop(&mut self) {
+                unsafe { CoTaskMemFree(self.0.cast()) };
+            }
+        }
+        let _folder = TaskString(folder);
+        if folder.is_null() {
+            return Err(io::Error::other(
+                "GetAppContainerFolderPath returned a null path",
+            ));
+        }
+        let mut length = 0;
+        unsafe {
+            while *folder.add(length) != 0 {
+                length += 1;
+            }
+        }
+        let path = unsafe { std::slice::from_raw_parts(folder, length) };
+        Ok(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+            path,
+        )))
+    }
 }
 
 impl Drop for WindowsAppContainerProfile {
@@ -1365,15 +1416,22 @@ mod tests {
             .ok_or_else(|| io::Error::other("SystemRoot is unavailable"))?;
         let cwd = PathBuf::from(system_root).join("System32");
         let application = cwd.join("cmd.exe");
-        let argv = ["/D", "/C", "exit", "0"]
+        let argv = ["/D", "/C", "exit /b 0"]
             .into_iter()
             .map(OsString::from)
             .collect::<Vec<_>>();
         let mut environment = crate::managed_process::EnvironmentPolicy::sanitized().entries();
         ProcessProvenance::new("environment-block-test", "attempt")
             .apply_environment(&mut environment);
-        let mut environment = super::super::windows_environment_block(environment, &cwd)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        let local_app_data = std::env::temp_dir().join("codegg-environment-block-local-app-data");
+        let temporary_directory = local_app_data.join("Temp");
+        let mut environment = super::super::windows_environment_block(
+            environment,
+            &cwd,
+            &local_app_data,
+            &temporary_directory,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
 
         let pipes = WindowsStdioPipes::create()?;
         let mut attributes = WindowsProcessAttributes::new(1)?;
