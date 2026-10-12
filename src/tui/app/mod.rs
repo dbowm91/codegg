@@ -2519,9 +2519,6 @@ impl App {
         });
     }
 
-    // These values form the server's correlated stage acknowledgement; keep
-    // them explicit so callers cannot accidentally omit one field.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_shell_promotion_staged(
         &mut self,
         result: crate::tui::app::ShellPromotionStageResult,
