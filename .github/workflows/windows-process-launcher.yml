@@ -50,6 +50,27 @@ jobs:
           "Build: $($os.BuildNumber)"
           rustc --version --verbose
 
+      - name: Record disposable runner privilege evidence
+        shell: pwsh
+        run: |
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          $groups = whoami /groups
+          $highIntegrity = [bool]($groups | Select-String 'S-1-16-12288')
+          $uac = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA
+          "Runner identity: $($identity.Name)"
+          "Administrator role: $isAdministrator"
+          "High integrity token: $highIntegrity"
+          "UAC enabled: $([bool]$uac)"
+          @(
+            '### Disposable Windows runner privilege evidence'
+            ''
+            "- Administrator role: ``$isAdministrator``"
+            "- High integrity token: ``$highIntegrity``"
+            "- UAC enabled: ``$([bool]$uac)``"
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
       - name: AppContainer filesystem access proof
         shell: pwsh
         run: |
