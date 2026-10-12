@@ -27,7 +27,7 @@ Prove the full requested Windows `ReadOnly`/`WorkspaceWrite` security semantics 
 
 ## 2. Why this milestone is ready / dependency gate
 
-Hard: C008–C010 closed on hosted native evidence. GitHub's hosted runner privilege probe passed (`Administrator role=True`, `High integrity token=True`; UAC is enabled but the process token is elevated), satisfying the operational privilege gate for disposable fixtures. C010's owner-SID correction passed same-revision Windows workflow `38215171043`. C011 is active; M004's historical closure stays blocked until the adversarial matrix passes and receives additive review.
+Hard: C008–C010 closed on hosted native evidence. GitHub's hosted Windows Server 2025 runner passed the disposable privilege probe (`Administrator role=True`, `High integrity token=True`; UAC is enabled), satisfying the operational gate for synthetic fixtures. C010's owner-SID correction passed same-revision Windows workflow `38215171043`. C011 uses fresh runner-owned workspaces and synthetic credentials only; it never reads repository or runner secrets. M004's historical closure stays blocked until the adversarial matrix passes and receives additive review.
 
 ## 3. Current implementation evidence and failed predecessor coverage
 
@@ -96,6 +96,7 @@ Guard legacy Windows builds/unsupported file systems with explicit unavailabilit
 ## 10. Required tests
 
 - Hosted native suite C008–C010 across same revision, plus windows sandbox containment end-to-end.
+- Hosted synthetic-root adversarial test `windows_sandbox_adversarial`: direct, junction, hardlink, and ADS credential-read denial; approved workspace read/write; token/Job verification; and exact ACL restoration. This is a bounded C011 slice, not the full matrix or real-user-data qualification.
 - Isolated privileged VM: inherited ACL, file read/write adversarial fixtures, real sensitive-path denial, ADS/hardlink/junction/UNC, named-pipe access, descendant process tokens and Job, failure injection, recovery after forced stop.
 - Optional Windows 11 smoke for product support matrix, or accurately narrow minimum supported build.
 - Unix: Landlock/Seatbelt previously covered paths, workspace quick/static guards, no scheduler bypass.

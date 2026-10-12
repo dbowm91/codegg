@@ -22,6 +22,7 @@ on:
       - 'tests/windows_process_launcher.rs'
       - 'tests/windows_restricted_managed_process.rs'
       - 'tests/windows_acl_lease.rs'
+      - 'tests/windows_sandbox_adversarial.rs'
       - 'research/windows-native-sandbox/**'
   workflow_dispatch:
 
@@ -121,6 +122,9 @@ jobs:
 
       - name: Journaled Windows ACL lease and recovery tests
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_acl_lease -- --nocapture --test-threads=1
+
+      - name: Windows sandbox existing-root adversarial qualification
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_adversarial -- --nocapture --test-threads=1
 
       - name: Windows ACL lease failure and recovery unit tests
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib windows_acl_lease -- --nocapture --test-threads=1
