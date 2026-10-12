@@ -19,6 +19,12 @@ capability and workspace-root contracts before adding an operation. Results
 must remain bounded, and an unsupported server capability should produce the
 existing typed unsupported result instead of an unqualified request.
 
+For diagnostics, keep readiness separate from contents: `NotReady` is not an
+empty clean set. Preserve the last complete view until a `Ready` pull arrives.
+The current diagnostics change publisher has no production driver, so do not
+promise ongoing push updates or add implicit polling in a presentation-only
+change.
+
 Use the root package's `lsp-test-support` feature and its
 `codegg-lsp-test-server` harness for deterministic integration scenarios.
 The `egglsp` crate also builds a separate `egglsp-test-server` binary; they

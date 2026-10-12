@@ -345,32 +345,75 @@ impl CoreDaemon {
         &self,
         request: LspDiagnosticsGetRequestDto,
     ) -> LspDiagnosticsResultDto {
-        let empty = LspDiagnosticsResultDto {
-            project_id: request.project_id.clone(),
-            files: Vec::new(),
-            truncated: false,
-        };
         if request.project_id.is_empty() {
-            return empty;
+            return diagnostics_result(request.project_id, false, None, false);
         }
         // Gate on the service too: a daemon with no LSP cannot be
         // authoritative about diagnostics, and an empty set would read as
         // "this project is clean".
         if self.lsp_service().is_err() {
-            return empty;
+            return diagnostics_result(request.project_id, false, None, false);
         }
-        self.lsp_diagnostics
-            .lock()
-            .files_for(&request.project_id)
-            .map(|files| LspDiagnosticsResultDto {
-                project_id: request.project_id.clone(),
-                files,
-                truncated: self
-                    .lsp_diagnostics
-                    .lock()
-                    .tracker_saturated(&request.project_id),
-            })
-            .unwrap_or(empty)
+        let store = self.lsp_diagnostics.lock();
+        let files = store.files_for(&request.project_id);
+        let truncated = store.tracker_saturated(&request.project_id);
+        diagnostics_result(request.project_id, true, files, truncated)
+    }
+}
+
+fn diagnostics_result(
+    project_id: String,
+    service_available: bool,
+    files: Option<Vec<codegg_protocol::lsp::LspFileDiagnosticsDto>>,
+    truncated: bool,
+) -> LspDiagnosticsResultDto {
+    let (status, files, truncated) = match (service_available, files) {
+        (true, Some(files)) => (
+            codegg_protocol::lsp::LspDiagnosticsStatus::Ready,
+            files,
+            truncated,
+        ),
+        _ => (
+            codegg_protocol::lsp::LspDiagnosticsStatus::NotReady,
+            Vec::new(),
+            false,
+        ),
+    };
+    LspDiagnosticsResultDto {
+        project_id,
+        status,
+        files,
+        truncated,
+    }
+}
+
+#[cfg(test)]
+mod diagnostics_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_or_unobserved_diagnostics_are_not_ready() {
+        for result in [
+            diagnostics_result("project-1".into(), false, Some(Vec::new()), false),
+            diagnostics_result("project-1".into(), true, None, false),
+        ] {
+            assert_eq!(
+                result.status,
+                codegg_protocol::lsp::LspDiagnosticsStatus::NotReady
+            );
+            assert!(result.files.is_empty());
+            assert!(!result.truncated);
+        }
+    }
+
+    #[test]
+    fn an_observed_empty_set_is_ready_and_authoritative() {
+        let result = diagnostics_result("project-1".into(), true, Some(Vec::new()), false);
+        assert_eq!(
+            result.status,
+            codegg_protocol::lsp::LspDiagnosticsStatus::Ready
+        );
+        assert!(result.files.is_empty());
     }
 }
 

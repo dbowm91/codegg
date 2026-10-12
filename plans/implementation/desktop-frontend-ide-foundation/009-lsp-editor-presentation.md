@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 006-C — LSP Editor Presentation
 
-Status: ready for handoff
+Status: blocked (desktop corrective C003 diagnostics readiness contract)
 
 Repository baseline: `e27efc11f` (M006-B strict closed)
 

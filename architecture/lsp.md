@@ -956,6 +956,18 @@ The cost is that after a daemon restart a client has no sequence history and
 must re-pull — which is exactly why the pull, not the stream, is the
 correctness authority.
 
+`LspDiagnosticsResultDto` carries `LspDiagnosticsStatus::{Ready, NotReady}`
+separately from `files`. A complete `Ready` response with no files is an
+authoritative empty set. A missing project snapshot or unavailable LSP service
+is `NotReady`; it must preserve the client's previous view and must never be
+rendered as “no diagnostics.” Older daemon responses that omit this additive
+field deserialize as `NotReady` for compatibility and safety.
+
+The change publisher currently has no production driver. The subscribe path
+provides its initial authoritative snapshot, but this implementation does not
+emit ongoing diagnostic changes. Consumers must use the pull result and must
+not claim live push updates until a separately qualified driver exists.
+
 ### download.rs - Binary Download
 
 ```rust

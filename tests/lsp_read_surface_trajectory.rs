@@ -208,6 +208,7 @@ fn the_file_cap_is_reported_rather_than_silent() {
 fn authoritative(files: Vec<LspFileDiagnosticsDto>) -> LspDiagnosticsResultDto {
     LspDiagnosticsResultDto {
         project_id: "project-1".to_string(),
+        status: codegg_protocol::lsp::LspDiagnosticsStatus::Ready,
         files,
         truncated: false,
     }

@@ -330,10 +330,28 @@ pub struct LspDiagnosticDto {
     pub source: Option<String>,
 }
 
+/// Whether a diagnostics response is a complete snapshot or not ready yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspDiagnosticsStatus {
+    Ready,
+    NotReady,
+}
+
+impl Default for LspDiagnosticsStatus {
+    fn default() -> Self {
+        Self::NotReady
+    }
+}
+
 /// The authoritative diagnostics for a project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LspDiagnosticsResultDto {
     pub project_id: String,
+    /// Readiness is separate from the contents: an unavailable service must
+    /// never be interpreted as an authoritative empty diagnostic set.
+    #[serde(default)]
+    pub status: LspDiagnosticsStatus,
     pub files: Vec<LspFileDiagnosticsDto>,
     /// `true` when the file list itself was capped, so a client knows the set
     /// it received is not the whole project.
@@ -403,6 +421,15 @@ mod tests {
             column: Some(7),
             query: None,
         }
+    }
+
+    #[test]
+    fn diagnostics_without_readiness_field_fail_closed_to_not_ready() {
+        let result: LspDiagnosticsResultDto =
+            serde_json::from_str(r#"{"project_id":"project-1","files":[],"truncated":false}"#)
+                .expect("older daemon result remains deserializable");
+        assert_eq!(result.status, LspDiagnosticsStatus::NotReady);
+        assert!(result.files.is_empty());
     }
 
     #[test]

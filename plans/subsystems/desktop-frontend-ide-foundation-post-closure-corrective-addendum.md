@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — Post-Closure Corrective Addendum
 
-Status: closed
+Status: active
 
 Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 
@@ -286,4 +286,6 @@ C001 closes only when:
 
 | Corrective | Status | Plan | Blocker |
 |---|---|---|---|
-| C001 M004 prompt-composition error boundary + hosted strict closure | closing | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/001-m004-prompt-composition-error-boundary-and-hosted-closure.md` | No code dependency blocker. Hosted root CI is currently red on the new M004 helper; M005 remains deferred until C001 closes. |
+| C001 M004 prompt-composition error boundary + hosted strict closure | closed | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/001-m004-prompt-composition-error-boundary-and-hosted-closure.md` | Closure `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/001-status.md`. |
+| C002 feature-gated compile break + undrained publisher | closed | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/002-feature-gated-compile-break-and-undrained-publisher.md` | Closure `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/002-status.md`; M006-B push publisher remains undriven by design/evidence. |
+| C003 diagnostics readiness contract | active | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/003-diagnostics-not-ready-contract.md` | M006-C is blocked until unavailable diagnostics are distinguishable from authoritative empty results under accepted ADR-0012. |
