@@ -325,7 +325,8 @@ async fn missing_filesystem_root_fails_before_the_test_child_is_created() {
         .expect_err("test-only path must reject unqualified filesystem rights");
     assert!(matches!(
         error,
-        codegg::managed_process::ManagedProcessError::Spawn(_)
+        codegg::managed_process::ManagedProcessError::SandboxFailed(reason)
+            if reason.contains("ACL lease root is unavailable")
     ));
 }
 
