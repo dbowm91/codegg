@@ -6,9 +6,14 @@ use codegg::managed_process::{
 };
 use codegg::security::sandbox::SandboxLaunchSpec;
 use std::ffi::OsString;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+use windows_sys::Win32::Foundation::{GetLastError, WAIT_OBJECT_0};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+};
 
 fn powershell() -> PathBuf {
     std::env::var_os("SystemRoot")
@@ -43,6 +48,36 @@ fn restricted_request(args: Vec<OsString>) -> ManagedProcessRequest {
         deny_paths: Vec::new(),
     });
     request
+}
+
+fn process_signaled(pid: u32) -> bool {
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        let error = unsafe { GetLastError() };
+        assert_eq!(
+            error,
+            windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER,
+            "OpenProcess({pid}) failed for an unexpected reason: {error}"
+        );
+        return true;
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+    let result = unsafe { WaitForSingleObject(handle.as_raw_handle() as _, 0) };
+    assert_ne!(result, u32::MAX, "WaitForSingleObject({pid}) failed");
+    result == WAIT_OBJECT_0
+}
+
+async fn wait_for_process_exit(pid: u32) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if process_signaled(pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("restricted Job Object left descendant process {pid} alive"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -158,6 +193,67 @@ async fn restricted_service_cancellation_closes_the_job_and_reaps_the_child() {
     assert_eq!(result.termination, TerminationReason::Cancelled);
     assert!(result.cleanup.job_object_established);
     assert!(result.cleanup.forced_signal_sent);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restricted_service_cancellation_terminates_job_owned_descendants() {
+    let script = r#"
+$psi = [Diagnostics.ProcessStartInfo]::new()
+$psi.FileName = Join-Path $PSHOME 'powershell.exe'
+$psi.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 60"'
+$psi.UseShellExecute = $false
+$psi.CreateNoWindow = $true
+$child = [Diagnostics.Process]::Start($psi)
+[Console]::Out.WriteLine("child-pid:$($child.Id)")
+[Console]::Out.Flush()
+Start-Sleep -Seconds 60
+"#;
+    let mut request = restricted_request(vec![
+        OsString::from("-NoLogo"),
+        OsString::from("-NoProfile"),
+        OsString::from("-NonInteractive"),
+        OsString::from("-Command"),
+        OsString::from(script),
+    ]);
+    let cancellation = CancellationToken::new();
+    request.cancellation = cancellation.clone();
+    request.timeout = Some(Duration::from_secs(30));
+
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(8);
+    let run = tokio::spawn(ManagedProcessService::run_streaming(request, output_tx));
+    let child_pid = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut output = Vec::new();
+        loop {
+            assert!(
+                !run.is_finished(),
+                "restricted child exited before publishing descendant PID"
+            );
+            let chunk = output_rx
+                .recv()
+                .await
+                .expect("restricted child output stream remains open");
+            output.extend_from_slice(&chunk.bytes);
+            let text = String::from_utf8_lossy(&output);
+            if let Some(line) = text.lines().find(|line| line.starts_with("child-pid:")) {
+                return line["child-pid:".len()..]
+                    .trim()
+                    .parse::<u32>()
+                    .expect("descendant PID is numeric");
+            }
+        }
+    })
+    .await
+    .expect("restricted child publishes descendant PID");
+
+    cancellation.cancel();
+    let result = run
+        .await
+        .expect("managed process task should finish")
+        .expect("cancelled restricted process should be reaped");
+    assert_eq!(result.termination, TerminationReason::Cancelled);
+    assert!(result.cleanup.job_object_established);
+    assert!(result.cleanup.forced_signal_sent);
+    wait_for_process_exit(child_pid).await;
 }
 
 #[tokio::test]

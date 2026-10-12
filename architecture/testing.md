@@ -226,8 +226,10 @@ release-disabled `windows-sandbox-test-support` feature and runs
 `tests/windows_restricted_managed_process.rs`. That target verifies owned
 stdin/stdout/stderr, private status despite forged stdout markers, token and Job
 checks before resume, timeout cleanup, and a non-`Enforced` test-only result.
-It does not qualify ACL lease recovery or full M004 security; those remain
-separate milestones.
+The workflow also runs an AppContainer control launch with the service's
+profile-local environment block and the status-frame rejection tests. It does
+not qualify ACL lease recovery or full M004 security; those remain separate
+milestones.
 
 The same workflow exercises the native shell argv builder and Windows policy
 input fixtures for system roots, profile credential denies, PATH-independent

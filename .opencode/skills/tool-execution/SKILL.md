@@ -21,7 +21,10 @@ Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows
 constrained requests remain unavailable until a separate backend proves
-filesystem enforcement and installs any required token/status controls.
+filesystem enforcement and installs any required token/status controls. The
+test-only AppContainer path is integrated through this same service, verifies
+the package SID and Job before resume, and uses package-local `LOCALAPPDATA`,
+`TEMP`, and `TMP`; it does not claim filesystem enforcement.
 
 Raw model-shell text is compiled to platform-specific execution inputs (`sh -c`
 on Unix; an absolute Windows PowerShell, `cmd.exe`, Git Bash, or WSL executable

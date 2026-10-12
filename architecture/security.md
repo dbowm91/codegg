@@ -176,8 +176,11 @@ process lifecycle through `ManagedProcessService` with a restricted three-handle
 stdio list, pre-resume token/Job verification, bounded output, cancellation, and
 a private status pipe. It returns a distinct `TestOnlyAppContainer` result and
 never `Enforced`; release builds fail compilation if this feature is enabled.
-It does not grant or recover filesystem ACLs and does not change production
-backend availability. See `tests/windows_restricted_managed_process.rs`.
+Its explicit Unicode environment block retains drive-current-directory entries,
+uses the requested cwd for its drive entry, and supplies `LOCALAPPDATA`, `TEMP`,
+and `TMP` from the AppContainer package-local profile instead of the host user's
+profile paths. It does not grant or recover filesystem ACLs and does not change
+production backend availability. See `tests/windows_restricted_managed_process.rs`.
 - Any host with no registered backend: constrained Bash requests report
   `FilesystemEnforcement::Unavailable` and fail before process creation
   (never `FullHost` or an uncontained fallback). Python's separately

@@ -86,7 +86,9 @@ the Job after the root exits also terminates any descendants before output
 pipes are joined. `CleanupDiagnostics::job_object_established` reports this
 process-tree ownership fact. Sanitized Windows children retain the system
 runtime and temporary-directory variables (`SystemRoot`, `WINDIR`, `TEMP`,
-`TMP`) needed by native applications. This is process supervision only: Windows
+`TMP`) needed by native applications. The explicit Unicode environment block
+also preserves drive-current-directory entries and sets the requested cwd's
+drive entry to that cwd. This is process supervision only: Windows
 filesystem-constrained requests still fail before launch, and Job Objects do
 not provide filesystem or network containment. Native behavior is exercised
 by `tests/windows_process_launcher.rs` and the focused Windows workflow.
@@ -95,7 +97,11 @@ The debug-only `windows-sandbox-test-support` feature also routes an explicit
 child, a three-handle stdio allowlist, token SID and Job verification before
 resume, and bounded output/status handling. Its result is explicitly
 `TestOnlyAppContainer`, never `Enforced`; release builds reject the feature.
-This test seam does not activate a production Windows sandbox backend.
+For that test-only path, the service obtains the AppContainer package-local
+data path from the profile, creates its `Temp` child, and supplies those paths
+as `LOCALAPPDATA`, `TEMP`, and `TMP`; it never forwards the host user's profile
+or temp directories. This test seam does not activate a production Windows
+sandbox backend.
 
 Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
 while Windows defaults to the inbox Windows PowerShell executable and can opt
