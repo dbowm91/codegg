@@ -1,6 +1,6 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: active
+Status: blocked (architecture decision pending in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
 
 Repository baseline: `d32e1ff28ead2527fd88220a3954dee0d9590bb0` (active work began after M004's hosted-only blocker record)
 
@@ -19,7 +19,7 @@ Long-term requirements:
 - `plans/000-long-term-specification.md#45-locality-by-default`
 - `plans/001-terminology-and-domain-model.md#8-scheduler-and-execution-terms`
 
-Applicable ADRs: none identified. If session/context storage cannot safely own bounded pending promotions under existing authorization, stop and request a specific architecture decision rather than inventing a generic context store.
+Applicable ADR: proposed `plans/adrs/ADR-0017-human-shell-promotion-admission.md`. If session/context storage cannot safely own bounded pending promotions under existing authorization, request an architecture decision rather than inventing a generic context store.
 
 Primary class: invariant/capability/infrastructure.
 
@@ -36,6 +36,20 @@ C001 established a real provider-facing turn path and redaction tests, but its p
 `src/tui/app/mod.rs` holds pending promotion tokens and `src/tui/app/prompt_turn.rs` attaches projected text to the submitted `TurnSubmit.messages`; a successful `CoreResponse::Ack` then marks the local shell entry promoted and drops the local token. `src/tui/commands/shell.rs` builds the bounded redacted projection and fences the captured session/workspace, but `add_user_message` is the staging operation for the local path. The remote include path only inserts an unsubmitted composer draft. `SessionPromptSubmit` composes a daemon-side turn from the session selection but has no promotion input.
 
 The daemon's authorization decision already carries the authenticated `principal_id`, and `TurnSubmit` is scoped through the session with `AgentInvoke`; request DTOs do not establish identity. Turn admission generates a daemon `turn_id`, acquires the existing durable session-controller lease, and only then calls `run_turn`; the handler returns `Ack` after `run_turn` accepts. That lease has its own SQLite transaction, while there is no durable turn message/admission record coupling it to promotion state. Session schema is additive through migration v70, and the authoritative `CoreDaemon` owns its SQLite pool. This establishes a possible narrow session-owned persistence surface, but work package A still needs to prove how a promotion claim can be recovered without loss or duplicate provider delivery across the gap between runtime acceptance and durable completion state.
+
+### WP-A audit — complete (2026-10-12)
+
+| Boundary | Current owner and evidence | Consequence for C004 |
+|---|---|---|
+| Request identity and session authorization | `CoreDaemon::handle_request_with_client` derives `RequestAuthorityContext` from the transport-bound `ClientRegistry`; `SessionPromptSubmit` is `AgentInvoke` with `ViaSession` scope in `codegg-core::authorization::operation_descriptor`. Session/project resolution is server-side. | A new stage/query API can derive principal and project from trusted server authority; request DTO identity fields must not be trusted. |
+| Local pending promotion | `App::pending_shell_promotions` and `UIMessage` hold staged text in frontend memory. Local `TurnSubmit` success marks it promoted; remote `/shell-include` inserts an unsubmitted composer draft. | Neither route has a canonical durable stage acknowledgement/query or survives frontend restart. |
+| Turn request and admission | `TurnSubmit` carries provider messages but no stable submission/idempotency key or promotion IDs. `SessionPromptSubmit` carries one text string and no promotion input, then recurses through `TurnSubmit`. The daemon creates a random `turn_id`; `RequestEnvelope.request_id` is correlation/audit identity, not replay protection. | Duplicate/reconnect requests cannot resolve to one durable accepted turn or prove exactly-once promotion consumption. |
+| Acceptance transaction | Turn admission reserves in-memory `active_turn`, separately calls `SessionControllerStore::acquire` (one durable controller-row operation), builds the runtime input, then awaits `run_turn` before returning `Ack`. The controller row contains no prompt or promotion payload. | Existing controller storage cannot atomically record admission plus promotion consumption. The external provider call is outside SQLite transaction scope. |
+| Durable session storage | The daemon catalog has sequential SQLite migrations through v70. `session`/`message` store conversation state; `session_turn_controller` stores control ownership; neither models bounded, expiring, principal-bound pending redacted evidence and its consume receipt. | A narrow additive ledger is technically possible, but a migration alone does not answer accepted-turn recovery or ambiguous delivery after daemon restart. |
+| Capability compatibility | `SessionPromptSubmit` has no per-feature capability probe; `ChatCapabilities` is for chat and does not advertise human-shell staging. | A new stage lifecycle needs explicit feature negotiation and a typed unsupported-daemon result before the UI reports staged. |
+| Restart and provider outcome | Frontend pending state disappears on restart. The server has no durable accepted-turn envelope/provider-delivery receipt; a provider request may have an unknown outcome if the daemon stops after runtime acceptance. | The storage owner cannot currently distinguish an unaccepted pending stage from an accepted turn whose provider delivery outcome is unknown. Choosing consume/replay semantics crosses the current session-storage and turn-runtime boundary. |
+
+**WP-A disposition:** authentication and binding have a viable existing owner, but no existing durable contract can make promotion consumption and accepted turn identity recoverable. `ADR-0017` is proposed to decide the durable lifecycle and restart semantics before WP-B adds a table or protocol. C004 is blocked pending that decision. Do not implement a generic context store or represent composer insertion as staging.
 
 ## 4. Invariants that must not regress
 

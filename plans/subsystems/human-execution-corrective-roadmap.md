@@ -1,6 +1,6 @@
 # Human Execution Corrective Roadmap
 
-Status: active (C003 closed; C004 active for C001 authoritative staging; C002 blocked on C001)
+Status: active (C003 closed; C004 blocked pending ADR-0017; C002 blocked on C001 authoritative staging)
 
 Repository baseline: `578b62bd9580382e00fb19e096fc1794e1f5618b` (2026-10-09).
 
@@ -14,7 +14,7 @@ Long-term references:
 - `plans/001-terminology-and-domain-model.md#8-scheduler-and-execution-terms`
 - `plans/002-long-term-roadmap.md#phase-19--operational-hardening-and-scale-closure`
 
-Applicable ADRs: none for the corrective contracts; remote-node execution federation or durable PTY identity requires separate architectural authorization.
+Applicable ADRs: proposed `plans/adrs/ADR-0017-human-shell-promotion-admission.md` governs C004's pending stage/turn-admission recovery contract; remote-node execution federation or durable PTY identity requires separate architectural authorization.
 
 ## 1. Purpose and ownership boundary
 
@@ -48,7 +48,7 @@ The TUI remains a view and human-intent adapter. Human finite execution receives
 
 ## 6. Dependency graph
 
-`C001` (promotion and redaction) is ready. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and is blocked until C001 closes. `C003` (PTY keyboard and VT presentation) is ready independently because original interactive-process M001–M003 are closed.
+`C001` requires a corrective pass because promotion is not yet durably staged. `C004` owns that corrective audit and is blocked pending the accepted lifecycle decision in proposed ADR-0017. `C002` (workspace-owned human shell dispatch) hard-depends on C001's accepted context/output ownership and remains blocked. `C003` (PTY keyboard and VT presentation) is closed independently because original interactive-process M001–M003 are closed.
 
 ## 7. Milestones
 
@@ -60,6 +60,9 @@ Class: infrastructure/capability. Plan: `plans/implementation/human-execution-co
 
 ### C003 — PTY keyboard and VT fidelity
 Class: capability/polish. Plan: `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md`. Deliver explicit focus exit and literal Esc forwarding, safe bounded VT screen interpretation, truthful resize/resync, and real PTY fixtures beyond `cat` echo. Independent of C001/C002.
+
+### C004 — Authoritative human-shell promotion staging
+Class: invariant/capability/infrastructure. Plan: `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`. The WP-A ownership/API audit is complete. Implementation is blocked until maintainers select the durable admission and restart contract in proposed ADR-0017; do not add protocol or storage before that decision.
 
 ## 8. Cross-cutting requirements
 
@@ -84,4 +87,4 @@ C001–C003 each need an independent closure record including user-visible end-t
 | C001 | corrective pass required | `plans/implementation/human-execution-corrective/001-human-shell-promotion-and-redaction.md` | `plans/closure/human-execution-corrective/001-status.md`; follow-up C004 |
 | C002 | blocked (C001) | `plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md` | pending; C001 authoritative staging contract is incomplete |
 | C003 | closed | `plans/implementation/human-execution-corrective/003-terminal-keyboard-and-vt-fidelity.md` | `plans/closure/human-execution-corrective/003-status.md` |
-| C004 | active | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | Corrective follow-up for C001; C002 remains blocked until C004 closes and C001 is accepted |
+| C004 | blocked (ADR-0017 decision pending) | `plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md` | WP-A audit complete; no durable accepted-turn receipt exists to resolve provider-outcome ambiguity after daemon restart. Proposed ADR-0017 must be decided before WP-B. C002 remains blocked. |
