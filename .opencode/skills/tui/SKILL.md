@@ -268,6 +268,46 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   *different surface* than the usual one (the side panel), carry the route as
   explicit app state — `App::terminal_panel_spawn` — and clear it on **every**
   failure path, or a failed create diverts the next unrelated terminal.
+- **Viewport click and viewport drag share one press.** Inside the message
+  viewport, `Down` arms a selection, `Drag` extends it, and `Up` decides:
+  release on the anchor cell is a *click* and reaches `on_click` (whose
+  viewport arm expands reasoning, then tool output); release elsewhere is a
+  *drag* and copies. Resolving on `Down` — which the text-selection feature
+  briefly did — makes every click a selection and leaves click-to-expand
+  unreachable, because the viewport click arm is the only thing that expands
+  a message. All other surfaces keep immediate press behaviour through the
+  shared `dispatch_click`.
+- **The working strip owns turn liveness.** `render_working_strip` draws one
+  throbber row plus one row per advertised subagent between the transcript and
+  the composer, reserved from the prompt allocation and carved back off like
+  the hint line and the todo strip. It draws only while `Working`.
+  `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
+  because the strip is carved out of the prompt chunk — the reverse order
+  resolves every subagent click to click-to-focus. Hit rects live in
+  `SubagentState::hits` and are rebuilt every frame.
+- **Subagent rows are projection-derived and last-known-good.**
+  `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
+  A snapshot that arrives replaces the rows; a *missing* snapshot does not,
+  because absence is not evidence that no subagents exist and clearing on it
+  blanks the strip mid-turn. Never synthesize a row the projection did not
+  vouch for, and never synthesize progress text: the projection adapter
+  hardcodes `progress: None`.
+- **The subagent buffer is a view, not a modal.** Clicking a row replaces the
+  transcript in the viewport rect; `Esc` returns. Its `Esc` arm sits below the
+  modal short-circuit and above every other handler.
+- **Reasoning deltas must reach `add_reasoning`.** `add_assistant_text` is a
+  parser for literal `<think>` tags — a raw delta has none, so it falls
+  through to `MsgPart::Text` and thinking renders as ordinary prose with no
+  `Thought for` header. Both the daemon (`TurnReasoningDelta`) and standalone
+  (`ReasoningDelta`) arms must call `add_reasoning`, or the two transports
+  silently disagree.
+- **The stall watchdog measures silence, and long tools are silent.**
+  `bash` delivers its output only on completion, so a multi-minute build emits
+  no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared
+  on a matching `ToolCompleted`, in **both** transports) lets
+  `check_turn_stall` re-arm instead of failing a healthy turn, bounded by
+  `TURN_STALL_TOOL_GRACE`. Keep that grace at or above the slowest legal tool
+  timeout, or the watchdog kills work that is merely slow.
 - **Never put arithmetic in `bool::then_some`.** `then_some` takes its value
   eagerly, so `cond.then_some(a - b)` evaluates `a - b` even when `cond` is
   false — and `Duration`'s `Sub` panics on underflow. This crashed the TUI on

@@ -555,10 +555,10 @@ contract in `architecture/authorization.md` (ADR-0007).
   exactly as before. Controller identity remains visible through
   the session projection.
 
-### Chat activity indicator and todo strip
+### Chat activity indicator, working strip, and todo strip
 
-Two strips bracket the chat viewport and are owned by `App`, not by the
-sidebar widget.
+Strips bracket the chat viewport and are owned by `App`, not by the sidebar
+widget.
 
 **Activity indicator** (`MessagesWidget::activity`). A one-line
 `⠋ thinking 12s` / `⠋ running bash 3s` row appended after the message loop, so
@@ -569,6 +569,36 @@ reasoning blocks are recorded in `reasoning_durations` keyed by message index
 and render as `Thought for 3.2s`; clicking a message checks reasoning before
 tool output so that header is the expand affordance.
 
+**Working strip** (`render_working_strip`). One throbber row plus one row per
+advertised subagent, reserved from the prompt allocation and carved back off
+like the hint line and the todo strip, so it sits *between the transcript and
+the composer* and reads as part of the buffer. It draws only while
+`SessionStatus::Working`; an idle buffer gets the rows back. Row 0 is the
+throbber (the activity line, or `⠋ working Ns` during the window before the
+first event names a phase); the rows below it are clickable and their hit
+rects are rebuilt every frame in `UiState::working_area` /
+`SubagentState::hits`, so a click resolves against the geometry the user saw.
+`ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
+strip is carved out of the prompt chunk, so the reverse order would resolve
+every subagent click to click-to-focus. Rows are bounded by
+`MAX_WORKING_STRIP_SUBAGENTS` and truncation is announced with a `… +N more`
+row, which `working_strip_rows` reserves space for.
+
+Rows come from `sync_subagents_from_snapshot`, which reads the same
+`active_turn` (falling back to the newest `recent_turns`) agent tree the
+sidebar renders, joined to durable runs by exact canonical task id only to
+attach a `run_id`. A snapshot that *arrives* replaces the rows; **a missing
+snapshot does not**, because absence is not evidence that no subagents exist
+and clearing on it would blank the strip mid-turn.
+
+**Subagent buffer** (`SubagentState::open`). Clicking a row replaces the
+transcript in the viewport rect rather than opening a modal, so `Esc` has one
+unambiguous meaning — return to the main buffer. The `Esc` arm sits below the
+modal short-circuit (so `Esc` still closes a dialog in front of it) and above
+every other handler (so nothing can swallow the key that dismisses it). The
+view holds its own captured row, so a run dropping out of the next snapshot
+does not yank the buffer out from under the reader.
+
 **Todo strip** (`render_todo_strip`). Compact form is a single
 `Todo list: 2/8 completed · Ctrl+T expand` row; `Ctrl+T` expands to a header
 plus one status-bubbled row per task, bounded by `MAX_TODO_STRIP_TASKS`. Task
@@ -576,6 +606,36 @@ titles are ellipsized (display-width aware) rather than wrapped, so the strip
 height is predictable. The strip's rows are added to the prompt allocation in
 `session_layout` and then carved back off, so the input box keeps the height it
 requested and the viewport absorbs the difference.
+
+### Viewport click vs. drag
+
+Inside the message viewport a press does both jobs and only the release
+decides which one it was: `Down` arms a potential selection, `Drag` extends it,
+and `Up` on the anchor cell is a *click* (it reaches `on_click`, whose viewport
+arm expands reasoning or tool output) while a release elsewhere is a *drag*
+that copies to the clipboard. Resolving on `Down` instead made every click a
+selection and left click-to-expand unreachable. All other surfaces keep
+immediate press behaviour via the shared `dispatch_click`.
+
+### Reasoning must reach `add_reasoning`
+
+Both transports must feed reasoning deltas to
+`MessagesWidget::add_reasoning`, which opens a real `MsgPart::Reasoning`
+block. `add_assistant_text` is a parser for *literal* `<think>` tags; a raw
+delta carries no such tag and falls through to `MsgPart::Text`, so the model's
+thinking renders as ordinary assistant prose with no `Thought for` header and
+no way to collapse it. `apply_core_event`'s `TurnReasoningDelta` arm previously
+did exactly that while the standalone `AppEvent::ReasoningDelta` arm did not.
+
+### Turn-stall watchdog vs. long tool calls
+
+`check_turn_stall` measures *silence*, and `bash` is silent by construction —
+it delivers its output only on completion, so a multi-minute build emits no
+events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared on a
+matching `ToolCompleted`, in both transports) lets the watchdog tell "working"
+from "wedged": an in-flight call re-arms the timer instead of failing the
+turn, up to `TURN_STALL_TOOL_GRACE`, which matches the shell timeout ceiling
+so a runaway tool still trips the watchdog.
 
 Todo updates reach the frontend as `CoreEvent::TodoListUpdated`. The bus event
 that originates them (`AppEvent::TodoUpdated`) is published on the

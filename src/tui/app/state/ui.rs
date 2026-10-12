@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use tokio::sync::broadcast;
 
 use crate::tts::Tts;
+use crate::tui::app::state::subagents::SubagentState;
 use crate::tui::app::types::Dialog;
 use crate::tui::input::{InputAction, InputMode, KeybindConfig};
 use crate::tui::layout::TuiLayout;
@@ -107,6 +108,14 @@ pub struct UiState {
     /// Advertised plugin UI capabilities. Checked before applying effects
     /// to enforce policy/capability filtering at the TUI boundary.
     pub plugin_ui_caps: crate::protocol::ui::PluginUiCapabilities,
+    /// Active-subagent rows and the subagent buffer opened over the main one.
+    ///
+    /// View state: it is rebuilt from each projection snapshot, so an absent
+    /// snapshot empties it rather than leaving stale rows on screen.
+    pub subagents: SubagentState,
+    /// Frame rect of the working strip (throbber + subagent rows), recorded
+    /// on render so mouse hit testing resolves the row the user actually saw.
+    pub working_area: Option<Rect>,
 }
 
 impl UiState {
