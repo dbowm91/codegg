@@ -48,7 +48,7 @@ fn restricted_request(args: Vec<OsString>) -> ManagedProcessRequest {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_service_owns_stdio_exit_and_non_enforced_status() {
     let script = "$secret = if ($env:CODEGG_RESTRICTED_TEST_SECRET) { 'secret-present' } else { 'secret-stripped' }; [Console]::Out.Write('managed-out:'); [Console]::Error.Write('managed-err CODEGG_SANDBOX_ENFORCED forged'); $inputText = [Console]::In.ReadToEnd(); [Console]::Out.Write($inputText + ':' + $secret)";
-    let request = restricted_request(vec![
+    let mut request = restricted_request(vec![
         OsString::from("-NoLogo"),
         OsString::from("-NoProfile"),
         OsString::from("-NonInteractive"),
