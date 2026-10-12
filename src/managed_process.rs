@@ -854,6 +854,11 @@ async fn run_windows_test_restricted_inner(
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
     use std::os::windows::ffi::OsStrExt;
 
+    // The AppContainer cannot reach runner-user TEMP without changing the
+    // user's profile ACLs. C014 uses this reserved test-only path to request
+    // a fresh projection under the package profile's own local TEMP instead.
+    let profile_temp_projection = Path::new(r"C:\__codegg_test_profile_temp__");
+
     let ManagedProcessRequest {
         executable,
         argv,
@@ -928,6 +933,9 @@ async fn run_windows_test_restricted_inner(
                 .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Deny)),
         )
     {
+        if path == profile_temp_projection {
+            continue;
+        }
         windows_acl_lease::validate_input_directory(&path).map_err(|error| {
             ManagedProcessError::SandboxFailed(format!(
                 "ACL lease root is unavailable or unsupported: {error}"
@@ -994,6 +1002,35 @@ async fn run_windows_test_restricted_inner(
     if forensic_populated_deny_roots {
         eprintln!("C013 stage: AppContainer profile created");
     }
+    let local_app_data = profile.local_app_data_path().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("resolve AppContainer local application data: {error}"),
+        ))
+    })?;
+    let temporary_directory = local_app_data.join("Temp");
+    std::fs::create_dir_all(&temporary_directory).map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("create AppContainer temporary directory: {error}"),
+        ))
+    })?;
+    if cwd == profile_temp_projection {
+        windows_acl_lease::validate_empty_lease_root(&temporary_directory).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "AppContainer profile projection root is unavailable or populated: {error}"
+            ))
+        })?;
+        let canonical = std::fs::canonicalize(&temporary_directory).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "canonicalize AppContainer profile projection root: {error}"
+            ))
+        })?;
+        roots.insert(
+            canonical.to_string_lossy().to_lowercase(),
+            (canonical, windows_acl_lease::LeaseAccess::ReadWrite),
+        );
+    }
     let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
     for (path, access) in roots.into_values() {
         acl_leases.push(
@@ -1050,32 +1087,34 @@ async fn run_windows_test_restricted_inner(
         }
         eprintln!("C013 stage: post-lease object snapshots complete");
     }
-    let local_app_data = profile.local_app_data_path().map_err(|error| {
-        ManagedProcessError::Spawn(std::io::Error::new(
-            error.kind(),
-            format!("resolve AppContainer local application data: {error}"),
-        ))
-    })?;
-    let temporary_directory = local_app_data.join("Temp");
-    std::fs::create_dir_all(&temporary_directory).map_err(|error| {
-        ManagedProcessError::Spawn(std::io::Error::new(
-            error.kind(),
-            format!("create AppContainer temporary directory: {error}"),
-        ))
-    })?;
     #[cfg(test)]
     if forensic_populated_deny_roots {
         eprintln!("C013 stage: AppContainer temp directory ready");
     }
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
-    let mut environment_block =
-        windows_environment_block(environment, &cwd, &local_app_data, &temporary_directory)?;
+    if cwd == profile_temp_projection {
+        environment.insert(
+            "CODEGG_C014_PROJECTION".into(),
+            temporary_directory.as_os_str().to_owned(),
+        );
+    }
+    let launch_cwd = if cwd == profile_temp_projection {
+        temporary_directory.as_path()
+    } else {
+        cwd.as_path()
+    };
+    let mut environment_block = windows_environment_block(
+        environment,
+        launch_cwd,
+        &local_app_data,
+        &temporary_directory,
+    )?;
     let mut child = windows::WindowsTestRestrictedProcess::launch(
         &spec.target,
         &requested_args,
         &profile,
-        &cwd,
+        launch_cwd,
         &mut environment_block,
         &cancellation,
     )

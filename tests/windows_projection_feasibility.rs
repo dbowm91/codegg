@@ -41,10 +41,9 @@ fn probe(variable: &str, label: &str) -> String {
 async fn c014_projection_tool_smoke_and_unprojected_host_denials() {
     let git = find_git().expect("C014 requires Git on the Windows runner");
     let fixture = tempfile::tempdir().expect("C014 disposable fixture");
-    let projection = fixture.path().join("projection");
+    let projection = PathBuf::from(r"C:\__codegg_test_profile_temp__");
     let host = fixture.path().join("unprojected-host");
     let sibling = fixture.path().join("ungranted-sibling");
-    std::fs::create_dir(&projection).unwrap();
     std::fs::create_dir(&host).unwrap();
     std::fs::create_dir(&sibling).unwrap();
 
