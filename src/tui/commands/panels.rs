@@ -114,6 +114,7 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) {
             chat_panel_project,
             *sidebar_area,
             focused,
+            ui_state.input_mode,
         );
         panel_host.select(id, &mut ctx);
     }
@@ -132,6 +133,36 @@ pub(crate) fn focus_panel(app: &mut App) -> bool {
 pub(crate) fn blur_panel(app: &mut App) {
     app.panel_host.blur();
     sync_workspace_focus(app);
+}
+
+/// Move keyboard focus into the side panel (`Shift+Right` / `Shift+L`).
+///
+/// Shows the column when it is hidden rather than refusing: the key is the
+/// only way to reach the panel, and a toast telling the user to press
+/// `Ctrl+B` and then the same key again is a worse answer than just doing it.
+///
+/// Binding is resolved first because the Chat panel refuses focus while
+/// unbound — arming the target is part of arriving there, not a separate
+/// step the user has to know about.
+pub(crate) fn focus_side_panel(app: &mut App) {
+    if !app.ui_state.sidebar_visible {
+        app.ui_state.sidebar_visible = true;
+    }
+    sync_chat_panel_project(app);
+    if !focus_panel(app) {
+        app.messages_state
+            .toasts
+            .info("Side panel has nothing to show yet");
+    }
+}
+
+/// Move keyboard focus back to the main buffer (`Shift+Left` / `Shift+H`).
+///
+/// This also re-arms the composer for the agent session, because the chat
+/// target is derived from panel focus rather than latched — so there is no
+/// way to leave the panel still pointed at chat.
+pub(crate) fn focus_main_buffer(app: &mut App) {
+    blur_panel(app);
 }
 
 /// Route one key to the focused panel and apply any intent it emits.
@@ -168,6 +199,7 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
             chat_panel_project,
             *sidebar_area,
             focused,
+            ui_state.input_mode,
         );
         panel_host.handle_key(key, action, &mut ctx)
     };
@@ -181,6 +213,10 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
             true
         }
         PanelKey::Consumed => true,
+        // The panel is a viewer and the key belongs to the composer. Routing
+        // continues so the bottom prompt — which renders the active
+        // `[BUILD]`/`[CHAT]` target — receives it.
+        PanelKey::PassThrough => false,
     }
 }
 
@@ -199,6 +235,7 @@ fn panel_ctx<'a>(
     chat_panel_project: &'a Option<String>,
     sidebar_area: Option<ratatui::layout::Rect>,
     focused: bool,
+    input_mode: crate::tui::input::InputMode,
 ) -> PanelCtx<'a> {
     let theme: Arc<Theme> = Arc::clone(&ui_state.theme);
     PanelCtx {
@@ -216,6 +253,7 @@ fn panel_ctx<'a>(
         // Supplied by the caller: it holds `panel_host` mutably while the
         // context is alive, so the host's focus flag cannot be read here.
         focused,
+        input_mode,
     }
 }
 

@@ -235,62 +235,6 @@ async fn selector_keys_never_reach_the_composer() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_focused_chat_panel_owns_printable_keys() {
-    let mut app = test_app();
-    seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
-    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.panel_host.active(), SidePanelId::Chat);
-
-    // `i` opens the panel composer, then the letters become message text.
-    app.on_key(plain('i'));
-    for ch in "hello".chars() {
-        app.on_key(plain(ch));
-    }
-    assert!(
-        app.prompt_state.prompt.get_text().is_empty(),
-        "typing in the panel must never become a prompt turn: {:?}",
-        app.prompt_state.prompt.get_text()
-    );
-    assert_eq!(
-        app.chat.draft_for(PROJECT),
-        "hello",
-        "the typed text belongs to the chat composer"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn escape_returns_from_the_panel_to_the_composer() {
-    let mut app = test_app();
-    seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
-    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-    app.on_key(plain('i'));
-    assert!(app.panel_host.chat_panel_mut().mode().is_input());
-
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
-        !app.panel_host.chat_panel_mut().mode().is_input(),
-        "Esc leaves Compose before it leaves the panel"
-    );
-    assert!(app.panel_host.is_focused());
-
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
-        !app.panel_host.is_focused(),
-        "a second Esc must return keys to the composer"
-    );
-    app.on_key(plain('z'));
-    assert_eq!(
-        app.prompt_state.prompt.get_text(),
-        "z",
-        "once focus is released the composer must work again"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn switching_back_to_session_restores_prompt_input_immediately() {
     let mut app = test_app();
     seed_chat(&mut app);
@@ -308,36 +252,6 @@ async fn switching_back_to_session_restores_prompt_input_immediately() {
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     app.on_key(plain('q'));
     assert!(!app.panel_host.is_focused());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn q_also_drops_panel_focus() {
-    let mut app = test_app();
-    seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
-    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.panel_host.chat_panel_mut().mode().is_input());
-    app.on_key(plain('q'));
-    assert!(!app.panel_host.is_focused());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn q_types_while_the_chat_composer_is_open() {
-    let mut app = test_app();
-    seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
-    app.on_key(plain('l'));
-    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
-    app.on_key(plain('i'));
-    app.on_key(plain('q'));
-    assert_eq!(
-        app.chat.draft_for(PROJECT),
-        "q",
-        "q must be text while composing, not an exit"
-    );
-    assert!(app.panel_host.is_focused());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -401,5 +315,259 @@ async fn modal_dialogs_still_take_precedence_over_the_panel() {
     assert!(
         app.panel_host.is_focused(),
         "the panel kept focus while the modal was up"
+    );
+}
+
+/// Enter Normal mode the way a user does.
+///
+/// The focus moves are Normal-only by contract, and the app boots into
+/// Insert — so every test that reaches for `Shift+Arrow` has to make the
+/// same trip a user makes, or it would assert against a state the user
+/// cannot actually be in.
+fn to_normal(app: &mut codegg::tui::app::App) {
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Normal,
+        "precondition: the focus moves only exist in Normal mode"
+    );
+}
+
+/// Select the Chat panel the way a user does: open the switcher, step to
+/// it, commit. This is also the only way the panel gets a bound project, so
+/// almost every focus/target assertion has to start here.
+fn select_chat(app: &mut codegg::tui::app::App) {
+    seed_chat(app);
+    app.on_key(ctrl_alt('w'));
+    app.on_key(plain('l'));
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.panel_host.active(),
+        SidePanelId::Chat,
+        "precondition: the chat panel is active"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctrl_b_works_repeatedly_while_a_panel_is_focused() {
+    // Regression: the toggle used to work exactly once. The first press
+    // focused a panel, and because a focused panel consumed every key the
+    // second press was swallowed by the panel that press had just focused.
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    assert!(app.panel_host.is_focused(), "precondition: a focused panel");
+
+    for round in 0..3 {
+        app.on_key(key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(
+            !app.ui_state.sidebar_visible,
+            "round {round}: Ctrl+B must hide the column from inside a focused panel"
+        );
+        app.on_key(key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(
+            app.ui_state.sidebar_visible,
+            "round {round}: Ctrl+B must show it again"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shift_right_focuses_the_panel_and_shift_left_returns() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused(), "precondition: focus in main");
+
+    app.on_key(key(KeyCode::Right, KeyModifiers::SHIFT));
+    assert!(
+        app.panel_host.is_focused(),
+        "Shift+Right must move focus into the side column"
+    );
+
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "Shift+Left must move focus back to the main buffer"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shift_letters_move_focus_either_encoding() {
+    // Terminals disagree on whether a shifted letter carries SHIFT. Both
+    // forms must reach the same action, or the focus move is a keypress
+    // that works on one machine and not another.
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        let mut app = test_app();
+        select_chat(&mut app);
+        to_normal(&mut app);
+        app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+        app.on_key(key(KeyCode::Char('L'), modifiers));
+        assert!(
+            app.panel_host.is_focused(),
+            "L/{modifiers:?} must focus the panel"
+        );
+        app.on_key(key(KeyCode::Char('H'), modifiers));
+        assert!(
+            !app.panel_host.is_focused(),
+            "H/{modifiers:?} must return to the main buffer"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shift_arrows_do_not_move_focus_in_insert_mode() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused());
+
+    app.on_key(plain('i'));
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Insert,
+        "precondition: composing"
+    );
+
+    app.on_key(key(KeyCode::Right, KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "the focus move is a Normal-mode gesture; Shift+Right is caret movement while composing"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bare_arrows_keep_their_existing_meaning() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    // Return focus to the main buffer, so a bare Right is judged against the
+    // main-buffer bindings rather than the panel's navigation.
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused(), "precondition: focus in main");
+
+    app.on_key(key(KeyCode::Right, KeyModifiers::NONE));
+    assert!(
+        !app.panel_host.is_focused(),
+        "an unmodified Right must not have become a focus move"
+    );
+    assert_eq!(
+        app.input_target(),
+        codegg::tui::panels::InputTarget::Build,
+        "an unmodified arrow must not have armed the chat target"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_composer_target_follows_the_focused_panel() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    assert_eq!(
+        app.input_target(),
+        codegg::tui::panels::InputTarget::Chat,
+        "a focused chat panel arms chat delivery"
+    );
+
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    assert_eq!(
+        app.input_target(),
+        codegg::tui::panels::InputTarget::Build,
+        "leaving the panel re-arms the agent automatically — the target is derived, never latched"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_agent_session_is_the_default_target() {
+    let app = test_app();
+    assert_eq!(
+        app.input_target(),
+        codegg::tui::panels::InputTarget::Build,
+        "with no panel focused the composer targets the agent session"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_focused_chat_panel_in_insert_mode_leaves_typing_to_the_composer() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(key(KeyCode::Left, KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Right, KeyModifiers::SHIFT));
+    assert!(app.panel_host.is_focused());
+
+    app.on_key(plain('i'));
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Insert,
+        "i in the panel opens the shared composer"
+    );
+
+    app.on_key(plain('h'));
+    app.on_key(plain('i'));
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "hi",
+        "the composer owns typing while the panel is focused in Insert mode"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn escape_leaves_insert_mode_before_it_leaves_the_panel() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(plain('i'));
+    app.on_key(plain('h'));
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Insert
+    );
+
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(
+        app.ui_state.input_mode,
+        codegg::tui::input::InputMode::Normal,
+        "Esc must leave Insert first so a typed letter is never unfocusable"
+    );
+    assert!(app.panel_host.is_focused(), "one Esc is not two");
+
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.panel_host.is_focused(),
+        "a second Esc releases the panel"
+    );
+    assert_eq!(
+        app.prompt_state.prompt.get_text(),
+        "h",
+        "Esc must not discard what was typed"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn q_types_rather_than_unfocusing_while_composing() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(plain('i'));
+    app.on_key(plain('q'));
+    assert!(
+        app.panel_host.is_focused(),
+        "q is a letter while composing, not a command"
+    );
+    assert_eq!(app.prompt_state.prompt.get_text(), "q");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn q_still_unfocuses_the_panel_in_normal_mode() {
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    app.on_key(plain('q'));
+    assert!(
+        !app.panel_host.is_focused(),
+        "outside Insert mode q keeps its exit meaning"
     );
 }

@@ -739,20 +739,29 @@ Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, and one
 `SidePanel` impl. There is no per-panel branch left in the render path or the
 key handler.
 
-**A focused panel consumes every key.** This is the property that makes the
-column usable: in the chat panel a printable character means "insert into the
-composer", so an unbound key that fell through to the prompt would submit an
-agent turn. `PanelKey` therefore has no "unhandled" variant; `Esc` and `q`
-are the only exits, handled by the host. A panel with an input mode claims
-the exit first via `SidePanel::owns_exit_key`, so chat returns to Normal with
-its buffer intact before focus leaves — and `q` stays a letter while
-composing instead of yanking the keyboard away mid-word.
+**A focused panel owns navigation, not text — and only in Normal mode.** Two
+rules replace the original "consumes every key" contract:
+
+1. **Mode gate.** The host is consulted only when `input_mode == Normal` (or
+   the selector overlay is up). This is load-bearing, not an optimisation: the
+   host claims `Esc` and `q` as focus exits, so consulting it in Insert mode
+   would make the letter `q` untypable and `Esc` unable to leave Insert. In
+   Insert mode the composer owns the keyboard, which is what lets one bottom
+   composer deliver to two destinations.
+2. **Navigation vs text.** While focused in Normal mode the panel consumes
+   arrows, `j`/`k`, paging, channel switching and its own verbs, so a stray
+   `j` is never read as a keystroke elsewhere. It does not own text: `i` and
+   `a` return `PanelKey::PassThrough` so the shared composer's `FocusPrompt`
+   opens Insert mode. `PassThrough` is only legal for a panel that holds no
+   draft of its own — the chat panel has none, and a panel with a live buffer
+   must still consume everything so falling text is never edited in one
+   buffer while rendered in another.
 
 **Key ownership precedence** in `App::on_key`: modal dialogs (`FocusManager`) →
-timeline → command mode → completions → change review → **side panel** →
-Workspace view → Editor view → composer. The panel sits above the non-modal
-primary views because those also claim printable keys, and a chat panel in
-Compose mode must see them as text rather than as dashboard navigation.
+timeline → command mode → completions → change review → **side panel (Normal
+mode only)** → Workspace view → Editor view → composer. The panel sits above
+the non-modal primary views because those also claim printable keys, and a
+chat panel must see them as navigation rather than as dashboard input.
 
 **Panels are presentation plus intent**, exactly like `Component` dialogs.
 `PanelCtx` grants named borrows only — theme, clock, the sidebar widget, the
@@ -769,6 +778,44 @@ field the chat commands read; the panel's `bound` flag is kept in step with
 it so `SidePanelHost::focus` (which has no app access) can refuse focus to an
 unbound chat panel. Changing the binding drops the panel's per-view state, so
 a composer buffer cannot survive into a different project's channel list.
+
+**Focus moves and the input target.** Two things are deliberately *not* stored
+state. `App::input_target()` is derived from the host on every read
+(`Chat` iff the Chat panel is focused), and `SidePanelHost::focused` decides
+which region has the keyboard. Because the target is derived rather than
+latched, moving focus away re-arms `Build` automatically — there is no path
+that leaves the composer pointed at chat after the user has left the panel.
+
+| Key | Action | Mode |
+|---|---|---|
+| `Shift+Right` / `Shift+L` | `FocusSidePanel` | Normal only |
+| `Shift+Left` / `Shift+H` | `FocusMainBuffer` | Normal only |
+
+These are **Normal-mode gestures**, enforced by `is_normal_only` in
+`handle_key_with_bindings`: the binding map is shared across modes, so without
+that guard a `Shift+H` would claim the letter in Insert mode. They are
+Shift-*qualified* so bare arrows keep their existing meaning — `Up`/`Down`
+scroll the transcript, `Left`/`Right` move the caret. `Shift+Up`/`Down` and
+`Shift+J`/`K` are deliberately left unbound until a layout with stacked panels
+exists; binding keys that cannot change anything would advertise a capability
+the UI does not have.
+
+Each letter is bound twice, with and without the `SHIFT` modifier, because
+terminals disagree about how to encode a shifted letter. Binding both is safe
+(uppercase `H`/`L` are otherwise unbound in Normal mode) and is the same
+legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
+`tests/modifier_chords.rs`.
+
+**The composer is the only input surface.** The chat panel is a viewer: it has
+no composer buffer, and `i` hands the keyboard to the bottom composer. The
+composer renders `[NOR|INS] [agent] [BUILD] [CHAT]` with the armed target
+emphasised, and `send_prompt` reads the same derived value, so the badge and
+the dispatch cannot disagree. When the chat target is armed, text routes
+through `commands::chat::route_composer_to_chat` using
+`App::chat_panel_project` — never a path or the process cwd — and if the
+target is armed but unbound the text is **dropped with a warning** rather than
+rerouted to the agent, since that silent reroute is the exact mistake the
+badge exists to prevent.
 
 **Selector overlay** (`Ctrl+Alt+W`): a two-column grid drawn *inside* the
 side column, not centred over the viewport — it describes the region it is
@@ -832,23 +879,32 @@ switch away and back without re-entering the view.
 
 A peer of the `/chat` window (`components/dialogs/chat.rs`), not a
 replacement — the slash commands stay available so the two can be compared.
-Both read the same `ChatState` projection, share the two-mode Normal /
-Compose / Edit keymap and key meanings (`j`/`k` move, `g`/`G`/`Home`/`End` jump,
-PageUp/PageDown and `Ctrl+U`/`Ctrl+D` page, `i`/`a`/`Enter` compose, `r` reply,
-`e` edit, `X` redact, `m` mark-read, `u` load older, `R` refresh, `[`/`]`
-switch channel), and emit the same `TuiMsg` intents.
+Both read the same `ChatState` projection and emit the same `TuiMsg` intents
+through the same `start_chat_*` seams.
 
-The difference is presentation. At 30 columns there is a single composer row
-instead of a bordered three-row editor, message bodies hard-wrap through
+**The panel is a viewer, not a second window.** It deliberately has *no*
+composer buffer and no reply/edit verbs: the bottom composer is the single
+input surface for both targets, and two live text buffers would put two
+cursors on screen with nothing to say which one `Enter` would use. Its keys
+are `j`/`k` move, `g`/`G`/`Home`/`End` jump, PageUp/PageDown and
+`Ctrl+U`/`Ctrl+D` page, `X` redact, `m` mark-read, `u` load older, `[`/`]`
+switch channel, and `i`/`a` **passed through** to the composer. Reply, edit
+and redaction-by-message-management remain on the `/chat` window.
+
+The difference is presentation. Message bodies hard-wrap through
 `wrap::wrap_to_strings` with continuation lines indented under the first body
 column, and the keybar is one line of hints shown only while focused.
 
-Two invariants carried over from the window:
+Invariants carried over from the window:
 
-- **The composer buffer lives in the panel, not in `ChatState`.** It is
-  mirrored into the per-project draft on every edit so `/chat-send` from the
-  command line sees the same text and a failed send keeps what was typed.
-  Opening the composer never clears it.
+- **The destination row is unconditional and names the armed target.** It
+  draws `▸ CHAT ↵ sends here · Shift+← back` when focused and bound, drops the
+  `▸` marker when blurred, and shows `No project bound` in the body rather
+  than an armed-looking row when nothing is bound. Collapsing this row is what
+  previously made "which panel has the keyboard" unobservable.
+- **The panel's own `bound` flag gates rendering**, not just the context's
+  project. `sync_chat_panel_project` sets both in lockstep, but a panel that
+  has been told it is unbound must not render an armed `CHAT` destination.
 - **Paging anchors on the selected message's last wrapped line.** A long
   message can span more rows than the body has, so anchoring on its first
   line would scroll the selection off-screen entirely.
@@ -864,18 +920,28 @@ Three deliberate divergences from the `/chat` window:
 - **There is no manual refresh key.** The `/chat` window keeps `R`; the panel
   does not.
 
-**The composer row is unconditional and carries a mode badge.** The row renders
-in both modes: `NOR` while navigating, `INS` while capturing text, in inverse
-video so it reads as a state lamp at 28 columns. Normal mode shows a muted
-placeholder (`i to type`, prefixed by `editing a message ·` or `replying ·` when
-a target is set); input mode shows the buffer and caret.
+**The destination row is unconditional** — see the chat panel section above. It
+replaced the panel's own `NOR`/`INS` composer row once the panel became a
+viewer; the badge moved to the bottom composer, which now renders
+`[NOR|INS] [agent] [BUILD] [CHAT]` and owns both the mode and the armed
+destination.
 
-This is load-bearing, not decoration. Collapsing the row in Normal mode made the
-two modes pixel-identical when the buffer was empty, so a user pressing `i` and
-typing saw the characters silently become navigation and reasonably concluded
-the input box was broken. The badge is what makes the mode observable, and it is
-rendered whether or not the panel holds focus — mode is panel state, not focus
-state.
+**The `/chat` window keeps its own mode badge and composer.** It reserves the
+composer row in *both* modes (it previously reserved zero rows in Normal mode)
+and draws an inverse-video `NOR`/`INS` badge, with `press i to type` in Normal
+mode. Two further rules there are load-bearing:
+
+- The composer renders `before + caret + after`. It used to assign the buffer
+  into a `text` local and then drop it: the empty case rendered a bare caret
+  and the non-empty case rendered only the slice *after* the caret, so every
+  character typed left of the cursor was never drawn. That, not the missing
+  row, is why "typing in the input box does not display" reproduced even in
+  Compose mode.
+- The placeholder is a fallback shown only when the buffer is empty, dimmed so
+  it cannot be mistaken for typed text.
+
+Making either visible is a support-question fix, not decoration: a mode the
+user cannot observe is indistinguishable from a broken input.
 
 **Refresh is event-driven.** The panel renders `ChatState` live rather than
 holding a snapshot, and `refresh_chat_panel` re-binds the panel to the current

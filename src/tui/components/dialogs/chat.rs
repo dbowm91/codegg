@@ -534,37 +534,76 @@ impl ChatDialog {
         }
     }
 
-    /// The composer/edit box, including a visible caret.
+    /// Inverse-video mode badge.
+    ///
+    /// This dialog used to render *zero* composer rows in Normal mode, so a
+    /// user typing into what looked like an empty input box saw nothing
+    /// happen and no indication that the key they needed was `i`. The badge
+    /// is drawn in both modes for the same reason the panel's is: the mode
+    /// must be observable before the user types, not after.
+    fn mode_badge(&self, theme: &Arc<Theme>) -> Span<'static> {
+        let (label, colour) = match self.mode {
+            ChatMode::Compose | ChatMode::Edit => ("INS", theme.primary),
+            ChatMode::Normal => ("NOR", theme.muted),
+        };
+        Span::styled(
+            format!(" {label} "),
+            Style::default()
+                .fg(theme.background)
+                .bg(colour)
+                .add_modifier(Modifier::BOLD),
+        )
+    }
+
+    /// The composer/edit box, including a visible caret and the mode badge.
     fn composer_line(&self, theme: &Arc<Theme>) -> Line<'static> {
+        let badge = self.mode_badge(theme);
         let label = match self.mode {
             ChatMode::Edit => "edit",
             _ if self.reply_target.is_some() => "reply",
             _ => "say",
         };
-        let text = if self.buffer.is_empty() {
-            match self.mode {
-                ChatMode::Edit => "(unchanged)".to_string(),
-                _ => "(message…)".to_string(),
-            }
-        } else {
-            self.buffer.clone()
+        // The placeholder is a *fallback*, not the buffer. It used to be
+        // assigned into `text` and then dropped on the floor: the empty case
+        // rendered a bare caret and the non-empty case rendered only the
+        // slice after the caret. That is why typing appeared to do nothing —
+        // every character before the cursor was never drawn.
+        let placeholder_text = match self.mode {
+            // Spelling out the mode's entry key is what turns "typing did
+            // nothing" into a discoverable interaction.
+            ChatMode::Normal => "press i to type",
+            ChatMode::Edit => "unchanged",
+            _ => "message…",
         };
-        let caret = if self.buffer.is_empty() {
-            "▏".to_string()
+        let (before, after) = if self.buffer.is_empty() {
+            (placeholder_text.to_string(), String::new())
         } else {
             let idx = char_byte_index(&self.buffer, self.caret);
-            let mut after = text[idx..].to_string();
-            after.insert(0, '▏');
-            after
+            (
+                self.buffer[..idx].to_string(),
+                self.buffer[idx..].to_string(),
+            )
         };
+        let empty = self.buffer.is_empty();
         Line::from(vec![
+            badge,
+            Span::raw(" "),
             Span::styled(
                 format!(" {label}› "),
                 Style::default()
                     .fg(theme.primary)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(caret, Style::default().fg(theme.primary)),
+            Span::styled(
+                before,
+                if empty {
+                    Style::default().fg(theme.muted)
+                } else {
+                    Style::default().fg(theme.foreground)
+                },
+            ),
+            Span::styled("▏", Style::default().fg(theme.primary)),
+            Span::styled(after, Style::default().fg(theme.foreground)),
         ])
     }
 }
@@ -632,7 +671,10 @@ impl Component for ChatDialog {
         // Channel bar is present only when the project actually has more
         // than one channel to switch between.
         let channel_rows = u16::from(self.channel_count() > 1);
-        let composer_rows = if self.mode == ChatMode::Normal { 0 } else { 3 };
+        // Unconditional: a composer that appears only while typing is
+        // indistinguishable from a broken one. Normal mode shows the badge
+        // plus `i to type` rather than nothing.
+        let composer_rows = 3;
         let rows = Layout::vertical([
             Constraint::Length(1), // header
             Constraint::Length(channel_rows),
@@ -1324,5 +1366,59 @@ mod tests {
         d.handle_key(key(KeyCode::Home));
         d.handle_key(key(KeyCode::Delete));
         assert_eq!(d.buffer(), "éllo");
+    }
+
+    /// Regression: the dialog used to reserve **zero** composer rows in
+    /// Normal mode, so typing into what looked like an empty input box did
+    /// nothing and nothing on screen said `i` was the way in. This is the
+    /// same defect the side panel had.
+    #[test]
+    fn normal_mode_still_shows_the_composer_row_with_a_badge() {
+        let theme = Arc::new(Theme::default());
+        let mut d = ChatDialog::new(Arc::clone(&theme), "p".to_string());
+        d.apply_snapshot(ready_snapshot());
+        assert_eq!(d.mode(), ChatMode::Normal);
+
+        let line = d.composer_line(&theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(
+            text.contains("NOR"),
+            "Normal mode must be labelled NOR: {text}"
+        );
+        assert!(
+            text.contains("press i to type"),
+            "Normal mode must name the key that starts composing: {text}"
+        );
+    }
+
+    #[test]
+    fn compose_mode_relabels_the_badge_to_ins() {
+        let theme = Arc::new(Theme::default());
+        let mut d = ChatDialog::new(Arc::clone(&theme), "p".to_string());
+        d.apply_snapshot(ready_snapshot());
+        d.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(d.mode(), ChatMode::Compose);
+
+        let line = d.composer_line(&theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("INS"), "Compose mode must read INS: {text}");
+        assert!(
+            !text.contains("press i to type"),
+            "the entry hint must not linger once composing: {text}"
+        );
+    }
+
+    #[test]
+    fn typed_text_is_visible_in_the_dialog_composer() {
+        let theme = Arc::new(Theme::default());
+        let mut d = ChatDialog::new(Arc::clone(&theme), "p".to_string());
+        d.apply_snapshot(ready_snapshot());
+        d.handle_key(key(KeyCode::Char('i')));
+        for ch in "ship it".chars() {
+            d.handle_key(key(KeyCode::Char(ch)));
+        }
+        let line = d.composer_line(&theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("ship it"), "typed text must render: {text}");
     }
 }

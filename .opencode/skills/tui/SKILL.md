@@ -115,15 +115,32 @@ root and lifecycle modules.
   owns which `SidePanelId` is active, whether it holds focus, and the
   `Ctrl+Alt+W` selector. To add a panel: an enum variant, an entry in
   `SidePanelId::ALL`, and one `SidePanel` impl. Do not add a per-panel `if`
-  to the render path. A focused panel consumes *every* key — an unbound key
-  that fell through to the prompt would submit an agent turn — so
-  `PanelKey` has no "unhandled" variant; `Esc`/`q` are the only exits and
-  go through the host. Panels get named borrows via `PanelCtx` (never
-  `&App`) and express every mutation as a `TuiMsg` routed into an existing
-  command seam. Project binding is resolved by `commands/panels.rs`, not by
-  the panel. Key precedence in `App::on_key`: modals → timeline → command
-  mode → completions → change review → **side panel** → Workspace → Editor →
-  composer.
+  to the render path. A focused panel owns *navigation* — arrows, `j`/`k`,
+  paging, its own verbs — and is consulted **only in Normal mode**, because
+  the host claims `Esc`/`q` as exits and would otherwise make `q` untypable
+  while composing. `PanelKey::PassThrough` exists only for panels that hold
+  no draft (the chat panel passes `i`/`a` to the composer); a panel with a
+  live buffer must still consume everything. Panels get named borrows via
+  `PanelCtx` (never `&App`) and express every mutation as a `TuiMsg` routed
+  into an existing command seam. Project binding is resolved by
+  `commands/panels.rs`, not by the panel. Key precedence in `App::on_key`:
+  modals → timeline → command mode → completions → change review → **side
+  panel (Normal only)** → Workspace → Editor → composer.
+- **Focus moves and the input target are Normal-mode, Shift-qualified, and
+  derived.** `Shift+→`/`Shift+L` focus the side panel, `Shift+←`/`Shift+H`
+  return to the main buffer; bare arrows keep their existing meaning. They
+  are gated by `is_normal_only` because the binding map is shared across
+  modes. Each shifted letter is bound with *and* without `SHIFT` because
+  terminals disagree on the encoding. `App::input_target()` is derived from
+  panel focus on every read — never latched — so leaving the panel re-arms
+  `Build` automatically. The composer renders `[NOR|INS] [agent] [BUILD]
+  [CHAT]` and `send_prompt` reads the same value; when `Chat` is armed but
+  unbound, text is dropped with a warning rather than rerouted to the agent.
+- **The chat panel is a viewer.** It has no composer buffer, no reply/edit
+  verbs, and never owns text — one bottom composer, two destinations. Its
+  destination row names the armed target and draws a `▸` marker only while
+  it holds the keyboard; when unbound it renders `No project bound` instead
+  of an armed-looking row.
 - **Multi-modifier chords are `{CONTROL, ALT}` only.** The TUI never pushes
   keyboard-enhancement flags (`tui/terminal.rs` does raw mode, bracketed
   paste, mouse capture only), so the terminal is in legacy xterm encoding where
@@ -133,12 +150,16 @@ root and lifecycle modules.
   switcher. `Ctrl+Alt+<letter>` arrives as `ESC` + one control byte and is
   unambiguous. `tests/modifier_chords.rs` asserts no map holds a
   CONTROL|SHIFT entry and that each chord stays disjoint from its twins.
-- **A panel must make its mode observable.** The chat panel renders its
-  composer row in both modes with a `NOR`/`INS` badge. Collapsing the row in
-  Normal mode made the modes pixel-identical on an empty buffer, so a user
-  pressing `i` and typing watched characters vanish into navigation and
-  concluded the input box was broken. The chat panel has no manual refresh key
-  — it renders `ChatState` live and daemon chat events push into the reducer.
+- **An input surface must make its mode observable, and must draw the whole
+  buffer.** The `/chat` window reserves its composer row in both modes with a
+  `NOR`/`INS` badge and `press i to type` in Normal mode. It also renders
+  `before + caret + after`: it used to draw only the slice after the caret and
+  nothing at all when empty, so text typed left of the cursor never appeared.
+  Collapsing the row in Normal mode made the modes pixel-identical on an empty
+  buffer, so a user pressing `i` and typing watched characters vanish into
+  navigation and concluded the input box was broken. The chat panel has no
+  manual refresh key — it renders `ChatState` live and daemon chat events push
+  into the reducer.
 - **`HelpDialog` is searchable.** Printable keys filter the keybinding rows,
   `Esc` clears the filter before it closes the dialog, and scrolling is on
   arrows/PageUp/PageDown rather than `j`/`k` so letters stay typeable.

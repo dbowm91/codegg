@@ -156,6 +156,10 @@ pub enum TuiMsg {
     CloseDialog,
     ProjectInitApprove,
     ToggleSidebar,
+    /// Move keyboard focus into the side panel (`Shift+Right` / `Shift+L`).
+    FocusSidePanel,
+    /// Move keyboard focus back to the main buffer (`Shift+Left` / `Shift+H`).
+    FocusMainBuffer,
     ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,

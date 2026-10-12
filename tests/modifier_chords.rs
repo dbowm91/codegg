@@ -207,3 +207,126 @@ fn panel_switcher_never_falls_through_to_close_session() {
         );
     }
 }
+
+// ── Panel focus moves ─────────────────────────────────────────────────
+//
+// These are the only Shift-qualified bindings in the shipped maps, and they
+// carry a constraint the chords above do not: they must exist in Normal mode
+// and must NOT fire in Insert mode, where the same key is ordinary text or
+// caret movement. A binding that leaked across the mode boundary would make
+// `Shift+Right` unreachable for typing and `H` untypable while composing.
+
+#[test]
+fn shift_arrow_focus_moves_are_bound_in_every_map() {
+    for vim_mode in [false, true] {
+        let map = build_bindings(None, vim_mode);
+        let label = if vim_mode { "vim" } else { "default" };
+        assert_eq!(
+            map.get(&(KeyModifiers::SHIFT, KeyCode::Right)).cloned(),
+            Some(InputAction::FocusSidePanel),
+            "Shift+Right missing from the {label} map"
+        );
+        assert_eq!(
+            map.get(&(KeyModifiers::SHIFT, KeyCode::Left)).cloned(),
+            Some(InputAction::FocusMainBuffer),
+            "Shift+Left missing from the {label} map"
+        );
+    }
+}
+
+#[test]
+fn focus_moves_fire_in_normal_mode_only() {
+    assert_eq!(
+        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::FocusSidePanel),
+        "Shift+Right must move focus in Normal mode"
+    );
+    assert_eq!(
+        press(KeyCode::Left, KeyModifiers::SHIFT, InputMode::Normal),
+        Some(InputAction::FocusMainBuffer),
+        "Shift+Left must return focus in Normal mode"
+    );
+    assert_eq!(
+        press(KeyCode::Right, KeyModifiers::SHIFT, InputMode::Insert),
+        None,
+        "Shift+Right is caret movement while composing; it must not steal the key"
+    );
+    assert_eq!(
+        press(KeyCode::Left, KeyModifiers::SHIFT, InputMode::Insert),
+        None,
+        "Shift+Left must remain caret movement while composing"
+    );
+}
+
+#[test]
+fn shift_letters_resolve_under_both_encodings() {
+    // Terminals disagree about whether a shifted letter carries SHIFT. If
+    // only one form were bound, the focus move would work on one machine and
+    // silently do nothing on another.
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        assert_eq!(
+            press(KeyCode::Char('L'), modifiers, InputMode::Normal),
+            Some(InputAction::FocusSidePanel),
+            "L with {modifiers:?} must focus the side panel"
+        );
+        assert_eq!(
+            press(KeyCode::Char('H'), modifiers, InputMode::Normal),
+            Some(InputAction::FocusMainBuffer),
+            "H with {modifiers:?} must focus the main buffer"
+        );
+    }
+}
+
+#[test]
+fn uppercase_focus_letters_are_ordinary_text_in_insert_mode() {
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        assert_eq!(
+            press(KeyCode::Char('L'), modifiers, InputMode::Insert),
+            Some(InputAction::Char('L')),
+            "an uppercase L while composing must type an L, not move focus"
+        );
+        assert_eq!(
+            press(KeyCode::Char('H'), modifiers, InputMode::Insert),
+            Some(InputAction::Char('H')),
+            "an uppercase H while composing must type an H, not move focus"
+        );
+    }
+}
+
+#[test]
+fn bare_arrows_keep_their_unmodified_meaning() {
+    // The user's contract was that focus switching must not disturb the
+    // existing arrow behaviour, so an unmodified arrow may never move focus.
+    for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right] {
+        let action = press(code, KeyModifiers::NONE, InputMode::Normal);
+        assert!(
+            !matches!(
+                action,
+                Some(InputAction::FocusSidePanel) | Some(InputAction::FocusMainBuffer)
+            ),
+            "an unmodified {code:?} must not have become a focus move, got {action:?}"
+        );
+    }
+}
+
+#[test]
+fn the_vertical_focus_pair_is_deliberately_unbound() {
+    // Shift+Up/Down and Shift+J/K are reserved for a layout with stacked
+    // panels. Binding them to a no-op today would advertise a capability
+    // the UI does not have, so they must stay unclaimed in Normal mode.
+    for code in [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Char('J'),
+        KeyCode::Char('K'),
+    ] {
+        let action = press(code, KeyModifiers::SHIFT, InputMode::Normal);
+        assert!(
+            !matches!(
+                action,
+                Some(InputAction::FocusSidePanel) | Some(InputAction::FocusMainBuffer)
+            ),
+            "Shift+{code:?} is reserved and must not act as a focus move, got {action:?}"
+        );
+    }
+}

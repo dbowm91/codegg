@@ -45,7 +45,7 @@ use ratatui::{
 };
 
 use crate::protocol::core::ChatMessageDto;
-use crate::tui::app::state::chat::{ChatStatus, ProjectChat};
+use crate::tui::app::state::chat::ProjectChat;
 use crate::tui::app::TuiMsg;
 use crate::tui::input::InputAction;
 use crate::tui::theme::Theme;
@@ -60,52 +60,19 @@ use super::{PanelCtx, PanelKey, SidePanel, SidePanelId};
 /// a mis-sized page still lands on a visible row.
 const PANEL_PAGE_STEP: usize = 10;
 
-/// Maximum composer characters. Matches the reducer's draft bound so the
-/// panel never holds text the daemon would reject on send.
-const MAX_COMPOSER_CHARS: usize = 4_000;
-
-/// Interaction mode of the chat panel.
+/// Read-only project-chat side panel.
 ///
-/// Mirrors `ChatDialog`'s `ChatMode` so both surfaces speak the same
-/// vocabulary, but owned locally: the panel must be able to sit in Compose
-/// mode while the `/chat` window sits in Normal, and they are separate
-/// views of the same projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ChatMode {
-    /// Browsing: single keys drive actions, no text is captured.
-    #[default]
-    Normal,
-    /// Composing a new message.
-    Compose,
-    /// Editing an existing message's body.
-    Edit,
-}
-
-impl ChatMode {
-    /// Whether printable keys are captured as text.
-    pub fn is_input(self) -> bool {
-        matches!(self, ChatMode::Compose | ChatMode::Edit)
-    }
-}
-
-/// Interactive project-chat side panel.
-///
-/// Holds only per-view state — mode, cursor, channel highlight, and the
-/// composer buffer. Message data lives in `ChatState`; the buffer is
-/// mirrored into the per-project draft on every edit so a failed send keeps
-/// the author's text and `/chat-send` from the command line sees the same
-/// thing.
+/// Holds only per-view state — the message cursor and the channel highlight.
+/// Message data lives in `ChatState`. There is deliberately **no** composer
+/// buffer here: the bottom composer is the single input surface for both
+/// send targets, and a second live text buffer would put two cursors on
+/// screen with nothing to say which one Enter would use.
 #[derive(Debug, Default)]
 pub struct ChatPanel {
-    mode: ChatMode,
     /// Index into the active channel's message window.
     cursor: usize,
     /// Index into the channel list.
     channel_cursor: usize,
-    buffer: String,
-    caret: usize,
-    edit_target: Option<String>,
-    reply_target: Option<String>,
     /// First `X` arms a destructive redact; the second confirms.
     redact_armed: Option<String>,
     /// Mirrors `App::chat_panel_project` — true when a project is bound.
@@ -115,14 +82,6 @@ pub struct ChatPanel {
 }
 
 impl ChatPanel {
-    pub fn mode(&self) -> ChatMode {
-        self.mode
-    }
-
-    pub fn buffer(&self) -> &str {
-        &self.buffer
-    }
-
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -149,13 +108,8 @@ impl ChatPanel {
     /// Called on revocation and project change so a composer buffer cannot
     /// outlive the projection it was composed against.
     pub fn reset(&mut self) {
-        self.mode = ChatMode::Normal;
         self.cursor = 0;
         self.channel_cursor = 0;
-        self.buffer.clear();
-        self.caret = 0;
-        self.edit_target = None;
-        self.reply_target = None;
         self.redact_armed = None;
     }
 
@@ -171,16 +125,6 @@ impl ChatPanel {
 
     fn channel_count(&self, ctx: &PanelCtx<'_>) -> usize {
         self.entry(ctx).map_or(0, |e| e.channels.len())
-    }
-
-    /// Sending into a project the daemon never authorized would produce a
-    /// guaranteed `project_not_found` round-trip, so the composer stays
-    /// closed until state arrives.
-    fn interactive(&self, ctx: &PanelCtx<'_>) -> bool {
-        matches!(
-            self.entry(ctx).map(|e| e.status),
-            Some(ChatStatus::Ready) | Some(ChatStatus::Error)
-        )
     }
 
     fn selected<'a>(&self, ctx: &'a PanelCtx<'_>) -> Option<&'a ChatMessageDto> {
@@ -203,205 +147,7 @@ impl ChatPanel {
         self.cursor = self.cursor.min(self.message_count(ctx).saturating_sub(1));
     }
 
-    // ── Buffer editing ────────────────────────────────────────────────
-
-    fn insert(&mut self, ch: char) {
-        if char_len(&self.buffer) >= MAX_COMPOSER_CHARS {
-            return;
-        }
-        let idx = char_byte_index(&self.buffer, self.caret);
-        self.buffer.insert(idx, ch);
-        self.caret += 1;
-    }
-
-    fn backspace(&mut self) {
-        if self.caret == 0 {
-            return;
-        }
-        let idx = char_byte_index(&self.buffer, self.caret - 1);
-        self.buffer.remove(idx);
-        self.caret -= 1;
-    }
-
-    fn delete(&mut self) {
-        if self.caret >= char_len(&self.buffer) {
-            return;
-        }
-        let idx = char_byte_index(&self.buffer, self.caret);
-        self.buffer.remove(idx);
-    }
-
-    /// Copy the panel buffer into the per-project draft so `/chat-send` and
-    /// `/chat-edit` from the command line stay in step with what is on
-    /// screen, and so a failed send does not lose the text.
-    fn mirror_draft(&self, ctx: &mut PanelCtx<'_>) {
-        let Some(project) = ctx.chat_project else {
-            return;
-        };
-        if ctx.chat.draft_for(project) != self.buffer {
-            ctx.chat.set_draft(project, self.buffer.clone());
-        }
-    }
-
-    /// Adopt the project draft into an empty buffer.
-    ///
-    /// Only while browsing: overwriting mid-typing would destroy what the
-    /// user is composing every time an unrelated live event landed.
-    fn sync_draft(&mut self, ctx: &PanelCtx<'_>) {
-        if self.mode == ChatMode::Normal && self.buffer.is_empty() {
-            if let Some(project) = ctx.chat_project {
-                self.buffer = ctx.chat.draft_for(project).to_string();
-                self.caret = char_len(&self.buffer);
-            }
-        }
-    }
-
-    fn open_compose(&mut self, ctx: &PanelCtx<'_>) {
-        if !self.interactive(ctx) {
-            return;
-        }
-        self.mode = ChatMode::Compose;
-        self.edit_target = None;
-        self.reply_target = None;
-        // The buffer is NOT cleared: it holds the project draft, which is how
-        // a message survives a failed send. Opening the composer must not
-        // make that draft unreachable from the one place it can be fixed.
-        self.caret = char_len(&self.buffer);
-    }
-
-    fn open_reply(&mut self, ctx: &PanelCtx<'_>) {
-        if !self.interactive(ctx) {
-            return;
-        }
-        let Some(message) = self.selected(ctx) else {
-            return;
-        };
-        let (author, message_id) = (message.author_principal.clone(), message.message_id.clone());
-        self.mode = ChatMode::Compose;
-        self.edit_target = None;
-        self.reply_target = Some(message_id);
-        self.buffer = format!("@{author} ");
-        self.caret = char_len(&self.buffer);
-    }
-
-    fn open_edit(&mut self, ctx: &PanelCtx<'_>) {
-        let Some(message) = self.selected(ctx) else {
-            return;
-        };
-        if !self.interactive(ctx) || message.redacted {
-            return;
-        }
-        // Authorship is the daemon's call, not the client's. The same
-        // principal string is not proof of ownership across transports, so
-        // the panel neither hides the affordance nor pre-checks it — the
-        // daemon answers with an authored reason either way.
-        let (message_id, body) = (message.message_id.clone(), message.body.clone());
-        self.mode = ChatMode::Edit;
-        self.reply_target = None;
-        self.edit_target = Some(message_id);
-        self.buffer = body;
-        self.caret = char_len(&self.buffer);
-    }
-
-    /// Leave input mode, returning to Normal with the buffer intact.
-    ///
-    /// `Esc` must never destroy typed text, so cancel does not clear the
-    /// buffer. It is cleared on submit and by [`ChatPanel::reset`].
-    fn cancel_input(&mut self) {
-        self.mode = ChatMode::Normal;
-        self.edit_target = None;
-        self.reply_target = None;
-        self.redact_armed = None;
-    }
-
     // ── Key routing ───────────────────────────────────────────────────
-
-    fn handle_input_key(&mut self, key: KeyEvent, ctx: &mut PanelCtx<'_>) -> PanelKey {
-        match key.code {
-            // `Esc` leaves input mode; the host drops focus afterwards only
-            // if the panel has already returned to Normal.
-            KeyCode::Esc => {
-                self.cancel_input();
-                PanelKey::Consumed
-            }
-            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => self.submit(ctx),
-            KeyCode::Backspace => {
-                self.backspace();
-                self.mirror_draft(ctx);
-                PanelKey::Consumed
-            }
-            KeyCode::Delete => {
-                self.delete();
-                self.mirror_draft(ctx);
-                PanelKey::Consumed
-            }
-            KeyCode::Left => {
-                self.caret = self.caret.saturating_sub(1);
-                PanelKey::Consumed
-            }
-            KeyCode::Right => {
-                self.caret = (self.caret + 1).min(char_len(&self.buffer));
-                PanelKey::Consumed
-            }
-            KeyCode::Home => {
-                self.caret = 0;
-                PanelKey::Consumed
-            }
-            KeyCode::End => {
-                self.caret = char_len(&self.buffer);
-                PanelKey::Consumed
-            }
-            KeyCode::Char(ch)
-                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
-            {
-                self.insert(ch);
-                self.mirror_draft(ctx);
-                PanelKey::Consumed
-            }
-            // Unclaimed keys are still consumed: while composing, a key must
-            // never fall through and submit a turn.
-            _ => PanelKey::Consumed,
-        }
-    }
-
-    /// Hand the buffer to the intent boundary and return to Normal.
-    fn submit(&mut self, ctx: &mut PanelCtx<'_>) -> PanelKey {
-        let body = self.buffer.trim().to_string();
-        // An empty composer is a no-op, not a send. `start_chat_send`
-        // rejects an empty body with a warning toast, so emitting the
-        // intent here would make a stray Enter on an untouched composer
-        // shout at the user about a message they never wrote.
-        if body.is_empty() && self.mode == ChatMode::Compose {
-            self.mode = ChatMode::Normal;
-            self.edit_target = None;
-            self.reply_target = None;
-            return PanelKey::Consumed;
-        }
-        let intent = match self.mode {
-            ChatMode::Edit => self
-                .edit_target
-                .take()
-                .map(|message_id| TuiMsg::ChatEdit { message_id, body }),
-            _ => Some(TuiMsg::ChatSend {
-                body,
-                reply_to: self.reply_target.take(),
-            }),
-        };
-        self.mode = ChatMode::Normal;
-        self.reply_target = None;
-        self.edit_target = None;
-        self.buffer.clear();
-        self.caret = 0;
-        if let Some(project) = ctx.chat_project {
-            ctx.chat.set_draft(project, String::new());
-        }
-        // An empty submission produces no intent: the panel stays in Normal
-        // rather than emitting a send the daemon would reject.
-        match intent {
-            Some(msg) => PanelKey::Intent(msg),
-            None => PanelKey::Consumed,
-        }
-    }
 
     fn handle_normal_key(&mut self, key: KeyEvent, ctx: &mut PanelCtx<'_>) -> PanelKey {
         let last = self.message_count(ctx).saturating_sub(1);
@@ -454,17 +200,13 @@ impl ChatPanel {
                 self.clamp_cursor(ctx);
                 PanelKey::Consumed
             }
-            KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter => {
-                self.open_compose(ctx);
-                PanelKey::Consumed
-            }
-            KeyCode::Char('r') => {
-                self.open_reply(ctx);
-                PanelKey::Consumed
-            }
-            KeyCode::Char('e') => {
-                self.open_edit(ctx);
-                PanelKey::Consumed
+            KeyCode::Char('i') | KeyCode::Char('a') => {
+                // The panel is a viewer: the bottom composer is the only
+                // input surface. `i` is handed back so the shared composer's
+                // own `FocusPrompt` binding opens Insert mode — the same key
+                // that enters the agent prompt enters chat compose, which is
+                // what makes "type anywhere, land in the armed target" true.
+                PanelKey::PassThrough
             }
             KeyCode::Char('X') => self.arm_or_redact(ctx),
             KeyCode::Char('m') => PanelKey::Intent(TuiMsg::ChatMarkRead),
@@ -663,79 +405,43 @@ impl ChatPanel {
         Line::default()
     }
 
-    /// Mode badge: `INS` while capturing text, `NOR` while navigating.
+    /// Which destination the bottom composer is currently armed for.
     ///
-    /// This row is the reason typing "does nothing" is not a support question.
-    /// Without it, Normal mode and Compose mode look identical when the buffer
-    /// is empty, so a user pressing `i` and typing sees the characters vanish
-    /// into navigation with nothing on screen saying why.
-    fn mode_badge(&self, theme: &Theme) -> Span<'static> {
-        let label = if self.mode.is_input() { "INS" } else { "NOR" };
-        let colour = if self.mode.is_input() {
-            theme.primary
+    /// The panel no longer has a composer, so this row answers the question
+    /// its old composer row used to answer — "where does what I type go?" —
+    /// plus the one the badge alone cannot: *which panel has the keyboard*.
+    /// A focused panel is drawn with a `▸` marker and says so in words,
+    /// because mistaking the focused region for the send target is how a
+    /// prompt silently lands in the team chat.
+    fn target_line(&self, ctx: &PanelCtx<'_>, theme: &Theme) -> Line<'static> {
+        let armed_chat = ctx.chat_project.is_some();
+        let (marker, name, hint) = if !ctx.focused {
+            (" ", "", "Shift+→ focus · ^⌥W switch")
+        } else if armed_chat {
+            ("▸", " CHAT ", "↵ sends here · Shift+← back")
         } else {
-            theme.muted
+            ("▸", " SESSIONS ", "↵ sends to agent · i to type")
         };
-        // Inverse video so the badge reads as a state lamp rather than as part
-        // of the surrounding text, and so it is still obvious at 28 columns.
-        Span::styled(
-            format!(" {label} "),
+        let marker_style = if ctx.focused {
             Style::default()
                 .fg(theme.background)
-                .bg(colour)
-                .add_modifier(Modifier::BOLD),
-        )
-    }
-
-    /// Composer row, rendered in **both** modes.
-    ///
-    /// Normal mode shows the badge plus a muted placeholder; input mode shows
-    /// the badge plus the buffer and a caret. The row is never absent, because
-    /// its absence was what made the mode unobservable.
-    fn composer_line(&self, theme: &Theme, width: u16) -> Line<'static> {
-        let badge = self.mode_badge(theme);
-        let width = usize::from(width).max(8);
-        // Badge occupies 5 cells; leave a gutter and at least one text cell.
-        let budget = width.saturating_sub(badge.width() + 3).max(1);
-        let mut spans = vec![badge, Span::raw(" ")];
-        if self.mode.is_input() {
-            let body: String = self.buffer.chars().take(budget).collect();
-            let caret_offset = self.caret.min(char_len(&body));
-            let before: String = body.chars().take(caret_offset).collect();
-            let after: String = body.chars().skip(caret_offset).collect();
-            spans.push(Span::styled(before, Style::default().fg(theme.foreground)));
-            spans.push(Span::styled(
-                "▌",
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::UNDERLINED),
-            ));
-            spans.push(Span::styled(after, Style::default().fg(theme.foreground)));
+                .bg(theme.warning)
+                .add_modifier(Modifier::BOLD)
         } else {
-            let prefix = self.edit_or_reply_hint();
-            let hint = if self.buffer.is_empty() {
-                format!("{prefix}i to type")
-            } else {
-                prefix
-            };
-            spans.push(Span::styled(
-                ellipsize_to_width(&hint, budget),
-                Style::default().fg(theme.muted),
-            ));
-        }
-        Line::from(spans)
-    }
-
-    /// Short description of what submitting in the current mode would do, so
-    /// Normal mode explains itself without hiding the mode badge.
-    fn edit_or_reply_hint(&self) -> String {
-        if self.edit_target.is_some() {
-            "editing a message · ".to_string()
-        } else if self.reply_target.is_some() {
-            "replying · ".to_string()
+            Style::default().fg(theme.muted)
+        };
+        let name_style = if ctx.focused {
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD)
         } else {
-            String::new()
-        }
+            Style::default().fg(theme.muted)
+        };
+        Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::styled(name, name_style),
+            Span::styled(format!(" {hint}"), Style::default().fg(theme.muted)),
+        ])
     }
 
     /// One-line keybar, shown only while the panel holds focus so an
@@ -744,11 +450,7 @@ impl ChatPanel {
         if !ctx.focused {
             return Line::default();
         }
-        let hint = if self.mode.is_input() {
-            "↵ send · Esc back to NOR"
-        } else {
-            "jk move · i type · X del · ^⌥W panel · auto-updates"
-        };
+        let hint = "jk move · i type · X del · [ ] channel · ^⌥W panel · auto-updates";
         Line::from(Span::styled(
             ellipsize_to_width(hint, usize::from(ctx.area.width).saturating_sub(2)),
             Style::default().fg(theme.muted),
@@ -761,17 +463,7 @@ impl SidePanel for ChatPanel {
         SidePanelId::Chat
     }
 
-    /// In input mode both of the host's exits belong to the panel: `Esc`
-    /// and `q` must leave Compose without the buffer before the host
-    /// returns keys to the composer. `q` in particular is a letter while
-    /// composing, and letting the host treat it as a command would make it
-    /// impossible to type a `q`.
-    fn owns_exit_key(&self, _key: KeyEvent) -> bool {
-        self.mode.is_input()
-    }
-
     fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
-        self.sync_draft(ctx);
         let theme = ctx.theme.clone();
         if area.width < 12 || area.height < 4 {
             return;
@@ -802,13 +494,14 @@ impl SidePanel for ChatPanel {
             return;
         }
 
-        // The composer row is unconditional. Collapsing it in Normal mode made the
-        // mode invisible, which is what made "my typing does nothing" look like
-        // a broken input box rather than an unadvertised mode switch.
+        // The destination row is unconditional. Collapsing it whenever the
+        // panel was unfocused made "which panel has the keyboard" invisible,
+        // which is how a prompt reaches the agent while the user believes
+        // they are typing into chat.
         let rows = Layout::vertical([
             Constraint::Length(1), // header
             Constraint::Min(1),    // body
-            Constraint::Length(1), // composer (badge in every mode)
+            Constraint::Length(1), // destination / focus marker
             Constraint::Length(1), // status
             Constraint::Length(1), // keybar
         ])
@@ -817,9 +510,13 @@ impl SidePanel for ChatPanel {
         Paragraph::new(self.header(ctx, &theme)).render(rows[0], buf);
 
         // Nothing bound yet: say so rather than showing an empty box the
-        // user cannot act in.
-        if self.entry(ctx).is_none() {
-            let message = if ctx.chat_project.is_none() {
+        // user cannot act in. The panel's own recorded binding is consulted
+        // as well as the context's project, because a panel that has been
+        // told it is unbound must not render an armed `CHAT` destination —
+        // the two are set in lockstep by `sync_chat_panel_project`, so
+        // either one alone would be a second source of truth.
+        if !self.bound || self.entry(ctx).is_none() {
+            let message = if !self.bound || ctx.chat_project.is_none() {
                 "No project bound"
             } else {
                 "Chat unavailable"
@@ -857,7 +554,7 @@ impl SidePanel for ChatPanel {
             Paragraph::new(window).render(rows[1], buf);
         }
 
-        Paragraph::new(self.composer_line(&theme, rows[2].width)).render(rows[2], buf);
+        Paragraph::new(self.target_line(ctx, &theme)).render(rows[2], buf);
         Paragraph::new(self.status_line(ctx, &theme)).render(rows[3], buf);
         Paragraph::new(self.keybar(ctx, &theme)).render(rows[4], buf);
     }
@@ -868,14 +565,11 @@ impl SidePanel for ChatPanel {
         _action: Option<InputAction>,
         ctx: &mut PanelCtx<'_>,
     ) -> PanelKey {
-        match self.mode {
-            ChatMode::Normal => self.handle_normal_key(key, ctx),
-            ChatMode::Compose | ChatMode::Edit => self.handle_input_key(key, ctx),
-        }
+        // The panel is a viewer, so there is no input mode to dispatch on.
+        self.handle_normal_key(key, ctx)
     }
 
     fn on_activate(&mut self, ctx: &mut PanelCtx<'_>) {
-        self.sync_draft(ctx);
         // Re-anchor the channel highlight on whatever the reducer reports as
         // active so a completed switch lands where the user aimed and the
         // next press continues from there.
@@ -893,24 +587,10 @@ impl SidePanel for ChatPanel {
         // Leaving must not strand a destructive action armed, nor leave the
         // user inside a half-typed edit they can no longer see.
         self.redact_armed = None;
-        if self.mode.is_input() {
-            self.cancel_input();
-        }
     }
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────
-
-fn char_len(s: &str) -> usize {
-    s.chars().count()
-}
-
-fn char_byte_index(s: &str, char_idx: usize) -> usize {
-    s.char_indices()
-        .nth(char_idx)
-        .map(|(idx, _)| idx)
-        .unwrap_or(s.len())
-}
 
 /// Terminal columns a string occupies. Used to reserve the author prefix so
 /// wrapped bodies align; a char count would under-reserve for CJK/emoji.
@@ -1030,6 +710,7 @@ mod tests {
                 chat_project: Some(PROJECT),
                 area: SIDEBAR,
                 focused,
+                input_mode: crate::tui::input::InputMode::Normal,
             }
         }
     }
@@ -1077,31 +758,6 @@ mod tests {
         let mut panel = ChatPanel::default();
         panel.set_bound(true);
         panel
-    }
-
-    #[test]
-    fn unbound_panel_refuses_to_act() {
-        let mut world = World::new();
-        let mut panel = ChatPanel::default();
-        assert!(panel.is_unbound());
-        // No bound project: `i` cannot open a composer that has nowhere to
-        // send, and every other key is still swallowed rather than leaking.
-        assert_eq!(press(&mut panel, &mut world, 'i'), PanelKey::Consumed);
-        assert_eq!(panel.mode(), ChatMode::Normal);
-    }
-
-    #[test]
-    fn binding_drops_stale_view_state() {
-        let mut world = World::seeded(&["one"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        press(&mut panel, &mut world, 'h');
-        assert_eq!(panel.buffer(), "h");
-        // Rebinding to another project must not carry the buffer across.
-        panel.set_bound(false);
-        assert_eq!(panel.buffer(), "");
-        assert_eq!(panel.mode(), ChatMode::Normal);
-        assert!(panel.is_unbound());
     }
 
     #[test]
@@ -1175,157 +831,6 @@ mod tests {
             assert_eq!(outcome, PanelKey::Consumed);
             assert_eq!(panel.cursor(), expect);
         }
-    }
-
-    #[test]
-    fn i_opens_the_composer_and_typing_is_captured() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        assert_eq!(panel.mode(), ChatMode::Compose);
-        for ch in "hi".chars() {
-            assert_eq!(press(&mut panel, &mut world, ch), PanelKey::Consumed);
-        }
-        assert_eq!(panel.buffer(), "hi");
-    }
-
-    #[test]
-    fn enter_submits_a_send_intent_and_clears_the_buffer() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        press(&mut panel, &mut world, 'h');
-        press(&mut panel, &mut world, 'i');
-        assert_eq!(
-            tap(&mut panel, &mut world, KeyCode::Enter),
-            PanelKey::Intent(TuiMsg::ChatSend {
-                body: "hi".to_string(),
-                reply_to: None
-            })
-        );
-        assert_eq!(panel.buffer(), "");
-        assert_eq!(panel.mode(), ChatMode::Normal);
-        assert_eq!(world.chat.draft_for(PROJECT), "");
-    }
-
-    #[test]
-    fn enter_with_an_empty_composer_emits_nothing() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        assert_eq!(
-            tap(&mut panel, &mut world, KeyCode::Enter),
-            PanelKey::Consumed
-        );
-        assert_eq!(panel.mode(), ChatMode::Normal);
-    }
-
-    #[test]
-    fn composing_mirrors_into_the_project_draft() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        press(&mut panel, &mut world, 'a');
-        press(&mut panel, &mut world, 'b');
-        assert_eq!(
-            world.chat.draft_for(PROJECT),
-            "ab",
-            "the panel buffer must be visible to the /chat-* command path"
-        );
-    }
-
-    #[test]
-    fn escape_leaves_compose_mode_and_keeps_the_buffer() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        press(&mut panel, &mut world, 'd');
-        assert_eq!(
-            tap(&mut panel, &mut world, KeyCode::Esc),
-            PanelKey::Consumed
-        );
-        assert_eq!(panel.mode(), ChatMode::Normal);
-        assert_eq!(
-            panel.buffer(),
-            "d",
-            "Esc must not destroy typed text; the author may want to fix and resend"
-        );
-    }
-
-    #[test]
-    fn exit_keys_belong_to_the_panel_only_while_composing() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        let esc = event(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(
-            !panel.owns_exit_key(esc),
-            "in Normal mode Esc must fall through to the host so it can drop focus"
-        );
-        press(&mut panel, &mut world, 'i');
-        assert!(
-            panel.owns_exit_key(esc),
-            "while composing, Esc must leave Compose before focus leaves"
-        );
-        assert!(
-            panel.owns_exit_key(event(KeyCode::Char('q'), KeyModifiers::NONE)),
-            "`q` is a letter while composing, not a command"
-        );
-    }
-
-    #[test]
-    fn backspace_and_delete_edit_around_the_caret() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        press(&mut panel, &mut world, 'a');
-        press(&mut panel, &mut world, 'b');
-        tap(&mut panel, &mut world, KeyCode::Backspace);
-        assert_eq!(panel.buffer(), "a");
-        tap(&mut panel, &mut world, KeyCode::Home);
-        tap(&mut panel, &mut world, KeyCode::Delete);
-        assert_eq!(panel.buffer(), "");
-    }
-
-    #[test]
-    fn reply_prefills_the_author_mention() {
-        let mut world = World::seeded(&["first"]);
-        let mut panel = bound_panel();
-        assert_eq!(
-            press(&mut panel, &mut world, 'r'),
-            PanelKey::Consumed,
-            "reply opens the composer rather than emitting an intent"
-        );
-        assert_eq!(panel.mode(), ChatMode::Compose);
-        assert_eq!(panel.buffer(), "@alice ");
-    }
-
-    #[test]
-    fn reply_is_not_available_before_chat_is_ready() {
-        let mut world = World::new();
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'r');
-        assert_eq!(
-            panel.mode(),
-            ChatMode::Normal,
-            "no Ready window means no composer to open"
-        );
-    }
-
-    #[test]
-    fn edit_prefills_the_selected_body_and_emits_an_edit_intent() {
-        let mut world = World::seeded(&["original"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'e');
-        assert_eq!(panel.mode(), ChatMode::Edit);
-        assert_eq!(panel.buffer(), "original");
-        tap(&mut panel, &mut world, KeyCode::Backspace);
-        assert_eq!(
-            tap(&mut panel, &mut world, KeyCode::Enter),
-            PanelKey::Intent(TuiMsg::ChatEdit {
-                message_id: "m1".to_string(),
-                body: "origina".to_string(),
-            })
-        );
     }
 
     #[test]
@@ -1444,38 +949,6 @@ mod tests {
                 "{ch} must not escape the focused panel"
             );
         }
-        assert_eq!(panel.mode(), ChatMode::Normal);
-    }
-
-    #[test]
-    fn deactivate_clears_an_armed_redact_and_leaves_input_mode() {
-        let mut world = World::seeded(&["one", "two"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'X');
-        {
-            let mut ctx = world.ctx(true);
-            panel.on_deactivate(&mut ctx);
-        }
-        press(&mut panel, &mut world, 'i');
-        {
-            let mut ctx = world.ctx(true);
-            panel.on_deactivate(&mut ctx);
-        }
-        assert_eq!(
-            panel.mode(),
-            ChatMode::Normal,
-            "leaving the panel must not strand the user inside an invisible edit"
-        );
-        // Re-entering must start unarmed: X arms, and only a second X on the
-        // same message confirms. A surviving arm would redact m1 on the
-        // user's first attempt.
-        assert_eq!(press(&mut panel, &mut world, 'X'), PanelKey::Consumed);
-        assert_eq!(
-            press(&mut panel, &mut world, 'X'),
-            PanelKey::Intent(TuiMsg::ChatRedact {
-                message_id: "m1".to_string()
-            })
-        );
     }
 
     #[test]
@@ -1503,94 +976,6 @@ mod tests {
         let blurred = paint_default(&mut panel, &mut world, false);
         assert!(!blurred.contains('●'), "{blurred}");
         assert!(!blurred.contains("i type"), "{blurred}");
-    }
-
-    #[test]
-    fn the_composer_row_shows_the_mode_badge_in_both_modes() {
-        // The badge is the fix for "my typing does nothing": Normal and input
-        // mode must be distinguishable on screen at all times.
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-
-        let normal = paint_default(&mut panel, &mut world, true);
-        assert!(
-            normal.contains("NOR"),
-            "Normal mode must be labelled:\n{normal}"
-        );
-        assert!(
-            !normal.contains("INS"),
-            "Normal mode must not claim to be capturing text:\n{normal}"
-        );
-
-        assert_eq!(press(&mut panel, &mut world, 'i'), PanelKey::Consumed);
-        assert_eq!(panel.mode(), ChatMode::Compose);
-        let composing = paint_default(&mut panel, &mut world, true);
-        assert!(
-            composing.contains("INS"),
-            "input mode must be labelled INS:\n{composing}"
-        );
-        // Assert on the badge itself, not the whole paint: the keybar mentions
-        // "NOR" as the mode `Esc` returns to, so a whole-screen `NOR` check
-        // would pass for the wrong reason.
-        assert!(
-            panel
-                .composer_line(&Theme::dark(), 28)
-                .to_string()
-                .contains("INS"),
-            "the composer badge must read INS while composing"
-        );
-        assert!(
-            !panel
-                .composer_line(&Theme::dark(), 28)
-                .to_string()
-                .contains("NOR"),
-            "the composer badge must not read NOR while composing"
-        );
-    }
-
-    #[test]
-    fn the_badge_is_visible_even_when_the_panel_is_not_focused() {
-        // Mode is panel state, not focus state; blurring must not hide it.
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        let blurred = paint_default(&mut panel, &mut world, false);
-        assert!(blurred.contains("INS"), "{blurred}");
-    }
-
-    #[test]
-    fn typed_text_appears_in_the_composer_row() {
-        // End-to-end on the reported symptom: press `i`, type, and the
-        // characters must be visible on screen, not just held in the buffer.
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        press(&mut panel, &mut world, 'i');
-        for ch in "typing works".chars() {
-            assert_eq!(
-                press(&mut panel, &mut world, ch),
-                PanelKey::Consumed,
-                "character {ch:?} was not consumed by the composer"
-            );
-        }
-        let text = paint_default(&mut panel, &mut world, true);
-        assert!(
-            text.contains("typing works"),
-            "typed text is not visible:\n{text}"
-        );
-    }
-
-    #[test]
-    fn the_badge_fits_at_the_narrowest_rendered_width() {
-        // The side column is ~28-30 cells; the badge must not be ellipsized
-        // out of existence at that size. Width-only, so no world state is needed.
-        let panel = bound_panel();
-        let theme = Theme::dark();
-        let line = panel.composer_line(&theme, 12);
-        let rendered: String = line.spans.iter().flat_map(|s| s.content.chars()).collect();
-        assert!(
-            rendered.contains("NOR"),
-            "badge clipped at 12 cols: {rendered:?}"
-        );
     }
 
     #[test]
@@ -1644,20 +1029,6 @@ mod tests {
     }
 
     #[test]
-    fn composing_shows_the_caret_only_while_composing() {
-        let mut world = World::seeded(&["hello"]);
-        let mut panel = bound_panel();
-        // The composer row is always present, so the marker that distinguishes
-        // "capturing text" from "navigating" is the caret — not the row's
-        // existence, which no longer says anything about the mode.
-        assert!(!paint_default(&mut panel, &mut world, true).contains('▌'));
-        press(&mut panel, &mut world, 'i');
-        let text = paint_default(&mut panel, &mut world, true);
-        assert!(text.contains('▌'), "composer must show a caret:\n{text}");
-        assert!(text.contains("INS"), "{text}");
-    }
-
-    #[test]
     fn a_send_failure_is_surfaced_on_the_status_row() {
         let mut world = World::seeded(&["hello"]);
         let mut panel = bound_panel();
@@ -1667,5 +1038,90 @@ mod tests {
         let text = paint_default(&mut panel, &mut world, true);
         assert!(text.contains('✗'), "a failed send must be marked:\n{text}");
         assert!(text.contains("denied by policy"), "{text}");
+    }
+
+    #[test]
+    fn i_passes_through_so_the_shared_composer_can_take_over() {
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        // `i` must reach the composer rather than being swallowed: the panel
+        // holds no buffer, so it is the composer's `FocusPrompt` that turns
+        // this into Insert mode and the CHAT target into a live destination.
+        assert_eq!(press(&mut panel, &mut world, 'i'), PanelKey::PassThrough);
+        assert_eq!(press(&mut panel, &mut world, 'a'), PanelKey::PassThrough);
+    }
+
+    #[test]
+    fn enter_is_consumed_rather_than_sent_to_the_agent() {
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        // With the panel focused in Normal mode, Enter is not a send. It
+        // reaches the composer only after the mode gate admits it.
+        assert_eq!(
+            tap(&mut panel, &mut world, KeyCode::Enter),
+            PanelKey::Consumed
+        );
+    }
+
+    #[test]
+    fn printable_keys_other_than_i_are_consumed_not_leaked() {
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        for ch in ['z', 'x', 'Q', '7'] {
+            assert_eq!(
+                press(&mut panel, &mut world, ch),
+                PanelKey::Consumed,
+                "{ch} must not leak past a focused panel"
+            );
+        }
+    }
+
+    #[test]
+    fn the_target_row_marks_the_panel_that_has_the_keyboard() {
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = bound_panel();
+        let focused = paint_default(&mut panel, &mut world, true);
+        let blurred = paint_default(&mut panel, &mut world, false);
+
+        assert!(
+            focused.contains('▸'),
+            "focused panel must be marked:\n{focused}"
+        );
+        assert!(
+            focused.contains("CHAT"),
+            "a focused, bound chat panel must name the armed target:\n{focused}"
+        );
+        assert!(
+            focused.contains("sends here"),
+            "the focused row must say where Enter goes:\n{focused}"
+        );
+        assert!(
+            !blurred.contains('▸'),
+            "an unfocused panel must not claim the keyboard:\n{blurred}"
+        );
+    }
+
+    #[test]
+    fn an_unbound_panel_reports_instead_of_claiming_a_target() {
+        let mut world = World::seeded(&["hello"]);
+        let mut panel = ChatPanel::default();
+        let painted = paint_default(&mut panel, &mut world, true);
+        assert!(
+            painted.contains("No project bound"),
+            "an unbound panel must not imply a live destination:\n{painted}"
+        );
+    }
+
+    #[test]
+    fn navigation_still_works_after_the_composer_was_removed() {
+        let mut world = World::seeded(&["one", "two", "three"]);
+        let mut panel = bound_panel();
+        assert_eq!(
+            tap(&mut panel, &mut world, KeyCode::Down),
+            PanelKey::Consumed
+        );
+        assert_eq!(panel.cursor(), 1, "Down must still move the message cursor");
+        assert_eq!(tap(&mut panel, &mut world, KeyCode::Up), PanelKey::Consumed);
+        assert_eq!(panel.cursor(), 0, "Up must still move the message cursor");
     }
 }

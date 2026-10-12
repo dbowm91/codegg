@@ -114,6 +114,15 @@ pub enum InputAction {
     FocusSidebar,
     /// Open the side-panel switcher (`Ctrl+Alt+W`).
     TogglePanelSelector,
+    /// Move keyboard focus from the main buffer into the side panel
+    /// (`Shift+Right` / `Shift+L`, Normal mode only).
+    ///
+    /// Only the Chat panel arms the composer for chat delivery, so this is
+    /// also what re-targets the bottom composer at the project chat.
+    FocusSidePanel,
+    /// Return keyboard focus from the side panel to the main buffer
+    /// (`Shift+Left` / `Shift+H`, Normal mode only).
+    FocusMainBuffer,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -190,6 +199,15 @@ pub enum ActionKey {
     FocusSidebar,
     /// Open the side-panel switcher (`Ctrl+Alt+W`).
     TogglePanelSelector,
+    /// Move keyboard focus from the main buffer into the side panel
+    /// (`Shift+Right` / `Shift+L`, Normal mode only).
+    ///
+    /// Only the Chat panel arms the composer for chat delivery, so this is
+    /// also what re-targets the bottom composer at the project chat.
+    FocusSidePanel,
+    /// Return keyboard focus from the side panel to the main buffer
+    /// (`Shift+Left` / `Shift+H`, Normal mode only).
+    FocusMainBuffer,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -315,6 +333,8 @@ impl ActionKey {
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
             Self::TogglePanelSelector => InputAction::TogglePanelSelector,
+            Self::FocusSidePanel => InputAction::FocusSidePanel,
+            Self::FocusMainBuffer => InputAction::FocusMainBuffer,
             Self::ToggleSection => InputAction::ToggleSection,
             Self::CloseSession => InputAction::CloseSession,
             Self::Help => InputAction::Help,
@@ -372,6 +392,8 @@ impl ActionKey {
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
             Self::TogglePanelSelector => "Switch side panel",
+            Self::FocusSidePanel => "Focus side panel",
+            Self::FocusMainBuffer => "Focus main buffer",
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
@@ -443,8 +465,56 @@ pub struct KeybindConfig {
 static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
     Lazy::new(default_bindings_internal);
 
+/// Actions that exist only in Normal mode.
+///
+/// The binding map is shared across modes, so a `Shift`-qualified entry would
+/// otherwise claim the key in Insert mode too — stealing the caret movement
+/// that `Shift+Left`/`Shift+Right` performs while composing and stealing the
+/// letter itself for `Shift+H`/`Shift+L`. `handle_key_with_bindings` consults
+/// this so those keys stay ordinary text/caret input in Insert.
+fn is_normal_only(action: &InputAction) -> bool {
+    matches!(
+        action,
+        InputAction::FocusSidePanel | InputAction::FocusMainBuffer
+    )
+}
+
+/// `Shift`-qualified moves between the main buffer and the side panel.
+///
+/// Shift-qualified on purpose: the bare arrows already scroll the transcript
+/// (`Up`/`Down`) and move the caret (`Left`/`Right`), and the user's contract
+/// was that focus switching must not disturb them. The vertical pair
+/// (`Shift+Up`/`Down`, `Shift+J`/`K`) is deliberately left unbound until a
+/// layout with stacked panels actually exists — binding keys that cannot
+/// change anything would advertise a capability the UI does not have.
+///
+/// Each letter is bound twice. Terminals disagree about how to encode a
+/// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
+/// with no modifier at all. Binding both is safe because uppercase `H`/`L` are
+/// otherwise unbound in Normal mode, and `is_normal_only` keeps Insert mode
+/// treating them as text. This is the same legacy-encoding hazard that made
+/// every `Ctrl+Shift+X` chord undecodable — see `tests/modifier_chords.rs`.
+fn insert_panel_focus_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Right),
+        InputAction::FocusSidePanel,
+    );
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Left),
+        InputAction::FocusMainBuffer,
+    );
+    for (letter, action) in [
+        ('L', InputAction::FocusSidePanel),
+        ('H', InputAction::FocusMainBuffer),
+    ] {
+        map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
+        map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
+    }
+}
+
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
+    insert_panel_focus_bindings(&mut map);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     // Ctrl+C is the unconditional exit; Esc only backs out of whatever is on
@@ -715,6 +785,7 @@ pub fn default_bindings() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 
 fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
+    insert_panel_focus_bindings(&mut map);
 
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
@@ -997,6 +1068,22 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+Alt+W",
             action: "Switch side panel",
+            condition: None,
+        },
+        // The focus moves are Normal-mode gestures by contract. They are
+        // listed under Insert as well because the app boots into Insert and
+        // a user reading only that section is exactly who would try `Shift+→`
+        // from the composer and conclude the panel is unreachable.
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Shift+→ / Shift+L",
+            action: "Focus side panel (normal mode)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Shift+← / Shift+H",
+            action: "Focus main buffer (normal mode)",
             condition: None,
         },
         HelpEntry {
@@ -1775,7 +1862,7 @@ pub(crate) fn handle_key_with_bindings(
                 if key.modifiers == KeyModifiers::NONE && is_printable_char(c));
 
             if let Some(action) = map.get(&key_tuple) {
-                if is_bare_char {
+                if is_bare_char || is_normal_only(action) {
                     debug_log!("insert mode: skipping bare char binding: {:?}", action);
                 } else {
                     debug_log!("insert mode: matched binding: {:?}", action);
@@ -1784,7 +1871,7 @@ pub(crate) fn handle_key_with_bindings(
             }
             if let Some(_user_bindings) = bindings {
                 if let Some(action) = DEFAULT_BINDINGS.get(&key_tuple) {
-                    if is_bare_char {
+                    if is_bare_char || is_normal_only(action) {
                         debug_log!("insert mode: skipping bare char default: {:?}", action);
                     } else {
                         debug_log!("insert mode: fallback to default: {:?}", action);

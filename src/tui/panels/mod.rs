@@ -25,12 +25,23 @@
 //!
 //! ## Key ownership
 //!
-//! A focused panel *consumes every key*. This is deliberate and is the
-//! safety property that makes the panel usable: in the chat panel, a
-//! printable character means "insert into the composer". If unbound keys
-//! fell through to the main prompt, typing a chat message would submit an
-//! agent turn. [`PanelKey`] therefore has no "unhandled" variant — the only
-//! way out is the host's `Esc`, which returns focus to the composer.
+//! A focused panel owns *navigation*: arrows, `j`/`k`, paging, channel
+//! switching and the panel's own verbs. It consumes every one of those, so a
+//! stray `j` can never be read as a keystroke somewhere else.
+//!
+//! A focused panel does **not** own text. The chat panel is a viewer — it
+//! renders messages and has no composer of its own — so a printable key and
+//! `Enter` return [`PanelKey::PassThrough`] and land in the bottom composer.
+//! That is safe now in a way it was not when this module was written: the
+//! composer is the only input surface and it renders an explicit
+//! `[BUILD]`/`[CHAT]` target badge, so what happens to the key is decided by
+//! a value the user can see before they type, not by which widget happened to
+//! be focused. The old rule ("a leak would submit an agent turn") is now a
+//! rule about *displayed state* instead of a rule about swallowing keys.
+//!
+//! `PassThrough` is only legal for a panel that holds no draft of its own. A
+//! panel with a text buffer must consume everything, or falling text would be
+//! edited in one buffer while rendered in another.
 
 pub mod chat;
 pub mod session;
@@ -199,6 +210,11 @@ pub enum PanelKey {
     Intent(TuiMsg),
     /// The panel consumed the key; it changed presentation only.
     Consumed,
+    /// The panel does not own this key — it belongs to the composer.
+    ///
+    /// Only legal for a panel that holds no draft. See "Key ownership" in the
+    /// module docs for why this is now safe where it was not before.
+    PassThrough,
 }
 
 /// Read-only view of the frontend state a panel may render from, plus the
@@ -224,6 +240,14 @@ pub struct PanelCtx<'a> {
     pub area: Rect,
     /// Whether the host currently holds keyboard focus.
     pub focused: bool,
+    /// The main composer's real input mode.
+    ///
+    /// The key resolver is invoked for panel keys in the panel's own mode,
+    /// not the app's, so without this the host cannot tell a `Shift+H` meant
+    /// as "type a capital H while composing" from one meant as "move focus".
+    /// `FocusMainBuffer`/`FocusSidePanel` are Normal-mode gestures by
+    /// contract, and this is what enforces that even while a panel is focused.
+    pub input_mode: crate::tui::input::InputMode,
 }
 
 /// A swappable side panel. See [`SidePanelId`] for the extension procedure.
@@ -266,6 +290,36 @@ pub trait SidePanel {
     fn on_deactivate(&mut self, _ctx: &mut PanelCtx<'_>) {}
 }
 
+/// Where the main composer delivers its text on Enter.
+///
+/// The composer is the single input surface for both destinations, so the
+/// only thing standing between "I meant this for the agent" and "I sent my
+/// prompt to the team chat" is whether the user can see which one is armed.
+/// This is a *derived* value rather than stored state: the panel host
+/// already knows which panel is active and whether it holds the keyboard,
+/// and a second copy of that fact could drift out of sync with the badge
+/// that is supposed to be reporting it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputTarget {
+    /// The agent session. The default, and what the composer targets
+    /// whenever no panel owns the keyboard.
+    #[default]
+    Build,
+    /// The project chat. Armed only while the Chat panel itself holds
+    /// focus, so moving focus away re-arms Build automatically.
+    Chat,
+}
+
+impl InputTarget {
+    /// The badge label rendered next to `[NOR]`/`[INS]` in the composer.
+    pub fn label(self) -> &'static str {
+        match self {
+            InputTarget::Build => "BUILD",
+            InputTarget::Chat => "CHAT",
+        }
+    }
+}
+
 /// Which panel the side column shows, whether it holds focus, and the
 /// `Ctrl+Alt+W` selector.
 pub struct SidePanelHost {
@@ -302,6 +356,19 @@ impl SidePanelHost {
 
     pub fn is_focused(&self) -> bool {
         self.focused && !self.panel_is_empty()
+    }
+
+    /// Where the composer sends while this host owns the state.
+    ///
+    /// Only the Chat panel redirects delivery; every other panel leaves the
+    /// composer aimed at the agent session, so focusing Session cannot
+    /// silently retarget a half-typed prompt.
+    pub fn input_target(&self) -> InputTarget {
+        if self.is_focused() && self.active == SidePanelId::Chat {
+            InputTarget::Chat
+        } else {
+            InputTarget::Build
+        }
     }
 
     /// The selector swallows every other key, so the underlying panel must
@@ -449,6 +516,35 @@ impl SidePanelHost {
                 self.open_selector();
             }
             return Some(PanelKey::Consumed);
+        }
+        // `Ctrl+B` hides the column this panel lives in, so it is the only
+        // key that must work *from* inside a focused panel. Answering it here
+        // is what stops the toggle from working exactly once: the first
+        // press focuses a panel, and because a focused panel consumes every
+        // key, the second press was swallowed by the panel that press had
+        // just focused — leaving the column stuck open and the keyboard
+        // stranded. The intent is routed through `App::process_msg` so the
+        // toggle has exactly one implementation.
+        if action == Some(InputAction::ToggleSidebar) {
+            return Some(PanelKey::Intent(TuiMsg::ToggleSidebar));
+        }
+        // The focus moves are answered here for the same reason: `Shift+H` /
+        // `Shift+Left` is the only way back out of a focused panel, and a
+        // panel that swallowed it would trap the keyboard. `Shift+L` /
+        // `Shift+Right` is idempotent — the panel already has focus, so
+        // re-focusing is a no-op rather than a toggle.
+        if ctx.input_mode == crate::tui::input::InputMode::Normal
+            && matches!(
+                action,
+                Some(InputAction::FocusMainBuffer | InputAction::FocusSidePanel)
+            )
+        {
+            let msg = if action == Some(InputAction::FocusSidePanel) {
+                TuiMsg::FocusSidePanel
+            } else {
+                TuiMsg::FocusMainBuffer
+            };
+            return Some(PanelKey::Intent(msg));
         }
         if let Some(selector) = self.selector.as_mut() {
             match selector.handle_key(key) {

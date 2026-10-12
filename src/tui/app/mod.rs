@@ -2826,11 +2826,17 @@ impl App {
             return;
         }
 
-        // The host takes keys when a panel holds focus *or* when its overlay is
-        // up; the overlay must answer its own `Esc`/`Enter` without a panel
-        // owning the keyboard first.
+        // The host takes keys when its overlay is up, or when a panel holds focus
+        // *in Normal mode*. The mode gate is load-bearing: the host claims
+        // `Esc`/`q` as focus-exit keys, so consulting it in Insert mode
+        // would make the letter `q` unfocusable and `Esc` unable to leave
+        // Insert. In Insert mode the composer owns the keyboard — which is
+        // what lets one bottom composer deliver to either target, because
+        // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
+        // renders.
         let panel_active = self.ui_state.sidebar_visible
-            && (self.panel_host.is_focused() || self.panel_host.selector_open());
+            && (self.panel_host.selector_open()
+                || (self.panel_host.is_focused() && self.ui_state.input_mode == InputMode::Normal));
         // M006-E: an open change review claims a strict subset of keys, and
         // only while it is focused. Anything unclaimed falls through, so a
         // review never silently swallows editor or composer input.
@@ -2958,6 +2964,12 @@ impl App {
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
+            Some(InputAction::FocusSidePanel) => {
+                crate::tui::commands::panels::focus_side_panel(self)
+            }
+            Some(InputAction::FocusMainBuffer) => {
+                crate::tui::commands::panels::focus_main_buffer(self)
+            }
             Some(InputAction::TogglePanelSelector) => {
                 crate::tui::commands::panels::toggle_panel_selector(self);
             }
@@ -10729,6 +10741,16 @@ impl App {
         self.project_tabs
             .active()
             .and_then(|t| t.project_id.as_deref())
+    }
+
+    /// Where the bottom composer delivers its text on Enter.
+    ///
+    /// Derived from the panel host on every read so the `[BUILD]`/`[CHAT]`
+    /// badge in the composer and the key that actually dispatches the send
+    /// can never disagree — the failure mode this badge exists to prevent
+    /// is a prompt silently landing in the team chat.
+    pub fn input_target(&self) -> crate::tui::panels::InputTarget {
+        self.panel_host.input_target()
     }
 
     /// Daemon-typed workspace id of the active tab, if known.

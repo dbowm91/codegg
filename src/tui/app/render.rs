@@ -1067,29 +1067,66 @@ impl App {
         // [build]`) so the mode a prompt will actually run under is visible
         // without opening the agent picker. Bounded so a long agent name
         // cannot crowd out the prompt's own prefix row.
-        let agent_badge = self
-            .agent_state
-            .agents
-            .get(self.agent_state.current_agent)
-            .map(|agent| {
-                let name = crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
-                format!(" [{name}]")
-            })
-            .unwrap_or_default();
-        let mode_indicator = match self.ui_state.input_mode {
-            InputMode::Insert => Span::styled(
-                format!("[INS]{agent_badge} "),
-                Style::default()
-                    .fg(self.ui_state.theme.secondary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            InputMode::Normal => Span::styled(
-                format!("[NOR]{agent_badge}"),
+        //
+        // Both send targets are always shown, with the armed one emphasised,
+        // because the composer is a single input surface for two very
+        // different destinations. Showing only the active target would make
+        // the badge useless for the question it exists to answer — "where
+        // am I about to send this?"
+        let target = self.input_target();
+        let (build_style, chat_style) = match target {
+            crate::tui::panels::InputTarget::Build => (
                 Style::default()
                     .fg(self.ui_state.theme.primary)
                     .add_modifier(Modifier::BOLD),
+                Style::default().fg(self.ui_state.theme.muted),
+            ),
+            crate::tui::panels::InputTarget::Chat => (
+                Style::default().fg(self.ui_state.theme.muted),
+                Style::default()
+                    .fg(self.ui_state.theme.warning)
+                    .add_modifier(Modifier::BOLD),
             ),
         };
+        let target_badge = Line::from(vec![
+            Span::styled("[BUILD] ", build_style),
+            Span::styled("[CHAT]", chat_style),
+        ]);
+        // The agent only runs a prompt; naming it while chat is armed would
+        // imply a delivery that is not going to happen.
+        let agent_badge = match target {
+            crate::tui::panels::InputTarget::Chat => String::new(),
+            crate::tui::panels::InputTarget::Build => self
+                .agent_state
+                .agents
+                .get(self.agent_state.current_agent)
+                .map(|agent| {
+                    let name =
+                        crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
+                    format!(" [{name}]")
+                })
+                .unwrap_or_default(),
+        };
+        let mode_span_style = match self.ui_state.input_mode {
+            InputMode::Insert => Style::default()
+                .fg(self.ui_state.theme.secondary)
+                .add_modifier(Modifier::BOLD),
+            InputMode::Normal => Style::default()
+                .fg(self.ui_state.theme.primary)
+                .add_modifier(Modifier::BOLD),
+        };
+        let mode_label = match self.ui_state.input_mode {
+            InputMode::Insert => "[INS]",
+            InputMode::Normal => "[NOR]",
+        };
+        // `[NOR] [agent] [BUILD] [CHAT]` — one row carrying the mode, the
+        // agent that will run the prompt, and both possible destinations.
+        let mode_indicator = Line::from(vec![
+            Span::styled(mode_label.to_string(), mode_span_style),
+            Span::styled(agent_badge.clone(), mode_span_style),
+            target_badge.spans[0].clone(),
+            target_badge.spans[1].clone(),
+        ]);
         let session_prefix = match &self.session_state.session_status {
             SessionStatus::Working => Span::styled(
                 " ● ",
@@ -1115,7 +1152,9 @@ impl App {
         self.prompt_state.prompt.set_prefix(session_prefix);
 
         let prompt_text = self.prompt_state.prompt.get_text();
-        let placeholder = if prompt_text.starts_with('!') {
+        let placeholder = if target == crate::tui::panels::InputTarget::Chat {
+            "Message the project chat…".to_string()
+        } else if prompt_text.starts_with('!') {
             "shell: run locally; not included in model context".to_string()
         } else if self.prompt_state.composer_mode.is_task() {
             "Describe the task to schedule… (Enter opens sheet, Tab for session)".to_string()
@@ -1431,6 +1470,7 @@ impl App {
             chat_project: self.chat_panel_project.as_deref(),
             area,
             focused: self.panel_host.is_focused(),
+            input_mode: self.ui_state.input_mode,
         };
         // `Clear` first: the previous panel's pixels must not show through
         // a narrower panel (the chat panel is shorter than the sidebar).

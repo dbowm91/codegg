@@ -1671,6 +1671,31 @@ pub(crate) fn route_observer_insert_to_chat(app: &mut App, text: &str) -> bool {
     true
 }
 
+/// Route composer text to the project chat when the `[CHAT]` target is
+/// armed.
+///
+/// The project comes from `chat_panel_project`, which the panel command
+/// layer resolved from the active tab or the Workspace selection. It is
+/// deliberately *not* re-resolved here and never comes from a path or the
+/// process cwd: the composer is a general input surface and must not
+/// become a way to name a destination.
+///
+/// Returns `false` only when the target is armed but no project is bound,
+/// which the caller must treat as "do not send this anywhere".
+pub(crate) fn route_composer_to_chat(app: &mut App, text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let Some(project_id) = app.chat_panel_project.clone() else {
+        return false;
+    };
+    start_chat_send(app, project_id, trimmed.to_string(), None);
+    app.prompt_state.prompt.clear();
+    app.prompt_state.show_completions = false;
+    true
+}
+
 // ── Daemon event intake ──────────────────────────────────────────────────
 
 /// Route a daemon `ChatMessageCommitted` payload into the bounded chat

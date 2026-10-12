@@ -99,6 +99,29 @@ plain-`Ctrl` action instead. `Ctrl+Alt+W` opens the side-panel switcher,
 `Ctrl+Alt+S` focuses the sidebar, and `Ctrl+Alt+N` / `Ctrl+Alt+B` move between
 project tabs.
 
+### Where your input goes
+
+The composer at the bottom is the **only** place you type, and it always shows
+what Enter will do:
+
+```
+[NOR] [build] [BUILD] [CHAT]
+```
+
+`[NOR]`/`[INS]` is your typing mode. `[BUILD]` and `[CHAT]` are the two
+destinations — the bright one is armed. `[CHAT]` lights up only while the chat
+side panel has the keyboard, so it cannot be armed by accident.
+
+To reach the side panel, press `Esc` (to get to `[NOR]`) and then
+`Shift+→` or `Shift+L`. `Shift+←` or `Shift+H` returns you. These work in
+`[NOR]` mode only — while you are in `[INS]`, `Shift+→` moves the caret as
+usual. The panel you are controlling shows a `▸` marker and says where Enter
+will go.
+
+There are deliberately two indicators because they answer different
+questions: the composer badge says *where the text goes*, and the `▸` marker
+says *which panel has the keyboard*.
+
 A few commonly used entries:
 
 | Command | Purpose |
