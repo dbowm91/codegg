@@ -190,10 +190,11 @@ a reason, and one classified as dangerous opens a confirmation dialog first
 
 The daemon applies the caller's persisted sandbox profile and reserves a
 shared scheduler process slot before acceptance. Runs continue after a client
-disconnect for at most the five-minute command timeout; status and bounded
-output remain available for ten minutes to the same principal, project,
-workspace, and session. A daemon restart drops the ephemeral run and does not
-replay it. The typed `human_shell.v1` protocol returns an explicit unsupported
+disconnect until the configured timeout (300 seconds by default, capped at
+one hour); status and bounded output remain available for ten minutes to the
+same principal, project, workspace, and session. A daemon restart drops the
+ephemeral run and does not replay it. The typed `human_shell.v1` protocol
+returns an explicit unsupported
 response when an older daemon lacks this feature; the TUI never falls back to
 spawning on its own host.
 

@@ -6,6 +6,7 @@ pub const HUMAN_SHELL_PROTOCOL_VERSION: u32 = 1;
 pub const HUMAN_SHELL_CAPABILITY: &str = "human_shell.v1";
 pub const HUMAN_SHELL_MAX_COMMAND_BYTES: usize = 16 * 1024;
 pub const HUMAN_SHELL_MAX_READ_BYTES: usize = 64 * 1024;
+pub const HUMAN_SHELL_MAX_TIMEOUT_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HumanShellRunCapabilitiesDto {
@@ -13,7 +14,7 @@ pub struct HumanShellRunCapabilitiesDto {
     pub protocol_version: u32,
     pub max_command_bytes: usize,
     pub max_read_bytes: usize,
-    pub timeout_secs: u64,
+    pub max_timeout_secs: u64,
     pub max_runs_per_principal: usize,
 }
 
@@ -36,6 +37,8 @@ pub struct HumanShellRunCreateRequestDto {
     pub origin: HumanShellOriginDto,
     pub confirmed_dangerous: bool,
     pub command: String,
+    /// Bounded timeout selected from the human-shell configuration.
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

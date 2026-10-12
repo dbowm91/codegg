@@ -78,6 +78,10 @@ pub(crate) fn spawn_human_shell(
     let project_id = app.active_project_id().map(str::to_owned);
     let workspace_id = app.active_workspace_id().map(str::to_owned);
     let session_id = app.active_session_id().map(str::to_owned);
+    let timeout_secs = app.shell_default_timeout_secs.clamp(
+        1,
+        crate::protocol::human_shell::HUMAN_SHELL_MAX_TIMEOUT_SECS,
+    );
     let submission_id = uuid::Uuid::new_v4().to_string();
     let tui_cmd_tx = app.tui_cmd_tx.clone();
     app.task_registry
@@ -128,6 +132,7 @@ pub(crate) fn spawn_human_shell(
                         origin,
                         confirmed_dangerous,
                         command: command.clone(),
+                        timeout_secs,
                     },
                 },
             );
@@ -140,7 +145,7 @@ pub(crate) fn spawn_human_shell(
                             protocol_version: crate::protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION,
                             submission_id: submission_id.clone(), project_id: project_id.clone(),
                             workspace_id: workspace_id.clone(), session_id: session_id.clone(),
-                            origin, confirmed_dangerous, command: command.clone(),
+                            origin, confirmed_dangerous, command: command.clone(), timeout_secs,
                         },
                     },
                 );
@@ -174,7 +179,7 @@ pub(crate) fn spawn_human_shell(
                 });
             }
             let run_started_at = tokio::time::Instant::now();
-            let run_deadline = run_started_at + std::time::Duration::from_secs(300);
+            let run_deadline = run_started_at + std::time::Duration::from_secs(timeout_secs);
             emit!(crate::shell::ShellEvent::Started {
                 id, command: command.clone(), cwd: std::path::PathBuf::from(&run.cwd),
             });
@@ -195,7 +200,7 @@ pub(crate) fn spawn_human_shell(
                     Err(_) => {
                         emit!(crate::shell::ShellEvent::TimedOut {
                             id,
-                            elapsed: std::time::Duration::from_secs(300),
+                            elapsed: std::time::Duration::from_secs(timeout_secs),
                         });
                         break;
                     }

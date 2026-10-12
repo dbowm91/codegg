@@ -21,7 +21,7 @@ impl CoreDaemon {
                     protocol_version: codegg_protocol::human_shell::HUMAN_SHELL_PROTOCOL_VERSION,
                     max_command_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_COMMAND_BYTES,
                     max_read_bytes: codegg_protocol::human_shell::HUMAN_SHELL_MAX_READ_BYTES,
-                    timeout_secs: 300,
+                    max_timeout_secs: codegg_protocol::human_shell::HUMAN_SHELL_MAX_TIMEOUT_SECS,
                     max_runs_per_principal: 8,
                 },
             }),

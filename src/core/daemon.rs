@@ -4360,6 +4360,7 @@ mod tests {
                         origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
                         confirmed_dangerous: false,
                         command: "printf standalone".into(),
+                        timeout_secs: 300,
                     },
                 },
             ))

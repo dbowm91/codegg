@@ -74,7 +74,8 @@ composer draft and makes no staging or acceptance claim from queue delivery.
    scheduler process slot before accepting the run.
 4. `ShellRuntime::spawn()` submits daemon-host `$SHELL -lc <command>` to
    `ManagedProcessService::run_streaming()` with a sanitized daemon environment,
-   canonical workspace cwd, 300-second timeout, and bounded stdout/stderr.
+   canonical workspace cwd, configured timeout (300 seconds by default, capped
+   at one hour), and bounded stdout/stderr.
    Constrained sandbox profiles fail closed if the host cannot enforce them.
 5. The daemon retains at most eight runs per principal, 512 total runs, and
    bounded output/status for ten minutes. A connection drop does not orphan an

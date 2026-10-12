@@ -1884,6 +1884,7 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
                 origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
                 confirmed_dangerous: false,
                 command: String::new(),
+                timeout_secs: 300,
             },
         },
         R::HumanShellRunCapabilities,

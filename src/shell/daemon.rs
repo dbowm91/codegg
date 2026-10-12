@@ -14,7 +14,6 @@ use codegg_protocol::human_shell::{
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-const RUN_TIMEOUT: Duration = Duration::from_secs(300);
 const RUN_TTL_MS: i64 = 10 * 60 * 1000;
 const MAX_RUNS_PER_PRINCIPAL: usize = 8;
 const MAX_RUNS_TOTAL: usize = 512;
@@ -86,6 +85,8 @@ impl HumanShellRunService {
             || request.command.is_empty()
             || request.command.len() > HUMAN_SHELL_MAX_COMMAND_BYTES
             || request.command.contains('\0')
+            || request.timeout_secs == 0
+            || request.timeout_secs > codegg_protocol::human_shell::HUMAN_SHELL_MAX_TIMEOUT_SECS
         {
             return error(
                 "human_shell_invalid_request",
@@ -196,7 +197,7 @@ impl HumanShellRunService {
             },
             command: request.command.clone(),
             cwd: cwd.clone(),
-            timeout: RUN_TIMEOUT,
+            timeout: Duration::from_secs(request.timeout_secs),
             capture_policy,
             env_policy: crate::shell::types::ShellEnvPolicy::Clean,
         };
@@ -448,6 +449,7 @@ mod tests {
             origin: HumanShellOriginDto::Bang,
             confirmed_dangerous: false,
             command: command.into(),
+            timeout_secs: 300,
         }
     }
 
@@ -546,6 +548,63 @@ mod tests {
         assert!(
             matches!(service.read(&scope_b, &run_a.run_id, 0, 1024).await, CoreResponse::Error { code, .. } if code == "human_shell_run_gone")
         );
+        assert!(
+            matches!(service.cancel(&scope_b, &run_a.run_id).await, CoreResponse::Error { code, .. } if code == "human_shell_run_gone")
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_timeout_is_enforced_by_the_managed_process() {
+        let service = service();
+        let dir = tempfile::tempdir().unwrap();
+        let scope = HumanShellRunScope {
+            principal_id: "p".into(),
+            project_id: "project".into(),
+            workspace_id: "workspace".into(),
+            session_id: None,
+        };
+        let mut oversized_timeout = create_request("too-long", "project", "workspace", "true");
+        oversized_timeout.timeout_secs =
+            codegg_protocol::human_shell::HUMAN_SHELL_MAX_TIMEOUT_SECS + 1;
+        assert!(matches!(
+            service
+                .create(
+                    scope.clone(),
+                    oversized_timeout,
+                    dir.path().into(),
+                    "daemon".into(),
+                    "sh".into(),
+                    None,
+                )
+                .await,
+            CoreResponse::Error { code, .. } if code == "human_shell_invalid_request"
+        ));
+        let mut request = create_request("timeout", "project", "workspace", "sleep 2");
+        request.timeout_secs = 1;
+        let response = service
+            .create(
+                scope.clone(),
+                request,
+                dir.path().into(),
+                "daemon".into(),
+                "sh".into(),
+                None,
+            )
+            .await;
+        let CoreResponse::HumanShellRunCreated { run, .. } = response else {
+            panic!("unexpected create response: {response:?}")
+        };
+        for _ in 0..100 {
+            if let CoreResponse::HumanShellRunOutput { run: status, .. } =
+                service.read(&scope, &run.run_id, 0, 1024).await
+            {
+                if status.status == HumanShellRunStatusDto::TimedOut {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("configured one-second timeout did not terminate the process");
     }
 
     #[tokio::test]

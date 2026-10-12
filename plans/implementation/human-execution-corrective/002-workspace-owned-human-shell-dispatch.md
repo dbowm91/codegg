@@ -137,9 +137,10 @@ planning evidence.
 
 Execution uses a bounded continue-with-expiry disconnect contract: runs may
 continue after the submitting connection drops, but remain limited by the
-five-minute command timeout and a ten-minute ephemeral status/output retention
-window. Authenticated principal, session (when present), project, and workspace
-must still match for read/cancel after reconnect. Daemon restart invalidates
+configured timeout (300 seconds by default, capped at one hour) and a ten-minute
+ephemeral status/output retention window. Authenticated principal, session
+(when present), project, and workspace must still match for read/cancel after
+reconnect. Daemon restart invalidates
 handles and never replays a command. The daemon reads the caller's persisted
 sandbox profile; constrained profiles must be enforced by the canonical
 managed-process launcher or admission fails closed. `FullHost` remains an

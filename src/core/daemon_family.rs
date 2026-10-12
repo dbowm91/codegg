@@ -408,6 +408,7 @@ mod tests {
                         origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
                         confirmed_dangerous: false,
                         command: String::new(),
+                        timeout_secs: 300,
                     },
                 },
                 DaemonRequestFamily::HumanShell,
