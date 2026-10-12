@@ -986,17 +986,24 @@ async fn run_windows_test_restricted_inner(
     }
     #[cfg(test)]
     if forensic_populated_deny_roots {
-        for path in spec.deny_paths.iter().take(8) {
-            let child_created_after_lease = path.join("created-after-lease.txt");
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&child_created_after_lease)
-                .and_then(|mut file| {
-                    use std::io::Write;
-                    file.write_all(b"synthetic-c013-created-after-lease")
-                })
-                .map_err(ManagedProcessError::Spawn)?;
+        for path in spec
+            .write_paths
+            .iter()
+            .chain(spec.deny_paths.iter())
+            .take(8)
+        {
+            if spec.deny_paths.contains(path) {
+                let child_created_after_lease = path.join("created-after-lease.txt");
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&child_created_after_lease)
+                    .and_then(|mut file| {
+                        use std::io::Write;
+                        file.write_all(b"synthetic-c013-created-after-lease")
+                    })
+                    .map_err(ManagedProcessError::Spawn)?;
+            }
             windows_acl_lease::forensic_tree_snapshots(path, 64)
                 .map_err(ManagedProcessError::Spawn)?
                 .into_iter()
@@ -2232,38 +2239,59 @@ catch { $new = 'creation-denied' }
             OsString::from("-Command"),
             OsString::from(script),
         ];
-        let mut request = ManagedProcessRequest::new(
-            std::iter::once(executable.clone().into_os_string())
-                .chain(args.iter().cloned())
-                .collect(),
-            std::env::var_os("SystemRoot")
-                .map(PathBuf::from)
-                .expect("SystemRoot is set")
-                .join("System32"),
-            ProcessProvenance::new("windows-c013-forensic", "existing-object-access"),
-        );
-        request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
-            target: executable,
-            args: args
-                .iter()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect(),
-            read_paths: Vec::new(),
-            write_paths: vec![workspace.clone()],
-            deny_paths: vec![credentials.clone()],
-        });
-        request.environment_policy = EnvironmentPolicy::sanitized()
-            .with_var("C013_DIRECT", credential.as_os_str())
-            .with_var(
-                "C013_JUNCTION",
-                junction.join("synthetic-secret.txt").as_os_str(),
-            )
-            .with_var("C013_HARDLINK", hardlink.as_os_str())
-            .with_var("C013_PROTECTED", protected.as_os_str())
-            .with_var("C013_ADS", alternate_stream.as_os_str())
-            .with_var("C013_DENY_ROOT", credentials.as_os_str());
+        let request_for = |include_deny_root: bool| {
+            let mut request = ManagedProcessRequest::new(
+                std::iter::once(executable.clone().into_os_string())
+                    .chain(args.iter().cloned())
+                    .collect(),
+                std::env::var_os("SystemRoot")
+                    .map(PathBuf::from)
+                    .expect("SystemRoot is set")
+                    .join("System32"),
+                ProcessProvenance::new("windows-c013-forensic", "existing-object-access"),
+            );
+            request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+                target: executable.clone(),
+                args: args
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect(),
+                read_paths: Vec::new(),
+                write_paths: vec![workspace.clone()],
+                deny_paths: include_deny_root
+                    .then(|| credentials.clone())
+                    .into_iter()
+                    .collect(),
+            });
+            request.environment_policy = EnvironmentPolicy::sanitized()
+                .with_var("C013_DIRECT", credential.as_os_str())
+                .with_var(
+                    "C013_JUNCTION",
+                    junction.join("synthetic-secret.txt").as_os_str(),
+                )
+                .with_var("C013_HARDLINK", hardlink.as_os_str())
+                .with_var("C013_PROTECTED", protected.as_os_str())
+                .with_var("C013_ADS", alternate_stream.as_os_str())
+                .with_var("C013_DENY_ROOT", credentials.as_os_str());
+            request
+        };
 
-        let result = run_windows_test_restricted_forensic(request)
+        let grant_only_result = run_windows_test_restricted_forensic(request_for(false))
+            .await
+            .expect("grant-only C013 fixture completes");
+        assert!(grant_only_result.exit_status.success());
+        let grant_only = grant_only_result.stdout.to_string_lossy();
+        eprintln!("C013 grant-only candidate results: {grant_only}");
+        assert!(matches!(
+            grant_only_result.sandbox,
+            SandboxExecutionOutcome::TestOnlyAppContainer {
+                token_verified: true,
+                job_verified: true,
+                ..
+            }
+        ));
+
+        let result = run_windows_test_restricted_forensic(request_for(true))
             .await
             .expect("isolated C013 forensic child completes");
         assert!(result.exit_status.success());
