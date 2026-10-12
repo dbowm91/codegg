@@ -4,11 +4,11 @@ Date: 2026-10-12
 
 Evidence revision: `6028e03f20572b9c4cad53b1614df16a5c8d4182`
 
-Hosted evidence: [Windows process-launcher run 38296752862](https://github.com/dbowm91/codegg/actions/runs/38296752862)
+Hosted evidence: [Windows process-launcher run 38299806236](https://github.com/dbowm91/codegg/actions/runs/38299806236) on closure revision `841d6a51d7a0e7b03c58aa47d78b703801fb80fe`; implementation-SHA run [38296752862](https://github.com/dbowm91/codegg/actions/runs/38296752862) independently produced the same result at `6028e03f20572b9c4cad53b1614df16a5c8d4182`.
 
 ## Scope and environment
 
-The C013 forensic test ran on the repository's Windows Server 2025 hosted runner, Rust 1.89 MSVC, using runner-owned NTFS fixtures and synthetic secret files. The runner principal was Administrator/high integrity, as recorded by the workflow. This is disposable-fixture evidence only; it does not qualify arbitrary-user IPC, production daemon recovery, or a realistic workspace.
+The C013 forensic test ran on the repository's Windows Server 2025 hosted runner, Rust 1.89 MSVC, using runner-owned NTFS fixtures and synthetic secret files. The runner principal was Administrator/high integrity, as recorded by the workflow. The closure-revision rerun confirmed the same file-ID, access and restoration findings on `841d6a51`. This is disposable-fixture evidence only; it does not qualify arbitrary-user IPC, production daemon recovery, or a realistic workspace.
 
 Exact C013 command:
 

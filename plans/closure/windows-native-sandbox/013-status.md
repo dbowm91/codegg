@@ -15,14 +15,14 @@ Source finding and mitigation:
 - `plans/closure/windows-native-sandbox/011-status.md`
 - `plans/closure/windows-native-sandbox/012-status.md`
 
-Repository baseline reviewed: `6028e03f20572b9c4cad53b1614df16a5c8d4182`
+Repository baseline reviewed: `841d6a51d7a0e7b03c58aa47d78b703801fb80fe` (closure revision; implementation code is unchanged from `6028e03f20572b9c4cad53b1614df16a5c8d4182`)
 
 Implementation commits:
 
 - `6d965e03` through `6028e03f` — test-only forensic fixture, handle-aware object snapshots, fail-closed populated-root admission, and native workflow qualification.
-- Closure and planning disposition are recorded in this commit.
+- `841d6a51` — closure, research, proposed ADR and planning disposition; no runtime change.
 
-Native evidence: [Windows process-launcher workflow 38296752862](https://github.com/dbowm91/codegg/actions/runs/38296752862), run against the exact implementation baseline above.
+Native evidence: [Windows process-launcher workflow 38299806236](https://github.com/dbowm91/codegg/actions/runs/38299806236), run against the exact closure revision above. Earlier implementation-SHA run [38296752862](https://github.com/dbowm91/codegg/actions/runs/38296752862) also passed.
 
 ## 1. Executive finding
 
@@ -84,7 +84,8 @@ The workflow also ran Windows managed-process launcher tests, suspended-target f
 ### Results
 
 - `cargo fmt --all -- --check`, `git diff --check`, sandbox and execution-ownership guards, `verify.sh quick`, and both Windows GNU cross-compilation commands passed on the implementation worktree before the final documentation-only changes.
-- Workflow `38296752862` completed successfully against `6028e03f20572b9c4cad53b1614df16a5c8d4182`.
+- Workflow `38299806236` completed successfully against closure revision `841d6a51d7a0e7b03c58aa47d78b703801fb80fe`; it repeated the same C013 result and all Windows process-launcher workflow steps.
+- Earlier workflow `38296752862` completed successfully against implementation revision `6028e03f20572b9c4cad53b1614df16a5c8d4182`.
 - Selected Windows counts: C013 1; restricted managed process 6; ACL integration 4; existing-root adversarial 1; ACL recovery unit tests 6; AppContainer ordering 5; launcher 8; suspended-target failure 1; restricted stdio 3; environment block 1; status frame 1. Shell/policy targets also passed (6 plus seven single-test filters).
 - Windows GNU commands were compile-only, not runtime evidence.
 - The final planning/closure-only changes require formatting/diff/static planning checks again; they do not change Rust code or workflow behavior.
