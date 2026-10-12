@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation Milestone 006-C — LSP Editor Presentation
 
-Status: active
+Status: implemented; closed
 
 Repository baseline: `6b18122d35e6e05d1f2113c78e77467848769f24` (C004 LSP location identity and human-shell admission correctives verified and closed)
 
