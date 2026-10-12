@@ -70,6 +70,16 @@ fn text_in_buffer(buffer: &Buffer) -> String {
     text
 }
 
+/// The text of a single buffer row, for assertions about *where* something
+/// was drawn rather than merely that it exists.
+fn text_row(buffer: &Buffer, y: u16) -> String {
+    let mut text = String::new();
+    for x in 0..buffer.area.width {
+        text.push(buffer[(x, y)].symbol().chars().next().unwrap_or(' '));
+    }
+    text
+}
+
 /// Check that a buffer contains a given substring (case-insensitive search
 /// on the rendered text).
 fn buffer_contains(buffer: &Buffer, needle: &str) -> bool {
@@ -718,6 +728,67 @@ fn render_toasts_contain_text() {
     assert!(
         text.contains("Build") || text.contains("INFO"),
         "expected toast text in buffer"
+    );
+}
+
+#[test]
+fn a_toast_is_only_its_message_and_a_border() {
+    // The progress bar under each toast spent a whole extra row per toast
+    // — up to three stacked toasts ate 25% of a 24-row terminal — to show
+    // a countdown the expiry already communicates. The box must be exactly
+    // `wrapped lines + 2 border rows`, with nothing under the message.
+    let mut app = test_app();
+    app.messages_state
+        .toasts
+        .info("Build completed successfully");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    let text = text_in_buffer(&buf);
+    assert!(
+        !text.contains('█') && !text.contains('░'),
+        "a toast must not draw a progress bar"
+    );
+
+    // The live column starts at y=2 and occupies x 40..=99. A one-line
+    // message is therefore rows 2 (top border), 3 (message), 4 (bottom
+    // border), and nothing after that. Assert the box's own corners, not
+    // that the rows below are blank — this is an overlay, so the sidebar
+    // shows through underneath it.
+    assert_eq!(buf[(40, 2)].symbol(), "┌", "top-left corner");
+    assert_eq!(buf[(99, 2)].symbol(), "┐", "top-right corner");
+    assert!(
+        text_row(&buf, 3).contains("Build completed"),
+        "the message occupies the one interior row: {:?}",
+        text_row(&buf, 3)
+    );
+    assert_eq!(buf[(40, 4)].symbol(), "└", "bottom-left corner");
+    assert_eq!(buf[(99, 4)].symbol(), "┘", "bottom-right corner");
+    assert_ne!(
+        buf[(40, 5)].symbol(),
+        "└",
+        "the box must not extend below the bottom border (that row was the bar)"
+    );
+}
+
+#[test]
+fn stacked_toasts_leave_the_live_column_less_occupied() {
+    // Two one-line toasts are three rows each plus a one-row gap: rows 2-4
+    // and 6-8, so 7 of the 10-row live column. With the progress bar each
+    // box was four rows and they ran 2-5 and 7-10 — 9 of 10 rows, with the
+    // third toast pushed off the bottom either way. The bar bought a
+    // countdown and cost two rows of the transcript behind it.
+    let mut app = test_app();
+    app.messages_state.toasts.info("first notification");
+    app.messages_state.toasts.warning("second notification");
+    let buf = assert_render_ok(&mut app, 100, 32);
+    let text = text_in_buffer(&buf);
+    assert!(text.contains("first notification"), "first toast visible");
+    assert!(text.contains("second notification"), "second toast visible");
+    assert_eq!(buf[(40, 6)].symbol(), "┌", "second toast starts at row 6");
+    assert_eq!(buf[(40, 8)].symbol(), "└", "second toast closes at row 8");
+    assert_ne!(
+        buf[(40, 9)].symbol(),
+        "└",
+        "nothing may be drawn under the last box"
     );
 }
 
@@ -2450,4 +2521,54 @@ fn completion_hit_rect_covers_only_drawn_rows() {
         "popup is capped at 8 rows, got {}",
         app.completion_visible_rows
     );
+}
+
+// ---------------------------------------------------------------------------
+// Outer frame corners
+// ---------------------------------------------------------------------------
+
+/// The bottom-left cell of the frame must be a corner, not the vertical bar
+/// of the left strip.
+///
+/// Regression: the lower corners were anchored on the footer's last row,
+/// which sits one row *above* the row reserved for the bottom edge. The
+/// status line therefore wore a stray `└` while the real bottom-left cell
+/// kept the left border's `│`, so the frame never closed.
+#[test]
+fn the_bottom_left_cell_is_a_corner_and_not_a_bare_vertical_bar() {
+    let mut app = test_app();
+    let (width, height) = (100u16, 24u16);
+    let buf = render_app_to_buffer(&mut app, width, height);
+
+    let bottom_row = height - 1;
+    assert_eq!(
+        buf[(0, bottom_row)].symbol(),
+        "└",
+        "the bottom-left cell must close the frame"
+    );
+
+    // The left border's own column above it is a plain vertical bar, which
+    // is what makes the corner distinguishable rather than a stray glyph.
+    assert_eq!(
+        buf[(0, bottom_row - 1)].symbol(),
+        "│",
+        "the left border continues above the corner"
+    );
+}
+
+#[test]
+fn no_corner_is_stranded_above_the_bottom_edge() {
+    // The other half of the regression: a `└` on the status row would look
+    // like a second, unconnected corner.
+    let mut app = test_app();
+    let (width, height) = (100u16, 24u16);
+    let buf = render_app_to_buffer(&mut app, width, height);
+
+    for y in 0..height - 1 {
+        let symbol = buf[(0, y)].symbol();
+        assert_ne!(
+            symbol, "└",
+            "a bottom-left corner is stranded at row {y}, above the real bottom edge"
+        );
+    }
 }

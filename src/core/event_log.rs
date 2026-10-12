@@ -760,6 +760,7 @@ mod tests {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             session_id: "s".into(),
             turn_id: "t".into(),
             stop_reason: "ok".into(),

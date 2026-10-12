@@ -205,6 +205,53 @@ cargo test -p egglsp --features lsp-real-server-tests \
 python3 scripts/audit_tokio_tests.py
 ```
 
+## Windows Process Launcher Smoke
+
+The Windows process-supervision milestone has a focused native test lane. It
+checks Unicode argv, exit and timeout classification, cancellation of a
+Job-owned descendant tree, Job cleanup after root exit, and fail-closed
+filesystem requests. Run it on Windows with:
+
+```powershell
+cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
+```
+
+`.github/workflows/windows-process-launcher.yml` runs the same test target on
+`windows-latest` for the native-sandbox work branch and supports manual
+dispatch. These tests qualify process ownership only; they do not qualify
+filesystem ACL or network enforcement.
+
+The same Windows workflow also builds the restricted service path with the
+release-disabled `windows-sandbox-test-support` feature and runs
+`tests/windows_restricted_managed_process.rs`. That target verifies owned
+stdin/stdout/stderr, private status despite forged stdout markers, token and Job
+checks before resume, timeout cleanup, and a non-`Enforced` test-only result.
+The workflow also runs an AppContainer control launch with the service's
+profile-local environment block and the status-frame rejection tests. It does
+The same workflow runs `tests/windows_acl_lease.rs` and the ACL lease unit
+tests. They verify AppContainer read/write on a runner-owned disposable root,
+read-only grants, denial on an empty sibling root, exact descriptor restoration
+after normal exit and cancellation, simulated parent-crash recovery, and refusal
+to overwrite concurrent descriptor drift. A hosted existing-root adversarial
+test found that a nonempty denied tree allowed synthetic credential reads via
+its direct path, a junction, and a hardlink (`38220136385`). The test-only path
+now rejects deny roots containing entries before child creation; separate
+positive fixtures cover allowed workspace access. These checks remain test-only
+and do not qualify production journal protection, existing-workspace authority,
+reparse/hardlink safety, or full M004 security. C011 remains blocked on its
+broader privileged qualification; C012 is conditionally closed with path
+replacement still unqualified.
+
+The same workflow exercises the native shell argv builder and Windows policy
+input fixtures for system roots, profile credential denies, PATH-independent
+shell resolution, case normalization, alternate data streams, UNC/device
+namespaces, traversal, junction components, and distinct sibling worktree
+roots. It runs PowerShell and cmd smokes, including cmd's raw-command channel
+and `COMSPEC` value, plus Git Bash when installed; WSL selection is argv-checked
+because a hosted runner may not have a provisioned Linux distribution. These checks are
+policy-input coverage only; M004/M006 own effective ACL and filesystem
+enforcement tests.
+
 ## Test Execution with Nextest
 
 Routine broad execution uses nextest profile `ci`, configured in

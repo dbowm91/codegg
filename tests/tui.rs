@@ -2163,10 +2163,12 @@ fn test_cycle_model_backward_syncs_dialog_state() {
     app.agent_state.current_model = models[1].clone();
     app.agent_state.model_idx = 1;
 
-    // Cycle backward using Ctrl+Shift+P key event
+    // Cycle backward using the Ctrl+Alt+P chord. `Ctrl+Shift+P` cannot be used
+    // here: legacy xterm encoding delivers it as a bare `Ctrl+P`, so it would
+    // silently cycle *forward* and pass this assertion for the wrong reason.
     let key = KeyEvent::new(
-        KeyCode::Char('P'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
     );
     app.on_key(key);
 

@@ -75,6 +75,8 @@ pub struct ProjectInitDraftDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope<T> {
     pub protocol_version: u32,
+    /// For `TurnSubmit` and `SessionPromptSubmit`, this is the durable
+    /// submission identity. A retry after an uncertain response must reuse it.
     pub request_id: String,
     pub payload: T,
 }
@@ -458,6 +460,12 @@ pub struct ChatCapabilitiesDto {
     /// M003: maximum prompt bytes accepted for agent-task actions.
     #[serde(default)]
     pub max_action_prompt_bytes: usize,
+    /// True when the daemon serves `ChatHistoryOlder` (backward paging).
+    /// Older daemons omit this field and decode as `false`, so a client
+    /// must gate every backward request on it rather than sending the
+    /// variant blindly into a daemon that cannot answer it.
+    #[serde(default)]
+    pub backward_paging: bool,
 }
 
 /// One ephemeral composing entry. Carries identity and expiry only, never
@@ -1164,6 +1172,16 @@ pub enum CoreResponse {
         session_id: String,
         messages: Vec<crate::dto::Message>,
     },
+    HumanShellPromotionStaged {
+        promotion: HumanShellPromotionDto,
+        duplicate: bool,
+    },
+    HumanShellPromotions {
+        promotions: Vec<HumanShellPromotionDto>,
+    },
+    TurnAdmissionReceipt {
+        receipt: TurnAdmissionReceiptDto,
+    },
     SessionMessageCounts {
         counts: std::collections::HashMap<String, usize>,
     },
@@ -1594,6 +1612,23 @@ pub enum CoreResponse {
         attachment_id: String,
         handle: String,
     },
+    HumanShellRunCreated {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        duplicate: bool,
+    },
+    HumanShellRunCapabilities {
+        capabilities: crate::human_shell::HumanShellRunCapabilitiesDto,
+    },
+    HumanShellRunOutput {
+        run: crate::human_shell::HumanShellRunMetadataDto,
+        chunks: Vec<crate::human_shell::HumanShellOutputChunkDto>,
+        next_sequence: u64,
+        resync_required: bool,
+        output_truncated: bool,
+    },
+    HumanShellRunCancelled {
+        run_id: String,
+    },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Acknowledgement of a heartbeat with the server-computed expiry.
     PresenceHeartbeatAck {
@@ -1628,6 +1663,24 @@ pub enum CoreResponse {
         messages: Vec<ChatMessageDto>,
         next_cursor: u64,
         truncated: bool,
+        retention_floor_seq: u64,
+    },
+    /// Bounded message history page walking *backwards* from
+    /// `older_cursor` — the ascending page of messages strictly older
+    /// than the client's current window. `has_older` reports that older
+    /// messages remain past this page. `older_cursor` is the anchor for
+    /// the next call, and is `None` only when the page is empty.
+    ///
+    /// Older daemons never send this variant; a client must confirm
+    /// [`ChatCapabilitiesDto::backward_paging`] before requesting it.
+    ChatHistoryOlder {
+        channel_id: String,
+        messages: Vec<ChatMessageDto>,
+        #[serde(default)]
+        older_cursor: Option<u64>,
+        #[serde(default)]
+        has_older: bool,
+        #[serde(default)]
         retention_floor_seq: u64,
     },
     /// One durable message. `duplicate` is true when a retry converged
@@ -1815,6 +1868,31 @@ pub enum CoreResponse {
         triggers: Vec<crate::work_order::TaskTriggerMetadataDto>,
         truncated: bool,
     },
+}
+
+/// Bounded projection metadata returned by the durable session promotion
+/// owner. Raw shell output is never represented by this DTO.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanShellPromotionDto {
+    pub id: String,
+    pub source_id: String,
+    pub session_id: String,
+    pub projection: String,
+    pub projection_bytes: usize,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+    pub consumed_turn_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnAdmissionReceiptDto {
+    pub submission_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub status: String,
+    pub accepted_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2089,6 +2167,10 @@ pub enum CoreRequest {
         /// the agent/model-profile default" — the pre-existing behavior.
         #[serde(default)]
         reasoning: Option<ReasoningOverride>,
+        /// Previously staged human-shell projections to include in this
+        /// accepted turn. Empty for ordinary turns.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
     },
     /// M004 desktop session slice: minimal prompt submission. The
     /// daemon resolves model/agents/messages from durable session
@@ -2101,6 +2183,19 @@ pub enum CoreRequest {
         session_id: String,
         text: String,
         plan_mode: bool,
+        /// Previously staged human-shell projections to include atomically
+        /// with this session-composed prompt.
+        #[serde(default)]
+        human_shell_promotion_ids: Vec<String>,
+    },
+    HumanShellPromotionStage {
+        session_id: String,
+        promotion_id: String,
+        source_id: String,
+        projection: String,
+    },
+    HumanShellPromotionsGet {
+        session_id: String,
     },
     TurnCancel {
         session_id: String,
@@ -2672,6 +2767,19 @@ pub enum CoreRequest {
     InteractiveProcessRemove {
         attachment_id: String,
     },
+    /// Create a bounded, daemon-owned human `!`/`!!` command run.
+    HumanShellRunCreate {
+        request: crate::human_shell::HumanShellRunCreateRequestDto,
+    },
+    HumanShellRunCapabilities,
+    /// Read a bounded slice of one human shell run's retained output.
+    HumanShellRunRead {
+        request: crate::human_shell::HumanShellRunReadDto,
+    },
+    /// Cancel a caller-owned human shell run.
+    HumanShellRunCancel {
+        request: crate::human_shell::HumanShellRunCancelDto,
+    },
     // ── Presence and Observation M001: Project-Scoped Presence Leases ──
     /// Capability negotiation for the presence surface. Unknown
     /// capability strings degrade to `supported: false`, never to an
@@ -2720,6 +2828,25 @@ pub enum CoreRequest {
         channel_id: String,
         #[serde(default)]
         from_seq: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Bounded message history for one channel walking *backwards*.
+    ///
+    /// [`ChatHistory`](Self::ChatHistory) only pages forward
+    /// (`seq >= from_seq`), so a client holding the newest messages could
+    /// not reach anything before them. This returns the newest `limit`
+    /// messages strictly older than `before_seq`. `before_seq = None`
+    /// anchors at the newest retained message, which is what a client
+    /// opening the window wants.
+    ///
+    /// Requires a daemon advertising
+    /// [`ChatCapabilitiesDto::backward_paging`]; older daemons cannot
+    /// serve it and the client must not send it blindly.
+    ChatHistoryOlder {
+        channel_id: String,
+        #[serde(default)]
+        before_seq: Option<u64>,
         #[serde(default)]
         limit: Option<u32>,
     },
@@ -3268,6 +3395,14 @@ impl ReasoningMode {
         }
     }
 
+    /// Whether this mode asks the provider for extended thinking at all.
+    ///
+    /// Only the modes that pin a concrete value need it; `Inherit` defers to
+    /// config and `Off` deliberately asks for none.
+    pub fn requests_reasoning(self) -> bool {
+        matches!(self, ReasoningMode::Effort(_) | ReasoningMode::Budget(_))
+    }
+
     /// Short label for the status bar.
     pub fn label(self) -> &'static str {
         match self {
@@ -3441,6 +3576,16 @@ pub enum CoreEvent {
         cached_tokens: Option<usize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_tokens: Option<usize>,
+        /// The context window the agent actually resolved for this turn.
+        ///
+        /// This is `ExecutionPolicy::context_window` — the same number that
+        /// decides when compaction fires — not a frontend guess. The footer
+        /// renders a percentage against it, so it must travel the process
+        /// boundary with the usage counts or the meter measures against a
+        /// fabricated limit. `None` means "not yet resolved": a consumer must
+        /// not substitute a default window.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        context_limit: Option<usize>,
     },
     TurnFailed {
         session_id: String,
@@ -4639,6 +4784,18 @@ mod tests {
             ReasoningMode::Off
         );
         assert_ne!(ReasoningMode::Inherit, ReasoningMode::Off);
+    }
+
+    #[test]
+    fn only_pinned_modes_request_reasoning() {
+        // The TUI warns about providers that strip the field, so the
+        // predicate must be true exactly where a request would be sent.
+        assert!(ReasoningMode::Effort(ReasoningEffort::Medium).requests_reasoning());
+        assert!(ReasoningMode::Budget(4_096).requests_reasoning());
+        // `Inherit` defers to config (which may or may not set anything) and
+        // `Off` asks for none; neither is a request this control made.
+        assert!(!ReasoningMode::Inherit.requests_reasoning());
+        assert!(!ReasoningMode::Off.requests_reasoning());
     }
 
     #[test]

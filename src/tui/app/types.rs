@@ -9,6 +9,7 @@ pub enum Dialog {
     Theme,
     Question,
     Permission,
+    PanelManager,
     Mcp,
     Keybind,
     Share,
@@ -48,6 +49,10 @@ pub enum Dialog {
     /// view (durable membership management). FocusManager-owned; see
     /// `team.rs`. `/collaborators` remains ephemeral presence.
     Team,
+    /// `/control` inspector. Split from `Team` because the panel host reads
+    /// the discriminator to decide where a box docks; see
+    /// [`crate::tui::components::component::DialogType::Control`].
+    Control,
     /// M003: one-time device-token plaintext display (transient,
     /// secret-safe; see `device_secret.rs`). FocusManager-owned.
     TeamTokenSecret,
@@ -156,6 +161,54 @@ pub enum TuiMsg {
     CloseDialog,
     ProjectInitApprove,
     ToggleSidebar,
+    /// A directional pane gesture, resolved contextually.
+    ///
+    /// Emitted by a box's own Normal-mode handler, because a modal
+    /// short-circuits key routing before the binding map is consulted — the
+    /// box has to recognise the gesture itself. Routed into the same
+    /// dispatcher the main buffer's `InputAction` arms reach, so both halves
+    /// of a box/panel pair resolve it identically.
+    MoveDirection(crate::tui::panels::PanelDirection),
+    /// The terminal panel took the PTY's keyboard.
+    ///
+    /// A panel cannot focus the terminal itself: the focus flag lives on the
+    /// controller the box also drives, and the toast that explains where
+    /// keystrokes now go needs the app's message state.
+    TerminalPanelFocus {
+        handle: String,
+    },
+    /// Hand the keyboard back to the host (the panel's `Ctrl-]`).
+    TerminalPanelBlur {
+        handle: String,
+    },
+    /// Forward bytes to a live PTY.
+    ///
+    /// Carries the payload rather than the side effect on purpose: the send
+    /// is a bounded daemon operation, and doing it in the command layer is
+    /// what keeps a panel from becoming an execution surface.
+    TerminalPanelInput {
+        handle: String,
+        bytes: Vec<u8>,
+    },
+    /// Clear the terminal's local scrollback and screen.
+    TerminalPanelClear {
+        handle: String,
+    },
+    /// Start a shell for the terminal panel.
+    ///
+    /// A panel can ask but cannot act: spawning is a daemon operation, and
+    /// *which surface* the result lands on is app state a panel is
+    /// structurally unable to see. One intent, one owner.
+    StartTerminal,
+    /// Load `panel` into the side column and close the manager.
+    SelectPanel {
+        panel: crate::tui::panels::SidePanelId,
+    },
+    /// Bind `digit` to `panel` and persist it.
+    SavePanelHotkey {
+        digit: char,
+        panel: crate::tui::panels::SidePanelId,
+    },
     ToggleTodoList,
     ToggleFullscreen,
     ToggleReasoning,
@@ -280,6 +333,53 @@ pub enum TuiMsg {
         line: Option<u32>,
         origin_label: Option<String>,
     },
+    // ── Project chat window (`ChatDialog`) ────────────────────────────
+    //
+    // Pure intents. The dialog owns presentation and local view state
+    // only; every variant below is routed by `App::process_msg` into the
+    // existing `commands/chat.rs` `start_chat_*` seams, which own the
+    // daemon round-trip, authorization, and stale-completion guards. None
+    // of these carries an authority decision — the daemon still decides
+    // whether a send, edit, or redact is allowed.
+    /// Send a composed message, optionally as a reply.
+    ChatSend {
+        body: String,
+        reply_to: Option<String>,
+    },
+    /// Replace one message body. The daemon resolves the expected
+    /// revision and reports conflicts; the client never guesses one.
+    ChatEdit {
+        message_id: String,
+        body: String,
+    },
+    /// Redact one message body irreversibly.
+    ChatRedact {
+        message_id: String,
+    },
+    /// Advance the read marker to the newest retained message.
+    ChatMarkRead,
+    /// Page backward from the current window (daemon-side backward
+    /// paging; gated on the negotiated capability).
+    ChatLoadOlder,
+    /// Reload the active channel.
+    ChatRefresh,
+    /// Move the window to another channel of the same project. The
+    /// reducer validates the channel against the daemon's own listing
+    /// before switching, so an unknown id is rejected client-side too.
+    ChatSwitchChannel {
+        channel_id: String,
+    },
+    /// The daemon does not advertise backward paging, so `u` cannot be
+    /// served. Surfaced as a hint rather than a silent no-op.
+    ChatPagingUnsupported,
+    /// A chat surface asked the shared composer to open an editor for it.
+    ///
+    /// The `/chat` window owns a composer of its own, so `i`/`r`/`e` are
+    /// handled inside the dialog. The side panel holds no text buffer — there
+    /// is one input surface, at the bottom — so it resolves those verbs to
+    /// this seed instead. `App::process_msg` puts the text in the prompt and
+    /// records the context; nothing here is a daemon request.
+    ChatComposerSeed(crate::tui::chat_browser::ChatComposeSeed),
     OpenRunDetail {
         run_id: String,
     },

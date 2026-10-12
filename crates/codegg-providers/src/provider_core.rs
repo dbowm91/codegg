@@ -157,6 +157,19 @@ pub struct ProviderCapabilities {
     pub max_result_size: Option<usize>,
     /// Maximum number of tool calls per hosted program execution.
     pub max_tool_calls_per_program: Option<usize>,
+    /// Whether this provider's request adapter *removes* `reasoning_effort`
+    /// from the outgoing body.
+    ///
+    /// True exactly for the adapters that call
+    /// `wire::omit_openai_fields(.., ["response_format", "reasoning_effort"])`
+    /// — Azure, OpenRouter, and OpenCode Zen. A user who selects an effort or
+    /// a thinking budget on such a provider gets silence, not an error, so the
+    /// frontend needs this to warn rather than let the setting look broken.
+    ///
+    /// This is deliberately NOT the inverse of "supports reasoning": most
+    /// providers simply pass the field through without declaring anything, so
+    /// `false` means "does not strip", never "cannot reason".
+    pub strips_reasoning_effort: bool,
 }
 
 impl ProviderCapabilities {
@@ -187,6 +200,16 @@ impl ProviderCapabilities {
                 supports_output_schema: true,
                 max_result_size: Some(1024 * 1024), // 1 MB
                 max_tool_calls_per_program: Some(50),
+                // Passes `reasoning_effort` through to the wire.
+                strips_reasoning_effort: false,
+            },
+            // These three adapters strip `reasoning_effort` from the body
+            // before it goes on the wire. Keep this list in lockstep with the
+            // `omit_openai_fields` calls in azure.rs / openrouter.rs /
+            // opencode_zen.rs.
+            "azure" | "openrouter" | "opencode_zen" => Self {
+                strips_reasoning_effort: true,
+                ..Default::default()
             },
             _ => Self::default(),
         }
@@ -1675,6 +1698,73 @@ mod tests {
             context: Default::default(),
         };
         assert_eq!(req.model, "test/model");
+    }
+
+    /// A request that actually carries a `reasoning_effort`, so an adapter
+    /// that drops it is observably different from one that passes it through.
+    fn effort_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![],
+            model: "test/model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: Some("high".to_string()),
+            context: Default::default(),
+        }
+    }
+
+    #[test]
+    fn strips_reasoning_effort_matches_real_adapter_behavior() {
+        // Locks the capability flag to what the adapters actually do. If a
+        // fourth adapter starts stripping the field, this fails until the
+        // `for_provider` list is updated too — the flag is what the TUI warns
+        // on, so a stale `false` is a silently broken control.
+        let azure = crate::azure::AzureProvider::new("k".into(), "https://e".into());
+        let body = azure.build_body(&effort_request()).expect("azure body");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "azure is declared as stripping reasoning_effort but kept it"
+        );
+
+        let zen = crate::opencode_zen::OpencodeZenProvider::new("k".into());
+        let body = zen.build_body(&effort_request()).expect("zen body");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "opencode_zen is declared as stripping reasoning_effort but kept it"
+        );
+
+        let router = crate::openrouter::OpenRouterProvider::new("k".into());
+        let body = router
+            .build_body(&effort_request())
+            .expect("openrouter body");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "openrouter is declared as stripping reasoning_effort but kept it"
+        );
+    }
+
+    #[test]
+    fn strips_reasoning_effort_flag_matches_the_declared_provider_list() {
+        for id in ["azure", "openrouter", "opencode_zen"] {
+            assert!(
+                ProviderCapabilities::for_provider(id).strips_reasoning_effort,
+                "{id} strips reasoning_effort on the wire but the capability flag says otherwise"
+            );
+        }
+        // A pass-through provider must NOT be flagged; over-reporting would
+        // warn users who are in fact getting the behavior they asked for.
+        assert!(!ProviderCapabilities::for_provider("openai").strips_reasoning_effort);
+        assert!(!ProviderCapabilities::for_provider("anthropic").strips_reasoning_effort);
+        // Unknown providers default to not stripping rather than warning
+        // speculatively.
+        assert!(
+            !ProviderCapabilities::for_provider("some-future-provider").strips_reasoning_effort
+        );
     }
 
     struct TestProvider;

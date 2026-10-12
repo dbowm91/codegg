@@ -290,7 +290,9 @@ action regardless of routing mode.
    running and kept holding a blocking-pool thread. On expiry the process
    group is killed — not just the direct child — so a pager, credential
    helper, or filter driver cannot outlive it and keep holding the repository
-   lock. stdout/stderr are drained concurrently so a large-output child cannot
+   lock. On Unix, the child is made a new process-group leader before spawn;
+   this keeps group cleanup scoped to the child tree and away from the caller's
+   process group. stdout/stderr are drained concurrently so a large-output child cannot
    deadlock the wait on a full pipe. `GitExecutionService` additionally bounds
    each structured phase by its own `timeout`, so `with_timeout` is
    authoritative for multi-command reads.

@@ -90,7 +90,7 @@ pub async fn repo_status(root: &Path) -> Result<RepoStatus, EgggitError> {
 }
 
 #[cfg(test)]
-mod timeout_tests {
+mod tests {
     use std::time::{Duration, Instant};
 
     /// End-to-end proof that a Git command which never exits is now bounded.

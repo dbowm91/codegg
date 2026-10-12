@@ -65,6 +65,12 @@ root and lifecycle modules.
 
 ## Dispatch Rules
 
+For LSP navigation, preserve the result's display label separately from its
+optional `workspace_relative_path`. Missing identity means no navigation
+action. Pass a present candidate through the existing `DocumentOpen` request;
+the daemon remains responsible for containment and `file.read` authorization.
+Do not build a workspace path from a display basename or open an LSP URI.
+
 - **`dispatch_tui_command` is `pub(crate) async fn`**
   (`src/tui/runtime/command_dispatch.rs:84`). The match is overwhelmingly
   synchronous, but it contains five `.await` points, all of the same shape:
@@ -87,6 +93,22 @@ root and lifecycle modules.
 
 ## Dialogs
 
+### M006-C editor LSP presentation
+
+The editor's F2–F7 actions consume existing daemon reads: F2 refreshes and
+lists diagnostics, F3 hover, F4 definition, F5 references, F6 document
+symbols, and F7 searches workspace symbols for the current word. Bind every
+completion to `EditorLspScope` and discard results after session/project/
+workspace/path/generation changes. Preserve complete diagnostics on
+`NotReady` or error and visibly mark the retained set stale. Do not add
+polling: the diagnostics publisher has no production driver.
+
+The LSP panel renders untrusted payloads as bounded text. Definition and
+symbol navigation requires the DTO's validated `workspace_relative_path`
+and must go through `open_editor`/`DocumentOpen`. Semantic spans are
+ephemeral, revision-bound, UTF-16 validated, and rejected as a whole on
+malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
+
 - `Dialog::Info` does NOT exist even though `components/dialogs/info.rs` does.
   Use `App::show_short_or_info(info_type, lines)`: toasts when <= 3 lines,
   otherwise opens a scrollable `InfoDialog`.
@@ -103,6 +125,24 @@ root and lifecycle modules.
 
 ## Other Invariants
 
+- **The launch directory is registered at startup.** `ProjectContextResolver`
+  resolves a directory by catalog lookup only and never registers on a miss, so
+  a directory CodeGG has not seen before has no executable project context.
+  `App::bootstrap_launch_project_context` runs from `main.rs` before any
+  session-scoped request: `WorkspaceRegister` then `ProjectRegister` for the
+  launch directory (both idempotent), writing the resulting pair onto the
+  active tab via `set_active_identities`. New code must not move identity
+  creation into the resolver, and must not send a path in an identity field —
+  `SessionCreate` takes a `(project_id, workspace_id)` **pair**, so a
+  directory-shaped `project_id` with no workspace is rejected by construction.
+  `ProjectExecutionContext::project_key()` exists for legacy single-field
+  requests only; do not use it for `SessionCreate`. Bootstrap failure is
+  non-fatal but must stay visible (stderr warning at startup, toast for the
+  startup session create) — a warn-only failure leaves an empty TUI with no
+  explanation. Raw-path registration through the project picker stays gated to
+  `AppMode::Embedded`; the bootstrap differs because its path is the
+  frontend's own cwd, not user-supplied remote text.
+
 - **Command discovery metadata**: `CommandRegistry` is the only command
   catalog. Its domain/source/scope/keywords fields are presentation metadata;
   they do not authorize or execute commands. The palette searches those fields
@@ -111,11 +151,273 @@ root and lifecycle modules.
   entries winning. `ActionKey::all()` is the exhaustive configurable action
   list; `Char` is the explicit non-configurable input exception.
 
+- **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
+  owns which `SidePanelId` is active and whether it holds focus. 32 panels
+  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 28
+  **hosted** — one per `/` command that brings up a box. Which one is loaded
+  is chosen by the **panel manager box** (`Shift+S` in Normal mode, or
+  `/panels` from anywhere), which renders `SidePanelId::ALL` directly — the list it shows
+  *is* the registry. To add a **hosted** panel (the common case): an enum
+  variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
+  `load_command`/`config_key` arms. The host builds its `HostPanel` from
+  `ALL`, so there is no host field, no `panel()` arm and no render-path
+  branch. To add a **bespoke** panel also write a `SidePanel` impl and add
+  arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  Docking is a **move**: `App::close_dialog` returns the component it
+  unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
+  box's filter, cursor and scroll. A panel with nothing adopted renders a
+  placeholder naming its `/` loader — never an empty bordered box, which
+  reads as a rendering bug. `render_hosted` is a deliberate **bridge**:
+  `SidePanel::render` gets a `&mut Buffer`, `Component::render` needs a
+  `&mut Frame`, and ratatui's `Frame` has no public constructor, so the
+  widget renders into an in-memory backend sized to the column and is copied
+  out. Do not add per-panel branches to the render path. A focused panel owns
+  *navigation* — arrows, `j`/`k`, paging, its own verbs — and is consulted
+  **only in Normal mode**, because the host claims `Esc`/`q` as exits and
+  would otherwise make `q` untypable while composing.
+  `PanelKey::PassThrough` exists only for panels that hold
+  no draft (the chat panel passes `i`/`a` to the composer); a panel with a
+  live buffer must still consume everything. A verb that carries text to
+  prefill cannot pass through — the chat panel's `r`/`e` emit
+  `TuiMsg::ChatComposerSeed` instead, so the reply target or replaced body
+  is not stranded. Panels get named borrows via `PanelCtx` (never `&App`)
+  and express every mutation as a `TuiMsg` routed into an existing command
+  seam. A panel declares its own keys through `SidePanel::composer_hints`,
+  which render on one contextual line directly above the composer — that is
+  the seam for adding the next panel, so do not grow per-panel footers.
+  Project binding is resolved by `commands/panels.rs`, not by the panel.
+  Key precedence in `App::on_key`:
+  **Ctrl+digit hotkey recall** → modals → timeline → command mode →
+  completions → change review → **side panel (Normal only)** → Workspace →
+  Editor → composer. Hotkeys come before the panel because a panel that
+  swallowed the only key that leaves it would trap the keyboard.
+- **`Shift+S` is the only *chord* of the panel manager; `/panels` is the
+  other route.** `Ctrl+Alt+W` is retired: the manager is a Normal-mode
+  surface exactly like the directionals that drive the same panels, so one
+  key per surface is one less chord to decode in a legacy terminal. A chord
+  alone, though, would make the manager unreachable in Insert — where
+  `Shift+S` is the letter `S` and must stay typeable — so `/panels` (aliases
+  `/panel`, `/panel-manager`) opens the same box. The key is answered ahead
+  of the focused panel because a panel consumes everything by contract:
+  `commands::panels::handle_panel_key` takes `OpenPanelManager` before
+  delegating, and `App::on_key` answers it ahead of the modal short-circuit
+  for the same reason. Keep the two spellings in lockstep — a third route is
+  a third thing to keep working.
+- **A toast is its message and a border, nothing else.** The live column is
+  a fixed 60×10 overlay at the top right (`App::render`), so every row a
+  toast spends is a row of transcript it hides. It previously drew a
+  countdown bar under the message, costing one row per toast for something
+  the expiry already says — and reading, at the bottom edge of the frame,
+  like a progress indicator for whatever sits beside it. Height is
+  `wrapped_lines + 2`; the durable record is the `/logs` toast history, so
+  nothing that matters is lost by making the live box cheap.
+- **A focused panel and the composer mode are one fact, not two.**
+  `App::on_key` consults a focused panel **only in Normal mode**, so focus
+  and mode must agree or the panel is silently dead: the badge and the hint
+  line say the panel has the keyboard while every key — including the
+  gesture that leaves it — goes to the composer and is typed as text.
+  `focus_panel` therefore parks the composer's mode in
+  `App::composer_mode_before_panel_focus` and forces Normal;
+  `blur_panel` restores it. The path that proved this was
+  `dock_open_box`: `close_dialog()` parks the composer in Insert and *then*
+  focuses the panel, so `Shift+H` to leave it used to type a literal `H`.
+  Anything that takes focus outside `focus_panel` (`select_panel` via a
+  `Ctrl+digit` recall, a route change) must go through the same seam.
+- **Every dockable box answers the gesture from one place.**
+  `App::handle_dialog_key` intercepts `Shift+←/→/↑/↓` *before* the mounted
+  modal sees the key, gated on `Component::docks_as_viewer()`. A viewer box
+  owns no text buffer, so the directional is free to mean "dock me" — and 28
+  dialogs do not each re-implement the same check. `/models` and `/sessions`
+  own a live filter, declare `docks_as_viewer() == false`, and answer the
+  gesture themselves under the same "filter is empty" guard that already
+  governs their `j`/`k`. Never add a bespoke `direction_of` check to a
+  dialog that is a viewer box — the central gate already covers it, and a
+  second copy is a second rule that can drift.
+- **The directionals are one gesture family with two meanings.**
+  `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
+  `InputAction::Direction*` and then to one dispatcher,
+  `commands::panels::move_directionally`: a dockable box is open → the box is
+  *moved* into the panel; no box is open → the direction *selects a pane*
+  (`→` into the column, `←` back to the main buffer, `↑`/`↓` cycle the loaded
+  panel type). Resolve it there, never per surface, or a box and its panel will
+  drift. Normal-mode only via `is_normal_only`. Uppercase letters only —
+  `Char('l')` is a bare `l`, a within-surface verb, never the gesture — and
+  each is bound with *and* without `SHIFT` because terminals disagree on the
+  encoding. `Shift+Up/Down` and `Shift+J/K` were once reserved for a stacked
+  layout; they are bound now because `↑`/`↓` cycle the panel list, so the key
+  is no longer advertising an absent capability.
+  `App::input_target()` is derived from panel focus on every read — never
+  latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
+  reads the same value; when `Chat` is armed but unbound, text is dropped with
+  a warning rather than rerouted to the agent.
+- **Every surface the composer can target needs a name.** The badge row reads
+  `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
+  destination is `App::composer_destination_title`: the focused panel's
+  `SidePanelId::title`, or `MAIN_BUFFER_TITLE` (`LLM`) when nothing is focused,
+  or `CHAT` while a seed is armed. It previously rendered `[BUILD]` *and*
+  `[CHAT]` unconditionally, giving `[INS] [build][BUILD] [CHAT]` — two badges
+  on one axis and one permanently lit. Adding a panel means adding a `title()`
+  arm; a destination the user cannot name is one they cannot trust.
+- **`L` docks a box into a panel.** `Shift+L` (one of the four `Direction*`
+  actions — there is no `DockPanel` action) closes the open box and activates
+  the panel that can hold it, so `/chat` then `Shift+L` leaves the same browser
+  running in the column. The association lives in one `match` arm in
+  `App::dock_target` — a `/help` panel later was one arm plus one `SidePanel`
+  impl, with no change to `commands::panels::dock_open_box`. With no box open
+  the same key is a *pane move*, not a warning; both meanings live in the one
+  `move_directionally` dispatcher.
+- **A box and its panel may open in different modes, and the caller decides.**
+  `HelpDialog::new_with_mode` takes the starting mode: `/help` passes **Insert**
+  (opened to type a query), the docked Help panel passes **Normal** (read and
+  scroll first; `i` reaches the filter). Never hardcode the mode inside the
+  widget. In Insert `j`/`k` are filter text, so a panel hardcoded to Insert
+  does not "refuse" to scroll — it types `j` into a filter nobody is watching,
+  which is indistinguishable from a dead pane. The panel owns no copy of the
+  rule; it hosts the dialog and passes a mode.
+- **A panel refuses focus only when it has nothing at all to show.** Chat with
+  no bound project leaves the keyboard in the composer. **Terminal is the
+  deliberate exception**: `i` either takes the keyboard of a terminal that
+  exists or starts a shell, so it always has something to do. Refusing there
+  was the dead end — an empty panel takes no keys, so the `i` that would have
+  fixed it never arrived. Distinguishing "re-attach a live process" from
+  "replace an exited one" belongs to the command layer (`focus_terminal_panel`
+  consults `InteractiveTerminalController::is_live`), never the panel.
+- **A command that means "open X" should produce X.** `/terminal` with no live
+  view behind it starts `default_shell_argv()` (`$SHELL`, falling back to
+  `sh`/`cmd.exe` — the same answer `shell::ShellRuntime` gives `!cmd`). Making
+  the user first invent an argv for `/terminal-create` and then re-run
+  `/terminal` to see it was the whole reason it read as broken. An explicitly
+  named handle is still honoured as typed, so `/terminal <handle>` never
+  silently substitutes a shell. Where an async create needs to land in a
+  *different surface* than the usual one (the side panel), carry the route as
+  explicit app state — `App::terminal_panel_spawn` — and clear it on **every**
+  failure path, or a failed create diverts the next unrelated terminal.
+- **Viewport click and viewport drag share one press.** Inside the message
+  viewport, `Down` arms a selection, `Drag` extends it, and `Up` decides:
+  release on the anchor cell is a *click* and reaches `on_click` (whose
+  viewport arm expands reasoning, then tool output); release elsewhere is a
+  *drag* and copies. Resolving on `Down` — which the text-selection feature
+  briefly did — makes every click a selection and leaves click-to-expand
+  unreachable, because the viewport click arm is the only thing that expands
+  a message. All other surfaces keep immediate press behaviour through the
+  shared `dispatch_click`.
+- **The working strip owns turn liveness.** `render_working_strip` draws one
+  throbber row plus one row per advertised subagent between the transcript and
+  the composer, reserved from the prompt allocation and carved back off like
+  the hint line and the todo strip. It draws only while `Working`.
+  `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
+  because the strip is carved out of the prompt chunk — the reverse order
+  resolves every subagent click to click-to-focus. Hit rects live in
+  `SubagentState::hits` and are rebuilt every frame.
+- **Subagent rows are projection-derived and last-known-good.**
+  `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
+  A snapshot that arrives replaces the rows; a *missing* snapshot does not,
+  because absence is not evidence that no subagents exist and clearing on it
+  blanks the strip mid-turn. Never synthesize a row the projection did not
+  vouch for, and never synthesize progress text: the projection adapter
+  hardcodes `progress: None`.
+- **The subagent buffer is a view, not a modal.** Clicking a row replaces the
+  transcript in the viewport rect; `Esc` returns. Its `Esc` arm sits below the
+  modal short-circuit and above every other handler.
+- **Reasoning deltas must reach `add_reasoning`.** `add_assistant_text` is a
+  parser for literal `<think>` tags — a raw delta has none, so it falls
+  through to `MsgPart::Text` and thinking renders as ordinary prose with no
+  `Thought for` header. Both the daemon (`TurnReasoningDelta`) and standalone
+  (`ReasoningDelta`) arms must call `add_reasoning`, or the two transports
+  silently disagree.
+- **The stall watchdog measures silence, and long tools are silent.**
+  `bash` delivers its output only on completion, so a multi-minute build emits
+  no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared
+  on a matching `ToolCompleted`, in **both** transports) lets
+  `check_turn_stall` re-arm instead of failing a healthy turn, bounded by
+  `TURN_STALL_TOOL_GRACE`. Keep that grace at or above the slowest legal tool
+  timeout, or the watchdog kills work that is merely slow.
+- **Never put arithmetic in `bool::then_some`.** `then_some` takes its value
+  eagerly, so `cond.then_some(a - b)` evaluates `a - b` even when `cond` is
+  false — and `Duration`'s `Sub` panics on underflow. This crashed the TUI on
+  the first message of a new session, in the render throttle's
+  `render_delay_after`, because `elapsed` is read twice per loop iteration and
+  the work between the reads makes the second one larger. Use `then(|| ..)`
+  and `saturating_sub`. Note the render's `catch_unwind` covers only
+  `render_app`: the throttle maths is outside it, so a panic there kills the
+  process instead of degrading.
+- **An empty authoritative load must not delete local rows.**
+  `apply_session_messages_loaded` clears only when the load carries rows or
+  there is nothing local to lose. A brand-new session returns zero rows until
+  its first turn is persisted, and an unconditional `clear()` erased the
+  prompt the user had just sent.
+- **The chat viewport centres the selection.** `chat_browser::window` used to
+  end on the selected message's last row, so scrolling up filled the screen
+  with blank rows *below* the selection and made every later message
+  unreachable. Centre, then clamp — tail-follow still lands on the newest.
+- **`/chat` and the chat panel are one implementation, not two.**
+  `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
+  viewport anchor, and the hints; each surface owns only its composer. They
+  were peers with a copied keymap and drifted until the panel could neither
+  reply nor edit — fix a verb in the browser, never in one surface. The
+  browser holds no text: a verb that needs typing returns
+  `ChatKeyAction::Compose` and the *host* materializes the editor (the
+  dialog's own composer, or `PromptState::chat_seed` for the shared one).
+- **The chat panel holds no composer buffer** — one bottom composer, two
+  destinations. Its destination row names the armed target and draws a `▸`
+  marker only while it holds the keyboard; when unbound it renders
+  `No project bound` instead of an armed-looking row.
+- **An armed chat seed outranks panel focus.** Pressing `r` seeds the
+  composer with `@author ` and a reply target; letting a later focus move
+  redirect that into an agent prompt would be the worst possible outcome, so
+  `App::input_target()` returns `Chat` while `PromptState::chat_seed` is set,
+  the badge shows `[REPLY]`/`[EDIT]`, and Normal-mode `Esc` cancels the
+  context without discarding the typed text.
+- **Selection uses `bg`, not `fg`.** `theme.selection` is a background; using
+  it as a foreground painted selected message authors dark-on-dark. Pair it
+  with `fg(theme.foreground)`. Unselected bodies are `foreground`, not
+  `muted` — dimming the whole transcript whenever nothing was unread made
+  the common case the unreadable one.
+- **Chat surfaces open on the newest message and follow the tail.**
+  `ChatBrowser::follow_tail` starts true; `k` unpins, `j` past the newest and
+  `G` re-pin. `sync` runs on every render and snapshot, not only on
+  navigation. A cursor starting at index 0 made a busy channel look empty.
+- **`@` is not the same trigger in both destinations.** `@` opens the
+  agent/file completion popup for the agent session and Enter accepts it;
+  against chat it is a mention, and `update_completions` skips that branch
+  when `input_target() == Chat`. Leaving it enabled made Enter insert an
+  agent name instead of sending — and `r` seeds `@author `, so it broke
+  every reply.
+- **Multi-modifier chords are `{CONTROL, ALT}` only.** The TUI never pushes
+  keyboard-enhancement flags (`tui/terminal.rs` does raw mode, bracketed
+  paste, mouse capture only), so the terminal is in legacy xterm encoding where
+  `Ctrl+Shift+X` and `Ctrl+X` are the same byte. A `(CONTROL|SHIFT, …)` binding
+  is unreachable and the key silently fires whatever owns the bare-Ctrl twin —
+  that is how `Ctrl+Shift+W` ran `CloseSession` instead of opening the panel
+  switcher. `Ctrl+Alt+<letter>` arrives as `ESC` + one control byte and is
+  unambiguous. `tests/modifier_chords.rs` asserts no map holds a
+  CONTROL|SHIFT entry and that each chord stays disjoint from its twins.
+- **An input surface must make its mode observable, and must draw the whole
+  buffer.** The `/chat` window reserves its composer row in both modes with a
+  `NOR`/`INS` badge and `press i to type` in Normal mode. It also renders
+  `before + caret + after`: it used to draw only the slice after the caret and
+  nothing at all when empty, so text typed left of the cursor never appeared.
+  Collapsing the row in Normal mode made the modes pixel-identical on an empty
+  buffer, so a user pressing `i` and typing watched characters vanish into
+  navigation and concluded the input box was broken. The chat panel has no
+  manual refresh key — it renders `ChatState` live and daemon chat events push
+  into the reducer.
+- **`HelpDialog` is searchable and mode-aware.** Printable keys filter the
+  keybinding rows, `Esc` clears the filter before it closes the dialog, and it
+  tracks `NOR`/`INS` with a badge. Arrows/PageUp/PageDown scroll in **both**
+  modes; `j`/`k` scroll **only** in Normal, because in Insert they have to stay
+  typeable so `help` itself can be searched for. `NOR` exists for the
+  gestures that need a non-typable key — above all the directional that docks
+  the box — since in Insert `Shift+L` is the letter `L` and must stay typeable.
+  The Help *panel* hosts this dialog via `render_into`; it does not
+  reimplement it, so box and panel cannot drift.
 - **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
   shared by keyboard navigation and mouse hit testing. Selection is cleared on
   project-scope changes, and the bounded `agent_tree` is joined to durable
   runs only by exact canonical task IDs. Enter opens the existing lazy run
   detail surface; it never copies transcripts or logs into sidebar state.
+  The Session panel (`panels/session.rs`) delegates to `SidebarWidget`
+  unchanged, so its binding-resolved behavior is whatever `handle_key` says.
 - **Git sidebar is cached**: `GitSidebarState` caches git info; stale
   generations are dropped silently. Do not render git state live per frame.
 - **Remote protocol is event/state-driven**: the `/tui` WebSocket speaks the
@@ -126,6 +428,11 @@ root and lifecycle modules.
   messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
+  Finite `!`/`!!` commands go through the daemon's versioned create/read/cancel
+  family. The TUI is only an adapter for output and cancellation: never spawn
+  locally or send frontend cwd/environment. Insert a run into shell history
+  only after daemon admission; preserve the captured session/workspace binding
+  so late output cannot be promoted into another tab.
 - **Interactive terminal keys** are modal input: focused Esc is forwarded to
   the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;

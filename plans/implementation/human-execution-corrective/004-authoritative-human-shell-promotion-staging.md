@@ -1,8 +1,8 @@
 # Human Execution Corrective C004 — Authoritative Human-Shell Promotion Staging
 
-Status: ready for handoff
+Status: implemented; closed in `plans/closure/human-execution-corrective/004-status.md` (Option A accepted in `plans/adrs/ADR-0017-human-shell-promotion-admission.md`)
 
-Repository baseline: `2f026f05220f60c62bfc381af3d7479172dfdb50`
+Repository baseline: `4c651b84` (C012 closeout/rebase; C004 ownership audit began 2026-10-12)
 
 Source roadmap:
 
@@ -19,7 +19,7 @@ Long-term requirements:
 - `plans/000-long-term-specification.md#45-locality-by-default`
 - `plans/001-terminology-and-domain-model.md#8-scheduler-and-execution-terms`
 
-Applicable ADRs: none identified. If session/context storage cannot safely own bounded pending promotions under existing authorization, stop and request a specific architecture decision rather than inventing a generic context store.
+Applicable ADR: proposed `plans/adrs/ADR-0017-human-shell-promotion-admission.md`. If session/context storage cannot safely own bounded pending promotions under existing authorization, request an architecture decision rather than inventing a generic context store.
 
 Primary class: invariant/capability/infrastructure.
 
@@ -33,7 +33,29 @@ C001 established a real provider-facing turn path and redaction tests, but its p
 
 ## 3. Current implementation evidence
 
-`src/tui/app/mod.rs` holds pending promotion tokens and `src/tui/app/prompt_turn.rs` attaches them to a submitted turn. `src/tui/commands/shell.rs` builds the redacted projection and fences originating session/workspace. The canonical turn and ask submissions accept model-facing messages, but there is no durable stage-before-turn request, authoritative pending record, reconnect query, expiry state, or dedupe identity at the session owner.
+`src/tui/app/mod.rs` now retains an identical payload's request ID across an uncertain submit and accepts a typed durable admission receipt; a confirmed receipt marks the local shell entry promoted and drops its local token. `src/tui/commands/shell.rs` stages the bounded redacted projection with the authoritative owner and fences the captured session/workspace. The remote include path remains an unsubmitted composer draft. `SessionPromptSubmit` composes a daemon-side turn from the session selection and forwards the same envelope request ID through the shared admission path.
+
+The daemon's authorization decision carries authenticated `principal_id`, and `TurnSubmit` is scoped through the session with `AgentInvoke`; request DTOs do not establish identity. Turn admission now reserves the controller lease, consumes promotions, and inserts a request-digest-bound receipt in one SQLite transaction before runtime delivery. The handler returns that typed receipt after runtime acceptance. Session schema is additive through migration v72, and the authoritative `CoreDaemon` owns its SQLite pool. `MessageStore` persists UI snapshots but is not an admission ledger used by `DefaultTurnRuntime`. Receipt recovery marks a prior accepted turn interrupted and does not replay it. The shell digest already renders exit and truncation details into the redacted projection; C004 persists that projection as the only shell payload and does not add a second raw-output metadata channel.
+
+**WP-A recovery boundary:** No database transaction can atomically commit with an external provider request. The implementation binds a staged promotion to exactly one durable daemon `turn_id` in the admission transaction, retains the redacted record through expiry, and never automatically replays a consumed promotion after restart. If a process dies after claim and before the provider outcome is known, the stage remains visibly consumed by an interrupted turn; the user may explicitly create a new promotion identity. This provides at-most-once daemon inclusion and recoverable evidence/status without claiming exactly-once remote inference delivery. A busy/rejected admission leaves the record pending.
+
+### WP-A audit snapshot — complete (2026-10-12)
+
+This table records the pre-decision architecture snapshot. ADR-0017 now selects
+Option A, and WP-B is implementing the durable receipt path below; do not read
+the historical `no stable key` findings as current implementation status.
+
+| Boundary | Current owner and evidence | Consequence for C004 |
+|---|---|---|
+| Request identity and session authorization | `CoreDaemon::handle_request_with_client` derives `RequestAuthorityContext` from the transport-bound `ClientRegistry`; `SessionPromptSubmit` is `AgentInvoke` with `ViaSession` scope in `codegg-core::authorization::operation_descriptor`. Session/project resolution is server-side. | A new stage/query API can derive principal and project from trusted server authority; request DTO identity fields must not be trusted. |
+| Local pending promotion | `App::pending_shell_promotions` and `UIMessage` hold staged text in frontend memory. Local `TurnSubmit` success marks it promoted; remote `/shell-include` inserts an unsubmitted composer draft. | Neither route has a canonical durable stage acknowledgement/query or survives frontend restart. |
+| Turn request and admission | `TurnSubmit` carries provider messages but no stable submission/idempotency key or promotion IDs. `SessionPromptSubmit` carries one text string and no promotion input, then recurses through `TurnSubmit`. The daemon creates a random `turn_id`; `RequestEnvelope.request_id` is correlation/audit identity, not replay protection. | Duplicate/reconnect requests cannot resolve to one durable accepted turn or prove exactly-once promotion consumption. |
+| Acceptance transaction | Turn admission reserves in-memory `active_turn`, separately calls `SessionControllerStore::acquire` (one durable controller-row operation), builds the runtime input, then awaits `run_turn` before returning `Ack`. The controller row contains no prompt or promotion payload. | Existing controller storage cannot atomically record admission plus promotion consumption. The external provider call is outside SQLite transaction scope. |
+| Durable session storage | The daemon catalog has sequential SQLite migrations through v70. `session`/`message` store conversation state; `session_turn_controller` stores control ownership; neither models bounded, expiring, principal-bound pending redacted evidence and its consume receipt. | A narrow additive ledger is technically possible, but a migration alone does not answer accepted-turn recovery or ambiguous delivery after daemon restart. |
+| Capability compatibility | `SessionPromptSubmit` has no per-feature capability probe; `ChatCapabilities` is for chat and does not advertise human-shell staging. | A new stage lifecycle needs explicit feature negotiation and a typed unsupported-daemon result before the UI reports staged. |
+| Restart and provider outcome | Frontend pending state disappears on restart. The server has no durable accepted-turn envelope/provider-delivery receipt; a provider request may have an unknown outcome if the daemon stops after runtime acceptance. | The storage owner cannot currently distinguish an unaccepted pending stage from an accepted turn whose provider delivery outcome is unknown. Choosing consume/replay semantics crosses the current session-storage and turn-runtime boundary. |
+
+**WP-A disposition:** authentication and binding have a viable existing owner. ADR-0017 selects durable admission with an accepted-turn receipt and interrupted/no-auto-replay restart semantics. WP-B now uses `RequestEnvelope.request_id` as stable turn-submission identity, commits the receipt with the controller lease and promotion claims, returns the receipt on duplicate retry, and marks accepted receipts interrupted during daemon recovery. Keep C004 active until production boundaries, lifecycle tests, compatibility handling, docs, and hosted verification are complete. Do not implement a generic context store or represent composer insertion as staging.
 
 ## 4. Invariants that must not regress
 
@@ -70,7 +92,7 @@ Define a promotion record with opaque idempotency identity, shell command/run so
 
 ### Storage and migrations
 
-Reuse authoritative session storage where ownership and migration semantics are sound. Otherwise add one additive migration for bounded redacted pending payloads and lifecycle state. Define finite TTL/retention and cleanup behavior. Never persist raw stdout/stderr for this feature. Migration restart/rollback and old-session behavior must be tested.
+Reuse authoritative session storage where ownership and migration semantics are sound. Otherwise add one additive migration for bounded redacted pending payloads and lifecycle state. Define finite TTL/retention and cleanup behavior; the selected implementation purges expired rows lazily during stage/recovery access after the 24-hour pending TTL plus a 24-hour idempotency window. Never persist raw stdout/stderr for this feature. Migration restart/rollback and old-session behavior must be tested.
 
 ### Protocol and DTOs
 
@@ -78,7 +100,7 @@ Audit current DTOs and capability handshake before adding a request. Stage must 
 
 ### Runtime and concurrency
 
-Stage is idempotent by promotion identity. Turn admission and consumption must be atomic or have a recoverable lease/transaction protocol that prevents both duplicate inclusion and evidence loss. Ask must combine question and evidence in one accepted turn. Rejected/busy admission preserves pending state. Reconnect lists only the caller's session-scoped bounded state. Expiry and stale generation cannot attach to a new tab/session.
+Stage is idempotent by promotion identity. Turn admission and consumption commit with the durable controller lease in one SQLite transaction. A promotion can be attached to no more than one daemon turn id; consumed rows remain queryable until expiry, and restart never replays them automatically. A crash around external provider delivery may leave the outcome unknown, but the bounded redacted evidence and consumed-turn identity remain durable. Ask stages under a stable idempotency identity before submitting; a rejected/busy admission leaves it pending. Reconnect lists only the caller's session-scoped bounded state. Expiry and stale generation cannot attach to a new tab/session.
 
 ### Frontend or operator surface
 
@@ -116,7 +138,7 @@ Define transaction boundaries for stage and turn admission; test concurrent dupl
 
 ## 9. Compatibility and migration
 
-Older daemons must return an explicit unsupported capability without marking output staged. Additive migration only. Existing session histories remain readable, and rollback must not reinterpret raw shell output as model context.
+The current protocol has no general capability negotiation handshake for this request family. An older daemon's invalid/unknown request response or a failed acknowledgement must be surfaced as unsupported/unconfirmed and leave the projection in the composer; the UI must never claim it was staged. Additive migration only. Existing session histories remain readable, and rollback must not reinterpret raw shell output as model context.
 
 ## 10. Verification commands
 
@@ -125,8 +147,13 @@ cargo fmt --all -- --check
 cargo test -p codegg --lib shell
 cargo test --test shell_projection_harness
 cargo test --test shell_projection_phase10
-# Add the focused daemon/session staging recovery integration target.
+cargo test -p codegg-core --test human_shell_promotion --locked
+cargo test -p codegg --lib shell_dispatch_tests --locked
+cargo test -p codegg --lib turn_submit_uses_injected_runtime --locked
 python3 scripts/check_execution_ownership.py
+python3 scripts/check_authorization_matrix.py
+python3 scripts/check_audit_coverage.py
+python3 scripts/check_project_catalog_invariants.py
 python3 scripts/check_scheduler_bypass.py
 scripts/verify.sh quick
 ```

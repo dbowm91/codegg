@@ -417,6 +417,14 @@ impl Default for SessionDialog {
 
 impl Component for SessionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg> {
+        // The panel docking gesture, under the same "filter is empty"
+        // guard that keeps `j`/`k` as navigation below. While a query is
+        // being typed, `Shift+L` is the letter `L` and must reach the buffer.
+        if self.filter.is_empty() {
+            if let Some(dir) = crate::tui::panels::direction_of(key) {
+                return Some(TuiMsg::MoveDirection(dir));
+            }
+        }
         match key.code {
             crossterm::event::KeyCode::Esc => {
                 if self.bulk_mode {

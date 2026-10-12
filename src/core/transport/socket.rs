@@ -115,7 +115,7 @@ impl CoreClient for SocketCoreClient {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::protocol::frames::CoreFrame;

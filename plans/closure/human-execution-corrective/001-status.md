@@ -1,6 +1,6 @@
-# Human Execution Corrective C001 — Closure Status
+# Human Execution Corrective C001 — Historical Closure Status
 
-Status: corrective pass required
+Status: corrective pass required at the time of this record; requirement discharged by C004 on 2026-10-12
 
 Source implementation plan:
 
@@ -103,3 +103,14 @@ Corrective implementation plan required. Keep C001 active until the authoritativ
 ## 12. Registry updates
 
 Register the C001 corrective implementation plan, retain C001 as active/corrective, leave C002 blocked, and mark independent C003 closed. Do not claim that the C002 dependency has been discharged.
+
+## 13. Subsequent corrective disposition (2026-10-12)
+
+The corrective requirement recorded above was completed by
+`plans/implementation/human-execution-corrective/004-authoritative-human-shell-promotion-staging.md`.
+Its closure record is
+`plans/closure/human-execution-corrective/004-status.md`, verified on
+implementation SHA `6b18122d35e6e05d1f2113c78e77467848769f24` with hosted root
+CI `38251214377` and Desktop E2E `38251230731` both green. C001 is now closed
+as a current roadmap status. C002 becomes dependency-ready; this addendum does
+not claim C002 is implemented.

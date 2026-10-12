@@ -124,7 +124,7 @@ configuration options. State is managed in-memory:
 | Key | Action |
 |-----|--------|
 | `Ctrl+Y` | Toggle TTS (speak selected message) |
-| `Ctrl+Shift+Y` | Stop TTS playback |
+| `Ctrl+Alt+Y` | Stop TTS playback |
 
 Slash command: `/tts` (alias `/voice`).
 
@@ -149,6 +149,6 @@ pattern kill — together with the 6 regression tests in `src/tts/mod.rs`
 assignment (`src/tui/app/mod.rs:861`), the `AgentFinished` auto-stop with
 its embedded-mode-only guard (`src/tui/runtime/app_events.rs:333-345`),
 `/tts` registration (`src/tui/command.rs:573`), and the default bindings
-`Ctrl+y` → `ToggleTts` / `Ctrl+Shift+Y` → `StopTts`
+`Ctrl+y` → `ToggleTts` / `Ctrl+Alt+Y` → `StopTts`
 (`src/tui/input.rs:552-562`). The earlier `pkill say` caveat is **resolved**:
 `stop()` now signals only the recorded child pid's process group.

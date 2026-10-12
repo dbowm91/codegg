@@ -23,6 +23,13 @@ use codegg_config::schema::SessionTemplate;
 /// input_tokens, output_tokens, cached_tokens, cost_usd, timestamp).
 type UsageRow = (String, String, String, String, i64, i64, i64, f64, i64);
 
+/// How many of the most recent messages a forked session inherits.
+///
+/// Bounded so a fork of a very long session cannot copy an unbounded
+/// transcript. Truncation is from the oldest end: the fork keeps the recent
+/// conversation it was branched from.
+const FORK_MESSAGE_LIMIT: u32 = 5000;
+
 pub fn escape_sql_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -1093,6 +1100,17 @@ impl SessionStore {
         Ok(result.into())
     }
 
+    /// Copy a session and its transcript into a new child session.
+    ///
+    /// The transcript is bounded to the most recent `FORK_MESSAGE_LIMIT`
+    /// messages, kept in chronological order. A fork exists to branch from
+    /// where the session is *now*, so the retained window must be the newest
+    /// one: ordering ascending before the `LIMIT` silently keeps the oldest
+    /// messages and drops the recent turn a fork was made to branch from.
+    ///
+    /// Only parts belonging to a copied message are carried over. `part`
+    /// references `message` by foreign key, so copying an orphan part would
+    /// fail the constraint and lose the whole fork.
     pub async fn fork(&self, id: &str) -> Result<Session, StorageError> {
         let parent = self
             .get(id)
@@ -1136,13 +1154,17 @@ impl SessionStore {
 
         let msgs = sqlx::query_as::<_, MessageRow>(
             r#"
-            SELECT id, session_id, time_created, time_updated, data
-            FROM message WHERE session_id = ?
+            SELECT id, session_id, time_created, time_updated, data FROM (
+                SELECT id, session_id, time_created, time_updated, data
+                FROM message WHERE session_id = ?
+                ORDER BY time_created DESC, id DESC
+                LIMIT ?
+            )
             ORDER BY time_created ASC, id ASC
-            LIMIT 5000
             "#,
         )
         .bind(id)
+        .bind(i64::from(FORK_MESSAGE_LIMIT))
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -1197,8 +1219,12 @@ impl SessionStore {
 
         let mut part_values: Vec<(String, String, String, i64, i64, String)> = Vec::new();
         for part in &parts {
+            // A part whose message fell outside the retained window must not be
+            // carried over: `part.message_id` is a foreign key.
+            let Some(new_msg_id) = id_map.get(&part.message_id) else {
+                continue;
+            };
             let new_part_id = Uuid::new_v4().to_string();
-            let new_msg_id = id_map.get(&part.message_id).unwrap_or(&part.message_id);
             let redacted_data =
                 serde_json::to_string(&super::redact_for_export(parse_json_field(&part.data)))
                     .unwrap_or_else(|_| part.data.clone());
@@ -2174,6 +2200,90 @@ impl MessageStore {
             time_updated: now,
             data: message_data,
         })
+    }
+
+    /// Append an ordered batch of messages to one session transcript.
+    ///
+    /// The canonical read order is `ORDER BY time_created ASC, id ASC`
+    /// ([`MESSAGE_QUERY`]). Two separate `create` calls made in the same
+    /// millisecond therefore fall through to an `id` tiebreak, and `create`
+    /// mints random UUIDs — so the reader's message and its reply can come
+    /// back swapped. This method assigns `time_created` as a strictly
+    /// increasing sequence that starts after the session's current maximum,
+    /// so read order reproduces write order regardless of clock resolution.
+    ///
+    /// The whole batch lands in one transaction: a partially written turn
+    /// (a prompt with no reply, or a reply with no prompt) is worse than a
+    /// missing turn, because the reader renders it as a truncated history.
+    ///
+    /// Returns `Ok(None)` when `session_id` has no `session` row. Subagent and
+    /// other synthetic transcripts deliberately have no durable session, and
+    /// `message.session_id` is a foreign key with `ON DELETE CASCADE`, so
+    /// writing one would fail the constraint rather than create a transcript.
+    ///
+    /// An `id` already present is left untouched, so replaying a batch after a
+    /// partially-observed write cannot duplicate history.
+    pub async fn append_batch(
+        &self,
+        session_id: &str,
+        entries: &[(String, serde_json::Value)],
+    ) -> Result<Option<usize>, StorageError> {
+        if entries.is_empty() {
+            return Ok(None);
+        }
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        if exists.is_none() {
+            return Ok(None);
+        }
+
+        let last: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(time_created) FROM message WHERE session_id = ?")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let now = Utc::now().timestamp_millis();
+        let base = now.max(last.unwrap_or(0).saturating_add(1));
+
+        let mut written = 0usize;
+        for (offset, (id, data)) in entries.iter().enumerate() {
+            let data_str =
+                serde_json::to_string(data).map_err(|e| StorageError::Database(e.to_string()))?;
+            let time_created = base.saturating_add(offset as i64);
+            let result = sqlx::query(
+                r#"
+                INSERT INTO message (id, session_id, time_created, time_updated, data)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                "#,
+            )
+            .bind(id)
+            .bind(session_id)
+            .bind(time_created)
+            .bind(time_created)
+            .bind(&data_str)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+            written += result.rows_affected() as usize;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(Some(written))
     }
 
     pub async fn get(

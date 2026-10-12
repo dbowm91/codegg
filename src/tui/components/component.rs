@@ -28,6 +28,7 @@ pub enum DialogType {
     Tree,
     Theme,
     Permission,
+    PanelManager,
     Mcp,
     Question,
     Diff,
@@ -60,6 +61,11 @@ pub enum DialogType {
     Collaborators,
     ProjectChat,
     Team,
+    /// `/control` output. Was folded into the `Team` slot because both are
+    /// `InfoDialog`; it needs its own identity now that `App::dock_target`
+    /// reads the discriminator to decide which panel a box docks into, and
+    /// `/control` and `/team` are different panels.
+    Control,
     TeamTokenSecret,
     ProjectPicker,
     TaskSchedule,
@@ -119,12 +125,14 @@ impl From<DialogType> for Dialog {
             DialogType::Collaborators => Dialog::Collaborators,
             DialogType::ProjectChat => Dialog::ProjectChat,
             DialogType::Team => Dialog::Team,
+            DialogType::Control => Dialog::Control,
             DialogType::TeamTokenSecret => Dialog::TeamTokenSecret,
             DialogType::TaskSchedule => Dialog::TaskSchedule,
             DialogType::TaskView => Dialog::TaskView,
             DialogType::TriggerSecret => Dialog::TriggerSecret,
             DialogType::WorkspaceDashboard => Dialog::WorkspaceDashboard,
             DialogType::None => Dialog::None,
+            DialogType::PanelManager => Dialog::PanelManager,
         }
     }
 }
@@ -141,6 +149,7 @@ impl From<Dialog> for DialogType {
             Dialog::Theme => DialogType::Theme,
             Dialog::Question => DialogType::Question,
             Dialog::Permission => DialogType::Permission,
+            Dialog::PanelManager => DialogType::PanelManager,
             Dialog::Mcp => DialogType::Mcp,
             Dialog::Keybind => DialogType::Keybind,
             Dialog::Share => DialogType::Share,
@@ -174,6 +183,7 @@ impl From<Dialog> for DialogType {
             Dialog::Collaborators => DialogType::Collaborators,
             Dialog::ProjectChat => DialogType::ProjectChat,
             Dialog::Team => DialogType::Team,
+            Dialog::Control => DialogType::Control,
             Dialog::TeamTokenSecret => DialogType::TeamTokenSecret,
             Dialog::TaskSchedule => DialogType::TaskSchedule,
             Dialog::TaskView => DialogType::TaskView,
@@ -185,6 +195,22 @@ impl From<Dialog> for DialogType {
 
 pub trait Component: Send + Any + AsAny {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
+    /// Whether the panel host may resolve the docking gesture for this
+    /// dialog on its behalf.
+    ///
+    /// `App::handle_dialog_key` intercepts `Shift+←/→/↑/↓` before handing a
+    /// key to the mounted modal, but **only** when this is `true`. That is
+    /// what lets the 24 plain viewer boxes dock into the side column without
+    /// each re-implementing the same check.
+    ///
+    /// The default is `false`, and that default is load-bearing: a dialog
+    /// with a composer, a filter, or its own mode tracking must answer the
+    /// gesture itself, and a box that already does must not be intercepted
+    /// out from under it. Opting a dialog *in* is a claim that its
+    /// Shift-qualified keys are free and that nothing here needs them.
+    fn docks_as_viewer(&self) -> bool {
+        false
+    }
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> {
         None
     }

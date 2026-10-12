@@ -77,6 +77,7 @@ pub struct BashTool {
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(crate) routing_disabled_override: Option<bool>,
     pub(crate) workspace_root: Option<PathBuf>,
+    pub(crate) windows_shell: Option<crate::config::schema::WindowsShellKind>,
 }
 
 impl BashTool {
@@ -97,6 +98,7 @@ impl BashTool {
             asset_pin: None,
             routing_disabled_override: None,
             workspace_root: None,
+            windows_shell: None,
         }
     }
 
@@ -117,6 +119,14 @@ impl BashTool {
 
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.workspace_root = Some(root);
+        self
+    }
+
+    pub fn with_windows_shell(
+        mut self,
+        shell: Option<crate::config::schema::WindowsShellKind>,
+    ) -> Self {
+        self.windows_shell = shell;
         self
     }
 

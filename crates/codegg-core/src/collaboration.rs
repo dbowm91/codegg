@@ -169,6 +169,7 @@ impl CollaborationConfig {
             actions_supported: true,
             max_action_title_bytes: self.max_action_title_bytes,
             max_action_prompt_bytes: self.max_action_prompt_bytes,
+            backward_paging: true,
         }
     }
 
@@ -433,6 +434,19 @@ pub struct ChatHistoryPage {
     pub messages: Vec<ChatMessage>,
     pub next_cursor: u64,
     pub truncated: bool,
+    pub retention_floor_seq: u64,
+}
+
+/// Bounded backward history page, ascending by `seq`.
+///
+/// Produced by [`CollaborationStore::history_older`]. `older_cursor` is the
+/// `before_seq` for the next call; `has_older` reports that older messages
+/// remain past this page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatHistoryOlderPage {
+    pub messages: Vec<ChatMessage>,
+    pub older_cursor: Option<u64>,
+    pub has_older: bool,
     pub retention_floor_seq: u64,
 }
 
@@ -1329,6 +1343,80 @@ impl CollaborationService {
         })
     }
 
+    /// Bounded history page for one channel, walking *backwards* from
+    /// `before_seq`.
+    ///
+    /// [`history`](Self::history) only pages forward (`seq >= from_seq`), so
+    /// a client holding the newest messages had no way to reach anything
+    /// before them. This walks the other direction: the newest
+    /// `limit` messages strictly older than `before_seq`, returned
+    /// ascending by `seq` so callers can prepend them to an existing
+    /// window without re-sorting.
+    ///
+    /// `before_seq = None` anchors at the newest retained message, which
+    /// makes this the natural "open on the recent messages" entry point.
+    /// `older_cursor` carries the oldest `seq` returned so the next call
+    /// can continue from it; it is `None` only for an empty page.
+    /// `has_older` reports that the daemon retains at least one message
+    /// older than this page — it is the backward analogue of
+    /// [`ChatHistoryPage::truncated`].
+    pub async fn history_older(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+        before_seq: Option<u64>,
+        limit: Option<u32>,
+    ) -> Result<ChatHistoryOlderPage, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        let bound = self.config.clamp_page_limit(limit);
+        let floor = self.retention_floor(&pool, channel_id).await?;
+        // Anchor on one past the newest retained `seq` when the caller has
+        // not paged yet. The predicate is strictly `seq < anchor`, so the
+        // newest message must fall *inside* the first page rather than be
+        // skipped as it would be with a bare `newest_seq` anchor.
+        let anchor = match before_seq {
+            Some(seq) => seq,
+            None => self.newest_seq_bound(&pool, channel_id).await?,
+        };
+        let rows = self
+            .page_rows_older(&pool, channel_id, anchor, bound)
+            .await?;
+        let has_older = rows.len() > bound as usize;
+        let mut messages: Vec<ChatMessage> =
+            rows.into_iter().take(bound as usize).collect::<Vec<_>>();
+        // Queried newest-first for the index-friendly `ORDER BY seq DESC`,
+        // but every page type in this module is ascending.
+        messages.reverse();
+        let older_cursor = messages.first().map(|m| m.seq);
+        Ok(ChatHistoryOlderPage {
+            messages,
+            older_cursor,
+            has_older,
+            retention_floor_seq: floor,
+        })
+    }
+
+    /// Exclusive upper `seq` bound for an unanchored
+    /// [`history_older`](Self::history_older) call: one past the newest
+    /// retained `seq`. Falls back to the retention floor for an empty
+    /// channel so the `seq < ?` predicate stays meaningful.
+    async fn newest_seq_bound(
+        &self,
+        pool: &SqlitePool,
+        channel_id: &ChannelId,
+    ) -> Result<u64, CollaborationError> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT MAX(seq) FROM chat_message WHERE channel_id = ?")
+                .bind(channel_id.as_str())
+                .fetch_optional(pool)
+                .await?;
+        match row.and_then(|(seq,)| u64::try_from(seq).ok()) {
+            Some(newest) => Ok(newest.saturating_add(1)),
+            None => self.retention_floor(pool, channel_id).await,
+        }
+    }
+
     /// Bounded incremental sync from a cursor.
     ///
     /// Cursors at or above the retention floor resume incrementally.
@@ -1390,6 +1478,35 @@ impl CollaborationService {
         )
         .bind(channel_id.as_str())
         .bind(i64::try_from(from_seq).unwrap_or(i64::MAX))
+        .bind(i64::from(bound) + 1)
+        .fetch_all(pool)
+        .await?;
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            messages.push(row_to_message(row)?);
+        }
+        Ok(messages)
+    }
+
+    /// Rows strictly older than `before_seq`, newest-first, one extra row
+    /// beyond `bound` so the caller can report `has_older` without a
+    /// second query. Callers reverse the result into ascending order.
+    async fn page_rows_older(
+        &self,
+        pool: &SqlitePool,
+        channel_id: &ChannelId,
+        before_seq: u64,
+        bound: u32,
+    ) -> Result<Vec<ChatMessage>, CollaborationError> {
+        let rows: Vec<MessageRow> = sqlx::query_as(
+            "SELECT id, channel_id, project_id, seq, author_principal, author_agent, body, \
+                    reply_to, thread_root, mentions_json, references_json, revision, redacted, \
+                    idempotency_key, created_at, edited_at \
+             FROM chat_message WHERE channel_id = ? AND seq < ? \
+             ORDER BY seq DESC LIMIT ?",
+        )
+        .bind(channel_id.as_str())
+        .bind(i64::try_from(before_seq).unwrap_or(i64::MAX))
         .bind(i64::from(bound) + 1)
         .fetch_all(pool)
         .await?;
@@ -2149,7 +2266,168 @@ mod tests {
         assert!(matches!(bad, Err(CollaborationError::Invalid { .. })));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    /// Backward paging is the inverse of `history`: walking forward must
+    /// never reach the same rows twice, and the unanchored form must land
+    /// on the newest message rather than skipping it.
+    #[tokio::test]
+    async fn history_older_walks_backward_and_anchors_on_the_newest() {
+        let pool = test_pool().await;
+        let service = service_with_pool(pool);
+        let (project, author, _other) = ids();
+        let channel = service
+            .ensure_default_channel(&project, &author, 1_000)
+            .await
+            .unwrap();
+        for seq in 1..=10 {
+            service
+                .send_message(
+                    &project,
+                    &channel.id,
+                    &author,
+                    None,
+                    &format!("m{seq}"),
+                    None,
+                    None,
+                    &[],
+                    &[],
+                    None,
+                    2_000 + seq as i64,
+                )
+                .await
+                .unwrap();
+        }
+
+        // Unanchored returns the newest page INCLUDING seq 10.
+        let newest = service
+            .history_older(&project, &channel.id, None, Some(3))
+            .await
+            .unwrap();
+        let seqs: Vec<u64> = newest.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, vec![8, 9, 10], "ascending, newest included");
+        assert_eq!(newest.older_cursor, Some(8));
+        assert!(newest.has_older, "seq 1..7 remain");
+
+        // Anchoring on the page's oldest cursor continues strictly below it.
+        let older = service
+            .history_older(&project, &channel.id, newest.older_cursor, Some(3))
+            .await
+            .unwrap();
+        let seqs: Vec<u64> = older.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, vec![5, 6, 7], "no overlap with the previous page");
+        assert_eq!(older.older_cursor, Some(5));
+
+        // Walking to the floor empties the page and stops claiming more.
+        let oldest = service
+            .history_older(&project, &channel.id, older.older_cursor, Some(10))
+            .await
+            .unwrap();
+        let seqs: Vec<u64> = oldest.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+        assert_eq!(oldest.older_cursor, Some(1));
+        assert!(!oldest.has_older, "nothing older than seq 1 exists");
+
+        // Nothing left: an empty page reports no cursor and no more.
+        let exhausted = service
+            .history_older(&project, &channel.id, Some(1), Some(10))
+            .await
+            .unwrap();
+        assert!(exhausted.messages.is_empty());
+        assert_eq!(exhausted.older_cursor, None);
+        assert!(!exhausted.has_older);
+
+        // Forward paging still starts from the oldest — the two directions
+        // are genuinely separate queries.
+        let forward = service
+            .history(&project, &channel.id, None, Some(3))
+            .await
+            .unwrap();
+        let seqs: Vec<u64> = forward.messages.iter().map(|m| m.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3]);
+    }
+
+    /// An empty channel must not panic or claim messages exist beyond the
+    /// retention floor.
+    #[tokio::test]
+    async fn history_older_on_an_empty_channel_is_empty() {
+        let pool = test_pool().await;
+        let service = service_with_pool(pool);
+        let (project, author, _other) = ids();
+        let channel = service
+            .ensure_default_channel(&project, &author, 1_000)
+            .await
+            .unwrap();
+        let page = service
+            .history_older(&project, &channel.id, None, Some(10))
+            .await
+            .unwrap();
+        assert!(page.messages.is_empty());
+        assert_eq!(page.older_cursor, None);
+        assert!(!page.has_older);
+    }
+
+    /// Paging must be scoped to the requested channel: a cursor from one
+    /// channel must not leak another channel's messages.
+    #[tokio::test]
+    async fn history_older_never_crosses_channels() {
+        let pool = test_pool().await;
+        let service = service_with_pool(pool);
+        let (project, author, _other) = ids();
+        let first = service
+            .ensure_default_channel(&project, &author, 1_000)
+            .await
+            .unwrap();
+        let second = service
+            .ensure_channel_by_name(&project, &author, "second", 1_000)
+            .await
+            .unwrap();
+        for seq in 1..=3 {
+            service
+                .send_message(
+                    &project,
+                    &first.id,
+                    &author,
+                    None,
+                    &format!("a{seq}"),
+                    None,
+                    None,
+                    &[],
+                    &[],
+                    None,
+                    2_000 + seq as i64,
+                )
+                .await
+                .unwrap();
+        }
+        service
+            .send_message(
+                &project,
+                &second.id,
+                &author,
+                None,
+                "other channel",
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                3_000,
+            )
+            .await
+            .unwrap();
+
+        let page = service
+            .history_older(&project, &first.id, None, Some(10))
+            .await
+            .unwrap();
+        assert_eq!(page.messages.len(), 3);
+        assert!(
+            page.messages.iter().all(|m| m.channel_id == first.id),
+            "only the requested channel's rows come back"
+        );
+        assert!(!page.has_older);
+    }
+
+    #[tokio::test]
     async fn edit_redact_revision_conflicts_and_history() {
         let pool = test_pool().await;
         let service = service_with_pool(pool);

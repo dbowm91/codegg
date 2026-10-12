@@ -125,13 +125,14 @@ pub enum AuditAction {
     AuditExport,
     AuditQuery,
     WorkOrderLifecycle,
+    HumanShellRun,
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
     /// Every known action in canonical order.
-    pub const ALL: [&'static str; 26] = [
+    pub const ALL: [&'static str; 27] = [
         "authentication",
         "authorization_decision",
         "membership_change",
@@ -158,6 +159,7 @@ impl AuditAction {
         "audit_export",
         "audit_query",
         "work_order_lifecycle",
+        "human_shell_run",
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -188,6 +190,7 @@ impl AuditAction {
             Self::AuditExport => "audit_export",
             Self::AuditQuery => "audit_query",
             Self::WorkOrderLifecycle => "work_order_lifecycle",
+            Self::HumanShellRun => "human_shell_run",
             Self::Unknown => "unknown",
         }
     }
@@ -221,6 +224,7 @@ impl AuditAction {
             "audit_export" => Self::AuditExport,
             "audit_query" => Self::AuditQuery,
             "work_order_lifecycle" => Self::WorkOrderLifecycle,
+            "human_shell_run" => Self::HumanShellRun,
             _ => {
                 return Err(AuditError::UnknownAction(value.to_owned()));
             }

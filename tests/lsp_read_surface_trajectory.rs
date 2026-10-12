@@ -28,6 +28,7 @@ fn diagnostic(message: &str) -> LspDiagnosticDto {
     LspDiagnosticDto {
         range: LspRangeDto {
             path: "lib.rs".to_string(),
+            workspace_relative_path: None,
             start_line: 1,
             start_column: 2,
             end_line: 1,
@@ -208,6 +209,7 @@ fn the_file_cap_is_reported_rather_than_silent() {
 fn authoritative(files: Vec<LspFileDiagnosticsDto>) -> LspDiagnosticsResultDto {
     LspDiagnosticsResultDto {
         project_id: "project-1".to_string(),
+        status: codegg_protocol::lsp::LspDiagnosticsStatus::Ready,
         files,
         truncated: false,
     }

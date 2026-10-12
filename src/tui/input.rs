@@ -28,7 +28,7 @@
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
 //! | Ctrl+R | RestorePrompt |
-//! | Ctrl+P / Ctrl+Shift+P | CycleModelForward/Backward |
+//! | Ctrl+P / Ctrl+Alt+P | CycleModelForward/Backward |
 //! | PgUp/PgDn | PageUp/PageDown |
 //! | Ctrl+F | Search |
 //!
@@ -112,6 +112,38 @@ pub enum InputAction {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    /// Open the side-panel manager (`Shift+S`), Normal mode only.
+    ///
+    /// The manager used to have a second key, `Ctrl+Alt+W`, so it could be
+    /// reached mid-sentence. That chord is retired: the manager is a
+    /// Normal-mode surface exactly like the directionals that drive the same
+    /// panels, so one key per surface is both consistent and one less chord
+    /// to decode in a legacy terminal. It is answered *before* a focused
+    /// panel sees the key, so switching panels is reachable from inside a
+    /// panel rather than only from the main buffer.
+    OpenPanelManager,
+    /// Directional pane gestures, Normal mode only.
+    ///
+    /// `Shift+Left/Right/Up/Down` and the vim `Shift+H/J/K/L` twins all
+    /// resolve here, and every one of them routes through the *same*
+    /// contextual dispatcher ([`crate::tui::commands::panels::move_directionally`])
+    /// rather than carrying its own meaning:
+    ///
+    /// * a dockable box is open → the box is **moved** into the side panel
+    ///   and the box goes away. The direction names the panel's side, which
+    ///   is right today and left when the layout grows a second column;
+    /// * no box is open → the direction **selects a pane**: `Right` takes
+    ///   the keyboard into the side panel, `Left` returns it to the main
+    ///   buffer, and `Up`/`Down` cycle which panel type is loaded.
+    ///
+    /// One gesture family with two meanings is the multiplexer contract: the
+    /// key says *which way*, the surface underneath says *what is there*.
+    /// Resolving it in one place is what keeps a box and its panel from
+    /// disagreeing about what `L` does.
+    DirectionLeft,
+    DirectionRight,
+    DirectionUp,
+    DirectionDown,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -186,6 +218,15 @@ pub enum ActionKey {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
+    /// Open the side-panel manager (`Shift+S`, Normal mode only).
+    OpenPanelManager,
+    /// Directional pane gestures. See
+    /// [`InputAction::DirectionLeft`] — all four share one contextual
+    /// dispatcher.
+    DirectionLeft,
+    DirectionRight,
+    DirectionUp,
+    DirectionDown,
     ToggleTodoList,
     ToggleSection,
     CloseSession,
@@ -309,6 +350,11 @@ impl ActionKey {
             Self::NewSession => InputAction::NewSession,
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
+            Self::OpenPanelManager => InputAction::OpenPanelManager,
+            Self::DirectionLeft => InputAction::DirectionLeft,
+            Self::DirectionRight => InputAction::DirectionRight,
+            Self::DirectionUp => InputAction::DirectionUp,
+            Self::DirectionDown => InputAction::DirectionDown,
             Self::ToggleSection => InputAction::ToggleSection,
             Self::CloseSession => InputAction::CloseSession,
             Self::Help => InputAction::Help,
@@ -365,6 +411,11 @@ impl ActionKey {
             Self::NewSession => "New session",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
+            Self::OpenPanelManager => "Open panel manager (Shift+S)",
+            Self::DirectionLeft => "Pane left",
+            Self::DirectionRight => "Pane right",
+            Self::DirectionUp => "Previous panel",
+            Self::DirectionDown => "Next panel",
             Self::ToggleSection => "Toggle section",
             Self::CloseSession => "Close session",
             Self::Help => "Show help",
@@ -436,8 +487,87 @@ pub struct KeybindConfig {
 static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
     Lazy::new(default_bindings_internal);
 
+/// Actions that exist only in Normal mode.
+///
+/// The binding map is shared across modes, so a `Shift`-qualified entry would
+/// otherwise claim the key in Insert mode too — stealing the caret movement
+/// that `Shift+Left`/`Shift+Right` performs while composing and stealing the
+/// letter itself for `Shift+H`/`Shift+L`. `handle_key_with_bindings` consults
+/// this so those keys stay ordinary text/caret input in Insert.
+fn is_normal_only(action: &InputAction) -> bool {
+    matches!(
+        action,
+        InputAction::DirectionLeft
+            | InputAction::DirectionRight
+            | InputAction::DirectionUp
+            | InputAction::DirectionDown
+            // `Shift+S` is a letter the user is typing most of the time,
+            // so the manager must not claim it mid-word. This used to be a
+            // two-key arrangement with a chord that worked in Insert; the
+            // chord is retired and this is now the only spelling, which
+            // makes the mode gate the whole reason the key is safe.
+            | InputAction::OpenPanelManager
+    )
+}
+
+/// `Shift`-qualified pane directions: `←/→/↑/↓` and the vim `H/J/K/L` twins.
+///
+/// Shift-qualified on purpose. The bare arrows already scroll the transcript
+/// (`Up`/`Down`) and move the caret (`Left`/`Right`), and the bare letters
+/// `j`/`k` are bound to the same navigation; claiming any of them would take
+/// away an existing verb. Shift narrows the gesture to "I am moving between
+/// surfaces", which is a different intent from "I am moving within one".
+///
+/// The vertical pair used to be deliberately left unbound, reserved for a
+/// future stacked-pane layout. It is bound now because it is no longer inert:
+/// with a two-pane layout, `↑`/`↓` cycle which panel type is loaded in the
+/// side column. That is the same gesture a stacked layout would use to move
+/// between rows, so the key is now earning its place instead of advertising
+/// something the UI cannot do.
+///
+/// Each letter is bound twice. Terminals disagree about how to encode a
+/// shifted letter: many report `Char('H') + SHIFT`, others a bare `Char('H')`
+/// with no modifier at all. Binding both is safe because uppercase `H`/`J`/
+/// `K`/`L` are otherwise unbound in Normal mode, and `is_normal_only` keeps
+/// Insert mode treating them as text. This is the same legacy-encoding hazard
+/// that made every `Ctrl+Shift+X` chord undecodable — see
+/// `tests/modifier_chords.rs`.
+fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), InputAction>) {
+    for (key_code, action) in [
+        (KeyCode::Left, InputAction::DirectionLeft),
+        (KeyCode::Right, InputAction::DirectionRight),
+        (KeyCode::Up, InputAction::DirectionUp),
+        (KeyCode::Down, InputAction::DirectionDown),
+    ] {
+        map.insert((KeyModifiers::SHIFT, key_code), action);
+    }
+    // Uppercase letters only. `Char('l')` is a bare `l`, which is a
+    // withinsurface vim verb, not the directional gesture.
+    for (letter, action) in [
+        ('H', InputAction::DirectionLeft),
+        ('J', InputAction::DirectionDown),
+        ('K', InputAction::DirectionUp),
+        ('L', InputAction::DirectionRight),
+    ] {
+        map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
+        map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
+    }
+    // The panel manager also answers to `Shift+S`. Bound under both encodings
+    // for the same legacy-terminal reason as the vim letters, and normal-only
+    // so it never claims an `S` mid-word.
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('S')),
+        InputAction::OpenPanelManager,
+    );
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('S')),
+        InputAction::OpenPanelManager,
+    );
+}
+
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
+    insert_panel_direction_bindings(&mut map);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     // Ctrl+C is the unconditional exit; Esc only backs out of whatever is on
@@ -496,19 +626,43 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // Normal-mode space opens help (the `/help` affordance). Insert mode is
     // unaffected: bare printable keys remain prompt text there.
     map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
+    // ── Chord-selection contract ────────────────────────────────────────
+    //
+    // Multi-modifier chords must be built from `{CONTROL, ALT}` only. A bare
+    // `Ctrl+<letter>` is unusable because every free bare Ctrl letter is a
+    // terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
+    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend) and binding
+    // one steals the terminal's own job.
+    //
+    // `Ctrl+Shift+<letter>` is *also* unusable, for a subtler reason: without
+    // keyboard-enhancement flags (never pushed — see `tui/terminal.rs`) the
+    // terminal is in legacy xterm encoding, where `Ctrl+Alt+W` and `Ctrl+W`
+    // are the same byte 0x17. crossterm therefore reports `Char('w')` with
+    // CONTROL only, and a `(CONTROL|SHIFT, Char('W'))` binding is
+    // unreachable — worse, the key silently falls through to whichever action
+    // owns the bare-Ctrl twin. That is how the panel switcher ended up firing
+    // `CloseSession`.
+    //
+    // `Ctrl+Alt+<letter>` has no such collision: legacy encoding sends `ESC`
+    // followed by the single control byte, so crossterm reports CONTROL|ALT
+    // and the pair is unambiguous against both bare `Ctrl+W` and bare
+    // `Alt+W`. `tests/modifier_chords.rs` asserts the whole set stays
+    // disjoint from their unshifted twins.
+    //
     // Sidebar focus keeps a reachable chord now that space is help.
-    // Sidebar focus keeps a reachable chord now that space is help. A bare
-    // `Ctrl+<letter>` is deliberately avoided: every free bare Ctrl letter is
-    // a terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
-    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend), so binding
-    // one would steal the terminal's own job.
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('S'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('s'),
         ),
         InputAction::FocusSidebar,
     );
+    // The side-panel manager used to answer a second key, `Ctrl+Alt+W`,
+    // here so it could be reached while composing. It is retired: the
+    // manager is a Normal-mode surface like the directionals that drive
+    // the same panels, and one key per surface is one less thing to
+    // remember and one fewer chord to get wrong in a legacy terminal.
+    // `Shift+S` (`OpenPanelManager`) is the only spelling now.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
         InputAction::CloseSession,
@@ -534,10 +688,13 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('p')),
         InputAction::CycleModelForward,
     );
+    // Ctrl+Alt+P cycles backward. Deliberately `P` and not `M`: bare `Ctrl+M` is
+    // byte 0x0D, i.e. Enter, so `Ctrl+Alt+M` would be `ESC` + CR and is not a
+    // chord a legacy terminal can be relied on to disambiguate.
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('P'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('p'),
         ),
         InputAction::CycleModelBackward,
     );
@@ -605,15 +762,15 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     );
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('Y'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('y'),
         ),
         InputAction::StopTts,
     );
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('F'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('f'),
         ),
         InputAction::ToggleFullscreen,
     );
@@ -624,19 +781,20 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('\\')),
         InputAction::OpenProjectPicker,
     );
-    // Ctrl+Shift+] next project tab
+    // Ctrl+Alt+n next project tab. A letter chord rather than the bracket
+    // pair the chord contract rules out; see the CONTROL|ALT note above.
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char(']'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('n'),
         ),
         InputAction::NextProjectTab,
     );
-    // Ctrl+Shift+[ previous project tab
+    // Ctrl+Alt+b previous project tab
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('['),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('b'),
         ),
         InputAction::PreviousProjectTab,
     );
@@ -677,6 +835,7 @@ pub fn default_bindings() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 
 fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     let mut map = HashMap::new();
+    insert_panel_direction_bindings(&mut map);
 
     map.insert((KeyModifiers::NONE, KeyCode::Enter), InputAction::Send);
     map.insert((KeyModifiers::SHIFT, KeyCode::Enter), InputAction::Newline);
@@ -719,18 +878,19 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
     // the vim map did not, so sidebar focus was unreachable whenever
     // `vim_mode=true` even though the help advertised it unconditionally.
     map.insert((KeyModifiers::NONE, KeyCode::Char(' ')), InputAction::Help);
-    // Sidebar focus keeps a reachable chord now that space is help. A bare
-    // `Ctrl+<letter>` is deliberately avoided: every free bare Ctrl letter is
-    // a terminal control character (Ctrl+H backspace, Ctrl+I tab, Ctrl+J
-    // newline, Ctrl+M enter, Ctrl+V literal-next, Ctrl+Z suspend), so binding
-    // one would steal the terminal's own job.
+    // Sidebar focus keeps a reachable chord now that space is help. See the
+    // CONTROL|ALT chord contract in `default_bindings_internal` for why this
+    // is not `Ctrl+Alt+S`.
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('S'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('s'),
         ),
         InputAction::FocusSidebar,
     );
+    // The side-panel switcher no longer has a `Ctrl+Alt+W` binding here or
+    // in the Insert map: `Shift+S` is the single spelling, and it is
+    // already inserted into every map by `insert_panel_direction_bindings`.
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,
@@ -800,8 +960,8 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
 
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('F'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('f'),
         ),
         InputAction::ToggleFullscreen,
     );
@@ -836,18 +996,18 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         (KeyModifiers::SHIFT, KeyCode::Char('Q')),
         InputAction::CloseProjectTab,
     );
-    // Ctrl+Shift+] / Ctrl+Shift+[ also in vim mode
+    // Ctrl+Alt+n / Ctrl+Alt+b also in vim mode (same chords as insert mode)
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char(']'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('n'),
         ),
         InputAction::NextProjectTab,
     );
     map.insert(
         (
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-            KeyCode::Char('['),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            KeyCode::Char('b'),
         ),
         InputAction::PreviousProjectTab,
     );
@@ -948,6 +1108,22 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             action: "Toggle sidebar",
             condition: None,
         },
+        // The focus moves are Normal-mode gestures by contract. They are
+        // listed under Insert as well because the app boots into Insert and
+        // a user reading only that section is exactly who would try `Shift+→`
+        // from the composer and conclude the panel is unreachable.
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Shift+→ / Shift+L",
+            action: "Focus side panel (normal mode)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Insert,
+            key: "Shift+← / Shift+H",
+            action: "Focus main buffer (normal mode)",
+            condition: None,
+        },
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Space",
@@ -956,7 +1132,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+S",
+            key: "Ctrl+Alt+S",
             action: "Focus sidebar",
             condition: None,
         },
@@ -998,7 +1174,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+P",
+            key: "Ctrl+Alt+P",
             action: "Cycle model backward",
             condition: None,
         },
@@ -1010,13 +1186,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+Y",
+            key: "Ctrl+Alt+Y",
             action: "Stop TTS",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+F",
+            key: "Ctrl+Alt+F",
             action: "Toggle fullscreen",
             condition: None,
         },
@@ -1046,13 +1222,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+]",
+            key: "Ctrl+Alt+N",
             action: "Next project tab",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+Shift+[",
+            key: "Ctrl+Alt+B",
             action: "Previous project tab",
             condition: None,
         },
@@ -1215,13 +1391,13 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "Ctrl+Shift+]",
+            key: "Ctrl+Alt+N",
             action: "Next project tab",
             condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "Ctrl+Shift+[",
+            key: "Ctrl+Alt+B",
             action: "Previous project tab",
             condition: None,
         },
@@ -1311,7 +1487,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "Ctrl+Shift+P",
+            key: "Ctrl+Alt+P",
             action: "Cycle model backward",
             condition: None,
         },
@@ -1399,6 +1575,48 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Command,
             key: "/shell-kill <id>",
             action: "Kill running shell command",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal",
+            action: "Open an interactive terminal in a box (Shift+L docks it into the panel)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-clear",
+            action: "Clear a terminal's scrollback and screen; the process keeps running",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+L / Shift+Right",
+            action: "Dock the open box into the side panel, or select a pane when none is open",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+Left / Shift+H",
+            action: "Return the keyboard to the main buffer",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+Up / Shift+Down",
+            action: "Cycle which panel is loaded in the side column",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+S",
+            action: "Open the side-panel manager: pick which panel the side column holds, and bind its Ctrl+1..Ctrl+0 hotkey",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/panels",
+            action: "Same side-panel manager, reachable while composing — the gesture above is the letter S in Insert",
             condition: None,
         },
         HelpEntry {
@@ -1700,7 +1918,7 @@ fn is_text_modifier(modifiers: KeyModifiers) -> bool {
     modifiers == KeyModifiers::NONE || modifiers == KeyModifiers::SHIFT
 }
 
-fn handle_key_with_bindings(
+pub(crate) fn handle_key_with_bindings(
     key: KeyEvent,
     bindings: Option<&HashMap<(KeyModifiers, KeyCode), InputAction>>,
     mode: InputMode,
@@ -1724,7 +1942,7 @@ fn handle_key_with_bindings(
                 if key.modifiers == KeyModifiers::NONE && is_printable_char(c));
 
             if let Some(action) = map.get(&key_tuple) {
-                if is_bare_char {
+                if is_bare_char || is_normal_only(action) {
                     debug_log!("insert mode: skipping bare char binding: {:?}", action);
                 } else {
                     debug_log!("insert mode: matched binding: {:?}", action);
@@ -1733,7 +1951,7 @@ fn handle_key_with_bindings(
             }
             if let Some(_user_bindings) = bindings {
                 if let Some(action) = DEFAULT_BINDINGS.get(&key_tuple) {
-                    if is_bare_char {
+                    if is_bare_char || is_normal_only(action) {
                         debug_log!("insert mode: skipping bare char default: {:?}", action);
                     } else {
                         debug_log!("insert mode: fallback to default: {:?}", action);
@@ -1864,13 +2082,82 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_shift_p_returns_cycle_model_backward() {
+    fn test_ctrl_alt_p_returns_cycle_model_backward() {
         let key = make_key(
-            KeyCode::Char('P'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
         );
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
         assert_eq!(result, Some(InputAction::CycleModelBackward));
+    }
+
+    #[test]
+    fn ctrl_alt_m_is_not_a_chord() {
+        // Bare `Ctrl+M` is byte 0x0D (Enter), so `Ctrl+Alt+M` is `ESC` + CR
+        // and is not a chord a legacy terminal can disambiguate. Model cycling
+        // backward therefore lives on `Ctrl+Alt+P`.
+        let key = make_key(
+            KeyCode::Char('m'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_ne!(
+            handle_key_with_bindings(key, None, InputMode::Insert),
+            Some(InputAction::CycleModelBackward),
+            "Ctrl+Alt+M must not resolve to model cycling; use Ctrl+Alt+P"
+        );
+    }
+
+    #[test]
+    fn the_retired_ctrl_alt_w_no_longer_opens_the_panel_manager() {
+        // `Ctrl+Alt+W` was retired in favour of `Shift+S`. It must not fall
+        // through to anything either: the Control chord it shares is gone,
+        // and silently resolving to `CloseSession` would be the worst
+        // possible reading of a key the help no longer advertises.
+        let key = make_key(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            assert_ne!(
+                handle_key_with_bindings(key, None, mode),
+                Some(InputAction::OpenPanelManager),
+                "the retired chord must not reach the panel manager in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_manager_is_reachable_from_shift_s_in_normal_only() {
+        // Both encodings, because terminals disagree about whether a
+        // shifted letter carries the SHIFT flag.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            let key = make_key(KeyCode::Char('S'), modifiers);
+            assert_eq!(
+                handle_key_with_bindings(key, None, InputMode::Normal),
+                Some(InputAction::OpenPanelManager),
+                "the panel manager must be reachable in Normal mode"
+            );
+            // In Insert it stays the letter S.
+            assert!(
+                !matches!(
+                    handle_key_with_bindings(key, None, InputMode::Insert),
+                    Some(InputAction::OpenPanelManager)
+                ),
+                "the panel manager must not steal the letter S mid-word"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_ctrl_w_still_closes_the_session() {
+        // The chord fix must not change what the bare key does: `Ctrl+W`
+        // still owns CloseSession, and the retired chord sharing that
+        // letter must not change it either.
+        let key = make_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Insert),
+            Some(InputAction::CloseSession)
+        );
     }
 
     #[test]
@@ -1953,10 +2240,11 @@ mod tests {
     #[test]
     fn sidebar_focus_keeps_a_reachable_chord() {
         // Space moved to help, so focus must stay reachable on a chord that
-        // does not collide with a terminal control character.
+        // does not collide with a terminal control character — or with the
+        // bare-Ctrl twin, which is why this is Ctrl+Alt+S.
         let key = make_key(
-            KeyCode::Char('S'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
         );
         assert_eq!(
             handle_key_with_bindings(key, None, InputMode::Normal),
@@ -2228,8 +2516,8 @@ mod tests {
         assert!(keys.contains(&"Ctrl+R"), "missing Ctrl+R in insert help");
         assert!(keys.contains(&"Ctrl+Y"), "missing Ctrl+Y in insert help");
         assert!(
-            keys.contains(&"Ctrl+Shift+F"),
-            "missing Ctrl+Shift+F in insert help"
+            keys.contains(&"Ctrl+Alt+F"),
+            "missing Ctrl+Alt+F in insert help"
         );
     }
 

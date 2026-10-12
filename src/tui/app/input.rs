@@ -8,52 +8,6 @@
 use super::*;
 
 impl App {
-    /// Route keys consumed by the presentation-only sidebar selection. Modal
-    /// components remain owned by `FocusManager`; this branch is reached only
-    /// when no modal is active, so prompt input cannot see a consumed key.
-    pub(crate) fn handle_sidebar_action(
-        &mut self,
-        action: Option<crate::tui::input::InputAction>,
-        key: crossterm::event::KeyEvent,
-    ) {
-        use crate::tui::components::sidebar::SidebarActivation;
-        use crate::tui::input::InputAction;
-
-        let area = self.sidebar_area.unwrap_or_default();
-        match action {
-            Some(InputAction::NavigateUp) => self.sidebar.focus_prev(),
-            Some(InputAction::NavigateDown) => self.sidebar.focus_next(),
-            Some(InputAction::PageUp) => self.sidebar.focus_page_prev(area),
-            Some(InputAction::PageDown) => self.sidebar.focus_page_next(area),
-            Some(InputAction::Left) => self.sidebar.collapse_or_parent(),
-            Some(InputAction::Right) => self.sidebar.expand_focused(),
-            Some(InputAction::ToggleSection) | Some(InputAction::FocusSidebar)
-                if key.code == crossterm::event::KeyCode::Char(' ') =>
-            {
-                self.sidebar.toggle_focused();
-            }
-            Some(InputAction::ToggleSection) => self.sidebar.toggle_focused(),
-            Some(InputAction::Send) => match self.sidebar.activate_focused() {
-                SidebarActivation::ToggleSection | SidebarActivation::ToggleAgentNode(_) => {
-                    self.sidebar.toggle_focused();
-                }
-                SidebarActivation::InspectRun(run_id) => {
-                    self.process_msg(TuiMsg::OpenRunDetail { run_id });
-                }
-                SidebarActivation::None => {}
-            },
-            Some(InputAction::Cancel) | Some(InputAction::FocusPrompt) => {
-                self.sidebar.blur_sidebar();
-            }
-            Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
-            _ => {
-                // Sidebar focus is modal-like presentation focus. Unknown or
-                // text actions are consumed rather than leaking to prompt.
-            }
-        }
-        self.sidebar.ensure_focused_visible(area);
-    }
-
     pub fn process_msg(&mut self, msg: TuiMsg) {
         tracing::debug!(target: "codegg::tui::app", "process_msg: {:?}", msg);
         match msg {
@@ -148,6 +102,59 @@ impl App {
                         .info("Initialization preview cancelled; no file was written");
                 }
                 self.close_dialog();
+            }
+            // ── Project chat window intents ──────────────────────────
+            //
+            // The dialog emits these; every one routes into the existing
+            // `commands/chat.rs` seam so the daemon round-trip, the
+            // authorization decision, and the stale-completion guards
+            // stay in one place. Nothing here writes chat state directly.
+            TuiMsg::ChatSend { body, reply_to } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_send(self, project_id, body, reply_to);
+                }
+            }
+            TuiMsg::ChatEdit { message_id, body } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_edit(self, project_id, message_id, body);
+                }
+            }
+            TuiMsg::ChatRedact { message_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_redact(
+                        self, project_id, message_id, None,
+                    );
+                }
+            }
+            TuiMsg::ChatMarkRead => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_read(self, project_id);
+                }
+            }
+            TuiMsg::ChatLoadOlder => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_load_older(self, project_id);
+                }
+            }
+            TuiMsg::ChatRefresh => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_history(self, project_id);
+                }
+            }
+            TuiMsg::ChatSwitchChannel { channel_id } => {
+                if let Some(project_id) = self.chat_panel_project.clone() {
+                    crate::tui::commands::chat::start_chat_switch_channel(
+                        self, project_id, channel_id,
+                    );
+                }
+            }
+            TuiMsg::ChatPagingUnsupported => {
+                self.messages_state.toasts.warning(
+                    "This daemon does not support loading older chat history — restart or upgrade the daemon",
+                );
+            }
+            TuiMsg::ChatComposerSeed(seed) => {
+                self.arm_chat_composer(seed);
             }
             TuiMsg::ProjectInitApprove => {
                 let Some(draft) = self.dialog_state.project_init_draft.take() else {
@@ -245,6 +252,7 @@ impl App {
                             command,
                             promote_after,
                             cwd,
+                            confirmed_dangerous: true,
                         });
                     }
                 } else {
@@ -592,6 +600,35 @@ impl App {
                 self.close_dialog();
             }
             TuiMsg::ToggleSidebar => self.toggle_sidebar(),
+            TuiMsg::MoveDirection(dir) => {
+                crate::tui::commands::panels::move_directionally(self, dir)
+            }
+            TuiMsg::TerminalPanelFocus { handle } => {
+                crate::tui::commands::interactive_terminal::focus_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelBlur { handle } => {
+                crate::tui::commands::interactive_terminal::blur_terminal_panel(self, &handle)
+            }
+            TuiMsg::TerminalPanelInput { handle, bytes } => {
+                crate::tui::commands::interactive_terminal::send_terminal_input(self, handle, bytes)
+            }
+            TuiMsg::TerminalPanelClear { handle } => {
+                crate::tui::commands::interactive_terminal::clear_terminal(self, &handle)
+            }
+            TuiMsg::StartTerminal => {
+                crate::tui::commands::interactive_terminal::spawn_default_terminal_for_panel(self)
+            }
+            TuiMsg::SelectPanel { panel } => {
+                // Focus follows the pick: the manager exists to get the user
+                // *to* a panel, and landing there without the keyboard would
+                // make the choice look inert.
+                self.close_dialog();
+                crate::tui::commands::panels::select_panel(self, panel);
+                crate::tui::commands::panels::focus_panel(self);
+            }
+            TuiMsg::SavePanelHotkey { digit, panel } => {
+                crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
+            }
             TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),

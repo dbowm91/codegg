@@ -45,6 +45,7 @@ pub enum DaemonRequestFamily {
     Chat,
     Team,
     Interactive,
+    HumanShell,
     WorkOrders,
     Documents,
     ProjectInitialization,
@@ -133,6 +134,8 @@ impl DaemonRequestFamily {
             CoreRequest::TurnSteer { .. } => Self::Turns,
             CoreRequest::TurnSubmit { .. } => Self::Turns,
             CoreRequest::SessionPromptSubmit { .. } => Self::Turns,
+            CoreRequest::HumanShellPromotionStage { .. } => Self::Turns,
+            CoreRequest::HumanShellPromotionsGet { .. } => Self::Turns,
             CoreRequest::SessionControlGet { .. } => Self::Turns,
             CoreRequest::SessionControlRequest { .. } => Self::Turns,
             CoreRequest::SessionControlTransfer { .. } => Self::Turns,
@@ -243,7 +246,7 @@ impl DaemonRequestFamily {
             CoreRequest::ChatComposingList { .. } => Self::Chat,
             CoreRequest::ChatComposingSet { .. } => Self::Chat,
             CoreRequest::ChatEdit { .. } => Self::Chat,
-            CoreRequest::ChatHistory { .. } => Self::Chat,
+            CoreRequest::ChatHistory { .. } | CoreRequest::ChatHistoryOlder { .. } => Self::Chat,
             CoreRequest::ChatPolicyGet { .. } => Self::Chat,
             CoreRequest::ChatPolicyList { .. } => Self::Chat,
             CoreRequest::ChatProjectPolicySet { .. } => Self::Chat,
@@ -294,6 +297,10 @@ impl DaemonRequestFamily {
             CoreRequest::InteractiveProcessResize { .. } => Self::Interactive,
             CoreRequest::InteractiveProcessResume { .. } => Self::Interactive,
             CoreRequest::InteractiveProcessTerminate { .. } => Self::Interactive,
+            CoreRequest::HumanShellRunCapabilities
+            | CoreRequest::HumanShellRunCreate { .. }
+            | CoreRequest::HumanShellRunRead { .. }
+            | CoreRequest::HumanShellRunCancel { .. } => Self::HumanShell,
             CoreRequest::Initialize => Self::Turns,
         }
     }
@@ -313,6 +320,7 @@ impl DaemonRequestFamily {
             Self::Chat => "src/core/daemon.rs::handle_chat_request",
             Self::Team => "src/core/daemon_team.rs::handle_team_request",
             Self::Interactive => "src/core/daemon.rs::run_interactive_request",
+            Self::HumanShell => "src/core/daemon_human_shell.rs::handle_human_shell_request",
             Self::WorkOrders => "src/core/daemon_work_orders.rs::handle_work_order_request",
             Self::Documents => "src/core/daemon_documents.rs::handle_document_request",
             Self::ProjectInitialization => {
@@ -388,6 +396,22 @@ mod tests {
             (
                 CoreRequest::InteractiveProcessCapabilities,
                 DaemonRequestFamily::Interactive,
+            ),
+            (
+                CoreRequest::HumanShellRunCreate {
+                    request: codegg_protocol::human_shell::HumanShellRunCreateRequestDto {
+                        protocol_version: 1,
+                        submission_id: String::new(),
+                        project_id: String::new(),
+                        workspace_id: String::new(),
+                        session_id: None,
+                        origin: codegg_protocol::human_shell::HumanShellOriginDto::Bang,
+                        confirmed_dangerous: false,
+                        command: String::new(),
+                        timeout_secs: 300,
+                    },
+                },
+                DaemonRequestFamily::HumanShell,
             ),
         ];
         for (request, expected) in &cases {

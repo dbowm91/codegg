@@ -33,6 +33,7 @@ on:
       - 'architecture/**'
       - '**.md'
       - '.opencode/skills/**'
+  workflow_dispatch:
 
 # Superseded runs never contribute signal: each push/PR-sync cancels the
 # previous in-progress run on the same ref instead of burning a second

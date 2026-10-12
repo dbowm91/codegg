@@ -20,6 +20,21 @@ pub struct MessageData {
     pub message_id: String,
     #[serde(default)]
     pub parts: Vec<PartInfo>,
+    /// Who produced this message.
+    ///
+    /// Optional because rows written before this field existed — including
+    /// every compatibility import — have no role recorded. Readers must fall
+    /// back to inferring it from `parts` when this is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<MessageRole>,
+}
+
+/// Author of a persisted transcript message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    User,
+    Assistant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +104,7 @@ mod tests {
             session_id: String::new(),
             message_id: String::new(),
             parts: Vec::new(),
+            role: None,
         };
         assert!(data.parts.is_empty());
     }
@@ -158,11 +174,13 @@ mod tests {
                     text: "hello".to_string(),
                 },
             }],
+            role: Some(MessageRole::Assistant),
         };
         let json = serde_json::to_string(&data).unwrap();
         let deserialized: MessageData = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.id, "msg_1");
         assert_eq!(deserialized.parts.len(), 1);
+        assert_eq!(deserialized.role, Some(MessageRole::Assistant));
     }
 
     #[test]
@@ -193,6 +211,7 @@ mod tests {
                 session_id: "sess_1".to_string(),
                 message_id: "msg_1".to_string(),
                 parts: vec![],
+                role: None,
             },
         };
         let json = serde_json::to_string(&msg).unwrap();

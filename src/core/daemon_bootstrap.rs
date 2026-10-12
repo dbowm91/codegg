@@ -198,6 +198,19 @@ impl CoreDaemon {
             return;
         };
 
+        if let Some(store) = self
+            .pool
+            .clone()
+            .map(codegg_core::session_control::SessionControllerStore::new)
+        {
+            if let Err(error) = store
+                .interrupt_incomplete_turn_receipts(chrono::Utc::now().timestamp_millis())
+                .await
+            {
+                tracing::error!(error = %error, "failed to mark prior turn receipts interrupted");
+            }
+        }
+
         // Find interrupted turns: TurnStarted without a matching TurnCompleted/TurnFailed
         // for the same session_id + turn_id. Use the explicit event-type strings
         // written by `core_event_type()` (snake_case) so the query is stable and
@@ -681,6 +694,57 @@ mod tests {
         // Job recovery returns a report when a scheduler is present.
         let report = daemon.recover_jobs().await;
         assert!(report.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_marks_receipts_interrupted_without_replay() {
+        let pool = in_memory_pool().await;
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) \
+             VALUES ('project-recovery', '/tmp/project-recovery', '[]', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("project row");
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) \
+             VALUES ('session-recovery', 'project-recovery', 'recovery', '/tmp/project-recovery', 'Recovery', '1', ?, ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("session row");
+        let principal =
+            codegg_core::identity::PrincipalId::parse("principal-recovery").expect("principal");
+        let store = codegg_core::session_control::SessionControllerStore::new(pool.clone());
+        store
+            .admit_with_promotions(
+                "session-recovery",
+                "submission-recovery",
+                &"a".repeat(64),
+                "turn-recovery",
+                &principal,
+                Some("client-recovery"),
+                "project-recovery",
+                "workspace-recovery",
+                &[],
+                now,
+            )
+            .await
+            .expect("durable accepted receipt");
+
+        let daemon = CoreDaemon::new(Some(pool), None, None);
+        daemon.recover_state().await;
+        let receipt = store
+            .get_turn_receipt("submission-recovery")
+            .await
+            .expect("receipt lookup")
+            .expect("receipt exists");
+        assert_eq!(receipt.status, "interrupted");
     }
 
     #[tokio::test]

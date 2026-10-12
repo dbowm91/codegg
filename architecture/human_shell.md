@@ -14,6 +14,7 @@ and a promotion model that keeps ephemeral commands out of model context.
 |------|----------|
 | `types.rs` | `ShellOrigin`, `ShellCapturePolicy`, `ShellCommandId`, `ShellRequest`, `ShellEvent`, `ShellStatus`, `ShellPromotionMode`, `ShellEnvPolicy`, `PromptSubmissionKind`, `classify_prompt_submission()` |
 | `runtime.rs` | `ShellRuntime` (streams `$SHELL -lc` through `ManagedProcessService`), `ShellHandle` (cancellation handle) |
+| `daemon.rs` | `HumanShellRunService` (scheduler-admitted, bounded daemon run registry and owner-scoped output cursor) |
 | `store.rs` | `ShellOutputStore` (bounded VecDeque), `BoundedOutput` (head/tail split), `ShellOutputEntry` |
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
@@ -30,10 +31,23 @@ and a promotion model that keeps ephemeral commands out of model context.
 
 A human `!` command is not model context unless the user explicitly
 promotes it. `!command` runs ephemerally (command and output hidden from model).
-`!!command` runs and stages bounded/redacted output for the next submitted
-turn when `human_shell.auto_promote_bangbang` is enabled. `/shell-include`
-stages a selected output view in the same way. `/shell-ask` submits one
-question and its redacted evidence through the session-scoped prompt API.
+`!!command` runs and asks the authoritative daemon to stage a bounded,
+redacted projection for the exact session when
+`human_shell.auto_promote_bangbang` is enabled. `/shell-include` stages a
+selected output view in the same way. The daemon acknowledges the durable
+record before the TUI presents it as staged. Pending records are principal,
+session, project, and workspace scoped, limited to 32 KiB each, 32 pending and
+256 retained per session, and expire after 24 hours. A submitted turn claims
+them atomically with the session controller lease and a durable admission
+receipt (SQLite migrations v71–v72). The request envelope's `request_id` is
+the stable submission identity; retry the identical request with the same ID
+to receive the original receipt without starting another turn. Receipt rows
+are retained for a bounded idempotency window. Daemon recovery marks
+still-accepted receipts interrupted and never replays them; turn
+completion/failure updates the receipt. Reconnect restores pending records,
+while consumed records are never replayed automatically. `/shell-ask` stages
+the question and evidence under a stable identity before submitting one
+session-scoped prompt turn.
 Promotions require a bound non-observer session.
 Neither staging command starts inference. `\!command` escapes to a literal
 `!` chat message.
@@ -42,39 +56,50 @@ Human-shell promotion always runs the shared secret redactor and fails closed
 if redaction does not report an applied state, regardless of
 `redact_model_visible_output`; the general shell projection `off` setting does
 not disable this human-consent boundary. Projection text is ANSI-stripped and
-limited to 32 KiB before it is inserted into provider-facing user context.
-The TUI marks an entry promoted only after the session turn API acknowledges
-acceptance. A staged message remains local to its current TUI session until
-that turn is accepted. The WebSocket TUI transport accepts prompt strings
-only, so it places approved evidence in an empty composer for explicit
-submission; it preserves a non-empty draft and does not claim remote acceptance
-from queue delivery.
+limited to 32 KiB before staging. Without a connected authoritative owner, the
+TUI leaves the evidence as an unsubmitted composer draft. The WebSocket TUI
+transport accepts prompt strings only, so it also uses an explicitly labeled
+composer draft and makes no staging or acceptance claim from queue delivery.
 
 ### Execution Flow
 
 1. User input parsed by `classify_prompt_submission()` →
    `PromptSubmissionKind::HumanShell { command, promote_after }`.
-2. `ShellRuntime::spawn()` submits `$SHELL -lc <command>` to
-   `ManagedProcessService::run_streaming()` with inherited-but-filtered
-   environment, explicit cwd, timeout (default 300s), and bounded
-   stdout/stderr. Returns `ShellHandle` with cancellation capability.
-3. Shell events (`Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`,
+2. The TUI negotiates `human_shell.v1` and submits create/read/cancel requests
+   through `CoreClient`. It supplies project/workspace/session locators and
+   an idempotency key, never a cwd or environment.
+3. The daemon requires `command.execute`, resolves the registered workspace
+   and project/session bindings, refuses remote-node bindings, enforces the
+   daemon user's sandbox profile and safety classifier, and reserves a shared
+   scheduler process slot before accepting the run.
+4. `ShellRuntime::spawn()` submits daemon-host `$SHELL -lc <command>` to
+   `ManagedProcessService::run_streaming()` with a sanitized daemon environment,
+   canonical workspace cwd, configured timeout (300 seconds by default, capped
+   at one hour), and bounded stdout/stderr.
+   Constrained sandbox profiles fail closed if the host cannot enforce them.
+5. The daemon retains at most eight runs per principal, 512 total runs, and
+   bounded output/status for ten minutes. A connection drop does not orphan an
+   unbounded process; reconnect reads require the same principal, project,
+   workspace, and session binding. Restart drops handles and never replays.
+6. Shell events (`Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`,
    `FailedToStart`) stream over `mpsc::Sender<ShellEvent>`.
-4. `ShellOutputStore` receives bounded head/tail for TUI rendering.
-5. `ShellCommandRunBridge` mirrors events into `CommandOutputStore` for
+7. `ShellOutputStore` receives bounded head/tail for TUI rendering only after
+   daemon admission.
+8. `ShellCommandRunBridge` mirrors events into `CommandOutputStore` for
    projection/expansion.
-6. Policy gate (`evaluate_command()`) blocks destructive commands,
-   warns on risky ones, before execution.
+9. `evaluate_command()` is enforced by both the TUI confirmation flow and the
+   daemon boundary; a warning-class command needs explicit confirmation.
 
 Human model-context promotions pass through one redaction hook regardless of
 the general shell-output redaction setting and are capped at 32 KiB. `!`
 output remains private. Local `!!`/include entries are marked promoted only
-after the next submitted turn receives a daemon `Ack`; `/shell-ask` waits for
-the session-scoped submission `Ack`. Remote TUI queue acceptance is not
-session acceptance, so the current remote path does not claim promotion
-success. Finite command execution still runs in the frontend and is being
-corrected separately by C002 at
-`plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
+after a turn is accepted and the durable stage is claimed. `/shell-ask` waits
+for both stage acknowledgement and session turn acceptance. Remote TUI queue
+acceptance is not session acceptance, so the remote path remains an
+unsubmitted composer draft for model-context promotion. Finite command
+execution itself is daemon-owned for local and remote-attached TUIs; remote
+workspace execution nodes are explicitly unsupported. C002 is closed at
+`plans/closure/human-execution-corrective/002-status.md`.
 
 ### Projection Pipeline (Phases 1–10)
 

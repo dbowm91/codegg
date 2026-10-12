@@ -872,6 +872,11 @@ impl TurnRuntime for DefaultTurnRuntime {
                     // not mapped there (see `core::map_app_event_to_core_event`).
                     let (stop_reason, input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                         crate::agent::turn_completion::turn_usage(&events);
+                    // The resolved context window travels with the usage:
+                    // the footer percentage is measured against it, and
+                    // without it the meter has no denominator and can only
+                    // show "unknown" for a model it cannot guess at.
+                    let context_limit = agent_loop.context_limit();
                     event_log_for_spawn
                         .publish(
                             Some(session_id_for_spawn.clone()),
@@ -884,6 +889,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                                 output_tokens,
                                 cached_tokens,
                                 reasoning_tokens,
+                                context_limit,
                             },
                         )
                         .await;

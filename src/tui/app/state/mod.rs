@@ -10,6 +10,7 @@ pub mod file_tree;
 pub mod manifest;
 pub mod messages;
 pub mod observe;
+pub mod panel_hotkeys;
 pub mod persistence;
 pub mod plugin_ui;
 pub mod presence;
@@ -21,6 +22,7 @@ pub mod restore;
 pub mod routing;
 pub mod session;
 pub mod snapshot;
+pub mod subagents;
 pub mod ui;
 pub mod view_switch;
 pub mod work_orders;
@@ -66,7 +68,8 @@ pub use routing::{
     InactiveSummaryKind, RouteCheck, RouteDecision, RoutingRegistry, TabActivitySummary,
     UiRouteToken, MAX_TAB_HEALTH_SUMMARY_LEN, MAX_TAB_LAST_ERROR_LEN, MAX_TAB_UNREAD_DISPLAY,
 };
-pub use session::SessionState;
+pub use session::{RunningTool, SessionState};
+pub use subagents::{SubagentRow, SubagentState, SubagentView};
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;
 pub use work_orders::{

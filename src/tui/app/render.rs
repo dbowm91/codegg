@@ -5,6 +5,7 @@
 //! filesystem, daemon, network, process, or other blocking work.
 
 use super::*;
+use crate::tui::app::state::subagents::SubagentRow;
 use ratatui::style::Color;
 
 /// Maximum display width of the agent name shown beside the input-mode badge.
@@ -103,26 +104,60 @@ impl App {
         // absorbs the difference. Carving them back out of the prompt chunk
         // instead would silently shrink the input by up to
         // `MAX_TODO_STRIP_TASKS` rows every time the list was expanded.
+        // The contextual key line sits directly above the input and is
+        // reserved from the prompt allocation for the same reason the todo
+        // strip is: carving it out afterwards would shrink the input every
+        // time a panel took focus.
+        let hint_rows = u16::from(self.composer_hint_text().is_some());
+        // The working strip sits closest to the transcript, so a turn in
+        // flight reads as part of the buffer rather than as chrome. It is
+        // reserved from the prompt allocation for the same reason the hint
+        // line and todo strip are: carving it afterwards would shrink the
+        // input every time the agent started working.
+        let working_rows = self.working_strip_rows();
         let prompt_height = self
             .prompt_state
             .prompt
             .needed_height(max_prompt_height)
-            .saturating_add(todo_rows);
+            .saturating_add(todo_rows)
+            .saturating_add(hint_rows)
+            .saturating_add(working_rows);
         let session_chunks = self
             .ui_state
             .layout
             .session_layout(pane_area, Some(prompt_height));
 
-        // Carve the todo strip off the top of the prompt chunk so it sits
-        // directly above the input.
-        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && session_chunks[2].height > todo_rows {
+        // Carve the hint line, then the todo strip, then the working strip,
+        // off the top of the prompt chunk. Order matters: hints belong closer
+        // to the input than the task strip does, and the working strip closer
+        // to the transcript than both.
+        let mut available = session_chunks[2];
+        let mut working_chunk = None;
+        if working_rows > 0 && available.height > working_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(working_rows), Constraint::Min(1)])
+                .split(available);
+            working_chunk = Some(split[0]);
+            available = split[1];
+        }
+        let mut hint_chunk = None;
+        if hint_rows > 0 && available.height > hint_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(hint_rows), Constraint::Min(1)])
+                .split(available);
+            hint_chunk = Some(split[0]);
+            available = split[1];
+        }
+        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
-                .split(session_chunks[2]);
+                .split(available);
             (split[1], Some(split[0]))
         } else {
-            (session_chunks[2], None)
+            (available, None)
         };
         self.todo_area = todo_chunk;
         self.viewport_area = Some(session_chunks[1]);
@@ -130,15 +165,19 @@ impl App {
 
         // Outer TUI frame: paint the left border on the reserved strip
         // and the four corner cells that connect it with the header's
-        // bottom border (top) and the footer's bottom border (bottom).
-        // The header and footer widgets supply the horizontal lines via
-        // their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`.
+        // bottom border (top) and the reserved bottom edge (bottom).
+        // The header supplies the top horizontal line via its own
+        // `Borders::BOTTOM`; the bottom line is painted in `finish_render`
+        // on `border_area`, so the lower corners have to be anchored there
+        // too — anchoring them on the footer's last row left the bottom
+        // edge's own leftmost cell showing the `│` of the left strip and
+        // put a stray `└` up on the status line.
         self.render_outer_borders(
             frame,
             bordered[0],
             pane_area,
             session_chunks[0],
-            session_chunks[3],
+            border_area,
         );
 
         self.render_header(frame, session_chunks[0]);
@@ -150,6 +189,13 @@ impl App {
                     panic!("injected messages render panic");
                 }
                 self.render_viewport(frame, session_chunks[1]);
+                // An open subagent buffer replaces the transcript in the
+                // same rect rather than opening a modal over it: Esc then has
+                // exactly one meaning — return to the main buffer — instead of
+                // being ambiguous between "close a dialog" and "go back".
+                if self.ui_state.subagents.open.is_some() {
+                    self.render_subagent_view(frame, session_chunks[1]);
+                }
                 Ok(())
             }));
         if let Err(err) = viewport_result {
@@ -162,6 +208,8 @@ impl App {
             self.render_component_fallback(frame, session_chunks[1], "Messages render error");
         }
 
+        self.render_working_strip(frame, working_chunk);
+        self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
@@ -587,18 +635,25 @@ impl App {
 
     /// Draw the left border on the reserved 1-column strip and the
     /// four corner cells that connect it with the header's bottom
-    /// border (top edge) and the footer's bottom border (bottom edge).
-    /// The header and footer widgets supply the horizontal lines via
-    /// their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`
-    /// — the corners here are what make the three sides look like a
-    /// single connected frame instead of three disjoint segments.
+    /// border (top edge) and the reserved bottom edge (bottom edge).
+    /// The header supplies the top horizontal line via its own
+    /// `Borders::BOTTOM`, and the bottom horizontal line is painted
+    /// later by `finish_render` — the corners here are what make the
+    /// three sides look like a single connected frame instead of three
+    /// disjoint segments.
+    ///
+    /// `bottom_edge_area` is the row carved off for that bottom line,
+    /// so the lower corners are anchored on the edge itself. They used
+    /// to be placed on the footer's last row instead, which is one row
+    /// higher: the status line got a `└`/`┘` it never asked for and the
+    /// real bottom-left corner was left showing the left border's `│`.
     fn render_outer_borders(
         &mut self,
         frame: &mut Frame,
         left_area: Rect,
         content_area: Rect,
         header_area: Rect,
-        footer_area: Rect,
+        bottom_edge_area: Option<Rect>,
     ) {
         // Left border: paint a `Borders::LEFT` block on the reserved
         // strip. Drawing on a dedicated strip keeps the line continuous
@@ -611,28 +666,26 @@ impl App {
             .style(bg_style);
         frame.render_widget(left_block, left_area);
 
-        // The footer/status bar draws its own `Borders::TOP |
-        // Borders::BOTTOM` only when it has more than one row to spend
-        // (`status_bar.rs` takes an early, border-less path at height 1).
-        // The configured `footer_height` is 1, so in practice nothing
-        // painted the bottom edge of the main pane and it read as an
-        // open-ended window next to the sidebar, which does draw a full
-        // `Borders::ALL`. The edge therefore lives on its own reserved
-        // row, carved off `main_area_inner` by `render` before the session
-        // layout ran, and is painted in `finish_render`. This function
-        // only owns the corner glyphs that connect it to the side edges.
-        if header_area.height > 0 && footer_area.height > 0 && content_area.width > 0 {
-            // Corner cells: top-left, top-right, bottom-left, bottom-right.
-            // Drawn after the header and footer widgets (which supply the
-            // horizontal lines) so the corner glyphs overwrite the line
-            // glyphs at the intersections and visually connect them.
+        // The bottom edge lives on its own reserved row (see `render`),
+        // painted in `finish_render`. Without it the main pane read as an
+        // open-ended window next to the sidebar, which draws a full
+        // `Borders::ALL`. This function only owns the corner glyphs that
+        // connect that edge to the side edges.
+        let Some(bottom_edge_area) = bottom_edge_area else {
+            return;
+        };
+        // Corner cells: top-left, top-right, bottom-left, bottom-right.
+        // Drawn after the header widget (which supplies the top line) so
+        // the corner glyphs overwrite the line glyphs at the intersections
+        // and visually connect them.
+        if header_area.height > 0 && content_area.width > 0 {
             let header_bottom_y = header_area.y + header_area.height - 1;
-            let footer_bottom_y = footer_area.y + footer_area.height - 1;
+            let bottom_y = bottom_edge_area.y + bottom_edge_area.height.saturating_sub(1);
             let right_x = content_area.x + content_area.width - 1;
             self.render_corner(frame, left_area.x, header_bottom_y, '┌', border_style);
             self.render_corner(frame, right_x, header_bottom_y, '┐', border_style);
-            self.render_corner(frame, left_area.x, footer_bottom_y, '└', border_style);
-            self.render_corner(frame, right_x, footer_bottom_y, '┘', border_style);
+            self.render_corner(frame, left_area.x, bottom_y, '└', border_style);
+            self.render_corner(frame, right_x, bottom_y, '┘', border_style);
         }
     }
 
@@ -779,6 +832,7 @@ impl App {
                 writable,
                 busy,
                 snapshot: &snapshot,
+                lsp: &self.editor_state.lsp,
                 presentation: session.presentation_mut(),
                 theme,
             }
@@ -1059,6 +1113,242 @@ impl App {
         frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
     }
 
+    /// Render the open subagent buffer over the transcript.
+    ///
+    /// Shows only what the projection actually vouches for — the agent, its
+    /// task description, the lifecycle status, and the canonical ids needed
+    /// to reach durable run detail. It deliberately does not synthesize
+    /// progress text: the projection adapter hardcodes `progress: None`, so
+    /// an invented "working on step 3" line would be a lie the user acts on.
+    fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(view) = self.ui_state.subagents.open.clone() else {
+            return;
+        };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        let status_style = if view.row.is_running() {
+            Style::default().fg(theme.primary)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(Span::styled(
+            format!(" Subagent · {}", view.row.agent),
+            Style::default()
+                .fg(theme.foreground)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", view.row.status),
+            status_style,
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Task",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   {}", view.row.description),
+            Style::default().fg(theme.foreground),
+        )));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Identity",
+            Style::default().fg(theme.muted),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("   task {}", view.row.task_id),
+            Style::default().fg(theme.foreground),
+        )));
+        if let Some(run_id) = &view.row.run_id {
+            lines.push(Line::from(Span::styled(
+                format!("   run  {run_id}"),
+                Style::default().fg(theme.foreground),
+            )));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " Esc returns to the main buffer".to_string(),
+            Style::default().fg(theme.muted),
+        )));
+
+        let width = area.width.saturating_sub(1);
+        let paragraph = Paragraph::new(lines)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((view.scroll, 0));
+        frame.render_widget(paragraph, Rect { width, ..area });
+    }
+
+    /// Rows the working strip needs, or `0` when it has nothing to say.
+    fn working_strip_rows(&self) -> u16 {
+        if !self.should_show_working_strip() {
+            return 0;
+        }
+        let total = self.ui_state.subagents.rows.len();
+        let shown = total.min(MAX_WORKING_STRIP_SUBAGENTS);
+        // Reserve a row for the overflow marker when the list is truncated.
+        // Without the reservation the marker has nowhere to draw — the rows
+        // exactly fill the strip — so a wide fan-out would silently drop
+        // subagents with no indication that any were hidden.
+        let overflow = u16::from(total > shown);
+        1 + shown as u16 + overflow
+    }
+
+    /// Whether a turn is in flight and the strip should be drawn.
+    fn should_show_working_strip(&self) -> bool {
+        matches!(self.session_state.session_status, SessionStatus::Working)
+    }
+
+    /// Draw the working strip: a throbber with elapsed time and the current
+    /// phase, followed by one clickable row per advertised subagent.
+    ///
+    /// Hit rects are recorded as they are drawn so a click resolves to the
+    /// row the user actually saw rather than a recomputed layout.
+    fn render_working_strip(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        let Some(area) = chunk else {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        };
+        if area.width == 0 || area.height == 0 {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        }
+        if !self.should_show_working_strip() {
+            self.ui_state.working_area = None;
+            self.ui_state.subagents.hits.clear();
+            return;
+        }
+
+        self.ui_state.working_area = Some(area);
+        // Rebuilt from scratch each frame: a stale rect from a previous
+        // layout would let a click land on a row that has since moved.
+        self.ui_state.subagents.hits.clear();
+        let theme = self.ui_state.theme.clone();
+        let mut lines: Vec<Line> = Vec::new();
+
+        // Row 0: the throbber. `ActivityIndicator::line` derives its glyph
+        // from whole elapsed seconds, so it animates on the 80ms pump without
+        // depending on render cadence.
+        let phase = self
+            .messages_state
+            .messages
+            .activity
+            .as_ref()
+            .map(|activity| activity.line())
+            .unwrap_or_else(|| self.working_elapsed_fallback());
+        let running_subs = self.ui_state.subagents.running_count();
+        let mut head = phase;
+        if running_subs > 0 {
+            head.push_str(&format!(" · {running_subs} subagent"));
+            if running_subs != 1 {
+                head.push('s');
+            }
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {head}"),
+            Style::default().fg(theme.primary),
+        )));
+
+        for (index, sub) in self
+            .ui_state
+            .subagents
+            .rows
+            .iter()
+            .take(MAX_WORKING_STRIP_SUBAGENTS)
+            .enumerate()
+        {
+            let summary = sub.summary_line(area.width as usize);
+            lines.push(Line::from(Span::styled(
+                summary,
+                Style::default().fg(if sub.is_running() {
+                    theme.foreground
+                } else {
+                    theme.muted
+                }),
+            )));
+            // Row 1 is the throbber, so subagent row `index` sits one line
+            // below the top of the strip.
+            let y = area.y + 1 + index as u16;
+            if y < area.y + area.height {
+                self.ui_state
+                    .subagents
+                    .hits
+                    .push((index, Rect::new(area.x, y, area.width, 1)));
+            }
+        }
+
+        // Rows that did not fit are summarized rather than silently dropped:
+        // a user who cannot see how many subagents are left has no way to
+        // tell the difference between "all done" and "off screen".
+        let hidden = self
+            .ui_state
+            .subagents
+            .rows
+            .len()
+            .saturating_sub(MAX_WORKING_STRIP_SUBAGENTS);
+        if hidden > 0 && lines.len() < area.height as usize {
+            lines.push(Line::from(Span::styled(
+                format!(" … +{hidden} more"),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// A phase line for a working turn that has no `ActivityIndicator` yet.
+    ///
+    /// The strip must not blink out during the window between the turn being
+    /// marked `Working` and the first event that names a phase, so this
+    /// falls back to the turn's own elapsed time.
+    fn working_elapsed_fallback(&self) -> String {
+        let secs = self
+            .session_state
+            .working_since
+            .map(|since| since.elapsed().as_secs())
+            .unwrap_or(0);
+        format!("⠋ working {secs}s")
+    }
+
+    /// The contextual key line for whatever currently owns the keyboard.
+    ///
+    /// Rendered from the panel's own `composer_hints`, so a panel advertises
+    /// its verbs once and they appear next to the input they modify. Kept out
+    /// of each panel's own chrome: inside the panel they described the
+    /// panel, while the keys actually operate on the shared composer.
+    fn render_composer_hints(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        let Some(area) = chunk else {
+            return;
+        };
+        if area.width < 4 || area.height == 0 {
+            return;
+        }
+        let Some(text) = self.composer_hint_text() else {
+            return;
+        };
+        let budget = usize::from(area.width).saturating_sub(4);
+        let theme = &self.ui_state.theme;
+        let line = Line::from(vec![
+            Span::styled(
+                " \u{258c} ",
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                crate::tui::wrap::ellipsize_to_width(&text, budget),
+                Style::default().fg(theme.muted),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
     fn render_prompt(&mut self, frame: &mut Frame, area: Rect) {
         let bg_block = Block::default().style(Style::default().bg(self.ui_state.theme.input_bg));
         frame.render_widget(bg_block, area);
@@ -1067,29 +1357,81 @@ impl App {
         // [build]`) so the mode a prompt will actually run under is visible
         // without opening the agent picker. Bounded so a long agent name
         // cannot crowd out the prompt's own prefix row.
-        let agent_badge = self
-            .agent_state
-            .agents
-            .get(self.agent_state.current_agent)
-            .map(|agent| {
-                let name = crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
-                format!(" [{name}]")
-            })
-            .unwrap_or_default();
-        let mode_indicator = match self.ui_state.input_mode {
-            InputMode::Insert => Span::styled(
-                format!("[INS]{agent_badge} "),
-                Style::default()
-                    .fg(self.ui_state.theme.secondary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            InputMode::Normal => Span::styled(
-                format!("[NOR]{agent_badge}"),
-                Style::default()
-                    .fg(self.ui_state.theme.primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        //
+        // The destination badge names the surface that currently has the
+        // keyboard — `[LLM]`, `[CHAT]`, `[SESSIONS]` — rather than listing
+        // every reachable destination. Showing both send targets at once was
+        // meant to answer "where am I about to send this?", but it rendered
+        // `[CHAT]` unconditionally and put a second `[BUILD]` beside the agent
+        // name, so the row read as three badges about two axes and answered
+        // the question worse than a single accurate one does.
+        let target = self.input_target();
+        // One destination badge, naming the surface that currently has the
+        // keyboard. See `App::composer_destination_title`.
+        let destination_title = self.composer_destination_title();
+        let destination_style = if target == crate::tui::panels::InputTarget::Chat {
+            Style::default()
+                .fg(self.ui_state.theme.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(self.ui_state.theme.primary)
+                .add_modifier(Modifier::BOLD)
         };
+        // The agent only runs a prompt; naming it while chat is armed would
+        // imply a delivery that is not going to happen.
+        let agent_badge = match target {
+            crate::tui::panels::InputTarget::Chat => String::new(),
+            crate::tui::panels::InputTarget::Build => self
+                .agent_state
+                .agents
+                .get(self.agent_state.current_agent)
+                .map(|agent| {
+                    let name =
+                        crate::tui::wrap::ellipsize_to_width(&agent.name, MAX_AGENT_BADGE_WIDTH);
+                    format!(" [{name}]")
+                })
+                .unwrap_or_default(),
+        };
+        let mode_span_style = match self.ui_state.input_mode {
+            InputMode::Insert => Style::default()
+                .fg(self.ui_state.theme.secondary)
+                .add_modifier(Modifier::BOLD),
+            InputMode::Normal => Style::default()
+                .fg(self.ui_state.theme.primary)
+                .add_modifier(Modifier::BOLD),
+        };
+        let mode_label = match self.ui_state.input_mode {
+            InputMode::Insert => "[INS]",
+            InputMode::Normal => "[NOR]",
+        };
+        // An armed chat reply/edit is a *third* state neither badge covers:
+        // `[CHAT]` says the destination but not that Enter will thread or
+        // replace a specific message, which is exactly what a user needs to
+        // be reminded of before pressing it.
+        let context_badge = self
+            .prompt_state
+            .chat_seed
+            .as_ref()
+            .filter(|seed| seed.is_contextual())
+            .map(|seed| {
+                Span::styled(
+                    format!("[{}] ", seed.label().to_uppercase()),
+                    Style::default()
+                        .fg(self.ui_state.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                )
+            });
+        // `[NOR] [agent] [LLM]` — one row carrying the mode, the agent that
+        // will run the prompt, and the single surface this text is aimed at,
+        // plus the armed chat context when there is one.
+        let mut badge_spans = vec![
+            Span::styled(mode_label.to_string(), mode_span_style),
+            Span::styled(agent_badge.clone(), mode_span_style),
+            Span::styled(format!("[{}] ", destination_title), destination_style),
+        ];
+        badge_spans.extend(context_badge);
+        let mode_indicator = Line::from(badge_spans);
         let session_prefix = match &self.session_state.session_status {
             SessionStatus::Working => Span::styled(
                 " ● ",
@@ -1115,7 +1457,9 @@ impl App {
         self.prompt_state.prompt.set_prefix(session_prefix);
 
         let prompt_text = self.prompt_state.prompt.get_text();
-        let placeholder = if prompt_text.starts_with('!') {
+        let placeholder = if target == crate::tui::panels::InputTarget::Chat {
+            "Message the project chat…".to_string()
+        } else if prompt_text.starts_with('!') {
             "shell: run locally; not included in model context".to_string()
         } else if self.prompt_state.composer_mode.is_task() {
             "Describe the task to schedule… (Enter opens sheet, Tab for session)".to_string()
@@ -1414,19 +1758,42 @@ impl App {
     }
 
     fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
-        // M005: when the Workspace primary view is active, the normal
-        // sidebar region shows project chat for the selected project
-        // (existing `ChatState` projection, no second cache). Narrow
-        // terminals hide the sidebar entirely via layout bounds; that is
-        // the clean degrade (no panic, viewport still shows Workspace).
-        if matches!(
-            self.ui_state.routes.current(),
-            crate::tui::route::Route::Workspace
-        ) {
-            self.render_workspace_chat_panel(frame, area);
-            return;
-        }
-        self.sidebar.set_theme(&self.ui_state.theme);
+        // The side column is a panel host now: whichever panel is active
+        // renders here. Everything below only *populates* the projections
+        // the panels read (sidebar widget, chat state); it never decides
+        // which panel shows.
+        self.populate_session_panel();
+        let mut ctx = crate::tui::panels::PanelCtx {
+            theme: Arc::clone(&self.ui_state.theme),
+            // `now_ms` is display-only (composing expiry); no I/O.
+            now_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            session: &mut self.sidebar,
+            chat: &mut self.chat,
+            terminal: &mut self.interactive_terminals,
+            vim_mode: self.ui_state.vim_mode,
+            chat_project: self.chat_panel_project.as_deref(),
+            area,
+            focused: self.panel_host.is_focused(),
+            input_mode: self.ui_state.input_mode,
+        };
+        // `Clear` first: the previous panel's pixels must not show through
+        // a narrower panel (the chat panel is shorter than the sidebar).
+        frame.render_widget(Clear, area);
+        self.panel_host.render(&mut ctx, frame.buffer_mut(), area);
+    }
+
+    /// Push session projection into the Session panel's widget.
+    ///
+    /// Split out of `render_sidebar` so the sidebar's field population is
+    /// readable on its own; it performs no I/O and reads only cached state.
+    fn populate_session_panel(&mut self) {
+        // The Workspace route no longer forces this panel. It selects the
+        // Chat panel through the host instead (see
+        // `workspace_dashboard::open_workspace`), which keeps the previous
+        // behaviour while leaving the choice switchable on every route.
         let project_scope = self.active_project_id().map(str::to_string);
         self.sidebar.set_project_scope(project_scope.as_deref());
         if let Some(ref sess) = self.session_state.session {
@@ -1488,6 +1855,14 @@ impl App {
         let derived = &self.session_state_derived;
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
+
+        // Derive the subagent rows first and let the snapshot borrow end
+        // here: the sidebar writes below all need `&mut self`, so holding the
+        // snapshot across them would conflict.
+        let subagent_rows = self
+            .projection_client
+            .active_snapshot()
+            .and_then(|(_, snapshot)| Self::sync_subagents_from_snapshot(snapshot));
 
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
@@ -1565,71 +1940,71 @@ impl App {
             self.sidebar.set_convergences(Vec::new());
         }
 
-        frame.render_widget(&self.sidebar, area);
+        // Only a snapshot that *arrives* replaces the rows. A missing
+        // snapshot is not evidence that no subagents exist — it means the
+        // projection stream has not spoken yet or just hiccupped — so
+        // clearing on it would blank the strip mid-turn and hide work that
+        // is genuinely in flight. An arriving snapshot with no tree is
+        // authoritative emptiness and does clear.
+        if let Some(rows) = subagent_rows {
+            self.ui_state.subagents.set_rows(rows);
+        }
     }
 
-    /// M005: dedicated project-chat side panel for the Workspace-selected
-    /// project. Routes history/draft through `ChatState[selected]` and the
-    /// existing `chat.v1` operations; selection changes switch projection
-    /// via `sync_workspace_chat_panel`. Render performs no I/O and stays
-    /// bounded through `panel_lines`. Denied/unsupported chat renders the
-    /// generic unavailable state (never another project's data).
-    fn render_workspace_chat_panel(&mut self, frame: &mut Frame, area: Rect) {
-        let theme = Arc::clone(&self.ui_state.theme);
-        let selected = self
-            .dialog_state
-            .workspace_dashboard
+    /// Project the snapshot's agent tree into the main buffer's subagent rows.
+    ///
+    /// Reads the same `active_turn` (falling back to the newest
+    /// `recent_turns`) tree the sidebar renders, so the two surfaces cannot
+    /// disagree about which delegated runs exist. Durable runs are joined by
+    /// exact canonical task id — the one identity both sides agree on — purely
+    /// to attach a `run_id` for the detail view; a task with no matching run
+    /// still gets a row rather than being hidden, because the agent tree is
+    /// the authoritative record that the task was dispatched.
+    ///
+    /// Returns `None` when there is no snapshot to read at all, which is not
+    /// the same as an empty tree: the caller keeps the rows it already has
+    /// rather than blanking the strip mid-turn.
+    fn sync_subagents_from_snapshot(
+        snapshot: &crate::protocol::projection::SessionProjectionSnapshot,
+    ) -> Option<Vec<SubagentRow>> {
+        use crate::protocol::projection::dto::AgentTreeStatus;
+
+        let tree = snapshot
+            .active_turn
             .as_ref()
-            .and_then(|dashboard| dashboard.selected())
-            .map(|row| {
-                (
-                    row.summary.project_id.clone(),
-                    row.summary.display_name.clone(),
-                )
-            });
-        let Some((project_id, display_name)) = selected else {
-            let block = Block::default()
-                .title(" Project chat ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border))
-                .style(Style::default().bg(theme.background));
-            let paragraph = Paragraph::new("No project selected")
-                .block(block)
-                .style(Style::default().fg(theme.muted))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(paragraph, area);
-            return;
+            .or_else(|| snapshot.recent_turns.front());
+
+        let Some(tree) = tree else {
+            // The snapshot arrived and carries no agent tree at all: that is
+            // authoritative, so it clears rather than keeps the last set.
+            return Some(Vec::new());
         };
-        // `now_ms` is display-only (composing expiry); no I/O.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        let mut panel = self.chat.panel_lines(&project_id, now_ms);
-        // Append the editable draft + focus hint (bounded display only;
-        // the durable draft lives in `ChatState` per project).
-        let draft = self.chat.draft_for(&project_id).to_string();
-        let focused = self.workspace_focus == crate::tui::app::state::WorkspaceFocus::Chat;
-        if focused {
-            panel.push(format!("> {draft}▌ (Enter sends, Esc returns)"));
-        } else if !draft.is_empty() {
-            let preview: String = draft.chars().take(80).collect();
-            panel.push(format!("draft: {preview}"));
-        } else {
-            panel.push("/chat focuses panel · Space expands tasks".to_string());
-        }
-        let title = format!(" Chat: {display_name} ");
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(if focused { theme.primary } else { theme.border }))
-            .style(Style::default().bg(theme.background));
-        let text: Vec<Line> = panel
-            .into_iter()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.foreground))))
-            .collect();
-        let paragraph = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
-        frame.render_widget(paragraph, area);
+
+        Some(
+            tree.agent_tree
+                .iter()
+                .map(|node| {
+                    let task_id = node.task_id.to_string();
+                    SubagentRow {
+                        // Exact canonical join against `AgentRunSummary::task_id`.
+                        run_id: snapshot
+                            .agent_runs
+                            .iter()
+                            .find(|run| run.task_id == task_id)
+                            .map(|run| run.run_id.clone()),
+                        task_id,
+                        agent: node.agent.clone(),
+                        description: node.description.clone(),
+                        status: match node.status {
+                            AgentTreeStatus::Running => "running",
+                            AgentTreeStatus::Completed => "completed",
+                            AgentTreeStatus::Failed => "failed",
+                        }
+                        .to_string(),
+                    }
+                })
+                .collect(),
+        )
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {

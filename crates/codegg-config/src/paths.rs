@@ -197,6 +197,7 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             experimental,
             keybinds,
             vim_mode,
+            panel_hotkeys,
             hooks,
             notifications,
             catalog,
@@ -1042,7 +1043,10 @@ mod tests {
             "research": { "search_provider": { "backend": "fixture" } },
             "tool_backends": { "lsp": { "backend": "native" } },
             "human_shell": { "enabled": true },
-            "shell": { "output": { "retain_raw": false } },
+            "shell": {
+                "output": { "retain_raw": false },
+                "windows_shell": "cmd"
+            },
             "deterministic_tools": { "enabled": true },
             "preflight": { "enabled": false },
             "command_intent": { "route_safe_commands": true },
@@ -1075,7 +1079,10 @@ mod tests {
             merged.human_shell.as_ref().and_then(|c| c.enabled),
             Some(true)
         );
-        assert!(merged.shell.is_some());
+        assert_eq!(
+            merged.shell.as_ref().and_then(|shell| shell.windows_shell),
+            Some(crate::schema::WindowsShellKind::Cmd)
+        );
         assert!(
             merged
                 .deterministic_tools
@@ -1117,6 +1124,10 @@ mod tests {
                 max_history_entries: Some(42),
                 ..Default::default()
             }),
+            shell: Some(crate::schema::ShellConfig {
+                output: Some(crate::schema::ShellOutputConfig::default()),
+                windows_shell: Some(crate::schema::WindowsShellKind::Cmd),
+            }),
             ..Default::default()
         };
         let overlay = Config {
@@ -1126,6 +1137,10 @@ mod tests {
             }),
             human_shell: Some(crate::schema::HumanShellConfig {
                 enabled: Some(false),
+                ..Default::default()
+            }),
+            shell: Some(crate::schema::ShellConfig {
+                windows_shell: Some(crate::schema::WindowsShellKind::GitBash),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1140,6 +1155,13 @@ mod tests {
         let human_shell = merged.human_shell.expect("human_shell section");
         assert_eq!(human_shell.enabled, Some(false));
         assert_eq!(human_shell.max_history_entries, Some(42));
+
+        let shell = merged.shell.expect("shell section");
+        assert_eq!(
+            shell.windows_shell,
+            Some(crate::schema::WindowsShellKind::GitBash)
+        );
+        assert!(shell.output.is_some(), "unset output survives from base");
     }
 
     /// Sections whose fields are all non-`Option` cannot be combined without

@@ -26,7 +26,6 @@ pub enum InfoType {
     Collaborators,
     Team,
     Control,
-    ProjectChat,
     /// `/logs`: recent daemon log tail plus the in-memory toast history.
     Logs,
     ProjectInit,
@@ -90,7 +89,6 @@ impl InfoDialog {
             InfoType::Collaborators => " Collaborators ",
             InfoType::Team => " Team ",
             InfoType::Control => " Control ",
-            InfoType::ProjectChat => " Project Chat ",
             InfoType::Logs => " Logs ",
             InfoType::ProjectInit => " Initialize Project ",
         }
@@ -112,11 +110,7 @@ impl InfoDialog {
             InfoType::Agents => DialogType::Agent,
             InfoType::Collaborators => DialogType::Collaborators,
             InfoType::Team => DialogType::Team,
-            // M004 shares the Team dialog slot (single InfoDialog
-            // instance; last writer wins). Control output never
-            // carries secrets, so sharing the slot is safe.
-            InfoType::Control => DialogType::Team,
-            InfoType::ProjectChat => DialogType::ProjectChat,
+            InfoType::Control => DialogType::Control,
             InfoType::Logs => DialogType::Logs,
             InfoType::ProjectInit => DialogType::Team,
         }
@@ -152,6 +146,14 @@ impl InfoDialog {
 }
 
 impl Component for InfoDialog {
+    /// A plain viewer box: no composer, no live filter, no mode of its own,
+    /// so the panel host may resolve `Shift+←/→/↑/↓` as the docking gesture
+    /// before this dialog sees the key.
+    fn docks_as_viewer(&self) -> bool {
+        {
+            true
+        }
+    }
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
         match key.code {
             crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {

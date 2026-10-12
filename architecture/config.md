@@ -78,7 +78,8 @@ Different strategies per field type:
   `enabled_providers`, `permission`, `compaction`, `subagent`, `skills`,
   `templates`, `layout`, `tools`, `formatter`, `lsp`, `lsp_semantic_cache`,
   `snapshot`, `snapshot_config`, `plugin`, `enterprise`, `experimental`,
-  `keybinds`, `vim_mode`, `hooks`, `notifications`, `catalog`, `context`,
+  `keybinds`, `vim_mode`, `panel_hotkeys`, `hooks`, `notifications`,
+  `catalog`, `context`,
   `context_packer`, `context_policy`, `tool_advisor`, `decision_engine`,
   `orchestration`
 
@@ -209,6 +210,7 @@ pub struct Config {
     pub mode: Option<HashMap<String, ModeConfig>>,
     pub keybinds: Option<HashMap<String, String>>,
     pub vim_mode: Option<bool>,
+    pub panel_hotkeys: Option<HashMap<String, String>>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
@@ -415,7 +417,10 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `mode` — named mode configurations
 - `hooks` — event hooks (shell commands)
 - `context` / `context_packer` / `context_policy` — context management
-- `human_shell` / `shell` — human shell feature config
+- `human_shell` / `shell` — human shell feature config. `shell.windows_shell`
+  optionally selects `powershell`, `cmd`, `git-bash`, or `wsl` for raw
+  model-shell commands on Windows; when absent, Windows PowerShell is used.
+  Unix ignores this field, and structured argv never enters a shell.
 - `deterministic_tools` / `preflight` — eggsact-backed tools
 - `command_intent` — command classification and routing
 - `daemon` / `scheduler` — daemon and scheduler settings

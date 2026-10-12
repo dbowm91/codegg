@@ -1,9 +1,11 @@
 //! Canonical execution service for scheduler-owned argv processes.
 //!
-//! This module deliberately accepts argv rather than a shell command.  It is
-//! the common boundary for non-interactive managed processes: the environment
-//! is rebuilt from an allowlist, output is drained without unbounded growth,
-//! and cancellation/timeout cleanup targets the whole process session on Unix.
+//! This module deliberately accepts argv rather than an implicit shell command.
+//! The one explicit exception is the Windows `cmd.exe /C` route, whose raw
+//! command-line grammar is carried in a typed request field. It is the common
+//! boundary for non-interactive managed processes: the environment is rebuilt
+//! from an allowlist, output is drained without unbounded growth, and
+//! cancellation/timeout cleanup targets the whole process session on Unix.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
@@ -29,6 +31,18 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
 use nix::unistd::setsid;
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows;
+#[cfg(windows)]
+#[allow(dead_code)]
+mod windows_acl_lease;
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+pub fn windows_acl_lease_dacl_snapshot(path: &Path) -> std::io::Result<Vec<u8>> {
+    windows_acl_lease::dacl_snapshot(path)
+}
 
 use crate::security::sandbox::{
     decode_sandbox_status, SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
@@ -61,10 +75,20 @@ impl Default for EnvironmentPolicy {
 impl EnvironmentPolicy {
     /// Construct the default sanitized environment policy.
     pub fn sanitized() -> Self {
-        let inherited = codegg_git::ALLOWED_ENV_VARS
+        let inherited: BTreeSet<OsString> = codegg_git::ALLOWED_ENV_VARS
             .iter()
             .map(OsString::from)
             .collect();
+        #[cfg(windows)]
+        let inherited = {
+            let mut inherited = inherited;
+            inherited.extend(
+                ["SystemRoot", "WINDIR", "TEMP", "TMP"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            inherited
+        };
         let denied = codegg_git::ALWAYS_STRIPPED_ENV_VARS
             .iter()
             .map(OsString::from)
@@ -116,30 +140,39 @@ impl EnvironmentPolicy {
 
     pub(crate) fn apply(&self, command: &mut Command) {
         command.env_clear();
+        for (name, value) in self.entries() {
+            command.env(name, value);
+        }
+    }
 
+    fn entries(&self) -> BTreeMap<OsString, OsString> {
+        let mut entries = BTreeMap::new();
         for name in &self.inherited {
             if self.denied.contains(name) {
                 continue;
             }
             if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
+                entries.insert(name.clone(), value);
             }
         }
         for (name, value) in &self.overrides {
             if !self.denied.contains(name) {
-                command.env(name, value);
+                entries.insert(name.clone(), value.clone());
             }
         }
-
         // Keep managed jobs noninteractive and deterministic. These are
         // applied after caller variables so the service owns these invariants.
-        command
-            .env("CI", "1")
-            .env("NO_COLOR", "1")
-            .env("TERM", "dumb")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("PAGER", "cat");
+        for (name, value) in [
+            ("CI", "1"),
+            ("NO_COLOR", "1"),
+            ("TERM", "dumb"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+            ("GIT_PAGER", "cat"),
+            ("PAGER", "cat"),
+        ] {
+            entries.insert(name.into(), value.into());
+        }
+        entries
     }
 }
 
@@ -148,7 +181,7 @@ impl EnvironmentPolicy {
 pub enum OverflowPolicy {
     /// Keep draining the pipe, retaining only the configured head/tail.
     ContinueDrain,
-    /// Terminate the process group as soon as either stream exceeds its cap.
+    /// Terminate the owned process tree as soon as either stream exceeds its cap.
     Terminate,
 }
 
@@ -294,11 +327,9 @@ pub enum SandboxRequest {
     #[default]
     Disabled,
     Required(SandboxLaunchSpec),
-    /// Containment was requested but this host cannot provide any. The child
-    /// runs *without* OS filesystem containment instead of failing, and the
-    /// run is recorded as [`SandboxExecutionOutcome::Uncontained`] so a
-    /// reviewer can tell it apart from both a contained run and an explicit
-    /// `FullHost` request. Never use this variant to mean `Disabled`.
+    /// Compatibility representation for a constrained request whose host
+    /// cannot provide containment. This variant is rejected before spawn;
+    /// it must never be used to run the child without containment.
     DegradedUncontained {
         reason: String,
     },
@@ -325,13 +356,33 @@ impl ProcessProvenance {
         }
         command.env("CODEGG_MANAGED_PROCESS", "1");
     }
+
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    fn apply_environment(&self, environment: &mut BTreeMap<OsString, OsString>) {
+        if !self.job_id.is_empty() {
+            environment.insert("CODEGG_JOB_ID".into(), self.job_id.clone().into());
+            environment.insert("CODEGG_SCHEDULER_JOB_ID".into(), self.job_id.clone().into());
+        }
+        if !self.attempt_id.is_empty() {
+            environment.insert("CODEGG_ATTEMPT_ID".into(), self.attempt_id.clone().into());
+            environment.insert(
+                "CODEGG_SCHEDULER_ATTEMPT_ID".into(),
+                self.attempt_id.clone().into(),
+            );
+        }
+        environment.insert("CODEGG_MANAGED_PROCESS".into(), "1".into());
+    }
 }
 
-/// Request to run one non-shell argv process.
+/// Request to run one managed process. `argv` is passed directly to the child;
+/// `raw_command` is reserved for Windows `cmd.exe /C` shell text.
 #[derive(Debug, Clone)]
 pub struct ManagedProcessRequest {
     pub executable: OsString,
     pub argv: Vec<OsString>,
+    /// An uninterpreted Windows `cmd.exe /C` command appended after argv.
+    /// This is shell text and must only be set for an explicitly selected cmd shell.
+    pub raw_command: Option<OsString>,
     pub cwd: PathBuf,
     pub environment_policy: EnvironmentPolicy,
     pub stdin: StdinPolicy,
@@ -349,6 +400,7 @@ impl ManagedProcessRequest {
         Self {
             executable,
             argv: argv.collect(),
+            raw_command: None,
             cwd,
             environment_policy: EnvironmentPolicy::default(),
             stdin: StdinPolicy::Null,
@@ -358,6 +410,13 @@ impl ManagedProcessRequest {
             sandbox: SandboxRequest::Disabled,
             provenance,
         }
+    }
+
+    /// Append raw command text to a Windows cmd invocation without applying
+    /// Windows argv quoting to shell syntax.
+    pub fn with_raw_command(mut self, command: impl Into<OsString>) -> Self {
+        self.raw_command = Some(command.into());
+        self
     }
 
     pub fn full_argv(&self) -> Vec<OsString> {
@@ -396,6 +455,15 @@ pub enum SandboxExecutionOutcome {
     Uncontained {
         reason: String,
     },
+    /// A debug-only native AppContainer exercise. This proves process identity
+    /// and Job ownership for tests, but deliberately carries no filesystem
+    /// enforcement claim and is unavailable in release builds.
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    TestOnlyAppContainer {
+        token_verified: bool,
+        job_verified: bool,
+        status: String,
+    },
 }
 
 impl SandboxExecutionOutcome {
@@ -416,15 +484,18 @@ impl SandboxExecutionOutcome {
             Self::Disabled => "sandbox_disabled",
             Self::Enforced { .. } => "sandbox_enforced",
             Self::Uncontained { .. } => "sandbox_uncontained_degraded",
+            #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+            Self::TestOnlyAppContainer { .. } => "sandbox_test_only_appcontainer",
         }
     }
 }
 
-/// Diagnostics from process-group cleanup. Errors are retained on the result
+/// Diagnostics from process-tree cleanup. Errors are retained on the result
 /// so a target exit is never confused with cleanup failure.
 #[derive(Debug, Clone, Default)]
 pub struct CleanupDiagnostics {
     pub process_group_established: bool,
+    pub job_object_established: bool,
     pub graceful_signal_sent: bool,
     pub forced_signal_sent: bool,
     pub errors: Vec<String>,
@@ -525,9 +596,15 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    if matches!(&request.sandbox, SandboxRequest::Required(_)) {
+        return run_windows_test_restricted(request, output_tx).await;
+    }
+
     let ManagedProcessRequest {
         executable,
         argv,
+        raw_command,
         cwd,
         environment_policy,
         stdin,
@@ -544,6 +621,31 @@ async fn run_inner(
     if executable.to_string_lossy().contains('\0') {
         return Err(ManagedProcessError::InvalidArgument(
             "executable".to_string(),
+        ));
+    }
+    #[cfg(windows)]
+    if let Some(raw_command) = raw_command.as_deref() {
+        if raw_command.to_string_lossy().contains('\0') {
+            return Err(ManagedProcessError::InvalidArgument(
+                "raw command".to_string(),
+            ));
+        }
+        let executable_path = Path::new(&executable);
+        if !executable_path.is_absolute()
+            || !executable_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe"))
+        {
+            return Err(ManagedProcessError::InvalidArgument(
+                "raw command requires an absolute cmd.exe executable".to_string(),
+            ));
+        }
+    }
+    #[cfg(not(windows))]
+    if raw_command.is_some() {
+        return Err(ManagedProcessError::InvalidArgument(
+            "raw command is only supported for Windows cmd.exe".to_string(),
         ));
     }
     if let Some(index) = argv
@@ -575,6 +677,11 @@ async fn run_inner(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    if let Some(raw_command) = raw_command.as_deref() {
+        use std::os::windows::process::CommandExt;
+        command.as_std_mut().raw_arg(raw_command);
+    }
     match &stdin {
         StdinPolicy::Null => {
             command.stdin(std::process::Stdio::null());
@@ -591,8 +698,29 @@ async fn run_inner(
         configure_status_writer(&mut command, writer.as_raw_fd());
     }
 
+    #[cfg(windows)]
+    let mut process_job = Some(windows::WindowsJob::create().map_err(ManagedProcessError::Spawn)?);
+
     let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
     drop(status_writer);
+
+    #[cfg(windows)]
+    if let Err(error) = process_job
+        .as_mut()
+        .expect("Windows launches always own a Job Object")
+        .assign_and_resume(&child)
+    {
+        // The target's primary thread is still suspended on setup failure.
+        // Close the Job first (which kills an assigned tree), then request a
+        // direct kill as well in case assignment itself failed. Child has
+        // kill_on_drop enabled, so dropping its owned process handle remains
+        // a final cleanup path if Windows reports a transient kill failure.
+        drop(process_job.take());
+        let _ = child.start_kill();
+        drop(child);
+        return Err(ManagedProcessError::Spawn(error));
+    }
+
     let stdout = child
         .stdout
         .take()
@@ -639,8 +767,15 @@ async fn run_inner(
         process_timeout,
         &mut overflow_rx,
         output_policy.overflow,
+        #[cfg(windows)]
+        process_job.as_ref(),
     )
     .await?;
+    // A root process may exit while descendants remain. Closing this
+    // kill-on-close Job before joining pipes terminates them and releases
+    // inherited writers.
+    #[cfg(windows)]
+    drop(process_job.take());
     let stdout = join_output(stdout_task).await?;
     let stderr = join_output(stderr_task).await?;
     if let Some(task) = stdin_task {
@@ -683,6 +818,394 @@ async fn run_inner(
     })
 }
 
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn run_windows_test_restricted(
+    request: ManagedProcessRequest,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let ManagedProcessRequest {
+        executable,
+        argv,
+        raw_command,
+        cwd,
+        environment_policy,
+        stdin,
+        timeout: process_timeout,
+        cancellation,
+        output_policy,
+        sandbox,
+        provenance,
+    } = request;
+    if executable.is_empty() {
+        return Err(ManagedProcessError::EmptyArgv);
+    }
+    if cancellation.is_cancelled() {
+        return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+    if raw_command.is_some()
+        || executable.to_string_lossy().contains('\0')
+        || argv.iter().any(|arg| arg.to_string_lossy().contains('\0'))
+    {
+        return Err(ManagedProcessError::InvalidArgument(
+            "restricted AppContainer launch requires NUL-free argv without raw shell text".into(),
+        ));
+    }
+    let SandboxRequest::Required(spec) = sandbox else {
+        return Err(ManagedProcessError::SandboxFailed(
+            "test-only restricted launcher requires an explicit sandbox specification".into(),
+        ));
+    };
+    let encoded_spec = serde_json::to_vec(&spec)
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    if encoded_spec.len() > MAX_SANDBOX_SPEC_BYTES {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted sandbox specification exceeds 64 KiB".into(),
+        ));
+    }
+    let requested_args = spec
+        .args
+        .iter()
+        .map(|value| OsString::from(value.as_str()))
+        .collect::<Vec<_>>();
+    if spec.target.as_os_str() != Path::new(&executable).as_os_str()
+        || requested_args != argv
+        || !spec.target.is_absolute()
+        || !cwd.is_absolute()
+        || cwd.as_os_str().encode_wide().any(|unit| unit == 0)
+    {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted launch executable, argv, and cwd must match the immutable request".into(),
+        ));
+    }
+
+    let started = Instant::now();
+    let mut acl_leases = Vec::new();
+    let mut roots =
+        std::collections::BTreeMap::<String, (PathBuf, windows_acl_lease::LeaseAccess)>::new();
+    for (path, access) in spec
+        .read_paths
+        .iter()
+        .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Read))
+        .chain(
+            spec.write_paths
+                .iter()
+                .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::ReadWrite)),
+        )
+        .chain(
+            spec.deny_paths
+                .iter()
+                .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Deny)),
+        )
+    {
+        windows_acl_lease::validate_input_directory(&path).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "ACL lease root is unavailable or unsupported: {error}"
+            ))
+        })?;
+        if access == windows_acl_lease::LeaseAccess::Deny {
+            windows_acl_lease::validate_empty_deny_directory(&path).map_err(|error| {
+                ManagedProcessError::SandboxFailed(format!(
+                    "ACL deny root is unavailable or unsupported: {error}"
+                ))
+            })?;
+        }
+        let canonical = std::fs::canonicalize(&path).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!("ACL lease root is unavailable: {error}"))
+        })?;
+        let key = canonical.to_string_lossy().to_lowercase();
+        roots
+            .entry(key)
+            .and_modify(|(_, current)| {
+                if access == windows_acl_lease::LeaseAccess::Deny
+                    || (*current != windows_acl_lease::LeaseAccess::Deny
+                        && access == windows_acl_lease::LeaseAccess::ReadWrite)
+                {
+                    *current = access;
+                }
+            })
+            .or_insert((canonical, access));
+    }
+    let daemon_paths = codegg_client::LocalDaemonPaths::resolve();
+    daemon_paths
+        .ensure_root()
+        .map_err(ManagedProcessError::Spawn)?;
+    let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
+    let conflicts =
+        windows_acl_lease::recover_all(&journal_root).map_err(ManagedProcessError::Spawn)?;
+    if !conflicts.is_empty() {
+        return Err(ManagedProcessError::SandboxFailed(format!(
+            "{} stale Windows ACL lease journal(s) need operator inspection",
+            conflicts.len()
+        )));
+    }
+    let profile =
+        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
+    for (path, access) in roots.into_values() {
+        acl_leases.push(
+            windows_acl_lease::WindowsAclLease::acquire(
+                &path,
+                &journal_root,
+                &lease_run_id,
+                profile.sid(),
+                access,
+            )
+            .map_err(ManagedProcessError::Spawn)?,
+        );
+    }
+    let local_app_data = profile
+        .local_app_data_path()
+        .map_err(ManagedProcessError::Spawn)?;
+    let temporary_directory = local_app_data.join("Temp");
+    std::fs::create_dir_all(&temporary_directory).map_err(ManagedProcessError::Spawn)?;
+    let mut environment = environment_policy.entries();
+    provenance.apply_environment(&mut environment);
+    let mut environment_block =
+        windows_environment_block(environment, &cwd, &local_app_data, &temporary_directory)?;
+    let mut child = windows::WindowsTestRestrictedProcess::launch(
+        &spec.target,
+        &requested_args,
+        &profile,
+        &cwd,
+        &mut environment_block,
+        &cancellation,
+    )
+    .map_err(ManagedProcessError::Spawn)?;
+    let job_verified = child.job_established();
+    if !job_verified {
+        let _ = child.terminate(1);
+        let _ = child.wait().await;
+        child.close_job();
+        return Err(ManagedProcessError::Spawn(io::Error::other(
+            "restricted child Job membership verification failed",
+        )));
+    }
+
+    // The status pipe is private to the service. The target cannot forge its
+    // contents through stdout/stderr, and this fixture reports SetupError so
+    // the test-only ACL lease proof cannot be mistaken for production Enforced.
+    let status_text =
+        "debug-only AppContainer token, Job, and disposable ACL leases verified; production filesystem rights remain unqualified";
+    let status_bytes =
+        crate::security::sandbox::encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: status_text.to_string(),
+        })
+        .map_err(ManagedProcessError::SandboxFailed)?;
+    if status_bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err(ManagedProcessError::SandboxFailed(
+            "restricted launch status exceeded its private channel bound".into(),
+        ));
+    }
+    let (status_reader, mut status_writer) = windows::create_test_status_pipe()
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    status_writer
+        .write_all(&status_bytes)
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    drop(status_writer);
+
+    let (overflow_tx, mut overflow_rx) = mpsc::channel(2);
+    let stdout_task = tokio::spawn(read_bounded(
+        child.stdout.take().expect("stdout pipe is present"),
+        output_policy.stdout_limit,
+        OutputStream::Stdout,
+        overflow_tx.clone(),
+        output_policy.overflow,
+        output_tx.clone(),
+    ));
+    let stderr_task = tokio::spawn(read_bounded(
+        child.stderr.take().expect("stderr pipe is present"),
+        output_policy.stderr_limit,
+        OutputStream::Stderr,
+        overflow_tx,
+        output_policy.overflow,
+        output_tx,
+    ));
+    let status_task = tokio::spawn(read_status(status_reader));
+    let stdin_task = match stdin {
+        StdinPolicy::Null => {
+            child.stdin.take();
+            None
+        }
+        StdinPolicy::Bytes(bytes) => child.stdin.take().map(|mut writer| {
+            tokio::spawn(async move {
+                let result = writer.write_all(&bytes).await;
+                drop(writer);
+                result
+            })
+        }),
+    };
+    let (exit_status, termination, mut cleanup) = wait_for_test_restricted_child(
+        &child,
+        &cancellation,
+        process_timeout,
+        &mut overflow_rx,
+        output_policy.overflow,
+    )
+    .await?;
+    cleanup.job_object_established = true;
+    child.close_job();
+    drop(child.stdin.take());
+
+    let stdout = join_output(stdout_task).await?;
+    let stderr = join_output(stderr_task).await?;
+    if let Some(task) = stdin_task {
+        if let Err(error) = tokio::time::timeout(TERMINATION_GRACE, task).await {
+            tracing::debug!(
+                "restricted stdin task did not finish in grace period: {}",
+                error
+            );
+        }
+    }
+    let status = tokio::time::timeout(STATUS_READ_TIMEOUT, status_task)
+        .await
+        .map_err(|_| {
+            ManagedProcessError::SandboxFailed("private status channel did not close".into())
+        })?
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    let status = decode_sandbox_status(&status).map_err(ManagedProcessError::SandboxFailed)?;
+    let SandboxLaunchOutcome::SetupError { reason } = status else {
+        return Err(ManagedProcessError::SandboxFailed(
+            "test-only status channel reported an unexpected enforcement outcome".into(),
+        ));
+    };
+    for lease in acl_leases.into_iter().rev() {
+        lease
+            .release()
+            .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    }
+    drop(profile);
+
+    Ok(ManagedProcessResult {
+        exit_status,
+        stdout,
+        stderr,
+        duration: started.elapsed(),
+        termination,
+        sandbox: SandboxExecutionOutcome::TestOnlyAppContainer {
+            token_verified: true,
+            job_verified,
+            status: reason,
+        },
+        cleanup,
+    })
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+fn windows_environment_block(
+    environment: BTreeMap<OsString, OsString>,
+    cwd: &Path,
+    local_app_data: &Path,
+    temporary_directory: &Path,
+) -> Result<Vec<u16>, ManagedProcessError> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut environment = environment;
+    // AppContainer process creation needs the package-local profile paths to
+    // build its isolated environment. Never pass the host user's profile or
+    // temporary directories through this restricted launch path.
+    environment.insert("LOCALAPPDATA".into(), local_app_data.as_os_str().to_owned());
+    environment.insert("TEMP".into(), temporary_directory.as_os_str().to_owned());
+    environment.insert("TMP".into(), temporary_directory.as_os_str().to_owned());
+    let mut environment = environment.into_iter().collect::<Vec<_>>();
+    environment.sort_by_key(|(name, _)| name.to_string_lossy().to_ascii_uppercase());
+    let mut block = Vec::new();
+
+    // A supplied Windows environment block does not inherit the special
+    // per-drive current-directory entries from the parent. Preserve those
+    // entries because CreateProcessW and child libraries use them when
+    // resolving drive-relative paths. Override the requested working drive
+    // so it agrees with lpCurrentDirectory.
+    let mut drive_directories = windows::inherited_drive_directories()
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    let cwd_wide = cwd.as_os_str().encode_wide().collect::<Vec<_>>();
+    let drive = cwd_wide.first().copied();
+    if cwd_wide.len() >= 3
+        && cwd_wide[1] == b':' as u16
+        && (cwd_wide[2] == b'\\' as u16 || cwd_wide[2] == b'/' as u16)
+        && drive.is_some_and(|drive| {
+            (b'A' as u16..=b'Z' as u16).contains(&drive)
+                || (b'a' as u16..=b'z' as u16).contains(&drive)
+        })
+    {
+        let drive = drive.expect("validated drive letter");
+        let drive = if (b'a' as u16..=b'z' as u16).contains(&drive) {
+            drive - (b'a' - b'A') as u16
+        } else {
+            drive
+        };
+        let mut name = vec![b'=' as u16, drive, b':' as u16];
+        drive_directories.retain(|(existing, _)| existing != &name);
+        name.push(b'=' as u16);
+        drive_directories.push((name, cwd_wide));
+    }
+    drive_directories.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (name, value) in drive_directories {
+        block.extend(name);
+        block.extend(value);
+        block.push(0);
+    }
+
+    for (name, value) in environment {
+        if name
+            .to_string_lossy()
+            .chars()
+            .any(|c| c == '=' || c == '\0')
+            || value.to_string_lossy().contains('\0')
+        {
+            return Err(ManagedProcessError::SandboxFailed(
+                "restricted launch environment contains an invalid name or value".into(),
+            ));
+        }
+        block.extend(name.encode_wide());
+        block.push(b'=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() == 1 {
+        block.push(0);
+    }
+    Ok(block)
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn wait_for_test_restricted_child(
+    child: &windows::WindowsTestRestrictedProcess,
+    cancellation: &CancellationToken,
+    process_timeout: Option<Duration>,
+    overflow_rx: &mut mpsc::Receiver<OutputStream>,
+    overflow_policy: OverflowPolicy,
+) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
+    let timeout_future = async move {
+        match process_timeout {
+            Some(duration) => sleep(duration).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout_future);
+    tokio::select! {
+        status = child.wait() => Ok((status.map_err(ManagedProcessError::Wait)?, TerminationReason::Exited, CleanupDiagnostics::default())),
+        _ = cancellation.cancelled() => {
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::Cancelled, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+        _ = &mut timeout_future => {
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::TimedOut, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+        stream = overflow_rx.recv(), if overflow_policy == OverflowPolicy::Terminate => {
+            let stream = stream.unwrap_or(OutputStream::Stdout);
+            child.terminate(1).map_err(ManagedProcessError::Wait)?;
+            let status = child.wait().await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::OutputLimitExceeded { stream }, CleanupDiagnostics { job_object_established: true, forced_signal_sent: true, ..CleanupDiagnostics::default() }))
+        }
+    }
+}
+
 type PreparedLaunchArgv = (
     Vec<OsString>,
     Option<tempfile::NamedTempFile>,
@@ -702,11 +1225,13 @@ fn prepare_launch_argv(
         .collect::<Vec<_>>();
     match sandbox {
         SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
-        // Named degraded path: the caller already reported that this host has
-        // no OS containment. Run the target directly (no helper, no status
-        // pipe) and let `interpret_sandbox_status` record the fact as
-        // `Uncontained`. Nothing here is allowed to look enforced.
-        SandboxRequest::DegradedUncontained { .. } => Ok((full_argv, None, None, None)),
+        // A constrained request cannot turn into a direct child launch just
+        // because the host lacks a backend. Callers may offer an explicit
+        // approval escalation, but this low-level process owner has no
+        // authority to grant one.
+        SandboxRequest::DegradedUncontained { reason } => Err(ManagedProcessError::SandboxFailed(
+            format!("requested filesystem containment is unavailable: {reason}"),
+        )),
         SandboxRequest::Required(spec) => {
             #[cfg(not(unix))]
             {
@@ -898,6 +1423,7 @@ async fn wait_for_child(
     process_timeout: Option<Duration>,
     overflow_rx: &mut mpsc::Receiver<OutputStream>,
     overflow_policy: OverflowPolicy,
+    #[cfg(windows)] process_job: Option<&windows::WindowsJob>,
 ) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
     let timeout_future = async move {
         match process_timeout {
@@ -910,20 +1436,41 @@ async fn wait_for_child(
     tokio::select! {
         status = child.wait() => {
             status
-                .map(|status| (status, TerminationReason::Exited, CleanupDiagnostics::default()))
+                .map(|status| {
+                    let cleanup = CleanupDiagnostics::default();
+                    #[cfg(windows)]
+                    let cleanup = {
+                        let mut cleanup = cleanup;
+                        cleanup.job_object_established = process_job.is_some();
+                        cleanup
+                    };
+                    (status, TerminationReason::Exited, cleanup)
+                })
                 .map_err(ManagedProcessError::Wait)
         }
         _ = cancellation.cancelled() => {
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::Cancelled, cleanup))
         }
         _ = &mut timeout_future => {
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::TimedOut, cleanup))
         }
         stream = overflow_rx.recv(), if overflow_policy == OverflowPolicy::Terminate => {
             let stream = stream.unwrap_or(OutputStream::Stdout);
-            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            let (status, cleanup) = terminate_child(
+                child,
+                #[cfg(windows)]
+                process_job,
+            ).await.map_err(ManagedProcessError::Wait)?;
             Ok((status, TerminationReason::OutputLimitExceeded { stream }, cleanup))
         }
     }
@@ -944,7 +1491,17 @@ fn configure_process_session(command: &mut Command) {
 }
 
 #[cfg(not(unix))]
-fn configure_process_session(_command: &mut Command) {}
+fn configure_process_session(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command
+            .as_std_mut()
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
@@ -1015,12 +1572,28 @@ fn signal_process_group(pid: u32, signal: libc::c_int, cleanup: &mut CleanupDiag
 }
 
 #[cfg(not(unix))]
-async fn terminate_child(child: &mut Child) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
-    child.kill().await?;
-    child
-        .wait()
-        .await
-        .map(|status| (status, CleanupDiagnostics::default()))
+async fn terminate_child(
+    child: &mut Child,
+    #[cfg(windows)] process_job: Option<&windows::WindowsJob>,
+) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
+    #[cfg(windows)]
+    let cleanup = if let Some(job) = process_job {
+        job.terminate(1)?;
+        CleanupDiagnostics {
+            job_object_established: true,
+            forced_signal_sent: true,
+            ..CleanupDiagnostics::default()
+        }
+    } else {
+        child.kill().await?;
+        CleanupDiagnostics::default()
+    };
+    #[cfg(not(windows))]
+    let cleanup = {
+        child.kill().await?;
+        CleanupDiagnostics::default()
+    };
+    child.wait().await.map(|status| (status, cleanup))
 }
 
 fn interpret_sandbox_status(
@@ -1030,13 +1603,12 @@ fn interpret_sandbox_status(
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }
-    // The degraded path runs without a helper, so there is no status frame.
-    // Record the uncontained fact explicitly rather than reporting the run
-    // as unconstrained.
+    // Compatibility-only requests fail closed; they are never a valid
+    // outcome for a constrained launch.
     if let SandboxRequest::DegradedUncontained { reason } = sandbox {
-        return Ok(SandboxExecutionOutcome::Uncontained {
-            reason: reason.clone(),
-        });
+        return Err(ManagedProcessError::SandboxFailed(format!(
+            "requested filesystem containment is unavailable: {reason}"
+        )));
     }
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
@@ -1156,60 +1728,40 @@ mod tests {
     }
 
     #[test]
-    fn degraded_request_runs_uncontained_but_records_the_fact() {
+    fn degraded_request_is_rejected_before_spawn() {
         let reason = "Landlock is only available on Linux".to_string();
-        let outcome =
-            interpret_sandbox_status(None, &SandboxRequest::DegradedUncontained { reason })
-                .expect("degraded path must not fail closed");
-        assert_eq!(
-            outcome,
-            SandboxExecutionOutcome::Uncontained {
-                reason: "Landlock is only available on Linux".to_string()
-            }
+        let result = prepare_launch_argv(
+            &OsString::from("must-not-run"),
+            &[],
+            Path::new("."),
+            &SandboxRequest::DegradedUncontained { reason },
+            None,
         );
-        assert!(outcome.is_degraded_uncontained());
-        assert!(!outcome.is_contained());
-        // Never confusable with an unconstrained run or a contained one.
-        assert_ne!(outcome, SandboxExecutionOutcome::Disabled);
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Disabled.audit_token()
-        );
-        assert_ne!(
-            outcome.audit_token(),
-            SandboxExecutionOutcome::Enforced {
-                backend: crate::security::sandbox::BackendId::LANDLOCK,
-                abi: Some(1),
-                guarantees: vec![],
-                limits: vec![],
-            }
-            .audit_token()
-        );
+        assert!(matches!(
+            result,
+            Err(ManagedProcessError::SandboxFailed(reason))
+                if reason.contains("containment is unavailable")
+        ));
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn degraded_request_executes_the_target_without_a_helper() {
+    #[test]
+    fn unavailable_sandbox_status_cannot_be_recorded_as_uncontained_success() {
         let mut request = request("printf uncontained-ok");
         request.sandbox = SandboxRequest::DegradedUncontained {
             reason: "no OS containment on this host".to_string(),
         };
-
-        let result = run_inner(request, None, None)
-            .await
-            .expect("degraded path must still execute the command");
-
-        assert_eq!(result.stdout.to_string_lossy(), "uncontained-ok");
-        assert!(result.exit_status.success());
-        assert!(result.sandbox.is_degraded_uncontained());
-        assert!(!result.sandbox.is_contained());
+        let outcome = interpret_sandbox_status(None, &request.sandbox);
+        assert!(matches!(
+            outcome,
+            Err(ManagedProcessError::SandboxFailed(reason))
+                if reason.contains("containment is unavailable")
+        ));
     }
 
     #[test]
     fn required_request_with_helper_unavailable_still_fails_closed() {
-        // The degraded path is chosen by the caller *before* launch. A
-        // `Required` request that loses containment mid-flight must NOT fall
-        // through to it.
+        // A `Required` request that loses containment mid-flight must fail
+        // closed rather than falling through to any uncontained path.
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {

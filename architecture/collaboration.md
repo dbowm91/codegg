@@ -98,6 +98,20 @@ operations with `chat_unavailable`.
   `truncated`. `sync(from_seq)` resumes incrementally at or above the
   retention floor; expired cursors return `resync_required: true` with
   the oldest retained page. Pages clamp to 100 rows (default 50).
+- **Backward paging**: `history` only pages forward (`seq >= from_seq`),
+  which left a client holding the newest messages unable to reach
+  anything before them. `history_older(before_seq)` closes that gap: the
+  newest `limit` messages strictly older than `before_seq`, queried
+  `ORDER BY seq DESC` and returned **ascending** so callers can prepend
+  without re-sorting. `before_seq = None` anchors at one past the newest
+  retained `seq` — deliberately inclusive, since the predicate is strict
+  and a bare `newest_seq` anchor would skip the newest message from the
+  very first page. That unanchored form is the "newest N" query the chat
+  window opens with; `older_cursor` (the page's oldest `seq`) continues
+  paging and `has_older` is the backward analogue of `truncated`. Because
+  the window keeps only its newest 100 messages, loading older messages
+  necessarily trims the newest ones — re-fetching, not paging, is how a
+  client returns to the live head.
 - **Retention**: each channel keeps the newest 1000 messages, oldest
   pruned first on send (plus explicit `prune_retention`). Revision
   rows are never pruned by the window.
@@ -126,9 +140,16 @@ Bare key mentions in prose (no assignment operator) are left alone.
 ### Protocol (`chat.v1`, version 1)
 
 Requests: `ChatCapabilities`, `ChatChannelEnsure/List`,
-`ChatHistory/Send/Edit/Redact`, `ChatReadSet/Get`,
+`ChatHistory/HistoryOlder/Send/Edit/Redact`, `ChatReadSet/Get`,
 `ChatComposingSet/List`, `ChatSync`. Responses mirror with bounded
-pages plus `next_cursor` / `retention_floor_seq` / `resync_required`.
+pages plus `next_cursor` / `retention_floor_seq` / `resync_required`;
+`ChatHistoryOlder` answers with `older_cursor` / `has_older` instead.
+`ChatHistoryOlder` is gated on `ChatCapabilitiesDto::backward_paging`,
+which older daemons omit and which therefore decodes as `false` — a
+client must check it rather than send the variant into a daemon that
+cannot decode it. The gate is one-way: it authorizes the *request*, never
+a result, and the same per-channel `project.chat` policy governs it as
+every other read (`chat_history_older`, same `Capability::ProjectChat`).
 Events (`ChatMessageCommitted/Edited/Redacted`,
 `ChatComposingUpdated`) are structural liveness hints; redaction and
 composing hints carry identity/revision only. The surface is purely

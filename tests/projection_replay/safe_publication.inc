@@ -58,6 +58,7 @@ fn safe_events_are_persistent() {
             output_tokens: None,
             cached_tokens: None,
             reasoning_tokens: None,
+            context_limit: None,
             session_id: "s".into(),
             turn_id: "t".into(),
             stop_reason: "end_turn".into(),

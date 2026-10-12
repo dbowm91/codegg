@@ -26,6 +26,32 @@ impl App {
             tracing::debug!(target: "codegg::tui::app", "send_prompt: returning - trimmed text is empty");
             return;
         }
+        // `[CHAT]` is armed: the composer is delivering to the project chat,
+        // not to the agent. This is checked before every other branch so a
+        // chat-armed composer can never fall through into a turn — and when
+        // the target is armed but unbound the text is dropped rather than
+        // silently rerouted to the agent, because that is the exact mistake
+        // the target badge exists to prevent.
+        if self.input_target() == crate::tui::panels::InputTarget::Chat {
+            if trimmed_text.starts_with('/') {
+                // Slash input stays a command: posting "/help" into a shared
+                // channel would be worse than ignoring it.
+                if self.handle_slash_command(&text) {
+                    self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
+                    return;
+                }
+            } else if crate::tui::commands::chat::route_composer_to_chat(self, &text) {
+                return;
+            } else {
+                self.messages_state
+                    .toasts
+                    .warning("Chat target has no project bound — not sending");
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+            }
+            return;
+        }
         if self.prompt_state.pending_send {
             self.messages_state.toasts.warning(
                 if self.prompt_state.pending_session_submit.is_some() {
@@ -110,6 +136,7 @@ impl App {
                             command,
                             promote_after,
                             cwd,
+                            confirmed_dangerous: false,
                         },
                     );
                 }

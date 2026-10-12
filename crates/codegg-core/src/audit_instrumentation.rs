@@ -183,6 +183,17 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
         live_mapped: true,
     },
     AuditCoverageEntry {
+        action: "human_shell_run",
+        owner: "daemon:human_shell",
+        actor: "transport-bound principal",
+        scope: "direct_project",
+        decision: "human_shell_run_create",
+        metadata: &["command.digest", "human_shell.origin", "decision.outcome"],
+        causation: "project/workspace/session locators from the authorized request; command text and output never enter audit metadata; cancellation records no command digest",
+        visibility: AuditVisibility::Project,
+        live_mapped: true,
+    },
+    AuditCoverageEntry {
         action: "provider_select",
         owner: "daemon:provider_selection",
         actor: "transport-bound principal",
@@ -544,6 +555,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_fork", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
+    ("human_shell_promotion_stage", "prompt_submit"),
+    ("human_shell_run_create", "human_shell_run"),
+    ("human_shell_run_cancel", "human_shell_run"),
     ("turn_steer", "prompt_submit"),
     ("turn_cancel", "job_cancel"),
     ("agent_select", "agent_delegate"),
@@ -679,6 +693,9 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
 /// credential, bearer-mint, config) to this list merely to pass the
 /// guard; instrument it instead.
 pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
+    "human_shell_run_capabilities",
+    "human_shell_run_read",
+    "human_shell_promotions_get",
     "asset_refresh_capabilities",
     "asset_refresh_status",
     "audit_capabilities",
@@ -830,6 +847,7 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "chat_channel_ensure",
     "chat_channel_list",
     "chat_history",
+    "chat_history_older",
     "chat_send",
     "chat_edit",
     "chat_redact",
@@ -1230,6 +1248,26 @@ pub fn command_execute_event(
         .with_metadata("command.digest", truncate_label(command_digest_hex, 128))
         .with_metadata("command.family", truncate_label(family, 64))
         .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// Structural evidence for daemon-owned finite human shell admission and
+/// cancellation. Command text and output are never included.
+pub fn human_shell_run_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    command_digest_hex: Option<&str>,
+    origin: &str,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let mut builder = AuditEventBuilder::new(AuditAction::HumanShellRun, principal, provenance)
+        .with_visibility(AuditVisibility::Project)
+        .with_metadata("human_shell.origin", truncate_label(origin, 32))
+        .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    if let Some(digest) = command_digest_hex {
+        builder = builder.with_metadata("command.digest", truncate_label(digest, 128));
+    }
     apply_chain(builder, chain, provenance.project())
 }
 

@@ -375,7 +375,7 @@ fn capability_reports_a_reason_on_every_host() {
 }
 
 #[test]
-fn unsupported_host_takes_degraded_path_and_still_executes() {
+fn unsupported_host_takes_explicit_unavailable_path() {
     use codegg::tool::bash::BashTool;
 
     let dir = tempfile::tempdir().unwrap();
@@ -398,7 +398,7 @@ fn unsupported_host_takes_degraded_path_and_still_executes() {
             );
         }
         SandboxCapability::Unavailable { reason } => {
-            // The degraded path must be explicit and self-reporting...
+            // The unavailable path must be explicit and self-reporting...
             assert_eq!(
                 path,
                 SandboxExecutionPath::DegradedUncontained {
@@ -411,10 +411,11 @@ fn unsupported_host_takes_degraded_path_and_still_executes() {
             assert_ne!(path, SandboxExecutionPath::Unconstrained);
             assert!(!path.describe().contains("explicit FullHost"));
 
-            // And the enforcement descriptor stays constrained-unavailable:
-            // the degraded run does not launder a constrained request into
-            // FullHost.
-            let enforcement = tool.sandbox_enforcement(SandboxProfile::WorkspaceWrite);
+            // The enforcement descriptor stays constrained-unavailable and
+            // never launders the request into FullHost.
+            let enforcement = codegg::security::sandbox::resolve_sandbox_enforcement(
+                SandboxProfile::WorkspaceWrite,
+            );
             assert!(!enforcement.is_full_host());
             assert!(!enforcement.is_enforced());
             assert!(matches!(
@@ -426,7 +427,7 @@ fn unsupported_host_takes_degraded_path_and_still_executes() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn unsupported_host_runs_the_command_instead_of_failing_closed() {
+async fn unsupported_host_rejects_constrained_command_before_execution() {
     use codegg::tool::bash::BashTool;
     use codegg::tool::Tool;
 
@@ -436,23 +437,13 @@ async fn unsupported_host_runs_the_command_instead_of_failing_closed() {
     }
     let dir = tempfile::tempdir().unwrap();
     let tool = BashTool::new().with_sandbox_profile(SandboxProfile::WorkspaceWrite, dir.path());
-    let outcome = tool
+    let error = tool
         .execute(serde_json::json!({"command": "echo degraded-ok"}))
         .await
-        .expect("an unsupported host must still run bash commands");
-
-    assert!(
-        outcome.contains("degraded-ok"),
-        "command output must be preserved: {outcome}"
-    );
-    assert!(
-        outcome.contains("[sandbox: UNCONTAINED"),
-        "the degraded run must be reported to the operator: {outcome}"
-    );
-    assert!(
-        outcome.contains("[exit code: 0]"),
-        "a degraded run still reports its real exit status: {outcome}"
-    );
+        .expect_err("an unsupported host must reject constrained Bash execution");
+    assert!(error
+        .to_string()
+        .contains("filesystem containment is unavailable"));
 }
 
 // ── Restart and recovery ────────────────────────────────────────────────

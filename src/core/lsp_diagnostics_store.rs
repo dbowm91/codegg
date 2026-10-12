@@ -244,6 +244,7 @@ mod tests {
             diagnostics: vec![LspDiagnosticDto {
                 range: LspRangeDto {
                     path: "src/lib.rs".to_string(),
+                    workspace_relative_path: None,
                     start_line: 1,
                     start_column: 2,
                     end_line: 1,
@@ -328,6 +329,7 @@ mod tests {
         let one = LspDiagnosticDto {
             range: LspRangeDto {
                 path: "a.rs".to_string(),
+                workspace_relative_path: None,
                 start_line: 1,
                 start_column: 0,
                 end_line: 1,

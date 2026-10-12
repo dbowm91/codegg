@@ -138,6 +138,10 @@ pub enum BuiltinSlashAction {
     Control,
     Observe,
     StopObserving,
+    /// Open the side-panel manager. The second spelling of `Shift+S`, so
+    /// the panel switcher is reachable while composing a prompt — where
+    /// `Shift+S` is the letter `S` and must stay typeable.
+    Panels,
     Chat,
     ChatSend,
     ChatReply,
@@ -261,6 +265,10 @@ pub enum BuiltinSlashAction {
     TerminalDetach,
     TerminalTerminate,
     TerminalRemove,
+    /// Bare `/terminal`: show the active interactive terminal in a box.
+    Terminal,
+    /// `/terminal-clear`: drop a terminal's local scrollback.
+    TerminalClear,
     PluginInfo,
     PluginEnable,
     PluginDisable,
@@ -749,6 +757,11 @@ impl CommandRegistry {
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
             Command::new("/shell-expand", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ShellExpand))
                 .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
+            Command::new("/terminal", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Terminal))
+                .with_description("Open an interactive terminal box, starting a shell if none is live (Shift+L docks it into the panel; args: [handle])")
+                .with_aliases(&["/term"]),
+            Command::new("/terminal-clear", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalClear))
+                .with_description("Clear a terminal's scrollback and screen; the process keeps running (args: [handle])"),
             Command::new("/terminal-create", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalCreate))
                 .with_description("Create an interactive workspace terminal (args: <command> [args...])"),
             Command::new("/terminal-list", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::TerminalList))
@@ -801,6 +814,11 @@ impl CommandRegistry {
             Command::new("/stop-observing", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::StopObserving))
                 .with_aliases(&["/unwatch"])
                 .with_description("Stop following the observed session"),
+            Command::new("/panels", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Panels))
+                .with_aliases(&["/panel", "/panel-manager"])
+                .with_description(
+                    "Open the side-panel manager: pick which panel the side column holds and bind its Ctrl+digit hotkey (hotkey Shift+S in Normal mode)",
+                ),
             Command::new("/chat", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Chat))
                 .with_description("Show project chat for the active project (/chat)"),
             Command::new("/chat-send", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::ChatSend))
@@ -1138,10 +1156,12 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 157th built-in is `/reasoning` (per-turn extended-thinking control);
-        // 156th was `/logs` (daemon log viewer). Keep
+        // 160th is `/panels` (the side-panel manager, the spelling of `⇧S`
+        // that stays typeable mid-prompt); 159th and 158th are `/terminal`
+        // (bare interactive terminal box) and `/terminal-clear`; 157th was
+        // `/reasoning` (per-turn extended-thinking control). Keep
         // `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 157);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 160);
     }
 
     #[test]
@@ -1321,6 +1341,7 @@ mod tests {
             B::Control,
             B::Observe,
             B::StopObserving,
+            B::Panels,
             B::Chat,
             B::ChatSend,
             B::ChatReply,
@@ -1437,6 +1458,8 @@ mod tests {
             B::TerminalDetach,
             B::TerminalTerminate,
             B::TerminalRemove,
+            B::Terminal,
+            B::TerminalClear,
             B::PluginInfo,
             B::PluginEnable,
             B::PluginDisable,
