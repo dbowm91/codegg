@@ -30,7 +30,7 @@ fn find_git() -> Option<PathBuf> {
 
 fn probe(variable: &str, label: &str) -> String {
     format!(
-        "$p = [Environment]::GetEnvironmentVariable('{}'); try {{ $null = Get-Content -LiteralPath $p -Raw -ErrorAction Stop; Write-Output '{}=readable' }} catch {{ Write-Output '{}=denied:$($_.Exception.GetType().Name)' }}",
+        "$p = [Environment]::GetEnvironmentVariable('{}'); try {{ $null = [IO.File]::ReadAllText($p); [Console]::WriteLine('{}=readable') }} catch {{ [Console]::WriteLine('{}=denied:$($_.Exception.GetType().Name)') }}",
         variable,
         label,
         label,
@@ -94,26 +94,26 @@ async fn c014_projection_tool_smoke_and_unprojected_host_denials() {
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
-Write-Output 'probe=started'
-$projectFile = Join-Path $env:CODEGG_C014_PROJECTION 'staged-input.txt'
-Set-Content -LiteralPath $projectFile -Value 'staged-c014-content' -NoNewline
-$readBack = Get-Content -LiteralPath $projectFile -Raw
+[Console]::WriteLine('probe=started')
+$projectFile = [IO.Path]::Combine($env:CODEGG_C014_PROJECTION, 'staged-input.txt')
+[IO.File]::WriteAllText($projectFile, 'staged-c014-content')
+$readBack = [IO.File]::ReadAllText($projectFile)
 if ($readBack -ne 'staged-c014-content') {{ throw 'projection read/write mismatch' }}
-Write-Output 'projection=read-write-ok'
-Write-Output 'git=init-start'
+[Console]::WriteLine('projection=read-write-ok')
+[Console]::WriteLine('git=init-start')
 & $env:CODEGG_C014_GIT init --quiet $env:CODEGG_C014_PROJECTION
 if ($LASTEXITCODE -ne 0) {{ throw "git init failed: $LASTEXITCODE" }}
-Write-Output 'git=init-ok'
+[Console]::WriteLine('git=init-ok')
 & $env:CODEGG_C014_GIT -C $env:CODEGG_C014_PROJECTION status --porcelain
 if ($LASTEXITCODE -ne 0) {{ throw "git status failed: $LASTEXITCODE" }}
-Write-Output 'git=repository-status-ok'
+[Console]::WriteLine('git=repository-status-ok')
 {}
 {}
 {}
 {}
 {}
 $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', '{}', [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::None)
-try {{ $pipe.Connect(1000); Write-Output 'daemon-pipe=connected' }} catch {{ Write-Output "daemon-pipe=denied:$($_.Exception.GetType().Name)" }} finally {{ $pipe.Dispose() }}
+try {{ $pipe.Connect(1000); [Console]::WriteLine('daemon-pipe=connected') }} catch {{ [Console]::WriteLine("daemon-pipe=denied:$($_.Exception.GetType().Name)") }} finally {{ $pipe.Dispose() }}
 $rawHandle = [IntPtr]([Int64]$env:C014_INHERITED_HANDLE)
 try {{
   $safeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($rawHandle, $false)
@@ -122,9 +122,9 @@ try {{
     $buffer = [byte[]]::new(256)
     $count = $stream.Read($buffer, 0, $buffer.Length)
     $contents = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $count)
-    if ($contents.Contains('synthetic-c014-credential')) {{ Write-Output 'inherited-handle=leaked' }} else {{ Write-Output 'inherited-handle=unavailable' }}
-  }} else {{ Write-Output 'inherited-handle=unavailable' }}
-}} catch {{ Write-Output "inherited-handle=denied:$($_.Exception.GetType().Name)" }}
+    if ($contents.Contains('synthetic-c014-credential')) {{ [Console]::WriteLine('inherited-handle=leaked') }} else {{ [Console]::WriteLine('inherited-handle=unavailable') }}
+  }} else {{ [Console]::WriteLine('inherited-handle=unavailable') }}
+}} catch {{ [Console]::WriteLine("inherited-handle=denied:$($_.Exception.GetType().Name)") }}
 "#,
         probe("C014_CREDENTIAL", "direct"),
         probe("C014_JUNCTION", "junction"),
