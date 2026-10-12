@@ -23,7 +23,9 @@ limitation, not a qualified policy for existing denied trees.
 
 There is no production caller, operator command, or manual repair procedure
 yet. Do not remove a journal or reset a directory DACL by hand. C010 qualifies
-the lease transaction and recovery behavior on disposable roots. C011 is blocked
-on the hosted existing-file read finding; C012 is verifying the bounded
-fail-closed behavior and its rollback. Neither milestone enables a production
-backend until all required evidence is accepted.
+the lease transaction and recovery behavior on disposable roots. C012's
+fail-closed preflight passed exact-SHA hosted Windows run `38223080719`, but the
+path-based check is not qualified against replacement races. C011 remains
+blocked on the hosted existing-file read finding and its broader security
+matrix. Neither milestone enables a production backend until all required
+evidence is accepted.

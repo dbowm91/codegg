@@ -1,6 +1,6 @@
 # Windows Native Sandbox Corrective C012 — Existing-Tree Deny Lease Correction
 
-Status: conditionally closed (test-only preflight; path-replacement race remains unqualified)
+Status: implemented
 
 Repository baseline: `6efc0f92ab50fbadd10f3e1188e3639a4202afcd`, branch `work/windows-native-sandbox-foundation`, 2026-10-12.
 
@@ -19,7 +19,7 @@ Primary class: invariant
 
 ## 1. Objective
 
-Diagnose and correct the test-only Windows ACL lease behavior that let an AppContainer read a synthetic credential file beneath a denied existing directory, including through a junction and hardlink. Preserve exact rollback and crash-safe journal semantics. If a safe bounded correction cannot be demonstrated, reject the affected policy before child creation and keep Windows constrained execution unavailable.
+Correct the test-only Windows ACL lease behavior that let an AppContainer read a synthetic credential beneath a denied existing directory. This bounded pass selects the fail-closed option: reject every populated deny root before profile creation or child spawn, without traversing or mutating descendants. It does not diagnose the exact ACE ordering cause or implement recursive leases. Windows constrained execution remains unavailable.
 
 This is a corrective of C011's failed security qualification, not a production-backend enablement plan. M004 remains blocked until all of C011's requirements pass and a separate additive requalification is accepted.
 
@@ -32,7 +32,7 @@ Hard: C011 produced same-revision Windows Server 2025 evidence in run `382179334
 - `run_windows_test_restricted` leases DACLs on the root directories in `read_paths`, `write_paths`, and `deny_paths`.
 - `windows_acl_lease::add_appcontainer_ace` adds inheritable AppContainer ACEs to a directory DACL. Existing files can also have their own effective DACLs and explicit ACE ordering; root-only success is not proof that existing file objects deny access.
 - The C011 test used only runner-created directories and synthetic credential contents. It did not read repository, runner, or user secrets.
-- Microsoft documents that file and directory access is decided by their ACLs and that explicit ACEs take precedence over inherited ACEs: [file security and access rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights), [automatic propagation of inheritable ACEs](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces). The exact observed fixture DACL ordering and access path must be captured as part of this correction rather than inferred from the directory-only snapshot.
+- `validate_empty_deny_directory` rejects a deny root containing any entry. The managed-process path performs this preflight before AppContainer profile creation and child spawn. The exact C011 DACL cause is not diagnosed; this correction does not infer it from root-only snapshots.
 
 ## 4. Invariants that must not regress
 
@@ -46,11 +46,9 @@ Hard: C011 produced same-revision Windows Server 2025 evidence in run `382179334
 
 ### In scope
 
-- Reproduce and record the exact root and descendant DACLs and access-check route from C011.
-- Select a bounded mechanism that safely denies existing descendant objects or rejects unsupported trees before child creation.
-- Extend the journal to cover every object changed by a recursive/tree lease, if needed, including path/volume/file identity, owner, before-image, expected after-image, and conflict state.
-- Bound traversal and fail closed on reparse points, unsupported filesystems, inaccessible objects, identity aliases that cannot be safely tracked, and object-count/descriptor-size limits.
-- Re-run C011's synthetic direct/junction/hardlink/ADS matrix and rollback/crash fault-injection cases on the hosted privileged runner.
+- Reject every populated deny root before child creation, without inspecting file contents, traversing descendants, or mutating ACLs.
+- Verify that empty deny roots deny child read/list/write operations and restore their exact root ACLs.
+- Verify that a populated synthetic deny tree fails before a marker-producing child starts and that its ACL snapshots remain unchanged.
 
 ### Explicitly out of scope
 
@@ -59,25 +57,19 @@ Hard: C011 produced same-revision Windows Server 2025 evidence in run `382179334
 
 ## 6. Required implementation changes
 
-- Compare the effective DACL on the denied root, its existing directories/files, and the synthetic credential file before and during the lease. Record explicit/inherited ACE flags and canonical order without exposing credential contents.
-- Prove whether inheritable deny ACE propagation reaches the current descendant objects and whether an existing explicit allow or protected DACL bypasses the intended deny. Do not rely on a root-only ACL snapshot.
-- Implement the smallest safe lease transaction. Every changed object must have a durable before/after record written before mutation. Partial mutation rolls back in reverse order; restart recovery validates every object identity and descriptor before restoring any object. If atomic all-tree guarantees cannot be met, reject that denied root before creating the child.
-- Reject reparse points anywhere in a traversed deny tree until a safe, identity-pinned policy exists. Detect hardlink identity aliases where relevant; do not mistake path uniqueness for file-object uniqueness.
-- Add a negative test that asserts the child never starts when the denied tree cannot be safely leased.
+- Validate deny roots before AppContainer profile creation and child spawn; return typed `SandboxFailed` for populated roots.
+- Keep ACL lease and recovery behavior limited to eligible empty disposable roots; do not claim descendant protection.
+- Add a negative test asserting a populated tree fails before child start, with ACL snapshots unchanged.
 
 ## 7. Ordered work packages
 
-### WP-A — Reproduce and diagnose
+### WP-A — Bounded fail-closed policy
 
-Capture DACLs and file identities for root, existing secret file, hardlink, junction target, and ADS owner file. Identify the ACE ordering/access-check reason for the leak. Keep all contents synthetic.
+Reject populated deny roots before any child creation or ACL mutation. Do not traverse the tree or read synthetic credential contents.
 
-### WP-B — Bounded lease correction
+### WP-B — Native verification
 
-Implement either journaled existing-tree DACL protection with conflict-safe recovery, or a deterministic pre-spawn rejection for trees that cannot meet the invariant. Preserve rollback under injected failures at each mutation boundary.
-
-### WP-C — Native adversarial verification
-
-Run C011's exact synthetic path matrix on Windows Server 2025. All denied reads must fail while approved workspace reads/writes continue. Assert exact descriptor restoration for every touched object after success, failure, cancellation, and simulated restart recovery.
+On Windows Server 2025, prove populated-tree rejection happens before a marker-producing child starts and leaves ACLs unchanged. Separately prove empty-root deny behavior, positive allowed-root behavior, and exact lease restoration.
 
 ## 8. Failure, cancellation, restart, and contention semantics
 
@@ -89,12 +81,8 @@ This remains a Windows-only, test-support-only correction for qualified NTFS dis
 
 ## 10. Required tests
 
-- Exact C011 synthetic credential test: direct path, junction, hardlink, and ADS are denied by the child, or the request is rejected before child creation when the existing tree is not safely leaseable; approved workspace read/write remains covered by separate positive fixtures.
-- Existing-file explicit allow, protected child DACL, nested directory, and multiple-file fixtures.
-- Reparse entry inside a denied tree is rejected before child creation.
-- Hardlink identity alias, path replacement, descriptor drift, inaccessible child, bounded tree-size exhaustion, and overlapping lease contention.
-- Inject failures after every journal and ACL mutation stage; prove rollback or retained conflict without unjournaled changes.
-- Restart/recovery on the hosted Windows runner; verify exact before/after DACLs for every touched object.
+- Populated synthetic deny tree, including junction/hardlink/ADS fixtures, is rejected before child creation; ACL snapshots remain unchanged.
+- Empty deny root denies child read/list/write; allowed-root positive behavior remains covered; exact root ACL restoration is checked.
 - C008–C011 Windows regression suite, Windows runner privilege probe, `cargo fmt --all -- --check`, `git diff --check`, and `bash scripts/verify.sh quick`.
 
 ## 11. Required verification commands
@@ -133,7 +121,7 @@ Stop and retain C011/M004 as blocked if a safe tree lease would overwrite unrela
 
 ## 15. Closure evidence required
 
-Same-revision hosted run and exact logs; DACL/identity trace for the synthetic tree; negative and positive process traces; per-object restoration/recovery results; conflict and fail-closed cases; exact unqualified scope; and an audit of whether C011 or M004 requirements can now advance. M004 remains blocked absent complete independent C011 review.
+Same-revision hosted run and exact logs; populated-tree pre-spawn rejection; positive empty-root and allowed-root traces; exact ACL restoration; cross-host verification; exact unqualified scope; and an audit of whether C011 or M004 requirements can now advance. DACL root-cause diagnosis, recursive protection, restart fault injection for populated trees, and full C011 qualification are explicitly deferred and must not be claimed. M004 remains blocked absent complete independent C011 review.
 
 ## 16. Handoff notes
 

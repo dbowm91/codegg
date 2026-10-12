@@ -188,9 +188,11 @@ production journal protection, existing-workspace authority, adversarial path
 safety, or backend availability. The test-only lease rejects a deny root that
 already contains an entry before child creation: root-only DACL leasing allowed
 a child to read a synthetic denied file through its direct path, a junction, and
-a hardlink in hosted run `38220136385`. Empty deny roots and separate positive
-workspace fixtures remain testable, but this fail-closed restriction is not a
-production capability or complete existing-tree policy. See
+a hardlink in hosted run `38220136385`. The populated-root preflight and
+separate empty-root fixtures passed exact-SHA Windows workflow `38223080719`,
+but the path-based check is not qualified against replacement races. This
+fail-closed restriction is not a production capability or complete existing-tree
+policy. See
 `tests/windows_restricted_managed_process.rs`, `tests/windows_acl_lease.rs`, and
 `docs/windows-acl-leases.md`.
 - Any host with no registered backend: constrained Bash requests report

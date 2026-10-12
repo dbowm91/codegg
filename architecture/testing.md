@@ -238,8 +238,9 @@ its direct path, a junction, and a hardlink (`38220136385`). The test-only path
 now rejects deny roots containing entries before child creation; separate
 positive fixtures cover allowed workspace access. These checks remain test-only
 and do not qualify production journal protection, existing-workspace authority,
-reparse/hardlink safety, or full M004 security. C011 and C012 retain the
-remaining privileged adversarial qualification.
+reparse/hardlink safety, or full M004 security. C011 remains blocked on its
+broader privileged qualification; C012 is conditionally closed with path
+replacement still unqualified.
 
 The same workflow exercises the native shell argv builder and Windows policy
 input fixtures for system roots, profile credential denies, PATH-independent
