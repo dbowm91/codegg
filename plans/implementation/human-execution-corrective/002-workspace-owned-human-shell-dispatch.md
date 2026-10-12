@@ -1,6 +1,6 @@
 # Human Execution Corrective C002 — Workspace-Owned Human Shell Dispatch
 
-Status: active (C001 corrective contract closed by C004; implementation and verification in progress)
+Status: implemented; closed (`plans/closure/human-execution-corrective/002-status.md`)
 
 Repository baseline: `2c2d6f130` (C004 and M006-C closures are on branch); implementation review at `91cbe784aa442ad268c95ed8aca709820d5413e2`.
 

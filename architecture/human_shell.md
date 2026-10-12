@@ -95,9 +95,10 @@ output remains private. Local `!!`/include entries are marked promoted only
 after a turn is accepted and the durable stage is claimed. `/shell-ask` waits
 for both stage acknowledgement and session turn acceptance. Remote TUI queue
 acceptance is not session acceptance, so the remote path remains an
-unsubmitted composer draft. Finite command execution still runs in the
-frontend and is being corrected separately by C002 at
-`plans/implementation/human-execution-corrective/002-workspace-owned-human-shell-dispatch.md`.
+unsubmitted composer draft for model-context promotion. Finite command
+execution itself is daemon-owned for local and remote-attached TUIs; remote
+workspace execution nodes are explicitly unsupported. C002 is closed at
+`plans/closure/human-execution-corrective/002-status.md`.
 
 ### Projection Pipeline (Phases 1–10)
 
