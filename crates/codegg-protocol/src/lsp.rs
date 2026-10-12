@@ -331,17 +331,12 @@ pub struct LspDiagnosticDto {
 }
 
 /// Whether a diagnostics response is a complete snapshot or not ready yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LspDiagnosticsStatus {
     Ready,
+    #[default]
     NotReady,
-}
-
-impl Default for LspDiagnosticsStatus {
-    fn default() -> Self {
-        Self::NotReady
-    }
 }
 
 /// The authoritative diagnostics for a project.

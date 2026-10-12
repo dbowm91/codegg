@@ -114,6 +114,11 @@ scripts/verify.sh quick
 
 Run the hosted root CI workflow on the final revision. Space workflow dispatches and confirm they are queued/running rather than paused or indefinitely pending before relying on them.
 
+Hosted attempt `38228419611` was active and reached Workspace Clippy, then
+failed on Clippy's `derivable_impls` finding for the new status default. The
+enum now derives `Default` and marks `NotReady` as the default variant; retain
+that first result as a recorded failed attempt and rerun on the corrected SHA.
+
 ## 11. Documentation and closure evidence
 
 Update `architecture/lsp.md`, `.opencode/skills/lsp-ide/SKILL.md`, and `plans/registry.md`. Closure requires the empty-vs-missing state table, compatibility test, focused trajectories, relevant authorization checks, quick verification, and hosted CI result. Do not edit `plans/closure/desktop-frontend-ide-foundation/009-status.md`.
