@@ -621,21 +621,21 @@ mod tests {
     #[test]
     fn filter_matches_the_key_field() {
         let mut d = dialog();
-        for ch in "ctrl+alt+w".chars() {
+        for ch in "shift+s".chars() {
             d.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
         let hits = d.visible_rows();
         assert!(
-            hits.iter().any(|r| r.key == "Ctrl+Alt+W"),
-            "the switcher chord must be findable by name, got {:?}",
+            hits.iter().any(|r| r.key == "Shift+S"),
+            "the switcher key must be findable by name, got {:?}",
             hits.iter().map(|r| &r.key).collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn the_switcher_is_reachable_through_search() {
-        // The chord that used to be undecodable must be discoverable in the
-        // help surface, or the fix is undiscoverable.
+        // The key that opens the panel manager must be discoverable in the
+        // help surface, or the manager is undiscoverable.
         let mut d = dialog();
         // A real space, so the query is two ANDed terms ("side" and "panel")
         // rather than one unmatchable literal.
@@ -644,9 +644,33 @@ mod tests {
         }
         assert_eq!(d.query(), "side panel");
         assert!(
-            d.visible_rows().iter().any(|r| r.key == "Ctrl+Alt+W"),
+            d.visible_rows().iter().any(|r| r.key == "Shift+S"),
             "searching \"side panel\" must surface the panel switcher, got {:?}",
             d.visible_rows().iter().map(|r| &r.key).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_retired_switcher_chord_is_not_advertised() {
+        // `Ctrl+Alt+W` was retired in favour of `Shift+S`. Help must not
+        // keep naming a key that no longer does anything, or it teaches a
+        // binding that silently fails.
+        let rows: Vec<_> = [
+            crate::tui::input::HelpMode::Insert,
+            crate::tui::input::HelpMode::Normal,
+            crate::tui::input::HelpMode::Command,
+            crate::tui::input::HelpMode::Dialog,
+        ]
+        .into_iter()
+        .flat_map(crate::tui::input::help_entries_for_mode)
+        .collect();
+        assert!(
+            !rows.iter().any(|r| r.key.contains("Ctrl+Alt+W")),
+            "the retired chord is still advertised: {:?}",
+            rows.iter()
+                .filter(|r| r.key.contains("Ctrl+Alt+W"))
+                .map(|r| &r.key)
+                .collect::<Vec<_>>()
         );
     }
 

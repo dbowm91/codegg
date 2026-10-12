@@ -52,7 +52,7 @@ impl SidePanel for SessionPanel {
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
         hints.focused.then(|| {
-            "SESSIONS · jk move · ↵ open · space fold · hl collapse/expand · ^⌥W panel".to_string()
+            "SESSIONS · jk move · ↵ open · space fold · hl collapse/expand · ⇧S panel".to_string()
         })
     }
 

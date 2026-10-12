@@ -29,11 +29,15 @@ fn plain(ch: char) -> KeyEvent {
     key(KeyCode::Char(ch), KeyModifiers::NONE)
 }
 
-fn manager() -> KeyEvent {
-    key(
-        KeyCode::Char('w'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT,
-    )
+/// Open the panel manager the way a user does now.
+///
+/// `Shift+S` is the only spelling of the manager and it is Normal-mode
+/// only. The mode is stated directly rather than reached through `Esc`: on
+/// the Workspace route `Esc` belongs to that view, and routing through it
+/// would make these tests depend on a different surface's key handling.
+fn open_manager(app: &mut App) {
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(key(KeyCode::Char('S'), KeyModifiers::SHIFT));
 }
 
 fn test_app() -> App {
@@ -62,7 +66,7 @@ fn help_mode(app: &mut App) -> InputMode {
 }
 
 fn choose_nth(app: &mut App, n: usize) {
-    app.on_key(manager());
+    open_manager(app);
     manager_down(app, n);
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
@@ -73,7 +77,11 @@ fn choose_nth(app: &mut App, n: usize) {
 /// keyboard, which is what lets one bottom prompt deliver to either target. So
 /// every test that drives a *panel* has to say so rather than assume it.
 fn to_normal_mode(app: &mut App) {
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    // Idempotent: focusing a side panel already switches the app to Normal,
+    // so an unconditional `Esc` would blur the panel under test.
+    if app.ui_state.input_mode != codegg::tui::input::InputMode::Normal {
+        app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    }
 }
 
 // ── The directional matcher ─────────────────────────────────────────
@@ -354,7 +362,7 @@ fn a_clear_on_an_unknown_handle_reports_failure() {
 async fn a_digit_saved_in_the_manager_is_recalled_by_ctrl_digit() {
     let mut app = test_app();
     choose_nth(&mut app, 1); // Session -> Chat
-    app.on_key(manager()); // reopen on Chat
+    open_manager(&mut app); // reopen on Chat
     app.on_key(plain('1')); // bind
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.panel_hotkeys.get('1'), Some(SidePanelId::Chat));
@@ -374,13 +382,13 @@ async fn reassigning_a_digit_rebinds_rather_than_failing() {
     // Bind slot 3 to Chat, then rebind the same slot to Help. The manager
     // opens on the live panel each time, so walk from there.
     choose_nth(&mut app, SidePanelId::Chat.index());
-    app.on_key(manager());
+    open_manager(&mut app);
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.panel_hotkeys.get('3'), Some(SidePanelId::Chat));
 
     choose_nth(&mut app, SidePanelId::Help.index());
-    app.on_key(manager());
+    open_manager(&mut app);
     app.on_key(plain('3'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
@@ -432,4 +440,156 @@ fn ctrl_digit_shaped_keys_are_recognised_and_other_keys_are_not() {
     );
     assert_eq!(digit_slot(plain('1')), None, "a bare digit is just text");
     assert_eq!(digit_slot(key(KeyCode::Char('1'), KeyModifiers::ALT)), None);
+}
+
+// ── Focus/mode coherence ────────────────────────────────────────────
+
+/// Open a dockable box the way a user does, with the *composer* left in
+/// Insert — the state the regression below needs.
+///
+/// The box's own `Esc` is sent first because `/help` opens in its Insert
+/// mode, where the directional gesture is deliberately inert so `Shift+H`
+/// stays a typeable letter. That `Esc` is consumed by the box, which is
+/// exactly why the app-level mode is still Insert afterwards: the composer
+/// never saw it. This is the precise state that used to strand the user.
+fn open_help_box_while_composing(app: &mut App) {
+    app.ui_state.input_mode = InputMode::Insert;
+    for ch in "/help".chars() {
+        app.on_key(plain(ch));
+    }
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE)); // box: Insert -> Normal
+    assert!(
+        app.dock_target().is_some(),
+        "precondition: a dockable box should be open"
+    );
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Insert,
+        "precondition: the composer is still in Insert behind the box"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn docking_a_box_leaves_a_panel_the_keyboard_can_actually_reach() {
+    // Regression, and the reason the directional gesture has to work from
+    // inside a panel at all.
+    //
+    // Docking ran `close_dialog()` — which parks the composer in Insert —
+    // and then focused the panel. `App::on_key` consults a focused panel
+    // *only* in Normal mode, so the app sat in a state where the badge and
+    // the hint line both said the panel had the keyboard while every key,
+    // including `Shift+H`, the only way out, went to the composer and was
+    // typed as text. Focus and mode now agree by construction.
+    let mut app = test_app();
+    open_help_box_while_composing(&mut app);
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.panel_host.active(),
+        SidePanelId::Help,
+        "the gesture docks the open box into its panel"
+    );
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: the panel holds the keyboard after docking"
+    );
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "a focused panel is a Normal-mode surface"
+    );
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "Shift+H must return focus to the main buffer"
+    );
+    assert_eq!(
+        app.composer_destination_title(),
+        "LLM",
+        "the composer must be aimed at the main buffer again"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn leaving_a_panel_restores_the_composer_mode_it_had() {
+    // Taking focus parks the composer's mode rather than discarding it, so
+    // stepping back out of a panel does not silently change how the next
+    // keystroke behaves. Docking is the route that carries a composer in
+    // Insert into a focused panel, so that is the round trip under test.
+    let mut app = test_app();
+    open_help_box_while_composing(&mut app);
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "precondition: the panel is a Normal-mode surface"
+    );
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        !app.panel_host.is_focused(),
+        "the second gesture leaves the panel"
+    );
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Insert,
+        "the composer's own mode must survive the round trip"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_normal_mode_composer_is_not_rewritten_by_a_panel_visit() {
+    // The other direction: a user who was reading in Normal — rather than
+    // mid-sentence — comes back to Normal, not Insert.
+    let mut app = test_app();
+    open_help_box_while_composing(&mut app);
+    app.ui_state.input_mode = InputMode::Normal;
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: docked + focused"
+    );
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+
+    assert!(
+        !app.panel_host.is_focused(),
+        "the second gesture leaves the panel"
+    );
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "Normal must round-trip unchanged too"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn leaving_a_panel_with_escape_also_restores_the_composer_mode() {
+    // `Esc` blurs through the host rather than through `blur_panel`, so it
+    // owes the composer the same restoration. Without this the user is
+    // dropped into Normal whatever they were doing before.
+    let mut app = test_app();
+    open_help_box_while_composing(&mut app);
+
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: docked + focused"
+    );
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Normal,
+        "precondition: the panel is a Normal-mode surface"
+    );
+
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.panel_host.is_focused(), "Esc leaves the panel");
+    assert_eq!(
+        app.ui_state.input_mode,
+        InputMode::Insert,
+        "Esc must hand back the composer's own mode too"
+    );
 }

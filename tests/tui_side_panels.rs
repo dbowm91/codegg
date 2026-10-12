@@ -92,11 +92,24 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
     }
 }
 
-/// The legacy-safe chord form. `Ctrl+Shift+X` is byte-identical to `Ctrl+X`
-/// in legacy xterm encoding and can never arrive as written; see
-/// `tests/modifier_chords.rs`.
-fn ctrl_alt(ch: char) -> KeyEvent {
-    key(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)
+/// Press the panel-manager key.
+///
+/// The one spelling of the manager is `Shift+S`, and it is Normal-mode
+/// only, so the mode is stated directly rather than reached through `Esc`:
+/// on the Workspace route `Esc` belongs to that view, and routing through
+/// it would make these tests depend on a different surface's key handling.
+fn press_manager(app: &mut codegg::tui::app::App) {
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(plain('S'));
+}
+
+/// Open the panel manager, asserting it actually opened.
+fn open_manager(app: &mut codegg::tui::app::App) {
+    press_manager(app);
+    assert!(
+        manager_open(app),
+        "precondition: the panel manager should be open"
+    );
 }
 
 fn plain(ch: char) -> KeyEvent {
@@ -180,7 +193,7 @@ fn manager_cursor(app: &mut codegg::tui::app::App) -> Option<usize> {
 #[tokio::test(flavor = "current_thread")]
 async fn ctrl_alt_w_opens_the_manager_without_stealing_the_composer() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     assert!(manager_open(&app));
     assert!(
         !app.panel_host.is_focused(),
@@ -210,7 +223,7 @@ async fn shift_s_opens_the_same_manager_in_normal_mode_only() {
 #[tokio::test(flavor = "current_thread")]
 async fn the_manager_commits_the_highlighted_panel_on_enter() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('j')); // Session -> Chat
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
@@ -227,14 +240,14 @@ async fn the_manager_commits_the_highlighted_panel_on_enter() {
 #[tokio::test(flavor = "current_thread")]
 async fn manager_arrow_keys_match_the_vim_keys() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     let before = manager_cursor(&mut app);
     app.on_key(plain('j'));
     let after_vim = manager_cursor(&mut app);
 
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     assert_eq!(
         manager_cursor(&mut app),
         before,
@@ -247,7 +260,7 @@ async fn manager_arrow_keys_match_the_vim_keys() {
 #[tokio::test(flavor = "current_thread")]
 async fn escape_closes_the_manager_and_keeps_the_current_panel() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('j'));
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
     assert!(!manager_open(&app));
@@ -261,7 +274,7 @@ async fn escape_closes_the_manager_and_keeps_the_current_panel() {
 #[tokio::test(flavor = "current_thread")]
 async fn manager_keys_never_reach_the_composer() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     for ch in [':', 'j', 'k', 'x'] {
         app.on_key(plain(ch));
     }
@@ -275,7 +288,7 @@ async fn manager_keys_never_reach_the_composer() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_digit_binds_the_highlighted_panel_and_ctrl_recalls_it() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('j')); // highlight Chat
     app.on_key(plain('1')); // bind Ctrl+1 -> Chat
     app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
@@ -305,27 +318,44 @@ async fn an_unbound_ctrl_digit_is_consumed_rather_than_leaking() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ctrl_alt_w_toggles_the_manager_closed() {
+async fn the_manager_key_toggles_the_box_closed() {
     let mut app = test_app();
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     assert!(manager_open(&app));
     // The host answers the toggle itself, so it must work from inside the box
     // too rather than stacking a second copy.
-    app.on_key(ctrl_alt('w'));
+    press_manager(&mut app);
     assert!(!manager_open(&app), "the same key must close it again");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_manager_key_is_reachable_from_inside_a_focused_panel() {
+    // `Ctrl+Alt+W` is retired, so `Shift+S` is the only spelling of the
+    // manager. A focused panel consumes everything by contract, so if it
+    // also swallowed this key a user standing in a panel would have no way
+    // to reach the switcher for the panel they are standing in.
+    let mut app = test_app();
+    select_chat(&mut app);
+    to_normal(&mut app);
+    assert!(app.panel_host.is_focused(), "precondition: a focused panel");
+    press_manager(&mut app);
+    assert!(
+        manager_open(&app),
+        "Shift+S must open the manager from a panel"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn switching_back_to_session_restores_prompt_input_immediately() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
 
     // Re-open the manager, step back to Session, commit.
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('k'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Session);
@@ -357,7 +387,7 @@ async fn workspace_focus_mirrors_which_side_owns_the_keyboard() {
         WorkspaceFocus::Composer,
         "selecting a panel is not the same as focusing it"
     );
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(
         app.workspace_focus,
@@ -373,7 +403,7 @@ async fn workspace_focus_mirrors_which_side_owns_the_keyboard() {
 async fn modal_dialogs_still_take_precedence_over_the_panel() {
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('l'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.panel_host.is_focused());
@@ -394,8 +424,15 @@ async fn modal_dialogs_still_take_precedence_over_the_panel() {
 /// Insert — so every test that reaches for `Shift+Arrow` has to make the
 /// same trip a user makes, or it would assert against a state the user
 /// cannot actually be in.
+/// Put the app in Normal mode.
+///
+/// Idempotent on purpose: focusing a side panel already switches the app
+/// to Normal, so an unconditional `Esc` here would blur the very panel the
+/// caller is about to assert on. Only send the key when it is needed.
 fn to_normal(app: &mut codegg::tui::app::App) {
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    if app.ui_state.input_mode != codegg::tui::input::InputMode::Normal {
+        app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    }
     assert_eq!(
         app.ui_state.input_mode,
         codegg::tui::input::InputMode::Normal,
@@ -408,7 +445,7 @@ fn to_normal(app: &mut codegg::tui::app::App) {
 /// almost every focus/target assertion has to start here.
 fn select_chat(app: &mut codegg::tui::app::App) {
     seed_chat(app);
-    app.on_key(ctrl_alt('w'));
+    open_manager(app);
     // The manager opens on the live panel (Session) and steps with j/k, so
     // one `j` lands on Chat.
     app.on_key(plain('j'));

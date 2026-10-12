@@ -147,15 +147,19 @@ impl App {
 
         // Outer TUI frame: paint the left border on the reserved strip
         // and the four corner cells that connect it with the header's
-        // bottom border (top) and the footer's bottom border (bottom).
-        // The header and footer widgets supply the horizontal lines via
-        // their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`.
+        // bottom border (top) and the reserved bottom edge (bottom).
+        // The header supplies the top horizontal line via its own
+        // `Borders::BOTTOM`; the bottom line is painted in `finish_render`
+        // on `border_area`, so the lower corners have to be anchored there
+        // too — anchoring them on the footer's last row left the bottom
+        // edge's own leftmost cell showing the `│` of the left strip and
+        // put a stray `└` up on the status line.
         self.render_outer_borders(
             frame,
             bordered[0],
             pane_area,
             session_chunks[0],
-            session_chunks[3],
+            border_area,
         );
 
         self.render_header(frame, session_chunks[0]);
@@ -605,18 +609,25 @@ impl App {
 
     /// Draw the left border on the reserved 1-column strip and the
     /// four corner cells that connect it with the header's bottom
-    /// border (top edge) and the footer's bottom border (bottom edge).
-    /// The header and footer widgets supply the horizontal lines via
-    /// their own `Borders::BOTTOM` / `Borders::TOP | Borders::BOTTOM`
-    /// — the corners here are what make the three sides look like a
-    /// single connected frame instead of three disjoint segments.
+    /// border (top edge) and the reserved bottom edge (bottom edge).
+    /// The header supplies the top horizontal line via its own
+    /// `Borders::BOTTOM`, and the bottom horizontal line is painted
+    /// later by `finish_render` — the corners here are what make the
+    /// three sides look like a single connected frame instead of three
+    /// disjoint segments.
+    ///
+    /// `bottom_edge_area` is the row carved off for that bottom line,
+    /// so the lower corners are anchored on the edge itself. They used
+    /// to be placed on the footer's last row instead, which is one row
+    /// higher: the status line got a `└`/`┘` it never asked for and the
+    /// real bottom-left corner was left showing the left border's `│`.
     fn render_outer_borders(
         &mut self,
         frame: &mut Frame,
         left_area: Rect,
         content_area: Rect,
         header_area: Rect,
-        footer_area: Rect,
+        bottom_edge_area: Option<Rect>,
     ) {
         // Left border: paint a `Borders::LEFT` block on the reserved
         // strip. Drawing on a dedicated strip keeps the line continuous
@@ -629,28 +640,26 @@ impl App {
             .style(bg_style);
         frame.render_widget(left_block, left_area);
 
-        // The footer/status bar draws its own `Borders::TOP |
-        // Borders::BOTTOM` only when it has more than one row to spend
-        // (`status_bar.rs` takes an early, border-less path at height 1).
-        // The configured `footer_height` is 1, so in practice nothing
-        // painted the bottom edge of the main pane and it read as an
-        // open-ended window next to the sidebar, which does draw a full
-        // `Borders::ALL`. The edge therefore lives on its own reserved
-        // row, carved off `main_area_inner` by `render` before the session
-        // layout ran, and is painted in `finish_render`. This function
-        // only owns the corner glyphs that connect it to the side edges.
-        if header_area.height > 0 && footer_area.height > 0 && content_area.width > 0 {
-            // Corner cells: top-left, top-right, bottom-left, bottom-right.
-            // Drawn after the header and footer widgets (which supply the
-            // horizontal lines) so the corner glyphs overwrite the line
-            // glyphs at the intersections and visually connect them.
+        // The bottom edge lives on its own reserved row (see `render`),
+        // painted in `finish_render`. Without it the main pane read as an
+        // open-ended window next to the sidebar, which draws a full
+        // `Borders::ALL`. This function only owns the corner glyphs that
+        // connect that edge to the side edges.
+        let Some(bottom_edge_area) = bottom_edge_area else {
+            return;
+        };
+        // Corner cells: top-left, top-right, bottom-left, bottom-right.
+        // Drawn after the header widget (which supplies the top line) so
+        // the corner glyphs overwrite the line glyphs at the intersections
+        // and visually connect them.
+        if header_area.height > 0 && content_area.width > 0 {
             let header_bottom_y = header_area.y + header_area.height - 1;
-            let footer_bottom_y = footer_area.y + footer_area.height - 1;
+            let bottom_y = bottom_edge_area.y + bottom_edge_area.height.saturating_sub(1);
             let right_x = content_area.x + content_area.width - 1;
             self.render_corner(frame, left_area.x, header_bottom_y, '┌', border_style);
             self.render_corner(frame, right_x, header_bottom_y, '┐', border_style);
-            self.render_corner(frame, left_area.x, footer_bottom_y, '└', border_style);
-            self.render_corner(frame, right_x, footer_bottom_y, '┘', border_style);
+            self.render_corner(frame, left_area.x, bottom_y, '└', border_style);
+            self.render_corner(frame, right_x, bottom_y, '┘', border_style);
         }
     }
 

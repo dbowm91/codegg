@@ -13,7 +13,7 @@
 //!   per-panel `if` left in the render path.
 //! * [`SidePanelHost`] — which panel is active, whether it holds keyboard
 //!   focus. Which panel is loaded is chosen by the manager box
-//!   (`Ctrl+Alt+W` / `Shift+S`), which is a *dialog* rather than an overlay
+//!   (`Shift+S`), which is a *dialog* rather than an overlay
 //!   drawn inside the column — a box can show what it is about to change,
 //!   which a 30-column overlay never could.
 //!
@@ -581,7 +581,7 @@ impl SidePanelHost {
     }
 
     /// Step `delta` panels, wrapping. Selecting from an unfocused host
-    /// leaves it unfocused; `Ctrl+Alt+W` or a focus action drives focus
+    /// leaves it unfocused; `Shift+S` or a focus action drives focus
     /// explicitly.
     pub fn step(&mut self, delta: i8, ctx: &mut PanelCtx<'_>) {
         let len = SidePanelId::ALL.len();

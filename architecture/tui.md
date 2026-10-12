@@ -767,8 +767,7 @@ Four panels ship:
 | `Help` | `[HELP]` | the keybinding reference |
 
 Which panel is loaded is chosen by the **panel manager box**
-(`Ctrl+Alt+W`, or `Shift+S` in Normal mode) — a dialog, not an overlay drawn
-inside the column. It replaces the old two-column grid selector, which could
+(`Shift+S`, Normal mode) — a dialog, not an overlay drawn inside the column. It replaces the old two-column grid selector, which could
 not be filtered and showed unlabelled buttons in 30 columns.
 
 Adding a panel is an enum variant, an entry in `SidePanelId::ALL`, a
@@ -969,7 +968,7 @@ reserved at all when nothing is focused and nothing is armed. Panels advertise
 their keys once, next to the input those keys modify, rather than growing
 per-panel footers.
 
-**Panel manager** (`Ctrl+Alt+W`, or `Shift+S`): a box listing every
+**Panel manager** (`Shift+S`): a box listing every
 registered panel with its `label`, its `hint`, and the digit already bound to
 it. Type to filter; `j`/`k`/`↑`/`↓` move the highlight; `Enter` loads the
 highlighted panel and takes focus; `1`-`9`/`0` bind it to that digit and
@@ -980,12 +979,15 @@ what is *visible* without renumbering what `Enter` and the digits act on.
 Three ordering rules, all load-bearing:
 
 - **The manager hotkey is answered before the panel and before the modal.**
-  A focused panel would otherwise swallow `Ctrl+Alt+W` and trap the user
+  A focused panel would otherwise swallow the manager key and trap the user
   inside the panel they opened it to leave; a *dialog* would swallow it too
   and stack a second manager behind the first. `App::on_key` therefore
-  intercepts `InputAction::TogglePanelSelector` ahead of the modal
+  intercepts `InputAction::OpenPanelManager` ahead of the modal
   short-circuit when the manager is the active dialog, and
-  `SidePanelHost::handle_key` matches it before delegating to the panel.
+  `commands::panels::handle_panel_key` matches it before delegating to the
+  panel. This is load-bearing rather than tidy: `Ctrl+Alt+W` is retired, so
+  `Shift+S` is the *only* spelling of the manager, and a panel that consumed
+  it would leave no way to reach the switcher from inside a panel at all.
 - **Opening the manager does not take focus; committing does.** If opening
   stole the keyboard, a user who pressed it from the composer and then
   cancelled would find their next keystroke going to a panel they never
@@ -1021,7 +1023,7 @@ no app access, so it would otherwise find the panel unbound and refuse to
 focus it, leaving the selection looking inert.
 
 `Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Alt+S`
-enters sidebar focus; `Ctrl+Alt+W` (any mode) and `Shift+S` (Normal mode only)
+enters sidebar focus; `Shift+S` (Normal mode only)
 open the panel manager.
 
 **Chord contract.** Multi-modifier chords are `{CONTROL, ALT}` only. A bare
@@ -1049,7 +1051,7 @@ fallbacks: F1–F12 are intercepted by macOS for brightness/volume unless
 the leave-terminal-focus chord.
 
 Entering `Route::Workspace` still auto-selects the Chat panel, preserving the
-M005 behaviour, but the choice is the user's afterwards: `Ctrl+Alt+W` can
+M005 behaviour, but the choice is the user's afterwards: `Shift+S` can
 switch away and back without re-entering the view.
 
 ### Chat side panel (`src/tui/panels/chat.rs`)
@@ -1982,7 +1984,7 @@ tui/
 │   └── tool_output.rs      # ToolOutput
 ├── input.rs                # Key event handling, keybindings, InputMode
 ├── layout.rs               # Layout calculations, TuiLayout
-├── panels/                 # Swappable side-panel host (Ctrl+Alt+W manager)
+├── panels/                 # Swappable side-panel host (Shift+S manager)
 │   ├── mod.rs              # SidePanelId registry, SidePanel trait, SidePanelHost
 │   ├── chat.rs             # Interactive project-chat panel
 │   ├── terminal.rs         # Live PTY panel (NOR/INS, starts a shell on `i`)

@@ -252,7 +252,7 @@ pub struct App {
     pub command_registry: crate::tui::command::CommandRegistry,
     pub sidebar: SidebarWidget,
     /// Which panel occupies the side column, whether it holds keyboard
-    /// focus, and the `Ctrl+Alt+W` switcher.
+    /// focus, and the `Shift+S` switcher.
     ///
     /// The host is the single focus authority for the side column: both
     /// panels it owns route every key through it, so a focused panel can
@@ -561,6 +561,17 @@ pub struct App {
     /// chat draft for the Workspace-selected project. List navigation
     /// works in both. Render performs no I/O.
     pub workspace_focus: crate::tui::app::state::WorkspaceFocus,
+    /// The composer's own NOR/INS mode, parked while a side panel holds
+    /// the keyboard and restored when focus returns.
+    ///
+    /// A focused panel is a Normal-mode navigation surface, so taking
+    /// focus forces Normal — otherwise the two disagree. That is not
+    /// cosmetic: `App::on_key` consults a focused panel only in Normal
+    /// mode, so a panel that held focus while the composer sat in Insert
+    /// received *no* keys at all, and `Shift+H` to leave it was typed into
+    /// the composer as a literal `H` instead. Parking the mode here is
+    /// what makes the round trip lossless.
+    pub composer_mode_before_panel_focus: Option<crate::tui::input::InputMode>,
     /// M006-A: document editor state. Owns the document session
     /// handle for the `Route::Editor` primary view and the presentation
     /// of controller states and errors. Holds no document text.
@@ -988,6 +999,7 @@ impl App {
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
+            composer_mode_before_panel_focus: None,
             last_click_time: None,
             last_click_target: None,
             hover_target: None,
@@ -1547,6 +1559,7 @@ impl App {
             sidebar_area: None,
             left_border_area: None,
             bottom_border_area: None,
+            composer_mode_before_panel_focus: None,
             last_click_time: None,
             last_click_target: None,
             hover_target: None,
@@ -3101,14 +3114,14 @@ impl App {
         // opened it can close it. This has to happen *before* the modal
         // short-circuit below: the manager is a dialog, and a dialog would
         // swallow the toggle and leave a second copy stacked behind the
-        // first. Scoped to the manager being open so `Ctrl+Alt+W` from some
+        // first. Scoped to the manager being open so `Shift+S` from some
         // unrelated dialog still behaves as it did.
         if self.focus_manager.active_dialog_type() == DialogType::PanelManager
             && crate::tui::input::handle_key_with_bindings(
                 key,
                 Some(&self.ui_state.bindings),
                 self.ui_state.input_mode,
-            ) == Some(InputAction::TogglePanelSelector)
+            ) == Some(InputAction::OpenPanelManager)
         {
             self.close_dialog();
             return;
@@ -3324,7 +3337,7 @@ impl App {
                 self,
                 crate::tui::panels::PanelDirection::Down,
             ),
-            Some(InputAction::TogglePanelSelector) | Some(InputAction::OpenPanelManager) => {
+            Some(InputAction::OpenPanelManager) => {
                 crate::tui::commands::panels::toggle_panel_selector(self);
             }
             Some(InputAction::ToggleTodoList) => {

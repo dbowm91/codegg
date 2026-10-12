@@ -53,7 +53,7 @@ pub(crate) fn sync_chat_panel_project(app: &mut App) {
     panel.set_bound(app.chat_panel_project.is_some());
 }
 
-/// Open the panel manager (`Ctrl+Alt+W`, and `Shift+S` in Normal mode).
+/// Open the panel manager (`Shift+S`, Normal mode only).
 ///
 /// A *box*, not an overlay drawn inside the column. The old grid selector
 /// showed two unlabelled buttons in 30 columns and could not be filtered;
@@ -192,16 +192,49 @@ pub(crate) fn select_panel(app: &mut App, id: SidePanelId) {
 
 /// Focus the active panel, if it can act. Reports why it could not rather
 /// than leaving keys to a panel that would ignore them.
+///
+/// Taking focus also parks the composer's mode and switches the app to
+/// Normal, because a panel is a Normal-mode surface and `App::on_key`
+/// consults a focused panel *only* in Normal. Leaving the composer in
+/// Insert while the panel holds the keyboard produced the worst possible
+/// state: the badge and the hints said the panel had the keyboard, and
+/// every key — including `Shift+H`, the way out — went to the composer
+/// instead. That is what docking a box from Insert mode used to do.
 pub(crate) fn focus_panel(app: &mut App) -> bool {
     let focused = app.ui_state.sidebar_visible && app.panel_host.focus();
+    if focused {
+        app.composer_mode_before_panel_focus
+            .get_or_insert(app.ui_state.input_mode);
+        app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    }
     sync_workspace_focus(app);
     focused
 }
 
-/// Return focus to the composer.
+/// Return focus to the composer, restoring whichever NOR/INS mode it had
+/// before the panel took the keyboard.
+///
+/// Restoring rather than forcing Insert is what makes leaving a panel
+/// feel like stepping back out of it: a user who was mid-sentence keeps
+/// their caret, and one who was reading comes back to Normal.
 pub(crate) fn blur_panel(app: &mut App) {
     app.panel_host.blur();
+    restore_composer_mode_if_unfocused(app);
     sync_workspace_focus(app);
+}
+
+/// Give the composer back the mode it had before a panel took the keyboard.
+///
+/// Split out because two different routes leave a panel — [`blur_panel`] for
+/// the directional gesture, and `SidePanelHost`'s own `blur()` for the
+/// `Esc`/`q` exits — and both owe the composer the same restoration.
+fn restore_composer_mode_if_unfocused(app: &mut App) {
+    if app.panel_host.is_focused() {
+        return;
+    }
+    if let Some(mode) = app.composer_mode_before_panel_focus.take() {
+        app.ui_state.input_mode = mode;
+    }
 }
 
 /// Resolve one directional gesture (`Shift+←/→/↑/↓`, `Shift+H/J/K/L`).
@@ -346,7 +379,14 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
     // the host answers the toggle itself. Committing to Chat needs a bound
     // project, which only this layer can resolve — so bind here, on the press
     // that opens the box, rather than on every keystroke.
-    if action == Some(InputAction::TogglePanelSelector) {
+    //
+    // This is the one key a focused panel cannot own. With `Ctrl+Alt+W`
+    // retired, `Shift+S` is the *only* spelling of the manager, so letting a
+    // panel consume it would leave a user inside a panel with no way to
+    // reach the switcher for it. Answering it here — ahead of the panel,
+    // exactly like `Ctrl+B` and the directionals — is what keeps the
+    // manager reachable from wherever the keyboard currently is.
+    if action == Some(InputAction::OpenPanelManager) {
         // Toggle: pressing the key again with the manager up closes it,
         // rather than stacking a second copy of the same box.
         if app
@@ -387,6 +427,12 @@ pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<Inpu
     let Some(outcome) = outcome else {
         return false;
     };
+    // Leaving the panel by *any* route hands the composer its mode back:
+    // the gesture lands in `blur_panel`, but the host blurs directly for
+    // the `Esc`/`q` exits, so the restore has to happen here too or `Esc`
+    // would drop the user into the composer in Normal whatever they were
+    // doing before. `take()` makes this idempotent with `blur_panel`.
+    restore_composer_mode_if_unfocused(app);
     sync_workspace_focus(app);
     match outcome {
         PanelKey::Intent(msg) => {

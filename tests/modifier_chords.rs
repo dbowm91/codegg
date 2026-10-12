@@ -31,7 +31,6 @@ fn press(code: KeyCode, modifiers: KeyModifiers, mode: InputMode) -> Option<Inpu
 /// Chords that must be deliverable in legacy encoding, with the action each
 /// one owns. Every entry here must be `{CONTROL, ALT}` + lowercase letter.
 const LEGACY_SAFE_CHORDS: &[(char, InputAction, &str)] = &[
-    ('w', InputAction::TogglePanelSelector, "side-panel switcher"),
     ('s', InputAction::FocusSidebar, "sidebar focus"),
     ('p', InputAction::CycleModelBackward, "model cycle backward"),
     ('y', InputAction::StopTts, "stop TTS"),
@@ -87,19 +86,19 @@ fn every_advertised_chord_resolves_in_normal_mode() {
 
 #[test]
 fn the_panel_switcher_is_bound_in_every_map() {
-    // The switcher is the one chord this work exists for, and it must be
-    // reachable regardless of which map is active.
+    // `Ctrl+Alt+W` was retired in favour of `Shift+S`, which is a
+    // Normal-mode letter rather than a chord. No map may still bind it, or
+    // a user with the old habit gets a key that silently does nothing —
+    // and the letter `w` is next to `Ctrl+Alt+W`'s old neighbour, so a
+    // stray fallback to `CloseSession` would be actively dangerous.
     for vim_mode in [false, true] {
         let bindings = build_bindings(None, vim_mode);
-        assert_eq!(
-            bindings
-                .get(&(
-                    KeyModifiers::CONTROL | KeyModifiers::ALT,
-                    KeyCode::Char('w')
-                ))
-                .cloned(),
-            Some(InputAction::TogglePanelSelector),
-            "Ctrl+Alt+W missing from the {} map",
+        assert!(
+            !bindings.contains_key(&(
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                KeyCode::Char('w')
+            )),
+            "the retired Ctrl+Alt+W chord is still bound in the {} map",
             if vim_mode { "vim" } else { "default" }
         );
     }
@@ -165,10 +164,12 @@ fn chords_are_disjoint_from_their_bare_alt_twin() {
         KeyModifiers::CONTROL | KeyModifiers::ALT,
         InputMode::Insert,
     );
-    assert_eq!(
-        ctrl_alt_w,
-        Some(InputAction::TogglePanelSelector),
-        "Ctrl+Alt+W must open the panel selector, not close the tab"
+    assert!(
+        !matches!(
+            ctrl_alt_w,
+            Some(InputAction::CloseProjectTab) | Some(InputAction::CloseSession)
+        ),
+        "the retired Ctrl+Alt+W chord must not resolve to a destructive action"
     );
 }
 

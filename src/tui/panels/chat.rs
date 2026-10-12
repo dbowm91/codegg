@@ -238,7 +238,7 @@ impl ChatPanel {
     fn target_line(&self, ctx: &PanelCtx<'_>, theme: &Theme) -> Line<'static> {
         let armed_chat = ctx.chat_project.is_some();
         let (marker, name, hint) = if !ctx.focused {
-            (" ", "", "Shift+→ focus · ^⌥W switch")
+            (" ", "", "Shift+→ focus · ⇧S switch")
         } else if armed_chat {
             ("▸", " CHAT ", "↵ sends here · Shift+← back")
         } else {
@@ -406,7 +406,7 @@ impl SidePanel for ChatPanel {
         // which is not the same question — focusing Sessions does not retarget
         // the composer, and a line that implied it would would be a lie.
         let normal = chat_browser::normal_hints(self.browser.show_help());
-        Some(format!("CHAT · {normal} · ^⌥W panel"))
+        Some(format!("CHAT · {normal} · ⇧S panel"))
     }
 
     fn on_activate(&mut self, ctx: &mut PanelCtx<'_>) {

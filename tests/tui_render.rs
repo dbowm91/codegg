@@ -2451,3 +2451,53 @@ fn completion_hit_rect_covers_only_drawn_rows() {
         app.completion_visible_rows
     );
 }
+
+// ---------------------------------------------------------------------------
+// Outer frame corners
+// ---------------------------------------------------------------------------
+
+/// The bottom-left cell of the frame must be a corner, not the vertical bar
+/// of the left strip.
+///
+/// Regression: the lower corners were anchored on the footer's last row,
+/// which sits one row *above* the row reserved for the bottom edge. The
+/// status line therefore wore a stray `└` while the real bottom-left cell
+/// kept the left border's `│`, so the frame never closed.
+#[test]
+fn the_bottom_left_cell_is_a_corner_and_not_a_bare_vertical_bar() {
+    let mut app = test_app();
+    let (width, height) = (100u16, 24u16);
+    let buf = render_app_to_buffer(&mut app, width, height);
+
+    let bottom_row = height - 1;
+    assert_eq!(
+        buf[(0, bottom_row)].symbol(),
+        "└",
+        "the bottom-left cell must close the frame"
+    );
+
+    // The left border's own column above it is a plain vertical bar, which
+    // is what makes the corner distinguishable rather than a stray glyph.
+    assert_eq!(
+        buf[(0, bottom_row - 1)].symbol(),
+        "│",
+        "the left border continues above the corner"
+    );
+}
+
+#[test]
+fn no_corner_is_stranded_above_the_bottom_edge() {
+    // The other half of the regression: a `└` on the status row would look
+    // like a second, unconnected corner.
+    let mut app = test_app();
+    let (width, height) = (100u16, 24u16);
+    let buf = render_app_to_buffer(&mut app, width, height);
+
+    for y in 0..height - 1 {
+        let symbol = buf[(0, y)].symbol();
+        assert_ne!(
+            symbol, "└",
+            "a bottom-left corner is stranded at row {y}, above the real bottom edge"
+        );
+    }
+}

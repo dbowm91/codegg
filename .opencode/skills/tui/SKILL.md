@@ -136,7 +136,7 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
   owns which `SidePanelId` is active and whether it holds focus. Four panels
   ship: `Session`, `Chat`, `Terminal`, `Help`. Which one is loaded is chosen by
-  the **panel manager box** (`Ctrl+Alt+W`, or `Shift+S` in Normal mode) — a
+  the **panel manager box** (`Shift+S`, Normal mode) — a
   dialog, which replaced the old in-column grid selector. To add a panel: an
   enum variant, an entry in `SidePanelId::ALL`, `label`/`title`/`hint` arms, a
   host field, and arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
@@ -159,6 +159,27 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   completions → change review → **side panel (Normal only)** → Workspace →
   Editor → composer. Hotkeys come before the panel because a panel that
   swallowed the only key that leaves it would trap the keyboard.
+- **`Shift+S` is the only spelling of the panel manager.** `Ctrl+Alt+W` is
+  retired: the manager is a Normal-mode surface exactly like the directionals
+  that drive the same panels, so one key per surface is one less chord to
+  decode in a legacy terminal. Because it is the *only* spelling,
+  `commands::panels::handle_panel_key` must answer it ahead of the panel — a
+  focused panel consumes everything by contract, so letting it take this key
+  would leave a user inside a panel with no way to reach the switcher for
+  the panel they are standing in. `App::on_key` answers it ahead of the
+  modal short-circuit for the same reason.
+- **A focused panel and the composer mode are one fact, not two.**
+  `App::on_key` consults a focused panel **only in Normal mode**, so focus
+  and mode must agree or the panel is silently dead: the badge and the hint
+  line say the panel has the keyboard while every key — including the
+  gesture that leaves it — goes to the composer and is typed as text.
+  `focus_panel` therefore parks the composer's mode in
+  `App::composer_mode_before_panel_focus` and forces Normal;
+  `blur_panel` restores it. The path that proved this was
+  `dock_open_box`: `close_dialog()` parks the composer in Insert and *then*
+  focuses the panel, so `Shift+H` to leave it used to type a literal `H`.
+  Anything that takes focus outside `focus_panel` (`select_panel` via a
+  `Ctrl+digit` recall, a route change) must go through the same seam.
 - **The directionals are one gesture family with two meanings.**
   `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
   `InputAction::Direction*` and then to one dispatcher,

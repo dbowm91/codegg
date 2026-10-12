@@ -89,10 +89,6 @@ fn plain(ch: char) -> KeyEvent {
     key(KeyCode::Char(ch), KeyModifiers::NONE)
 }
 
-fn ctrl_alt(ch: char) -> KeyEvent {
-    key(KeyCode::Char(ch), KeyModifiers::CONTROL | KeyModifiers::ALT)
-}
-
 fn chat_message(seq: u64, author: &str, body: &str) -> ChatMessageDto {
     ChatMessageDto {
         message_id: format!("m{seq}"),
@@ -149,8 +145,17 @@ fn seed_chat(app: &mut codegg::tui::app::App) {
     ));
 }
 
+/// Put the app in Normal mode.
+///
+/// Idempotent on purpose: focusing a side panel already switches the app
+/// to Normal, so pressing `Esc` unconditionally here would land on the
+/// focused panel and blur it — turning "make sure we are in Normal" into
+/// "leave whatever has focus". Only send the key when it is actually
+/// needed.
 fn to_normal(app: &mut codegg::tui::app::App) {
-    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    if app.ui_state.input_mode != codegg::tui::input::InputMode::Normal {
+        app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    }
     assert_eq!(
         app.ui_state.input_mode,
         codegg::tui::input::InputMode::Normal,
@@ -158,10 +163,21 @@ fn to_normal(app: &mut codegg::tui::app::App) {
     );
 }
 
+/// Open the panel manager the way a user does now: `Shift+S`, which is the
+/// only spelling of the manager and is Normal-mode only.
+///
+/// The mode is stated directly rather than reached through `Esc`: on the
+/// Workspace route `Esc` belongs to that view, and routing through it would
+/// make these tests depend on a different surface's key handling.
+fn open_manager(app: &mut codegg::tui::app::App) {
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.on_key(plain('S'));
+}
+
 /// Select and focus the chat panel the way a user does.
 fn focus_chat(app: &mut codegg::tui::app::App) {
     seed_chat(app);
-    app.on_key(ctrl_alt('w'));
+    open_manager(app);
     // `j` steps down the manager's list; the manager opens on the live
     // panel (Session), so one press lands on Chat.
     app.on_key(plain('j'));
@@ -479,7 +495,7 @@ async fn the_session_panel_advertises_its_own_keys() {
     // teaching the composer about a new panel.
     let mut app = test_app();
     seed_chat(&mut app);
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     to_normal(&mut app);
     assert!(app.panel_host.is_focused());
@@ -522,7 +538,7 @@ async fn an_unbound_panel_advertises_nothing_and_takes_no_focus() {
     let (tx, _rx) = tokio::sync::mpsc::channel(32);
     app.tui_cmd_tx = Some(tx);
 
-    app.on_key(ctrl_alt('w'));
+    open_manager(&mut app);
     app.on_key(plain('j'));
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.panel_host.active(), SidePanelId::Chat);
@@ -571,7 +587,7 @@ async fn the_chat_window_is_unaffected_by_the_panel_workflow() {
 /// The manager is a *box*, so committing has to close it — which is why
 /// every caller gets a clean panel afterwards rather than a live overlay.
 fn select_panel(app: &mut codegg::tui::app::App, rows_down: i8) {
-    app.on_key(ctrl_alt('w'));
+    open_manager(app);
     for _ in 0..rows_down {
         app.on_key(plain('j'));
     }

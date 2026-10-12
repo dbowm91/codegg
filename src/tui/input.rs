@@ -112,16 +112,15 @@ pub enum InputAction {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
-    /// Open the side-panel manager (`Ctrl+Alt+W`, in any mode).
-    TogglePanelSelector,
-    /// Open the side-panel manager (`Shift+S`, Normal mode only).
+    /// Open the side-panel manager (`Shift+S`), Normal mode only.
     ///
-    /// A *separate* action from [`TogglePanelSelector`](Self::TogglePanelSelector)
-    /// even though both open the same box, because the two need opposite mode
-    /// treatment: `Ctrl+Alt+W` is a chord that should work while composing,
-    /// while `Shift+S` must be Normal-only or it would steal the letter `S`
-    /// from every word the user is typing. Folding them together would force
-    /// one of those two behaviours to be wrong.
+    /// The manager used to have a second key, `Ctrl+Alt+W`, so it could be
+    /// reached mid-sentence. That chord is retired: the manager is a
+    /// Normal-mode surface exactly like the directionals that drive the same
+    /// panels, so one key per surface is both consistent and one less chord
+    /// to decode in a legacy terminal. It is answered *before* a focused
+    /// panel sees the key, so switching panels is reachable from inside a
+    /// panel rather than only from the main buffer.
     OpenPanelManager,
     /// Directional pane gestures, Normal mode only.
     ///
@@ -219,8 +218,6 @@ pub enum ActionKey {
     NewSession,
     ToggleSidebar,
     FocusSidebar,
-    /// Open the side-panel manager (`Ctrl+Alt+W`).
-    TogglePanelSelector,
     /// Open the side-panel manager (`Shift+S`, Normal mode only).
     OpenPanelManager,
     /// Directional pane gestures. See
@@ -297,7 +294,6 @@ impl ActionKey {
             Self::NewSession,
             Self::ToggleSidebar,
             Self::FocusSidebar,
-            Self::TogglePanelSelector,
             Self::ToggleSection,
             Self::CloseSession,
             Self::Help,
@@ -354,7 +350,6 @@ impl ActionKey {
             Self::NewSession => InputAction::NewSession,
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
-            Self::TogglePanelSelector => InputAction::TogglePanelSelector,
             Self::OpenPanelManager => InputAction::OpenPanelManager,
             Self::DirectionLeft => InputAction::DirectionLeft,
             Self::DirectionRight => InputAction::DirectionRight,
@@ -416,7 +411,6 @@ impl ActionKey {
             Self::NewSession => "New session",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
-            Self::TogglePanelSelector => "Open panel manager",
             Self::OpenPanelManager => "Open panel manager (Shift+S)",
             Self::DirectionLeft => "Pane left",
             Self::DirectionRight => "Pane right",
@@ -507,9 +501,11 @@ fn is_normal_only(action: &InputAction) -> bool {
             | InputAction::DirectionRight
             | InputAction::DirectionUp
             | InputAction::DirectionDown
-            // `Shift+S` is a letter the user is typing most of the time;
-            // `Ctrl+Alt+W` deliberately is NOT listed here, because a chord
-            // should keep working in Insert mode.
+            // `Shift+S` is a letter the user is typing most of the time,
+            // so the manager must not claim it mid-word. This used to be a
+            // two-key arrangement with a chord that worked in Insert; the
+            // chord is retired and this is now the only spelling, which
+            // makes the mode gate the whole reason the key is safe.
             | InputAction::OpenPanelManager
     )
 }
@@ -661,15 +657,12 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         ),
         InputAction::FocusSidebar,
     );
-    // Side-panel switcher. Bound in every map so the panel picker is reachable
-    // regardless of whether vim mode is on.
-    map.insert(
-        (
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
-            KeyCode::Char('w'),
-        ),
-        InputAction::TogglePanelSelector,
-    );
+    // The side-panel manager used to answer a second key, `Ctrl+Alt+W`,
+    // here so it could be reached while composing. It is retired: the
+    // manager is a Normal-mode surface like the directionals that drive
+    // the same panels, and one key per surface is one less thing to
+    // remember and one fewer chord to get wrong in a legacy terminal.
+    // `Shift+S` (`OpenPanelManager`) is the only spelling now.
     map.insert(
         (KeyModifiers::CONTROL, KeyCode::Char('w')),
         InputAction::CloseSession,
@@ -895,15 +888,9 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         ),
         InputAction::FocusSidebar,
     );
-    // Side-panel switcher, bound in every map so the panel picker is reachable
-    // regardless of whether vim mode is on.
-    map.insert(
-        (
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
-            KeyCode::Char('w'),
-        ),
-        InputAction::TogglePanelSelector,
-    );
+    // The side-panel switcher no longer has a `Ctrl+Alt+W` binding here or
+    // in the Insert map: `Shift+S` is the single spelling, and it is
+    // already inserted into every map by `insert_panel_direction_bindings`.
     map.insert(
         (KeyModifiers::SHIFT, KeyCode::Char('G')),
         InputAction::GoToBottom,
@@ -1119,12 +1106,6 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+B",
             action: "Toggle sidebar",
-            condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Insert,
-            key: "Ctrl+Alt+W",
-            action: "Switch side panel",
             condition: None,
         },
         // The focus moves are Normal-mode gestures by contract. They are
@@ -1628,7 +1609,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Normal,
-            key: "Ctrl+Alt+W / Shift+S",
+            key: "Shift+S",
             action: "Open the panel manager (filter, load, or bind Ctrl+1..Ctrl+0)",
             condition: None,
         },
@@ -2121,27 +2102,51 @@ mod tests {
     }
 
     #[test]
-    fn test_panel_selector_chord_is_reachable() {
-        // The switcher must resolve from the chord the terminal can actually
-        // deliver. `Ctrl+Shift+W` is indistinguishable from `Ctrl+W` in legacy
-        // encoding and fell through to CloseSession; `Ctrl+Alt+W` is not.
+    fn the_retired_ctrl_alt_w_no_longer_opens_the_panel_manager() {
+        // `Ctrl+Alt+W` was retired in favour of `Shift+S`. It must not fall
+        // through to anything either: the Control chord it shares is gone,
+        // and silently resolving to `CloseSession` would be the worst
+        // possible reading of a key the help no longer advertises.
         let key = make_key(
             KeyCode::Char('w'),
             KeyModifiers::CONTROL | KeyModifiers::ALT,
         );
         for mode in [InputMode::Insert, InputMode::Normal] {
-            assert_eq!(
+            assert_ne!(
                 handle_key_with_bindings(key, None, mode),
-                Some(InputAction::TogglePanelSelector),
-                "panel selector unreachable in {mode:?}"
+                Some(InputAction::OpenPanelManager),
+                "the retired chord must not reach the panel manager in {mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_panel_manager_is_reachable_from_shift_s_in_normal_only() {
+        // Both encodings, because terminals disagree about whether a
+        // shifted letter carries the SHIFT flag.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            let key = make_key(KeyCode::Char('S'), modifiers);
+            assert_eq!(
+                handle_key_with_bindings(key, None, InputMode::Normal),
+                Some(InputAction::OpenPanelManager),
+                "the panel manager must be reachable in Normal mode"
+            );
+            // In Insert it stays the letter S.
+            assert!(
+                !matches!(
+                    handle_key_with_bindings(key, None, InputMode::Insert),
+                    Some(InputAction::OpenPanelManager)
+                ),
+                "the panel manager must not steal the letter S mid-word"
             );
         }
     }
 
     #[test]
     fn bare_ctrl_w_still_closes_the_session() {
-        // The chord fix must not change what the bare key does: `Ctrl+W` owns
-        // CloseSession and the switcher lives on `Ctrl+Alt+W`.
+        // The chord fix must not change what the bare key does: `Ctrl+W`
+        // still owns CloseSession, and the retired chord sharing that
+        // letter must not change it either.
         let key = make_key(KeyCode::Char('w'), KeyModifiers::CONTROL);
         assert_eq!(
             handle_key_with_bindings(key, None, InputMode::Insert),

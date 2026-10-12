@@ -1,6 +1,6 @@
 //! The panel manager: pick what the side column shows, and bind a hotkey to it.
 //!
-//! One box replaces the old `Ctrl+Alt+W` grid. The grid was two unlabelled
+//! One box replaces the old two-button grid. The grid was two unlabelled
 //! buttons in a 30-column overlay; this is a filtered list that names each
 //! panel, says what it is for, and shows which digit is already bound to it.
 //!

@@ -131,7 +131,7 @@ pub(crate) fn open_workspace_dashboard(app: &mut App) {
     sync_workspace_chat_panel(app);
     // Entering Workspace still auto-selects the chat panel, as it did when
     // the render path hard-coded it for this route. The choice stays the
-    // user's afterwards: `Ctrl+Alt+W` can switch away and back without
+    // user's afterwards: `Shift+S` can switch away and back without
     // re-entering the view.
     crate::tui::commands::panels::select_panel(app, crate::tui::panels::SidePanelId::Chat);
     app.messages_state.toasts.info(
