@@ -15,7 +15,7 @@ Related ADRs:
 
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
-- `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md` (proposed; not accepted)
+- `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md` (accepted: bounded feasibility direction only; production not approved)
 
 Repository research baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10). This roadmap does not claim Windows execution or native security tests have already been qualified.
 
@@ -112,6 +112,22 @@ M004 is **blocked**, with its historical failure recorded immutably at `plans/cl
 
 **Availability and acceptance:** Until C011 establishes requested read/write guarantees and approved backend registration, Windows `SandboxRequest::Required` stays unavailable/fail-closed. Successful C008/C009/C010 infrastructure tests never mean `filesystem=Enforced`. Keep `network=Unrestricted` absent separately qualified M005. Maintain same-revision Windows Server 2025 native testing and Linux/macOS regression guards; no VM results may be inferred from hosted-runner tests. At branch merge time, reconcile independently advancing `main` without folding unrelated human-shell runtime work into a fictitious Windows security closure.
 
+## ADR-0019 projection successor milestones
+
+ADR-0019 is **accepted only as a bounded staged-projection/AppContainer research direction**. This does *not* establish a production filesystem sandbox. The known C011 populated-tree credential-read failure and C013 hardlink/control-bit findings remain open and historically immutable. Do not modify existing user workspace ACLs. Keep Windows production `SandboxRequest::Required` unavailable and obtained filesystem enforcement unclaimed.
+
+**Dependency chain (hard):** C014 feasibility → C015 bounded independent-file snapshot → C016 AppContainer/Job staged execution → C017 authorized output promotion → C018 native adversarial qualification and C011 re-entry. All work is on the original `work/windows-native-sandbox-foundation` branch; review of additional unrelated diff is explicitly outside this workstream.
+
+- **C014 (ready):** `plans/implementation/windows-native-sandbox/014-projection-appcontainer-compatibility-and-deny-boundary.md` — real Windows feasibility: narrow AppContainer projection grants, successful shell/Git (and bounded Cargo/Python compatibility discovery), actual denied original-host access, inherited-handle/IPC probes. **Stop** and re-evaluate architecture if incompatible or readable host secrets.
+- **C015 (blocked on strict C014):** `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` — independent new-file copies only, reject hardlink/reparse/ADS and sensitive/unsupported content, handle-verified source identity, bounded private manifest and cleanup; no `CopyFileExW` metadata propagation.
+- **C016 (blocked on strict C015):** `plans/implementation/windows-native-sandbox/016-appcontainer-projection-launch-and-toolchain-qualification.md` — invoke validated tools through the existing `ManagedProcessService` AppContainer/Job boundary with projection cwd, no unqualified original-root grants and actual denied child+descendant probes.
+- **C017 (blocked on strict C016):** `plans/implementation/windows-native-sandbox/017-authorized-projection-output-reconciliation.md` — stage output inventory and separate, authorized, freshness-checked promotion to the actual worktree, with preview, dirty-file conflicts, link/race protection and rollback.
+- **C018 (blocked on strict C017 + independent VM):** `plans/implementation/windows-native-sandbox/018-projection-security-qualification-and-c011-reentry.md` — hosted and privileged isolated-VM security matrix, C011/M004 re-entry decision, clear status limits; no production backend without separate strict acceptance.
+
+**Status truth:** passing a copy test, running tool, or applying authorized output is not proof of OS filesystem isolation. Only real running-child denial + explicitly authorized output promotion + C011 independent security review could justify requalification. M004/M005/M006 remain blocked; M007 remains deferred. Experimental test-only code and metadata are not publicly usable constrained execution. Network guarantees remain separately unclaimed.
+
+**Research:** `research/windows-native-sandbox/adr-0019-successor-assessment.md`. Microsoft AppContainer access checks (including certain default OS access), NTFS hardlink shared descriptors, and `CopyFileExW` metadata/ADS copying are concrete input- and runtime-policy hazards. OpenAI's Windows Codex report found AppContainer troublesome for general development workflows, so compatibility is a **first** gate, not an assumed eventual success. Dedicated sandbox-user provisioning is a deferred alternative requiring separate administrator consent/ADR, not an implicit fallback.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -170,3 +186,8 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C011 | blocked | `plans/implementation/windows-native-sandbox/011-m004-native-adversarial-qualification.md` | `plans/closure/windows-native-sandbox/011-status.md` | Hosted runs `38217933472` and `38220136385` demonstrated direct, junction, and hardlink credential reads through a denied path; C012 closes only the bounded pre-spawn rejection slice; C013 closed negative for the current root-lease strategy. C011's remaining security matrix and independent review are still required. Proposed ADR-0019 awaits maintainer review before new architecture work is registered. |
 | C012 | conditionally closed | `plans/implementation/windows-native-sandbox/012-existing-tree-deny-lease-correction.md` | `plans/closure/windows-native-sandbox/012-status.md` | Exact-SHA Windows run `38223080719` passed nonempty-deny-root preflight rejection, DACL preservation, separate empty-root positive tests, and C010 lease tests. Concurrent path replacement and the full C011/M004 matrix remain unqualified. |
 | C013 | closed (negative feasibility; successor deferred) | `plans/implementation/windows-native-sandbox/013-c011-existing-object-access-and-alias-containment.md` | `plans/closure/windows-native-sandbox/013-status.md` | Windows Server 2025 workflow `38296752862`: populated root lease changes a shared hardlink object and leaves descendant control-bit drift; grant-only allowed read did not pass. Proposed ADR-0019 scopes future architecture review. Populated roots fail closed in test support; C011/M004 remain blocked. |
+| C014 | ready | `plans/implementation/windows-native-sandbox/014-projection-appcontainer-compatibility-and-deny-boundary.md` | — | ADR-0019 accepted experimental direction; Windows hosted AppContainer runner; no hard predecessor |
+| C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 strict positive feasibility/OS denial closure |
+| C016 | blocked | `plans/implementation/windows-native-sandbox/016-appcontainer-projection-launch-and-toolchain-qualification.md` | — | C015 strict positive bounded snapshot closure |
+| C017 | blocked | `plans/implementation/windows-native-sandbox/017-authorized-projection-output-reconciliation.md` | — | C016 strict positive restricted projection execution |
+| C018 | blocked | `plans/implementation/windows-native-sandbox/018-projection-security-qualification-and-c011-reentry.md` | — | C017 strict positive approval/promotion + independent Windows privileged VM |
