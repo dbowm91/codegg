@@ -5062,39 +5062,7 @@ impl App {
                 self.toggle_fullscreen();
             }
             B::TuiStats => {
-                self.ui_state.command_mode = false;
-                let mut by_kind: Vec<(String, usize)> = self
-                    .task_registry
-                    .iter()
-                    .fold(
-                        std::collections::HashMap::<String, usize>::new(),
-                        |mut acc, (_id, rec)| {
-                            *acc.entry(rec.kind.to_string()).or_insert(0) += 1;
-                            acc
-                        },
-                    )
-                    .into_iter()
-                    .collect();
-                by_kind.sort_by(|a, b| a.0.cmp(&b.0));
-                let oldest = self
-                    .task_registry
-                    .iter()
-                    .min_by_key(|(_id, rec)| rec.started_at)
-                    .map(|(_id, rec)| rec.name.to_string());
-                let task_summary = crate::tui::ui_builders::stats::TaskSummaryView {
-                    active: self.task_registry.active_count(),
-                    completed: self.task_registry.completed_count(),
-                    cancelled: self.task_registry.cancelled_count(),
-                    panicked: self.task_registry.panicked_count(),
-                    by_kind,
-                    oldest,
-                };
-                let node = crate::tui::ui_builders::stats::stats_node(
-                    &self.ui_state.diagnostics,
-                    &task_summary,
-                    self.shell_handles.len(),
-                );
-                self.open_ui_node_dialog("TUI Stats".into(), node);
+                self.open_stats_dialog();
             }
             B::Tts => {
                 self.toggle_tts();
@@ -9844,7 +9812,7 @@ impl App {
         }
     }
 
-    fn handle_diff_command(&mut self, path: Option<&str>) {
+    pub(crate) fn handle_diff_command(&mut self, path: Option<&str>) {
         let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
@@ -10285,7 +10253,7 @@ impl App {
             });
     }
 
-    fn handle_research_runs_command(&mut self) {
+    pub(crate) fn handle_research_runs_command(&mut self) {
         self.open_dialog(Dialog::ResearchBrowser);
         if let Some(ref mut browser) = self.dialog_state.research_browser {
             browser.loading = true;

@@ -99,6 +99,13 @@ pub fn render_hosted(
     let Some(mut terminal) = Terminal::new(TestBackend::new(area.width, area.height)).ok() else {
         return;
     };
+    // Backdrop first: modal widgets paint text, not backgrounds — as modals
+    // they relied on the dimmed overlay behind them. Untouched scratch cells
+    // would otherwise copy out as terminal-default (transparent) cells over
+    // the cleared column, which reads as missing styling.
+    for cell in terminal.current_buffer_mut().content.iter_mut() {
+        cell.set_bg(theme.background);
+    }
     let _ = terminal.draw(|frame| {
         frame.render_widget(
             ratatui::widgets::Block::default()
@@ -110,21 +117,17 @@ pub fn render_hosted(
         widget.render(frame, frame.area(), theme);
     });
 
-    // Copy cell-for-cell. The regions are the same size by construction, so
-    // this is an index-wise copy rather than a merge.
+    // Copy the origin-based scratch into `buf` at `area`'s screen position.
+    // The scratch has no idea where the column lives: intersecting it with
+    // `buf.area` instead painted the panel over the top-left corner, clipping
+    // across the main view.
     let scratch = terminal.backend().buffer();
-    let dst = buf.area.intersection(scratch.area);
-    if dst.is_empty() {
-        return;
-    }
-    let dx = scratch.area.x as i32;
-    let dy = scratch.area.y as i32;
-    for y in dst.y..dst.bottom() {
-        for x in dst.x..dst.right() {
-            let sx = (x as i32 - dx) as u16;
-            let sy = (y as i32 - dy) as u16;
-            let (Some(src_cell), Some(dst_cell)) = (scratch.cell((sx, sy)), buf.cell_mut((x, y)))
-            else {
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let (Some(src_cell), Some(dst_cell)) = (
+                scratch.cell((x, y)),
+                buf.cell_mut((area.x.saturating_add(x), area.y.saturating_add(y))),
+            ) else {
                 continue;
             };
             dst_cell.set_symbol(src_cell.symbol());
@@ -435,7 +438,7 @@ impl SidePanelId {
             SidePanelId::Sessions => "/sessions",
             SidePanelId::Tasks => "/tasks",
             SidePanelId::Plan => "/plan",
-            SidePanelId::Goal => "/goal",
+            SidePanelId::Goal => "/goal show",
             SidePanelId::Collaborators => "/collaborators",
             SidePanelId::Memory => "/memory-search",
             SidePanelId::Research => "/research-show",
@@ -1183,6 +1186,57 @@ mod tests {
                 panel.config_key()
             );
         }
+    }
+
+    /// The hosted bridge paints into the column, not the screen corner, and
+    /// fills the theme backdrop behind widgets that paint text only.
+    #[test]
+    fn render_hosted_paints_at_the_column_with_a_backdrop() {
+        use crate::tui::components::component::{Component, DialogType};
+
+        /// A widget that paints nothing: as a modal it relied on the dimmed
+        /// overlay behind it, so every interior cell must come from the bridge.
+        struct Blank;
+        impl Component for Blank {
+            fn handle_key(&mut self, _key: KeyEvent) -> Option<TuiMsg> {
+                None
+            }
+            fn update(&mut self, _msg: TuiMsg) -> Option<TuiMsg> {
+                None
+            }
+            fn render(&mut self, _frame: &mut ratatui::Frame, _area: Rect, _theme: &Arc<Theme>) {}
+            fn dialog_type(&self) -> DialogType {
+                DialogType::None
+            }
+        }
+
+        let theme = Arc::new(Theme::default());
+        let mut widget = Blank;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 100, 30));
+        for cell in buf.content.iter_mut() {
+            cell.set_symbol("X");
+        }
+        let area = Rect::new(70, 5, 30, 20);
+        render_hosted(&mut widget, &mut buf, area, &theme, " Panel ");
+
+        // Nothing outside the column is touched. The old copy loop
+        // intersected the scratch with the screen buffer, which painted the
+        // panel over the top-left corner of the main view.
+        for y in 0..30 {
+            for x in 0..100 {
+                if x >= 70 && (5..25).contains(&y) {
+                    continue;
+                }
+                let cell = buf.cell((x, y)).expect("in bounds");
+                assert_eq!(cell.symbol(), "X", "stray paint at ({x}, {y})");
+            }
+        }
+        // The border lands at the column's top-left, not the screen's.
+        assert_eq!(buf.cell((70, 5)).expect("in bounds").symbol(), "┌");
+        // Untouched interior cells carry the theme backdrop, not the
+        // terminal default showing through as transparency.
+        let interior = buf.cell((75, 10)).expect("in bounds");
+        assert_eq!(interior.bg, theme.background);
     }
 
     /// Titles are the composer's destination badge. Two panels sharing one
