@@ -961,16 +961,24 @@ async fn run_windows_test_restricted_inner(
         .ensure_root()
         .map_err(ManagedProcessError::Spawn)?;
     let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
-    let conflicts =
-        windows_acl_lease::recover_all(&journal_root).map_err(ManagedProcessError::Spawn)?;
+    let conflicts = windows_acl_lease::recover_all(&journal_root).map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("recover Windows ACL lease journal: {error}"),
+        ))
+    })?;
     if !conflicts.is_empty() {
         return Err(ManagedProcessError::SandboxFailed(format!(
             "{} stale Windows ACL lease journal(s) need operator inspection",
             conflicts.len()
         )));
     }
-    let profile =
-        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let profile = windows::WindowsAppContainerProfile::create().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("create restricted AppContainer profile: {error}"),
+        ))
+    })?;
     let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
     for (path, access) in roots.into_values() {
         acl_leases.push(
@@ -981,7 +989,15 @@ async fn run_windows_test_restricted_inner(
                 profile.sid(),
                 access,
             )
-            .map_err(ManagedProcessError::Spawn)?,
+            .map_err(|error| {
+                ManagedProcessError::Spawn(std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "acquire {access:?} Windows ACL lease for {}: {error}",
+                        path.display()
+                    ),
+                ))
+            })?,
         );
     }
     #[cfg(test)]
@@ -1027,7 +1043,12 @@ async fn run_windows_test_restricted_inner(
         &mut environment_block,
         &cancellation,
     )
-    .map_err(ManagedProcessError::Spawn)?;
+    .map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("launch restricted AppContainer child: {error}"),
+        ))
+    })?;
     let job_verified = child.job_established();
     if !job_verified {
         let _ = child.terminate(1);

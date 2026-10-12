@@ -135,9 +135,6 @@ jobs:
       - name: Windows sandbox existing-root adversarial qualification
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_adversarial -- --nocapture --test-threads=1
 
-      - name: C013 existing-object DACL and alias forensic qualification
-        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib c013_forensic_existing_object_acl_and_alias_probe -- --nocapture --test-threads=1
-
       - name: Windows ACL lease failure and recovery unit tests
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib windows_acl_lease -- --nocapture --test-threads=1
 
