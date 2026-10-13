@@ -62,13 +62,22 @@ static DWORD read_fixture(LPCWSTR path, LPCWSTR expected) {
     HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return GetLastError();
-    WCHAR actual[256] = {0};
+    char actual[256] = {0};
+    char expected_utf8[256] = {0};
+    int expected_length = WideCharToMultiByte(CP_UTF8, 0, expected, -1,
+                                               expected_utf8, (int)ARRAY_COUNT(expected_utf8),
+                                               NULL, NULL);
+    if (expected_length == 0) {
+        DWORD error = GetLastError();
+        CloseHandle(file);
+        return error;
+    }
     DWORD bytes_read = 0;
-    BOOL ok = ReadFile(file, actual, sizeof(actual) - sizeof(WCHAR), &bytes_read, NULL);
+    BOOL ok = ReadFile(file, actual, (DWORD)sizeof(actual) - 1, &bytes_read, NULL);
     DWORD error = ok ? ERROR_SUCCESS : GetLastError();
     CloseHandle(file);
     if (!ok) return error;
-    return wcscmp(actual, expected) == 0 ? ERROR_SUCCESS : ERROR_INVALID_DATA;
+    return strcmp(actual, expected_utf8) == 0 ? ERROR_SUCCESS : ERROR_INVALID_DATA;
 }
 
 static DWORD write_stage(LPCWSTR path, DWORD *read_error) {
