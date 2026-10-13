@@ -79,6 +79,9 @@ public static class C044Native {
         int logonFlags, string application, StringBuilder commandLine, int creationFlags,
         IntPtr environment, string currentDirectory, ref C044StartupInfo startup,
         out C044ProcessInformation processInformation);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool LogonUserW(string username, string domain, string password,
+        int logonType, int logonProvider, out IntPtr token);
     [DllImport("advapi32.dll", SetLastError=true)]
     public static extern bool CreateRestrictedToken(IntPtr existingToken, uint flags,
         uint disableSidCount, IntPtr sidsToDisable, uint deletePrivilegeCount,
@@ -432,6 +435,13 @@ try {
         "WINDIR=$env:SystemRoot"
     ) | Sort-Object
     $environmentBlock = [Runtime.InteropServices.Marshal]::StringToHGlobalUni(($environmentEntries -join "`0") + "`0`0")
+    $acctCheck = Get-LocalUser -Name $account
+    Write-Output "C044_ACCOUNT_DIAGNOSTIC enabled=$($acctCheck.Enabled) principal_source=$($acctCheck.PrincipalSource) cmdline_len=$($line.Length) stage_exists=$(Test-Path -LiteralPath $stage)"
+    $logonToken = [IntPtr]::Zero
+    $logonOk = [C044Native]::LogonUserW($account, $null, $plainPassword, 2, 0, [ref]$logonToken)
+    $logonError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($logonToken -ne [IntPtr]::Zero) { [void][C044Native]::CloseHandle($logonToken) }
+    Write-Output "C044_LOGON_DIAGNOSTIC logon_ok=$logonOk logon_error=$logonError"
     $created = [C044Native]::CreateProcessWithLogonW($account, $null, $plainPassword, 1, $pwsh, $line, 0x00000404, $environmentBlock, $stage, [ref]$startup, [ref]$processInfo)
     [Runtime.InteropServices.Marshal]::FreeHGlobal($environmentBlock)
     $plainPassword = $null
