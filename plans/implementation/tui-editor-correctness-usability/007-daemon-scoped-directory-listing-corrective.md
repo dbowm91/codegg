@@ -36,7 +36,7 @@ Old tests assert same-process temporary roots and symlink skipping; they cannot 
 
 ## 4. Required production changes (after ADR acceptance)
 
-**Protocol/shared client.** Add a small, typed, version-compatible `WorkspaceDirectoryList` request/result with an authenticated session/workspace locator, workspace-relative directory prefix and bounded options; validate before backend work. Result contains only inert relative entries and status/truncation/examined count, no file bodies or raw absolute daemon paths. Include explicit old-daemon Unsupported, denied/not-found, partial/truncated and error behavior with bounded message size. Model the existing ``max_items` / pagination/version conventions if present rather than inventing invisible defaults.
+**Protocol/shared client.** Add a small, typed, version-compatible `WorkspaceDirectoryList` request/result with an authenticated session/workspace locator, workspace-relative directory prefix and bounded options; validate before backend work. Result contains only inert relative entries and status/truncation/examined count, no file bodies or raw absolute daemon paths. Include explicit old-daemon Unsupported, denied/not-found, partial/truncated and error behavior with bounded message size. Model the existing `max_items` / pagination/version conventions if present rather than inventing invisible defaults.
 
 **Daemon / authorization.** Implement one read handler under `src/core` with request family classification, `ViaSession + FileRead` operation_descriptor/authorization matrix entry, daemon-resolved canonical root and target containment checked consistently with `DocumentOpen`. Do not use the frontend's provided absolute root. No LSP service interaction or writer lease. Use bounded `spawn_blocking`/scanner coordinator with explicit permit held by actual blocking work; cancellation, time/resource limit policy and no panics on unreadable entries. Reuse or port existing `TreeListing` semantics without introducing a second text owner.
 
@@ -97,7 +97,7 @@ Create a dedicated directory-listing protocol/daemon integration target and a de
 3. Request scoped to valid session/workspace and `file.read`; wrong principal/root/traversal denied before disk I/O.
 4. Old daemon/unavailable/permission loss fails closed and clearly; no client-local fallback.
 5. Depth/node/examined/name/serialized bytes and real blocking worker admission enforced, with measured tests.
-6. ``/files` and Ctrl+T remain equivalent and selected-file open continues the unchanged authorized document path.
+6. `/files` and Ctrl+T remain equivalent and selected-file open continues the unchanged authorized document path.
 7. Local and simulated remote transports, reconnect, cancellation and concurrent refresh work; docs, guards and exact-head hosted CI recorded.
 
 ## 10. Stop conditions

@@ -66,7 +66,7 @@ No public DTO, DB migration, authorization or external config. Local tree orderi
 ## 8. Tests and verification
 
 - Unit: barrier-controlled active/peak blocking count (must be ≤1 for selected policy), release only on true blocking completion, supersession queue length ≤1, cancellation flag immediately set, worker panic permit release, examined errors and node budget.
-- Integration: ``/files`/Ctrl+T new root listing after held A cancellation; B wins, A discarded; 100 refreshes while worker blocks never spawn 100 tasks or second blocking worker.
+- Integration: `/files`/Ctrl+T new root listing after held A cancellation; B wins, A discarded; 100 refreshes while worker blocks never spawn 100 tasks or second blocking worker.
 - Shutdown/restart: rooted worker not reintroduced after shutdown; explicit busy behavior; event loop still processes input; a long syscall is not reported as forcibly cancelled.
 - Security: arbitrary symlink, ignored-entry flood and root-scope checks unchanged; no direct file-content reads.
 
@@ -90,7 +90,7 @@ Add a new exact blocking-worker-count test and record the observed peak. Verify 
 1. A held first blocking worker plus 100 rebuild requests yields at most one active worker (or the explicitly specified fixed cap) and at most one queued latest intent, proven by instrumentation rather than registry count.
 2. Cancelling/aborting waiter does not free admission until blocking work actually returns; no unbounded Tokio blocking work accumulates.
 3. The event loop remains responsive and gives explicit busy/error/truncated states while work is held.
-4. Late A result after switching to B is not shown; ``/files` and Ctrl+T see only the latest valid tree.
+4. Late A result after switching to B is not shown; `/files` and Ctrl+T see only the latest valid tree.
 5. Original depth/node/examined/symlink/security caps pass; cancellation and shutdown claims match measured semantics.
 6. Scope, static guards, focused/broad verification, exact implementation SHA, hosted CI and operational caveats are recorded.
 
