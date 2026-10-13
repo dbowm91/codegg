@@ -406,6 +406,22 @@ empty result, not a warming server. Editing, reloading, resyncing, or
 reconnecting clears the highlight until the next validated read, so colors
 never paint against a different revision.
 
+### Very long lines and large file trees
+
+One logical line is one screen row, and each visible line examines at most
+32 KiB per frame (256 KiB for the whole frame). A line past 32 KiB shows
+its start followed by a `…[too long]` marker, and the status row adds
+`line too long — showing prefix` when the cursor is on such a line. The
+cursor position itself stays exact, but horizontal scrolling and motion stop
+at the end of the shown prefix; normal files are unaffected.
+
+The file tree (Ctrl+T pane and `/files`) walks at most 100,000 directory
+entries and keeps at most 4096, saying which limit stopped it. A refresh
+that is superseded, or a workspace that is no longer local, never paints a
+stale or foreign listing: the pane keeps its previous state and says why.
+Remote directory listing is unsupported; only a readable local workspace
+directory is listed.
+
 ## Where to go next
 
 - `architecture/tui.md` — module map, async command pattern, focus model

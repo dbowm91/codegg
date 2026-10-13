@@ -2766,3 +2766,41 @@ gutter. Local edit, undo, redo, reload, resync, save, attachment switch,
 and reconnect clear stale semantic state via `clear_semantic`; late
 completions after any of those are discarded by generation, scope, and
 snapshot-revision checks with no server calls on the render path.
+
+### Bounded rendering and tree scheduling (C002)
+
+Per-frame editor work is bounded in input bytes, not output rows.
+`MAX_RENDER_LINE_BYTES` (32 KiB) caps source bytes examined for one visible
+logical line; `MAX_FRAME_SOURCE_BYTES` (256 KiB) caps the frame total across
+`render_text` and `longest_visible_width` together. `line_content_end`
+inspects at most the last two bytes for a terminator instead of reading the
+line; `line_slice`/`line_spans` read at most the 32 KiB prefix window;
+`display_column`/`offset_at_column`/`resolve_viewport` saturate at the window
+instead of scanning a multi-megabyte line. `measure_frame_cost` mirrors the
+render loop exactly so tests assert deterministic budgets rather than
+wall-clock time.
+
+A line past the per-line budget renders its prefix as plain text (no
+per-token spans, which would cost the whole line) with a warning-styled
+`…[too long]` row suffix; rows past the frame budget render as the marker
+alone with zero content bytes read. The banner adds `line too long —
+showing prefix` when the cursor line or cursor column is past the window, so
+a truncated frame is never presented as complete. Cursor and selection byte
+offsets stay exact; horizontal motion past the prefix clamps to the prefix
+end. Ordinary short lines render exactly as before.
+
+The tree walk counts *examined* entries independently of retained nodes
+(`MAX_TREE_EXAMINED` 100,000 vs `MAX_TREE_NODES` 4096): ignored, symlink,
+special, and failed entries consume the examined budget while retaining
+nothing, and the truncation reason names which budget fired. `TreeListing`
+carries the examined count as result metadata. Walks run on `spawn_blocking`
+inside a generation-scoped async task (hard limit: one live `FileTree`
+task — each rebuild aborts the previous waiter first); the blocking scan
+checks a cooperative flag on every entry, superseded by `begin_rebuild`,
+`reset_for_project`, and `prepare_shutdown`, so a stranded scan exits within
+one entry. Stale completions are still refused by generation/root/request.
+With no command channel the UI reports an explicit error instead of walking
+synchronously on the event loop. `local_walk_root` fails closed on
+non-absolute, non-directory, symlinked, or unreadable roots rather than
+treating a same-name local path as authoritative; remote listing stays
+unsupported until a daemon-authorized transport exists.

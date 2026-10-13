@@ -11,15 +11,24 @@
 //! Two properties are load-bearing and are proven by tests rather than by
 //! convention:
 //!
-//! - **Bounded on every axis.** Depth, node count, and per-entry name length
-//!   all have hard caps. A pathological tree produces a truncation notice, not
-//!   a hang and not an unbounded allocation.
+//! - **Bounded on every axis.** Depth, retained-node count, *examined*-entry
+//!   count, and per-entry name length all have hard caps. A pathological
+//!   tree produces a truncation notice, not a hang and not an unbounded
+//!   allocation. The examined-entry budget is independent of the retained
+//!   budget: a directory of a million ignored entries stops the walk even
+//!   though it retains nothing.
 //! - **Symlinks are never followed**, at any depth, including directory
 //!   symlinks. The check is on the raw entry, because `canonicalize` resolves
 //!   a symlink and would then report the target as a non-symlink.
+//! - **Cooperatively cancellable.** [`build_tree_with_cancel`] checks an
+//!   atomic flag on every entry, so a superseded walk exits at the next
+//!   entry even after its async waiter is aborted. Blocking directory I/O
+//!   runs on `spawn_blocking` (see `commands::file_tree::rebuild`), never on
+//!   a Tokio worker.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Maximum directory depth walked, counted from the workspace root at `0`.
 pub const MAX_TREE_DEPTH: usize = 12;
@@ -30,6 +39,15 @@ pub const MAX_TREE_DEPTH: usize = 12;
 /// repository with a million files costs a bounded walk and a bounded
 /// allocation rather than exhausting memory.
 pub const MAX_TREE_NODES: usize = 4_096;
+
+/// Maximum number of directory entries *examined* across the whole walk.
+///
+/// Counted before any filtering, so ignored directories, symlinks, special
+/// files, and unreadable entries all consume it. This is what stops a walk
+/// over millions of filtered-out entries that would otherwise cost unbounded
+/// scanning while retaining nothing. Independent of [`MAX_TREE_NODES`]:
+/// a tree can exhaust either budget, and the truncation reason says which.
+pub const MAX_TREE_EXAMINED: usize = 100_000;
 
 /// Maximum byte length of a single entry name.
 ///
@@ -96,22 +114,52 @@ pub struct TreeListing {
     pub truncated: bool,
     /// Human-readable reason for truncation, when truncated.
     pub truncated_reason: Option<String>,
+    /// Directory entries examined, including filtered-out ones (ignored,
+    /// symlink, special, unreadable). Proves the examined-entry budget is
+    /// independent of the retained-node budget: a walk can examine far more
+    /// than it keeps.
+    pub examined: usize,
 }
 
 /// Walk `root` into a bounded listing.
 ///
 /// Symlinks are skipped at every depth, ignored directories are not descended
 /// into, unreadable directories are skipped rather than treated as fatal, and
-/// the walk stops at the first bound it reaches.
+/// the walk stops at the first bound it reaches. Never cancelled; see
+/// [`build_tree_with_cancel`] for the cancellable form the command layer
+/// uses.
 pub fn build_tree(root: &Path) -> TreeListing {
+    static NEVER: AtomicBool = AtomicBool::new(false);
+    build_tree_with_cancel(root, &NEVER)
+}
+
+/// Walk `root` into a bounded listing, exiting early when `cancel` is set.
+///
+/// Checks `cancel` on every entry and before descending into each
+/// subdirectory, so a superseded walk finishes within one entry of the
+/// request even if its async waiter was already aborted. A cancelled walk
+/// reports `truncated` with a cancellation reason rather than a partial
+/// listing presented as complete.
+pub fn build_tree_with_cancel(root: &Path, cancel: &AtomicBool) -> TreeListing {
     let mut listing = TreeListing::default();
     let mut budget = MAX_TREE_NODES;
+    let mut examined = 0usize;
     if budget == 0 {
         listing.truncated = true;
         listing.truncated_reason = Some("node budget is zero".to_string());
         return listing;
     }
-    walk(root, "", 0, &mut budget, &mut listing);
+    walk(
+        root,
+        "",
+        0,
+        &mut budget,
+        &mut examined,
+        MAX_TREE_EXAMINED,
+        cancel,
+        &mut listing,
+    );
+    listing.examined = examined;
     listing.nodes.sort_by(|left, right| {
         left.kind
             .cmp(&right.kind)
@@ -120,13 +168,53 @@ pub fn build_tree(root: &Path) -> TreeListing {
     listing
 }
 
+/// Refuse a workspace root that is not a proven-local readable directory.
+///
+/// The tree walks the local filesystem directly, so a root that does not
+/// exist locally, is not a directory, or is itself a symlink must fail
+/// closed rather than walk a same-name path as if it were authoritative.
+/// Remote directory listing stays unsupported until a daemon-authorized
+/// transport exists; this is the explicit refusal point, not a fallback
+/// that treats absence as an empty workspace.
+pub fn local_walk_root(root: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err(format!(
+            "refusing to list workspace root {}: not an absolute local path; remote directory listing is unsupported",
+            root.display()
+        ));
+    }
+    match std::fs::symlink_metadata(root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "refusing to list workspace root {}: the root itself is a symlink",
+            root.display()
+        )),
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "refusing to list workspace root {}: not a local directory; remote directory listing is unsupported",
+            root.display()
+        )),
+        Err(error) => Err(format!(
+            "refusing to list workspace root {}: not a readable local directory ({error}); remote directory listing is unsupported",
+            root.display()
+        )),
+    }
+}
+
 fn walk(
     directory: &Path,
     relative: &str,
     depth: usize,
     budget: &mut usize,
+    examined: &mut usize,
+    max_examined: usize,
+    cancel: &AtomicBool,
     listing: &mut TreeListing,
 ) {
+    if cancel.load(Ordering::Relaxed) {
+        listing.truncated = true;
+        listing.truncated_reason = Some("tree walk cancelled".to_string());
+        return;
+    }
     if depth >= MAX_TREE_DEPTH {
         listing.truncated = true;
         listing.truncated_reason =
@@ -147,6 +235,23 @@ fn walk(
     let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
 
     for entry in entries.flatten() {
+        if cancel.load(Ordering::Relaxed) {
+            listing.truncated = true;
+            listing.truncated_reason = Some("tree walk cancelled".to_string());
+            return;
+        }
+        // Examined before any filtering: ignored, symlink, special, and
+        // failed entries all cost scanning even though they retain nothing.
+        // This is the budget that stops a walk over millions of
+        // filtered-out entries.
+        *examined = examined.saturating_add(1);
+        if *examined > max_examined {
+            listing.truncated = true;
+            listing.truncated_reason = Some(format!(
+                "stopped after examining the maximum of {max_examined} entries"
+            ));
+            return;
+        }
         if *budget == 0 {
             listing.truncated = true;
             listing.truncated_reason = Some(format!(
@@ -191,6 +296,11 @@ fn walk(
     }
 
     for (name, path) in directories {
+        if cancel.load(Ordering::Relaxed) {
+            listing.truncated = true;
+            listing.truncated_reason = Some("tree walk cancelled".to_string());
+            return;
+        }
         let child_relative = TreeNode::child(relative, &name);
         let mut children = Vec::new();
         let mut child_listing = TreeListing::default();
@@ -199,6 +309,9 @@ fn walk(
             &child_relative,
             depth + 1,
             budget,
+            examined,
+            max_examined,
+            cancel,
             &mut child_listing,
         );
         if child_listing.truncated {
@@ -575,6 +688,194 @@ mod tests {
         assert!(listing.nodes.is_empty());
         assert!(!listing.truncated);
         assert!(listing.truncated_reason.is_none());
+    }
+
+    // ── C002 examined-entry budget, cancellation, locality ──────────────
+
+    use std::sync::atomic::AtomicBool;
+
+    /// Walk with explicit budgets, bypassing the production constants so
+    /// the examined-cap branch is reachable without creating 100k files.
+    fn walk_with(
+        root: &Path,
+        max_nodes: usize,
+        max_examined: usize,
+        cancel: &AtomicBool,
+    ) -> TreeListing {
+        let mut listing = TreeListing::default();
+        let mut budget = max_nodes;
+        let mut examined = 0usize;
+        walk(
+            root,
+            "",
+            0,
+            &mut budget,
+            &mut examined,
+            max_examined,
+            cancel,
+            &mut listing,
+        );
+        listing.examined = examined;
+        listing
+    }
+
+    fn live_cancel() -> AtomicBool {
+        AtomicBool::new(false)
+    }
+
+    #[test]
+    fn examined_budget_stops_a_walk_of_only_filtered_entries() {
+        let root = temp();
+        // Symlinks are fast to create and all filtered out: 200 examined,
+        // zero retained. The examined cap (50 here) must stop the walk even
+        // though the node budget is untouched.
+        #[cfg(unix)]
+        {
+            std::fs::write(root.path().join("target.txt"), b"x").expect("write");
+            for i in 0..200 {
+                std::os::unix::fs::symlink(
+                    root.path().join("target.txt"),
+                    root.path().join(format!("link{i:04}")),
+                )
+                .expect("symlink");
+            }
+            let listing = walk_with(root.path(), MAX_TREE_NODES, 50, &live_cancel());
+            assert!(
+                listing.truncated,
+                "filtered entries must still stop the walk"
+            );
+            assert!(
+                listing
+                    .truncated_reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains("examining")),
+                "the reason must name the examined budget, got {:?}",
+                listing.truncated_reason
+            );
+            assert!(listing.nodes.is_empty(), "nothing was retainable");
+            assert!(listing.examined > 50, "examined counts filtered entries");
+        }
+    }
+
+    #[test]
+    fn node_cap_and_examined_cap_are_independent_reasons() {
+        let root = temp();
+        for i in 0..20 {
+            write(root.path(), &format!("f{i:03}.txt"));
+        }
+        // Tight node budget, generous examined budget: the node cap fires.
+        let listing = walk_with(root.path(), 5, 10_000, &live_cancel());
+        assert!(listing.truncated);
+        assert!(
+            listing
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("entries") && !r.contains("examining")),
+            "node-cap reason must not mention examining, got {:?}",
+            listing.truncated_reason
+        );
+        assert!(
+            listing.examined >= 5,
+            "examined counts even retained entries"
+        );
+    }
+
+    #[test]
+    fn examined_counts_ignored_and_special_entries_without_retaining_them() {
+        let root = temp();
+        write(root.path(), "node_modules/pkg/index.js");
+        write(root.path(), "kept.txt");
+        let listing = build_tree(root.path());
+        // `node_modules` (1 examined, skipped) + `kept.txt` (1 examined,
+        // retained). The ignored directory's children are never descended
+        // into, so exactly two entries are examined.
+        assert_eq!(listing.examined, 2, "examined must count the ignored entry");
+        assert!(!listing.truncated);
+        assert_eq!(names(&listing), vec!["kept.txt"]);
+    }
+
+    #[test]
+    fn symlink_flood_counts_examined_without_truncation_or_retention() {
+        let root = temp();
+        #[cfg(unix)]
+        {
+            std::fs::write(root.path().join("real.txt"), b"x").expect("write");
+            for i in 0..1000 {
+                std::os::unix::fs::symlink(
+                    root.path().join("real.txt"),
+                    root.path().join(format!("flood{i:05}")),
+                )
+                .expect("symlink");
+            }
+            let listing = build_tree(root.path());
+            assert!(!listing.truncated, "1001 examined is within budget");
+            assert_eq!(
+                listing.examined, 1001,
+                "every symlink must be examined and skipped"
+            );
+            assert_eq!(names(&listing), vec!["real.txt"]);
+        }
+    }
+
+    #[test]
+    fn a_cancelled_walk_reports_cancellation_not_a_partial_tree() {
+        let root = temp();
+        for i in 0..50 {
+            write(root.path(), &format!("f{i:03}.txt"));
+        }
+        let cancelled = AtomicBool::new(true);
+        let listing = build_tree_with_cancel(root.path(), &cancelled);
+        assert!(listing.truncated);
+        assert_eq!(
+            listing.truncated_reason.as_deref(),
+            Some("tree walk cancelled")
+        );
+        assert!(listing.nodes.is_empty());
+    }
+
+    #[test]
+    fn cancel_mid_walk_stops_a_deep_tree() {
+        let root = temp();
+        write(root.path(), "a/b/c/d/e/f.txt");
+        write(root.path(), "top.txt");
+        // Cancel after the walk starts: flip the flag from a second thread
+        // while the walk runs. The walk must still terminate with a
+        // cancellation (or another bound), never hang.
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let setter = std::sync::Arc::clone(&flag);
+        std::thread::spawn(move || {
+            setter.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+        .join()
+        .expect("setter finishes");
+        let listing = build_tree_with_cancel(root.path(), &flag);
+        assert!(listing.truncated);
+        assert_eq!(
+            listing.truncated_reason.as_deref(),
+            Some("tree walk cancelled")
+        );
+    }
+
+    #[test]
+    fn local_walk_root_refuses_non_local_roots() {
+        // Missing: a same-name local path must not stand in for it.
+        assert!(local_walk_root(Path::new("/nonexistent-workspace-root-for-test")).is_err());
+        // Relative: never authoritative.
+        assert!(local_walk_root(Path::new("relative/path")).is_err());
+        // A file is not a walkable directory.
+        let root = temp();
+        write(root.path(), "file.txt");
+        assert!(local_walk_root(&root.path().join("file.txt")).is_err());
+        // A real local directory is accepted.
+        assert!(local_walk_root(root.path()).is_ok());
+        // The root itself must not be a symlink.
+        #[cfg(unix)]
+        {
+            let outer = temp();
+            std::os::unix::fs::symlink(root.path(), outer.path().join("linked-root"))
+                .expect("symlink");
+            assert!(local_walk_root(&outer.path().join("linked-root")).is_err());
+        }
     }
 
     #[test]

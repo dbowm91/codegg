@@ -10,12 +10,17 @@
 //! what keeps the gutter, the current-line highlight, and cursor arithmetic
 //! deterministic; soft wrap is deferred to a later milestone.
 //!
-//! ## Bounded work
+//! ## Bounded work (C002)
 //!
 //! Only the visible slice is materialized, bounded by the viewport height,
-//! and each visible line is read with a single bounded `read_bytes` call.
-//! Per-frame cost is a function of the viewport, not of the document, so a
-//! multi-megabyte file renders exactly like a small one.
+//! and each visible line examines at most
+//! [`MAX_RENDER_LINE_BYTES`](crate::tui::editor::MAX_RENDER_LINE_BYTES)
+//! (32 KiB) with the frame total capped at
+//! [`MAX_FRAME_SOURCE_BYTES`](crate::tui::editor::MAX_FRAME_SOURCE_BYTES)
+//! (256 KiB). A line past the per-line budget renders from its prefix with
+//! a visible `…[too long]` marker and a banner note — never a silent
+//! prefix. Cursor and selection byte offsets stay exact; horizontal motion
+//! past the prefix clamps to it. See `docs/tui.md` for the exact contract.
 //!
 //! The widget never reads a file: every byte arrives through
 //! `DocumentController::try_snapshot()`, which is daemon-authorized.
@@ -258,6 +263,22 @@ impl EditorWidget<'_> {
                     Style::default().fg(theme.warning),
                 ));
             }
+            // C002: a huge line under the cursor renders from its 32 KiB
+            // prefix with a `…[too long]` marker on the row itself. The
+            // banner repeats the signal so the degradation is visible even
+            // when the row marker scrolls out of view; other huge lines in
+            // the viewport carry their own row markers.
+            if editor::line_is_truncated(
+                self.snapshot,
+                editor::cursor_line(self.snapshot, self.cursor_byte),
+            ) || editor::display_column_truncated(self.snapshot, self.cursor_byte)
+            {
+                spans.push(Span::styled("  ", Style::default()));
+                spans.push(Span::styled(
+                    "· line too long — showing prefix",
+                    Style::default().fg(theme.warning),
+                ));
+            }
             Line::from(spans)
         };
         let rows = Rect {
@@ -288,11 +309,20 @@ impl EditorWidget<'_> {
 
         let total_lines = self.snapshot.len_lines();
         let mut lines: Vec<Line> = Vec::with_capacity(viewport.visible_lines as usize);
+        // C002 frame budget: content reads across all visible rows cost at
+        // most 256 KiB. Rows past the budget render as a marker without
+        // reading a single content byte, so a viewport full of huge lines
+        // stays bounded. Row byte sizes come from the cheap length check,
+        // never from a content read.
+        let mut frame_remaining = editor::MAX_FRAME_SOURCE_BYTES;
         for row in 0..viewport.visible_lines as usize {
             let line_index = viewport.first_line + row;
             if line_index >= total_lines {
                 break;
             }
+            let row_bytes = editor::line_byte_len(self.snapshot, line_index)
+                .unwrap_or(0)
+                .min(editor::MAX_RENDER_LINE_BYTES);
             let is_current = line_index == cursor_line;
             let number = format!(
                 "{:>width$} ",
@@ -325,7 +355,21 @@ impl EditorWidget<'_> {
             } else {
                 Style::default()
             };
-            spans.extend(self.line_spans(line_index, viewport, text_style));
+            if row_bytes > frame_remaining {
+                // Frame budget exhausted: no content read for this row, just
+                // the honest marker. The banner note (cursor line) and the
+                // per-row markers on the lines that did render already say
+                // the frame is partial.
+                spans.push(Span::styled(
+                    crate::tui::editor::TRUNCATED_LINE_SUFFIX,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                frame_remaining = frame_remaining.saturating_sub(row_bytes);
+                spans.extend(self.line_spans(line_index, viewport, text_style));
+            }
             lines.push(Line::from(spans));
         }
         // An empty document still has one logical line, so `lines` is
@@ -475,14 +519,18 @@ impl EditorWidget<'_> {
     /// The visible display-column slice of `line_index`, truncated to the
     /// viewport width.
     ///
-    /// Reads at most one window per line rather than the whole line, so a
-    /// pathologically long line cannot make a frame expensive.
+    /// C002: examines at most the 32 KiB prefix window
+    /// (`bounded_prefix_end`), never the whole logical line, so a
+    /// pathologically long line costs a bounded window per frame. The
+    /// truncation marker itself is added by [`Self::line_spans`]; this
+    /// returns the text window only.
     fn line_slice(&self, line_index: usize, viewport: EditorViewport) -> String {
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
             return String::new();
         };
         let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
-        let text = match self.snapshot.read_bytes(start, end) {
+        let window_end = editor::bounded_prefix_end(self.snapshot, start, end);
+        let text = match self.snapshot.read_bytes(start, window_end) {
             Ok(text) => text,
             Err(_) => return String::new(),
         };
@@ -516,8 +564,19 @@ impl EditorWidget<'_> {
             return vec![];
         };
         let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
-        if end.saturating_sub(start) > 16 * 1024 {
-            return vec![Span::styled(self.line_slice(line_index, viewport), base)];
+        // C002 bounded fallback: a line past the 32 KiB budget renders its
+        // prefix as plain text with a visible marker. Per-token spans are
+        // skipped on this path — mapping them would cost the whole line —
+        // and ordinary short lines keep their exact highlighting below.
+        if editor::bounded_prefix_end(self.snapshot, start, end) < end {
+            let mut spans = vec![Span::styled(self.line_slice(line_index, viewport), base)];
+            spans.push(Span::styled(
+                crate::tui::editor::TRUNCATED_LINE_SUFFIX,
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            return spans;
         }
         let Ok(line) = self.snapshot.read_bytes(start, end) else {
             return vec![];
@@ -984,6 +1043,120 @@ mod tests {
             "at most one row per viewport line: {visible}"
         );
         assert!(lines.iter().any(|line| line.contains("line0")));
+    }
+
+    // ── C002 huge-line degradation ────────────────────────────────────
+
+    fn mib_of_x(megabytes: usize) -> String {
+        "x".repeat(megabytes * 1024 * 1024)
+    }
+
+    /// Frame input cost for `text` the way the renderer accounts it: the
+    /// deterministic budget from `measure_frame_cost`, not wall-clock time.
+    fn frame_cost(
+        text: &str,
+        first_line: usize,
+        visible_lines: usize,
+    ) -> crate::tui::editor::FrameCost {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        crate::tui::editor::measure_frame_cost(&snapshot, first_line, visible_lines)
+    }
+
+    #[test]
+    fn a_1mib_single_line_renders_a_marked_prefix_within_budget() {
+        let text = mib_of_x(1);
+        let cost = frame_cost(&text, 0, 24);
+        assert!(
+            cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES,
+            "frame cost {} exceeds 256 KiB",
+            cost.total_bytes
+        );
+        assert_eq!(cost.truncated_lines, 1);
+
+        // Cursor at the start: the prefix is visible and honestly marked.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a truncated line must be visibly marked, got:\n{joined}"
+        );
+        for line in joined.lines() {
+            assert!(
+                line.chars().count() <= 80,
+                "every row stays viewport-bounded: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_at_the_far_right_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(1);
+        let cursor = text.len();
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+
+        // The cursor byte is past the render window; the frame must still
+        // render within budget and say the line is truncated rather than
+        // silently showing a prefix as the whole line.
+        let joined = paint(&text, 80, 24, cursor);
+        assert!(
+            joined.contains("too long"),
+            "far-right cursor on a huge line must stay marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn cursor_in_the_middle_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(2);
+        let joined = paint(&text, 80, 24, text.len() / 2);
+        assert!(
+            joined.contains("too long"),
+            "mid-line cursor on a huge line must stay marked, got:\n{joined}"
+        );
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn a_viewport_of_huge_lines_stays_within_the_frame_budget() {
+        let text = (0..30)
+            .map(|_| "y".repeat(1024 * 1024))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cost = frame_cost(&text, 0, 30);
+        assert!(
+            cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES,
+            "30 huge lines must cost at most 256 KiB, got {}",
+            cost.total_bytes
+        );
+        // Rendering must not panic and must mark the frame partial.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a frame of huge lines must be marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn a_1x1_terminal_with_a_huge_line_does_not_panic_and_marks() {
+        let text = mib_of_x(1);
+        let lines = render(&text, 1, 1, 0, defaults());
+        assert_eq!(lines.len(), 1);
+        let cost = frame_cost(&text, 0, 1);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn tabs_and_wide_unicode_inside_the_budget_render_exactly() {
+        // Inside the budget nothing changes: tabs, wide CJK, and combining
+        // marks render with the same widths as before C002.
+        let text = "a\tb汉e\u{301}f";
+        let joined = paint(text, 40, 8, 0);
+        assert!(joined.contains('a'), "{joined}");
+        assert!(joined.contains('b'), "{joined}");
+        assert!(joined.contains('汉'), "{joined}");
+        assert!(!joined.contains("too long"), "{joined}");
+        let cost = frame_cost(text, 0, 8);
+        assert_eq!(cost.truncated_lines, 0);
     }
 
     #[test]

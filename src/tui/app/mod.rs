@@ -3144,6 +3144,9 @@ impl App {
 
     pub fn prepare_shutdown(&mut self) {
         self.invalidate_pending_session_submit(false);
+        // A blocking tree scan outlives its aborted async waiter, so signal
+        // it cooperatively as well; it exits at its next entry.
+        self.file_tree_state.cancel_in_flight();
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
         if active > 0 {

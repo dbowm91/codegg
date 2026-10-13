@@ -11,6 +11,10 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::tui::app::state::AsyncUiRequestState;
 use crate::tui::file_tree::{visible_rows, TreeListing, TreeNodeKind, TreeRow};
@@ -55,6 +59,15 @@ pub struct FileTreeState {
     /// Bumped on every rebuild and on every project switch, so a completion
     /// for a previous walk is discarded.
     pub generation: u64,
+    /// Cooperative cancellation for the in-flight blocking walk.
+    ///
+    /// C002: set on every rebuild and project reset, checked by
+    /// `build_tree_with_cancel` on every entry. An aborted async waiter
+    /// cannot stop blocking `read_dir` work; this flag is what bounds the
+    /// stranded scan to one more entry. Shared with the spawned blocking
+    /// task, so it is deliberately not part of equality or debug output
+    /// beyond the pointer.
+    pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl FileTreeState {
@@ -280,7 +293,11 @@ impl FileTreeState {
     /// Begin a rebuild against `root`.
     ///
     /// The generation bump is what invalidates any walk already in flight.
+    /// The previous walk's cooperative flag is set first, so a superseded
+    /// blocking scan exits at its next entry rather than running to the
+    /// examined-entry cap.
     pub fn begin_rebuild(&mut self, root: PathBuf) -> (u64, u64) {
+        self.cancel_in_flight();
         if self.root.as_deref() != Some(root.as_path()) {
             // A new workspace resets everything: a path from the previous
             // project is meaningless in the next.
@@ -292,12 +309,34 @@ impl FileTreeState {
         self.generation = self.generation.wrapping_add(1);
         self.status = FileTreeStatus::Loading;
         self.truncated = None;
+        self.cancel_flag = Some(Arc::new(AtomicBool::new(false)));
         let request_id = self.request.begin();
         (self.generation, request_id)
     }
 
+    /// The cooperative flag for the walk started by [`Self::begin_rebuild`].
+    ///
+    /// Moved into the `spawn_blocking` task by the command layer. `None`
+    /// when no rebuild has begun (the command layer then refuses to walk).
+    pub fn take_cancel_flag(&self) -> Option<Arc<AtomicBool>> {
+        self.cancel_flag.clone()
+    }
+
+    /// Signal any in-flight blocking walk to stop at its next entry.
+    ///
+    /// Idempotent: safe to call when nothing is walking. Called by
+    /// `begin_rebuild`, `reset_for_project`, and TUI shutdown paths that
+    /// drop file-tree work.
+    pub fn cancel_in_flight(&mut self) {
+        if let Some(flag) = self.cancel_flag.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.cancel_flag = None;
+    }
+
     /// Reset for a project switch.
     pub fn reset_for_project(&mut self) {
+        self.cancel_in_flight();
         self.generation = self.generation.wrapping_add(1);
         self.root = None;
         self.nodes.clear();
@@ -685,6 +724,55 @@ mod tests {
         assert!(matches!(state.status, FileTreeStatus::Error(_)));
         assert!(state.rows().is_empty());
         assert!(state.selected.is_none());
+    }
+
+    #[test]
+    fn a_rebuild_cooperatively_cancels_the_previous_walk() {
+        use std::sync::atomic::Ordering;
+        let first = temp();
+        let second = temp();
+        let mut state = FileTreeState::default();
+        let _ = state.begin_rebuild(first.path().to_path_buf());
+        let previous = state.take_cancel_flag().expect("flag exists");
+        assert!(!previous.load(Ordering::Relaxed));
+
+        // A second rebuild supersedes the first: the old flag is set, so a
+        // blocking scan holding it exits at its next entry.
+        let _ = state.begin_rebuild(second.path().to_path_buf());
+        assert!(
+            previous.load(Ordering::Relaxed),
+            "the superseded walk must be signalled"
+        );
+        assert!(state.take_cancel_flag().is_some());
+    }
+
+    #[test]
+    fn reset_for_project_cancels_an_in_flight_walk() {
+        use std::sync::atomic::Ordering;
+        let root = temp();
+        let mut state = FileTreeState::default();
+        let _ = state.begin_rebuild(root.path().to_path_buf());
+        let flag = state.take_cancel_flag().expect("flag exists");
+        state.reset_for_project();
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(state.take_cancel_flag().is_none());
+    }
+
+    #[test]
+    fn a_hundred_rapid_rebuilds_leave_one_generation_and_no_stranded_flag() {
+        let root = temp();
+        let mut state = FileTreeState::default();
+        let mut flags = Vec::new();
+        for _ in 0..100 {
+            let _ = state.begin_rebuild(root.path().to_path_buf());
+            flags.push(state.take_cancel_flag().expect("flag exists"));
+        }
+        // Every superseded flag was signalled; only the latest is live.
+        use std::sync::atomic::Ordering;
+        let (superseded, latest) = flags.split_at(100 - 1);
+        assert!(superseded.iter().all(|f| f.load(Ordering::Relaxed)));
+        assert!(latest.iter().all(|f| !f.load(Ordering::Relaxed)));
+        assert_eq!(state.generation, 100);
     }
 
     #[test]
