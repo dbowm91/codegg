@@ -112,3 +112,9 @@ Close this roadmap only when C001, C002, M003 and M004 have individual closure f
 | C002 | closed | `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-render-and-tree-walk.md` | `plans/closure/tui-editor-correctness-usability/002-status.md` (`bd891348f`) |
 | M003 | closed | `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md` | `plans/closure/tui-editor-correctness-usability/003-status.md` (`44671d690`) |
 | M004 | closed | `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md` | `plans/closure/tui-editor-correctness-usability/004-status.md` (`fd2faaaf1`) |
+
+## 12. Post-closure audit and corrective workstream (2026-10-13)
+
+C001, C002, M003 and M004 retain their historical **closed** status and immutable closure records. A later source audit found gaps not established by those closures: real NotReady/Stale completion DTOs fail the frontend's revision-equality check; completion request IDs can be reused after reconnect; F8's UTF-16 cursor calculation can read an oversized line prefix; and cancelling a file-tree waiter does not bound the actual spawned blocking-worker lifetime. The local filesystem existence check also cannot attest daemon-workspace identity across separate hosts.
+
+The active successor is `plans/subsystems/tui-editor-correctness-usability-post-closure-corrective-addendum.md`: **C003/C004 ready**, **C005 blocked** pending the separately proposed `plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md`. M003/M004 and C002 must not be reopened merely to rename findings; each new corrective has its own plan, tests and closure requirements. Proposed ADR-0022 is not accepted by registration. Any C005 native protocol changes require a deliberate ADR decision.
