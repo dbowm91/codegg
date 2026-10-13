@@ -1292,4 +1292,58 @@ mod tests {
         assert_eq!(app.file_tree_state.status, FileTreeStatus::Ready);
         assert!(app.file_tree_coordinator.peak_running() <= 1);
     }
+
+    /// C006: a wire-cap empty listing (`Ready` + no nodes + truncated with
+    /// a reason) stays visibly truncated — never mistaken for an empty
+    /// project (`Ready` + no nodes + not truncated). The daemon emits the
+    /// distinction; the TUI preserves it verbatim.
+    #[test]
+    fn c006_wire_cap_empty_truncated_stays_visible_not_empty_success() {
+        use codegg_protocol::document::{
+            WorkspaceDirectoryListResultDto, WorkspaceDirectoryListStatusDto,
+        };
+
+        let emptied = WorkspaceDirectoryListResultDto {
+            workspace_id: "workspace-test".to_owned(),
+            prefix: String::new(),
+            nodes: Vec::new(),
+            truncated: true,
+            truncated_reason: Some(
+                "listing trimmed to fit the 524288-byte response budget".to_owned(),
+            ),
+            examined: 10_000,
+            status: WorkspaceDirectoryListStatusDto::Ready,
+        };
+        let rendered = listing_from_daemon(&emptied);
+        assert!(rendered.nodes.is_empty());
+        assert!(
+            rendered.truncated,
+            "wire-cap empty must stay truncated, never silent empty"
+        );
+        assert!(
+            rendered
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("response budget")),
+            "the wire-cap reason must reach the pane, got {:?}",
+            rendered.truncated_reason
+        );
+
+        let genuinely_empty = WorkspaceDirectoryListResultDto {
+            workspace_id: "workspace-test".to_owned(),
+            prefix: String::new(),
+            nodes: Vec::new(),
+            truncated: false,
+            truncated_reason: None,
+            examined: 3,
+            status: WorkspaceDirectoryListStatusDto::Ready,
+        };
+        let rendered_empty = listing_from_daemon(&genuinely_empty);
+        assert!(rendered_empty.nodes.is_empty());
+        assert!(
+            !rendered_empty.truncated,
+            "genuinely empty must not claim truncation"
+        );
+        assert!(rendered_empty.truncated_reason.is_none());
+    }
 }

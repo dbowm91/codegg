@@ -440,7 +440,14 @@ at the end of the shown prefix; normal files are unaffected.
 The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
 listing for the active workspace: the daemon walks at most 100,000
 directory entries and keeps at most 4096, saying which limit stopped it.
-At most one scan runs at a time on each side; a refresh that arrives while
+The complete listing response (entries plus workspace/prefix, status,
+and truncation reason) is capped at 512 KiB on the wire: oversized trees
+are trimmed from the trailing top-level entries with an explicit reason,
+down to an explicitly truncated empty listing when even one giant nested
+directory cannot fit — never a silent empty project and never an oversize
+payload. At most one scan runs at a time on each side; the daemon holds
+its admission until the actual filesystem scan exits, so cancelling a
+request cannot start a second scan behind it. A refresh that arrives while
 a request is active waits as one queued latest request and the pane says
 "waiting for prior scan…" instead of piling up workers. A refresh that is
 superseded, or a listing answered for a different workspace, never paints

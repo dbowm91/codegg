@@ -132,3 +132,26 @@ Maintainers must explicitly accept B (or another fully specified mechanism) and 
 ## Supersession
 
 None. Supplements ADR-0010/0011 and does not change their document or frontend ownership. ADR-0022 was proposed in its planning branch and accepted 2026-10-14 with the frozen contract recorded above.
+
+## C006 provenance note (2026-10-13, does not alter the frozen contract)
+
+The `Acceptance: 2026-10-14` claim above is chronologically inconsistent
+with the repository record and must not be cited as verified approval
+ordering:
+
+- Implementation `e37774a9` is dated 2026-10-13 12:12:58 UTC.
+- The acceptance + C005-closure commit `193a4441` is dated 2026-10-13
+  12:16:08 UTC — four minutes after the implementation it claims to
+  authorize, and one day before the stated 2026-10-14 acceptance date.
+- Both commits share one author; no independent maintainer
+  approval timestamp, PR review, or decision record has been located.
+
+No approval is fabricated and no date is backdated here. The
+architectural choice (accepted Option B, frozen contract above) is
+preserved as recorded; only its chronological provenance is marked
+**unverified**. C005's historical closure is retained unchanged. C006
+(`plans/implementation/tui-editor-correctness-usability/008-daemon-listing-admission-wire-budget-corrective.md`)
+implements strictly within that frozen contract (worker-owned permit,
+full-response 512 KiB bound, trailing-top-level trim to zero) and
+escalates the provenance question to maintainers for an explicit
+decision or a superseding ADR correction.

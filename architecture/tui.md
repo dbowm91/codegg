@@ -2929,3 +2929,25 @@ presented an empty tree alongside its (correct) reason. Bound hits now
 `break` to the flush, keeping everything retained up to the bound with the
 explicit reason. Pre-set cancellation still returns empty; mid-walk cancel
 keeps retained-so-far as a truncated listing rather than blanking it.
+
+C006 worker-owned admission and full-response cap (post-C005 corrective):
+the daemon's single-flight `OwnedSemaphorePermit` is moved into the
+`spawn_blocking` closure, so aborting the async waiter cannot free a
+scanner that is still alive — the permit releases only when the blocking
+closure exits, including error and panic unwind. Contention still answers
+`busy`; abnormal exits surface sanitized `unavailable`. Actual worker
+entry/exit is instrumented per daemon (`DirectoryListingProbe`:
+`active`/`peak` counters plus a test-only blocking gate; production
+installs no gate). The 512 KiB cap is enforced on the complete serialized
+`CoreResponse::WorkspaceDirectoryList` (discriminator + `workspace_id` /
+`prefix` + `status` + `examined` + combined walker/wire truncation reason
++ retained nodes) via the same `serde_json` serializer the socket/stdio
+transports use — never a nodes-only estimate. Trimming removes trailing
+whole top-level nodes in prefix order, down to zero retained roots if even
+the last nested root cannot fit; an all-roots-removed `Ready` carries
+`truncated=true` with a bounded wire reason and is visibly distinct from a
+genuinely empty `Ready`. If even that cannot fit, the daemon fails closed
+to `unavailable` (then a bounded `Error`), never an oversize payload. The
+enforcer binary-searches the longest fitting prefix in `O(log n)` full
+serializations, never `O(n)` pops. ADR-0022 Option B is unchanged; its
+acceptance-date provenance is marked unverified (see its C006 note).

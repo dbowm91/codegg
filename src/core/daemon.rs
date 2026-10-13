@@ -92,7 +92,17 @@ pub struct CoreDaemon {
     /// `busy` instead of queueing unbounded blocking workers. The permit
     /// is held from admission until the blocking walk completes, so an
     /// aborted waiter can never free a worker that is still scanning.
+    ///
+    /// C006: the permit is owned by the actual `spawn_blocking` worker
+    /// (moved into its closure), never by the abortable async handler.
+    /// See `super::daemon_documents::DirectoryListingProbe` for the
+    /// deterministic worker-entry/exit instrumentation.
     pub directory_listing_permits: Arc<tokio::sync::Semaphore>,
+    /// C006: per-daemon directory-listing worker probe. Counts actual
+    /// blocking-worker entry/exit (peak live scanners) and hosts an
+    /// optional deterministic test gate. Production paths never install
+    /// a gate, so behaviour is unchanged outside tests.
+    pub directory_listing_probe: Arc<super::daemon_documents::DirectoryListingProbe>,
     /// Ephemeral one-use previews for guarded root `AGENTS.md` publication.
     pub project_init_drafts: Arc<super::project_init::ProjectInitDraftRegistry>,
     /// Project Work Orders M001: daemon-owned project work-order
