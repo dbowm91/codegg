@@ -1,4 +1,4 @@
-# ADR-0022: Composable Linux Execution Isolation and Obtained-Capability Authority
+# ADR-0023: Composable Linux Execution Isolation and Obtained-Capability Authority
 
 Status: proposed
 
@@ -91,4 +91,4 @@ References: https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/REA
 
 ## Supersession
 
-None. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.
+None. ADR-0024 governs command authorization and representation-independent enforcement semantics; this proposed ADR selects the Linux mechanisms implementing those semantics. M002's typed interface work does not imply acceptance of Bubblewrap backend promotion. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.
