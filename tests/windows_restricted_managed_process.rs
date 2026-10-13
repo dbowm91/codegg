@@ -330,7 +330,6 @@ async fn missing_filesystem_root_fails_before_the_test_child_is_created() {
     ));
 }
 
-
 #[tokio::test]
 async fn pre_cancelled_restricted_request_fails_before_profile_or_process_creation() {
     let request = restricted_request(vec![
