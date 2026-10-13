@@ -1,8 +1,8 @@
 # Linux Execution Isolation M003 — Protected Writable Workspace Mount View
 
-Status: blocked (hard: M002 closed and accepted ADR-0022; M001 must close before trusted Git integration)
+Status: blocked (hard: M002 interface closed and ADR-0023 accepted for backend; C001 Git class is interface, M001 strict closure not required)
 Primary class: capability
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0022; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0023 for Linux backend promotion. Accepted ADR-0024 defines representation-independent authority; C001 typed Git interface is required for integration but M001 Git closure is not. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
 
 ## 1. Objective
 
@@ -66,3 +66,7 @@ A hostile workspace child can write an ordinary leased source/build file and its
 ## 10. Stop conditions
 
 Stop if nested protected paths cannot be guaranteed under writable ancestor, if worktree alias identity is ambiguous, if the proposed helper requires ambient root/setuid authority, or if toolchain compatibility would require granting host-root reads/secrets. Record a minimal negative reproducer and hand back for decision instead of weakening protections.
+
+## 11. Git dependency clarification
+
+Do not wait for M001 C002 contained-Git local recovery before implementing the protected mount view: that recovery **requires this mount view** and would create a dependency cycle. C001's typed Git execution-class interface is sufficient input to M003. Protect executable Git metadata for *arbitrary child*; later C002 owns narrowly scoped typed Git metadata writes and native-proven Git operations. No subcommand string blocklist may substitute for the mount/lease boundary.

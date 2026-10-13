@@ -1,15 +1,15 @@
 # Linux Execution Isolation M002 — Composable Linux Launch and Obtained Enforcement
 
-Status: blocked (hard: ADR-0022 maintainer acceptance)
+Status: ready for handoff (internal contract/probe only; production Linux backend promotion still requires ADR-0023 acceptance)
 Primary class: infrastructure
-Interface dependency: M001 trusted Git matrix; independent probe/testing work may precede completion.
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0022; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
+Interface dependency: M001/C001 trusted Git capability matrix; M001 strict closure is NOT a hard dependency.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed Linux backend gate: ADR-0023; do not treat it as accepted. Accepted cross-tool security authority: ADR-0024. The infrastructure interface and legacy/fake adapter work may close without backend promotion. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
 
 ## 1. Objective
 
 Add one Linux-specific composable sandbox **launch** abstraction behind `ManagedProcessService` that can model filesystem views, network mode, process/IPC scope, syscall constraints and optional resource limits without falsely reporting them enforced. Provide backend feature probes and a test-only no-op/denial adapter; preserve existing Landlock-only launches and default behavior. No completed namespace/network/resource security capability is claimed in this infrastructure slice.
 
-## 2. Current evidence and authority
+## 2. Why ready; current evidence and authority
 
 `src/security/sandbox/backend.rs` selects one process-local `probe/apply` entry and assumes the helper mutates itself then `exec`s a target. `src/managed_process.rs` owns required helper launch, private setup status and process group cleanup. `src/security/sandbox.rs::SandboxLaunchSpec` contains path read/write/deny rules; `codegg-core/src/approval.rs` separately reports requested sandbox and obtained filesystem/network enforcement. ADR-0016 already mandates platform-owned launch semantics rather than pretending every mechanism fits `apply`. This milestone must not insert bubblewrap into `BACKENDS` as a simple additional Landlock-style `apply` callback.
 
@@ -73,4 +73,8 @@ One canonical launch owner and an internal typed request/obtained status boundar
 
 ## 11. Stop conditions
 
-Do not implement/publish this milestone before ADR-0022 is accepted. Stop for incompatible launcher trust model, setuid requirement, unreviewed protocol migration, inability to observe actual child enforcement, or discoverable alternate spawn paths that could bypass the canonical process owner. Escalate conflict rather than claiming interface-only tests prove isolation.
+Do not implement/publish this milestone before ADR-0023 is accepted. Stop for incompatible launcher trust model, setuid requirement, unreviewed protocol migration, inability to observe actual child enforcement, or discoverable alternate spawn paths that could bypass the canonical process owner. Escalate conflict rather than claiming interface-only tests prove isolation.
+
+## 12. Independence from M001 Git compatibility corrective
+
+This milestone is **ready** under already accepted ADR-0016 and ADR-0024 because it defines internal typed requests, required/obtained outcomes, feature probes and test-only adapters while leaving existing Landlock unchanged. It **must not** register a real Bubblewrap/namespace backend or advertise new mount/network/process security until proposed ADR-0023 is accepted and M003–M005 deliver real native proof. M001's 9/12 failing mutation suite is tracked by correctives C001–C003 and is not an input-hard dependency on defining the launch interface. Preserve failure evidence in every closure; do not flip M001 to closed to unblock this work.

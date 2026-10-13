@@ -5,7 +5,7 @@ Primary class: invariant
 Repository baseline: `main` @ `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`, 2026-10-13.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016. ADR-0022 remains proposed, not accepted.
+Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016. ADR-0023 remains proposed, not accepted.
 No production implementation or verification is asserted by this plan.
 Target closure record: `plans/closure/linux-execution-isolation/008-status.md`.
 
@@ -51,3 +51,7 @@ Record implementation commits, host capability/kernel version, test output, skip
 
 ## 10. Stop conditions
 Stop for unqualified security promise, successful privileged Git payload, reachable host daemon/IPC/network bypass, uninstalled required cgroup, or compatibility fix requiring broad privilege expansion. Propose a bounded corrective instead of weakening acceptance criteria.
+
+## 11. Cross-tool and Git corrective dependency clarification
+
+Full qualification includes command-authorization M001–M003 effect-equivalence evidence and Linux M001 C001 typed Git policy, C002 contained local Git, C003 mediated remote transport. A staged subset may close only as an explicitly scoped capability; do not treat unimplemented SSH or a missing remote Git credential broker as equivalent to a secured transport. Do not declare M001 complete until its legitimate Git mutation failures have a documented verified resolution, not a command-name denial.
