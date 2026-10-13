@@ -66,7 +66,7 @@ fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
 #[cfg(windows)]
 fn start_pipe_fixture() -> io::Result<(Runtime, JoinHandle<()>, String)> {
     let pipe_name = format!("codegg-c020-{}", std::process::id());
-    let pipe_path = format!(r"\.pipe{pipe_name}");
+    let pipe_path = format!(r"\\.\pipe\{pipe_name}");
     let server = ServerOptions::new()
         .first_pipe_instance(true)
         .create(&pipe_path)?;

@@ -165,6 +165,7 @@ try {
     }
 
     $resultPath = Join-Path $stage 'child-result.json'
+    $childScriptPath = Join-Path $stage 'child-probe.ps1'
     $script = @"
 `$observed = [ordered]@{}
 `$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -195,9 +196,6 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
 `$observed.descendant_pid = `$descendant.Id
 [IO.File]::WriteAllText(`$env:C021_RESULT, (`$observed | ConvertTo-Json -Compress))
 "@
-    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-    $commandLine = [Text.StringBuilder]::new("`"$windowsPowerShell`" -NoLogo -NoProfile -NonInteractive -EncodedCommand $encodedScript")
-
     $environment = [ordered]@{
         C021_STAGE = $stage
         SystemDrive = $env:SystemDrive
@@ -228,6 +226,10 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
             '$env:' + $_.Key + ' = ' + (ConvertTo-Json -InputObject ([string]$_.Value) -Compress)
         }) -join "`n"
     $script = $childEnvironmentSetup + "`n" + $script
+    [IO.File]::WriteAllText($childScriptPath, $script, [Text.Encoding]::Unicode)
+    $commandText = "`"$windowsPowerShell`" -NoLogo -NoProfile -NonInteractive -File `"$childScriptPath`""
+    $commandLine = [Text.StringBuilder]::new(32768)
+    [void]$commandLine.Append($commandText)
     $startup = [C021StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C021StartupInfo])
     $processInfo = [C021ProcessInformation]::new()
