@@ -1,8 +1,8 @@
 # Windows Native Sandbox C037 — MXC Handle-propagation Semantics and Bypass Matrix
 
-Status: **ready for bounded test-only implementation; native execution operationally gated by eligible Windows 11 ARM64**
+Status: **active — bounded test-only implementation; native execution operationally gated by eligible Windows 11 ARM64**
 Primary class: security invariant corrective
-Baseline: `work/windows-native-sandbox-foundation` at `84faa0bd585e7161361bdb255f29e70cdf7ab619` (refresh at handoff).
+Baseline: `work/windows-native-sandbox-foundation` at `e8ebeb1df8a9b97907ffebfbaf47d05c13f16f77` after the C036 toolchain correction.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.
 Authority: ADR-0024 only; historical C033/C035 closed-negative and C034 no-admission unchanged; ADR-0021 privileged alternatives still rejected.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
