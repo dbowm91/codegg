@@ -5,7 +5,7 @@ Class: capability / compatibility
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 Source roadmap: `plans/subsystems/eggsearch-evidence-workflows-roadmap.md`
 References: `plans/003-planning-process.md`; `plans/implementation/tool-surface-upstream-compatibility/007-eggsearch-0.3.9-surface-alignment.md`.
-Hard dependency: strict legacy-retirement M001 release/provider-contract closure.
+Hard dependency: strict legacy-retirement M001 **pre-release development pin/provider-contract and paired-process compatibility** closure; no CodeGG release or installer qualification required.
 
 ## 1. Objective
 
