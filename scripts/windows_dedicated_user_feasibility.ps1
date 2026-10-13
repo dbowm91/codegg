@@ -6,6 +6,7 @@ $accountCreated = $false
 $hardlink = $null
 $stage = Join-Path $env:RUNNER_TEMP "codegg-c021-stage-$runId"
 $hostFixture = Join-Path $env:RUNNER_TEMP "codegg-c021-host-$runId"
+$siblingFixture = Join-Path $env:RUNNER_TEMP "codegg-c021-sibling-$runId"
 $junction = Join-Path $env:RUNNER_TEMP "codegg-c021-junction-$runId"
 $job = [IntPtr]::Zero
 $processInfo = $null
@@ -150,8 +151,11 @@ try {
 
     Set-PrivateDirectoryAcl -Path $stage -Sids @($accountSid, $adminSid, $systemSid)
     Set-PrivateDirectoryAcl -Path $hostFixture -Sids @($adminSid, $systemSid)
+    Set-PrivateDirectoryAcl -Path $siblingFixture -Sids @($adminSid, $systemSid)
     $secret = Join-Path $hostFixture 'synthetic-operator-secret.txt'
+    $siblingSecret = Join-Path $siblingFixture 'synthetic-sibling-secret.txt'
     [IO.File]::WriteAllText($secret, 'synthetic-c021-secret')
+    [IO.File]::WriteAllText($siblingSecret, 'synthetic-c021-sibling')
     $caseAlias = Join-Path $hostFixture 'SYNTHETIC-OPERATOR-SECRET.TXT'
     $hardlink = Join-Path $env:RUNNER_TEMP "codegg-c021-hardlink-$runId.txt"
     $ads = "$secret`:c021"
@@ -163,7 +167,9 @@ try {
 
     $stageDaclBefore = Get-DaclFingerprint $stage
     $hostDaclBefore = Get-DaclFingerprint $hostFixture
+    $siblingDaclBefore = Get-DaclFingerprint $siblingFixture
     $secretHashBefore = (Get-FileHash -LiteralPath $secret -Algorithm SHA256).Hash
+    $siblingSecretHashBefore = (Get-FileHash -LiteralPath $siblingSecret -Algorithm SHA256).Hash
     if ([IO.File]::ReadAllText($secret) -ne 'synthetic-c021-secret') {
         throw 'Runner administrator cannot read the protected synthetic secret fixture.'
     }
@@ -194,6 +200,7 @@ try {
 try { [IO.File]::WriteAllText([IO.Path]::Combine(`$env:C021_STAGE, 'stage-write.txt'), 'stage-ok'); `$observed.stage_write = 'allowed' } catch { `$observed.stage_write = 'failed:' + `$_.Exception.GetType().Name }
 foreach (`$probe in @(
     @{ name='direct'; path=`$env:C021_SECRET },
+    @{ name='sibling'; path=`$env:C021_SIBLING_SECRET },
     @{ name='junction'; path=`$env:C021_JUNCTION },
     @{ name='case_alias'; path=`$env:C021_CASE_ALIAS },
     @{ name='hardlink'; path=`$env:C021_HARDLINK },
@@ -256,6 +263,7 @@ try {
         C021_PYTHON = $python
         C021_CARGO = $cargo
         C021_SECRET = $secret
+        C021_SIBLING_SECRET = $siblingSecret
         C021_JUNCTION = Join-Path $junction 'synthetic-operator-secret.txt'
         C021_CASE_ALIAS = $caseAlias
         C021_HARDLINK = $hardlink
@@ -341,8 +349,10 @@ try {
         }
     }
     $hostDaclAfter = Get-DaclFingerprint $hostFixture
+    $siblingDaclAfter = Get-DaclFingerprint $siblingFixture
     $stageDaclAfter = Get-DaclFingerprint $stage
     $secretHashAfter = (Get-FileHash -LiteralPath $secret -Algorithm SHA256).Hash
+    $siblingSecretHashAfter = (Get-FileHash -LiteralPath $siblingSecret -Algorithm SHA256).Hash
     $report = [ordered]@{
         contract = 'codegg.windows_dedicated_user_feasibility.v1'
         host_edition = (Get-CimInstance Win32_OperatingSystem).Caption
@@ -362,8 +372,12 @@ try {
         stage_dacl_after_sha256 = $stageDaclAfter
         host_fixture_dacl_before_sha256 = $hostDaclBefore
         host_fixture_dacl_after_sha256 = $hostDaclAfter
+        sibling_fixture_dacl_before_sha256 = $siblingDaclBefore
+        sibling_fixture_dacl_after_sha256 = $siblingDaclAfter
         host_secret_sha256_before = $secretHashBefore
         host_secret_sha256_after = $secretHashAfter
+        sibling_secret_sha256_before = $siblingSecretHashBefore
+        sibling_secret_sha256_after = $siblingSecretHashAfter
         original_host_acl_changed = $false
         network_isolation = 'not tested and not claimed'
     }
@@ -372,16 +386,18 @@ try {
     $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
     if (-not $launchJobVerified -or $result.stage_write -ne 'allowed' -or
         $result.child_sid -ne $accountSid -or $result.child_is_administrator -or
-        $result.git -ne 'allowed' -or
+        $result.git -ne 'allowed' -or $result.read_sibling -ne 'denied' -or
         -not $descendantGone -or $hostDaclBefore -ne $hostDaclAfter -or
-        $secretHashBefore -ne $secretHashAfter) {
+        $secretHashBefore -ne $secretHashAfter -or
+        $siblingDaclBefore -ne $siblingDaclAfter -or
+        $siblingSecretHashBefore -ne $siblingSecretHashAfter) {
         throw 'C021 strict identity, stage, Job, cleanup, or host-fixture invariant failed.'
     }
     if ($result.inherited_secret_handle -ne 'not_transferred') {
         throw 'C021 leaked the marked inheritable synthetic host-secret handle.'
     }
     if ($result.operator_pipe -ne 'denied') { throw 'C021 child connected to the synthetic operator-only named pipe.' }
-    foreach ($name in @('direct','junction','case_alias','hardlink','ads')) {
+    foreach ($name in @('direct','sibling','junction','case_alias','hardlink','ads')) {
         $readResult = $result.PSObject.Properties["read_$name"].Value
         if ($readResult -ne 'denied') { throw "C021 host read probe was not denied: $name" }
     }
@@ -414,7 +430,8 @@ try {
     if (Test-Path -LiteralPath $junction) { Remove-Item -LiteralPath $junction -Force -ErrorAction SilentlyContinue }
     if ($hardlink -and (Test-Path -LiteralPath $hardlink)) { Remove-Item -LiteralPath $hardlink -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $hostFixture) { Remove-Item -LiteralPath $hostFixture -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $siblingFixture) { Remove-Item -LiteralPath $siblingFixture -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
-    Write-Output "C021_CLEANUP host_fixture_removed=$(-not (Test-Path -LiteralPath $hostFixture)) stage_removed=$(-not (Test-Path -LiteralPath $stage))"
+    Write-Output "C021_CLEANUP host_fixture_removed=$(-not (Test-Path -LiteralPath $hostFixture)) sibling_fixture_removed=$(-not (Test-Path -LiteralPath $siblingFixture)) stage_removed=$(-not (Test-Path -LiteralPath $stage))"
     if ($securePassword) { $securePassword.Dispose() }
 }
