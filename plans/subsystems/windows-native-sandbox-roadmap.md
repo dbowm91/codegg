@@ -159,6 +159,12 @@ Evidence basis `research/windows-native-sandbox/c023-c026-corrective-assessment.
 
 **2026-10-13 handoff refinement and result:** C024's hosted result satisfied the normal-account broad-read control but did not launch the restricted child. The tested candidate therefore has no read-denial evidence and is not admitted; C025's lifecycle gate did not open, and C026 records no-admission. A future candidate still needs the two-process same-file contrast, actual child token provenance, stage/tool compatibility and pre-resume Job ownership. See `research/windows-native-sandbox/c023-c026-corrective-assessment.md` and C024–C026 `17` supplements.
 
+## ADR-0020 post-C026 launch interop corrective
+
+**C027 ready:** `plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md`. The C024 hosted negative `CreateProcessAsUserW` run (Win32 123/2) used an implicit ANSI P/Invoke declaration despite naming UTF-16 `CreateProcessAsUserW`. This is a concrete candidate FFI defect; independent Unicode `CreateProcessWithTokenW` errors/timeouts may have other causes. A single bounded test-only pass must prove: correct Unicode ABI → actual **unrestricted primary-token API child** with minimal executable, token and Job provenance → actual **read-restricted primary-token child** denied read of the same unchanged broad-group-readable synthetic host file while permitted stage/Git/shell operations work. If the initial control fails, stop negative/blocked rather than confuse launch failure with security denial.
+
+The original C024 negative candidate, C025 closed without execution and C026 no-admission records are immutable evidence, not hard dependencies on this narrowly new diagnostic. No existing downstream plan auto-unblocks on positive C027: new lifecycle/review/production architecture would require separate approval. C011/M004–M006 and C015–C018 remain blocked; constrained Windows production `SandboxRequest::Required` stays unavailable; no filesystem/network `Enforced` or original user ACL changes. See `research/windows-native-sandbox/c023-c026-corrective-assessment.md`.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -226,6 +232,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C024 | closed (negative candidate) | `plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md` | `plans/closure/windows-native-sandbox/024-status.md` | Run `38362309506`, SHA `645f24a1`: normal principal read the broad-group fixture; restricted-token child did not launch; fixtures unchanged. No read-denial claim. |
 | C025 | closed without execution | `plans/implementation/windows-native-sandbox/025-dedicated-principal-lifecycle-recovery.md` | `plans/closure/windows-native-sandbox/025-status.md` | C024 strict-positive gate failed; lifecycle/reboot/concurrency work was abandoned under the plan's stop condition. |
 | C026 | closed — no admission | `plans/implementation/windows-native-sandbox/026-independent-review-and-admission-decision.md` | `plans/closure/windows-native-sandbox/026-status.md` | No candidate qualified; no positive proposal or independent positive review claim. |
+| C027 | ready | `plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md` | — | C024 could not launch restricted primary-token child; observed missing UTF-16 P/Invoke; bounded test-only interop and same-file proof |
 | C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 closed negative; requires an accepted successor architecture decision and a newly qualified strict-positive feasibility gate |
 | C016 | blocked | `plans/implementation/windows-native-sandbox/016-appcontainer-projection-launch-and-toolchain-qualification.md` | — | C015 strict positive bounded snapshot closure |
 | C017 | blocked | `plans/implementation/windows-native-sandbox/017-authorized-projection-output-reconciliation.md` | — | C016 strict positive restricted projection execution |
