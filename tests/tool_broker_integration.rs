@@ -280,6 +280,7 @@ fn make_ctx_with_grant(
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 
@@ -316,6 +317,7 @@ fn make_ctx_with_grant_snapshot(
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 
@@ -736,6 +738,7 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     };
     let err = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -778,6 +781,7 @@ async fn broker_authorized_programmatic_caller_accepted() {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     };
     let result = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -887,6 +891,7 @@ async fn broker_validate_pre_execution_caller_policy() {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     };
 
     let err = broker

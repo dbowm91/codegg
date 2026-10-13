@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation Roadmap
 
-Status: active — M001–M002 closed; M003–M004 ready
+Status: active — M001–M004 closed
 
 Research baseline: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (main, 2026-10-13)
 
@@ -155,7 +155,7 @@ Stop and propose an ADR instead of improvising if fixing this requires replacing
 |---|---|---|---|
 | M001 | closed | `implementation/agent-tool-runtime-reconciliation/001-mcp-broker-transport-adapter.md` | None — closure `plans/closure/agent-tool-runtime-reconciliation/001-status.md` |
 | M002 | closed | `implementation/agent-tool-runtime-reconciliation/002-external-tool-discovery-and-generation.md` | None — closure `plans/closure/agent-tool-runtime-reconciliation/002-status.md` (hard M001 satisfied) |
-| M003 | ready | `implementation/agent-tool-runtime-reconciliation/003-descendant-tool-authority-ceilings.md` | Hard M002 satisfied; rebaseline before code change |
-| M004 | ready | `implementation/agent-tool-runtime-reconciliation/004-provider-deferral-wire-qualification.md` | Hard M002 satisfied (M003 soft); rebaseline before code change |
+| M003 | closed | `implementation/agent-tool-runtime-reconciliation/003-descendant-tool-authority-ceilings.md` | None — closure `plans/closure/agent-tool-runtime-reconciliation/003-status.md` (hard M002 satisfied) |
+| M004 | closed | `implementation/agent-tool-runtime-reconciliation/004-provider-deferral-wire-qualification.md` | None — closure `plans/closure/agent-tool-runtime-reconciliation/004-status.md` (hard M002 + soft M003 satisfied) |
 
 Roadmap closes only on separate accepted closure records with traced commits, executable evidence and honest operational limitations. Prior closed milestone history is unchanged.

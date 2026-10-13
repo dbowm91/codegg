@@ -1031,8 +1031,35 @@ application-level deadlines remain the correctness bound for provider streams.
 - **ExternalCommand disabled**: Both `AuthResolver::resolve` and
   `ExternalCommandProvider::fetch` return `AuthError::Unsupported`.
 - **ContentPart::Reasoning is skip-serialized**: Never appears on the wire.
-- **ToolDefinition.defer_loading**: Annotated on each tool definition;
-  providers that support it (anthropic, openai) honor it; others ignore it.
+- **ToolDefinition.defer_loading**: Annotated on each tool definition for
+  host-side palette/discovery partitioning. Wire effect is qualified per
+  `ToolDisclosureWireMode` (below) — a family capability flag never
+  implies native support for the selected wire/model.
+
+### Tool disclosure wire modes (`provider_core.rs`, M004)
+
+`ToolDisclosureWireMode` names how deferred tools are actually disclosed
+on the wire: `FullCompatibility` (complete authorized array + ordinary
+CodeGG `tool_search` function), `NativeOpenAiToolSearch`, or
+`NativeAnthropicToolSearch`. `qualify_tool_disclosure(provider_id,
+model)` selects the mode by exact provider/model match against reviewed
+allowlist constants (`NATIVE_OPENAI_TOOL_SEARCH_MODELS`,
+`NATIVE_ANTHROPIC_TOOL_SEARCH_MODELS`) — both empty until a
+combination completes byte-level + two-turn live qualification, so all
+production traffic is `FullCompatibility` with byte-identical behavior
+to the pre-M004 baseline. Measured baseline (40 mixed tools):
+Chat ≈19.7 kB, Responses ≈20.4 kB, Messages ≈19.2 kB vs 755 B for a
+compact top-10; deferred schemas ≈12.1 kB of the full array.
+
+Wire census (pinned `eggpool-wire`): generic Chat **drops**
+`defer_loading` while sending full schemas (advertised deferral is a
+no-op there); Responses/Messages preserve the flags but emit no
+provider search entry (inert without one); unknown provider stream
+items decode to nothing executable (or a typed stream error — never a
+synthesized client call). Native emitters
+(`wire::apply_native_openai_tool_search` /
+`apply_native_anthropic_tool_search`) are fixture-proven and gated.
+Guard: `scripts/check_tool_disclosure_wire.py`.
 - **FallbackProvider creates one CircuitBreaker per provider** at
   construction time, not lazily.
 

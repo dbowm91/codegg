@@ -311,7 +311,7 @@ Four questions have four different owners; do not conflate them.
 | Question | Owner | Notes |
 |---|---|---|
 | Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. The live `ToolCatalog` shares this lifecycle. |
-| Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. |
+| Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. Actual wire emission is qualified per `ToolDisclosureWireMode` (M004): only a reviewed native mode changes the bytes; unqualified combinations send the full array as full compatibility. |
 | Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. The catalog is live for late registration, results are deterministic, capped at 10, and empty queries return none. |
 | Callable? | `ToolBroker` + permission + contracts | Disclosure never widens authority; denied/hidden tools stay non-callable. |
 

@@ -151,6 +151,14 @@ pub struct ToolExecutionContext {
     /// approval mode. Subagent construction reads this as the parent
     /// ceiling; missing means the pre-M005 default (`workspace_write`).
     pub sandbox_profile: Option<String>,
+    /// Descendant ceiling (agent-tool-runtime-reconciliation M003):
+    /// host-minted [`ParentToolAuthoritySnapshot`](crate::agent::parent_authority::ParentToolAuthoritySnapshot)
+    /// for the `task` delegation boundary. Populated by the agent loop
+    /// from the parent turn's live effective surface at delegation time;
+    /// never from model tool arguments. `TaskTool` attaches it to the
+    /// child request/payload; missing on the model-driven path fails
+    /// closed at delegation.
+    pub parent_tool_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
 }
 
 impl ToolExecutionContext {
@@ -195,6 +203,7 @@ impl ToolExecutionContext {
             decision_revoked_at: None,
             program_contract_snapshot: None,
             sandbox_profile: None,
+            parent_tool_authority: None,
             execution_audit: None,
             audit_emitter: None,
         }

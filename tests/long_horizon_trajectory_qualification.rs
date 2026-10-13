@@ -261,6 +261,7 @@ async fn insert_subagent_job(
                 denied_tools: Vec::new(),
                 allowed_paths: Vec::new(),
                 max_tool_calls: None,
+                parent_authority: None,
             },
         ))
         .await

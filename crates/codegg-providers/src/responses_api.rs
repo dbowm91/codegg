@@ -243,6 +243,14 @@ pub struct ResponsesTool {
     /// Whether the tool is strict (schema-enforced).
     #[serde(default)]
     pub strict: Option<bool>,
+    /// Deferred loading flag (M004). Propagated from
+    /// [`crate::provider_core::ToolDefinition::defer_loading`]; omitted
+    /// when `None` so compatibility payloads are byte-stable.
+    /// Fixture-qualified only: no live Responses API has confirmed the
+    /// exact deferred-function representation, so native emission stays
+    /// gated behind [`crate::provider_core::qualify_tool_disclosure`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 impl ResponsesTool {
@@ -254,7 +262,21 @@ impl ResponsesTool {
             description: Some(def.description.clone()),
             parameters: def.parameters.clone(),
             strict: None,
+            defer_loading: def.defer_loading,
         }
+    }
+
+    /// Provider-owned native tool-search entry (M004).
+    ///
+    /// This is the provider built-in `{"type":"tool_search"}` — NOT
+    /// CodeGG's model-callable `tool_search` function (which keeps its
+    /// `{"type":"function","name":"tool_search",...}` shape and must
+    /// never be confused with this entry: the built-in never dispatches
+    /// through the `ToolRegistry`). The exact built-in shape is
+    /// fixture-qualified against vendor documentation, not live-proven;
+    /// native emission stays gated.
+    pub fn native_tool_search_entry() -> serde_json::Value {
+        serde_json::json!({"type": "tool_search"})
     }
 }
 
@@ -1538,6 +1560,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn responses_tool_propagates_defer_loading() {
+        // M004: the deferred flag survives DTO conversion (omitted when
+        // unset so compatibility payloads stay byte-stable).
+        let immediate = crate::provider_core::ToolDefinition {
+            name: "read".into(),
+            description: "read".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            defer_loading: None,
+        };
+        let tool = ResponsesTool::from_tool_definition(&immediate);
+        assert_eq!(tool.tool_type, "function");
+        assert!(tool.defer_loading.is_none());
+        assert!(serde_json::to_value(&tool)
+            .unwrap()
+            .get("defer_loading")
+            .is_none());
+
+        let deferred = crate::provider_core::ToolDefinition {
+            defer_loading: Some(true),
+            ..immediate
+        };
+        let tool = ResponsesTool::from_tool_definition(&deferred);
+        assert_eq!(tool.defer_loading, Some(true));
+        assert_eq!(
+            serde_json::to_value(&tool).unwrap()["defer_loading"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn native_tool_search_entry_is_not_a_function() {
+        // M004: the provider built-in is exactly {"type":"tool_search"}
+        // and is structurally distinct from CodeGG's host function.
+        let entry = ResponsesTool::native_tool_search_entry();
+        assert_eq!(entry, serde_json::json!({"type": "tool_search"}));
+        assert!(entry.get("name").is_none());
+        // Structural distinction from the host function (no cross-module
+        // helper: the direct bridge must stay off this subsystem).
+        assert_ne!(
+            entry,
+            serde_json::json!({"type": "function", "name": "tool_search"})
+        );
+    }
+
+    #[test]
     fn provider_capabilities_hosted_support() {
         let caps = ProviderCapabilities::for_provider("openai");
         assert!(caps.supports_responses_api);
@@ -1632,6 +1699,7 @@ mod tests {
                 description: Some("Read a file".to_string()),
                 parameters: serde_json::json!({"type": "object"}),
                 strict: None,
+                defer_loading: None,
             }]),
             include_usage: true,
             instructions: Some("You are helpful".to_string()),

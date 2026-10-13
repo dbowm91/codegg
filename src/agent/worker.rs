@@ -103,6 +103,13 @@ pub struct SubAgentRequest {
     /// M005: explicitly requested child profile (`None` = inherit parent).
     /// A request for `FullHost` under a constrained parent fails closed.
     pub sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
+    /// Descendant ceiling (M003): host-minted parent authority snapshot.
+    /// `Some` on the model-driven `task` path (validated + enforced) and
+    /// on scheduler payloads that carry the additive field; `None` marks
+    /// an explicit root/system delegation (research, security review,
+    /// legacy payloads) with existing denied/filtered behavior. Never
+    /// from model arguments.
+    pub parent_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1225,15 +1232,84 @@ async fn execute_agent_task(
         tool_registry.filter_out(&request.denied_tools);
     }
 
+    // Descendant ceiling (M003): validate the host-minted delegation
+    // snapshot before it shapes the child registry or surface. `Some`
+    // arrives only via TaskTool execution context / registration state
+    // or scheduler payload decoding — never from model arguments.
+    // `None` marks an explicit root/system delegation (research
+    // evidence, security review, legacy scheduler payloads) and keeps
+    // the existing denied/filtered behavior; the model-driven `task`
+    // path always carries `Some` and fails closed at delegation when
+    // unavailable. Any validation failure fails the child closed.
+    let validated_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot> =
+        match request.parent_authority.clone() {
+            Some(snapshot) => {
+                if !snapshot.verify_integrity() {
+                    return Err(format!(
+                        "child tool authority failed integrity (InvalidParentReceipt fp={})",
+                        snapshot.snapshot_fingerprint
+                    )
+                    .into());
+                }
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                if now_ms > snapshot.expires_at_ms {
+                    return Err(
+                        "child tool authority expired (InvalidParentReceipt); delegation refused"
+                            .into(),
+                    );
+                }
+                if let Some(parent_id) = request.parent_id.as_deref() {
+                    if snapshot.parent_session_id != parent_id {
+                        return Err("child tool authority session mismatch (InvalidParentReceipt); delegation refused".into());
+                    }
+                }
+                // Generation staleness: a pinned non-empty MCP generation
+                // that disagrees with the live catalog fails closed
+                // (StaleGeneration). See `check_generation_fresh` for the
+                // empty-side contract.
+                if let Some(mcp_arc) = search_runtime.mcp() {
+                    if let Ok(guard) = mcp_arc.try_read() {
+                        let live = guard.catalog_fingerprint();
+                        if let Err(reason) = crate::agent::parent_authority::check_generation_fresh(
+                            &snapshot.mcp_generation,
+                            &live,
+                        ) {
+                            return Err(format!(
+                            "child tool authority is stale ({reason} pinned={} live={}); delegation refused",
+                            snapshot.mcp_generation, live
+                        )
+                        .into());
+                        }
+                    }
+                }
+                Some(snapshot)
+            }
+            None => {
+                tracing::debug!(
+                    task_id = request.task_id,
+                    "subagent delegation without parent tool authority (system delegation)"
+                );
+                None
+            }
+        };
+
     // Nested delegation is opt-in at the resolved agent definition. The
     // shared pool is installed only when the target has an explicit `task`
     // permission and the request did not inherit a task denial.
+    // M003: a parent ceiling without `task` additionally withholds nested
+    // delegation — the child cannot resurrect what the parent never had.
     let can_delegate = agent
         .permissions
         .get("task")
         .is_some_and(|level| level.eq_ignore_ascii_case("allow"))
         && !request.denied_tools.iter().any(|tool| tool == "task")
-        && config.subagent.as_ref().and_then(|s| s.enabled) != Some(false);
+        && config.subagent.as_ref().and_then(|s| s.enabled) != Some(false)
+        && validated_authority
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.eligible_tools.contains("task"));
+    // M003: deferred nested-`task` registration (authority attached
+    // after the child ceiling is resolved below).
+    let mut nested_task_tool: Option<crate::tool::task::TaskTool> = None;
     if can_delegate {
         // Acquire the four option slots concurrently rather than in
         // sequence; each is uncontended and the clones are cheap Arcs.
@@ -1326,7 +1402,10 @@ async fn execute_agent_task(
             Some(groups) => task_tool.with_run_group_service(Some(groups)),
             None => task_tool,
         };
-        tool_registry.register(task_tool);
+        // M003: registration is deferred until the validated child
+        // ceiling is known (see below); the narrowed snapshot is
+        // attached first so nested delegation can only shrink.
+        nested_task_tool = Some(task_tool);
     }
 
     let mut agent_rules = crate::permission::PermissionRuleset::default();
@@ -1364,15 +1443,102 @@ async fn execute_agent_task(
         .iter()
         .map(|(canonical, wire)| (wire.clone(), canonical.clone()))
         .collect();
-    let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry_with_aliases(
-        &tool_registry,
-        &denied,
-        &disabled,
-        agent_name == "plan",
-        None,
-        &wire_to_canonical,
-    )
-    .map_err(|error| format!("invalid subagent tool surface: {error:?}"))?;
+    // M003: exact-name pre-filter — anything the parent never had
+    // cannot reach the child surface even before capability checks.
+    // A wrapper the parent never saw (e.g. a newly registered safer
+    // tool) defaults to denied; only an explicit narrower host-held
+    // allow-rule may re-admit it, which this path does not invent.
+    if let Some(snapshot) = validated_authority.as_ref() {
+        let foreign: Vec<String> = tool_registry
+            .list()
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .filter(|name| !snapshot.eligible_tools.contains(name))
+            .collect();
+        if !foreign.is_empty() {
+            tracing::debug!(
+                task_id = request.task_id,
+                omitted = foreign.len(),
+                parent_fp = %snapshot.snapshot_fingerprint,
+                "subagent registry narrowed by parent tool ceiling"
+            );
+            tool_registry.filter_out(&foreign);
+        }
+    }
+    let surface = match validated_authority.as_ref() {
+        Some(snapshot) => {
+            crate::agent::tool_surface::ResolvedToolSurface::from_registry_with_parent_authority(
+                &tool_registry,
+                &denied,
+                &disabled,
+                agent_name == "plan",
+                &wire_to_canonical,
+                snapshot,
+            )
+            .map_err(|error| format!("invalid subagent tool surface: {error:?}"))?
+        }
+        None => crate::agent::tool_surface::ResolvedToolSurface::from_registry_with_aliases(
+            &tool_registry,
+            &denied,
+            &disabled,
+            agent_name == "plan",
+            None,
+            &wire_to_canonical,
+        )
+        .map_err(|error| format!("invalid subagent tool surface: {error:?}"))?,
+    };
+    // M003: narrow the delegation snapshot to this child's effective
+    // surface for broker admission and nested delegation. The ancestry
+    // upper bound is retained transitively without ever broadening.
+    let child_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot> =
+        validated_authority.as_ref().map(|snapshot| {
+            let narrowed = snapshot.narrow_for_child(&surface);
+            tracing::debug!(
+                task_id = request.task_id,
+                eligible = narrowed.eligible_tools.len(),
+                omissions = surface.omissions.len(),
+                parent_fp = %snapshot.snapshot_fingerprint,
+                child_fp = %narrowed.snapshot_fingerprint,
+                "resolved subagent tool ceiling"
+            );
+            narrowed
+        });
+    // Cross-workspace binding: a child root inside the pinned parent
+    // scope (equal or contained) proceeds directly. A root outside it
+    // (isolated worktree delegation) is permitted only through verified
+    // durable lineage, where the run record binds parent → child.
+    // Ephemeral spawns always share the parent root.
+    if let Some(snapshot) = validated_authority.as_ref() {
+        let scope = std::path::Path::new(&snapshot.workspace_scope);
+        let within = request
+            .workspace_root
+            .as_ref()
+            .is_some_and(|root| root == scope || root.starts_with(scope));
+        if !within {
+            let Some(ref run_id) = request.run_id else {
+                return Err("child workspace outside parent scope without durable lineage (InvalidParentReceipt); delegation refused".into());
+            };
+            let store_guard = subagent_pool.durable_agent_runs.lock().await;
+            let Some(store) = store_guard.clone() else {
+                return Err("child workspace outside parent scope with no run store (InvalidParentReceipt); delegation refused".into());
+            };
+            drop(store_guard);
+            let run = store
+                .get_run(run_id)
+                .await
+                .map_err(|error| format!("durable subagent run lookup failed: {error}"))?
+                .ok_or_else(|| {
+                    "durable subagent run is missing (InvalidParentReceipt)".to_string()
+                })?;
+            let run_parent = run.parent_run_id.as_ref().map(|id| id.to_string());
+            if run_parent != snapshot.parent_run_id {
+                return Err("child run lineage does not match parent authority (InvalidParentReceipt); delegation refused".into());
+            }
+        }
+    }
+    if let Some(task_tool) = nested_task_tool {
+        tool_registry.register(task_tool.with_parent_tool_authority(child_authority.clone()));
+    }
     let mut available_tools: Vec<String> = surface
         .tools
         .iter()
@@ -1423,6 +1589,11 @@ async fn execute_agent_task(
     // narrowing through the snapshot ceiling).
     agent_loop.set_sandbox_profile(effective_child);
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
+    // M003: install the validated, narrowed child ceiling for broker
+    // admission (`allowed_tools` manifest) and nested delegation.
+    if let Some(authority) = child_authority.clone() {
+        agent_loop.set_parent_tool_authority(authority);
+    }
 
     // The durable control service feeds these existing loop channels.  The
     // registration happens only after the loop owns the receivers, so a
@@ -1687,6 +1858,7 @@ mod admission_tests {
             workspace_locks: None,
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            parent_authority: None,
         }
     }
 

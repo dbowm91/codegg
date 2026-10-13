@@ -350,6 +350,7 @@ fn subagent_payload(agent: &str) -> JobPayload {
         denied_tools: vec![],
         allowed_paths: vec![],
         max_tool_calls: None,
+        parent_authority: None,
     }
 }
 

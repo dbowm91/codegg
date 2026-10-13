@@ -130,6 +130,12 @@ pub struct AgentLoop {
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    /// M003 (descendant ceilings): host-attested parent tool authority
+    /// imposed on this loop. `None` for root turns (no parent ceiling);
+    /// `Some` for child turns after the worker validates the delegation
+    /// snapshot. Read at broker admission (`allowed_tools` manifest) and
+    /// threaded into `task` execution contexts for nested delegation.
+    pub(super) parent_tool_authority: Option<super::parent_authority::ParentToolAuthoritySnapshot>,
     /// Host-owned habit observation state. Only allowlisted structural action
     /// metadata reaches this collector; raw calls/results remain in the
     /// ordinary model execution path and are never persisted here.
@@ -465,6 +471,7 @@ impl AgentLoop {
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
+            parent_tool_authority: None,
             habit_project_namespace,
             habit_actions: Vec::new(),
             habit_had_failure: false,
@@ -804,6 +811,23 @@ impl AgentLoop {
 
     pub fn sandbox_profile(&self) -> codegg_core::approval::SandboxProfile {
         self.services.sandbox_profile
+    }
+
+    /// M003 (descendant ceilings): install the worker-validated parent
+    /// authority snapshot for a child turn. Root turns leave this `None`.
+    /// Only host code calls this — the value never comes from model input.
+    pub fn set_parent_tool_authority(
+        &mut self,
+        snapshot: super::parent_authority::ParentToolAuthoritySnapshot,
+    ) {
+        self.parent_tool_authority = Some(snapshot);
+    }
+
+    /// Validated parent ceiling for this loop, if it is a child turn.
+    pub fn parent_tool_authority(
+        &self,
+    ) -> Option<&super::parent_authority::ParentToolAuthoritySnapshot> {
+        self.parent_tool_authority.as_ref()
     }
 
     /// M003: capture the immutable effective execution-policy snapshot for

@@ -1030,6 +1030,13 @@ pub enum JobPayload {
         denied_tools: Vec<String>,
         allowed_paths: Vec<String>,
         max_tool_calls: Option<u32>,
+        /// Descendant ceiling (M003): JSON-encoded host-minted parent
+        /// tool authority snapshot (typed in the root crate; decoded and
+        /// validated host-side by the scheduler executor). `None` marks a
+        /// legacy payload or an explicit root/system delegation without a
+        /// model-path ceiling — never an unrestricted default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_authority: Option<String>,
     },
     /// Scheduler payload carrying canonical durable agent ownership. The
     /// legacy `Subagent` variant remains readable for standalone callers and
@@ -1050,6 +1057,9 @@ pub enum JobPayload {
         /// Host-validated immutable Git base for a convergence child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_commit: Option<String>,
+        /// Descendant ceiling (M003): same contract as `Subagent`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_authority: Option<String>,
     },
     Test {
         command: String,

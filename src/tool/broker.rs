@@ -105,6 +105,15 @@ pub struct BrokerInvocationContext {
     pub workspace_path_policy_id: Option<String>,
     /// M013-C-06: Allowed tools manifest for scope verification.
     pub allowed_tools: Option<Vec<String>>,
+    /// Descendant ceiling (agent-tool-runtime-reconciliation M003):
+    /// host-minted parent tool authority snapshot, threaded from the
+    /// agent loop's delegation-time mint through the broker into the
+    /// inner [`ToolExecutionContext`](super::backend::ToolExecutionContext)
+    /// so `task` delegation carries the same ceiling end to end.
+    /// `None` on non-delegation paths (programs, MCP adapters, legacy
+    /// callers); a missing snapshot on the model-driven `task` path
+    /// fails closed at delegation, never unrestricted.
+    pub parent_tool_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
     /// M013-C-05: Current system policy revision for stale-revision detection.
     pub current_policy_revision: Option<String>,
     /// Identity / audit live-execution M001: trusted execution-audit
@@ -189,6 +198,10 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             principal_ref: None,
             workspace_path_policy_id: None,
             allowed_tools: None,
+            // M003: legacy conversion carries no delegation ceiling;
+            // model-driven `task` delegation through this path fails
+            // closed at launch (never unrestricted).
+            parent_tool_authority: None,
             current_policy_revision: None,
             execution_audit: ctx.execution_audit,
             audit_emitter: ctx.audit_emitter,
@@ -852,6 +865,11 @@ impl ToolBroker {
                 decision_revoked_at: None,
                 program_contract_snapshot: None,
                 sandbox_profile: None,
+                // M003: forward the delegation ceiling threaded through
+                // the broker context (agent `task` path); `None`
+                // otherwise, in which case model-driven delegation fails
+                // closed at launch.
+                parent_tool_authority: ctx.parent_tool_authority.clone(),
                 execution_audit: None,
                 audit_emitter: None,
             };
@@ -1444,6 +1462,7 @@ mod tests {
             principal_ref: None,
             workspace_path_policy_id: None,
             allowed_tools: None,
+            parent_tool_authority: None,
             current_policy_revision: None,
             execution_audit: None,
             audit_emitter: None,

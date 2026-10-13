@@ -188,6 +188,9 @@ async fn run_research_child(
         // in the worker.
         parent_sandbox_profile: None,
         sandbox_profile: None,
+        // M003: explicit system delegation (no parent model surface);
+        // existing denied/filtered behavior applies.
+        parent_authority: None,
     };
     let result =
         tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;

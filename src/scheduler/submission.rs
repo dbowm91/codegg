@@ -776,6 +776,8 @@ mod tests {
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
             max_tool_calls: None,
+            // M003: system delegation without a parent model surface.
+            parent_authority: None,
         };
         let subagent_job = submission
             .submit(None, subagent_spec)

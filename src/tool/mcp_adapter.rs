@@ -1120,6 +1120,7 @@ mod tests {
             principal_ref: None,
             workspace_path_policy_id: None,
             allowed_tools: None,
+            parent_tool_authority: None,
             current_policy_revision: None,
             execution_audit: None,
             audit_emitter: None,

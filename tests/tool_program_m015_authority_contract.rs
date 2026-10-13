@@ -40,6 +40,7 @@ fn accepted_context() -> ToolExecutionContext {
         decision_revoked_at: None,
         program_contract_snapshot: None,
         sandbox_profile: None,
+        parent_tool_authority: None,
         execution_audit: None,
         audit_emitter: None,
     }

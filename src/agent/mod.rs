@@ -30,6 +30,7 @@ pub mod instructions;
 pub mod r#loop;
 mod loop_output;
 pub mod mention;
+pub mod parent_authority;
 pub mod policy;
 pub mod processor;
 pub mod progress_recovery;

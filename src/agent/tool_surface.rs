@@ -8,6 +8,7 @@
 
 use crate::provider::ToolDefinition;
 use crate::tool::{ToolBackendKind, ToolCategory};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,7 +33,11 @@ pub enum Capability {
 
 /// Typed authority summary.  This is intentionally independent of agent
 /// names and roles: labels may select prompts, never execution authority.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// M003 serializes the set inside [`ParentToolAuthoritySnapshot`](super::parent_authority::ParentToolAuthoritySnapshot)
+/// for host-persisted delegation transport (scheduler payload JSON,
+/// in-memory spawner channels) — never for model-visible output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentCapabilitySet {
     pub filesystem_read: bool,
     pub filesystem_write: bool,
@@ -221,6 +226,51 @@ impl ResolvedToolSurface {
         )
     }
 
+    /// Resolve the registry surface for a child turn under a host-attested
+    /// parent ceiling. Mirrors [`from_registry_with_aliases`](Self::from_registry_with_aliases)
+    /// (registry categories, spawner bit) then intersects exact names and
+    /// capability bits via [`resolve_with_parent_authority`](Self::resolve_with_parent_authority).
+    pub fn from_registry_with_parent_authority(
+        registry: &crate::tool::ToolRegistry,
+        denied: &BTreeSet<String>,
+        disabled: &BTreeSet<String>,
+        plan_mode: bool,
+        wire_to_canonical_aliases: &BTreeMap<String, String>,
+        parent: &super::parent_authority::ParentToolAuthoritySnapshot,
+    ) -> Result<Self, SurfaceError> {
+        let categories = registry
+            .list()
+            .into_iter()
+            .map(|tool| (tool.name().to_string(), tool.category()))
+            .collect::<BTreeMap<_, _>>();
+        let definitions = registry
+            .list()
+            .into_iter()
+            .filter(|tool| tool.expose_in_definitions())
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                parameters: tool.parameters(),
+                defer_loading: tool.defer_loading().then_some(true),
+            })
+            .collect::<Vec<_>>();
+        let has_functional_spawner = registry
+            .list()
+            .into_iter()
+            .find(|tool| tool.name() == "task")
+            .is_some_and(|tool| tool.has_functional_backend());
+        Self::resolve_with_parent_authority(
+            definitions,
+            denied,
+            disabled,
+            plan_mode,
+            has_functional_spawner,
+            wire_to_canonical_aliases,
+            &categories,
+            parent,
+        )
+    }
+
     /// Resolve a surface from already policy-filtered definitions.  Native
     /// definitions are callable by construction; `task` additionally needs
     /// the explicit functional-spawner bit.  MCP names are namespaced and
@@ -382,6 +432,67 @@ impl ResolvedToolSurface {
         })
     }
 
+    /// Resolve a descendant surface under a host-attested parent ceiling.
+    ///
+    /// M003: applies the standard deny/disable/plan/spawner filters first,
+    /// then intersects **both** the exact eligible canonical names and the
+    /// typed capability bits from `parent`. A tool sharing a capability bit
+    /// with an eligible tool is still denied when its name is absent, and
+    /// an eligible name whose capabilities exceed the ceiling is still
+    /// denied — both reported as [`ToolOmissionReason::ParentCeiling`].
+    /// Wire aliases are canonicalized before membership checking, and alias
+    /// collisions still fail the whole resolution. The surface fingerprint
+    /// binds the parent snapshot fingerprint, so parent generation/policy
+    /// changes invalidate descendant cache identity derived from it.
+    pub fn resolve_with_parent_authority(
+        definitions: impl IntoIterator<Item = ToolDefinition>,
+        denied: &BTreeSet<String>,
+        disabled: &BTreeSet<String>,
+        plan_mode: bool,
+        has_functional_spawner: bool,
+        wire_to_canonical_aliases: &BTreeMap<String, String>,
+        categories: &BTreeMap<String, ToolCategory>,
+        parent: &super::parent_authority::ParentToolAuthoritySnapshot,
+    ) -> Result<Self, SurfaceError> {
+        let mut surface = Self::resolve_with_categories(
+            definitions,
+            denied,
+            disabled,
+            plan_mode,
+            has_functional_spawner,
+            Some(parent.capabilities),
+            wire_to_canonical_aliases,
+            categories,
+        )?;
+        let mut removed = Vec::new();
+        surface.tools.retain(|tool| {
+            let kept = parent.eligible_tools.contains(&tool.canonical_name);
+            if !kept {
+                removed.push(tool.canonical_name.clone());
+            }
+            kept
+        });
+        for canonical_name in removed {
+            surface.omissions.push(ToolOmission {
+                canonical_name,
+                reason: ToolOmissionReason::ParentCeiling,
+            });
+        }
+        surface
+            .canonical_to_wire
+            .retain(|name, _| surface.tools.iter().any(|t| &t.canonical_name == name));
+        surface
+            .wire_to_canonical
+            .retain(|_, name| surface.tools.iter().any(|t| &t.canonical_name == name));
+        surface.fingerprint = fingerprint_with_parent(
+            &surface.tools,
+            &surface.canonical_to_wire,
+            &surface.capabilities,
+            &parent.snapshot_fingerprint,
+        );
+        Ok(surface)
+    }
+
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools
             .iter()
@@ -519,6 +630,33 @@ fn fingerprint(
     capabilities: &AgentCapabilitySet,
 ) -> String {
     let mut material = String::new();
+    fingerprint_material(&mut material, tools, aliases, capabilities);
+    format!("sha256:{:x}", Sha256::digest(material.as_bytes()))
+}
+
+/// Surface fingerprint additionally bound to a parent authority snapshot
+/// fingerprint. [`fingerprint`] is unchanged: the parent binding line is
+/// appended only here, so root fingerprints are byte-stable.
+fn fingerprint_with_parent(
+    tools: &[ResolvedTool],
+    aliases: &BTreeMap<String, String>,
+    capabilities: &AgentCapabilitySet,
+    parent_fingerprint: &str,
+) -> String {
+    let mut material = String::new();
+    fingerprint_material(&mut material, tools, aliases, capabilities);
+    material.push('\n');
+    material.push_str("parent:");
+    material.push_str(parent_fingerprint);
+    format!("sha256:{:x}", Sha256::digest(material.as_bytes()))
+}
+
+fn fingerprint_material(
+    material: &mut String,
+    tools: &[ResolvedTool],
+    aliases: &BTreeMap<String, String>,
+    capabilities: &AgentCapabilitySet,
+) {
     for tool in tools {
         material.push_str(&tool.canonical_name);
         material.push('\0');
@@ -534,7 +672,6 @@ fn fingerprint(
         material.push('\n');
     }
     material.push_str(&format!("caps:{:?}", capabilities.capabilities()));
-    format!("sha256:{:x}", Sha256::digest(material.as_bytes()))
 }
 
 #[cfg(test)]

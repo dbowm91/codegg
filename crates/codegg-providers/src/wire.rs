@@ -328,6 +328,127 @@ pub fn encode_anthropic_messages(request: &ChatRequest) -> Result<Value, Provide
     Ok(body)
 }
 
+/// Provider-owned Anthropic tool-search variant (M004).
+///
+/// Fixture-qualified against vendor documentation only — no live
+/// Anthropic API has confirmed this exact entry shape, so native
+/// emission stays gated behind
+/// [`crate::qualify_tool_disclosure`]. The constant keeps the shape in
+/// exactly one place for tests and the (gated) emitter.
+pub const ANTHROPIC_NATIVE_TOOL_SEARCH_VARIANT: &str = "tool_search_tool_bm25_20251119";
+
+/// Whether a serialized tools entry is a provider-owned search entry
+/// (OpenAI `{"type":"tool_search"}` or the Anthropic variant) as
+/// opposed to CodeGG's ordinary `tool_search` *function*.
+pub fn is_provider_tool_search_entry(entry: &Value) -> bool {
+    match entry.get("type").and_then(Value::as_str) {
+        Some("tool_search") => true,
+        Some(variant) => variant == ANTHROPIC_NATIVE_TOOL_SEARCH_VARIANT,
+        None => false,
+    }
+}
+
+fn native_tools_array<'a>(
+    body: &'a mut Value,
+    surface: &str,
+) -> Result<&'a mut Vec<Value>, ProviderError> {
+    body.get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            ProviderError::api(
+                "native_tool_search",
+                format!("native tool search on {surface} requires a tools array"),
+            )
+        })
+}
+
+/// Apply the OpenAI Responses native tool-search shape to an already
+/// encoded request body (M004).
+///
+/// Deferred function entries keep their full definitions with
+/// `defer_loading: true` (set here when the shared codec omitted it);
+/// the provider-owned `{"type":"tool_search"}` built-in is appended
+/// exactly once; CodeGG's ordinary host `tool_search` *function* is
+/// removed from advertisement (it stays registry-callable, just not
+/// provider-advertised — the provider owns discovery in native mode).
+/// A missing tools array is a typed error so the caller falls back to
+/// [`crate::ToolDisclosureWireMode::FullCompatibility`] instead of
+/// sending a silently incomplete request.
+pub fn apply_native_openai_tool_search(
+    body: &mut Value,
+    deferred_function_names: &[String],
+) -> Result<(), ProviderError> {
+    let tools = native_tools_array(body, "openai_responses")?;
+    for tool in tools.iter_mut() {
+        let is_function = tool.get("type").and_then(Value::as_str) == Some("function");
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if is_function && deferred_function_names.iter().any(|n| n == &name) {
+            tool["defer_loading"] = Value::Bool(true);
+        }
+    }
+    tools.retain(|tool| {
+        !(tool.get("type").and_then(Value::as_str) == Some("function")
+            && tool.get("name").and_then(Value::as_str) == Some("tool_search"))
+    });
+    if !tools.iter().any(is_provider_tool_search_entry) {
+        // Provider-owned builtin, inlined (not via `responses_api`: the
+        // direct stateless bridge must not route through the
+        // hosted/stateful Responses subsystem —
+        // `check_provider_multi_surface_dispatch.py`). Shape owned by
+        // `ResponsesTool::native_tool_search_entry` (asserted equal in
+        // the disclosure fixtures).
+        tools.push(serde_json::json!({"type": "tool_search"}));
+    }
+    Ok(())
+}
+
+/// Apply the Anthropic Messages native tool-search shape (M004).
+///
+/// Every full tool definition is retained on the request with
+/// `defer_loading: true` on deferable entries; the search entry itself
+/// stays immediate (any defer flag on it is removed); CodeGG's host
+/// `tool_search` tool is removed from advertisement; the
+/// provider-owned variant is appended exactly once. Entry shape is
+/// fixture-qualified, not live-proven — native emission stays gated.
+pub fn apply_native_anthropic_tool_search(
+    body: &mut Value,
+    deferred_tool_names: &[String],
+) -> Result<(), ProviderError> {
+    let tools = native_tools_array(body, "anthropic_messages")?;
+    for tool in tools.iter_mut() {
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if deferred_tool_names.iter().any(|n| n == &name) {
+            tool["defer_loading"] = Value::Bool(true);
+        }
+    }
+    tools.retain(|tool| {
+        tool.get("name").and_then(Value::as_str) != Some("tool_search")
+            || is_provider_tool_search_entry(tool)
+    });
+    for tool in tools.iter_mut() {
+        if is_provider_tool_search_entry(tool) {
+            if let Some(object) = tool.as_object_mut() {
+                object.remove("defer_loading");
+            }
+        }
+    }
+    if !tools.iter().any(is_provider_tool_search_entry) {
+        tools.push(serde_json::json!({
+            "type": ANTHROPIC_NATIVE_TOOL_SEARCH_VARIANT,
+            "name": ANTHROPIC_NATIVE_TOOL_SEARCH_VARIANT,
+        }));
+    }
+    Ok(())
+}
+
 /// Preserve a provider's previously qualified OpenAI-compatible omission
 /// contract for optional fields it does not accept.
 pub fn omit_openai_fields(body: &mut Value, fields: &[&str]) {
@@ -1792,6 +1913,255 @@ mod responses_surface_tests {
         assert!(
             output.iter().any(Result::is_err),
             "Responses error event must surface, got {output:?}"
+        );
+    }
+}
+
+/// M004 baseline wire census + native disclosure fixtures.
+///
+/// The census pins what the shared kernel actually emits today (see the
+/// M004 closure for the full matrix): deferral flags without a
+/// provider-native search entry are inert on every surface, and generic
+/// Chat Completions drops the flag entirely.
+#[cfg(test)]
+mod disclosure_tests {
+    use super::*;
+    use crate::{ChatEvent, ChatRequest, ContentPart, Message, ToolDefinition};
+    use futures_util::StreamExt;
+    use std::sync::Arc;
+
+    fn tool(name: &str, deferred: bool) -> ToolDefinition {
+        ToolDefinition {
+            name: name.into(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object"}),
+            defer_loading: deferred.then_some(true),
+        }
+    }
+
+    fn disclosure_request() -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new("hello".into()),
+                }],
+            }],
+            model: "probe-model".into(),
+            tools: Some(vec![
+                tool("read", false),
+                tool("write", true),
+                ToolDefinition {
+                    name: "tool_search".into(),
+                    description: "host discovery".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    defer_loading: None,
+                },
+            ]),
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: Default::default(),
+        }
+    }
+
+    fn function_entries(body: &Value) -> Vec<Value> {
+        body.get("tools")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn census_chat_drops_defer_loading_but_sends_full_schemas() {
+        // Generic OpenAI-compatible Chat: the flag never reaches the
+        // wire, yet every schema is sent. Advertised "deferral" here is
+        // a no-op — FullCompatibility must say so honestly.
+        let body = encode_openai_chat(&disclosure_request(), None, false).unwrap();
+        let tools = function_entries(&body);
+        assert_eq!(tools.len(), 3);
+        for tool in &tools {
+            assert_eq!(tool["type"], "function");
+            assert!(
+                tool.get("defer_loading").is_none(),
+                "chat must not carry defer_loading: {tool}"
+            );
+        }
+        let write = tools
+            .iter()
+            .find(|t| t["function"]["name"] == "write")
+            .unwrap();
+        assert!(write["function"]["parameters"].is_object());
+        assert!(
+            body.get("tools").is_some(),
+            "deferred schemas are still sent in full"
+        );
+    }
+
+    #[test]
+    fn census_responses_preserves_flags_without_search_entry() {
+        let body = encode_openai_responses(&disclosure_request(), false).unwrap();
+        let tools = function_entries(&body);
+        assert_eq!(tools.len(), 3);
+        let write = tools.iter().find(|t| t["name"] == "write").unwrap();
+        assert_eq!(write["defer_loading"], Value::Bool(true));
+        let read = tools.iter().find(|t| t["name"] == "read").unwrap();
+        assert!(read.get("defer_loading").is_none());
+        assert!(
+            !tools.iter().any(is_provider_tool_search_entry),
+            "no provider-native search entry is emitted today"
+        );
+    }
+
+    #[test]
+    fn census_anthropic_preserves_flags_without_search_variant() {
+        let body = encode_anthropic_messages(&disclosure_request()).unwrap();
+        let tools = function_entries(&body);
+        assert_eq!(tools.len(), 3);
+        let write = tools.iter().find(|t| t["name"] == "write").unwrap();
+        assert_eq!(write["defer_loading"], Value::Bool(true));
+        assert!(
+            !tools.iter().any(is_provider_tool_search_entry),
+            "no provider-native search variant is emitted today"
+        );
+    }
+
+    #[test]
+    fn native_openai_apply_emits_builtin_once_and_drops_host_search() {
+        let mut body = encode_openai_responses(&disclosure_request(), false).unwrap();
+        apply_native_openai_tool_search(&mut body, &["write".to_string()]).unwrap();
+        let tools = function_entries(&body);
+        // Host tool_search function removed; builtin present exactly once.
+        assert!(!tools.iter().any(
+            |t| t.get("type").and_then(Value::as_str) == Some("function")
+                && t.get("name").and_then(Value::as_str) == Some("tool_search")
+        ));
+        let builtins: Vec<_> = tools
+            .iter()
+            .filter(|t| is_provider_tool_search_entry(t))
+            .collect();
+        assert_eq!(builtins.len(), 1);
+        assert_eq!(builtins[0], &serde_json::json!({"type": "tool_search"}));
+        // Deferred flags enforced on the wire representation.
+        let write = tools
+            .iter()
+            .find(|t| t.get("name").and_then(Value::as_str) == Some("write"))
+            .unwrap();
+        assert_eq!(write["defer_loading"], Value::Bool(true));
+        // Immediate tools keep full schemas.
+        let read = tools
+            .iter()
+            .find(|t| t.get("name").and_then(Value::as_str) == Some("read"))
+            .unwrap();
+        assert!(read["parameters"].is_object());
+        // Idempotent: a second application does not duplicate the builtin.
+        apply_native_openai_tool_search(&mut body, &["write".to_string()]).unwrap();
+        assert_eq!(
+            function_entries(&body)
+                .iter()
+                .filter(|t| is_provider_tool_search_entry(t))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn native_openai_apply_requires_a_tools_array() {
+        let mut body = serde_json::json!({"model": "x"});
+        let err = apply_native_openai_tool_search(&mut body, &["write".to_string()])
+            .expect_err("missing tools array must fail, not silently skip");
+        assert!(err.to_string().contains("tools array"), "got: {err}");
+    }
+
+    #[test]
+    fn native_anthropic_apply_emits_variant_and_keeps_full_definitions() {
+        let mut body = encode_anthropic_messages(&disclosure_request()).unwrap();
+        apply_native_anthropic_tool_search(&mut body, &["write".to_string()]).unwrap();
+        let tools = function_entries(&body);
+        // Full definitions retained (Anthropic carries every definition).
+        assert!(tools.iter().any(|t| t["name"] == "read"));
+        let write = tools.iter().find(|t| t["name"] == "write").unwrap();
+        assert_eq!(write["defer_loading"], Value::Bool(true));
+        // Host search removed; variant present exactly once and immediate.
+        assert!(!tools
+            .iter()
+            .any(|t| t["name"] == "tool_search" && !is_provider_tool_search_entry(t)));
+        let variants: Vec<_> = tools
+            .iter()
+            .filter(|t| is_provider_tool_search_entry(t))
+            .collect();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0]["type"], ANTHROPIC_NATIVE_TOOL_SEARCH_VARIANT);
+        assert!(variants[0].get("defer_loading").is_none());
+        apply_native_anthropic_tool_search(&mut body, &["write".to_string()]).unwrap();
+        assert_eq!(
+            function_entries(&body)
+                .iter()
+                .filter(|t| is_provider_tool_search_entry(t))
+                .count(),
+            1
+        );
+    }
+
+    const PROVIDER_SEARCH_STREAM: &str = concat!(
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"ts_1\",",
+        "\"type\":\"tool_search_call\",\"query\":\"read a file\"}}\n\n",
+        "event: response.output_item.done\n",
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",",
+        "\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\",",
+        "\"arguments\":\"{\\\"path\\\":\\\"a.txt\\\"}\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",",
+        "\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+    );
+
+    #[tokio::test]
+    async fn provider_search_items_never_become_executable_calls() {
+        // A provider-owned search item must never surface as a
+        // client-executable ToolCall, and no client ToolResult may be
+        // invented for the provider-owned search id.
+        //
+        // Census observation: the pinned kernel cannot yet represent a
+        // provider search item — it fails the stream closed with a typed
+        // `provider_stream` error rather than executing anything. That
+        // failure is the honest behavior today (nothing executes), and
+        // it is load-bearing evidence for leaving native mode disabled
+        // until hosted search results are preservable end to end.
+        let stream = futures_util::stream::iter([Ok::<_, std::io::Error>(
+            PROVIDER_SEARCH_STREAM.as_bytes().to_vec(),
+        )]);
+        let output: Vec<_> = openai_responses_stream(stream, None, None).collect().await;
+        let calls: Vec<_> = output
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ChatEvent::ToolCall(call)) => Some(call.name.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            calls.iter().all(|name| name == "read"),
+            "only real calls may surface, got: {output:?}"
+        );
+        let results: Vec<_> = output
+            .iter()
+            .filter_map(|event| match event {
+                Ok(ChatEvent::ToolResult { content, .. }) => Some(content.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            results.iter().all(|content| !content.contains("ts_1")),
+            "no invented tool result for provider search: {results:?}"
+        );
+        // Whatever the kernel did (drop or typed stream error), the
+        // provider search id must not be executable or completable.
+        assert!(
+            !calls.iter().any(|name| name.contains("search")),
+            "no search-named call may surface: {output:?}"
         );
     }
 }

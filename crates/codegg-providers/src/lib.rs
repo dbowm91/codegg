@@ -62,11 +62,13 @@ pub use opencode_go::PROVIDER_ID as OPENCODE_GO_PROVIDER_ID;
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
-    register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
-    EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
-    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ProviderWirePolicy,
-    ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
-    MAX_REASONING_BYTES,
+    qualify_tool_disclosure, qualify_tool_disclosure_with_allowlist, register_builtin,
+    register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, EventStream, ImageUrl,
+    Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities, ProviderCredentialCapability,
+    ProviderRegistry, ProviderRequestContext, ProviderWirePolicy, ReasoningVisibility,
+    ResponseFormat, TokenUsage, ToolCall, ToolDefinition, ToolDisclosureQualification,
+    ToolDisclosureWireMode, MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
+    NATIVE_ANTHROPIC_TOOL_SEARCH_MODELS, NATIVE_OPENAI_TOOL_SEARCH_MODELS,
 };
 pub use provider_profile::{
     adapted_provider_ids, is_wire_resolved, resolve_route, shared_base_url, shared_provider_id,

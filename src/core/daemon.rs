@@ -2445,6 +2445,9 @@ impl CoreDaemon {
                         denied_tools: Vec::new(),
                         allowed_paths: Vec::new(),
                         max_tool_calls: None,
+                        // M003: user-initiated collaboration task — explicit
+                        // root delegation without a parent model surface.
+                        parent_authority: None,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Subagent,
@@ -2550,6 +2553,9 @@ impl CoreDaemon {
                         denied_tools: Vec::new(),
                         allowed_paths: Vec::new(),
                         max_tool_calls: None,
+                        // M003: user-initiated collaboration task — explicit
+                        // root delegation without a parent model surface.
+                        parent_authority: None,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Subagent,

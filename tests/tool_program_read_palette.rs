@@ -302,6 +302,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 
@@ -332,6 +333,7 @@ fn agent_ctx() -> BrokerInvocationContext {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 

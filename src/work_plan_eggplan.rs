@@ -1618,6 +1618,7 @@ mod tests {
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
             max_tool_calls: None,
+            parent_authority: None,
         };
         assert!(verification_digest_for_job(&legacy).is_err());
         // Research payloads prove no execution semantics.
@@ -1643,6 +1644,7 @@ mod tests {
             run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
             delegation_key: "dk".to_string(),
             base_commit: None,
+            parent_authority: None,
         };
         let mut first = test_job_record();
         first.payload = payload(

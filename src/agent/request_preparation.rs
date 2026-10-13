@@ -991,6 +991,14 @@ impl AgentLoop {
 
         let permission_version = self.permission_version();
 
+        // M004: qualify the disclosure wire mode before cache lookup so
+        // every turn records its mode — cache hits reuse cached defs but
+        // re-report mode + reason (no sticky state; model switch and
+        // failover always re-evaluate).
+        let provider_id = self.services.provider.id();
+        let model_name: &str = model.map(String::as_str).unwrap_or_default();
+        let disclosure = crate::provider::qualify_tool_disclosure(provider_id, model_name);
+
         if let Some((
             ref cache_model,
             cache_plan,
@@ -1022,6 +1030,19 @@ impl AgentLoop {
             {
                 let mut definitions = cached_defs.clone();
                 self.services.deferred_tool_definitions = cached_deferred.clone();
+                // M004: per-turn mode truth on the cache-hit path (counts
+                // from the reused defs; byte accounting lives on the
+                // uncached build below).
+                tracing::debug!(
+                    provider = %provider_id,
+                    model = %model_name,
+                    disclosure_mode = %disclosure.mode.as_str(),
+                    disclosure_reason = %disclosure.reason,
+                    cache_hit = true,
+                    immediate_tools = definitions.len(),
+                    deferred_tools = self.services.deferred_tool_definitions.len(),
+                    "selected tool disclosure wire mode"
+                );
 
                 // M002 §5D: confine hook output to the cached authorized
                 // surface. Additions, renames, invalid schemas and
@@ -1279,8 +1300,12 @@ impl AgentLoop {
             );
         }
 
-        // Partition tools into immediate vs deferred based on provider capabilities
-        let provider_id = self.services.provider.id();
+        // Partition tools into immediate vs deferred (host-side palette
+        // reduction for discovery/counts). The partition is palette
+        // truth; only a qualified native `disclosure.mode` changes wire
+        // emission, and no combination is qualified without on-wire proof
+        // — so FullCompatibility sends the complete authorized array
+        // exactly as before.
         let caps = crate::provider::ProviderCapabilities::for_provider(provider_id);
         let deferral_enabled = self
             .services
@@ -1305,6 +1330,11 @@ impl AgentLoop {
             .as_ref()
             .and_then(|td| td.max_initial_tools);
 
+        // M004: the host partition is preserved whenever the provider
+        // family is deferral-capable (palette/discovery/cache behavior
+        // unchanged); the wire mode is qualified independently. A generic
+        // ID match never enables native emission — see
+        // `qualify_tool_disclosure`.
         let (definitions, deferred) = if deferral_enabled && caps.supports_defer_loading {
             let mut immediate = Vec::new();
             let mut deferred_tools = Vec::new();
@@ -1422,6 +1452,41 @@ impl AgentLoop {
                 agent = %snapshotted.agent_name,
                 surface_fingerprint = %surface.fingerprint,
                 "resolved tool descriptor snapshot"
+            );
+        }
+        // M004 observability: per-turn disclosure mode truth. Only a
+        // qualified native mode changes wire emission; everything else
+        // logs full compatibility (never native deferral) with the
+        // fallback reason plus exact definition bytes for tradeoff
+        // analysis. No credentials, endpoints, or schemas.
+        {
+            let immediate_bytes: usize = definitions
+                .iter()
+                .map(|def| {
+                    serde_json::to_string(&def.parameters)
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                })
+                .sum();
+            let deferred_bytes: usize = deferred
+                .iter()
+                .map(|def| {
+                    serde_json::to_string(&def.parameters)
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                })
+                .sum();
+            tracing::debug!(
+                provider = %provider_id,
+                model = %model_name,
+                disclosure_mode = %disclosure.mode.as_str(),
+                disclosure_reason = %disclosure.reason,
+                cache_hit = false,
+                immediate_tools = definitions.len(),
+                deferred_tools = deferred.len(),
+                immediate_schema_bytes = immediate_bytes,
+                deferred_schema_bytes = deferred_bytes,
+                "selected tool disclosure wire mode"
             );
         }
 

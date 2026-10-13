@@ -594,6 +594,7 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls,
             run_id,
             base_commit,
+            parent_authority_encoded,
         ) = match &ctx.job.payload {
             JobPayload::Subagent {
                 prompt,
@@ -603,6 +604,7 @@ impl JobExecutor for SubagentJobExecutor {
                 denied_tools,
                 allowed_paths,
                 max_tool_calls,
+                parent_authority,
             } => (
                 prompt.clone(),
                 agent.clone(),
@@ -613,6 +615,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 None,
                 None,
+                parent_authority.clone(),
             ),
             JobPayload::SubagentRun {
                 prompt,
@@ -624,6 +627,7 @@ impl JobExecutor for SubagentJobExecutor {
                 max_tool_calls,
                 run_id,
                 base_commit,
+                parent_authority,
                 ..
             } => (
                 prompt.clone(),
@@ -635,6 +639,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 Some(run_id.clone()),
                 base_commit.clone(),
+                parent_authority.clone(),
             ),
             _ => {
                 return failure_completion(
@@ -892,6 +897,28 @@ impl JobExecutor for SubagentJobExecutor {
         } else {
             None
         };
+        // M003: decode the host-persisted delegation snapshot. A
+        // present-but-corrupt snapshot fails the job closed; an absent
+        // one (legacy payload / system delegation) keeps the existing
+        // denied/filtered behavior.
+        let parent_authority = match parent_authority_encoded {
+            Some(encoded) => {
+                match crate::agent::parent_authority::decode_parent_authority(&encoded) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(_) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!(
+                                "corrupt parent tool authority for scheduler job {}",
+                                ctx.job.job_id.as_str()
+                            ),
+                        );
+                    }
+                }
+            }
+            None => None,
+        };
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             run_id: run_id.clone(),
@@ -920,6 +947,7 @@ impl JobExecutor for SubagentJobExecutor {
             // via the registry wiring in the worker.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            parent_authority,
         };
         let effective_workspace_root = request.workspace_root.clone();
 

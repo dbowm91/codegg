@@ -311,6 +311,65 @@ impl AgentLoop {
         resolve_tool_timeout(self.get_tool_timeout(tool_name), arguments)
     }
 
+    /// Mint the host-attested tool ceiling for one direct `task`
+    /// delegation (descendant ceilings M003).
+    ///
+    /// Re-resolves the parent turn's effective surface from the **live**
+    /// registry at delegation time — role denies, plan mode, spawner
+    /// availability — so a concurrent revocation narrows the next child
+    /// immediately instead of riding a stale turn-start snapshot. The
+    /// snapshot itself stays immutable once minted; expiry bounds it.
+    /// Any failure (invalid surface, clock, registry) returns `Err` and
+    /// the delegation fails closed — never an unrestricted `None`.
+    pub(super) fn mint_delegation_ceiling(
+        &self,
+    ) -> Result<super::parent_authority::ParentToolAuthoritySnapshot, String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let denied: BTreeSet<String> = self
+            .services
+            .agents
+            .get(&self.state.current_agent)
+            .map(|agent| {
+                agent
+                    .permissions
+                    .iter()
+                    .filter(|(_, level)| level.eq_ignore_ascii_case("deny"))
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let surface = super::tool_surface::ResolvedToolSurface::from_registry_with_aliases(
+            &self.services.tool_registry,
+            &denied,
+            &BTreeSet::new(),
+            self.state.plan_mode,
+            None,
+            &BTreeMap::new(),
+        )
+        .map_err(|error| format!("parent tool surface is invalid: {error:?}"))?;
+        let (mcp_generation, _) = super::tool_descriptor_snapshot::snapshot_mcp_identities(
+            self.services.mcp_service.as_ref(),
+        );
+        let plugin_activation_rev = super::tool_descriptor_snapshot::plugin_activation_revision(
+            self.plugin_service.as_ref(),
+        );
+        Ok(super::parent_authority::ParentToolAuthoritySnapshot::mint(
+            super::parent_authority::ParentAuthorityMintInput {
+                parent_session_id: self.session_id.clone(),
+                parent_turn_id: self.turn_id.clone(),
+                parent_run_id: self.run_id.clone().map(|id| id.to_string()),
+                parent_agent: self.state.current_agent.clone(),
+                workspace_scope: self.workspace_root.to_string_lossy().into_owned(),
+                surface,
+                mcp_generation,
+                plugin_activation_rev,
+                policy_revision: format!("config:{:016x}", self.permission_version()),
+                max_effect_class: "non_idempotent".into(),
+                now_ms: chrono::Utc::now().timestamp_millis(),
+            },
+        ))
+    }
+
     pub(super) fn build_tool_execution_context(
         &self,
         tc: &ToolCall,
@@ -341,6 +400,15 @@ impl AgentLoop {
             // M005: parent sandbox ceiling for subagent construction.
             // Approval mode never mutates this value.
             sandbox_profile: Some(snapshot.sandbox_profile().as_str().to_owned()),
+            // Descendant ceiling (M003): minted live for `task`
+            // delegations only. A mint failure yields `None` here and
+            // `TaskTool` fails the delegation closed — the child never
+            // runs unrestricted.
+            parent_tool_authority: if tc.name.as_str() == "task" {
+                self.mint_delegation_ceiling().ok()
+            } else {
+                None
+            },
             timeout_ms,
             invocation_key: Some(invocation_key),
             turn_id: self.turn_id.clone(),
@@ -1337,6 +1405,13 @@ impl AgentLoop {
         };
         let agent_id = self.state.current_agent.clone();
         let batch_snapshot_for_ctx = batch_snapshot.clone();
+        // Descendant ceiling (M003): the validated parent eligible set
+        // for a child loop, cloned before the `async move` boundary.
+        // Root loops carry `None` (previous behavior: no manifest bind).
+        let child_allowed_tools = self
+            .parent_tool_authority
+            .as_ref()
+            .map(|authority| authority.allowed_tools_sorted());
         for (orig_idx, tc, receipt) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -1370,6 +1445,7 @@ impl AgentLoop {
             let authority_ref = authority_ref.clone();
             let agent_workspace_id = agent_workspace_id.clone();
             let agent_id = agent_id.clone();
+            let child_allowed_tools = child_allowed_tools.clone();
             let idx_for_results = orig_idx;
             let event_store = event_store.clone();
             let tool_broker = Arc::clone(&tool_broker);
@@ -1557,6 +1633,9 @@ impl AgentLoop {
                             let authority_ref = authority_ref.clone();
                             let agent_workspace_id = agent_workspace_id.clone();
                             let agent_id = agent_id.clone();
+                            // M003: fresh clone per attempt — the ceiling
+                            // list is moved into `exec_fut` below.
+                            let child_allowed_tools = child_allowed_tools.clone();
                             let exec_fut = async move {
                                 // M014-A2: Build manifest digest from the tool name.
                                 // For AgentLoop direct calls, the manifest is the
@@ -1678,7 +1757,23 @@ impl AgentLoop {
                                         "workspace:{}",
                                         ws_id_for_ctx
                                     )),
-                                    allowed_tools: None,
+                                    // Descendant ceiling (M003): child
+                                    // loops bind the validated parent
+                                    // eligible set, so the broker
+                                    // manifest check denies any child
+                                    // tool outside the pinned ceiling —
+                                    // including tools injected after
+                                    // child launch. Root loops carry
+                                    // `None` (previous behavior).
+                                    allowed_tools: child_allowed_tools.clone(),
+                                    // M003: forward the delegation-time
+                                    // ceiling so `task` execution keeps
+                                    // the same host-minted authority end
+                                    // to end (broker rebuilds the inner
+                                    // execution context from this).
+                                    parent_tool_authority: exec_ctx
+                                        .parent_tool_authority
+                                        .clone(),
                                     current_policy_revision: Some(policy_revision_for_ctx),
                                     // M001: preserve daemon-threaded trusted
                                     // audit context when the execution

@@ -87,6 +87,7 @@ fn build_subagent_spec(workspace: &WorkspaceId) -> NewJob {
             denied_tools: vec![],
             allowed_paths: vec![],
             max_tool_calls: None,
+            parent_authority: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

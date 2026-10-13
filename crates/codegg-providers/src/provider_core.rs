@@ -229,6 +229,125 @@ impl ProviderCapabilities {
     }
 }
 
+/// Honest tool-disclosure wire mode (agent-tool-runtime-reconciliation
+/// M004). Names how deferred tools are actually disclosed on the wire —
+/// measured serialization, not a capability flag.
+///
+/// `ProviderCapabilities::supports_defer_loading` only records that a
+/// provider *family* is capable of deferral; it never proved the
+/// currently selected wire/API/model combination emits a provider-native
+/// search entry. Mode selection must use this qualified representation:
+/// a generic ID match or `supports_responses_api` alone is insufficient,
+/// and unrecognized combinations are `FullCompatibility`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolDisclosureWireMode {
+    /// Send the authorized complete tool definitions (current baseline)
+    /// with CodeGG `tool_search` as an ordinary model-callable function.
+    /// Logged as full compatibility — never as native deferral.
+    FullCompatibility,
+    /// OpenAI Responses native path: deferred function flags in the
+    /// documented representation plus the provider-owned
+    /// `{"type":"tool_search"}` built-in. Feature-gated until a
+    /// model/API combination completes byte-level + two-turn
+    /// qualification (see `NATIVE_OPENAI_TOOL_SEARCH_MODELS`).
+    NativeOpenAiToolSearch,
+    /// Anthropic Messages native path: full definitions every request
+    /// with `defer_loading:true` on deferable entries plus the
+    /// provider-owned tool-search variant. Feature-gated until qualified
+    /// (see `NATIVE_ANTHROPIC_TOOL_SEARCH_MODELS`).
+    NativeAnthropicToolSearch,
+}
+
+impl ToolDisclosureWireMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullCompatibility => "full_compatibility",
+            Self::NativeOpenAiToolSearch => "native_openai_tool_search",
+            Self::NativeAnthropicToolSearch => "native_anthropic_tool_search",
+        }
+    }
+
+    pub fn is_native(self) -> bool {
+        !matches!(self, Self::FullCompatibility)
+    }
+}
+
+/// Models with on-wire-qualified native OpenAI tool search.
+///
+/// EMPTY: no model/provider combination has completed byte-level +
+/// two-turn discover→call qualification against a live API, so no
+/// production traffic may claim native deferral. Enabling a model
+/// requires the fixture + live evidence recorded in the M004 closure
+/// (or a successor), never an ID-similarity inference.
+pub const NATIVE_OPENAI_TOOL_SEARCH_MODELS: &[&str] = &[];
+
+/// Models with on-wire-qualified native Anthropic tool search.
+///
+/// EMPTY for the same reason as
+/// [`NATIVE_OPENAI_TOOL_SEARCH_MODELS`]: deferred flags without the
+/// provider search entry are inert, and the entry shape is
+/// fixture-qualified only until a live two-turn run confirms it.
+pub const NATIVE_ANTHROPIC_TOOL_SEARCH_MODELS: &[&str] = &[];
+
+/// Qualified disclosure decision with a bounded fallback reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDisclosureQualification {
+    pub mode: ToolDisclosureWireMode,
+    /// Machine-readable reason (`unqualified_provider`,
+    /// `unqualified_model`, `native_openai_qualified`, ...). No
+    /// credentials, endpoints, or tool schemas.
+    pub reason: &'static str,
+}
+
+/// Qualify tool disclosure for one provider/model pair against the
+/// reviewed native allowlists. Unknown providers, unknown models, and
+/// any model not on the matching native list fall back conservatively
+/// to [`ToolDisclosureWireMode::FullCompatibility`].
+///
+/// Matching is exact on both axes: a generic OpenAI-compatible
+/// endpoint that happens to share a vendor label or model prefix never
+/// inherits native support.
+pub fn qualify_tool_disclosure(provider_id: &str, model: &str) -> ToolDisclosureQualification {
+    qualify_tool_disclosure_with_allowlist(
+        provider_id,
+        model,
+        NATIVE_OPENAI_TOOL_SEARCH_MODELS,
+        NATIVE_ANTHROPIC_TOOL_SEARCH_MODELS,
+    )
+}
+
+/// [`qualify_tool_disclosure`] with injectable allowlists (fixture and
+/// test seam; production passes the reviewed constants).
+pub fn qualify_tool_disclosure_with_allowlist(
+    provider_id: &str,
+    model: &str,
+    openai_models: &[&str],
+    anthropic_models: &[&str],
+) -> ToolDisclosureQualification {
+    if provider_id == "openai" && openai_models.contains(&model) {
+        return ToolDisclosureQualification {
+            mode: ToolDisclosureWireMode::NativeOpenAiToolSearch,
+            reason: "native_openai_qualified",
+        };
+    }
+    if provider_id == "anthropic" && anthropic_models.contains(&model) {
+        return ToolDisclosureQualification {
+            mode: ToolDisclosureWireMode::NativeAnthropicToolSearch,
+            reason: "native_anthropic_qualified",
+        };
+    }
+    if provider_id != "openai" && provider_id != "anthropic" {
+        return ToolDisclosureQualification {
+            mode: ToolDisclosureWireMode::FullCompatibility,
+            reason: "unqualified_provider",
+        };
+    }
+    ToolDisclosureQualification {
+        mode: ToolDisclosureWireMode::FullCompatibility,
+        reason: "unqualified_model",
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProviderRequestContext {
     /// Canonical conversation identity projected by the owning runtime.
@@ -1188,6 +1307,84 @@ mod tests {
     fn test_registry_new_is_empty() {
         let registry = ProviderRegistry::new();
         assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn disclosure_unknown_providers_fall_back_to_full_compatibility() {
+        // Generic OpenAI-compatible endpoints, proxies, and aliases must
+        // never inherit native support from a shared label or prefix.
+        for provider in [
+            "deepseek",
+            "groq",
+            "openrouter",
+            "opencode_go",
+            "custom",
+            "openai-compatible",
+            "openai_eu",
+            "anthropic_vertex",
+            "",
+        ] {
+            let qualified = qualify_tool_disclosure(provider, "any-model");
+            assert_eq!(
+                qualified.mode,
+                ToolDisclosureWireMode::FullCompatibility,
+                "provider {provider:?} must not claim native deferral"
+            );
+            assert_eq!(qualified.reason, "unqualified_provider");
+        }
+    }
+
+    #[test]
+    fn disclosure_known_providers_without_qualification_stay_compatible() {
+        // The reviewed allowlists are empty (no live qualification), so
+        // even the direct providers fall back — honestly logged, with
+        // byte-identical full-array behavior.
+        for (provider, model) in [
+            ("openai", "gpt-4.1"),
+            ("openai", "gpt-6-luna"),
+            ("anthropic", "claude-opus-4-6"),
+        ] {
+            let qualified = qualify_tool_disclosure(provider, model);
+            assert_eq!(
+                qualified.mode,
+                ToolDisclosureWireMode::FullCompatibility,
+                "{provider}/{model} has no live qualification"
+            );
+            assert_eq!(qualified.reason, "unqualified_model");
+        }
+    }
+
+    #[test]
+    fn disclosure_allowlist_gates_exact_provider_and_model() {
+        let openai = ["gpt-qualified"];
+        let anthropic = ["claude-qualified"];
+        let qualify = |provider: &str, model: &str| {
+            qualify_tool_disclosure_with_allowlist(provider, model, &openai, &anthropic)
+        };
+        assert_eq!(
+            qualify("openai", "gpt-qualified").mode,
+            ToolDisclosureWireMode::NativeOpenAiToolSearch
+        );
+        assert_eq!(
+            qualify("anthropic", "claude-qualified").mode,
+            ToolDisclosureWireMode::NativeAnthropicToolSearch
+        );
+        // Cross-wiring never qualifies: model on the wrong provider list,
+        // ID-similar providers, and model prefixes are all fallback.
+        for (provider, model) in [
+            ("openai", "claude-qualified"),
+            ("anthropic", "gpt-qualified"),
+            ("openai-compatible", "gpt-qualified"),
+            ("openai", "gpt-qualified-turbo"),
+            ("openai", "gpt"),
+            ("anthropic", ""),
+        ] {
+            assert_eq!(
+                qualify(provider, model).mode,
+                ToolDisclosureWireMode::FullCompatibility,
+                "{provider}/{model} must not qualify"
+            );
+        }
     }
 
     fn read_http_request(stream: &mut TcpStream) {

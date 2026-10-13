@@ -50,6 +50,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
                     denied_tools,
                     allowed_paths,
                     max_tool_calls,
+                    ..
                 } => (
                     prompt.clone(),
                     agent.clone(),
@@ -92,6 +93,20 @@ impl JobDispatcher for SubAgentJobDispatcher {
             // M005: durable-job fallback inherits the default ceiling.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            // M003: legacy durable payloads predate the ceiling (`None`
+            // → system delegation). A present-but-corrupt snapshot fails
+            // the dispatch closed, never a silent fallback.
+            parent_authority: match &job.payload {
+                JobPayload::Subagent {
+                    parent_authority: Some(encoded),
+                    ..
+                } => Some(
+                    crate::agent::parent_authority::decode_parent_authority(encoded).map_err(
+                        |_| DispatchError::Subagent("corrupt parent tool authority".to_string()),
+                    )?,
+                ),
+                _ => None,
+            },
         };
 
         self.pool

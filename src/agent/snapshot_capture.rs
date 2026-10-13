@@ -128,6 +128,8 @@ impl AgentLoop {
                         denied_tools: Vec::new(),
                         allowed_paths: vec![workspace_root.to_string_lossy().into_owned()],
                         max_tool_calls: None,
+                        // M003: system delegation without a parent surface.
+                        parent_authority: None,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Subagent,
@@ -178,6 +180,8 @@ impl AgentLoop {
             // the worker narrows to the child profile.
             parent_sandbox_profile: None,
             sandbox_profile: None,
+            // M003: explicit system delegation (no parent model surface).
+            parent_authority: None,
         };
         tokio::spawn(async move {
             // scheduler-audit: standalone-compat

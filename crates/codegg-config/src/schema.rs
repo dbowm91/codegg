@@ -2406,6 +2406,11 @@ fn discovery_roots_match(left: &DiscoveryRootConfig, right: &DiscoveryRootConfig
 }
 
 /// Configuration for tool deferral and partitioning behavior.
+///
+/// These settings drive host-side palette/discovery partitioning only.
+/// Whether deferral has any wire effect is qualified per
+/// `ToolDisclosureWireMode` (M004): unqualified provider/model pairs
+/// always send the full authorized array as full compatibility.
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct ToolDeferralConfig {

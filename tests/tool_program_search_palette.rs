@@ -165,6 +165,7 @@ fn program_ctx(
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 
@@ -214,6 +215,7 @@ fn agent_ctx(workspace: &Path) -> BrokerInvocationContext {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        parent_tool_authority: None,
     }
 }
 

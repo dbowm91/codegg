@@ -83,10 +83,33 @@ Each tool maps to one or more capabilities:
 
 ### Parent Ceiling
 
-For subagent turns, an `AgentCapabilitySet` ceiling is passed in. The
-surface intersects its capabilities with the ceiling, removing any tool
-whose required capabilities exceed the parent's authority. This prevents
-subagents from gaining capabilities the parent does not have.
+For subagent turns, a host-minted `ParentToolAuthoritySnapshot`
+(`src/agent/parent_authority.rs`) is enforced — never a bare
+capability set and never `None` on the model-driven path. The worker
+validates the snapshot (integrity fingerprint, expiry, session scope,
+MCP generation freshness) and resolves the child surface via
+`ResolvedToolSurface::from_registry_with_parent_authority` /
+`resolve_with_parent_authority`, which intersect **both** the exact
+eligible canonical names and the typed capability bits: a tool sharing
+a capability bit with an eligible tool is still denied when its name is
+absent (reported as `ParentCeiling`), and an eligible name whose
+capabilities exceed the ceiling is still denied. Wire aliases are
+canonicalized before membership checking; alias collisions fail the
+whole resolution. The surface fingerprint binds the parent snapshot
+fingerprint, so parent generation/policy changes invalidate descendant
+cache identity. Nested children re-narrow through
+`narrow_for_child`, retaining the ancestry bound transitively.
+
+Carriage: `task` execution resolves the snapshot from the live
+execution context (freshest, minted at delegation time by
+`AgentLoop::mint_delegation_ceiling`) or the registration-time
+child-effective snapshot, validates it, and attaches it to the
+`SubAgentRequest` plus the additive `parent_authority` JSON field on
+scheduler `Subagent`/`SubagentRun` payloads — never from model
+arguments. Missing/invalid on the model-driven path fails closed;
+explicit root/system delegations (research, security review, legacy
+payloads) carry `None` with existing denied/filtered behavior.
+Guard: `scripts/check_descendant_tool_ceiling.py`.
 
 ### Plan Mode Filtering
 
@@ -133,6 +156,15 @@ omitted as `MissingBackend`/`NonCallable`, never advertised as merely
 deferred. Specialist roles (`research`, `security-review`, `verifier`)
 receive their small role-appropriate immediate palette; ordinary coding
 keeps the core edit-loop primitives plus `tool_search`.
+
+Wire honesty (M004): palette states above are host-side visibility. The
+actual bytes per provider surface are selected by the qualified
+`ToolDisclosureWireMode` (`qualify_tool_disclosure`): generic Chat
+drops `defer_loading` while sending full schemas; Responses/Messages
+preserve flags but emit no provider search entry; only a reviewed
+native mode changes emission, and none is qualified — production is
+`FullCompatibility` with per-turn mode telemetry. Native emitters are
+fixture-proven and gated (`wire::apply_native_*_tool_search`).
 
 Contextual disclosure is host-derived during request preparation. An active
 Goal promotes `goal_get`, `goal_update_progress`, and

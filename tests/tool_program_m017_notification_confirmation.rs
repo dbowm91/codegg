@@ -148,6 +148,7 @@ fn accepted_context(
         decision_revoked_at: None,
         program_contract_snapshot: Some(contracts),
         sandbox_profile: None,
+        parent_tool_authority: None,
         execution_audit: None,
         audit_emitter: None,
     };

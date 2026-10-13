@@ -398,6 +398,10 @@ pub struct TaskTool {
     run_control: Option<Arc<RunControlService>>,
     parent_run_id: Option<AgentRunId>,
     run_groups: Option<Arc<AgentRunGroupService>>,
+    /// Descendant ceiling (M003): child-effective snapshot threaded by the
+    /// worker for nested delegation. The live execution context takes
+    /// precedence when present (freshest). Never from model arguments.
+    parent_tool_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
@@ -531,6 +535,7 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            parent_tool_authority: None,
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
@@ -561,6 +566,7 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            parent_tool_authority: None,
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
@@ -637,6 +643,18 @@ impl TaskTool {
         self
     }
 
+    /// Descendant ceiling (M003): child-effective snapshot for nested
+    /// delegation, set host-side by the worker from the validated child
+    /// surface. The live execution context takes precedence at spawn
+    /// time. Never populated from model tool arguments.
+    pub fn with_parent_tool_authority(
+        mut self,
+        snapshot: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
+    ) -> Self {
+        self.parent_tool_authority = snapshot;
+        self
+    }
+
     pub fn with_convergence_store(mut self, store: Option<Arc<dyn ConvergenceStore>>) -> Self {
         self.convergence_store = store;
         self
@@ -648,6 +666,53 @@ impl TaskTool {
     ) -> Self {
         self.orchestration_config = config.unwrap_or_default().bounded();
         self
+    }
+
+    /// Descendant ceiling (M003): validate the host-minted delegation
+    /// authority and return it with its host-persisted encoding.
+    /// Integrity, expiry, and session binding are enforced; any failure
+    /// — including a missing snapshot on this model-driven path — fails
+    /// closed. Explicit root/system delegations use their own host-owned
+    /// producers, not this tool.
+    pub(crate) fn require_delegation_authority(
+        &self,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<
+        (
+            crate::agent::parent_authority::ParentToolAuthoritySnapshot,
+            String,
+        ),
+        ToolError,
+    > {
+        let candidate = ctx
+            .and_then(|c| c.parent_tool_authority.clone())
+            .or_else(|| self.parent_tool_authority.clone());
+        let Some(snapshot) = candidate else {
+            return Err(ToolError::Execution(
+                "parent tool authority unavailable; delegation refused".to_string(),
+            ));
+        };
+        if !snapshot.verify_integrity() {
+            return Err(ToolError::Execution(format!(
+                "parent tool authority failed integrity ({})",
+                snapshot.snapshot_fingerprint
+            )));
+        }
+        if chrono::Utc::now().timestamp_millis() > snapshot.expires_at_ms {
+            return Err(ToolError::Execution(
+                "parent tool authority expired; delegation refused".to_string(),
+            ));
+        }
+        if let Some(expected) = self.parent_session_id.as_deref() {
+            if snapshot.parent_session_id != expected {
+                return Err(ToolError::Execution(
+                    "parent tool authority session mismatch; delegation refused".to_string(),
+                ));
+            }
+        }
+        let encoded = crate::agent::parent_authority::encode_parent_authority(&snapshot)
+            .map_err(ToolError::Execution)?;
+        Ok((snapshot, encoded))
     }
 
     pub(crate) fn with_additional_denied_tools(mut self, tools: &[&str]) -> Self {
@@ -1403,6 +1468,9 @@ impl TaskTool {
                 } else {
                     None
                 };
+                // M003: durable launch requires the validated ceiling.
+                let (_delegation_authority, delegation_authority_encoded) =
+                    self.require_delegation_authority(ctx)?;
                 let submitted = match submission
                     .submit(
                         durable.as_ref().and_then(|(_, _, key)| {
@@ -1434,6 +1502,7 @@ impl TaskTool {
                                     run_id,
                                     delegation_key,
                                     base_commit: explicit_base_commit.clone(),
+                                    parent_authority: Some(delegation_authority_encoded.clone()),
                                 }
                             } else {
                                 codegg_core::jobs::JobPayload::Subagent {
@@ -1448,6 +1517,7 @@ impl TaskTool {
                                         allowed_paths.clone()
                                     },
                                     max_tool_calls: None,
+                                    parent_authority: Some(delegation_authority_encoded.clone()),
                                 }
                             },
                             resource_request: codegg_core::jobs::ResourceRequest::for_kind(
@@ -1561,6 +1631,8 @@ impl TaskTool {
                     .and_then(|c| c.sandbox_profile.as_deref())
                     .and_then(codegg_core::approval::SandboxProfile::parse)
                     .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+                // M003: live launch requires the validated ceiling.
+                let (delegation_authority, _) = self.require_delegation_authority(ctx)?;
                 let req = SubAgentRequest {
                     task_id,
                     run_id: None,
@@ -1580,6 +1652,9 @@ impl TaskTool {
                     // Inherit parent by default; worker narrows for
                     // read-only/shared paths and enforces the ceiling.
                     sandbox_profile: None,
+                    // Descendant ceiling (M003): host-minted above, never
+                    // from model arguments.
+                    parent_authority: Some(delegation_authority),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))
