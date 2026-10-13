@@ -12,6 +12,7 @@ $processInfo = $null
 $environmentPointer = [IntPtr]::Zero
 $securePassword = $null
 $secretHandleStream = $null
+$operatorPipe = $null
 
 Add-Type -TypeDefinition @'
 using System;
@@ -170,6 +171,25 @@ try {
     if (-not [C021Native]::SetHandleInformation($secretHandleStream.SafeFileHandle.DangerousGetHandle(), 1, 1)) {
         throw "Could not mark the synthetic secret handle inheritable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
+    $pipeName = "codegg-c021-$runId"
+    $pipeSecurity = [IO.Pipes.PipeSecurity]::new()
+    $pipeSecurity.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($adminSid, $systemSid)) {
+        $pipeRule = [IO.Pipes.PipeAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),
+            [IO.Pipes.PipeAccessRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow)
+        [void]$pipeSecurity.AddAccessRule($pipeRule)
+    }
+    $operatorPipe = [IO.Pipes.NamedPipeServerStream]::new(
+        $pipeName,
+        [IO.Pipes.PipeDirection]::InOut,
+        1,
+        [IO.Pipes.PipeTransmissionMode]::Byte,
+        [IO.Pipes.PipeOptions]::Asynchronous,
+        0,
+        0,
+        $pipeSecurity)
 
     $resultPath = Join-Path $stage 'child-result.json'
     $childScriptPath = Join-Path $stage 'child-probe.ps1'
@@ -198,6 +218,12 @@ try { [IO.File]::Delete(`$env:C021_SECRET); `$observed.outside_delete = 'allowed
 if (`$env:C021_GIT) { `$repo = [IO.Path]::Combine(`$env:C021_STAGE, 'git-repo'); & `$env:C021_GIT init --quiet `$repo; `$initExit = `$LASTEXITCODE; if (`$initExit -eq 0) { & `$env:C021_GIT -C `$repo status --porcelain; `$observed.git = if (`$LASTEXITCODE -eq 0) {'allowed'} else {'failed'} } else { `$observed.git = 'failed' } }
 foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; path=`$env:C021_CARGO})) { if (`$tool.path) { & `$tool.path --version; `$observed[`$tool.name] = if (`$LASTEXITCODE -eq 0) {'allowed'} else {'failed'} } else { `$observed[`$tool.name] = 'not_available' } }
 `$observed.descendant_pid = 0
+try {
+    `$pipeClient = [IO.Pipes.NamedPipeClientStream]::new('.', `$env:C021_PIPE, [IO.Pipes.PipeDirection]::InOut)
+    `$pipeClient.Connect(1000)
+    `$observed.operator_pipe = 'connected'
+    `$pipeClient.Dispose()
+} catch { `$observed.operator_pipe = 'denied' }
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -235,6 +261,7 @@ try {
         PATH = "$systemRoot\System32;$systemRoot;$systemRoot\System32\Wbem;$systemRoot\System32\WindowsPowerShell\v1.0"
         C021_RESULT = $resultPath
         C021_SECRET_HANDLE = [string]$secretHandleStream.SafeFileHandle.DangerousGetHandle().ToInt64()
+        C021_PIPE = $pipeName
         C021_GIT = $git
         C021_PYTHON = $python
         C021_CARGO = $cargo
@@ -363,6 +390,7 @@ try {
     if ($result.inherited_secret_handle -ne 'not_transferred') {
         throw 'C021 leaked the marked inheritable synthetic host-secret handle.'
     }
+    if ($result.operator_pipe -ne 'denied') { throw 'C021 child connected to the synthetic operator-only named pipe.' }
     foreach ($name in @('direct','junction','case_alias','hardlink','ads')) {
         $readResult = $result.PSObject.Properties["read_$name"].Value
         if ($readResult -ne 'denied') { throw "C021 host read probe was not denied: $name" }
@@ -388,6 +416,7 @@ try {
     if ($processInfo -and $processInfo.hThread -ne [IntPtr]::Zero) { [void][C021Native]::CloseHandle($processInfo.hThread) }
     if ($environmentPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($environmentPointer) }
     if ($secretHandleStream) { $secretHandleStream.Dispose() }
+    if ($operatorPipe) { $operatorPipe.Dispose() }
     if ($accountCreated) {
         Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
         if (-not (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) { Write-Output 'C021_CLEANUP principal_removed=true' }
