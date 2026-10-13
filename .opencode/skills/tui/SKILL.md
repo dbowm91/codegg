@@ -336,13 +336,17 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
   `InputAction::Direction*` and then to one dispatcher,
   `commands::panels::move_directionally`. It asks, in order: a box is open →
-  dock it to the edge the direction names; the direction names an edge that is
-  **showing** a panel → take the keyboard there; the direction away from the
-  selected edge → return to the composer; otherwise `cycle_step(dir)` walks the
-  loaded panel type. Never branch on a side per surface, or a box and its panel
-  drift. `Shift+K` names no edge and is excluded from the "showing a panel"
-  branch, so it can never shadow the way out of a bottom panel. Normal-mode
-  only via `is_normal_only`.
+  dock it to the edge the direction names; the keyboard is in the main buffer
+  and the direction names an edge that is **showing** a panel → take the
+  keyboard there; the keyboard is in a panel and the direction leads **away**
+  from its edge → return to the main buffer; otherwise `cycle_step(dir)` walks
+  the loaded panel type. Never branch on a side per surface, or a box and its
+  panel drift. **The main buffer is a stop, not a gap** — it sits *between* the
+  columns, so two `Shift+H` from Chat reach Terminal and one lands in the
+  buffer; routing past it made the surface the user spends most of their time
+  unreachable by the gesture that names it. `PanelPlacement::named_by` returns
+  `None` for `Up`, so `Shift+K` names no edge and can never shadow the way out
+  of a bottom panel. Normal-mode only via `is_normal_only`.
 - **Edges are slots, and a panel moves between them.**
   `SidePanelHost` holds one `PanelSlot {panel, visible, history}` per
   `PanelPlacement`. Panel *state* stays keyed by `SidePanelId`, so
@@ -371,6 +375,24 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
   reads the same value; when `Chat` is armed but unbound, text is dropped with
   a warning rather than rerouted to the agent.
+- **The manager opens in Normal, and opening it must not change the frame.**
+  Two rules that keep reading as one bug when either is broken. (1) It used to
+  force the selected edge visible, on the reasoning that a strip describing a
+  collapsed column is confusing — so a panel the user had deliberately put away
+  with `Ctrl+B` came back the moment they reached for `Shift+S`. A box that only
+  *describes* the layout cannot be the reason a column reappears; the strip now
+  names the state (`[Left collapsed]`, live edge only, because three states in a
+  44-column box wrap). (2) It carries **NOR/INS** like every other dockable box:
+  in Normal the highlight moves and `Shift+H/J/K/L` puts the highlighted panel on
+  that edge; in Insert, `Shift+H` is the letter `H` and belongs in the filter.
+  It opens in Normal because it is reached with a Normal-mode chord and is read
+  before it is typed into — opening in Insert made `j`/`k` filter text, which is
+  indistinguishable from a dead pane. The manager's directional is
+  `TuiMsg::MovePanelTo`, deliberately **not** `MoveDirection`: the latter
+  resolves the keyboard position between edges already in use, which is the wrong
+  question while the manager is modal. Moving and loading stay separate acts, for
+  the same reason walking the list never materializes an empty panel — a gesture
+  that silently starts a daemon load is not a positioning gesture.
 - **Every surface the composer can target needs a name.** The badge row reads
   `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
   destination is `App::composer_destination_title`: the focused panel's

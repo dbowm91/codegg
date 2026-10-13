@@ -662,6 +662,9 @@ impl App {
             TuiMsg::CyclePanelPlacement => {
                 crate::tui::commands::panels::cycle_manager_placement(self);
             }
+            TuiMsg::MovePanelTo { panel, placement } => {
+                crate::tui::commands::panels::move_manager_panel(self, panel, placement);
+            }
             TuiMsg::SavePanelHotkey { digit, panel } => {
                 crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
             }

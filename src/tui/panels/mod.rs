@@ -290,6 +290,25 @@ impl PanelPlacement {
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
+    /// The edge a directional gesture names, or `None` when it names none.
+    ///
+    /// The gesture is literal — `Shift+H` means the left column — rather than
+    /// being reinterpreted through some selected edge's axis. That is the same
+    /// rule every surface uses, so a box, the manager and the main buffer
+    /// cannot disagree about what `H` means.
+    ///
+    /// `Up` names no edge. There is no top, and inventing one would let
+    /// `Shift+K` silently mean "stay here" in one surface and "go somewhere
+    /// else" in another.
+    pub fn named_by(direction: PanelDirection) -> Option<Self> {
+        match direction {
+            PanelDirection::Left => Some(Self::Left),
+            PanelDirection::Right => Some(Self::Right),
+            PanelDirection::Down => Some(Self::Bottom),
+            PanelDirection::Up => None,
+        }
+    }
+
     /// The gesture that moves the keyboard **into** the panel.
     pub fn toward(self) -> PanelDirection {
         match self {
