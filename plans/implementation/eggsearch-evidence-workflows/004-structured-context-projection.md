@@ -1,11 +1,11 @@
 # Eggsearch Evidence Workflows M004 — Structured Context Projection
 
-Status: blocked (legacy-retirement M001)
+Status: blocked (legacy-retirement M001 + retrieval-contract C001)
 Class: correctness / performance
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 Source roadmap: `plans/subsystems/eggsearch-evidence-workflows-roadmap.md`
 References: `plans/003-planning-process.md`; `plans/closure/tool-surface-upstream-compatibility/007-status.md`.
-Hard dependencies: this line's `001-evidence-fidelity-and-retrieval-state.md` accepted closure (`plans/closure/eggsearch-evidence-workflows/001-status.md`, satisfied); existing `search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` accepted closure (still required).
+Hard dependencies: historical evidence M001 closure (`plans/closure/eggsearch-evidence-workflows/001-status.md`, satisfied); **strict** post-closure C001 tagged retrieval-dimension normalization (`plans/implementation/eggsearch-evidence-workflows-corrective/001-tagged-retrieval-dimension-normalization.md`, ready but not implemented); existing `search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` accepted closure (still required). Never promote M004 solely from the historical evidence M001 closure.
 
 ## 1. Objective
 
