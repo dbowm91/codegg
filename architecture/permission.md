@@ -99,12 +99,33 @@ AgentLoop::check_tool_permission()
     ├──► GlobalEventBus::publish(PermissionPending { ... })
     │
     ├──► Wait for response (unbounded by default; see
-    │     permission.approval_timeout_secs to bound it)
+    │     permission.approval_timeout_secs to bound it.
+    │     Always bounded below by the registry orphan guard —
+    │     see "Orphan Guard" below)
     │
     ├──► User responds → PermissionRegistry::respond(perm_id, choice)
     │
     └──► Cache decision if AlwaysAllow/AlwaysDeny
 ```
+
+### Orphan Guard
+
+The human wait itself is unbounded by default — a user may take arbitrarily long
+to decide, and that is intended. The registry is nevertheless *always* given a
+non-zero `pending_ttl` so a waiter that can never be woken is eventually
+released rather than parked forever:
+
+- When `permission.approval_timeout_secs` is set, the TTL is that value plus a
+  60s grace, so the router's own deadline fires first and the waiter
+  unregisters itself cleanly rather than being evicted mid-wait.
+- Otherwise the TTL is a long orphan guard (24h) that will not fire against a
+  user who is still deciding, but does release a genuinely stranded waiter.
+
+Evicting an entry drops its oneshot sender, which the awaiting task observes as
+`CHANNEL_CLOSED_DENY` — a typed deny that reaches the model — instead of the
+turn spinning on "waiting for command/tool output..." with no error. This is the
+backstop for the case `respond_scoped` cannot repair: a response dropped because
+its `session_id` did not match leaves the waiter with no sender to wake it.
 
 ### Bash Command Handling
 
@@ -119,6 +140,14 @@ strict `default = "ask"` config.
 Safe bash patterns are defined in `default_bash_allow_patterns()`
 (`src/permission/mod.rs:1706`). Users can extend or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
+
+Escalation signals from the shell policy (`tool::bash::policy::find_ask_pattern`)
+are consulted on the same path, immediately after `destructive_match`: a hit
+returns `Ask` carrying an `ask_pattern` field rather than being rejected inside
+the tool. `bash_ask_patterns` adds operator-defined signals. These are review
+controls, not boundaries — see `architecture/tool.md` for why a pattern match
+constrains the invocation rather than the program, and why containment belongs
+to `SandboxProfile` plus Landlock.
 
 ## Key Types & APIs
 
@@ -344,8 +373,14 @@ The dialog accepts direct codex-style keys in addition to `↑↓`/`j`/`k` +
 | `y` | Allow once |
 | `p` | Always allow — arms the `⚠ Confirm & Persist` interstitial |
 | `n` | Deny once (cancels out of the interstitial when it is open) |
+| `1`–`4` | Positional equivalents of the rows above; answer in one keypress |
 | `↑↓`/`j`/`k`, `Enter` | Navigate / commit the highlighted row |
 | `Esc` | Close, or back out of the interstitial |
+
+Every answering key commits directly — no second `Enter` is required. The
+digits are guarded on no modifier, so `Ctrl`+digit stays available to the
+host, and `0` is deliberately not a row so it can never underflow into
+"Allow Once".
 
 Persistent grants (the `Always Allow` / `Always Deny` rows and `p`) always
 require the interstitial's second keypress, so no single keypress creates a

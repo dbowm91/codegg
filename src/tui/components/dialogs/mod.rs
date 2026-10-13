@@ -18,6 +18,7 @@ pub mod panel_manager;
 pub mod permission;
 pub mod plan;
 pub mod plugin;
+pub mod policy_selector;
 pub mod project_picker;
 pub mod question;
 pub mod research;

@@ -1579,6 +1579,27 @@ fn render_diff_dialog() {
 }
 
 #[test]
+fn render_policy_selector() {
+    use codegg::tui::commands::policy::open_policy_selector;
+
+    let mut app = test_app();
+    open_policy_selector(
+        &mut app,
+        codegg::tui::components::dialogs::policy_selector::PolicySelectorKind::Approval,
+    );
+    let buf = assert_render_ok(&mut app, 100, 32);
+    assert!(
+        !buffer_contains(&buf, "Rendering Error"),
+        "unexpected render error with the approval selector"
+    );
+    // The strong option must be visible, not just reachable by argument.
+    assert!(
+        buffer_contains(&buf, "yolo"),
+        "the selector must show every mode including yolo"
+    );
+}
+
+#[test]
 fn render_new_dialogs_at_small_size() {
     let new_dialogs = [
         Dialog::Template,

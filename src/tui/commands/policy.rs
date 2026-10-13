@@ -26,8 +26,10 @@ use crate::protocol::core::{
     CoreRequest, CoreResponse, ExecutionPolicySnapshotDto, RuntimePreferenceDto,
 };
 use crate::tui::app::App;
+use crate::tui::app::Dialog;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
+use crate::tui::components::dialogs::policy_selector::{PolicySelectorDialog, PolicySelectorKind};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Why a snapshot was requested. Controls completion verbosity: startup
@@ -292,6 +294,57 @@ pub(crate) fn apply_snapshot_loaded(
         }
         PolicySnapshotReason::AfterUpdate => {}
     }
+}
+
+/// Open the `/approval` / `/sandbox` fast-select.
+///
+/// Bare `/approval` previously only printed the cached status line, which
+/// left `yolo` reachable solely by remembering `/approval yolo`. The
+/// selector makes the strong option visible *and* requires a deliberate
+/// keystroke, which is the property the argument form also had.
+///
+/// The cursor is seeded from the daemon-resolved effective value so Enter is
+/// a re-affirmation rather than a silent change, and committing a row hands
+/// off to [`request_policy_change`] — the warning matrix, the FullHost/Yolo
+/// double confirmation, and the revision CAS all still run.
+pub fn open_policy_selector(app: &mut App, kind: PolicySelectorKind) {
+    // Deliberately not gated on `core_client`. Refusing to open the box when
+    // the core connection is down is what made `/approval` feel broken in the
+    // first place; the selector is a pure view over cached state, and an
+    // unreachable daemon surfaces as a clear toast from `start_policy_update`
+    // at commit time instead of a dead keystroke here.
+    let current = app.policy_ui.cached.as_ref().map(|view| match kind {
+        PolicySelectorKind::Approval => view.effective_mode.as_str(),
+        PolicySelectorKind::Sandbox => view.effective_profile.as_str(),
+    });
+    app.dialog_state.policy_selector = Some(PolicySelectorDialog::new(
+        kind,
+        current,
+        std::sync::Arc::clone(&app.ui_state.theme),
+    ));
+    app.open_dialog(Dialog::PolicySelector);
+}
+
+/// Apply a selector commit. Returns the parsed target so the caller can hand
+/// it straight to [`request_policy_change`]; `None` when neither axis parsed
+/// (a malformed wire value must not silently become "no change, no
+/// feedback").
+pub(crate) fn resolve_policy_selection(
+    app: &mut App,
+    approval_mode: Option<String>,
+    sandbox_profile: Option<String>,
+) -> Option<(Option<ApprovalMode>, Option<SandboxProfile>)> {
+    app.dialog_state.policy_selector = None;
+    app.close_dialog();
+    let mode = approval_mode.as_deref().and_then(ApprovalMode::parse);
+    let profile = sandbox_profile.as_deref().and_then(SandboxProfile::parse);
+    if mode.is_none() && profile.is_none() {
+        app.messages_state
+            .toasts
+            .warning("Runtime policy unchanged: unrecognised selection");
+        return None;
+    }
+    Some((mode, profile))
 }
 
 /// Entry point for `/approval [mode]` and `/sandbox [profile]` with an

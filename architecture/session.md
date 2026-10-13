@@ -54,7 +54,7 @@ transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.
 
-Migrations create and evolve **74 CREATE TABLE statements** across
+Migrations create and evolve **76 CREATE TABLE statements** across
 these table groups:
 
 **Core session tables (v1):**

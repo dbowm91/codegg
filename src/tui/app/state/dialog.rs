@@ -32,6 +32,10 @@ pub struct DialogState {
     pub connection_selection_dialog:
         Option<crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog>,
     pub goto_dialog: Option<crate::tui::components::dialogs::goto::GotoDialog>,
+    /// `/approval` / `/sandbox` fast-select seed. Mounted onto the focus
+    /// stack by `open_policy_selector`; see `policy_selector.rs`.
+    pub policy_selector:
+        Option<crate::tui::components::dialogs::policy_selector::PolicySelectorDialog>,
     pub plan_dialog: Option<crate::tui::components::dialogs::plan::PlanDialog>,
     pub diff_dialog: Option<crate::tui::components::dialogs::diff::DiffDialog>,
     pub review_dialog: Option<crate::tui::components::dialogs::review::ReviewDialog>,

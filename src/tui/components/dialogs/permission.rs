@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::sync::Arc;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
@@ -273,6 +273,8 @@ impl PermissionDialog {
                 };
                 // Direct keys are the primary affordance, so each row names
                 // its own key instead of leaving them to be discovered.
+                // `1`-`4` are the positional equivalents of `y`/`p`/`n`
+                // and the missing `4`; they answer in one keypress.
                 let shortcut = match (self.confirm_persistent, i) {
                     (true, 0) => "y",
                     (true, _) => "n",
@@ -281,6 +283,7 @@ impl PermissionDialog {
                     (false, 2) => "n",
                     (false, _) => "",
                 };
+                let keycap = format!("{shortcut}/{}", i + 1);
                 let style = if self.confirm_persistent {
                     if i == 0 {
                         Style::default()
@@ -294,19 +297,15 @@ impl PermissionDialog {
                 } else {
                     Style::default().fg(theme.foreground)
                 };
-                let label = if shortcut.is_empty() {
-                    format!("{prefix}{opt}")
-                } else {
-                    format!("{prefix}{shortcut})  {opt}")
-                };
+                let label = format!("{prefix}{keycap})  {opt}");
                 Line::from(Span::styled(label, style))
             })
             .collect();
 
         let hint = if self.confirm_persistent {
-            " Options — y confirm & persist  |  n cancel "
+            " Options — y/1 confirm & persist  |  n/2 cancel "
         } else {
-            " Options — y yes  |  p yes always  |  n no  |  ↑↓/j/k navigate  |  Esc cancel "
+            " Options — y/1 yes  |  p/2 yes always  |  n/3 no  |  4 always deny  |  ↑↓/j/k navigate  |  Esc cancel "
         };
 
         let options_para = Paragraph::new(options).block(
@@ -375,6 +374,24 @@ impl Component for PermissionDialog {
             KeyCode::Enter => {
                 let choice = self.selected_option;
                 self.commit(choice)
+            }
+            // Digits answer in one keypress, the same "no second Enter"
+            // contract `y`/`p`/`n` already have. Guarded on no modifier so
+            // Ctrl+digit is left for the host. `0` is not a row: it falls
+            // through as unhandled rather than underflowing to row 0.
+            KeyCode::Char(d)
+                if key.modifiers == KeyModifiers::NONE && d.is_ascii_digit() && d != '0' =>
+            {
+                let digit_index = d as usize - '1' as usize;
+                // Bounds are read off `options()`, which is already the
+                // two-row confirm sheet while the interstitial is armed —
+                // so `1` confirms, `2` backs out, and a digit past the
+                // visible rows is ignored instead of arming something the
+                // operator cannot see.
+                if digit_index >= self.options().len() {
+                    return None;
+                }
+                self.commit(digit_index)
             }
             code => match Self::option_for_key(code) {
                 // In the interstitial the direct keys answer the prompt
@@ -488,5 +505,83 @@ mod tests {
     fn esc_still_closes_when_no_confirmation_is_armed() {
         let mut d = dialog();
         assert_eq!(d.handle_key(key(KeyCode::Esc)), Some(TuiMsg::CloseDialog));
+    }
+
+    /// Digits answer in one keypress, matching `y`/`p`/`n` — the whole
+    /// point is that no second Enter is required for the once-only rows.
+    /// The persistent rows (`2`, `4`) deliberately still arm the
+    /// interstitial; that is covered separately.
+    #[test]
+    fn digits_answer_without_a_second_enter() {
+        for (digit, expected) in [('1', 0), ('3', 2)] {
+            let mut d = dialog();
+            assert_eq!(
+                d.handle_key(key(KeyCode::Char(digit))),
+                Some(TuiMsg::SubmitPermission {
+                    choice_index: expected
+                }),
+                "digit {digit} should answer immediately"
+            );
+        }
+    }
+
+    /// `4` is "Always Deny": one keypress to arm, never a standing grant.
+    #[test]
+    fn digit_four_arms_the_confirmation() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Char('4'))), None);
+        assert!(d.confirm_persistent);
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('1'))),
+            Some(TuiMsg::SubmitPermission { choice_index: 3 })
+        );
+    }
+
+    /// A persistent grant stays a two-step act through its digit too.
+    #[test]
+    fn digit_two_arms_then_one_commits() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Char('2'))), None);
+        assert!(d.confirm_persistent);
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('1'))),
+            Some(TuiMsg::SubmitPermission { choice_index: 1 })
+        );
+    }
+
+    /// Inside the interstitial the digit addresses the two-row confirm
+    /// sheet, so `2` backs out instead of re-arming it.
+    #[test]
+    fn digit_two_cancels_the_interstitial() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('2')));
+        assert!(d.confirm_persistent);
+        assert_eq!(d.handle_key(key(KeyCode::Char('2'))), None);
+        assert!(!d.confirm_persistent);
+    }
+
+    /// `0` is not a row. It must never underflow into "Allow Once".
+    #[test]
+    fn zero_is_not_a_row() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Char('0'))), None);
+        assert!(!d.confirm_persistent);
+    }
+
+    /// Out-of-range digits are ignored rather than clamped onto a row the
+    /// operator cannot see.
+    #[test]
+    fn out_of_range_digit_is_ignored() {
+        let mut d = dialog();
+        assert_eq!(d.handle_key(key(KeyCode::Char('9'))), None);
+    }
+
+    #[test]
+    fn modifier_digits_are_left_for_the_host() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL)),
+            None
+        );
     }
 }

@@ -277,6 +277,13 @@ pub struct Config {
     /// on load rather than failing the boot, because a typo in a preference
     /// is not worth refusing to start over.
     pub panel_hotkeys: Option<HashMap<String, String>>,
+    /// Which edge the side panel is docked to: `right`, `left` or `bottom`.
+    ///
+    /// Written by the panel manager's layout strip (`p`). Absent or
+    /// unrecognised means `right`, which is the layout that shipped first —
+    /// so a config that predates this key, or a hand-edited typo, still
+    /// starts with a panel the user recognises rather than with none.
+    pub panel_placement: Option<String>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
@@ -1272,6 +1279,15 @@ pub struct PermissionConfig {
     pub bash: Option<PermissionRule>,
     pub bash_allow_patterns: Option<Vec<String>>,
     pub bash_deny_patterns: Option<Vec<String>>,
+    /// Extra shell patterns that escalate to an approval prompt.
+    ///
+    /// Additive to the built-in escalation signals (`curl … | sh`, redirects
+    /// to a block device, inline interpreters, `chmod`/`chown` to a system
+    /// path, …). This is a *review* control, not a boundary: it shapes the
+    /// operator's decision under the configured approval mode. For a true
+    /// boundary use `bash_deny_patterns` or the sandbox profile — a pattern
+    /// match constrains the invocation, not the program.
+    pub bash_ask_patterns: Option<Vec<String>>,
     pub allow_all_bash: Option<bool>,
     pub task: Option<PermissionRule>,
     pub todowrite: Option<String>,

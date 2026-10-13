@@ -486,6 +486,11 @@ fn ctrl_digit_shaped_keys_are_recognised_and_other_keys_are_not() {
 /// stays a typeable letter. That `Esc` is consumed by the box, which is
 /// exactly why the app-level mode is still Insert afterwards: the composer
 /// never saw it. This is the precise state that used to strand the user.
+///
+/// The dock gesture that follows is `Shift+L` throughout: a box dock names
+/// the side it should land on, and the panel is on the right by default. It
+/// used to be `Shift+H` because *any* directional docked, which is exactly
+/// what made "open a panel on the left" impossible to ask for.
 fn open_help_box_while_composing(app: &mut App) {
     app.ui_state.input_mode = InputMode::Insert;
     for ch in "/help".chars() {
@@ -518,7 +523,7 @@ async fn docking_a_box_leaves_a_panel_the_keyboard_can_actually_reach() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Help,
@@ -555,7 +560,7 @@ async fn leaving_a_panel_restores_the_composer_mode_it_had() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert_eq!(
         app.ui_state.input_mode,
         InputMode::Normal,
@@ -582,7 +587,7 @@ async fn a_normal_mode_composer_is_not_rewritten_by_a_panel_visit() {
     open_help_box_while_composing(&mut app);
     app.ui_state.input_mode = InputMode::Normal;
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(
         app.panel_host.is_focused(),
         "precondition: docked + focused"
@@ -608,7 +613,7 @@ async fn leaving_a_panel_with_escape_also_restores_the_composer_mode() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(
         app.panel_host.is_focused(),
         "precondition: docked + focused"

@@ -91,11 +91,35 @@ pub(super) fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
     }
 }
 
+/// Extract the effective shell payload for the permission check.
+///
+/// `bash` carries a single `command` string. `terminal` carries a `command`
+/// plus an `args` array, and the string handed to `sh -c` is the two joined —
+/// so it must be composed the same way `TerminalTool::effective_script` does.
+/// Without this, `terminal` bypasses the shell escalation signals entirely:
+/// it is `ToolCategory::ShellExec`, but without a payload the permission layer
+/// cannot evaluate `destructive_match` or the `ask_pattern` set.
 pub(super) fn extract_bash_command(tc: &ToolCall) -> Option<String> {
-    if &*tc.name != "bash" {
-        return None;
+    match tc.name.as_str() {
+        "bash" => tc.arguments.get("command")?.as_str().map(String::from),
+        "terminal" => {
+            let command = tc.arguments.get("command")?.as_str()?;
+            let args: Vec<String> = tc
+                .arguments
+                .get("args")
+                .and_then(|a| a.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(crate::tool::terminal::TerminalTool::effective_script_pub(
+                command, &args,
+            ))
+        }
+        _ => None,
     }
-    tc.arguments.get("command")?.as_str().map(String::from)
 }
 
 pub(super) fn is_test_command(command: &str) -> bool {
@@ -292,6 +316,51 @@ pub(super) fn compute_model_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `terminal` is `ToolCategory::ShellExec` but carries its payload as
+    /// `command` + `args`. Without composing them here, the permission layer
+    /// receives no command and silently skips both the destructive check and
+    /// the shell escalation signals — a bypass introduced when escalation
+    /// signals moved out of the tool and into the permission layer.
+    #[test]
+    fn terminal_payload_reaches_the_permission_check() {
+        let tc = ToolCall {
+            name: "terminal".to_string().into(),
+            arguments: serde_json::json!({
+                "command": "printf",
+                "args": ["$(touch marker)"],
+            }),
+            id: "call_1".to_string().into(),
+        };
+        assert_eq!(
+            extract_bash_command(&tc).as_deref(),
+            Some("printf $(touch marker)")
+        );
+        assert!(
+            crate::tool::bash::policy::find_ask_pattern("printf $(touch marker)").is_some(),
+            "the composed payload must still carry an escalation signal"
+        );
+    }
+
+    #[test]
+    fn terminal_without_args_is_the_bare_command() {
+        let tc = ToolCall {
+            name: "terminal".to_string().into(),
+            arguments: serde_json::json!({ "command": "ls" }),
+            id: "call_2".to_string().into(),
+        };
+        assert_eq!(extract_bash_command(&tc).as_deref(), Some("ls"));
+    }
+
+    #[test]
+    fn non_shell_tools_extract_no_command() {
+        let tc = ToolCall {
+            name: "read".to_string().into(),
+            arguments: serde_json::json!({ "path": "README.md" }),
+            id: "call_3".to_string().into(),
+        };
+        assert!(extract_bash_command(&tc).is_none());
+    }
 
     #[test]
     fn test_is_test_command_cargo() {

@@ -1,21 +1,31 @@
 //! Pluggable side-panel host.
 //!
-//! The right-hand column used to be one widget chosen by an `if` in
-//! `render_sidebar`: the session sidebar, or — on the Workspace route —
+//! The right-hand column used to be one widget chosen by an `if` in the
+//! render path: the session sidebar, or — on the Workspace route —
 //! project chat. That made "swap the panel" impossible to express, and it
 //! meant every panel re-implemented focus, key routing, and its own title
 //! bar independently.
 //!
-//! This module introduces the two pieces that make the region a *host*:
+//! This module introduces the pieces that make the region a *host*:
 //!
-//! * [`SidePanelId`] — the closed set of panels the host can show. Adding a
+//! * [`SidePanelId`] — the closed set of panels a host can show. Adding a
 //!   panel is one enum variant plus one [`SidePanel`] impl; there is no
 //!   per-panel `if` left in the render path.
-//! * [`SidePanelHost`] — which panel is active, whether it holds keyboard
-//!   focus. Which panel is loaded is chosen by the manager box
-//!   (`Shift+S`), which is a *dialog* rather than an overlay
-//!   drawn inside the column — a box can show what it is about to change,
-//!   which a 30-column overlay never could.
+//! * [`PanelSlot`] — one dockable edge of the frame. There is a slot per
+//!   [`PanelPlacement`], so more than one edge can be showing a panel at
+//!   once, and each remembers what it was showing before its current
+//!   occupant arrived.
+//! * [`SidePanelHost`] — which edge each panel is docked to, which edge the
+//!   keyboard gestures act on, and whether that edge holds focus. Which
+//!   panel is loaded is chosen by the manager box (`Shift+S`), which is a
+//!   *dialog* rather than an overlay drawn inside the column — a box can
+//!   show what it is about to change, which a 30-column overlay never could.
+//!
+//! Panel *state* is keyed by [`SidePanelId`], not by edge: one `ChatPanel`,
+//! one `SessionPanel`. A slot only records which edge is showing which id.
+//! That is what lets [`SidePanelHost::dock`] move a panel between edges
+//! without losing its cursor, filter or scroll offset — and why a panel is
+//! never loaded on two edges at once.
 //!
 //! ## Authority
 //!
@@ -53,6 +63,7 @@ pub mod hosted;
 pub mod session;
 pub mod terminal;
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -163,18 +174,167 @@ pub enum PanelDirection {
 }
 
 impl PanelDirection {
-    /// How far this direction moves through the loaded panel types.
+    /// The vim letter that spells this gesture, e.g. `H` for left.
     ///
-    /// Vertical only. In a two-pane layout, `←`/`→` move the *keyboard*
-    /// between panes while `↑`/`↓` walk the panel list — each direction does
-    /// the one thing that still changes something. When the layout grows a
-    /// second column this becomes pure geometry again.
-    pub fn panel_step(self) -> i8 {
+    /// Used in the messages that *explain* a direction — a refusal that names
+    /// "left" when every other key in the UI names `Shift+H` teaches the user
+    /// one vocabulary and then switches to another mid-error.
+    pub fn gesture(self) -> &'static str {
         match self {
-            Self::Up => -1,
-            Self::Down => 1,
-            Self::Left | Self::Right => 0,
+            Self::Left => "H",
+            Self::Right => "L",
+            Self::Up => "K",
+            Self::Down => "J",
         }
+    }
+
+    /// Prose for the same explanations ("no panel on the left yet").
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Up => "above",
+            Self::Down => "below",
+        }
+    }
+}
+
+/// Which edge of the frame the panel host is painted into.
+///
+/// Groundwork for more than one panel. The directionals already address panes
+/// *by direction* — `Shift+H` means "the pane on my left" — so what was
+/// missing was a way to say **which** pane the one existing host is currently
+/// living in. Without that, every gesture silently assumed "right", which is
+/// exactly the hardcoding that makes a second column impossible to add later.
+///
+/// `Right` is the default and reproduces the layout that shipped first, so a
+/// user who configures nothing sees no change at all.
+///
+/// The three placements are the ones the frame can honestly host today: a
+/// left column, a right column, and a full-width row beneath the main input
+/// box. Growing a second column is a fourth variant plus one geometry arm —
+/// the gesture dispatcher already reads *which* side a direction names and
+/// needs no new rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelPlacement {
+    /// The shipped default: a column beside the main buffer, on the right.
+    #[default]
+    Right,
+    /// A column on the other side, so `Shift+H` is the gesture that enters
+    /// the panel and `Shift+L` returns to the buffer.
+    Left,
+    /// A full-width row under the main input box, so `Shift+J` enters it and
+    /// `Shift+K` returns to the buffer.
+    Bottom,
+}
+
+impl PanelPlacement {
+    /// Every placement, in the order the manager cycles them.
+    pub const ALL: &'static [PanelPlacement] = &[Self::Right, Self::Left, Self::Bottom];
+
+    /// Prose for the manager's layout strip.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Right => "Right",
+            Self::Left => "Left",
+            Self::Bottom => "Bottom",
+        }
+    }
+
+    /// The persisted spelling. Same rule as [`SidePanelId::config_key`]: user
+    /// data, so it is written down rather than derived from a label.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Left => "left",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// Read a persisted placement, tolerating the word users reach for.
+    ///
+    /// Returns `None` for an unknown value so the caller falls back to the
+    /// default rather than starting with no panel at all — a hand-edited
+    /// typo in a preference is not worth refusing to boot over, matching how
+    /// a bad panel hotkey drops one slot.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "right" => Some(Self::Right),
+            "left" => Some(Self::Left),
+            "bottom" | "down" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+
+    /// Position in [`Self::ALL`], which is also the slot-table index.
+    ///
+    /// Derived rather than hand-written so a variant added to `ALL` without
+    /// an index arm fails to compile instead of silently aliasing another
+    /// slot's state.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Right => 0,
+            Self::Left => 1,
+            Self::Bottom => 2,
+        }
+    }
+
+    /// The placement a slot index names, or `None` when out of range.
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::ALL.get(index).copied()
+    }
+
+    /// The next placement in [`Self::ALL`], wrapping.
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    /// The gesture that moves the keyboard **into** the panel.
+    pub fn toward(self) -> PanelDirection {
+        match self {
+            Self::Right => PanelDirection::Right,
+            Self::Left => PanelDirection::Left,
+            Self::Bottom => PanelDirection::Down,
+        }
+    }
+
+    /// The gesture that moves the keyboard **back** to the main buffer.
+    ///
+    /// Exactly [`toward`](Self::toward) inverted, so the pair can never
+    /// disagree about which key is the way out of a pane.
+    pub fn away(self) -> PanelDirection {
+        match self {
+            Self::Right => PanelDirection::Left,
+            Self::Left => PanelDirection::Right,
+            Self::Bottom => PanelDirection::Up,
+        }
+    }
+
+    /// How far `direction` walks the loaded panel types, or `None` when the
+    /// direction runs *along* the placement axis.
+    ///
+    /// This is the whole reason placement and direction cannot be two
+    /// independent lists: in a right-hand column `↑`/`↓` walk the panel list
+    /// because `←`/`→` already have a job, and under a bottom row that swaps
+    /// over. Deriving the answer from the placement keeps each direction doing
+    /// the one thing that still changes something.
+    pub fn cycle_step(self, direction: PanelDirection) -> Option<i8> {
+        match (self, direction) {
+            (Self::Right | Self::Left, PanelDirection::Up) => Some(-1),
+            (Self::Right | Self::Left, PanelDirection::Down) => Some(1),
+            (Self::Bottom, PanelDirection::Left) => Some(-1),
+            (Self::Bottom, PanelDirection::Right) => Some(1),
+            // Along the axis: the gesture means "enter the panel" or "return
+            // to the buffer", and `move_directionally` has already answered it.
+            _ => None,
+        }
+    }
+
+    /// Whether the panel is a column beside the buffer rather than a row
+    /// beneath it. The render path needs this to know which axis to split.
+    pub fn is_column(self) -> bool {
+        !matches!(self, Self::Bottom)
     }
 }
 
@@ -218,8 +378,29 @@ pub fn direction_of(key: KeyEvent) -> Option<PanelDirection> {
     }
 }
 
-/// One swappable side panel.
+/// Two disjoint mutable borrows into a slot table, by placement.
 ///
+/// Written out rather than open-coded at each call site because getting the
+/// index order backwards silently addresses the wrong slot — the move would
+/// still typecheck and still swap *something*, which is exactly the kind of
+/// bug that reads as "the gesture is just weird". Ordering the two first and
+/// splitting only once removes the case where the branches disagree.
+fn two_slots_mut(
+    slots: &mut [PanelSlot],
+    a: PanelPlacement,
+    b: PanelPlacement,
+) -> (&mut PanelSlot, &mut PanelSlot) {
+    debug_assert_ne!(a, b, "a slot cannot be borrowed twice");
+    let (first, second) = if a.index() <= b.index() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let (low, high) = slots.split_at_mut(second.index());
+    (&mut low[first.index()], &mut high[0])
+}
+
+/// One swappable side panel.
 /// Adding a panel is an enum variant in [`SidePanelId`], an entry in
 /// [`SidePanelId::ALL`], and one impl of this trait. Nothing else in the
 /// render or key path needs to know it exists.
@@ -737,9 +918,162 @@ impl InputTarget {
     }
 }
 
+/// Number of dockable edges — one slot per [`PanelPlacement`].
+///
+/// A named constant rather than `PanelPlacement::ALL.len()` so the slot table
+/// is a fixed-size array that cannot be resized by a variant added for a
+/// different reason, and so a mismatch between the table and the enum is a
+/// compile error at the type level instead of a panic at runtime.
+pub const PANEL_SLOT_COUNT: usize = 3;
+
+/// How many panels a side remembers before dropping the oldest.
+/// Bounded because this is a *convenience* memory, not an undo stack: the
+/// only thing it is ever asked for is "what was here before the thing that
+/// just left", so one entry deep already answers every real case. Two spare
+/// entries cover a user bouncing a panel between two edges. The cap is what
+/// stops a long session of docking from growing the host without limit.
+pub const PANEL_HISTORY_DEPTH: usize = 3;
+
+/// What an edge was showing, at a moment in the past.
+///
+/// Visibility is part of the remembered state, not an afterthought. An edge
+/// the user had already collapsed with `Ctrl+B` must come back *collapsed*
+/// when its panel is moved away — restoring it expanded would pop a column
+/// back onto the frame the user had deliberately closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SlotState {
+    panel: SidePanelId,
+    visible: bool,
+}
+
+/// One dockable edge of the frame: what it shows now, and what it showed
+/// before.
+///
+/// The history is what makes swapping sides feel like moving a panel rather
+/// than deleting one. When a panel leaves an edge — because the user pushed it
+/// to the other side — that edge restores the state it was showing, so the
+/// thing they displaced comes back instead of the column going blank. An edge
+/// whose history is empty restores to *collapsed*, which is the honest
+/// answer: nothing was there before, so there is nothing to bring back.
+///
+/// Deliberately a value type with no back-reference to the host. Restoring a
+/// panel cannot run a load or touch a client — it puts an already-constructed
+/// panel back on screen — so this stays plain data and the whole swap stays
+/// testable without an `App`.
+#[derive(Debug, Clone)]
+pub struct PanelSlot {
+    /// The panel this edge is showing.
+    panel: SidePanelId,
+    /// Whether the edge is collapsed (`Ctrl+B`).
+    ///
+    /// Per-slot rather than one global flag because the whole point of
+    /// swapping is that the two edges end up in *different* states: the panel
+    /// that moved is up, and the edge it left is collapsed again. A shared flag
+    /// would collapse both or neither.
+    visible: bool,
+    /// What this edge showed before its current panel, most recent last.
+    history: VecDeque<SlotState>,
+}
+
+impl PanelSlot {
+    /// A slot showing `panel`, expanded or collapsed.
+    pub fn new(panel: SidePanelId, visible: bool) -> Self {
+        Self {
+            panel,
+            visible,
+            history: VecDeque::new(),
+        }
+    }
+
+    pub fn panel(&self) -> SidePanelId {
+        self.panel
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    /// Put `panel` on this edge, remembering what it displaced.
+    ///
+    /// Selecting the panel already showing is a no-op rather than a
+    /// self-push: re-selecting the current panel would fill the history with
+    /// the panel it is supposed to be restoring, so the next swap would bring
+    /// back what never left.
+    pub fn occupy(&mut self, panel: SidePanelId) {
+        if self.panel == panel {
+            return;
+        }
+        if self.history.len() >= PANEL_HISTORY_DEPTH {
+            self.history.pop_front();
+        }
+        self.history.push_back(SlotState {
+            panel: self.panel,
+            visible: self.visible,
+        });
+        self.panel = panel;
+        // Occupying always reveals: a panel cannot be selected into a
+        // collapsed edge, or `Enter` in the manager would look like a no-op.
+        self.visible = true;
+    }
+
+    /// Move whatever is here to `target`, leaving this edge restored.
+    ///
+    /// Returns the panel that left, so the caller can hand it to the other
+    /// edge. This is the swap primitive: the panel is *moved*, never copied,
+    /// so it cannot end up loaded in two places at once.
+    ///
+    /// The vacated edge puts back the state it was in — panel *and*
+    /// collapsed-ness — or collapses when it never had one, which is the case
+    /// a user reaches by docking into a column they had previously emptied
+    /// with `Ctrl+B`.
+    pub fn release_to(&mut self, target: &mut PanelSlot) -> SidePanelId {
+        let leaving = self.panel;
+        match self.history.pop_back() {
+            Some(previous) => {
+                self.panel = previous.panel;
+                self.visible = previous.visible;
+            }
+            None => {
+                // Nothing was here before, so "restoring" means going back to
+                // the collapsed state this edge was in before the first dock.
+                self.visible = false;
+            }
+        }
+        target.occupy(leaving);
+        leaving
+    }
+
+    /// Whether this edge currently has a panel showing.
+    pub fn is_occupied(&self) -> bool {
+        self.visible
+    }
+
+    /// How many panels this edge remembers. Exposed for the bound test.
+    pub fn history_len(&self) -> usize {
+        self.history.len()
+    }
+}
+
 /// Which panel the side column shows, and whether it holds focus.
 pub struct SidePanelHost {
-    active: SidePanelId,
+    /// One slot per placement, indexed by [`PanelPlacement::index`].
+    ///
+    /// The panel *state* below (session, chat, terminal, …) is still shared
+    /// and keyed by [`SidePanelId`]; the slots only record which edge is
+    /// showing which panel. That split is what lets a panel move between
+    /// edges — the state travels with the id rather than living in the edge.
+    slots: [PanelSlot; PANEL_SLOT_COUNT],
+    /// Which edge the keyboard-facing API (`active`, `placement`, `Ctrl+B`)
+    /// speaks for.
+    ///
+    /// Not "wherever focus is": this is the edge the *next* gesture acts on,
+    /// so it can name a panel the user is reading without having driven the
+    /// keyboard into it yet.
+    selected: PanelPlacement,
     focused: bool,
     session: session::SessionPanel,
     agents: agents::AgentsPanel,
@@ -765,10 +1099,20 @@ impl Default for SidePanelHost {
 impl SidePanelHost {
     pub fn new() -> Self {
         Self {
-            // Session is the default because it is the panel every route
-            // can render; chat needs a bound project and degrades to an
-            // explicit "no project selected" until one exists.
-            active: SidePanelId::Session,
+            // Every edge starts on Session and expanded, but only the
+            // selected one is *shown*: the other two are staging for a swap,
+            // and a fresh frame must still be the single right-hand column
+            // that shipped.
+            slots: std::array::from_fn(|index| {
+                PanelSlot::new(
+                    SidePanelId::Session,
+                    PanelPlacement::from_index(index) == Some(PanelPlacement::default()),
+                )
+            }),
+            // Right is the shipped layout, so a user with no stored
+            // preference gets exactly the frame they had before placements
+            // existed.
+            selected: PanelPlacement::default(),
             focused: false,
             session: session::SessionPanel,
             agents: agents::AgentsPanel::default(),
@@ -790,6 +1134,106 @@ impl SidePanelHost {
                 .map(hosted::HostPanel::placeholder)
                 .collect(),
         }
+    }
+
+    /// A host whose selected edge is `placement`.
+    ///
+    /// The startup path uses this rather than `new()` plus `select_placement`
+    /// because the placement is restored from config while the `App` struct
+    /// literal is still being built — there is no moment where a half-built
+    /// host could paint the wrong edge.
+    pub fn with_placement(placement: PanelPlacement) -> Self {
+        let mut host = Self::new();
+        host.select_placement(placement);
+        host
+    }
+
+    /// The slot at `placement`.
+    pub fn slot(&self, placement: PanelPlacement) -> &PanelSlot {
+        &self.slots[placement.index()]
+    }
+
+    fn slot_mut(&mut self, placement: PanelPlacement) -> &mut PanelSlot {
+        &mut self.slots[placement.index()]
+    }
+
+    /// Whether any edge is currently showing a panel.
+    pub fn any_visible(&self) -> bool {
+        self.slots.iter().any(PanelSlot::is_visible)
+    }
+
+    /// The panel `placement` is showing, whatever its expanded state.
+    pub fn panel_at(&self, placement: PanelPlacement) -> SidePanelId {
+        self.slot(placement).panel()
+    }
+
+    /// Whether `placement` is expanded right now.
+    pub fn is_visible_at(&self, placement: PanelPlacement) -> bool {
+        self.slot(placement).is_visible()
+    }
+
+    /// Expand or collapse `placement` without changing which panel it holds.
+    pub fn set_visible_at(&mut self, placement: PanelPlacement, visible: bool) {
+        self.slot_mut(placement).set_visible(visible);
+    }
+
+    /// Which edge the keyboard-facing gestures currently act on.
+    pub fn placement(&self) -> PanelPlacement {
+        self.selected
+    }
+
+    /// Point the gestures at `placement`.
+    ///
+    /// Deliberately does not move the keyboard or change what is loaded:
+    /// choosing which edge you are driving is not a request to enter it, and
+    /// is emphatically not a request to re-select the panel it holds.
+    pub fn select_placement(&mut self, placement: PanelPlacement) {
+        self.selected = placement;
+        // Focus is a property of the panel you are *in*, so pointing the
+        // gestures elsewhere hands it back rather than leaving a highlight on
+        // an edge the user has walked away from.
+        self.focused = false;
+    }
+
+    /// Step the selected edge to the next placement, returning the new one.
+    pub fn cycle_placement(&mut self) -> PanelPlacement {
+        let next = self.selected.next();
+        self.selected = next;
+        next
+    }
+
+    /// Show `id` on `placement`, and remember what that edge was showing.
+    ///
+    /// This is a *swap* when the panel currently lives somewhere else: it is
+    /// moved rather than copied, so the edge it leaves restores its own
+    /// previous panel (or collapses, if it never had one) instead of going
+    /// blank. See [`PanelSlot::release_to`].
+    pub fn dock(&mut self, id: SidePanelId, placement: PanelPlacement) {
+        // Where the panel is coming from, if anywhere.
+        let origin = self
+            .slots
+            .iter()
+            .position(|slot| slot.panel() == id)
+            .and_then(PanelPlacement::from_index);
+        if let Some(origin) = origin {
+            if origin == placement {
+                // Already here: just make sure it is showing and selected.
+                self.slot_mut(placement).set_visible(true);
+                self.selected = placement;
+                return;
+            }
+            // Borrow both slots at once, so the move is a single operation
+            // rather than two steps a reader could interleave wrongly.
+            let (from_slot, to_slot) = two_slots_mut(&mut self.slots, origin, placement);
+            from_slot.release_to(to_slot);
+        } else {
+            self.slot_mut(placement).occupy(id);
+        }
+        self.selected = placement;
+    }
+
+    pub fn active(&self) -> SidePanelId {
+        self.slot(self.selected).panel()
     }
 
     /// The hosted panel for `id`, if it is one.
@@ -831,10 +1275,6 @@ impl SidePanelHost {
         }
     }
 
-    pub fn active(&self) -> SidePanelId {
-        self.active
-    }
-
     pub fn is_focused(&self) -> bool {
         self.focused && !self.panel_is_empty()
     }
@@ -845,7 +1285,7 @@ impl SidePanelHost {
     /// composer aimed at the agent session, so focusing Session cannot
     /// silently retarget a half-typed prompt.
     pub fn input_target(&self) -> InputTarget {
-        if self.is_focused() && self.active == SidePanelId::Chat {
+        if self.is_focused() && self.active() == SidePanelId::Chat {
             InputTarget::Chat
         } else {
             InputTarget::Build
@@ -863,7 +1303,7 @@ impl SidePanelHost {
     /// true at once.
     pub fn destination_title(&self) -> &'static str {
         if self.is_focused() {
-            self.active.title()
+            self.active().title()
         } else {
             MAIN_BUFFER_TITLE
         }
@@ -893,7 +1333,7 @@ impl SidePanelHost {
         };
         // Read-only dispatch: a hint must not require an exclusive borrow of
         // the panel, or the composer row could not ask for it during render.
-        match self.active {
+        match self.active() {
             SidePanelId::Session => self.session.composer_hints(&hints),
             SidePanelId::Chat => self.chat.composer_hints(&hints),
             SidePanelId::Terminal => self.terminal.composer_hints(&hints),
@@ -971,7 +1411,7 @@ impl SidePanelHost {
     /// True when the active panel has nothing to show. Focus is refused
     /// rather than stranding keys in a panel that cannot act on them.
     fn panel_is_empty(&self) -> bool {
-        match self.active {
+        match self.active() {
             SidePanelId::Session => false,
             SidePanelId::Chat => self.chat.is_unbound(),
             // The terminal panel is always actionable: `i` takes the keyboard
@@ -1000,7 +1440,18 @@ impl SidePanelHost {
     }
 
     fn panel(&mut self) -> &mut dyn SidePanel {
-        match self.active {
+        let id = self.active();
+        self.panel_by_id_mut(id)
+    }
+
+    /// The panel instance for `id`.
+    ///
+    /// Panel *state* is keyed by [`SidePanelId`] rather than by edge, which is
+    /// what lets a panel move between edges without losing its cursor, filter
+    /// or scroll offset: the state travels with the id, and the slot only
+    /// records which edge is showing which id.
+    fn panel_by_id_mut(&mut self, id: SidePanelId) -> &mut dyn SidePanel {
+        match id {
             SidePanelId::Session => &mut self.session,
             SidePanelId::Agents => &mut self.agents,
             SidePanelId::Chat => &mut self.chat,
@@ -1017,12 +1468,16 @@ impl SidePanelHost {
     /// activated; focus follows only if it already had it, so selecting a
     /// panel from an unfocused state does not silently capture the composer.
     pub fn select(&mut self, id: SidePanelId, ctx: &mut PanelCtx<'_>) {
-        if id == self.active {
+        if id == self.active() {
             self.panel().on_activate(ctx);
             return;
         }
         self.panel().on_deactivate(ctx);
-        self.active = id;
+        // Goes through the slot so the panel this edge was showing is
+        // remembered: selecting a different panel here is the same act as
+        // docking one, and the panel that was displaced must come back if
+        // this edge is later vacated by a swap.
+        self.slot_mut(self.selected).occupy(id);
         // Activate *before* asking whether the panel is empty. A panel that
         // adopts its content on activation — the Terminal panel adopts the
         // controller's active handle — would otherwise be judged empty for
@@ -1044,7 +1499,7 @@ impl SidePanelHost {
         if len == 0 {
             return;
         }
-        let current = self.active.index() as i64;
+        let current = self.active().index() as i64;
         let next = (current + i64::from(delta)).rem_euclid(len as i64) as usize;
         let was_focused = self.focused;
         self.select(SidePanelId::from_index(next), ctx);
@@ -1128,6 +1583,29 @@ impl SidePanelHost {
     pub fn render(&mut self, ctx: &mut PanelCtx<'_>, buf: &mut Buffer, area: Rect) {
         self.panel().render(ctx, buf, area);
     }
+
+    /// Paint the panel docked to `placement`.
+    ///
+    /// Takes the edge explicitly rather than reading the selected one, so the
+    /// render path can paint every occupied column in one pass without
+    /// re-pointing the app's idea of "the" panel as a side effect. Focus is
+    /// answered per-edge for the same reason: the focused edge is the selected
+    /// one *and* still up.
+    pub fn render_at(
+        &mut self,
+        placement: PanelPlacement,
+        ctx: &mut PanelCtx<'_>,
+        buf: &mut Buffer,
+        area: Rect,
+    ) {
+        let id = self.panel_at(placement);
+        self.panel_by_id_mut(id).render(ctx, buf, area);
+    }
+
+    /// Whether the panel on `placement` is the one holding the keyboard.
+    pub fn is_focused_at(&self, placement: PanelPlacement) -> bool {
+        self.is_focused() && placement == self.selected
+    }
 }
 
 /// Whether a key is one of the host-level exits that returns focus to the
@@ -1177,6 +1655,269 @@ mod tests {
             assert!(!panel.title().is_empty());
             assert!(!panel.hint().is_empty());
         }
+    }
+
+    // ------------------------------------------------------------ placements
+
+    /// Every direction must mean exactly one thing under every placement.
+    ///
+    /// The dispatcher in `move_directionally` answers `toward` and `away`
+    /// first and falls back to `cycle_step`. If any direction satisfied more
+    /// than one of those, one of the branches would be silently unreachable
+    /// and a gesture would quietly change meaning between layouts.
+    #[test]
+    fn every_direction_is_exactly_one_gesture_per_placement() {
+        for placement in PanelPlacement::ALL.iter().copied() {
+            let toward = placement.toward();
+            let away = placement.away();
+            assert_ne!(toward, away, "{placement:?}: toward and away collide");
+            for direction in [
+                PanelDirection::Left,
+                PanelDirection::Right,
+                PanelDirection::Up,
+                PanelDirection::Down,
+            ] {
+                let meanings = usize::from(direction == toward)
+                    + usize::from(direction == away)
+                    + usize::from(placement.cycle_step(direction).is_some());
+                assert_eq!(
+                    meanings, 1,
+                    "{placement:?}: {direction:?} has {meanings} meanings, want exactly 1"
+                );
+            }
+        }
+    }
+
+    /// `away` is the way *out*. If it ever stopped being the exact inverse of
+    /// `toward`, a panel would have no gesture that returns to the composer
+    /// and the keyboard would be stranded in it.
+    #[test]
+    fn away_is_the_exact_inverse_of_toward() {
+        let inverse = |d: PanelDirection| match d {
+            PanelDirection::Left => PanelDirection::Right,
+            PanelDirection::Right => PanelDirection::Left,
+            PanelDirection::Up => PanelDirection::Down,
+            PanelDirection::Down => PanelDirection::Up,
+        };
+        for placement in PanelPlacement::ALL.iter().copied() {
+            assert_eq!(placement.away(), inverse(placement.toward()));
+        }
+    }
+
+    /// The column placements keep `↑`/`↓` walking the panel list — the
+    /// behavior that shipped — and only the bottom row swaps the axis.
+    #[test]
+    fn the_panel_list_cycles_perpendicular_to_the_placement_axis() {
+        assert_eq!(
+            PanelPlacement::Right.cycle_step(PanelDirection::Down),
+            Some(1)
+        );
+        assert_eq!(PanelPlacement::Right.cycle_step(PanelDirection::Left), None);
+        assert_eq!(
+            PanelPlacement::Left.cycle_step(PanelDirection::Down),
+            Some(1)
+        );
+        assert_eq!(
+            PanelPlacement::Bottom.cycle_step(PanelDirection::Right),
+            Some(1)
+        );
+        assert_eq!(
+            PanelPlacement::Bottom.cycle_step(PanelDirection::Down),
+            None,
+            "Down is how you enter a bottom panel, not how you walk the list"
+        );
+    }
+
+    /// A persisted spelling is user data: it is written to disk and read back
+    /// next run, so every placement needs a round trip. A variant that forgot
+    /// one would silently reset to the default layout on the next launch.
+    #[test]
+    fn placements_round_trip_through_their_persisted_spelling() {
+        for placement in PanelPlacement::ALL.iter().copied() {
+            assert_eq!(PanelPlacement::parse(placement.as_str()), Some(placement));
+            assert!(!placement.label().is_empty());
+        }
+        // Tolerant of what a user would actually type and of stray casing.
+        assert_eq!(
+            PanelPlacement::parse("  Bottom "),
+            Some(PanelPlacement::Bottom)
+        );
+        assert_eq!(PanelPlacement::parse("DOWN"), Some(PanelPlacement::Bottom));
+        // A typo drops the preference rather than refusing to boot.
+        assert_eq!(PanelPlacement::parse("sideways"), None);
+    }
+
+    /// Cycling must cover every placement and return home, or `p` would
+    /// strand the user on a layout they cannot leave.
+    #[test]
+    fn cycling_visits_every_placement_and_wraps() {
+        let mut seen = vec![PanelPlacement::Right];
+        let mut current = PanelPlacement::Right;
+        for _ in 0..PanelPlacement::ALL.len() - 1 {
+            current = current.next();
+            seen.push(current);
+        }
+        assert_eq!(seen.len(), PanelPlacement::ALL.len());
+        assert!(PanelPlacement::ALL.iter().all(|p| seen.contains(p)));
+        assert_eq!(current.next(), PanelPlacement::Right);
+    }
+
+    /// The default is the layout that shipped first, so a user with no stored
+    /// preference sees no change at all.
+    #[test]
+    fn the_default_placement_is_the_shipped_right_column() {
+        assert_eq!(PanelPlacement::default(), PanelPlacement::Right);
+        assert_eq!(SidePanelHost::new().placement(), PanelPlacement::Right);
+    }
+
+    #[test]
+    fn with_placement_restores_without_disturbing_the_loaded_panel() {
+        let mut host = SidePanelHost::with_placement(PanelPlacement::Bottom);
+        assert_eq!(host.placement(), PanelPlacement::Bottom);
+        assert_eq!(
+            host.active(),
+            SidePanelId::Session,
+            "restoring a layout must not re-select a panel"
+        );
+        assert!(
+            !host.is_focused(),
+            "restoring a layout must not seize focus"
+        );
+        host.select_placement(PanelPlacement::Left);
+        assert_eq!(host.placement(), PanelPlacement::Left);
+    }
+
+    // ------------------------------------------------------------ the swap
+
+    /// The whole point of the slot history: pushing a panel to another edge
+    /// must not cost the edge it left whatever it was showing.
+    #[test]
+    fn a_moved_panel_restores_what_the_edge_it_left_was_showing() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        // `Session` was on the right before `Chat` displaced it.
+        host.dock(SidePanelId::Chat, PanelPlacement::Left);
+
+        assert_eq!(
+            host.panel_at(PanelPlacement::Left),
+            SidePanelId::Chat,
+            "the panel moved to the edge the gesture named"
+        );
+        assert_eq!(
+            host.panel_at(PanelPlacement::Right),
+            SidePanelId::Session,
+            "and the edge it left brought its own panel back"
+        );
+        assert!(
+            host.is_visible_at(PanelPlacement::Right),
+            "a restore is visible — a column that reappeared empty reads as data loss"
+        );
+    }
+
+    /// The user's own scenario: an edge that was collapsed before the panel
+    /// arrived has nothing to restore, so it goes back to collapsed rather
+    /// than to an arbitrary default panel.
+    #[test]
+    fn an_edge_that_was_collapsed_restores_to_collapsed() {
+        let mut host = SidePanelHost::new();
+        host.set_visible_at(PanelPlacement::Right, false);
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        assert!(host.is_visible_at(PanelPlacement::Right));
+
+        host.dock(SidePanelId::Chat, PanelPlacement::Left);
+
+        assert_eq!(host.panel_at(PanelPlacement::Left), SidePanelId::Chat);
+        assert!(
+            !host.is_visible_at(PanelPlacement::Right),
+            "nothing was there before the panel, so nothing comes back"
+        );
+        assert!(
+            host.is_visible_at(PanelPlacement::Left),
+            "and the edge that received it is up"
+        );
+    }
+
+    /// A panel is *moved*, never copied. Two edges showing the same panel id
+    /// would mean one widget state rendered twice, which is how a chat panel
+    /// ends up drawing the same selection into two columns.
+    #[test]
+    fn a_panel_is_never_loaded_on_two_edges_at_once() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Help, PanelPlacement::Right);
+        host.dock(SidePanelId::Help, PanelPlacement::Bottom);
+        let showing: Vec<_> = PanelPlacement::ALL
+            .iter()
+            .copied()
+            .filter(|placement| host.panel_at(*placement) == SidePanelId::Help)
+            .collect();
+        assert_eq!(showing, vec![PanelPlacement::Bottom]);
+    }
+
+    /// Re-docking a panel to the edge it is already on must not push itself
+    /// onto that edge's history: the next swap would then "restore" a panel
+    /// that never left.
+    #[test]
+    fn re_docking_to_the_same_edge_does_not_corrupt_its_history() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        host.dock(SidePanelId::Chat, PanelPlacement::Left);
+        assert_eq!(
+            host.panel_at(PanelPlacement::Right),
+            SidePanelId::Session,
+            "the edge must restore what it had, not the panel that left it"
+        );
+    }
+
+    /// The history is a convenience memory, not an undo stack, so it must
+    /// not grow without bound in a long session.
+    #[test]
+    fn the_history_is_bounded() {
+        let mut slot = PanelSlot::new(SidePanelId::Session, true);
+        for id in SidePanelId::ALL
+            .iter()
+            .copied()
+            .take(PANEL_HISTORY_DEPTH + 4)
+        {
+            if id != SidePanelId::Session {
+                slot.occupy(id);
+            }
+        }
+        assert!(
+            slot.history_len() <= PANEL_HISTORY_DEPTH,
+            "history grew to {}",
+            slot.history_len()
+        );
+    }
+
+    /// Collapsing is per-edge. It has to be: the entire swap experience is
+    /// that the edge a panel left and the edge it arrived at can be in
+    /// different states at the same time.
+    #[test]
+    fn collapsing_one_edge_leaves_the_other_alone() {
+        let mut host = SidePanelHost::new();
+        host.dock(SidePanelId::Chat, PanelPlacement::Right);
+        host.dock(SidePanelId::Session, PanelPlacement::Left);
+        host.set_visible_at(PanelPlacement::Right, false);
+        assert!(!host.is_visible_at(PanelPlacement::Right));
+        assert!(
+            host.is_visible_at(PanelPlacement::Left),
+            "collapsing one column must not take the other with it"
+        );
+        assert!(host.any_visible());
+    }
+
+    /// A fresh frame is still the single right-hand column that shipped,
+    /// even though the host now carries slots for three edges.
+    #[test]
+    fn a_fresh_host_shows_only_the_right_column() {
+        let host = SidePanelHost::new();
+        let shown: Vec<_> = PanelPlacement::ALL
+            .iter()
+            .copied()
+            .filter(|placement| host.is_visible_at(*placement))
+            .collect();
+        assert_eq!(shown, vec![PanelPlacement::Right]);
     }
 
     /// Every panel must be constructible by name and nameable on disk.

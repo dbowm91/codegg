@@ -130,6 +130,7 @@ The permission box accepts direct keys as well as arrow/`j`/`k` + `Enter`:
 | `y` | Allow once |
 | `p` | Always allow (asks for a second confirming keypress) |
 | `n` | Deny once |
+| `1`–`4` | Same four rows by position; answer without pressing Enter |
 | `↑↓`/`j`/`k`, `Enter` | Navigate / commit the highlighted option |
 | `Esc` | Cancel, or back out of the confirm step |
 

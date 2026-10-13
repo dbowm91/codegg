@@ -407,7 +407,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-157 count stays in sync with this documentation.
+161 count stays in sync with this documentation.
 
 ## Related Docs
 
