@@ -267,7 +267,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         if (-not [C024Native]::ConvertStringSidToSidW($limitingSid, [ref]$sidPointer)) { throw "ConvertStringSidToSidW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
         $sidArray = [Runtime.InteropServices.Marshal]::AllocHGlobal([Runtime.InteropServices.Marshal]::SizeOf([type][IntPtr]) + 8)
         [Runtime.InteropServices.Marshal]::WriteIntPtr($sidArray, $sidPointer)
-        [Runtime.InteropServices.Marshal]::WriteInt32($sidArray, [Runtime.InteropServices.Marshal]::SizeOf([type][IntPtr]), 4)
+        # CreateRestrictedToken requires Attributes=0 for entries in SidsToRestrict.
+        [Runtime.InteropServices.Marshal]::WriteInt32($sidArray, [Runtime.InteropServices.Marshal]::SizeOf([type][IntPtr]), 0)
         if (-not [C024Native]::CreateRestrictedToken($baseToken, 9, 0, [IntPtr]::Zero, 0, [IntPtr]::Zero, 1, $sidArray, [ref]$writeRestrictedToken)) {
             throw "CreateRestrictedToken(WRITE_RESTRICTED) failed: Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
         }
