@@ -290,6 +290,25 @@ impl PanelPlacement {
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
+    /// The edge a directional gesture names, or `None` when it names none.
+    ///
+    /// The gesture is literal — `Shift+H` means the left column — rather than
+    /// being reinterpreted through some selected edge's axis. That is the same
+    /// rule every surface uses, so a box, the manager and the main buffer
+    /// cannot disagree about what `H` means.
+    ///
+    /// `Up` names no edge. There is no top, and inventing one would let
+    /// `Shift+K` silently mean "stay here" in one surface and "go somewhere
+    /// else" in another.
+    pub fn named_by(direction: PanelDirection) -> Option<Self> {
+        match direction {
+            PanelDirection::Left => Some(Self::Left),
+            PanelDirection::Right => Some(Self::Right),
+            PanelDirection::Down => Some(Self::Bottom),
+            PanelDirection::Up => None,
+        }
+    }
+
     /// The gesture that moves the keyboard **into** the panel.
     pub fn toward(self) -> PanelDirection {
         match self {
@@ -487,8 +506,10 @@ impl SidePanelId {
     /// and the manager's cursor agree), and `PanelManagerDialog` renders this
     /// list directly — there is no second registry to keep in sync.
     ///
-    /// The four bespoke panels lead, then every box that can dock into the
-    /// column. A panel appears here only if it is reachable: either the box
+    /// The bespoke panels lead, then every box that can dock into the
+    /// column. Bespoke means "owns its own implementation" — see
+    /// [`is_bespoke`](Self::is_bespoke), which is what `SidePanelHost` filters
+    /// on. A panel appears here only if it is reachable: either the box
     /// that fills it exists, or selecting it renders a placeholder that names
     /// the command to run.
     pub const ALL: &'static [SidePanelId] = &[
@@ -700,6 +721,29 @@ impl SidePanelId {
             SidePanelId::Diff => "diff",
             SidePanelId::Review => "review",
         }
+    }
+
+    /// Whether this panel owns a live projection or a controller and so has
+    /// its own `SidePanel` implementation, rather than being a box adopted at
+    /// runtime.
+    ///
+    /// **One predicate, two consumers.** [`SidePanelHost::new`] filters this
+    /// out of the hosted list, and the bespoke-or-hosted test reads the same
+    /// function. When those were two separate `matches!` literals they drifted
+    /// the moment a fifth bespoke panel was added: `Agents` kept its own
+    /// `AgentsPanel` *and* got a hosted placeholder, so
+    /// `hosted_panel_has_content` answered `Some(false)` for it and
+    /// `materialize_hosted_panel` treated it as an unloaded box — calling
+    /// `open_panel_box`, which calls `select_panel`, which calls
+    /// `materialize_hosted_panel`. `/agents` recursed until the stack died.
+    ///
+    /// Adding a bespoke panel means adding it here and nothing else; the
+    /// hosted list and the test both follow.
+    pub fn is_bespoke(self) -> bool {
+        matches!(
+            self,
+            Self::Session | Self::Agents | Self::Chat | Self::Terminal | Self::Help
+        )
     }
 
     /// Position in [`SidePanelId::ALL`].
@@ -1122,15 +1166,7 @@ impl SidePanelHost {
             hosted: SidePanelId::ALL
                 .iter()
                 .copied()
-                .filter(|id| {
-                    !matches!(
-                        id,
-                        SidePanelId::Session
-                            | SidePanelId::Chat
-                            | SidePanelId::Terminal
-                            | SidePanelId::Help
-                    )
-                })
+                .filter(|id| !id.is_bespoke())
                 .map(hosted::HostPanel::placeholder)
                 .collect(),
         }
@@ -1244,7 +1280,7 @@ impl SidePanelHost {
     /// Whether a hosted panel currently has a real box adopted into it, as
     /// opposed to the placeholder it shows when nothing has been docked.
     ///
-    /// `None` for the four bespoke panels, which are not hosted. Exposed so a
+    /// `None` for the bespoke panels, which are not hosted (`is_bespoke`). Exposed so a
     /// test can observe adoption without reaching through a private field.
     pub fn hosted_panel_has_content(&self, id: SidePanelId) -> Option<bool> {
         self.hosted
@@ -1258,7 +1294,7 @@ impl SidePanelHost {
     /// This is what makes docking a *move* rather than a copy: the component
     /// [`FocusManager::pop`] returned is the very one the box was painting, so
     /// the panel starts with the same filter, cursor, scroll offset and
-    /// selection. Returns `false` for a panel that is not hosted (the four
+    /// selection. Returns `false` for a panel that is not hosted (the
     /// bespoke ones), which is a programming error rather than a runtime
     /// condition — those panels have their own dock paths.
     pub fn adopt(
@@ -2035,17 +2071,36 @@ mod tests {
     fn every_box_derived_panel_has_a_hosted_instance() {
         let host = SidePanelHost::new();
         for panel in SidePanelId::ALL.iter().copied() {
-            let bespoke = matches!(
-                panel,
-                SidePanelId::Session
-                    | SidePanelId::Chat
-                    | SidePanelId::Terminal
-                    | SidePanelId::Help
-            );
             let hosted = host.hosted.iter().any(|candidate| candidate.id() == panel);
             assert_eq!(
-                bespoke, !hosted,
+                panel.is_bespoke(),
+                !hosted,
                 "{panel:?} must be exactly one of bespoke-or-hosted"
+            );
+        }
+    }
+
+    /// The invariant `materialize_hosted_panel` actually branches on.
+    ///
+    /// It proceeds only for `Some(false)` — a hosted panel with no box adopted
+    /// yet — and its first move is to `open_panel_box`, which comes straight
+    /// back through `select_panel`. So a bespoke panel answering `Some(false)`
+    /// is an infinite recursion, not a slow path. The bespoke-or-hosted test
+    /// above cannot see this: it compared against the same stale literal that
+    /// built the list, so it agreed with the bug.
+    #[test]
+    fn a_bespoke_panel_never_reads_as_an_unloaded_hosted_panel() {
+        let host = SidePanelHost::new();
+        for panel in SidePanelId::ALL
+            .iter()
+            .copied()
+            .filter(|id| id.is_bespoke())
+        {
+            assert_eq!(
+                host.hosted_panel_has_content(panel),
+                None,
+                "{panel:?} is bespoke: reporting a hosted placeholder would send \
+                 materialize_hosted_panel into open_panel_box and back again"
             );
         }
     }

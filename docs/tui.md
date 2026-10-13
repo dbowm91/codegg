@@ -114,6 +114,11 @@ Read it as "the gesture pointing at a panel enters it, the opposite gesture
 comes back, and the other two walk the panel list". With a **box** open, the
 same gesture instead means "move this box into the panel on that side".
 
+**The main buffer is a stop of its own, not something you step over.** With two
+columns up — Terminal left, Chat right — one `Shift+H` from Chat lands in the
+buffer and the second reaches Terminal. The buffer sits *between* the columns, so
+the gestures walk the whole frame rather than jumping from one end to the other.
+
 So on the default right-column layout: `/chat` then `Shift+L` closes the box
 and leaves the conversation running in the panel, `/help` then `Shift+L` does
 the same for the keybinding reference, and `/terminal` then `Shift+L` moves
@@ -148,10 +153,29 @@ immediately, and `i` takes you to the filter. The `/help` *box* opens in `INS`,
 because you opened it to type a query.
 
 The **panel manager** lists every panel with a one-line
-description; type to filter, `Enter` to load, and a digit (`1`-`9`, `0`) to
-bind that panel to `Ctrl+<digit>` so you can swap to it in one keystroke.
-Bindings are saved to `codegg.json` and survive a restart. `Ctrl` rather than
-`Cmd` because a terminal does not deliver a Cmd modifier.
+description; a digit (`1`-`9`, `0`) binds that panel to `Ctrl+<digit>` so you can swap
+to it in one keystroke. Bindings are saved to `codegg.json` and survive a restart.
+`Ctrl` rather than `Cmd` because a terminal does not deliver a Cmd modifier.
+
+It opens in `NOR`, because it is reached with a Normal-mode chord and is read
+before it is typed into:
+
+- **`NOR`** — `j`/`k` and the arrow keys move the highlight; `Shift+H/J/K/L`
+  (or `Shift+←/→/↑/↓`) **put the highlighted panel on that edge**; `Enter`
+  loads it onto the edge the strip marks; `p` moves that edge; a digit binds;
+  `i` takes you to the filter.
+- **`INS`** — type to filter, `Backspace` edits, `Esc` goes back to `NOR` with
+  your query intact. `Esc` in `NOR` clears the filter first and only closes
+  once there is nothing to clear.
+
+The directional is the reason the manager needs its own mode: in `NOR` it is
+free, so it means *put this panel over there* — the same gesture the main
+buffer uses. In `INS` it is just the letter, so it types into the filter like
+any other character.
+
+Opening the manager never changes your frame. If an edge is collapsed it stays
+collapsed, and the strip says so (`[Left collapsed]`) rather than popping the
+column open behind you.
 
 It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
 anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the

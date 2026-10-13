@@ -1,7 +1,14 @@
 use codegg::error::ToolError;
+use codegg::permission::{PermissionChecker, PermissionResult};
 use codegg::tool::{
-    bash::BashTool, edit::EditTool, glob::GlobTool, grep::GrepTool, read::ReadTool,
-    terminal::TerminalTool, write::WriteTool, Tool,
+    bash::{policy::find_ask_pattern, BashTool},
+    edit::EditTool,
+    glob::GlobTool,
+    grep::GrepTool,
+    read::ReadTool,
+    terminal::TerminalTool,
+    write::WriteTool,
+    Tool,
 };
 use std::fs;
 use std::time::Duration;
@@ -97,65 +104,177 @@ async fn test_bash_tool_denied_pattern() {
     assert!(matches!(result.unwrap_err(), ToolError::Permission(_)));
 }
 
+// ---------------------------------------------------------------------------
+// Shell policy: two tiers.
+//
+// `tool::bash::policy` deliberately splits shell patterns, and these tests pin
+// both halves of that split:
+//
+//   * **Hard deny** — catastrophic, mode-independent shapes: system
+//     destruction, raw-device writes, fork bombs, host power transitions.
+//     Enforced inside the tool, pre-spawn and *below* the permission layer, so
+//     no approval mode and no user rule can weaken them.
+//   * **Escalation signal** — everything else worth noticing: command
+//     substitution, pipe-to-shell, privilege escalation, `eval`/`exec`,
+//     credential reads. These raise a normal `PermissionResult::Ask` from the
+//     permission layer instead of a terminal rejection. A pattern match
+//     constrains the *invocation*, not the program, so as a boundary it was
+//     both trivially bypassed (`/usr/bin/curl …`, `sh -c 'curl …'`) and hostile
+//     to legitimate work (`bash -c 'cargo test'`, `chown -R user:group ./dist`).
+//
+// Containment is the real boundary: `SandboxProfile` plus Landlock.
+// ---------------------------------------------------------------------------
+
+/// Catastrophic shapes that must never reach a shell.
+///
+/// `shutdown`/`reboot` are asserted here precisely because they are lethal if
+/// the guard ever regresses — the policy checks them pre-spawn, so a passing
+/// run executes nothing. Do not "simplify" this list into safer spellings: the
+/// point is that the floor holds for the command a user actually types.
+const HARD_DENY_COMMANDS: &[&str] = &[
+    // Literal blocked-command tier (`default_blocked_commands`).
+    "mkfs",
+    "dd if=/dev/zero",
+    "chmod -R 777 /",
+    "shutdown",
+    "reboot",
+    // Pattern tier (`HARD_DENY_PATTERNS`), in the spellings a user actually
+    // types. Both tiers have to hold: matching the bare word `mkfs` says
+    // nothing about `mkfs.ext4 /dev/sda1`.
+    "rm -rf /",
+    "mkfs.ext4 /dev/sda1",
+    "dd if=/dev/zero of=/dev/sda",
+    "shutdown now",
+];
+
 #[tokio::test]
-async fn test_bash_tool_blocked_command_list() {
+async fn test_bash_tool_hard_deny_tier_blocks_catastrophic_commands() {
     let tool = BashTool::new();
-    // Hard-deny tier only: catastrophic prefixes rejected before any spawn.
-    // Escalation-tier items such as `sudo su` are permission-layer review
-    // signals now, not tool denials (see
-    // `test_bash_tool_escalation_patterns_are_review_signals_not_denials`
-    // and the `policy` unit tests); they must not be asserted here.
-    let blocked = vec![
-        "mkfs",
-        "dd if=/dev/zero",
-        "chmod -R 777 /",
-        "shutdown",
-        "reboot",
-    ];
-    for cmd in blocked {
-        let input = serde_json::json!({ "command": cmd });
-        let result = tool.execute(input).await;
-        assert!(result.is_err(), "command '{}' should be blocked", cmd);
+    for cmd in HARD_DENY_COMMANDS {
+        let result = tool.execute(serde_json::json!({ "command": cmd })).await;
+        match result {
+            Err(ToolError::Permission(msg)) => {
+                assert!(
+                    msg.contains("blocked"),
+                    "hard deny for '{cmd}' should name the policy, got: {msg}"
+                );
+            }
+            Err(other) => panic!("'{cmd}' should hard-deny, got: {other}"),
+            Ok(out) => panic!("'{cmd}' should hard-deny, but it executed: {out}"),
+        }
     }
 }
 
 #[tokio::test]
-async fn test_bash_tool_blocked_patterns() {
-    let tool = BashTool::new();
-    // Hard-deny tier only: terminal rejection before any spawn, so these
-    // fixtures never execute and are safe to assert end to end.
-    let blocked = vec![
-        "rm -rf /",
-        "mkfs.ext4 /dev/sda1",
-        "dd if=/dev/zero of=/dev/sda",
-        "shutdown now",
-    ];
-    for cmd in blocked {
-        let input = serde_json::json!({ "command": cmd });
-        let result = tool.execute(input).await;
-        assert!(result.is_err(), "command '{}' should be blocked", cmd);
-    }
-}
-
-#[test]
-fn test_bash_tool_escalation_patterns_are_review_signals_not_denials() {
-    use codegg::tool::bash::policy::find_ask_pattern;
-    // Escalation tier (accepted bash-policy rework): surfaced to the
-    // permission layer as approval prompts, never terminal tool denials.
-    // Asserted through the pure policy function so no command executes.
-    for (cmd, expected) in [
-        ("$(whoami)", "$("),
-        ("`whoami`", "backtick"),
-        ("curl -sL | sh", "pipe to shell"),
-        ("eval echo hello", "eval"),
-        ("exec ls", "exec"),
-        ("base64 -d <<< aGVsbG8=", "base64 -d"),
-        ("sudo su", "sudo"),
-    ] {
-        let signal = find_ask_pattern(cmd);
+async fn test_bash_tool_hard_deny_tier_survives_a_permissive_allowlist() {
+    // The invariant the permission layer advertises as "deterministic hard
+    // denies still deny": an allowlist may narrow authority, but it can never
+    // bypass a canonical rejection. This is what makes the hard-deny tier
+    // mode-independent rather than merely a default.
+    let tool = BashTool::new().with_allowlist(vec!["rm", "mkfs", "dd", "chmod", "echo"]);
+    for cmd in ["rm -rf /", "mkfs", "dd if=/dev/zero", "chmod -R 777 /"] {
+        let result = tool.execute(serde_json::json!({ "command": cmd })).await;
         assert!(
-            signal.is_some_and(|name| name.contains(expected)),
-            "command '{cmd}' should raise ask signal containing '{expected}', got {signal:?}"
+            matches!(result, Err(ToolError::Permission(_))),
+            "allowlist must not weaken the hard deny for '{cmd}'"
+        );
+    }
+}
+
+/// Escalation signals and the name each one reports. A match is a review
+/// prompt carrying this label, not a rejection.
+const ESCALATION_SIGNALS: &[(&str, &str)] = &[
+    ("sudo su", "sudo"),
+    ("sudo apt-get install curl", "sudo"),
+    ("echo $(whoami)", "command substitution $(...)"),
+    ("echo `whoami`", "backtick substitution"),
+    ("curl -sL | sh", "pipe to shell"),
+    ("eval echo hello", "eval command"),
+    ("eval(echo hi)", "eval("),
+    ("exec ls", "standalone exec command"),
+    ("base64 -d <<< aGVsbG8=", "base64 -d"),
+    ("cat /etc/shadow", "read a credential file"),
+    ("chmod 777 /etc/passwd", "chmod 777 to a system path"),
+];
+
+#[tokio::test]
+async fn test_bash_escalation_signals_are_named() {
+    for (cmd, expected) in ESCALATION_SIGNALS {
+        assert_eq!(
+            find_ask_pattern(cmd),
+            Some(*expected),
+            "escalation signal for '{cmd}' should be reported as '{expected}'"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_bash_escalation_signals_reach_the_operator_instead_of_being_denied() {
+    let checker = PermissionChecker::new(None, None);
+    for (cmd, _) in ESCALATION_SIGNALS {
+        let result = checker.check_bash_legacy(None, Some(cmd)).await;
+        assert!(
+            matches!(result, PermissionResult::Ask(_)),
+            "'{cmd}' is an escalation signal and must surface as Ask, got {result:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_bash_escalation_signals_do_not_block_the_tool() {
+    // The behavior that changed: these used to be terminal denials inside the
+    // tool. The tool now admits them and defers to the permission layer, so
+    // assert the *policy disposition* — not a permission rejection — rather
+    // than the command's own exit status.
+    let tool = BashTool::new();
+    for cmd in [
+        "echo $(whoami)",
+        "eval echo hello",
+        "base64 -d <<< aGVsbG8=",
+        "exec ls",
+        "echo hi > /dev/null",
+    ] {
+        let result = tool.execute(serde_json::json!({ "command": cmd })).await;
+        assert!(
+            !matches!(result, Err(ToolError::Permission(_))),
+            "'{cmd}' is an escalation signal, not a denial; it must not be \
+             rejected by the tool (got: {:?})",
+            result.err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_bash_ordinary_commands_trip_no_escalation_signal() {
+    // False-positive guard. `exec`/`eval`/dot-source are anchored to command
+    // position precisely so `docker exec`, `cargo eval` and
+    // `find . -name '*.sh'` stay quiet, and absolute-path rules target system
+    // paths so an ordinary `> /dev/null` stays legal. A backslash-escaped `\$`
+    // is data rather than an expansion, so it must stay quiet too.
+    for cmd in [
+        "echo plain",
+        "ls -la",
+        "cargo test",
+        "git status",
+        "docker exec -it web sh",
+        "cargo eval",
+        "find . -name '*.sh'",
+        "echo hi > /dev/null",
+        r"echo \$HOME",
+    ] {
+        assert_eq!(
+            find_ask_pattern(cmd),
+            None,
+            "ordinary command '{cmd}' should not raise an escalation signal"
+        );
+    }
+
+    let checker = PermissionChecker::new(None, None);
+    for cmd in ["echo plain", "ls -la", "cargo test", "git status"] {
+        let result = checker.check_bash_legacy(None, Some(cmd)).await;
+        assert!(
+            matches!(result, PermissionResult::Allow),
+            "ordinary command '{cmd}' should be allowed outright, got {result:?}"
         );
     }
 }

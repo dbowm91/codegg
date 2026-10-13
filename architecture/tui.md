@@ -926,16 +926,26 @@ The rule is **geometry resolved against what is on screen**, not a per-side
 branch. `move_directionally` asks in order:
 
 1. a box is open → dock it to the edge the direction names (`dock_open_box`);
-2. the direction names an edge that is **showing** a panel → take the keyboard
-   there, re-pointing `selected` if it is a different edge;
-3. the direction away from the selected edge → return to the main buffer;
+2. the keyboard is in the main buffer and the direction names an edge that is
+   **showing** a panel → take the keyboard there, re-pointing `selected` if it
+   is a different edge;
+3. the keyboard is in a panel and the direction is the one leading **away** from
+   its edge → return to the main buffer;
 4. otherwise `cycle_step(dir)` → walk the loaded panel types.
 
+**The main buffer is a stop, not a gap.** The second column is not "the other
+end of the line" from the first — the buffer sits *between* them. So step 3
+fires even when the far column is populated: two `Shift+H` from Chat reach
+Terminal, and one lands in the buffer the user was sitting in. That is the
+difference between "go left" and "go to the left panel", and it is why the
+dispatcher asks *where the keyboard is* rather than which edge is selected —
+the answer is a position on a line, not a pair of edges.
+
 Step 2 is what makes a second column reachable with the same keys that moved
-the first one there. Step 3 is what preserves the single-column behavior: with
-one right-hand panel, `Shift+H` finds nothing to the left, so it falls through
-to "the way back out". `Shift+K` names no edge at all and is excluded from
-step 2, so it can never shadow the way out of a bottom panel.
+the first one there. Step 3 is also what preserves the single-column behavior:
+with one right-hand panel, `Shift+H` finds nothing to the left and returns to
+the composer. `Shift+K` names no edge at all (`PanelPlacement::named_by`
+returns `None`), so it can never shadow the way out of a bottom panel.
 
 `TuiLayout::split` returns a **named** `PanelRegions { main, left, right,
 bottom }` rather than a positional `Vec<Rect>`. A vector cannot express "left
@@ -958,11 +968,21 @@ The panel manager carries a **display-only layout strip** above the panel list,
 with `p` cycling the edge. It is deliberately not rows in the navigable list:
 which edge the panel lives on and which panel is loaded are different
 questions, and merging them would renumber every panel row and make `Enter`
-mean something new depending on cursor drift.
+mean something new depending on cursor drift. The bracketed edge also names
+its own collapsed state (`[Left collapsed]`) — only the live edge does, because
+three states in a 44-column box wrap, and a wrapped strip loses the entry the
+user has not tried yet.
+
+**Opening the manager must not change the frame.** It used to force the selected
+edge visible, on the reasoning that a strip describing a collapsed column is
+confusing. The cost was that a panel the user had deliberately put away with
+`Ctrl+B` came back by itself the moment they reached for `Shift+S`, which reads
+as the TUI undoing their last action. Naming the state is the honest fix;
+changing the frame to match a strip is not.
 
 #### Panels
 
-Four panels are **bespoke** — they own live projections or a controller and
+Five panels are **bespoke** — they own live projections or a controller and
 need their own key model:
 
 | Panel | Title badge | Holds |
@@ -971,16 +991,17 @@ need their own key model:
 | `Chat` | `[CHAT]` | interactive project chat |
 | `Terminal` | `[TERMINAL]` | the live PTY view |
 | `Help` | `[HELP]` | the keybinding reference |
+| `Agents` | `[AGENTS]` | the M006-F management rows |
 
-The other **29** are **hosted**: each is a `/` command that brings up a box,
+The other **28** are **hosted**: each is a `/` command that brings up a box,
 and the panel holds that box's component rather than a lookalike. They are one
-implementation (`panels/hosted.rs`), not 29:
+implementation (`panels/hosted.rs`), not 28:
 
 | Group | Panels |
 |---|---|
 | Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
 | Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
-| Pickers | `Models` `Agents` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
 | Browsers | `Files` |
 
 Which panel is loaded is chosen by the **panel manager box**
@@ -995,10 +1016,22 @@ and `label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
 the one site outside this file that fails to compile if missed — and a
 `dock_target` arm in `App` so `L` knows where the box goes. `title` must be
 all-ASCII uppercase and `config_key` snake_case and unique; both are enforced.
-The host constructs the backing `HostPanel` from `ALL`, so there is no host
-field, no `panel()` arm and no render-path branch. Adding a **bespoke** panel
-additionally needs a `SidePanel` impl, a host field, and arms in `panel()`,
-`panel_is_empty()` and `composer_hints()`.
+The host constructs the backing `HostPanel` from `ALL` filtered on
+`SidePanelId::is_bespoke()`, so there is no host field, no `panel()` arm and no
+render-path branch. Adding a **bespoke** panel means adding it to
+`is_bespoke()`, writing a `SidePanel` impl, adding a host field, and adding arms
+in `panel()`, `panel_is_empty()` and `composer_hints()`.
+
+That filter is **load-bearing, not bookkeeping**. `materialize_hosted_panel`
+proceeds only for a panel whose `hosted_panel_has_content` is `Some(false)` —
+a hosted panel with no box adopted — and its first move is `open_panel_box`,
+which returns through `select_panel` into `materialize_hosted_panel` again. A
+bespoke panel that keeps a hosted placeholder therefore answers `Some(false)`
+and loops: `/agents` overflowed the stack and aborted the process. `is_bespoke`
+is the single list both the constructor and the bespoke-or-hosted test read,
+because when they were two separate `matches!` literals they drifted the moment
+a fifth bespoke panel was added, and the test agreed with the bug by comparing
+against the same stale literal.
 
 **A box and its panel open in different modes.** `HelpDialog::new_with_mode`
 takes the starting mode from its caller, and the two callers disagree on
@@ -1195,11 +1228,37 @@ per-panel footers.
 
 **Panel manager** (`Shift+S`): a box listing every
 registered panel with its `label`, its `hint`, and the digit already bound to
-it. Type to filter; `j`/`k`/`↑`/`↓` move the highlight; `Enter` loads the
-highlighted panel and takes focus; `1`-`9`/`0` bind it to that digit and
-persist to `codegg.json`; `Esc` clears the filter, then closes. The highlight
-indexes [`SidePanelId::ALL`], not the filtered view, so filtering narrows
-what is *visible* without renumbering what `Enter` and the digits act on.
+it. It carries **NOR/INS**, like every other dockable box, because it has to
+answer two questions whose keys collide. It opens in **Normal** — it is reached
+with a Normal-mode chord and is read before it is typed into, and opening it in
+Insert made `j`/`k` filter text, which is indistinguishable from a dead pane.
+
+- **Normal** — `j`/`k`/`↑`/`↓`/`PgUp`/`PgDn` move the highlight;
+  `Shift+H/J/K/L` or `Shift+←/→/↑/↓` **put the highlighted panel on that edge**;
+  `Enter` loads it onto the bracketed edge; `1`-`9`/`0` bind and persist it;
+  `p` steps the bracketed edge; `i`/`a` starts the filter.
+- **Insert** — type to filter, `Backspace` edits, `Esc` returns to Normal with
+  the query intact. `Esc` from Normal clears the filter first and closes only
+  when there is nothing to clear.
+
+The Normal directional is the reason the box needs a mode of its own. `Shift+H`
+is the letter `H`, so resolving it as a gesture unconditionally is wrong in a
+box with a query buffer — but gating it on Normal buys something the other
+boxes do not have, because there the gesture is free to mean *move the
+highlighted panel* rather than *dock this box*. It is deliberately **not**
+`TuiMsg::MoveDirection`: that resolves the keyboard position between the edges
+already in use, which is the wrong question while the manager is modal, since
+no panel is focused to move.
+
+Moving and loading stay separate acts (`MovePanelTo` vs `SelectPanel`) for the
+same reason walking the panel list never materializes an empty panel: a gesture
+that silently starts a daemon load is not a positioning gesture. The box stays
+open across a move — arranging three panels is one continuous act, and closing
+would throw away the list mid-arrangement.
+
+The highlight indexes [`SidePanelId::ALL`], not the filtered view, so filtering
+narrows what is *visible* without renumbering what `Enter` and the digits act
+on.
 
 Three ordering rules, all load-bearing:
 
@@ -2661,7 +2720,7 @@ action.
   selecting it, through the same seams as its `/` command
   (`materialize_hosted_panel`/`open_panel_box`). A synchronous snapshot box
   is opened and adopted immediately, so `Shift+S` + `Enter` lands on live
-  content with focus — the behaviour the four bespoke panels always had. A
+  content with focus — the behaviour the bespoke panels always had. A
   live-loading box (Research, Task view) stays open as a modal instead:
   adopting its spinner would freeze it and cancel the load, so the toast
   names the one remaining step (`L` to dock). Panels with genuinely nothing

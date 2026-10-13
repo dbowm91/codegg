@@ -62,20 +62,23 @@ pub(crate) fn sync_chat_panel_project(app: &mut App) {
 /// uses. It also has somewhere to explain itself, which is what a switcher
 /// for a growing registry needs.
 pub(crate) fn open_panel_manager(app: &mut App) {
-    // Opening the manager reveals the edge it is describing: the list names
-    // the layout strip, and a strip describing a collapsed column is asking
-    // the user to work out why.
-    let placement = app.panel_host.placement();
-    app.panel_host.set_visible_at(placement, true);
-    app.ui_state.sidebar_visible = app.panel_host.any_visible();
-    // Resolve the chat binding now, before the user can pick Chat: the host
-    // has no app access and would otherwise find it unbound and refuse focus.
+    // Opening the manager must not change the frame. It used to force the
+    // selected edge visible, on the reasoning that a strip describing a
+    // collapsed column is confusing — but the cost was that a panel the user
+    // had deliberately put away with `Ctrl+B` came back by itself the moment
+    // they reached for `Shift+S`, which reads as the TUI undoing their last
+    // action. The strip now *names* a collapsed edge instead of resolving the
+    // ambiguity by moving it.
+    //
+    // Resolve the chat binding before the user can pick Chat: the host has no
+    // app access and would otherwise find it unbound and refuse focus.
     sync_chat_panel_project(app);
     let dialog = crate::tui::components::dialogs::panel_manager::PanelManagerDialog::new(
         Arc::clone(&app.ui_state.theme),
         app.panel_hotkeys.clone(),
         app.panel_host.active(),
         app.panel_host.placement(),
+        app.panel_host.is_visible_at(app.panel_host.placement()),
     );
     app.push_dialog(crate::tui::app::Dialog::PanelManager, Box::new(dialog));
 }
@@ -90,12 +93,48 @@ pub(crate) fn open_panel_manager(app: &mut App) {
 /// match for the downcast, and the manager is the only `PanelManagerDialog`.
 pub(crate) fn sync_manager_placement(app: &mut App) {
     let placement = app.panel_host.placement();
+    let visible = app.panel_host.is_visible_at(placement);
     if let Some(dialog) =
         app.focus_manager
             .dialog_mut_any::<crate::tui::components::dialogs::panel_manager::PanelManagerDialog>()
     {
-        dialog.set_placement(placement);
+        dialog.set_placement(placement, visible);
     }
+}
+
+/// Put the manager's highlighted panel on `placement`.
+///
+/// The manager's Normal-mode directional. Moving and loading stay separate acts
+/// because they answer separate questions: this one says *where the panel
+/// lives* and leaves it unloaded, `Enter` says *fill this edge*. Folding them
+/// together would mean a gesture that silently starts a daemon load — the same
+/// reason walking the panel list never materializes an empty panel.
+///
+/// The box stays open, like `p`: arranging three panels and arriving at one is
+/// one continuous act, and closing would throw away the list mid-arrangement.
+pub(crate) fn move_manager_panel(app: &mut App, panel: SidePanelId, placement: PanelPlacement) {
+    let from = app.panel_host.placement();
+    if from == placement && app.panel_host.panel_at(placement) == panel {
+        // Still confirm. A keypress that appears to do nothing is read as a
+        // dead key, and the honest "already there" is the useful answer.
+        app.messages_state.toasts.info(&format!(
+            "{} is already on the {}",
+            panel.label(),
+            placement.label()
+        ));
+        return;
+    }
+    app.panel_host.dock(panel, placement);
+    app.ui_state.sidebar_visible = app.panel_host.any_visible();
+    persist_panel_placement(app, placement);
+    app.messages_state.toasts.info(&format!(
+        "{} moved to the {}; the {} is now {}",
+        panel.label(),
+        placement.label(),
+        from.label(),
+        describe_vacated(app, from)
+    ));
+    sync_manager_placement(app);
 }
 
 /// Step the manager's layout strip, then tell the box what happened.
@@ -385,9 +424,16 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
                 );
                 app.panel_host.set_agents_rows(rows);
                 // `select_panel` is the one seam that both selects and
-                // focuses, so `/agents` and `Shift+L` land on the panel by
+                // loads, so `/agents` and `Shift+L` land on the panel by
                 // exactly the same path rather than by a private shortcut.
+                // It does not *focus*: the two halves are separate on purpose
+                // elsewhere (loading a box must not steal the keyboard from a
+                // focused panel), which left `/agents` loading the panel and
+                // then warning that it had not taken focus — true of the
+                // keyboard, false of the panel. Same order `dock_open_box`
+                // uses.
                 select_panel(app, SidePanelId::Agents);
+                focus_panel(app);
                 if !app.panel_host.is_focused() {
                     app.messages_state
                         .toasts
@@ -534,25 +580,59 @@ fn restore_composer_mode_if_unfocused(app: &mut App) {
 /// A box calls this from its own Normal-mode handler (a modal short-circuits
 /// key routing before the binding map runs); the main buffer arrives via the
 /// [`InputAction`] arms in `App::on_key`.
+///
+/// ## The main buffer is a stop, not a gap
+///
+/// The second column is not "the other end of the line" from the first one —
+/// the **main buffer sits between them**. So stepping away from a panel in a
+/// direction that also names another populated edge lands on the buffer
+/// first, and the *next* press in that same direction reaches the far edge.
+/// With Terminal on the left and Chat on the right, two `Shift+H` from Chat
+/// reach Terminal; one jumped straight over the buffer the user was sitting
+/// in.
+///
+/// That is the whole difference between "go left" and "go to the left panel",
+/// and it is why this asks *where the keyboard is* rather than which edge is
+/// selected: the answer is a position on a line, not a pair of edges.
 pub(crate) fn move_directionally(app: &mut App, dir: PanelDirection) {
     if app.dock_target().is_some() {
         dock_open_box(app, dir);
         return;
     }
-    // A direction naming an edge that actually has a panel moves the
-    // keyboard to that edge, whatever the selected one is. With two columns
-    // up this is what makes them independently reachable: `Shift+H` is
-    // literally "go left", and left is where the chat panel now lives.
-    if let Some(placement) = edge_holding_a_panel(app, dir) {
-        if placement != app.panel_host.placement() {
+    // `Up` names no edge — there is no top — so it can never be read as "the
+    // panel is over there". That is what stops an empty column from shadowing
+    // the way out of a bottom row.
+    let named = PanelPlacement::named_by(dir);
+
+    // Keyboard in the main buffer: the gesture steps *into* a populated edge.
+    if !app.panel_host.is_focused() {
+        if let Some(placement) = named.filter(|p| app.panel_host.is_visible_at(*p)) {
             app.panel_host.select_placement(placement);
+            focus_side_panel(app);
+            return;
         }
-        focus_side_panel(app);
+        // Nothing that way. The perpendicular gestures still walk the panel
+        // list, so browsing from the buffer is not a dead end.
+        if let Some(step) = app.panel_host.placement().cycle_step(dir) {
+            step_panel(app, step);
+        }
         return;
     }
+
     let placement = app.panel_host.placement();
+    // Stepping *away* from this edge means the main buffer — always, even when
+    // the far column has a panel on it. Routing past it made the buffer
+    // invisible as a destination, so the one surface the user spends most of
+    // their time could not be returned to by the gesture that names it.
     if dir == placement.away() {
         focus_main_buffer(app);
+        return;
+    }
+    if let Some(edge) = named.filter(|p| app.panel_host.is_visible_at(*p)) {
+        if edge != placement {
+            app.panel_host.select_placement(edge);
+        }
+        focus_side_panel(app);
         return;
     }
     // Perpendicular to the placement axis, so the gesture is free to mean
@@ -561,23 +641,6 @@ pub(crate) fn move_directionally(app: &mut App, dir: PanelDirection) {
     if let Some(step) = placement.cycle_step(dir) {
         step_panel(app, step);
     }
-}
-
-/// The edge `dir` points at, when that edge is showing a panel.
-///
-/// Returns `None` for a direction that names no edge (`Shift+K` — there is
-/// nothing above the buffer) and for an edge that is collapsed. Both fall
-/// through to the axis rules, which is what preserves the single-column
-/// behavior: with one right-hand panel, `Shift+H` finds nothing to the left,
-/// becomes "the way back out", and enters the panel is not shadowed by an
-/// empty column that happens to exist.
-fn edge_holding_a_panel(app: &App, dir: PanelDirection) -> Option<PanelPlacement> {
-    let placement = edge_named_by(dir, app.panel_host.placement());
-    // `Up` resolves to the current edge rather than a real one, so it must
-    // not read as "the panel is over there" — that would swallow the way out
-    // of a bottom panel.
-    let names_edge = !matches!(dir, PanelDirection::Up);
-    (names_edge && app.panel_host.is_visible_at(placement)).then_some(placement)
 }
 
 /// Cycle the loaded panel type by `delta`, keeping focus where it was.
@@ -658,7 +721,7 @@ pub(crate) fn dock_open_box(app: &mut App, dir: PanelDirection) {
     // `close_dialog` hands back the component it unmounted. For a hosted
     // panel that component is the box itself — same filter, same cursor,
     // same scroll offset — so docking is a move rather than a re-open that
-    // happens to look similar. The four bespoke panels have their own dock
+    // happens to look similar. The bespoke panels have their own dock
     // paths and ignore the returned component.
     let unmounted = app.close_dialog();
     let from = app.panel_host.placement();
@@ -698,12 +761,10 @@ pub(crate) fn dock_open_box(app: &mut App, dir: PanelDirection) {
 /// presses `Shift+K` with a box open gets the panel where it already is,
 /// which is at least the reading they can act on.
 fn edge_named_by(dir: PanelDirection, current: PanelPlacement) -> PanelPlacement {
-    match dir {
-        PanelDirection::Left => PanelPlacement::Left,
-        PanelDirection::Right => PanelPlacement::Right,
-        PanelDirection::Down => PanelPlacement::Bottom,
-        PanelDirection::Up => current,
-    }
+    // One table, shared with the manager's own directional: `named_by` says
+    // which edge a gesture means, and this only decides what the one gesture
+    // that names no edge should do instead.
+    PanelPlacement::named_by(dir).unwrap_or(current)
 }
 
 /// Move keyboard focus into the panel, on whichever side it is docked.

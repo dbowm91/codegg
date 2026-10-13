@@ -19,6 +19,7 @@
 
 use codegg::tui::app::{App, TuiMsg};
 use codegg::tui::components::component::DialogType;
+use codegg::tui::components::dialogs::panel_manager::PanelManagerDialog as ManagerDialog;
 use codegg::tui::input::InputMode;
 use codegg::tui::panels::{PanelPlacement, SidePanelId};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -545,7 +546,13 @@ fn the_layout_strip_does_not_push_the_panel_list_off_screen() {
     // And the footer — the only place the keys are written down — must
     // survive. It did not, when the strip briefly had a chunk of its own.
     assert!(text.contains("Enter load"), "footer clipped");
-    assert!(text.contains("p move panel"), "footer lost the layout key");
+    // The Normal-mode directional is the footer's headline verb. `p` and the
+    // digits are not repeated here any more -- the strip and each list row say
+    // where they live, and the footer only has ~41 columns to spend.
+    assert!(
+        text.contains("⇧H/J/K/L move"),
+        "footer lost the directional, which is the box's reason to exist"
+    );
 }
 
 /// The three placements fit on one line at the manager's usual width. If they
@@ -592,5 +599,322 @@ fn the_highlight_stays_visible_when_walking_the_list() {
     assert!(
         text.contains(last.label()),
         "the highlighted panel scrolled out of view: {last:?} missing"
+    );
+}
+
+// ── Two columns, and the buffer between them ──────────────────────────────
+
+/// Session on the left, Terminal on the right, the bottom row out of the way.
+///
+/// The frame the two-column gestures have to be right about. Every helper
+/// above collapses all but one edge, so none of them would notice a gesture
+/// that stepped from one column straight to the other.
+///
+/// Both panels take focus when empty. Chat deliberately does not: an unbound
+/// chat panel refuses it so the keyboard stays in the composer, which is
+/// correct behaviour and useless here — the geometry under test is about
+/// *where* the keyboard is, so it has to be able to arrive.
+fn two_column_app() -> App {
+    let mut app = test_app();
+    app.panel_host.select_placement(PanelPlacement::Right);
+    app.panel_host
+        .dock(SidePanelId::Session, PanelPlacement::Left);
+    app.panel_host
+        .dock(SidePanelId::Terminal, PanelPlacement::Right);
+    // Set explicitly rather than trusted from the docks: `PanelSlot::occupy`
+    // is a no-op when the panel already sits on that edge, so docking onto a
+    // slot that starts collapsed leaves it collapsed. Both helpers above do
+    // the same thing, for the same reason.
+    for edge in PanelPlacement::ALL {
+        app.panel_host
+            .set_visible_at(*edge, *edge != PanelPlacement::Bottom);
+    }
+    app.ui_state.sidebar_visible = true;
+    to_normal(&mut app);
+    app
+}
+
+fn with_manager<R>(app: &App, f: impl FnOnce(&ManagerDialog) -> R) -> Option<R> {
+    app.focus_manager.with_component::<ManagerDialog, _>(f)
+}
+
+fn manager_mode(app: &App) -> Option<InputMode> {
+    with_manager(app, |d| d.input_mode())
+}
+
+fn manager_cursor(app: &App) -> Option<usize> {
+    with_manager(app, |d| d.cursor())
+}
+
+fn manager_selected(app: &App) -> Option<Option<SidePanelId>> {
+    with_manager(app, |d| d.selected())
+}
+
+/// The buffer is the surface the user spends most of their time in, so the
+/// gesture that names it has to *land* on it rather than stepping over it on
+/// the way to the far column. Without this, two `Shift+H` from Chat reached
+/// Terminal — and the buffer was unreachable by any horizontal gesture at all.
+#[test]
+fn the_main_buffer_is_a_stop_on_the_way_across_the_columns() {
+    let mut app = two_column_app();
+    app.on_key(plain('L'));
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: inside the right panel"
+    );
+
+    app.on_key(plain('H'));
+    assert!(
+        !app.panel_host.is_focused(),
+        "the first Shift+H lands on the main buffer, not the far column"
+    );
+
+    app.on_key(plain('H'));
+    assert_eq!(
+        app.panel_host.placement(),
+        PanelPlacement::Left,
+        "the second Shift+H reaches the left column"
+    );
+    assert!(app.panel_host.is_focused(), "and arrives ready to use");
+}
+
+/// The same stop in the other direction, so the cycle is symmetric rather than
+/// a rule that only holds on the way left.
+#[test]
+fn the_main_buffer_is_a_stop_on_the_way_back_too() {
+    let mut app = two_column_app();
+    app.on_key(plain('H'));
+    assert!(app.panel_host.is_focused(), "precondition: inside Terminal");
+
+    app.on_key(plain('L'));
+    assert!(
+        !app.panel_host.is_focused(),
+        "L steps out to the main buffer"
+    );
+
+    app.on_key(plain('L'));
+    assert_eq!(app.panel_host.placement(), PanelPlacement::Right);
+    assert!(
+        app.panel_host.is_focused(),
+        "and L again reaches the right panel"
+    );
+}
+
+/// The buffer is a stop, not a trap: a column that is not up must not swallow
+/// the gesture, and the perpendicular pair still walks the panel list from it.
+#[test]
+fn a_collapsed_column_does_not_swallow_the_gesture_that_names_it() {
+    let mut app = app_on(PanelPlacement::Right);
+    app.on_key(plain('L'));
+    assert!(
+        app.panel_host.is_focused(),
+        "precondition: inside the right panel"
+    );
+    app.on_key(plain('H'));
+    assert!(!app.panel_host.is_focused(), "back in the main buffer");
+    // Left is collapsed, so there is nothing to step into — and no toast
+    // pretending the key was wrong.
+    app.on_key(plain('H'));
+    assert!(!app.panel_host.is_focused());
+    // The perpendicular pair is untouched by all of that.
+    let before = app.panel_host.active();
+    app.on_key(plain('J'));
+    assert_ne!(app.panel_host.active(), before, "J still walks the list");
+}
+
+// ── Opening the manager must not change the frame ──────────────────────────
+
+/// The reported bug. `/chat` on the right, Terminal on the left, `Ctrl+B` puts
+/// the left column away — and `Shift+S`, a box that exists only to *describe*
+/// the layout, brought it straight back. The manager used to force the selected
+/// edge visible; a box cannot be the reason a column the user deliberately
+/// collapsed reappears.
+#[test]
+fn opening_the_manager_does_not_uncollapse_an_edge() {
+    let mut app = two_column_app();
+    app.panel_host.select_placement(PanelPlacement::Left);
+    app.on_key(key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    assert!(
+        !app.panel_host.is_visible_at(PanelPlacement::Left),
+        "precondition: Ctrl+B put the left column away"
+    );
+
+    open_manager(&mut app);
+
+    assert!(
+        !app.panel_host.is_visible_at(PanelPlacement::Left),
+        "Shift+S describes the layout; it must not change it"
+    );
+}
+
+/// With the frame untouched, the strip has to *say* so — naming the state is
+/// the honest replacement for resolving the ambiguity by expanding it.
+#[test]
+fn the_strip_says_when_the_edge_it_describes_is_collapsed() {
+    let mut app = two_column_app();
+    app.panel_host.select_placement(PanelPlacement::Left);
+    app.on_key(key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+    open_manager(&mut app);
+    assert!(
+        manager_text(&mut app).contains("collapsed"),
+        "a strip describing a collapsed edge must name it"
+    );
+}
+
+// ── The manager's modes ───────────────────────────────────────────────────
+
+/// The manager is reached with `Shift+S` — a Normal-mode chord — and is read
+/// before it is typed into. Opening it in Insert made `j`/`k` filter text,
+/// which is indistinguishable from a dead pane.
+#[test]
+fn the_manager_opens_in_normal_and_only_types_in_insert() {
+    let mut app = test_app();
+    open_manager(&mut app);
+    assert_eq!(manager_mode(&app), Some(InputMode::Normal));
+
+    app.on_key(plain('j'));
+    assert_eq!(
+        manager_cursor(&app),
+        Some(1),
+        "j walks the highlight in Normal"
+    );
+    assert!(
+        !manager_text(&mut app).contains("search"),
+        "a Normal-mode keypress must not open a filter"
+    );
+
+    app.on_key(plain('i'));
+    assert_eq!(manager_mode(&app), Some(InputMode::Insert));
+    for ch in "chat".chars() {
+        app.on_key(plain(ch));
+    }
+    assert!(
+        manager_text(&mut app).contains("search chat"),
+        "Insert types into the filter"
+    );
+    assert_eq!(
+        manager_cursor(&app),
+        Some(1),
+        "filtering narrows what is visible without renumbering the cursor"
+    );
+}
+
+/// `Esc` walks out one step at a time — Insert → Normal → clear → close — so
+/// one press never discards a query the user is midway through typing.
+#[test]
+fn escape_leaves_insert_before_it_clears_or_closes() {
+    let mut app = test_app();
+    open_manager(&mut app);
+    app.on_key(plain('i'));
+    app.on_key(plain('a'));
+
+    let esc = key(KeyCode::Esc, KeyModifiers::NONE);
+    app.on_key(esc);
+    assert_eq!(
+        manager_mode(&app),
+        Some(InputMode::Normal),
+        "Esc returns to Normal"
+    );
+    assert!(
+        app.focus_manager.has_dialog(DialogType::PanelManager),
+        "with the filter intact — that is where the directional lives"
+    );
+
+    app.on_key(esc);
+    assert!(
+        app.focus_manager.has_dialog(DialogType::PanelManager),
+        "a second Esc clears the filter rather than closing"
+    );
+
+    app.on_key(esc);
+    assert!(
+        !app.focus_manager.has_dialog(DialogType::PanelManager),
+        "a third Esc, with nothing left to clear, closes"
+    );
+}
+
+/// The guard that makes the whole NOR/INS split necessary. `Shift+H` is the
+/// letter `H`; while a query is being typed it has to reach the filter.
+#[test]
+fn the_directional_is_a_filter_character_in_insert() {
+    let mut app = test_app();
+    open_manager(&mut app);
+    app.on_key(plain('i'));
+    app.on_key(plain('H'));
+
+    assert_eq!(manager_mode(&app), Some(InputMode::Insert));
+    assert!(
+        manager_text(&mut app).contains("search H"),
+        "in Insert, Shift+H is the letter H and belongs in the filter"
+    );
+}
+
+/// The reason the box needs a mode at all: in Normal the gesture is free, so
+/// it means *put this panel over there* — the same gesture the main buffer
+/// uses, rather than a manager-only verb with its own vocabulary.
+#[test]
+fn the_manager_directional_puts_the_highlighted_panel_on_that_edge() {
+    let mut app = two_column_app();
+    open_manager(&mut app);
+    assert_eq!(
+        manager_selected(&app),
+        Some(Some(SidePanelId::Terminal)),
+        "precondition: the manager opens on the live panel"
+    );
+
+    app.on_key(plain('H'));
+
+    assert_eq!(
+        app.panel_host.panel_at(PanelPlacement::Left),
+        SidePanelId::Terminal,
+        "Shift+H in the manager moves the highlighted panel"
+    );
+    assert_eq!(
+        app.panel_host.placement(),
+        PanelPlacement::Left,
+        "and the edge it landed on becomes the live one — that is where the panel is"
+    );
+    assert!(
+        app.focus_manager.has_dialog(DialogType::PanelManager),
+        "arranging three panels is one continuous act; the box stays open"
+    );
+    assert!(
+        manager_text(&mut app).contains("[Left]"),
+        "the strip follows the panel the user just moved"
+    );
+}
+
+/// Moving a panel and filling an edge stay separate acts. Folding them together
+/// would make a gesture silently start a daemon load — the same reason walking
+/// the panel list never materializes an empty panel.
+#[test]
+fn moving_a_panel_in_the_manager_does_not_load_it() {
+    let mut app = two_column_app();
+    open_manager(&mut app);
+    app.on_key(plain('H'));
+    assert_eq!(
+        app.panel_host.panel_at(PanelPlacement::Left),
+        SidePanelId::Terminal,
+        "precondition: the panel is on the left"
+    );
+    assert!(
+        app.focus_manager.has_dialog(DialogType::PanelManager),
+        "still open: moving is not loading"
+    );
+}
+
+/// `Shift+K` names no edge — there is no top — so inside the manager it must do
+/// nothing at all rather than inventing a destination.
+#[test]
+fn an_upward_directional_is_inert_in_the_manager() {
+    let mut app = two_column_app();
+    open_manager(&mut app);
+    let before = app.panel_host.placement();
+    app.on_key(plain('K'));
+    assert_eq!(app.panel_host.placement(), before);
+    assert_eq!(
+        manager_cursor(&app),
+        Some(SidePanelId::Terminal.index()),
+        "and it must not have walked the highlight either"
     );
 }
