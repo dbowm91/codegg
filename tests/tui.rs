@@ -1382,6 +1382,7 @@ fn test_layout_config_custom() {
         header_height: 2,
         footer_height: 2,
         scrollbar_width: 1,
+        bottom_panel_ratio: 35,
     };
     assert_eq!(config.sidebar_width, 50);
     assert_eq!(config.min_main_width, 80);
@@ -1404,32 +1405,35 @@ fn test_tui_layout_with_config() {
 fn test_tui_layout_split_wide_enough() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 100, 50);
-    let result = layout.split(area, true);
-    assert_eq!(result.len(), 2);
+    let regions = layout.split(area, &[codegg::tui::panels::PanelPlacement::Right]);
+    assert!(regions.right.is_some());
+    assert!(regions.main.width < area.width);
 }
 
 #[test]
 fn test_tui_layout_split_narrow() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 50, 50);
-    let result = layout.split(area, true);
-    assert_eq!(result.len(), 1);
+    let regions = layout.split(area, &[codegg::tui::panels::PanelPlacement::Right]);
+    assert!(regions.right.is_none());
+    assert_eq!(regions.main, area);
 }
 
 #[test]
 fn test_tui_layout_split_boundary() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 71, 50);
-    let result = layout.split(area, true);
-    assert_eq!(result.len(), 2);
+    let regions = layout.split(area, &[codegg::tui::panels::PanelPlacement::Right]);
+    assert!(regions.right.is_some());
 }
 
 #[test]
 fn test_tui_layout_split_boundary_narrow() {
     let layout = TuiLayout::new();
     let area = Rect::new(0, 0, 70, 50);
-    let result = layout.split(area, true);
-    assert_eq!(result.len(), 1);
+    let regions = layout.split(area, &[codegg::tui::panels::PanelPlacement::Right]);
+    assert!(regions.right.is_none());
+    assert_eq!(regions.main, area);
 }
 
 #[test]

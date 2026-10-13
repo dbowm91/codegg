@@ -861,9 +861,104 @@ the honest reading.
 
 ### Swappable side panel (`src/tui/panels/`)
 
-The right-hand column is a **panel host**, not a widget chosen by an `if` in
-`render_sidebar`. `SidePanelHost` (`src/tui/panels/mod.rs`) owns two pieces of
-state: which `SidePanelId` is active, and whether it holds keyboard focus.
+The panel column is a **panel host**, not a widget chosen by an `if` in the render
+path. `SidePanelHost` (`src/tui/panels/mod.rs`) owns three pieces of state: which
+edge each panel is docked to, which edge the keyboard gestures act on
+(`selected`), and whether that edge's panel holds focus.
+
+#### Edges and slots
+
+`PanelPlacement` is `{Right, Left, Bottom}`, with **`Right` the default** — the
+layout that shipped first, so a user with no stored preference sees no change.
+`Bottom` is a full-width row beneath the main input box.
+
+`SidePanelHost` holds **one `PanelSlot` per edge**, and a slot is
+`{panel, visible, history}`. Panel *state* stays keyed by `SidePanelId` (one
+`ChatPanel`, one `SessionPanel`, …); the slot only records which edge is
+showing which id. That split is what lets a panel move between edges without
+losing its cursor, filter or scroll: the state travels with the id.
+
+`visible` is **per-slot, not a global flag**. The whole point of a swap is that
+the edge a panel left and the edge it arrived at can be in *different* states
+at the same time — one up, one collapsed. A shared bool would collapse both or
+neither. `ui_state.sidebar_visible` survives only as a derived mirror of
+`any_visible()`, because the session manifest persists a sidebar-visibility
+preference that predates placements; **no behavior branches on it**, since a
+read there silently answers a coarser question than "which edge is up".
+
+#### The swap
+
+`SidePanelHost::dock(id, target)` is the only way a panel changes edges, and it
+**moves** rather than copies. A panel is therefore never loaded on two edges at
+once, which is what stops one widget state rendering twice.
+
+The edge being vacated pushes its current state onto its own bounded history
+(`PANEL_HISTORY_DEPTH`, 3 — a convenience memory, not an undo stack) and then
+**restores** what it remembers, collapsed-ness included. An edge with an empty
+history restores to collapsed, which is the honest answer: nothing was there
+before, so there is nothing to bring back.
+
+So `/chat` then `Shift+H` with the chat panel on the right *walks it left*, and
+the right column comes back to whatever it was — the session panel if that was
+up, collapsed if the user had put it away. Re-docking a panel to the edge it is
+already on is a no-op rather than a self-push, or the next swap would "restore"
+a panel that never left.
+
+`select(id)` goes through `slot.occupy`, so displacing a panel by selecting
+another one is remembered exactly as docking is. A user who walks to Chat in
+the manager and then pushes it left gets their session panel back.
+
+This replaced a deliberate **refusal**: a directional naming an empty edge used
+to be turned down with a toast naming the key that worked instead. That was
+honest but a dead end — the user had said where they wanted the panel, the
+frame had a good place to put it, and the answer was "no". Swapping keeps the
+gesture truthful: pushing a box left *moves* it left.
+
+| Placement | Panel region | Enters with | Leaves with | List cycles with |
+|---|---|---|---|---|
+| `Right` | column, `sidebar_width` wide | `Shift+L` / `Shift+→` | `Shift+H` / `Shift+←` | `Shift+J`/`K`, `Shift+↓`/`↑` |
+| `Left` | column, `sidebar_width` wide | `Shift+H` / `Shift+←` | `Shift+L` / `Shift+→` | `Shift+J`/`K`, `Shift+↓`/`↑` |
+| `Bottom` | full-width row, `bottom_panel_ratio`% (min 8, floor 12 for main) | `Shift+J` / `Shift+↓` | `Shift+K` / `Shift+↑` | `Shift+L`/`H`, `Shift+→`/`←` |
+
+The rule is **geometry resolved against what is on screen**, not a per-side
+branch. `move_directionally` asks in order:
+
+1. a box is open → dock it to the edge the direction names (`dock_open_box`);
+2. the direction names an edge that is **showing** a panel → take the keyboard
+   there, re-pointing `selected` if it is a different edge;
+3. the direction away from the selected edge → return to the main buffer;
+4. otherwise `cycle_step(dir)` → walk the loaded panel types.
+
+Step 2 is what makes a second column reachable with the same keys that moved
+the first one there. Step 3 is what preserves the single-column behavior: with
+one right-hand panel, `Shift+H` finds nothing to the left, so it falls through
+to "the way back out". `Shift+K` names no edge at all and is excluded from
+step 2, so it can never shadow the way out of a bottom panel.
+
+`TuiLayout::split` returns a **named** `PanelRegions { main, left, right,
+bottom }` rather than a positional `Vec<Rect>`. A vector cannot express "left
+*and* right are both up" without the caller guessing which index means which
+edge, and a caller that guesses wrong paints the panel over the transcript.
+Named regions make that a compile error instead of a mangled frame.
+
+Splitting still refuses when the frame cannot host a panel honestly — too
+narrow for another column, or shorter than `MIN_MAIN_PANEL_HEIGHT +
+MIN_BOTTOM_PANEL_HEIGHT` — matching the original no-dead-strip rule: a panel
+that cannot render is not shown. A second column therefore yields to the
+transcript's floor rather than squeezing it.
+
+Placement is persisted as `ui.panel_placement` (`right` / `left` / `bottom`),
+read at startup into `SidePanelHost::with_placement` and written by
+`persist_panel_placement`. An unknown value falls back to `Right` rather than
+failing the boot — the same tolerance a bad panel hotkey gets.
+
+The panel manager carries a **display-only layout strip** above the panel list,
+with `p` cycling the edge. It is deliberately not rows in the navigable list:
+which edge the panel lives on and which panel is loaded are different
+questions, and merging them would renumber every panel row and make `Enter`
+mean something new depending on cursor drift.
+
+#### Panels
 
 Four panels are **bespoke** — they own live projections or a controller and
 need their own key model:
@@ -1158,7 +1253,10 @@ Committing to Chat also re-resolves the project binding first: the host has
 no app access, so it would otherwise find the panel unbound and refuse to
 focus it, leaving the selection looking inert.
 
-`Ctrl+B` toggles the column and focuses the *active* panel; `Ctrl+Alt+S`
+`Ctrl+B` toggles the panel on the **selected** edge and focuses it; it leaves
+every other edge alone, and only hands back the keyboard when the edge it
+collapsed was the one holding it. `InputAction::ToggleSidebar` keeps its
+original name so persisted user keybindings do not break. `Ctrl+Alt+S`
 enters sidebar focus; `Shift+S` (Normal mode only) or `/panels` from anywhere
 opens the panel manager.
 

@@ -101,15 +101,46 @@ between project tabs.
 
 ### Moving between the box and the panel
 
-`Shift+L` — or `Shift+→` — is a **directional**: it means "move this to the
-panel on the right" when a box is open, and "select a pane" when one is not.
-`Shift+←` returns to the main buffer; `Shift+↑` / `Shift+↓` cycle which panel
-is loaded. The vim `Shift+H/J/K/L` do the same four things.
+The directionals are one gesture family, and **which key does what depends on
+where your panel is docked**:
 
-So `/chat` then `Shift+L` closes the box and leaves the conversation running
-in the side column, `/help` then `Shift+L` does the same for the keybinding
-reference, and `/terminal` then `Shift+L` moves the terminal across. With no
-box open, the same keys move the keyboard instead.
+| Panel is | Enter the panel | Back to the buffer | Cycle loaded panel |
+|---|---|---|---|
+| right column *(default)* | `Shift+→` / `Shift+L` | `Shift+←` / `Shift+H` | `Shift+↓`/`↑` / `Shift+J`/`K` |
+| left column | `Shift+←` / `Shift+H` | `Shift+→` / `Shift+L` | `Shift+↓`/`↑` / `Shift+J`/`K` |
+| bottom row | `Shift+↓` / `Shift+J` | `Shift+↑` / `Shift+K` | `Shift+→`/`←` / `Shift+L`/`H` |
+
+Read it as "the gesture pointing at a panel enters it, the opposite gesture
+comes back, and the other two walk the panel list". With a **box** open, the
+same gesture instead means "move this box into the panel on that side".
+
+So on the default right-column layout: `/chat` then `Shift+L` closes the box
+and leaves the conversation running in the panel, `/help` then `Shift+L` does
+the same for the keybinding reference, and `/terminal` then `Shift+L` moves
+the terminal across. With no box open, the same keys move the keyboard
+instead.
+
+### Moving a panel to the other side
+
+**Pushing a panel toward an empty side moves it there.** There is no "wrong
+side" to land on: `/chat` then `Shift+H` walks the chat panel to the left
+column, and the right column goes back to **whatever it was showing before** —
+the session panel if that was up, collapsed if you had put it away with
+`Ctrl+B`. So you never lose the panel you displaced, and you never get an
+empty column where something used to be.
+
+Concretely:
+
+1. `Ctrl+B` collapses everything.
+2. `/chat` then `Shift+L` puts chat on the right.
+3. `/chat` then `Shift+H` puts chat on the left, and the right goes back to
+   collapsed — because that is how you left it.
+
+CodeGG says what the vacated edge became ("Chat moved to the Left; the Right is
+now Session"), since that edge changes without you pressing anything there.
+
+Each side remembers a short history (the last few panels it was showing), so a
+panel you displace by picking another one comes back the same way.
 
 The docked **Help** panel opens in `NOR` rather than `INS`, because a panel is
 read and scrolled before it is filtered: `j`/`k` and the arrow keys scroll
@@ -126,6 +157,16 @@ It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
 anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
 letter `S`, so it has to stay typeable.
 
+`p` inside the manager moves the panel to the next edge — right → left →
+bottom — carrying whatever panel is loaded with it, and the choice is saved too
+(`panel_placement` in `codegg.json`). The strip above the list always shows all
+three with the live one marked, so you can see there are three places to be
+before you press it again.
+
+`Ctrl+B` hides and shows the panel you are looking at. It closes whichever pane
+has your keyboard, whatever side that pane is on, and leaves the other side
+alone.
+
 ### Where your input goes
 
 The composer at the bottom is the **only** place you type, and it always shows
@@ -139,11 +180,11 @@ what Enter will do:
 destinations — the bright one is armed. `[CHAT]` lights up only while the chat
 side panel has the keyboard, so it cannot be armed by accident.
 
-To reach the side panel, press `Esc` (to get to `[NOR]`) and then
-`Shift+→` or `Shift+L`. `Shift+←` or `Shift+H` returns you. These work in
-`[NOR]` mode only — while you are in `[INS]`, `Shift+→` moves the caret as
-usual. The panel you are controlling shows a `▸` marker and says where Enter
-will go.
+To reach the side panel, press `Esc` (to get to `[NOR]`) and then the
+directional that points at it — `Shift+→` or `Shift+L` on the default layout.
+The opposite direction returns you. These work in `[NOR]` mode only — while you
+are in `[INS]`, `Shift+→` moves the caret as usual. The panel you are
+controlling shows a `▸` marker and says where Enter will go.
 
 There are deliberately two indicators because they answer different
 questions: the composer badge says *where the text goes*, and the `▸` marker

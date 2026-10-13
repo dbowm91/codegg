@@ -754,6 +754,13 @@ impl App {
                 )
             })
             .unwrap_or_default();
+        // Which edge the panel is docked to. Same tolerance as the hotkeys
+        // above: an unrecognised value falls back to the default layout
+        // rather than refusing to start.
+        let saved_panel_placement = cfg
+            .and_then(|c| c.panel_placement.as_deref())
+            .and_then(crate::tui::panels::PanelPlacement::parse)
+            .unwrap_or_default();
         debug_log!(
             "loaded {} keybindings, custom config: {}",
             bindings.len(),
@@ -1028,7 +1035,7 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            panel_host: crate::tui::panels::SidePanelHost::new(),
+            panel_host: crate::tui::panels::SidePanelHost::with_placement(saved_panel_placement),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -3287,7 +3294,7 @@ impl App {
         // what lets one bottom composer deliver to either target, because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
-        let panel_active = self.ui_state.sidebar_visible
+        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
             && self.ui_state.input_mode == InputMode::Normal;
         // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
@@ -3486,7 +3493,7 @@ impl App {
             Some(InputAction::ToggleSection) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
-                } else if self.ui_state.sidebar_visible {
+                } else if self.panel_host.any_visible() {
                     self.sidebar.toggle_focused();
                 }
             }
@@ -9586,20 +9593,15 @@ impl App {
         }
     }
 
+    /// Hide or show the panel buffer (`Ctrl+B`).
+    ///
+    /// Thin delegation: the behaviour lives in
+    /// `commands::panels::toggle_selected_pane`, which is scoped to the
+    /// *selected* pane rather than to a right-hand column, so a left or
+    /// bottom placement is closed by the same key without this method growing
+    /// a branch per side.
     fn toggle_sidebar(&mut self) {
-        self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
-        if self.ui_state.sidebar_visible {
-            // Focus the active panel, not the session sidebar: the column
-            // may be showing chat, and focusing a panel the user cannot see
-            // would strand every key in an invisible surface.
-            crate::tui::commands::panels::focus_panel(self);
-            if self.panel_host.active() == crate::tui::panels::SidePanelId::Session {
-                self.sidebar.focus_sidebar();
-            }
-        } else {
-            crate::tui::commands::panels::blur_panel(self);
-            self.sidebar.blur_sidebar();
-        }
+        crate::tui::commands::panels::toggle_selected_pane(self);
     }
 
     /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,

@@ -11,12 +11,22 @@
 //! * **`Enter`** — load the highlighted panel and take focus.
 //! * **`1`-`9`, `0`** — bind the highlighted panel to that digit, persisting
 //!   it to `codegg.json`.
+//! * **`p`** — move the panel to the next edge (right → left → bottom).
 //! * **`Esc`** — clear the filter, then close.
 //!
 //! The cursor stays on a real panel rather than a filtered position, so
 //! typing narrows what is *visible* without renumbering what `Enter` and the
 //! digits act on. A user who filtered to `chat` and pressed `Enter` expects
 //! chat, not "the third of whatever matched".
+//!
+//! ## Why the layout is a strip and not rows
+//!
+//! Which edge the panel lives on and which panel is loaded are two different
+//! questions, and the panel list answers only the second. Putting the
+//! placements into the same navigable list would renumber every panel and
+//! make `Enter` mean something new depending on where the cursor had drifted
+//! — so the placements get a display-only strip with one key, leaving the
+//! panel cursor and the digits exactly as they were.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -28,7 +38,7 @@ use std::sync::Arc;
 use crate::tui::app::state::panel_hotkeys::PanelHotkeys;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
-use crate::tui::panels::SidePanelId;
+use crate::tui::panels::{PanelPlacement, SidePanelId};
 use crate::tui::theme::Theme;
 
 /// Upper bound on the filter text, so a held key cannot grow this without
@@ -43,6 +53,14 @@ pub struct PanelManagerDialog {
     /// The user's saved digit bindings, read-only here: saving happens in
     /// the command layer so persistence lives in one place.
     hotkeys: PanelHotkeys,
+    /// Which edge the panel is on.
+    ///
+    /// A copy, not a live borrow: the manager keeps rendering while `p`
+    /// rewrites the host underneath it, and a box that had to go back and ask
+    /// the app every frame would have to decide what to show in the frame
+    /// between the press and the applied change. The command layer is the
+    /// only writer, and it owns the truth — this is the box's echo of it.
+    placement: PanelPlacement,
 }
 
 impl Clone for PanelManagerDialog {
@@ -52,6 +70,7 @@ impl Clone for PanelManagerDialog {
             query: self.query.clone(),
             cursor: self.cursor,
             hotkeys: self.hotkeys.clone(),
+            placement: self.placement,
         }
     }
 }
@@ -63,7 +82,12 @@ impl std::fmt::Debug for PanelManagerDialog {
 }
 
 impl PanelManagerDialog {
-    pub fn new(theme: Arc<Theme>, hotkeys: PanelHotkeys, active: SidePanelId) -> Self {
+    pub fn new(
+        theme: Arc<Theme>,
+        hotkeys: PanelHotkeys,
+        active: SidePanelId,
+        placement: PanelPlacement,
+    ) -> Self {
         Self {
             theme,
             query: String::new(),
@@ -71,6 +95,7 @@ impl PanelManagerDialog {
             // rather than a silent jump to whatever happens to be first.
             cursor: active.index(),
             hotkeys,
+            placement,
         }
     }
 
@@ -78,9 +103,50 @@ impl PanelManagerDialog {
         self.cursor
     }
 
+    /// The placement the layout strip is showing.
+    pub fn placement(&self) -> PanelPlacement {
+        self.placement
+    }
+
+    /// Adopt a placement the command layer applied.
+    ///
+    /// The box has no way to learn this on its own — `TuiMsg` handling runs
+    /// outside the mounted component — so the layer pushes it back. Without
+    /// this the strip would keep advertising the edge the user just left.
+    pub fn set_placement(&mut self, placement: PanelPlacement) {
+        self.placement = placement;
+    }
+
     /// The highlighted panel.
     pub fn selected(&self) -> Option<SidePanelId> {
         SidePanelId::ALL.get(self.cursor).copied()
+    }
+
+    /// First visible row, scrolled so `cursor` is always on screen.
+    ///
+    /// There are more panels than rows — 33 entries into roughly ten lines —
+    /// so without this `j` walks the highlight straight off the bottom of
+    /// the box and `Enter` then commits a panel nobody can see was selected.
+    /// The highlight is the only thing saying which panel `Enter` will load,
+    /// so a highlight that has scrolled away is a silent mis-selection.
+    fn scroll(&self, list_height: u16) -> u16 {
+        // Two rows go to the list's own border.
+        let page = list_height.saturating_sub(2);
+        if page == 0 {
+            return 0;
+        }
+        let total = SidePanelId::ALL.len() as u16;
+        // Never past the end: with fewer rows than panels, sitting at the
+        // bottom is what puts the *last* entries on screen.
+        let max_offset = total.saturating_sub(page);
+        let cursor = self.cursor as u16;
+        if cursor < page {
+            return 0;
+        }
+        cursor
+            .saturating_add(1)
+            .saturating_sub(page)
+            .min(max_offset)
     }
 
     /// True when `panel` passes the current filter.
@@ -111,6 +177,39 @@ impl PanelManagerDialog {
             self.query.push(ch);
         }
     }
+
+    /// The layout strip: every edge, with the live one marked.
+    ///
+    /// All three are drawn rather than only the current one. `p` cycles, and
+    /// a strip showing a single word makes a cycling key read as a glitch —
+    /// the user has to see that there are three places to be before "press
+    /// `p` again" is a predictable act.
+    ///
+    /// Kept short because it shares the title row: the box is only about 44
+    /// columns wide, and anything longer wraps into the border and loses the
+    /// entry at the end — which is the one the user has not tried yet.
+    fn layout_spans<'s>(&self, theme: &Arc<Theme>) -> Vec<Span<'s>> {
+        let mut spans = vec![Span::styled("  ", Style::default())];
+        for placement in PanelPlacement::ALL.iter().copied() {
+            let live = placement == self.placement;
+            spans.push(Span::styled(
+                if live {
+                    format!("[{}] ", placement.label())
+                } else {
+                    format!("{} ", placement.label())
+                },
+                if live {
+                    Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                },
+            ));
+        }
+        spans.push(Span::styled("· p", Style::default().fg(theme.muted)));
+        spans
+    }
 }
 
 impl Component for PanelManagerDialog {
@@ -133,6 +232,14 @@ impl Component for PanelManagerDialog {
             KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Backspace => {
                 self.query.pop();
+            }
+            // The layout strip. Not a filter character and not a panel verb:
+            // `p` answers "where does the panel live", which the panel list
+            // cannot, and folding it into the list would renumber every
+            // panel. Guarded on no modifier for the same reason the digits
+            // are — a `Ctrl+P` must keep its own meaning.
+            KeyCode::Char('p') if key.modifiers == KeyModifiers::NONE => {
+                return Some(TuiMsg::CyclePanelPlacement);
             }
             // A digit binds the *highlighted* panel. Guarded on no modifier
             // so a Ctrl+digit (which recalls a saved panel) is not swallowed
@@ -160,7 +267,7 @@ impl Component for PanelManagerDialog {
     fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Arc<Theme>) {
         let buf = frame.buffer_mut();
         let chunks = Layout::vertical([
-            Constraint::Length(3), // title
+            Constraint::Length(3), // title (+ the layout strip, on its inner row)
             Constraint::Length(3), // filter
             Constraint::Min(1),    // list
             Constraint::Length(3), // footer
@@ -178,6 +285,23 @@ impl Component for PanelManagerDialog {
             .border_style(Style::default().fg(theme.primary))
             .style(Style::default().bg(theme.background));
         Widget::render(block, chunks[0], buf);
+
+        // The strip shares the title's inner row rather than taking a chunk
+        // of its own. A dedicated 3-row block looks right at 40 rows tall and
+        // then, at 24, the fixed chunks exceed the box and the *footer* — the
+        // one place the keys are written down — is pushed off the bottom
+        // entirely. One row inside a block that already exists cannot cost
+        // the footer anything.
+        let strip = Rect {
+            y: chunks[0].y + 1,
+            height: 1,
+            ..chunks[0]
+        };
+        Widget::render(
+            Paragraph::new(Line::from(self.layout_spans(theme))),
+            strip,
+            buf,
+        );
 
         let filtering = !self.query.trim().is_empty();
         let filter_spans = if filtering {
@@ -237,19 +361,21 @@ impl Component for PanelManagerDialog {
             ]));
         }
         Widget::render(
-            Paragraph::new(lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.border)),
-            ),
+            Paragraph::new(lines)
+                .scroll((self.scroll(chunks[2].height), 0))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(theme.border)),
+                ),
             chunks[2],
             buf,
         );
 
         let footer = if filtering {
-            "Enter load  |  0-9 bind hotkey  |  Esc clear filter  |  Esc close"
+            "Enter load  |  p move panel  |  0-9 bind hotkey  |  Esc clear filter  |  Esc close"
         } else {
-            "Enter load  |  0-9 bind hotkey  |  type to filter  |  Esc close"
+            "Enter load  |  p move panel  |  0-9 bind hotkey  |  type to filter  |  Esc close"
         };
         Widget::render(
             Paragraph::new(Line::from(Span::styled(
@@ -290,6 +416,7 @@ mod tests {
             Arc::new(Theme::default()),
             PanelHotkeys::default(),
             SidePanelId::Session,
+            PanelPlacement::Right,
         )
     }
 
@@ -299,6 +426,7 @@ mod tests {
             Arc::new(Theme::default()),
             PanelHotkeys::default(),
             SidePanelId::Terminal,
+            PanelPlacement::Right,
         );
         assert_eq!(d.selected(), Some(SidePanelId::Terminal));
     }
@@ -364,5 +492,89 @@ mod tests {
             d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
             Some(TuiMsg::CloseDialog)
         );
+    }
+
+    // --------------------------------------------------------------- layout
+
+    /// `p` asks where the panel lives, which the panel list cannot answer.
+    /// It must not also be a filter character, or the layout would be
+    /// unreachable while the user is searching for a panel.
+    #[test]
+    fn p_asks_for_the_layout_rather_than_filtering() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('p'), KeyModifiers::NONE)),
+            Some(TuiMsg::CyclePanelPlacement)
+        );
+    }
+
+    /// A `Ctrl+P` is a different gesture that something else may own.
+    #[test]
+    fn a_modified_p_is_not_the_layout_key() {
+        let mut d = dialog();
+        // Unmodified handling falls through to the filter branch below.
+        assert_ne!(
+            d.handle_key(key(KeyCode::Char('P'), KeyModifiers::CONTROL)),
+            Some(TuiMsg::CyclePanelPlacement)
+        );
+    }
+
+    /// Cycling the layout must not move the panel highlight: the two answer
+    /// different questions, and folding them together would renumber every
+    /// panel row for a change that touches none of them.
+    #[test]
+    fn the_layout_is_independent_of_the_panel_cursor() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
+        let cursor = d.cursor();
+        d.handle_key(key(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(d.cursor(), cursor);
+    }
+
+    /// The strip has to be able to describe an applied change it did not
+    /// make itself — `TuiMsg` handling runs outside the mounted box.
+    #[test]
+    fn the_box_adopts_the_placement_the_command_layer_applied() {
+        let mut d = dialog();
+        assert_eq!(d.placement(), PanelPlacement::Right);
+        d.set_placement(PanelPlacement::Bottom);
+        assert_eq!(d.placement(), PanelPlacement::Bottom);
+    }
+
+    /// All three edges are drawn, with the live one marked. A strip showing
+    /// one word makes a cycling key read as a glitch.
+    #[test]
+    fn the_layout_strip_names_every_placement() {
+        let theme = Arc::new(Theme::default());
+        let d = dialog();
+        let text: String = d
+            .layout_spans(&theme)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        for placement in PanelPlacement::ALL {
+            assert!(
+                text.contains(placement.label()),
+                "{placement:?} is missing from the strip: {text}"
+            );
+        }
+        assert!(
+            text.contains("[Right]"),
+            "the live placement must be marked: {text}"
+        );
+    }
+
+    #[test]
+    fn the_strip_moves_its_mark_with_the_placement() {
+        let theme = Arc::new(Theme::default());
+        let mut d = dialog();
+        d.set_placement(PanelPlacement::Left);
+        let text: String = d
+            .layout_spans(&theme)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("[Left]"), "{text}");
+        assert!(!text.contains("[Right]"), "{text}");
     }
 }
