@@ -1,6 +1,6 @@
 # TUI Editor Post-Closure Corrective C005 — Daemon-Scoped Directory Listing
 
-Status: blocked — proposed ADR-0022 must be accepted before implementation; planning ready for a single handoff once gated.
+Status: implemented; closed — ADR-0022 accepted (Option B) 2026-10-14 with frozen contract; implementation `e37774a9` on branch `plans/tui-editor-correctness-usability-20261013`; closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md`.
 
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`; review current tree at activation.
 Source: `plans/subsystems/tui-editor-correctness-usability-post-closure-corrective-addendum.md` C005.

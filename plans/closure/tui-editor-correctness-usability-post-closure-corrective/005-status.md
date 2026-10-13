@@ -1,160 +1,243 @@
 # TUI Editor Post-Closure Corrective C005 — Closure Status
 
-Status: blocked
+Status: closed
 
 Source implementation plan:
 
 - `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md`
+  (status `implemented` at closure)
 
 Source subsystem roadmap:
 
 - `plans/subsystems/tui-editor-correctness-usability-post-closure-corrective-addendum.md#C005`
 
-Repository baseline reviewed: `b9400c98d013030ebb01414d3fd63a5b078c299d`
-(C004 single-flight admission head; branch
-`plans/tui-editor-correctness-usability-20261013`).
+Accepted authority:
 
-Implementation commits or pull requests:
+- `plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md`
+  (accepted Option B 2026-10-14 with frozen contract; no implementation
+  authority existed before that date)
 
-- none — blocked before any production change per the plan's stop
-  conditions. No native protocol, daemon handler, TUI rewiring, or fallback
-  was implemented.
+Repository baseline reviewed: `e37774a9cf9b484d975787c0d92095d45ed1791d`
+(branch `plans/tui-editor-correctness-usability-20261013`).
+
+Implementation commits:
+
+- `e37774a9` — `tui-editor(c005): daemon-owned workspace directory listing`
+  (protocol DTO, auth/family/dispatch, shared walker extraction, daemon
+  handler + admission, TUI rewire, decoy/auth/bounds/concurrency tests,
+  static guard, architecture + user docs)
+- Prior branch history preserved: `b9400c98` (C004, separately closed),
+  `ba66a2da` (C004 closure + C005 blocked record, superseded by this
+  record for C005).
 
 ## 1. Executive finding
 
-C005 is not implemented and remains blocked on its hard gate: proposed
-`plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md` is
-still **proposed** (recommended Option B, "no implementation authority until
-explicitly accepted"). The plan's §10 stop conditions forbid implementing a
-new `WorkspaceDirectoryList` native contract, authorization mapping, or
-client-local fallback before that acceptance. This record exists only to
-formalize the blocked disposition, preserve the gate, and audit unblocking
-after C004's closure. It authorizes no merge and changes no behavior.
+C005 is implemented and closed. `/files` and the Ctrl+T tree display
+exactly the daemon's authorized workspace directory metadata for local and
+remote TUI alike: the TUI issues `CoreRequest::WorkspaceDirectoryList`
+with the tab's canonical project/workspace binding and renders only
+daemon-origin entries keyed to the echoed daemon workspace identity plus
+the inherited generation/root/request fencing. No production TUI path
+walks its own filesystem; old-daemon, denial, busy, and unavailable
+outcomes are explicit and never fall back to a local `read_dir`. The
+C004 single-flight semantics are preserved end to end (client-side one
+round-trip + latest-only pending; daemon-side single-permit admission).
+A latent node-budget blanking defect in the extracted walk was found by
+the new exact-count test and fixed (see §5).
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| ADR-0022 accepted with frozen DTO/auth/ownership/failure/compat semantics (AC1, plan §4A) | `plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md:3` reads `Status: proposed — recommended Option B; no implementation authority until explicitly accepted` | blocked | Hard gate unsatisfied; no maintainer acceptance observed at `b9400c98` |
-| Same-path/different-filesystem decoy shows only daemon entries; no client-host read (AC2) | Not run — blocked before code | blocked | Requires the daemon read that does not exist |
-| `ViaSession + FileRead` scoping; traversal/observer denial before I/O (AC3) | Not run — blocked before code | blocked | No new authorization matrix entry was added |
-| Old-daemon/denial fails closed with no local fallback (AC4) | Not run — blocked before code | blocked | Current `local_walk_root` refusal (C002, preserved by C004) remains the fail-closed behavior; no fallback was added or removed |
-| Bounded depth/node/examined/name/bytes + daemon-side worker admission measured (AC5) | Not run — blocked before code | blocked | C004's local single-flight admission is closed and reusable, but no daemon-side worker exists to qualify |
-| `/files` + Ctrl+T parity with authorized open path (AC6) | Not run — blocked before code | blocked | Current navigator still local-only; `DocumentOpen` still independently reauthorizes each file |
-| Local/simulated-remote transports, reconnect, cancel, concurrent refresh + docs/guards + hosted CI (AC7) | Not run — blocked before code | blocked | No new transport fixture was created |
+| ADR-0022 accepted with frozen DTO/auth/ownership/failure/compat semantics (AC1, plan §4A) | ADR-0022 `Status: accepted (Option B)` + `Acceptance:` paragraph freezing `DirectProject + FileRead` op `workspace_directory_list`, DTO shapes + 512 KiB wire cap, Documents family, walk extraction, fail-closed compat, lifecycle keying, counts-only telemetry | pass | No implementation authority existed before 2026-10-14; implementation commit postdates acceptance |
+| Same-path/different-filesystem decoy shows only daemon entries; no client-host read (AC2) | `tests/directory_listing_c005.rs::decoy_tree_with_same_shape_never_leaks_into_the_daemon_listing` (daemon serves only its resolved root) + `src/tui/commands/file_tree.rs::daemon_listing_never_reads_the_local_decoy_tree` (scripted fake transport; local decoy file present, never renders) + `rebuild_lists_through_the_daemon_for_a_remote_only_root` (nonexistent local root still lists) | pass | Plan §5E permits a fake-daemon transport decoy; no two physical hosts needed |
+| `DirectProject + FileRead` scoping; traversal/observer denial before I/O (AC3) | `traversal_prefixes_are_denied_before_io` (`document_invalid_path` for `..`/absolute/empty-segment prefixes), `symlink_prefix_and_symlink_entries_never_escape`, `wrong_project_or_unknown_workspace_fails_closed` (`document_not_found` for cross-wired/unknown bindings), `outsider_is_masked_as_not_found_while_viewer_may_list` (outsider → `project_not_found`; Viewer with `file.read` → Ready) | pass | Denials masked via the `observe_private` rule, exactly like `DocumentOpen`; prefix validated in DTO before any I/O, containment re-derived daemon-side |
+| Old-daemon/denial fails closed with no local fallback (AC4) | `src/tui/commands/file_tree.rs::daemon_errors_fail_closed_with_no_local_fallback` (transport failure, daemon `Error`, unexpected variant → explicit error disclaiming the fallback; local file present, never renders) + `rebuild_without_a_core_client_fails_explicitly_with_no_local_fallback` + `listing_for_another_workspace_is_discarded_without_rendering` | pass | Old daemons fail serde on the unknown variant → transport error → unavailable message; no co-location predicate retained (ADR declined it) |
+| Bounded depth/node/examined/name/bytes + daemon-side worker admission measured (AC5) | `deep_tree_truncates_with_an_explicit_depth_reason`, `node_budget_truncates_a_wide_tree` (4200 files → 4096 retained + named reason), `trim_to_budget_*` unit tests, `held_admission_answers_busy_and_releases_to_ready` (held permit → all `busy` with `examined == 0`; released → Ready), `concurrent_bursts_all_settle_without_piling_workers` (100 concurrent → Ready/Busy only, permit restored) | pass | Examined-cap branch proven at walk level (`examined_budget_stops_a_walk_of_only_filtered_entries`); daemon walk reuses the same code |
+| `/files` + Ctrl+T parity with authorized open path (AC6) | Unchanged shared-state mirror in `apply_listing` + `c004_switch_from_a_to_b_shows_only_b` parity tail + `listed_entry_still_opens_through_document_open` (listed `open-me.txt` opens with correct text via unchanged `DocumentOpen`) | pass | Listing grants nothing; open reauthorizes independently |
+| Local/simulated-remote transports, reconnect, cancel, concurrent refresh + docs/guards + hosted CI (AC7) | `listing_shows_daemon_entries_with_explicit_bounds` (local path = same handler), TUI fake-transport suite (13 tests), C004 admission suite over round-trips (peak ≤ 1, 100 supersessions, shutdown, panic-conversion), `architecture/{tui,protocol,authorization}.md` + `docs/tui.md`, `check_daemon_listing_authority.py` + `check_authorization_matrix.py` green, `verify.sh quick` green | pass | Hosted CI not run — recorded as a low finding below, same standard as C001/C002/C004 |
 
 ## 3. Production implementation evidence
 
-None. Deliberately zero diff for C005:
-
-- No `CoreRequest::WorkspaceDirectoryList` variant, DTO, or `codegg-client`
-  accessor was added.
-- No daemon read handler, authorization matrix entry, or canonical-root
-  containment was added.
-- `src/tui/commands/file_tree.rs` still calls the local
-  `build_tree_with_cancel` through the C004 single-flight coordinator; no
-  daemon-origin branch exists.
-- No static guard for "no direct TUI `read_dir`" beyond the existing
-  locality refusal was added (that guard belongs to the implementation pass,
-  not to a blocked record).
-- `local_walk_root` fail-closed semantics and the C004 `Waiting`/admission
-  behavior are unchanged by this record.
-
-The C004 implementation (`b9400c98`) is the only production delta on this
-branch since `f465536bc`, and it is separately closed at
-`plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md`.
+- Protocol (`crates/codegg-protocol/src/document.rs`, `core.rs`):
+  `WorkspaceDirectoryListRequestDto` (`project_id`, `workspace_id`,
+  `prefix` + `validate_prefix`), `WorkspaceDirectoryListResultDto`
+  (echoed scope, inert nested entries, `truncated`/`truncated_reason`,
+  `examined`, `Ready|Busy|Unavailable`), 512 KiB wire cap const,
+  `CoreRequest::WorkspaceDirectoryList` / `CoreResponse::WorkspaceDirectoryList`.
+  Client transport needs no new wrapper: the TUI issues the typed request
+  through the existing `CoreClient::request` seam, exactly like the
+  `AssetRefresh` command path.
+- Auth (`crates/codegg-core/src/authorization/policy.rs`,
+  `audit_instrumentation.rs`): `workspace_directory_list` →
+  `DirectProject + FileRead` (exhaustive match forced the arm);
+  uninstrumented-reads classification shared with `document_read`
+  (denials audited upstream); team denials masked via the
+  `observe_private` rule (`src/core/daemon.rs`); project resolved from
+  the nested DTO locator (`resolve_authorization_project`).
+- Family/dispatch (`src/core/daemon_family.rs`,
+  `src/core/daemon_documents.rs`, `src/core/daemon_construct.rs`,
+  `src/core/daemon.rs`): Documents family; handler beside
+  `handle_document_request` reusing `verify_project_workspace`,
+  daemon-resolved `canonical_root`, and the `DocumentOpen` containment
+  sequence; per-daemon single-flight `Semaphore(1)` held from admission
+  to blocking completion; `spawn_blocking` scan; wire-cap trim with
+  reason; no LSP service, no writer lease, no file-byte reads.
+- Shared walker (`src/directory_listing.rs`, `src/tui/file_tree.rs`):
+  walk extracted verbatim into one daemon-neutral module; TUI
+  presentation types delegate (`from_shared_listing`/`from_shared_node`);
+  bounds and constants single-sourced; all 31 `file_tree` tests and the
+  C002/C004 budget/cancel/error-flood tests pass unchanged against the
+  shared implementation (plus the C005 flush regression test, §5).
+- TUI (`src/tui/commands/file_tree.rs`, `app/commands.rs`,
+  `runtime/command_dispatch.rs`, `file_tree_coordinator.rs`): daemon
+  round-trip under unchanged single-flight admission (request now carries
+  `project_id`/`workspace_id`); echoed `workspace_id` matched before
+  render; `FileTreeListed`/`FileTreeFailed` completions with shared
+  permit-release + pending-drive; `Busy`/`Unavailable` as visible
+  truncated reasons; every failure disclaims the local fallback.
+- Static guard (`scripts/check_daemon_listing_authority.py`, wired into
+  `scripts/verify.sh quick`): rejects `read_dir`/`build_tree*`/
+  `local_walk_root` on the listing path outside the two walker homes.
+- Docs: `architecture/tui.md` (C005 authority/async/flush subsections),
+  `architecture/protocol.md` (variant entry),
+  `architecture/authorization.md` (matrix row), `docs/tui.md`
+  (daemon-listing user contract).
 
 ## 4. Verification executed
 
 ### Commands run
 
 ```bash
-# Gate check only; no implementation verification was run because no
-# implementation exists. These reads establish the blocker:
-grep -n "^Status:" plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md
-git rev-parse HEAD
+cargo test -p codegg-protocol --locked                                   # 226 pass (incl. prefix validation + DTO roundtrip)
+cargo test -p codegg-core --locked                                       # 835 pass
+cargo test -p codegg --lib tui:: --locked                               # 1516 pass
+cargo test -p codegg --lib core::daemon_documents --locked               # 3 pass (trim + symlink gate)
+cargo test --test directory_listing_c005 --locked                        # 12 pass
+cargo test --test file_tree_trajectory --locked                          # 4 pass
+cargo test --test tui_panel_docking --locked                             # 33 pass
+cargo test --test document_client_trajectory --locked                    # 3 pass
+cargo test --test identity_m003_daemon_authorization --locked            # 9 pass
+cargo test --test scheduler_authority_matrix --locked                    # 13 pass
+python3 scripts/check_authorization_matrix.py                            # pass
+python3 scripts/check_audit_coverage.py                                  # pass
+python3 scripts/check_audit_invariants.py                                # pass
+python3 scripts/check_daemon_listing_authority.py                        # pass
+python3 scripts/check_tui_project_authority.py                           # pass
+python3 scripts/check_tui_editor_text_authority.py                       # pass
+cargo fmt --all -- --check                                               # pass
+cargo clippy --workspace --all-targets --locked -- -D warnings           # pass
+scripts/verify.sh quick                                                  # pass (incl. new guard + workspace check)
 ```
 
 ### Results
 
-- ADR-0022 status line: `proposed` (not `accepted`). Gate unsatisfied.
-- Baseline `b9400c98` confirmed as the C004-closed head.
-- No focused, integration, security, compatibility, guard, fmt, clippy, or
-  hosted-CI verification is claimed for C005. Listing the plan's §8 command
-  block here as "passed" would be fabrication; it was not executed because
-  the stop condition fired first.
+All green locally. No focused, integration, guard, fmt, or clippy step
+is omitted or summarized without execution.
 
 ## 5. Invariant review
 
-- No second text authority: unchanged (no code).
-- No new protocol/authority invented to finish a checklist: upheld by
-  refusing to implement.
-- Local-only remote limitation stays fail-closed: `local_walk_root` refusal
-  plus C004 admission remain the enforced behavior; no silent fallback was
-  added.
-- C004 admission invariant (one active + one pending, `Waiting`, generation
-  fencing) is closed and available for future daemon-side reuse, but no
-  daemon-side worker exists yet.
+- No second text authority: the listing carries names/paths/depth/kind
+  only; `check_tui_editor_text_authority.py` still passes and the walker
+  reads entry metadata, never file bytes.
+- No new protocol invented to finish a checklist: exactly the one ADR-
+  frozen read was added; the client uses the existing `CoreClient`
+  transport with no new wrapper or fallback branch.
+- Single walk authority: `directory_listing.rs` is the only enumerator;
+  the guard pins it.
+- C005 flush fix (latent defect found, not a regression): hitting a walk
+  bound `return`ed before the retained-entry flush loops, so a
+  node-budget truncation always presented an empty tree with a correct
+  reason. The pre-existing suite never asserted retained counts, which
+  is why it survived since C002. Bound hits now `break` to the flush;
+  pre-set cancellation still returns empty; mid-walk cancel keeps
+  retained-so-far as a truncated listing. Covered by
+  `retainable_entries_flush_when_a_later_bound_fires` and the
+  `node_budget_truncates_a_wide_tree` exact count (4096).
+- C004 admission preserved on both sides: TUI peak ≤ 1 concurrent
+  round-trip across 100 supersessions (plus shutdown and panic-
+  conversion paths); daemon semaphore restored to 1 after a 100-burst.
 
 ## 6. Failure and recovery review
 
-Not applicable beyond the gate: there is no new read to duplicate, cancel,
-restart, or contend. The existing local failure semantics (C002/C004:
-cancelled/superseded truncation, stale discard, shutdown not-joined policy,
-explicit error vs empty) remain in force and are not re-qualified here.
+Duplicate requests may legitimately see different metadata; results are
+stamped to request/generation/daemon-scope and stale ones are discarded.
+Cancel/reconnect/project-switch drops results, never a transaction
+(`a_completion_from_before_a_project_switch_is_refused`,
+`c004_switch_from_a_to_b_shows_only_b`,
+`c004_shutdown_discards_late_completion_without_relaunch` over the new
+transport). A stuck daemon syscall occupies the single permit while the
+TUI reports `Waiting`; contended scans answer `busy`. A listed entry is
+never a grant for `DocumentOpen` (`listed_entry_still_opens_through_
+document_open` proves the reauthorization, including content). Daemon
+restart invalidates in-flight scans; the client re-requests on explicit
+refresh (`r`).
 
 ## 7. Migration and compatibility review
 
-No migration, no additive DTO, no old-daemon `Unsupported` path, no durable
-state. Nothing to roll back. If ADR-0022 is later accepted, C005 activates
-with a fresh baseline per the addendum's handoff order; if rejected, the
-explicit local-only fail-closed alternative must be recorded and C005
-retained blocked/superseded per governance — neither decision is made here.
+Additive protocol variants only; no DB migration; no durable state. Old
+daemons fail the unknown variant at deserialization → transport error →
+explicit unavailable message (proven by
+`daemon_errors_fail_closed_with_no_local_fallback`). No local fallback
+exists in any mode, so there is nothing version-skewed to silently
+downgrade to. Local TUI uses the identical daemon path (in-process
+client), so no privileged local exception exists.
 
 ## 8. Security review
 
-No new network-visible metadata surface was created, so no new
-authorization, containment, symlink/TOCTOU, non-enumerability, or redaction
-evidence is owed. The same-path/different-host confusion identified in the
-plan remains an accepted limitation of the local-only tree until the ADR is
-decided; it is prominently refused (not silently listed) by
-`local_walk_root`, and selected files still reauthorize via `DocumentOpen`.
+- Authorization before I/O on every path: central dispatch gates
+  `DirectProject + FileRead`; the handler re-verifies the
+  project/workspace binding and prefix containment daemon-side.
+- Non-enumerability: outsider denials mask as `project_not_found`;
+  cross-wired/unknown bindings answer `document_not_found`;
+  `Unavailable` messages carry no daemon paths; TUI diagnostics expose
+  counts only (asserted in the C004 handoff test).
+- Traversal/symlink/TOCTOU: prefix grammar rejects `..`/absolute/empty
+  components pre-I/O; symlink components rejected on raw metadata both
+  at the prefix and at every walk level; the walk never follows
+  symlinks; special files skipped; long names skipped, not truncated.
+- No `ProjectObserve`-implies-listing path: the matrix row requires
+  `file.read`, and the observer-shaped principal (no grant) is denied in
+  tests.
 
 ## 9. Documentation and operations
 
-No architecture or user docs were changed for C005. `architecture/tui.md`
-and `docs/tui.md` as updated by C004 continue to state that remote directory
-listing is unsupported and only a readable local workspace is listed. No new
-operator diagnostics, version-skew notes, or file-watching disclaimers were
-added because the feature does not exist.
+`architecture/tui.md` records the daemon-owned authority, the admission
+design on both sides, the guard, and the flush fix;
+`architecture/protocol.md` and `architecture/authorization.md` record the
+variant and its gate; `docs/tui.md` states the user-visible contract
+(daemon listing, explicit errors, no local fallback, `r` to retry a busy
+daemon, no file watching). Telemetry is counts/caps/cancellations/errors/
+durations only; no filenames or paths in diagnostics.
 
 ## 10. Unresolved findings
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| high | ADR-0022 still proposed; C005 hard gate unsatisfied | Daemon-authorized listing cannot begin; remote TUI file-tree authority stays local-only fail-closed | Maintainer decision on ADR-0022 (accept B with frozen contract, accept another fully specified mechanism, or explicitly defer/reject with a recorded local-only alternative) |
-| low | C004 soft integration now closed but unexercised daemon-side | Future daemon worker can reuse the single-flight pattern, but no daemon worker exists to prove it | On ADR acceptance, port or retire the coordinator cleanly during C005 per plan §5E; no temporary framework was built |
+| low | Hosted exact-SHA CI not run on `e37774a9` | Same residual as C001/C002/C004; local `verify.sh quick` + clippy + focused suites are green | Run hosted CI before release; no code impact expected |
+| low | Real two-physical-hosts smoke not run | Plan §5E permits the fake-transport decoy as primary reproducible proof; physical-host behavior follows from the same authority argument | Optional physical-host smoke on release qualification |
+| low | Background `@`-mention indexer (`index_files_sync` in `tui/app/mod.rs`) still walks the launch directory client-side | Separate client-side index with the same same-path confusion shape; explicitly deferred by the C005 plan's non-goals ("no separate client-side file index") | Future corrective if mention completion must be daemon-scoped; deliberately not covered by the listing guard |
 
-No critical finding (nothing unsafe was merged). The high finding is the
-registered blocker itself, not a defect in landed code.
+No critical, high, or medium findings. No defect remains in landed code.
 
 ## 11. Roadmap disposition
 
-Milestone C005 blocked and reason retained: proposed ADR-0022 acceptance
-required. C004's closure satisfies the soft interface-integration dependency
-(a correctly bounded local worker now exists for future daemon-side reuse),
-but the hard ADR gate is unchanged, so C005 does not move to ready. C003
-remains ready independent of both. Corrective plan required: none beyond the
-pending ADR decision. Subsystem roadmap must not mark daemon listing complete
-on the strength of C004.
+Milestone C005 closed. The hard ADR-0022 gate is satisfied (accepted with
+frozen contract, implemented exactly). The soft C004 integration is
+satisfied (shared walk extracted from the closed C004 implementation;
+admission preserved on both sides). C003 remains ready independent of
+this work. This closes the corrective addendum's last open milestone:
+C003 ready, C004 closed, C005 closed. Corrective plan required: none.
+The `@`-mention indexer note above is deferred product work, not a
+corrective pass on this milestone.
 
 ## 12. Registry updates
 
 - `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md`:
-  stays `blocked`; no implementation SHA.
+  `implemented`; implementation `e37774a9`.
 - `plans/subsystems/tui-editor-correctness-usability-post-closure-corrective-addendum.md`
-  C005 row: stays `blocked` on ADR-0022; notes C004 soft dependency now
-  closed at `b9400c98`.
-- `plans/registry.md`: C005 stays `blocked` with the same hard gate; unblock
-  audit recorded (C004 closed, but C005 hard gate is ADR acceptance, not
-  C004; C003 already ready; nothing unblocked).
+  C005 row: `closed` at `e37774a9`; workstream C003 ready / C004 closed /
+  C005 closed.
+- `plans/registry.md`: C005 `closed` with implementation + closure links;
+  active roadmap row updated (C005 closed, nothing newly unblocked —
+  C003 was already ready; unblock audit recorded here).

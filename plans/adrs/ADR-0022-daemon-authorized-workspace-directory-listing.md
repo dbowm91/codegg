@@ -1,8 +1,56 @@
 # ADR-0022 — Daemon-Authorized Workspace Directory Listing for Remote TUI
 
-Status: proposed — recommended Option B; no implementation authority until explicitly accepted
+Status: accepted (Option B)
 
 Date: 2026-10-13
+
+Acceptance: 2026-10-14 — project maintainer accepted the recommended
+Option B (daemon-owned read-only workspace directory listing) with the
+frozen contract below. No implementation authority existed before this
+date. C005 (`007-daemon-scoped-directory-listing-corrective.md`) is now
+unblocked and executes exactly this contract; any deviation requires a
+superseding ADR, not implementation-time improvisation.
+
+Frozen contract:
+
+- Scope/capability: `DirectProject + FileRead` under operation
+  `workspace_directory_list` — the same gate as `DocumentOpen`, so any
+  principal that may open workspace files may list them, and
+  `ProjectObserve` alone never implies listing access. No session
+  locator: the tree is project/workspace-keyed, matching the existing
+  TUI `FileTreeState` identity.
+- DTO: additive `CoreRequest::WorkspaceDirectoryList { request:
+  document::WorkspaceDirectoryListRequestDto }` carrying top-level
+  `project_id`, `workspace_id`, and an optional workspace-relative
+  `prefix` (default `""`); `CoreResponse::WorkspaceDirectoryList {
+  result: document::WorkspaceDirectoryListResultDto }` carrying the
+  echoed `workspace_id`/`prefix`, inert nested entries (`name`, `path`,
+  `depth`, `kind`, `children`), `truncated` + `truncated_reason`,
+  `examined`, and `status` (`ready` | `busy` | `unavailable`). No file
+  bodies, no absolute daemon paths. Serialized wire cap
+  `MAX_DIRECTORY_LISTING_RESPONSE_BYTES = 512 KiB`, enforced by
+  trimming trailing top-level nodes with an explicit truncation reason.
+- Family/handler: `Documents` family; handler beside
+  `handle_document_request` in `src/core/daemon_documents.rs`, reusing
+  `verify_project_workspace`, daemon-resolved `canonical_root`, and the
+  `DocumentOpen` containment sequence (`validate_relative`-equivalent
+  prefix check, `reject_symlink_components`, `starts_with`).
+  No LSP service, no writer lease.
+- Scanner: extract the C002/C004 walk into one daemon-neutral module
+  (`src/directory_listing.rs`); `src/tui/file_tree.rs` delegates to it
+  so there is exactly one walk authority. Bounds preserved: depth 12,
+  nodes 4096, examined 100000, names 255B, symlinks never followed.
+  Daemon admission is a per-daemon single-flight semaphore:
+  contended scans answer `busy`, never queue unboundedly.
+- Compatibility: fail closed always. Old daemons (unknown variant) and
+  `unavailable` answer with an explicit tree-unavailable message; no
+  client-local `read_dir` fallback in any mode, including standalone.
+  The temporary co-location predicate in §6 is explicitly declined.
+- Lifecycle: responses are keyed to the echoed daemon `workspace_id`
+  plus the existing TUI generation/request fencing; revocation,
+  reconnect, and project switch invalidate prior listings.
+- Telemetry: counts, caps, cancellations, errors, denied requests, and
+  durations only; no filenames or paths in diagnostics.
 
 Owners: CodeGG maintainers
 
@@ -48,7 +96,7 @@ Requires cross-platform, mount-aware strong host/filesystem identity and an auth
 
 Safest interim mitigation but regresses local-socket users and does not deliver the intended multi-frontend IDE capability. Acceptable only as a **temporary fail-closed guard** until B is implemented, never as evidence of remote support.
 
-## Proposed decision (pending acceptance)
+## Decision (accepted; see Acceptance above)
 
 1. **Authority:** all TUI file-tree directory enumeration is daemon-owned for both local and remote sessions, using a single explicit native read; no unconditional TUI-host direct `read_dir` in production TUI. The daemon's authenticated project/workspace locator determines canonical authority. Workspace-relative paths only.
 2. **Authorization:** classify listing as a read of directory metadata under `ViaSession + FileRead` (or a narrower explicit directory-list capability if the auth domain already provides one with equivalent scope). Resolve authorization *before* any traversal. Denials are non-enumerable and distinct from NotReady/empty/unreadable/truncated. The browser UI never assumes `ProjectObserve` implies file-list access. Future read of file bytes still uses `DocumentOpen`; listing grants no new write/read body API.
@@ -83,4 +131,4 @@ Maintainers must explicitly accept B (or another fully specified mechanism) and 
 
 ## Supersession
 
-None. Supplements ADR-0010/0011 and does not change their document or frontend ownership. ADR-0022 is **proposed** in this planning branch; do not treat its addition as approval.
+None. Supplements ADR-0010/0011 and does not change their document or frontend ownership. ADR-0022 was proposed in its planning branch and accepted 2026-10-14 with the frozen contract recorded above.

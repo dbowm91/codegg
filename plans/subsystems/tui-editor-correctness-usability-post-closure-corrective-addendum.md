@@ -1,12 +1,12 @@
 # TUI Editor Correctness/Usability — Post-Closure Corrective Addendum
 
-Status: active (C003 ready; C004 closed at `b9400c98`; C005 blocked on proposed ADR-0022)
+Status: active (C003 ready; C004 closed at `b9400c98`; C005 closed at `e37774a9`)
 
 Parent historical roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` (C001, C002, M003, M004 recorded closed; keep their closures immutable).
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`, reviewed 2026-10-13. Implementation agents MUST recheck current head and unrelated changes.
 Governance: `plans/003-planning-process.md` `7 corrective passes.
 Long-term references: `plans/000-long-term-specification.md` (TUI-first, correctness, project authorization, locality); `plans/001-terminology-and-domain-model.md`; `plans/002-long-term-roadmap.md`.
-Accepted ADRs: ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021. Proposed ADR-0022 (daemon-authorized workspace directory listing) gates C005 and is **not** accepted by publication of this addendum.
+Accepted ADRs: ADR-0010, ADR-0011, ADR-0012, ADR-0018, ADR-0021, ADR-0022 (daemon-authorized workspace directory listing, accepted Option B 2026-10-14 with frozen contract; gated C005 until acceptance).
 
 ## 1. Purpose and ownership boundary
 
@@ -48,11 +48,11 @@ M006-D (`plans/closure/desktop-frontend-ide-foundation/006-status.md`) and C002 
 
 `C003 — completion correctness`: **ready**. Hard deps M003/M004 closures (satisfied). Independent of C004/C005.
 
-`C004 — tree blocking-worker admission`: **ready**. Hard deps C002 closure (satisfied). Independent of C003. Soft interface integration to C005 if later selected.
+`C004 — tree blocking-worker admission`: **closed** at `b9400c98` (closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md`). Independent of C003. Soft interface integrated into C005 via the shared walker.
 
-`ADR-0022`: **proposed**; maintainer decision gate, explicitly not auto-approved by this planning branch.
+`ADR-0022`: **accepted** (Option B) 2026-10-14 with frozen contract (`DirectProject + FileRead`, Documents family, fail-closed, 512 KiB wire cap, single-flight daemon admission).
 
-`C005 — daemon-scoped tree metadata`: **blocked** by ADR-0022 acceptance. C004 is a soft implementation dependency; final C005 strict closure must use a correctly bounded *daemon-side* blocking worker, not inherit a false TUI task-lifecycle claim. C003 does not gate C005.
+`C005 — daemon-scoped tree metadata`: **closed** at `e37774a9` (closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md`). C003 does not gate C005 and remains ready independently.
 
 Do not block C003 or C004 on the ADR, a live rust-analyzer server, or unrelated Windows sandbox branch/CI status. Qualify each independently with focused and hosted evidence.
 
@@ -66,13 +66,13 @@ Exit: real daemon NotReady/Stale DTO constructors map to intended popup states; 
 
 ### C004 — File-tree blocking scan admission
 
-Plan `plans/implementation/tui-editor-correctness-usability/006-file-tree-worker-admission-corrective.md`. Status **ready**.
+Plan `plans/implementation/tui-editor-correctness-usability/006-file-tree-worker-admission-corrective.md`. Status **implemented; closed** at `b9400c98`.
 
 Exit: barrier test proves peak *actual* simultaneous blocking scans ≤ selected finite admission cap with 100 refreshes; newest-only pending intent; old work cannot release permit while still executing; UI stays responsive when a scan is stuck; cancellation/shutdown semantics stated accurately; original tree guard/test matrix passes. Closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md`.
 
 ### C005 — Daemon-authoritative directory listing
 
-Plan `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md`. Status **blocked** (hard gate ADR-0022).
+Plan `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md`. Status **implemented; closed** at `e37774a9` (ADR-0022 accepted 2026-10-14; frozen as `DirectProject + FileRead`, Documents family, fail-closed compat).
 
 Exit: one bounded native daemon listing API with explicit `file.read` and canonical workspace authority; local and remote TUI show daemon-origin entries; same-path/different-fs decoy test proves client-local tree never scanned; old daemon/denial fails closed; `/files` and Ctrl+T share result and `DocumentOpen` still reauthorizes file. Closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md`.
 
