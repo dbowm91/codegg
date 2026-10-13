@@ -1,6 +1,6 @@
 # C023–C026 Windows sandbox corrective assessment
 
-Status: research/planning input, 2026-10-13. Baseline `4d61f9622ee037313ce4781eb5b5666142d95a5d`.
+Status: closed evidence and no-admission disposition, 2026-10-13. Baseline `4d61f9622ee037313ce4781eb5b5666142d95a5d`.
 
 ## Factual triggers
 
@@ -9,6 +9,15 @@ Status: research/planning input, 2026-10-13. Baseline `4d61f9622ee037313ce4781eb
 - **C021 lifecycle:** normal `finally` cleanup and Job child termination passed; orphan/reboot recovery, colliding owners, concurrent workspaces, cancellation races and host loss were not tested. C025 is blocked until strict-positive C024 and C023, then requires a disposable reboot-capable VM.
 - **Decision:** C022 [closure](https://github.com/dbowm91/codegg/blob/work/windows-native-sandbox-foundation/plans/closure/windows-native-sandbox/022-status.md) is conditionally closed with *insufficient evidence*. C026 requires independent Windows security review for any positive proposal, or records no-admission immediately if C024 fails.
 - **MXC:** C020 selected native ProcessContainer and denied observed host reads, but Python/native helper initialization and inherited-handle qualification failed; bounded negative, not demonstrated MXC escape. Do not launch another automatic MXC corrective loop.
+
+## Corrective line closure — 2026-10-13
+
+- **C023 closed:** Required launcher CI passed at exact implementation SHA `68113300c68961a57faa6902ef6307b5e5e59db9` in run `38359288381`; the full process-launcher job also passed in the manual C014 research run `38359300786`. The opt-in C014 job in `38359300786` reproduced the closed-negative Git `/dev/null` denial and failed as expected, while its separate launcher job passed. A follow-up run `38362180227` at SHA `40de0257b1fde353c2b2b3f9c71a51fd7000bb7f` records UBR and repeats the required suite. Closure: `plans/closure/windows-native-sandbox/023-status.md`.
+- **C024 closed negative for the tested candidate:** Exact SHA `645f24a1ff35e7b38db5580f1b09346d95af00b8`, run `38362309506`, Windows Server 2025 Datacenter build `26100`, UBR `33438`. The ordinary disposable-account child read the broad-group-readable synthetic host object and wrote its stage. The restricted-token child did not launch: `CreateProcessAsUserW` returned Win32 2 in the final candidate attempts, the unrestricted `CreateProcessWithTokenW` control timed out, and the restricted `CreateProcessWithTokenW` attempt returned Win32 5. Fixture DACL fingerprints and secret hashes were unchanged; the principal was removed. This is a negative admission result, not a demonstrated restricted-child read denial.
+- **C025 closed without execution:** Its required C024 strict-positive gate failed, so no recovery/VM/concurrency work was started. Closure: `plans/closure/windows-native-sandbox/025-status.md`.
+- **C026 closed no-admission:** No candidate passed C024, so no production proposal or positive security review is warranted. This is not an independent positive review. Closure: `plans/closure/windows-native-sandbox/026-status.md`.
+
+The C023–C026 corrective line is complete. Windows production `SandboxRequest::Required` remains unavailable; filesystem/network `Enforced` remain unclaimed; C011/M004–M006 and C015–C018 remain blocked. Any new candidate requires a separately registered plan and a working native-token control before it may claim access-denial evidence.
 
 ## Security and scheduling rule
 

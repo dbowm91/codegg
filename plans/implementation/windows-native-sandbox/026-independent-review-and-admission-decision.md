@@ -1,6 +1,6 @@
 # Windows Native Sandbox C026 — Independent Windows Security Review and Admission Disposition
 
-Status: blocked (C024 disposition; if positive C023/C025 plus independent reviewer)
+Status: closed (no-admission; C024 did not qualify a restricted-token candidate)
 
 Repository baseline: `4d61f9622ee037313ce4781eb5b5666142d95a5d` on `work/windows-native-sandbox-foundation`; refresh HEAD before implementation.
 

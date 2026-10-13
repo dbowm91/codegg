@@ -1,6 +1,6 @@
 # Windows Native Sandbox C023 — Windows Launcher CI and Historical-Negative Reconciliation
 
-Status: active
+Status: implemented
 
 Repository baseline: `4d61f9622ee037313ce4781eb5b5666142d95a5d` on `work/windows-native-sandbox-foundation`; refresh HEAD before implementation.
 

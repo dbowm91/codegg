@@ -1,6 +1,6 @@
 # Windows Native Sandbox C025 — Dedicated-Principal Lifecycle, Recovery and Concurrency
 
-Status: blocked (hard C024 strict positive + C023 closed; operational reboot-capable admin VM)
+Status: closed without execution (C024 strict-positive hard gate failed; lifecycle candidate abandoned)
 
 Repository baseline: `4d61f9622ee037313ce4781eb5b5666142d95a5d` on `work/windows-native-sandbox-foundation`; refresh HEAD before implementation.
 

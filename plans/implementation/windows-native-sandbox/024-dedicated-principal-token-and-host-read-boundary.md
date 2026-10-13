@@ -1,6 +1,6 @@
 # Windows Native Sandbox C024 — Dedicated-Principal Token and Host-Read Isolation
 
-Status: active (test-only feasibility)
+Status: closed (negative candidate result; no viable restricted-token child launch was established)
 
 Repository baseline: `4d61f9622ee037313ce4781eb5b5666142d95a5d` on `work/windows-native-sandbox-foundation`; refresh HEAD before implementation.
 
