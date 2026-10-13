@@ -27,6 +27,19 @@ fn main() {
 }
 
 #[cfg(windows)]
+fn read_utf16_json(path: &std::path::Path) -> Option<Value> {
+    let bytes = fs::read(path).ok()?;
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let words = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    serde_json::from_str(&String::from_utf16(&words).ok()?).ok()
+}
+
+#[cfg(windows)]
 fn run() {
     use std::io::Write;
     use std::os::windows::io::AsRawHandle;
@@ -112,14 +125,14 @@ fn run() {
             "c037-on",
         ])
         .output();
-    let control_on_proof = fs::read_to_string(root.join("on-proof.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let control_on_proof = read_utf16_json(&root.join("on-proof.json"));
     let inherit_on = control_on
         .as_ref()
         .is_ok_and(|result| result.status.success())
         && control_on_proof.as_ref().is_some_and(|proof| {
-            proof["secret_match"] == true && proof["handle_same_file"] == true
+            proof["nonce"] == "c037-on"
+                && proof["secret_match"] == true
+                && proof["handle_same_file"] == true
         });
     let control_off = Command::new(&helper)
         .args([
@@ -131,14 +144,15 @@ fn run() {
             "c037-off",
         ])
         .output();
-    let control_off_proof = fs::read_to_string(root.join("off-proof.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    let control_off_proof = read_utf16_json(&root.join("off-proof.json"));
     let inherit_off = control_off
         .as_ref()
         .is_ok_and(|result| result.status.success())
         && control_off_proof.as_ref().is_some_and(|proof| {
-            proof["secret_match"] == false && proof["handle_same_file"] == false
+            proof["nonce"] == "c037-off"
+                && proof["secret_match"] == false
+                && proof["handle_same_file"] == false
+                && proof["host_path_secret_match"] == true
         });
 
     let file = match fs::File::open(&secret) {
@@ -252,13 +266,13 @@ fn run() {
             0,
         ),
     };
-    let child_proof = fs::read_to_string(&proof)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let descendant_proof = fs::read_to_string(&descendant)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    let child_entry = fs::read(&entry).is_ok();
+    let child_proof = read_utf16_json(&proof)
+        .filter(|proof| proof["nonce"] == nonce && proof["marker"] == "child-proof");
+    let entry_proof = read_utf16_json(&entry)
+        .filter(|proof| proof["nonce"] == nonce && proof["phase"] == "entry");
+    let descendant_proof = read_utf16_json(&descendant)
+        .filter(|proof| proof["nonce"] == nonce && proof["pid"].as_u64().is_some());
+    let child_entry = entry_proof.is_some();
     let acl_after_run = Command::new("icacls.exe")
         .arg(&secret)
         .output()
