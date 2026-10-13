@@ -168,6 +168,41 @@ pub fn build_tree_with_cancel(root: &Path, cancel: &AtomicBool) -> TreeListing {
     listing
 }
 
+/// Account for one iterated directory entry (including iterator `Err`s).
+///
+/// C004: every item yielded by `read_dir` — `Ok` or `Err` — consumes
+/// iteration work and must observe cancellation and both budgets. Returns
+/// `false` when the walk must stop (truncation reason already recorded).
+fn account_one_entry(
+    cancel: &AtomicBool,
+    examined: &mut usize,
+    max_examined: usize,
+    budget: usize,
+    listing: &mut TreeListing,
+) -> bool {
+    if cancel.load(Ordering::Relaxed) {
+        listing.truncated = true;
+        listing.truncated_reason = Some("tree walk cancelled".to_string());
+        return false;
+    }
+    *examined = examined.saturating_add(1);
+    if *examined > max_examined {
+        listing.truncated = true;
+        listing.truncated_reason = Some(format!(
+            "stopped after examining the maximum of {max_examined} entries"
+        ));
+        return false;
+    }
+    if budget == 0 {
+        listing.truncated = true;
+        listing.truncated_reason = Some(format!(
+            "stopped at the maximum of {MAX_TREE_NODES} entries"
+        ));
+        return false;
+    }
+    true
+}
+
 /// Refuse a workspace root that is not a proven-local readable directory.
 ///
 /// The tree walks the local filesystem directly, so a root that does not
@@ -234,31 +269,23 @@ fn walk(
     let mut directories: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
 
-    for entry in entries.flatten() {
-        if cancel.load(Ordering::Relaxed) {
-            listing.truncated = true;
-            listing.truncated_reason = Some("tree walk cancelled".to_string());
+    // C004: do not use `entries.flatten()`. An `Err` item still consumed
+    // iteration work (a directory entry that could not be read), so it must
+    // consume the examined budget and observe cancellation, or a long stream
+    // of errors bypasses both bounds. Count first, then skip.
+    for next in entries {
+        // Examined before any filtering: ignored, symlink, special,
+        // unreadable, and iterator-error entries all cost scanning even
+        // though they retain nothing. This is the budget that stops a walk
+        // over millions of filtered-out entries.
+        if !account_one_entry(cancel, examined, max_examined, *budget, listing) {
             return;
         }
-        // Examined before any filtering: ignored, symlink, special, and
-        // failed entries all cost scanning even though they retain nothing.
-        // This is the budget that stops a walk over millions of
-        // filtered-out entries.
-        *examined = examined.saturating_add(1);
-        if *examined > max_examined {
-            listing.truncated = true;
-            listing.truncated_reason = Some(format!(
-                "stopped after examining the maximum of {max_examined} entries"
-            ));
-            return;
-        }
-        if *budget == 0 {
-            listing.truncated = true;
-            listing.truncated_reason = Some(format!(
-                "stopped at the maximum of {MAX_TREE_NODES} entries"
-            ));
-            return;
-        }
+        let Ok(entry) = next else {
+            // The entry could not be read (concurrent removal, I/O error).
+            // Counted above; skipped without retaining anything.
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.is_empty() || name.len() > MAX_TREE_NAME_BYTES || name.contains('\0') {
             // Skipped, not truncated into: a mangled name could produce a
@@ -883,5 +910,55 @@ mod tests {
         let missing = PathBuf::from("/nonexistent-workspace-root-for-test");
         let listing = build_tree(&missing);
         assert!(listing.nodes.is_empty());
+    }
+
+    // ── C004 iterator-error accounting ──────────────────────────────────
+
+    /// C004: iterator `Err`s still consume examined work and observe
+    /// cancellation/budgets. `account_one_entry` is the exact function the
+    /// walk calls per item (both `Ok` and `Err`), so driving it with a
+    /// synthetic 200-error stream proves a long error flood cannot bypass
+    /// the examined cap or a cancel flag.
+    #[test]
+    fn iterator_error_stream_consumes_examined_and_respects_cancel() {
+        let live = AtomicBool::new(false);
+        let mut listing = TreeListing::default();
+        let mut examined = 0usize;
+        // 200 errors against a budget of 50: must stop with the examined
+        // reason, having counted every error.
+        for _ in 0..200 {
+            if !account_one_entry(&live, &mut examined, 50, MAX_TREE_NODES, &mut listing) {
+                break;
+            }
+        }
+        assert!(listing.truncated);
+        assert!(
+            listing
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("examining")),
+            "error flood must name the examined budget, got {:?}",
+            listing.truncated_reason
+        );
+        assert!(
+            examined > 50,
+            "every error must be examined, got {examined}"
+        );
+
+        // Cancellation is observed even mid-flood.
+        let cancelled = AtomicBool::new(true);
+        let mut listing = TreeListing::default();
+        let mut examined = 0usize;
+        assert!(!account_one_entry(
+            &cancelled,
+            &mut examined,
+            10_000,
+            MAX_TREE_NODES,
+            &mut listing
+        ));
+        assert_eq!(
+            listing.truncated_reason.as_deref(),
+            Some("tree walk cancelled")
+        );
     }
 }

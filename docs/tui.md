@@ -434,11 +434,13 @@ cursor position itself stays exact, but horizontal scrolling and motion stop
 at the end of the shown prefix; normal files are unaffected.
 
 The file tree (Ctrl+T pane and `/files`) walks at most 100,000 directory
-entries and keeps at most 4096, saying which limit stopped it. A refresh
-that is superseded, or a workspace that is no longer local, never paints a
-stale or foreign listing: the pane keeps its previous state and says why.
-Remote directory listing is unsupported; only a readable local workspace
-directory is listed.
+entries and keeps at most 4096, saying which limit stopped it. At most one
+scan runs at a time; a refresh that arrives while a scan is active waits as
+one queued latest request and the pane says "waiting for prior scan…" instead
+of piling up workers. A refresh that is superseded, or a workspace that is no
+longer local, never paints a stale or foreign listing: the pane keeps its
+previous state and says why. Remote directory listing is unsupported; only a
+readable local workspace directory is listed.
 
 ## Where to go next
 

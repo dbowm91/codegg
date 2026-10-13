@@ -2817,16 +2817,42 @@ end. Ordinary short lines render exactly as before.
 
 The tree walk counts *examined* entries independently of retained nodes
 (`MAX_TREE_EXAMINED` 100,000 vs `MAX_TREE_NODES` 4096): ignored, symlink,
-special, and failed entries consume the examined budget while retaining
-nothing, and the truncation reason names which budget fired. `TreeListing`
-carries the examined count as result metadata. Walks run on `spawn_blocking`
-inside a generation-scoped async task (hard limit: one live `FileTree`
-task — each rebuild aborts the previous waiter first); the blocking scan
-checks a cooperative flag on every entry, superseded by `begin_rebuild`,
-`reset_for_project`, and `prepare_shutdown`, so a stranded scan exits within
-one entry. Stale completions are still refused by generation/root/request.
-With no command channel the UI reports an explicit error instead of walking
-synchronously on the event loop. `local_walk_root` fails closed on
-non-absolute, non-directory, symlinked, or unreadable roots rather than
-treating a same-name local path as authoritative; remote listing stays
-unsupported until a daemon-authorized transport exists.
+special, unreadable, and iterator-error entries consume the examined budget
+while retaining nothing, and the truncation reason names which budget fired.
+Iterator `Err`s are counted via `account_one_entry` (C004): the old
+`entries.flatten()` silently dropped errors without counting work or checking
+cancellation, letting an error flood bypass both bounds. `TreeListing`
+carries the examined count as result metadata.
+
+C004 single-flight admission (`src/tui/file_tree_coordinator.rs`): at most
+one blocking scan executes (global cap 1, preferred per plan), with at most
+one coalesced latest-only pending intent. The permit is held from event-loop
+`try_admit` until the blocking work's completion arrives; aborting the async
+waiter never frees capacity early, so the old "one live task" registry count
+(which counted waiters, not workers) is replaced by instrumentation
+(`running`/`peak_running`) proving peak actual workers ≤ 1 across 100
+superseding rebuilds. A rebuild arriving while a scan is active supersedes
+intent immediately (generation bump + cancel flag) but spawns nothing and
+aborts nothing; the active scan drains as one accounted, finite-budget prior
+operation, then the pending latest runs. The newest request shows an explicit
+`Waiting` state ("waiting for prior scan…") while the prior scan drains; the
+event loop stays responsive. Every scan is fenced to
+request/generation/project/tab/root and revalidated before the delayed scan
+and again before display, so late A after a switch to B never renders and
+`/files` shares the one guarded state. A stale completion never cancels the
+current request (that would strand the queued intent). Shutdown signals the
+flag once, drops the queue, force-clears admission, aborts waiters, and
+reports a bounded policy: a worker stuck in a kernel syscall is not joined
+and no deadline is claimed; its `RunningGuard` still releases on exit and its
+late completion mismatches and is discarded. Diagnostics (`diagnostics()`)
+expose counts only, never paths. Walks run on `spawn_blocking` inside a
+generation-scoped async task; the blocking scan checks a cooperative flag on
+every entry, superseded by `begin_rebuild`, `reset_for_project`, and
+`prepare_shutdown`, so a superseded scan exits within one *completed* entry —
+not a wall-clock bound, since one syscall cannot be preempted. Stale
+completions are still refused by generation/root/request. With no command
+channel the UI reports an explicit error instead of walking synchronously on
+the event loop. `local_walk_root` fails closed on non-absolute,
+non-directory, symlinked, or unreadable roots rather than treating a
+same-name local path as authoritative; remote listing stays unsupported until
+a daemon-authorized transport exists.

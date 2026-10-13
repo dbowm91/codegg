@@ -27,6 +27,11 @@ pub enum FileTreeStatus {
     Idle,
     /// A walk is in flight.
     Loading,
+    /// C004: a rebuild is queued behind an in-flight blocking scan. The
+    /// newest request is coalesced as the single pending intent; no new
+    /// blocking work spawns until the active worker exits. The event loop
+    /// stays responsive; this is not an empty workspace.
+    Waiting,
     /// A walk completed for the current root.
     Ready,
     /// The walk could not run (for example the workspace root is unreadable).

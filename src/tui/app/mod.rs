@@ -483,6 +483,10 @@ pub struct App {
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
+    /// C004: single-flight admission for file-tree blocking scans. At most
+    /// one blocking scan executes; newer rebuilds coalesce as one pending
+    /// latest intent. Abort of the async waiter never frees capacity early.
+    pub file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator,
     /// Plugin-owned UI surfaces: dialogs, panels, and status items.
     /// Consumed by `apply_plugin_ui_effect` and rendered by
     /// `PluginUiRenderer`.
@@ -1138,6 +1142,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             plugin_manager: None, // initialized lazily after construction
             project_tabs,
@@ -1671,6 +1677,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
             plugin_manager: None, // initialized lazily after construction
@@ -3144,9 +3152,18 @@ impl App {
 
     pub fn prepare_shutdown(&mut self) {
         self.invalidate_pending_session_submit(false);
-        // A blocking tree scan outlives its aborted async waiter, so signal
-        // it cooperatively as well; it exits at its next entry.
+        // C004 bounded shutdown policy: signal the in-flight blocking scan
+        // cooperatively (it exits at its next entry, within the examined
+        // budget), drop any queued latest intent, and abort waiters. A worker
+        // stuck inside a kernel `read_dir` syscall cannot be joined on a
+        // bounded deadline — the shutdown does not wait for it and never
+        // claims it was joined. The worker's `RunningGuard` still releases
+        // its instrumentation count on exit; its late completion (if any)
+        // mismatches the cleared admission and is discarded.
         self.file_tree_state.cancel_in_flight();
+        self.file_tree_coordinator.clear_pending();
+        tracing::debug!("{}", self.file_tree_coordinator.diagnostics());
+        self.file_tree_coordinator.force_clear_for_shutdown();
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
         if active > 0 {
