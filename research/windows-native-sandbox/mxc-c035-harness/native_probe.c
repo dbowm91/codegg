@@ -67,22 +67,29 @@ static int child(int argc, wchar_t **argv) {
 
     uintptr_t raw = (uintptr_t)_wcstoui64(argv[5], NULL, 10);
     HANDLE inherited = (HANDLE)raw;
-    DWORD flags = 0;
-    BOOL has_flags = GetHandleInformation(inherited, &flags);
-    DWORD handle_error = has_flags ? 0 : GetLastError();
-    DWORD type = GetFileType(inherited);
-    DWORD type_error = type == FILE_TYPE_UNKNOWN ? GetLastError() : 0;
+    DWORD flags = 0, handle_error = 0, type = FILE_TYPE_UNKNOWN, type_error = 0;
+    DWORD read_error = 0, probe_exception = 0;
+    BOOL has_flags = FALSE, read_ok = FALSE;
     char secret[128] = {0}; DWORD read_bytes = 0;
-    BOOL read_ok = has_flags && type == FILE_TYPE_DISK &&
-        ReadFile(inherited, secret, sizeof(secret), &read_bytes, NULL);
-    DWORD read_error = read_ok ? 0 : GetLastError();
+    __try {
+        has_flags = GetHandleInformation(inherited, &flags);
+        handle_error = has_flags ? 0 : GetLastError();
+        type = GetFileType(inherited);
+        type_error = type == FILE_TYPE_UNKNOWN ? GetLastError() : 0;
+        read_ok = has_flags && type == FILE_TYPE_DISK &&
+            ReadFile(inherited, secret, sizeof(secret), &read_bytes, NULL);
+        read_error = read_ok ? 0 : GetLastError();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        probe_exception = GetExceptionCode();
+        read_ok = FALSE;
+    }
     BOOL secret_match = read_ok && read_bytes == 21 && memcmp(secret, "synthetic-c035-secret", 21) == 0;
     wchar_t proof[2048];
     _snwprintf_s(proof, 2048, _TRUNCATE,
-        L"{\"pid\":%lu,\"nonce\":\"%s\",\"marker\":\"child-proof\",\"entry_error\":%d,\"handle_present\":%s,\"handle_inheritable\":%s,\"handle_flags\":%lu,\"handle_error\":%lu,\"file_type\":%lu,\"file_type_error\":%lu,\"read_ok\":%s,\"read_error\":%lu,\"secret_match\":%s,\"token_user\":\"%s\",\"group_count\":%lu,\"group_sids\":%s,\"integrity_sid\":\"%s\",\"token_type\":%lu,\"token_observed\":%s}",
+        L"{\"pid\":%lu,\"nonce\":\"%s\",\"marker\":\"child-proof\",\"entry_error\":%d,\"handle_present\":%s,\"handle_inheritable\":%s,\"handle_flags\":%lu,\"handle_error\":%lu,\"file_type\":%lu,\"file_type_error\":%lu,\"read_ok\":%s,\"read_error\":%lu,\"probe_exception\":%lu,\"secret_match\":%s,\"token_user\":\"%s\",\"group_count\":%lu,\"group_sids\":%s,\"integrity_sid\":\"%s\",\"token_type\":%lu,\"token_observed\":%s}",
         GetCurrentProcessId(), nonce, entry_error, has_flags ? L"true" : L"false",
         (has_flags && (flags & HANDLE_FLAG_INHERIT)) ? L"true" : L"false", flags, handle_error, type, type_error,
-        read_ok ? L"true" : L"false", read_error, secret_match ? L"true" : L"false", user_sid,
+        read_ok ? L"true" : L"false", read_error, probe_exception, secret_match ? L"true" : L"false", user_sid,
         group_count, group_sids, integrity_sid, (DWORD)token_type, token ? L"true" : L"false");
     int proof_error = write_text(proof_path, proof);
     if (token) CloseHandle(token);

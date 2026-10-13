@@ -309,6 +309,7 @@ fn run() {
         && mxc_proof_valid
         && mxc_proof.as_ref().is_some_and(|proof| {
             proof["secret_match"] == false
+                && proof["probe_exception"] == 0
                 && (proof["handle_present"] == false
                     || (proof["handle_inheritable"] == true && proof["read_error"] == 5))
         });
