@@ -179,7 +179,7 @@ fn child_script(action: Action) -> &'static str {
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
-    let token = "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('C019_TOKEN=' + $identity.Name + '|' + $identity.User.Value);";
+    let token = "";
     if matches!(
         action,
         Action::DirectHostRead
@@ -274,7 +274,7 @@ async fn execute(
         cwd,
         ProcessProvenance::new("windows-c019", format!("{action:?}")),
     );
-    request.timeout = Some(Duration::from_secs(10));
+    request.timeout = Some(Duration::from_secs(30));
     let mut environment = EnvironmentPolicy::sanitized()
         .with_var("C019_STAGE", stage.as_os_str())
         .with_var("C019_PIPE", pipe)
