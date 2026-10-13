@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active (planning; ADR-0024 accepted; M001 closed; M002 active; M003 dependency/evidence-blocked)
+Status: active (planning; ADR-0024 accepted; M001–M002 closed; M003 active)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -57,8 +57,8 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 ### Existing workstream dependencies
 
 - M001 Syntax-only blocker audit and policy classification: **closed**; hard dependency ADR-0024 accepted; interface independent of Linux feature rollout.
-- M002 Reviewer/preflight/permission/route convergence: **active**; parent M001 closed, and `ApprovalRouter` / `ExecutionPolicySnapshot` existing interfaces are stable.
-- M003 Cross-tool effect-equivalence/observability qualification: **blocked hard M002**; OS-level native Linux test availability is an **operational** evidence dependency, not a license to weaken launch.
+- M002 Reviewer/preflight/permission/route convergence: **closed** at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`; one accepted snapshot/receipt survives broker attempts, duplicate preflight is removed, and constrained route widening fails closed.
+- M003 Cross-tool effect-equivalence/observability qualification: **active**; M002 is closed and native Linux filesystem fixtures are available. Network/IPC claims remain explicitly unavailable without an enforcing backend.
 - Linux C001 typed Git denial/routing uses M001's written policy interface (**interface** dependency); implementation may proceed in parallel and must not pretend this closes executable Git compatibility.
 - Linux M002 composable contract depends on existing accepted ADR-0016 and ADR-0024, *not* M001 Git closure; proposed ADR-0023 gates concrete Bubblewrap backend promotion, not non-executable interface work.
 - Linux C002 contained Git workflow recovery hard-depends on real M002–M005 obtained containment for executable local filters/hooks; networked Git requires distinct M006/approved transport authority. Never treat an interface test as an actual containment proof.
@@ -71,8 +71,8 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 | M001 C001 | invariant | `implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md` | **closed** | Specific configured rules not shadowed; current Deny remains terminal; saved family grants do not cover compound shell |
 | M001 C002 | invariant | `implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md` | **closed** | No built-in syntax-only hard denial; risk classifier and command preflight advisory, explicit user policy intact |
 | M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | **closed** | 62-command authorized-policy corpus has zero Ask/Deny; real Landlock ABI 4 filesystem evidence and network/IPC limitations recorded |
-| M002 | infrastructure | `implementation/command-authorization-and-execution-boundaries/002-approval-preflight-and-routing-convergence.md` | **active** | one approval precedence and execution ceiling across shell/typed tools; denied capability cannot be laundered |
-| M003 | invariant | `implementation/command-authorization-and-execution-boundaries/003-equivalent-effects-and-execution-observability.md` | blocked: M002 | equivalent forbidden effects cannot bypass actual enforcement by changing invocation surface; transparent unknown/unsupported |
+| M002 | infrastructure | `implementation/command-authorization-and-execution-boundaries/002-approval-preflight-and-routing-convergence.md` | **closed** | one approval precedence and execution ceiling across shell/typed tools; denied capability cannot be laundered |
+| M003 | invariant | `implementation/command-authorization-and-execution-boundaries/003-equivalent-effects-and-execution-observability.md` | **active** | equivalent forbidden effects cannot bypass actual enforcement by changing invocation surface; transparent unknown/unsupported |
 
 ## 8. Cross-cutting requirements
 
@@ -107,4 +107,4 @@ No normative security claim relies on command-name/text patterns. Explicit Deny 
 
 ## 12. Status
 
-M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`. M002 is ready; M003 remains blocked on M002 and native evidence for each claimed dimension. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim.
+M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`; M002 is closed at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`. M003 is active for effect-equivalence and observability qualification; Linux filesystem evidence is available, while network/IPC remain unrestricted/unqualified. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim.
