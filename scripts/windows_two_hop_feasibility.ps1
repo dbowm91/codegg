@@ -226,6 +226,7 @@ try {
 param([string]$Mode, [string]$Secret, [string]$Stage, [string]$Report, [string]$RestrictingSid, [string]$Git, [string]$SiblingSecret, [string]$JunctionSecret, [string]$HardlinkSecret, [string]$AdsPath)
 $ErrorActionPreference = 'Stop'
 if ($Mode -eq 'child') {
+    [IO.File]::WriteAllText("$Report.entry", 'c032-child-entry')
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $processToken = [IntPtr]::Zero
     if (-not [C032Native]::OpenProcessToken([C032Native]::GetCurrentProcess(), 0x0008, [ref]$processToken)) {
@@ -287,6 +288,8 @@ $child = [C032ProcessInformation]::new()
 $created = $false
 $errorCode = 0
     $innerSuspendCount = 0
+    $innerJobVerified = $false
+    $innerResumeSucceeded = $false
 try {
     if (-not [C032Native]::ConvertStringSidToSidW($RestrictingSid, [ref]$sidPointer)) { throw "ConvertStringSidToSidW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
     $sidAttributes = [Runtime.InteropServices.Marshal]::AllocHGlobal([IntPtr]::Size + 8)
@@ -305,17 +308,29 @@ try {
     if (-not $created) { $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); throw "CreateProcessAsUserW failed: $errorCode" }
     $inJob = $false
     if (-not [C032Native]::IsProcessInJob($child.hProcess, [IntPtr]::Zero, [ref]$inJob) -or -not $inJob) { throw 'Restricted child did not inherit Job ownership.' }
+    $innerJobVerified = $true
     $innerSuspendCount = [C032Native]::ResumeThread($child.hThread)
     if ($innerSuspendCount -ne 1) { throw "Inner child suspend count was unexpected: $innerSuspendCount" }
-    $wait = [C032Native]::WaitForSingleObject($child.hProcess, 90000)
+    $innerResumeSucceeded = $true
+    $wait = [C032Native]::WaitForSingleObject($child.hProcess, 30000)
     if ($wait -ne 0) { throw "Restricted child timed out (wait=$wait)." }
     $childResult = Get-Content -LiteralPath $Report -Raw | ConvertFrom-Json
     $childResult | Add-Member -NotePropertyName inner_child_suspend_count -NotePropertyValue $innerSuspendCount -Force
     $childResult | Add-Member -NotePropertyName inner_child_owned_job_verified_before_resume -NotePropertyValue $true -Force
     $childResult | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Report -Encoding utf8
 } catch {
-    if ($created) { $errorCode = $errorCode -or [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
-    [ordered]@{ contract = 'codegg.windows_two_hop_feasibility.v1'; phase = 'runner'; normal_account_same_file_read = $normalRead; runner_sid = $identity.User.Value; restricting_sid = $RestrictingSid; launch_error = $errorCode; launch_failure = $_.Exception.Message; child_reached_entry = $false; network = 'not_tested'; production_admission = 'not_authorized' } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Report -Encoding utf8
+    [ordered]@{
+        contract = 'codegg.windows_two_hop_feasibility.v1'; phase = 'runner'
+        normal_account_same_file_read = $normalRead; runner_sid = $identity.User.Value
+        restricting_sid = $RestrictingSid; launch_error = $errorCode
+        launch_failure = $_.Exception.Message; inner_child_created = $created
+        inner_child_suspend_count = $innerSuspendCount
+        inner_child_owned_job_verified_before_resume = $innerJobVerified
+        inner_child_resume_succeeded = $innerResumeSucceeded
+        child_entry_marker_seen = (Test-Path -LiteralPath "$Report.entry")
+        child_reached_entry = (Test-Path -LiteralPath "$Report.entry")
+        network = 'not_tested'; production_admission = 'not_authorized'
+    } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Report -Encoding utf8
 } finally {
     if ($child.hThread -ne [IntPtr]::Zero) { [void][C032Native]::CloseHandle($child.hThread) }
     if ($child.hProcess -ne [IntPtr]::Zero) { [void][C032Native]::CloseHandle($child.hProcess) }
@@ -382,7 +397,7 @@ try {
     if (-not (Test-Path -LiteralPath $reportPath)) { throw 'Two-hop runner produced no result report.' }
     $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     $report | Add-Member -NotePropertyName contract -NotePropertyValue 'codegg.windows_two_hop_feasibility.v1' -Force
-    $report | Add-Member -NotePropertyName child_reached_entry -NotePropertyValue ($report.mode -eq 'restricted-child') -Force
+    $report | Add-Member -NotePropertyName child_reached_entry -NotePropertyValue (($report.mode -eq 'restricted-child') -or $report.child_entry_marker_seen) -Force
     $report | Add-Member -NotePropertyName host_edition -NotePropertyValue (Get-CimInstance Win32_OperatingSystem).Caption
     $report | Add-Member -NotePropertyName host_build -NotePropertyValue (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
     $report | Add-Member -NotePropertyName runner_executable -NotePropertyValue $pwsh
