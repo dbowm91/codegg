@@ -20,7 +20,7 @@ Authoritative references:
 
 Improve CodeGG's consumption of eggsearch evidence: no duplicate network/provider engines, no replacement of the CodeGG research coordinator, no new competing tool-discovery layer. Eggsearch owns provider routing, fetch/cache, result/source identities, retrieval warnings, next-action *suggestions*, and evidence packaging. CodeGG owns stable native tool schemas, permissions, runtime transport, evidence/claim orchestration, model-visible projection, and policy-governed tool disclosure.
 
-This is a successor capability/quality line, **not** a reopening of completed eggsearch-integration milestones. The parallel legacy-retirement M001 adopts a qualified eggsearch release and reconciles providers; its M002 removes the builtin execution branch. Do not implement those changes here or change their historical closure evidence.
+This is a successor capability/quality line, **not** a reopening of completed eggsearch-integration milestones. The parallel legacy-retirement M001 adopts a qualified *upstream* eggsearch release **into CodeGG's development checkout** and reconciles providers using a one-command paired CodeGG-runtime/real-eggsearch subprocess contract suite; its M002 removes the builtin execution branch. This is not a CodeGG release gate and does not require working agent inference or public packaging. Do not implement those changes here or change their historical closure evidence.
 
 ## 2. Findings from repository audit
 
@@ -63,7 +63,7 @@ Existing legacy-retirement M001 (READY) ----------> M004 projection (blocked)
 
 - New evidence M001 is **historically closed** at `plans/closure/eggsearch-evidence-workflows/001-status.md`; its typed receipt transport is implemented, but the tagged upstream dimensional status contract escaped original verification.
 - Post-closure corrective C001 is **closed** at `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`. M004's C001 dependency is satisfied. C001 is independent of the runtime-pin migration and must be requalified after that separate pin changes.
-- M002 and M003 are **blocked** on the separate legacy-retirement M001 adopting and qualifying the pinned release.
+- M002 and M003 are **blocked** on the separate legacy-retirement M001 adopting and qualifying the pinned upstream eggsearch version via the *offline paired-development test*, not a CodeGG public release.
 - M004 remains **blocked** on legacy-retirement M001; its strict post-closure C001 dependency is satisfied. Do not render unverified completeness status before the pin adoption closes.
 - M005 is **blocked** on M002 and M004. Tool execution authority remains CodeGG-owned.
 - Legacy-retirement M002 deletion is not a hard dependency of these new milestones; coordinate touched files and avoid parallel edits on one branch.
