@@ -1,4 +1,4 @@
-# Plan 001 — Eggsearch Parity Release Adoption and Provider Contract
+# Plan 001 — Pinned Eggsearch Development Integration and Paired Compatibility
 
 Status: ready
 
@@ -6,7 +6,7 @@ Source roadmap:
 
 - `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md`
 
-Milestone: M001 eggsearch parity release adoption and provider-contract reconciliation
+Milestone: M001 pinned upstream dependency adoption, provider contract and one-unit development verification
 
 Primary class: development dependency integration + compatibility
 
@@ -24,9 +24,11 @@ strictly closes parity M003–M005, confirms published immutable v0.4.1
 (tag `v0.4.1` at `32769d684417567dfb30fc5adea1475cee7f0ed0`),
 and unblocks CodeGG downstream adoption at `>=0.4.1`.
 The published v0.4.1 release passed the ten-tool/provider contract smoke;
-CodeGG must still run its own pinned-binary compatibility and installation
-qualification before closing M001. v0.4.2 is not automatically substituted
-without equivalent release/contract qualification.
+CodeGG must still run its **paired source-development** compatibility suite
+against the exact adopted upstream binary before closing M001; CodeGG
+installer/release qualification belongs to a future milestone. v0.4.2 is
+not automatically substituted without equivalent *upstream* contract
+qualification.
 
 Relevant predecessor evidence:
 
@@ -93,8 +95,11 @@ At the planning baseline these include at least:
 Use source search at implementation time rather than assuming this list is
 complete.
 
-The release bundle must continue staging `codegg-eggsearch` as a sibling and
-validating `--version`; do not switch to PATH-only discovery.
+Preserve the **future** release-bundle sibling staging/version identity
+contract for `codegg-eggsearch`; this milestone updates its static pin
+expectations but does **not** stage/publish a CodeGG release. Development
+compatibility runs against an explicitly provided pinned upstream executable
+and must not silently select an unrelated PATH binary.
 
 ## 4. Provider-schema reconciliation
 
@@ -196,7 +201,7 @@ At minimum inspect/update:
 - `src/tool/websearch.rs`;
 - `src/search_backend/eggsearch.rs`;
 - `src/search_backend/bootstrap.rs`;
-- installation/release/upgrade pin owners;
+- installation/release/upgrade **static pin/configuration** owners;
 - fake/real eggsearch compatibility tests;
 - provider argument-mapping tests;
 - doctor/preflight tests;
