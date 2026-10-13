@@ -1557,6 +1557,19 @@ mod tests {
             matches!(error, BrokerError::AuthorityError { ref reason, .. } if reason.contains("ForbiddenEffect")),
             "unexpected rejection: {error}"
         );
+        let mut wrong_session = ctx;
+        wrong_session.session_id = Some("other-child-session".into());
+        let error = broker
+            .validate_pre_execution(
+                &contract_with_effect("read", ToolEffectClass::ReadOnly),
+                &wrong_session,
+                &serde_json::json!({}),
+            )
+            .expect_err("a sibling session must not reuse the child snapshot");
+        assert!(
+            matches!(error, BrokerError::AuthorityError { ref reason, .. } if reason.contains("InvalidParentReceipt")),
+            "unexpected identity rejection: {error}"
+        );
     }
 
     #[test]
