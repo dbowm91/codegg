@@ -1,6 +1,6 @@
 # Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
 
-Status: **ready C001 for upstream integration and exact-head qualification** (mainline already fixed the stale tests; independent of Windows MXC research).
+Status: **closed** (C001 integrated and exact-head qualified; independent of Windows MXC admission).
 Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
 Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
 
@@ -16,7 +16,7 @@ Do not loosen canonical prohibitions for genuinely forbidden operations (e.g. de
 
 ## Dependency
 
-C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny-vs-ask-test-reconciliation.md` is ready for exact-head validation after C040's mainline integration (or a faithful isolated preview). Native MXC research can run independently. Closing C001 requires exact-head general CI green **or** explicit truthful blocking evidence for failures outside C001. Draft PR merge conflicts are a separate integration/rebase issue and are not automatically solved by C001.
+C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny-vs-ask-test-reconciliation.md` is closed at exact integrated head `b89ba9e364bbf492d19048bed54803c4a8fd6d8e`; see `plans/closure/shell-command-policy-ci-corrective/001-status.md`. The corrected hard-deny/Ask matrix, actual approval/no-dispatch path, focused suites, and hosted Linux CI passed. Native MXC research remains independent.
 
 ## Acceptance
 

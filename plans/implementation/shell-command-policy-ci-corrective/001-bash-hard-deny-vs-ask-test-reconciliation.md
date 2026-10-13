@@ -1,8 +1,8 @@
 # Shell Command Policy CI C001 — Legacy Bash Hard-deny vs Ask Test Reconciliation
 
-Status: **ready for upstream integration and exact-head verification**; main already contains the test-policy rewrite, branch does not
+Status: **implemented; closed**; upstream test-policy rewrite and approval-path verification passed on the C040 integrated head
 Primary class: security regression corrective
-Baseline: `work/windows-native-sandbox-foundation` at `84faa0bd585e7161361bdb255f29e70cdf7ab619`; refresh HEAD before edits.
+Verified integration head: `b89ba9e364bbf492d19048bed54803c4a8fd6d8e` on `work/windows-native-sandbox-foundation`; source test rewrite: mainline `9d32c35b516315adef21e30eb2a9e436826231e0`.
 Source: `plans/subsystems/shell-command-policy-ci-corrective-addendum.md`.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md`; `plans/003-planning-process.md`; ADR-0004; current permission and sandbox contract.
 Predecessor: prior shell policy split into hard-deny and Ask (`src/tool/bash/policy.rs` and `src/permission/mod.rs`), no previous closure authorized tests that assume the old contract.

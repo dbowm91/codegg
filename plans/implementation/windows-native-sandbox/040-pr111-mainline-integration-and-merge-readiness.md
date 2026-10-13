@@ -1,8 +1,8 @@
 # Windows Native Sandbox C040 — PR #111 Mainline Integration, Registry Conflict, and Merge Readiness
 
-Status: **blocked on C039 ADR-identity reconciliation; shell C001 verification may proceed in parallel**
+Status: **implemented; closed**; C039 ADR-identity reconciliation is closed
 Primary class: integration/quality corrective
-Baseline: `work/windows-native-sandbox-foundation` `631ae9488f251ac70e91b9c8299d2c1c3bff83fa`; `main` `b9ba494c1b21638c2e2f660301ba207ce8859682`; fork/common base `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`. **Refresh** all three at implementation.
+Refreshed integration baseline: feature parent `a00a766af7ebdd7db770182ac47e4ddc824dd9d8`; `main` `b9ba494c1b21638c2e2f660301ba207ce8859682`; common base `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`; merge result `b89ba9e364bbf492d19048bed54803c4a8fd6d8e`.
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#post-adr-0024-pr-111-mainline-reconciliation`.
 Authority: `plans/003-planning-process.md`, ADR-0004, ADR-0016, no-admission decisions C029/C034/C038. PR <https://github.com/dbowm91/codegg/pull/111>.
 Hard predecessor: C039 recorded collision-free ADR reconciliation on this branch or a maintainer-approved equivalent migration. Soft/parallel predecessor: shell-policy C001 exact-head tests.
