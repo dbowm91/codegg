@@ -156,9 +156,16 @@ fn inherited_handle_probe() {
                 .ok()
                 .map(|()| &bytes[..read as usize] == b"synthetic-c020-secret")
         });
-    match outcome {
-        Some(true) => println!("inherited_handle=leaked"),
-        Some(false) | None => println!("inherited_handle=not_transferred"),
+    let report = match outcome {
+        Some(true) => "inherited_handle=leaked",
+        Some(false) | None => "inherited_handle=not_transferred",
+    };
+    if let Some(path) = std::env::var_os("C020_HANDLE_PROBE_RESULT") {
+        if fs::write(path, report).is_err() {
+            std::process::exit(3);
+        }
+    } else {
+        std::process::exit(4);
     }
 }
 
@@ -194,6 +201,7 @@ fn main() {
     let outside = run_root.join("outside-stage-write.txt");
     let script_path = stage.join("probe.cmd");
     let descendant_script = stage.join("descendant.py");
+    let handle_probe_result = stage.join("inherited-handle-result.txt");
     let descendant_pid_file = stage.join("descendant.pid");
     let secret = host.join("synthetic-c020-secret.txt");
     let sibling_secret = sibling.join("synthetic-c020-sibling.txt");
@@ -293,16 +301,15 @@ print(f"descendant_probe_pid={child.pid}")
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
     ];
+    let executable = std::env::current_exe().expect("harness executable path");
+    lines.push(format!(
+        "{} --c020-inherited-handle-probe",
+        batch_quote(&executable)
+    ));
+    lines.push(
+        "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)".into(),
+    );
     if let Some(python) = &python {
-        let executable = std::env::current_exe().expect("harness executable path");
-        lines.push(format!(
-            "{} --c020-inherited-handle-probe",
-            batch_quote(&executable)
-        ));
-        lines.push(
-            "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)"
-                .into(),
-        );
         lines.push(format!(
             "{} {}",
             batch_quote(python),
@@ -310,7 +317,6 @@ print(f"descendant_probe_pid={child.pid}")
         ));
         lines.push("if errorlevel 1 (echo descendant_probe_exit=failed) else (echo descendant_probe_exit=0)".into());
     } else {
-        lines.push("echo handle_probe_exit=python-unavailable".into());
         lines.push("echo descendant_probe_exit=python-unavailable".into());
     }
     if let Some(git) = &git {
@@ -409,6 +415,10 @@ print(f"descendant_probe_pid={child.pid}")
                 raw_handle_number(secret_handle.as_ref().expect("handle fixture")).to_string(),
             ),
             (
+                "C020_HANDLE_PROBE_RESULT".into(),
+                handle_probe_result.to_string_lossy().into_owned(),
+            ),
+            (
                 "C020_DESCENDANT_PID_FILE".into(),
                 descendant_pid_file.to_string_lossy().into_owned(),
             ),
@@ -460,10 +470,8 @@ print(f"descendant_probe_pid={child.pid}")
         Ok(result) => {
             let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
-            let inherited_handle = stdout
-                .lines()
-                .find(|line| line.starts_with("inherited_handle="))
-                .unwrap_or("inherited_handle=missing");
+            let inherited_handle = fs::read_to_string(&handle_probe_result)
+                .unwrap_or_else(|_| "inherited_handle=unavailable".into());
             let report = json!({
                 "contract": "codegg.mxc_v1_native_feasibility.v1",
                 "runner_temp": run_root.display().to_string(),
