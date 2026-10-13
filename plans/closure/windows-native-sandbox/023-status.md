@@ -18,13 +18,13 @@ Implementation commits or pull requests:
 - `40de0257` — record Windows runner UBR in the required workflow metadata.
 - Required Windows launcher workflow [38359288381](https://github.com/dbowm91/codegg/actions/runs/38359288381) passed on exact SHA `68113300c68961a57faa6902ef6307b5e5e59db9`.
 - Opt-in C014 reproduction run [38359300786](https://github.com/dbowm91/codegg/actions/runs/38359300786) reproduced the expected Git `/dev/null` failure; its independent `process-launcher` job passed. The research failure is not a launcher CI pass.
-- Follow-up Windows launcher workflow [38362180227](https://github.com/dbowm91/codegg/actions/runs/38362180227), SHA `40de0257b1fde353c2b2b3f9c71a51fd7000bb7f`, records the UBR and repeats the required suite.
+- Follow-up Windows launcher workflow [38362180227](https://github.com/dbowm91/codegg/actions/runs/38362180227), SHA `40de0257b1fde353c2b2b3f9c71a51fd7000bb7f`, completed its runner-metadata step and recorded UBR `33438`. Its repeated process-launcher job was still running when this closure was prepared; C023 acceptance rests on the separate completed exact-implementation run `38359288381`.
 
 ## 1. Executive finding
 
 C023 is closed. The mandatory Windows launcher job now runs the previously skipped positive launcher, Job, ACL, environment, status, AppContainer-ordering, and shell regressions without the known-negative C014 Git experiment gating them. No blanket `continue-on-error` was introduced. C014 remains available as a clearly labeled manual research job and still reports its historical negative result.
 
-The required run on the implementation SHA passed. The follow-up run records Windows Server 2025 Datacenter version `10.0.26100`, build `26100`, UBR `33438`; its metadata step completed and the full repeated launcher suite is the run associated with the UBR update. The earlier exact implementation run reported edition/version/build but did not yet print UBR.
+The required run on the implementation SHA passed. The follow-up run's completed metadata step records Windows Server 2025 Datacenter version `10.0.26100`, build `26100`, UBR `33438`. The earlier exact implementation run reported edition/version/build but did not yet print UBR. Its repeat process-launcher job is not used as acceptance evidence in this closure.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -78,7 +78,7 @@ GitHub Actions: UBR metadata and repeated launcher suite, run 38362180227
 - Local formatting, sandbox contract, execution ownership, and `verify.sh quick` passed.
 - Run `38359288381` passed all required process-launcher workflow steps at the exact C023 implementation SHA. Each required test invocation selected at least one case; the 48 selected cases all passed.
 - Run `38359300786` had the expected failed C014 research job (`git init` exit 128, `/dev/null` permission denial) and a successful, independent process-launcher job. The top-level workflow is red because of the expected research finding; this is explicitly not a required CI pass.
-- Run `38362180227` records UBR `33438` and repeats the required test suite after metadata-only workflow refinement. C014 was skipped on this push-triggered run by design.
+- Run `38362180227` completed the metadata step and records UBR `33438`; its repeated process-launcher job remained in progress when this closure was prepared. C014 was skipped on this push-triggered run by design. The required exact-implementation evidence is run `38359288381`.
 - No Windows 11 host compatibility, host-denial, or broader security claim is made by C023.
 
 ## 5. Invariant review
