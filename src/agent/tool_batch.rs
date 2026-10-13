@@ -353,6 +353,30 @@ impl AgentLoop {
         let plugin_activation_rev = super::tool_descriptor_snapshot::plugin_activation_revision(
             self.plugin_service.as_ref(),
         );
+        let mut eligible_effects = BTreeMap::new();
+        for tool in &surface.tools {
+            let contract = self
+                .services
+                .tool_broker
+                .lookup_contract(&tool.canonical_name)
+                .map_err(|_| {
+                    format!(
+                        "parent tool surface has no broker contract for {}",
+                        tool.canonical_name
+                    )
+                })?;
+            eligible_effects.insert(
+                tool.canonical_name.clone(),
+                contract.effect_class.as_str().to_owned(),
+            );
+        }
+        let max_effect_class = eligible_effects
+            .values()
+            .filter_map(|effect| crate::tool::contract::ToolEffectClass::from_authority_str(effect))
+            .max_by_key(|effect| effect.severity())
+            .unwrap_or(crate::tool::contract::ToolEffectClass::ReadOnly)
+            .as_str()
+            .to_owned();
         Ok(super::parent_authority::ParentToolAuthoritySnapshot::mint(
             super::parent_authority::ParentAuthorityMintInput {
                 parent_session_id: self.session_id.clone(),
@@ -364,7 +388,8 @@ impl AgentLoop {
                 mcp_generation,
                 plugin_activation_rev,
                 policy_revision: format!("config:{:016x}", self.permission_version()),
-                max_effect_class: "non_idempotent".into(),
+                max_effect_class,
+                eligible_effects,
                 now_ms: chrono::Utc::now().timestamp_millis(),
             },
         ))
@@ -400,14 +425,13 @@ impl AgentLoop {
             // M005: parent sandbox ceiling for subagent construction.
             // Approval mode never mutates this value.
             sandbox_profile: Some(snapshot.sandbox_profile().as_str().to_owned()),
-            // Descendant ceiling (M003): minted live for `task`
-            // delegations only. A mint failure yields `None` here and
-            // `TaskTool` fails the delegation closed — the child never
-            // runs unrestricted.
+            // Descendant ceiling: every child call carries the child
+            // snapshot. Root turns have no inherited authority. A fresh
+            // snapshot is minted only for task delegation below.
             parent_tool_authority: if tc.name.as_str() == "task" {
                 self.mint_delegation_ceiling().ok()
             } else {
-                None
+                self.parent_tool_authority.clone()
             },
             timeout_ms,
             invocation_key: Some(invocation_key),

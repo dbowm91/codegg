@@ -100,6 +100,27 @@ fingerprint, so parent generation/policy changes invalidate descendant
 cache identity. Nested children re-narrow through
 `narrow_for_child`, retaining the ancestry bound transitively.
 
+The snapshot pins a maximum broker effect for each exact canonical tool
+name, derived from the parent's live `ToolBroker` contract catalog at
+delegation time. At every child invocation, the broker checks snapshot
+integrity, expiry, workspace scope, exact name, and that current contract's
+effect against this per-name ceiling, independently of the current grant
+and `allowed_tools` manifest. A missing per-name effect entry (including
+an older serialized snapshot) denies invocation. Process execution remains
+available only when the parent's effective surface included that exact
+contract; the child's sandbox and command approval remain separate gates.
+The worker binds a resolved child snapshot to its exact child session and
+workspace after checking parent identity and durable lineage; broker calls
+must match that bound session. A `task` invocation instead matches the
+parent session that minted its delegation snapshot.
+
+When nested delegation is allowed, the worker installs the functional
+`TaskTool` before resolving the child's surface so `task` can be advertised
+and discovered. That candidate carries the validated parent snapshot and
+is not executable until the child loop is built. The worker then replaces
+it with the same tool carrying the narrowed child snapshot before broker
+construction.
+
 Carriage: `task` execution resolves the snapshot from the live
 execution context (freshest, minted at delegation time by
 `AgentLoop::mint_delegation_ceiling`) or the registration-time
@@ -110,6 +131,12 @@ arguments. Missing/invalid on the model-driven path fails closed;
 explicit root/system delegations (research, security review, legacy
 payloads) carry `None` with existing denied/filtered behavior.
 Guard: `scripts/check_descendant_tool_ceiling.py`.
+
+The snapshot SHA-256 is an unkeyed integrity checksum, not a sender
+signature. Its authenticity depends on host-owned AgentLoop/TaskTool
+carriage or scheduler-owned persisted payload plus worker validation;
+generic broker callers cannot treat a caller-supplied snapshot as a
+cryptographic attestation. Model schemas have no authority field.
 
 ### Plan Mode Filtering
 

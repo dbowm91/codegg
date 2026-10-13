@@ -70,6 +70,12 @@ It lives in `crates/codegg-core/src/error.rs`.
    cannot trigger another `tools/call`; the result remains typed as timed out
    or uncertain according to the broker acknowledgement path.
 
+   Child agent MCP calls also carry the worker-bound parent authority into
+   `ToolBroker`: exact `mcp__server__tool` name, child session/workspace,
+   expiry, and the pinned per-name contract effect are checked before the
+   adapter dispatch. The adapter's MCP generation/schema staleness checks
+   remain an independent gate.
+
 4. **Shutdown**: `McpService::shutdown_all()` disconnects every server
    in order. Local clients kill the child process; remote clients send
    `notifications/cancelled` and cancel heartbeat tasks.

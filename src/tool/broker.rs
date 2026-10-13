@@ -684,6 +684,31 @@ impl ToolBroker {
             });
         }
 
+        // Descendant admission is an independent layer from the current
+        // ToolAuthorityGrant and the exact-name manifest. The authority
+        // carrier is host-side scheduler/AgentLoop state; model arguments
+        // cannot supply it. Legacy snapshots without a per-name contract
+        // envelope fail closed here.
+        if let Some(parent) = ctx.parent_tool_authority.as_ref() {
+            let scope = ctx.cwd.to_string_lossy();
+            if let Err(reason) = parent
+                .check_invocation_session(&contract.name, ctx.session_id.as_deref())
+                .and_then(|()| {
+                    parent.check_tool(
+                        &contract.name,
+                        contract.effect_class.as_str(),
+                        chrono::Utc::now().timestamp_millis(),
+                        &scope,
+                    )
+                })
+            {
+                return Err(BrokerError::AuthorityError {
+                    tool: contract.name.clone(),
+                    reason: format!("descendant authority denied: {}", reason.as_str()),
+                });
+            }
+        }
+
         // Step 3: input size check
         let input_size = serde_json::to_vec(input).map(|b| b.len()).unwrap_or(0);
         if input_size > self.config.max_input_bytes {
@@ -1467,6 +1492,96 @@ mod tests {
             execution_audit: None,
             audit_emitter: None,
         }
+    }
+
+    fn descendant_snapshot(
+        effect: &str,
+    ) -> crate::agent::parent_authority::ParentToolAuthoritySnapshot {
+        use crate::agent::parent_authority::{
+            ParentAuthorityMintInput, ParentToolAuthoritySnapshot,
+        };
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            [crate::provider::ToolDefinition {
+                name: "read".into(),
+                description: "read".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                defer_loading: None,
+            }],
+            &std::collections::BTreeSet::new(),
+            &std::collections::BTreeSet::new(),
+            false,
+            true,
+            None,
+        )
+        .unwrap();
+        ParentToolAuthoritySnapshot::mint(ParentAuthorityMintInput {
+            parent_session_id: "s".into(),
+            parent_turn_id: None,
+            parent_run_id: None,
+            parent_agent: "build".into(),
+            workspace_scope: ".".into(),
+            surface,
+            mcp_generation: String::new(),
+            plugin_activation_rev: String::new(),
+            policy_revision: "p".into(),
+            max_effect_class: effect.into(),
+            eligible_effects: std::collections::BTreeMap::from([("read".into(), effect.into())]),
+            now_ms: chrono::Utc::now().timestamp_millis(),
+        })
+    }
+
+    #[test]
+    fn broker_denies_descendant_contract_effect_drift_before_execution() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::new(&registry);
+        let mut ctx = make_ctx();
+        let grant = ctx.authority.grant().unwrap().clone();
+        let grant = codegg_core::jobs::ToolAuthorityGrant {
+            allowed_effect_class: "process_exec".into(),
+            decision_digest: String::new(),
+            ..grant
+        };
+        ctx.authority = BrokerAuthority::from_grant(codegg_core::jobs::ToolAuthorityGrant {
+            decision_digest: grant.compute_digest(),
+            ..grant
+        });
+        ctx.session_id = Some("child-session".into());
+        let mut parent = descendant_snapshot("read_only");
+        parent.bind_child_session("child-session".into());
+        ctx.parent_tool_authority = Some(parent);
+        let widened = contract_with_effect("read", ToolEffectClass::ProcessExec);
+        let error = broker
+            .validate_pre_execution(&widened, &ctx, &serde_json::json!({}))
+            .expect_err("parent effect drift must deny before tool execution");
+        assert!(
+            matches!(error, BrokerError::AuthorityError { ref reason, .. } if reason.contains("ForbiddenEffect")),
+            "unexpected rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn broker_preserves_parent_authorized_process_exec_ceiling() {
+        let registry = make_registry_with_test_tool();
+        let broker = ToolBroker::new(&registry);
+        let mut ctx = make_ctx();
+        let grant = ctx.authority.grant().unwrap().clone();
+        let grant = codegg_core::jobs::ToolAuthorityGrant {
+            allowed_effect_class: "process_exec".into(),
+            decision_digest: String::new(),
+            ..grant
+        };
+        ctx.authority = BrokerAuthority::from_grant(codegg_core::jobs::ToolAuthorityGrant {
+            decision_digest: grant.compute_digest(),
+            ..grant
+        });
+        ctx.session_id = Some("child-session".into());
+        let mut parent = descendant_snapshot("process_exec");
+        parent.bind_child_session("child-session".into());
+        ctx.parent_tool_authority = Some(parent);
+        let process = contract_with_effect("read", ToolEffectClass::ProcessExec);
+        broker
+            .validate_pre_execution(&process, &ctx, &serde_json::json!({}))
+            .expect("independently authorized ProcessExec must remain admitted");
     }
 
     #[tokio::test]

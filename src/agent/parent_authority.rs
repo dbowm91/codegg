@@ -44,7 +44,7 @@
 use super::tool_surface::{AgentCapabilitySet, ResolvedToolSurface};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bounded time-to-live for one delegation snapshot.
 ///
@@ -100,6 +100,10 @@ impl std::fmt::Display for ParentDenyReason {
 pub struct ParentToolAuthoritySnapshot {
     /// Session that owns the parent turn.
     pub parent_session_id: String,
+    /// Exact child session authorized by the worker after lineage checks.
+    /// Absent on a delegation snapshot that is being admitted at `task`.
+    #[serde(default)]
+    pub child_session_id: Option<String>,
     /// Exact daemon-owned turn identity, when available.
     pub parent_turn_id: Option<String>,
     /// Durable run identity of the parent, when scheduler-owned.
@@ -110,6 +114,11 @@ pub struct ParentToolAuthoritySnapshot {
     pub workspace_scope: String,
     /// Exact eligible canonical tool names (parent-effective).
     pub eligible_tools: BTreeSet<String>,
+    /// Per-name maximum effects pinned from the parent's broker contracts.
+    /// Empty/missing maps fail closed for invocation (legacy payloads do not
+    /// acquire a default effect grant).
+    #[serde(default)]
+    pub eligible_effects: BTreeMap<String, String>,
     /// Typed capability ceiling (parent-effective).
     pub capabilities: AgentCapabilitySet,
     /// Fingerprint of the parent resolved surface (diagnostics + binding).
@@ -146,6 +155,7 @@ pub struct ParentAuthorityMintInput {
     pub plugin_activation_rev: String,
     pub policy_revision: String,
     pub max_effect_class: String,
+    pub eligible_effects: BTreeMap<String, String>,
     pub now_ms: i64,
 }
 
@@ -161,11 +171,13 @@ impl ParentToolAuthoritySnapshot {
             .collect::<BTreeSet<_>>();
         let mut snapshot = Self {
             parent_session_id: input.parent_session_id,
+            child_session_id: None,
             parent_turn_id: input.parent_turn_id,
             parent_run_id: input.parent_run_id,
             parent_agent: input.parent_agent,
             workspace_scope: input.workspace_scope,
             eligible_tools,
+            eligible_effects: input.eligible_effects,
             capabilities: input.surface.capabilities,
             surface_fingerprint: input.surface.fingerprint,
             mcp_generation: input.mcp_generation,
@@ -184,6 +196,8 @@ impl ParentToolAuthoritySnapshot {
         let mut material = String::new();
         material.push_str(&self.parent_session_id);
         material.push('\0');
+        material.push_str(self.child_session_id.as_deref().unwrap_or(""));
+        material.push('\0');
         material.push_str(self.parent_turn_id.as_deref().unwrap_or(""));
         material.push('\0');
         material.push_str(self.parent_run_id.as_deref().unwrap_or(""));
@@ -194,6 +208,12 @@ impl ParentToolAuthoritySnapshot {
         material.push('\0');
         for name in &self.eligible_tools {
             material.push_str(name);
+            material.push('\0');
+        }
+        for (name, effect) in &self.eligible_effects {
+            material.push_str(name);
+            material.push('\0');
+            material.push_str(effect);
             material.push('\0');
         }
         material.push_str(&format!("caps:{:?}", self.capabilities.capabilities()));
@@ -261,9 +281,11 @@ impl ParentToolAuthoritySnapshot {
         if !self.eligible_tools.contains(canonical_name) {
             return Err(ParentDenyReason::ParentCeiling);
         }
-        let ceiling =
-            crate::tool::contract::ToolEffectClass::from_authority_str(&self.max_effect_class)
-                .ok_or(ParentDenyReason::ForbiddenEffect)?;
+        let ceiling = self
+            .eligible_effects
+            .get(canonical_name)
+            .and_then(|effect| crate::tool::contract::ToolEffectClass::from_authority_str(effect))
+            .ok_or(ParentDenyReason::ForbiddenEffect)?;
         let effect = crate::tool::contract::ToolEffectClass::from_authority_str(contract_effect)
             .ok_or(ParentDenyReason::ForbiddenEffect)?;
         if !effect.is_within_ceiling(ceiling) {
@@ -291,11 +313,18 @@ impl ParentToolAuthoritySnapshot {
         let capabilities = self.capabilities.intersect(child_surface.capabilities);
         let mut narrowed = Self {
             parent_session_id: self.parent_session_id.clone(),
+            child_session_id: self.child_session_id.clone(),
             parent_turn_id: self.parent_turn_id.clone(),
             parent_run_id: self.parent_run_id.clone(),
             parent_agent: self.parent_agent.clone(),
             workspace_scope: self.workspace_scope.clone(),
             eligible_tools,
+            eligible_effects: self
+                .eligible_effects
+                .iter()
+                .filter(|(name, _)| child_names.contains(*name))
+                .map(|(name, effect)| (name.clone(), effect.clone()))
+                .collect(),
             capabilities,
             surface_fingerprint: child_surface.fingerprint.clone(),
             mcp_generation: self.mcp_generation.clone(),
@@ -308,6 +337,45 @@ impl ParentToolAuthoritySnapshot {
         };
         narrowed.snapshot_fingerprint = narrowed.compute_fingerprint();
         narrowed
+    }
+
+    /// Bind a validated child snapshot to the child workspace selected by
+    /// the worker. Call only after the worker has proved containment or
+    /// durable parent→child run lineage; broker admission then compares
+    /// the exact active child cwd rather than trusting an ancestor path.
+    pub fn bind_child_workspace_scope(&mut self, workspace_scope: String) {
+        self.workspace_scope = workspace_scope;
+        self.snapshot_fingerprint = self.compute_fingerprint();
+    }
+
+    /// Bind broker calls to the exact child session created by the worker.
+    pub fn bind_child_session(&mut self, child_session_id: String) {
+        self.child_session_id = Some(child_session_id);
+        self.snapshot_fingerprint = self.compute_fingerprint();
+    }
+
+    /// Check the session role for an invocation: direct child tools use the
+    /// worker-bound child session; `task` uses the session that minted the
+    /// delegation snapshot.
+    pub fn check_invocation_session(
+        &self,
+        tool_name: &str,
+        session_id: Option<&str>,
+    ) -> Result<(), ParentDenyReason> {
+        let Some(session_id) = session_id else {
+            return Err(ParentDenyReason::InvalidParentReceipt);
+        };
+        let expected = if tool_name == "task" {
+            self.parent_session_id.as_str()
+        } else {
+            self.child_session_id
+                .as_deref()
+                .ok_or(ParentDenyReason::InvalidParentReceipt)?
+        };
+        if session_id != expected {
+            return Err(ParentDenyReason::InvalidParentReceipt);
+        }
+        Ok(())
     }
 
     /// Sorted eligible names for broker `allowed_tools` binding and bounded
@@ -348,7 +416,12 @@ pub fn encode_parent_authority(snapshot: &ParentToolAuthoritySnapshot) -> Result
 pub fn decode_parent_authority(
     encoded: &str,
 ) -> Result<ParentToolAuthoritySnapshot, ParentDenyReason> {
-    serde_json::from_str(encoded).map_err(|_| ParentDenyReason::InvalidParentReceipt)
+    let snapshot: ParentToolAuthoritySnapshot =
+        serde_json::from_str(encoded).map_err(|_| ParentDenyReason::InvalidParentReceipt)?;
+    if !snapshot.verify_integrity() {
+        return Err(ParentDenyReason::InvalidParentReceipt);
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -391,6 +464,11 @@ mod tests {
             plugin_activation_rev: "plugins-a".into(),
             policy_revision: "config:1".into(),
             max_effect_class: "non_idempotent".into(),
+            eligible_effects: BTreeMap::from([
+                ("read".into(), "read_only".into()),
+                ("write".into(), "non_idempotent".into()),
+                ("git_query".into(), "read_only".into()),
+            ]),
             now_ms: 1_000,
         })
     }
@@ -445,7 +523,9 @@ mod tests {
         );
         // Eligible name with a widened contract effect: denied.
         let mut narrow = mint_parent();
-        narrow.max_effect_class = "read_only".into();
+        narrow
+            .eligible_effects
+            .insert("write".into(), "read_only".into());
         narrow.snapshot_fingerprint = narrow.compute_fingerprint();
         assert_eq!(
             narrow.check_tool("write", "non_idempotent", 2_000, "/workspace"),
@@ -456,6 +536,28 @@ mod tests {
             snapshot.check_tool("read", "bogus", 2_000, "/workspace"),
             Err(ParentDenyReason::ForbiddenEffect)
         );
+    }
+
+    #[test]
+    fn absent_legacy_effect_map_fails_closed_and_per_name_drift_is_bounded() {
+        let now = 2_000;
+        let snapshot = mint_parent();
+        let mut legacy = snapshot.clone();
+        legacy.eligible_effects.clear();
+        legacy.snapshot_fingerprint = legacy.compute_fingerprint();
+        assert_eq!(
+            legacy.check_tool("read", "read_only", now, "/workspace"),
+            Err(ParentDenyReason::ForbiddenEffect),
+            "a decoded legacy snapshot must not inherit a global effect grant"
+        );
+        assert_eq!(
+            snapshot.check_tool("read", "non_idempotent", now, "/workspace"),
+            Err(ParentDenyReason::ForbiddenEffect),
+            "an eligible name cannot inherit another tool's wider effect"
+        );
+        assert!(snapshot
+            .check_tool("write", "safe_repeat", now, "/workspace")
+            .is_ok());
     }
 
     #[test]
@@ -514,6 +616,19 @@ mod tests {
         );
         // Legacy payloads without the field decode as None at the
         // `Option<String>` layer, not here — documented in task payloads.
+    }
+
+    #[test]
+    fn legacy_snapshot_without_effect_envelope_fails_decode_closed() {
+        let snapshot = mint_parent();
+        let mut payload = serde_json::to_value(snapshot).unwrap();
+        payload
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("eligible_effects");
+        let decoded = decode_parent_authority(&payload.to_string())
+            .expect_err("old snapshots must not decode as a wider grant");
+        assert_eq!(decoded, ParentDenyReason::InvalidParentReceipt);
     }
 
     #[test]

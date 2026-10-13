@@ -59,6 +59,12 @@ instructions into the candidate. See `architecture/agent.md`.
    `src/agent/team.rs` inbox is removed; `task` tool ops address typed
    durable run IDs with bounded payloads. Derive the current action set
    from the tool schema in `src/tool/task.rs` rather than pinning it here.
+8. **Descendant tool authority is checked at the broker.** Workers bind each
+   child snapshot to the child session and workspace after validating parent
+   identity/lineage; every child call checks exact tool name and its pinned
+   broker effect. Register a functional nested `TaskTool` before resolving the
+   child surface, then replace it with the narrowed child snapshot before
+   constructing the loop. Apply the resolved agent's tool permission rules.
 
 ## Orientation Facts
 
@@ -97,6 +103,7 @@ files `src/agent/turn_runtime.rs` and `src/agent/worker.rs` (not all of
 
 ```bash
 cargo test -p codegg agent::
+cargo test -p codegg --test agent_tool_m003_descendant
 cargo test --test agent_convergence
 cargo test --test agent_loop_harness
 cargo test --test tool_program_scenarios  # programmatic tool path through the loop

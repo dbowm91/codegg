@@ -46,16 +46,36 @@ def main() -> int:
     jobs = read("crates/codegg-core/src/jobs/mod.rs")
     executors = read("src/scheduler/executors.rs")
     dispatcher = read("src/job_dispatcher.rs")
+    broker = read("src/tool/broker.rs")
+    authority = read("src/agent/parent_authority.rs")
 
     # 1. Worker enforces the snapshot on child turns.
     for token in (
         "from_registry_with_parent_authority",
         "set_parent_tool_authority",
         "narrow_for_child",
+        "bind_child_workspace_scope",
+        "bind_child_session",
         "StaleGeneration",
     ):
         if token not in worker:
             failures += fail(f"src/agent/worker.rs lacks {token!r}")
+
+    # Functional nested task registration must precede surface resolution,
+    # then be replaced with the narrowed child authority before loop start.
+    candidate_registration = worker.find("tool_registry.register(task_tool.clone())")
+    surface_resolution = worker.find("from_registry_with_parent_authority(")
+    narrowed_registration = worker.find(
+        "tool_registry.register(task_tool.with_parent_tool_authority(child_authority.clone()))"
+    )
+    loop_construction = worker.find("let mut agent_loop = AgentLoop::new(")
+    if not (0 <= candidate_registration < surface_resolution < narrowed_registration < loop_construction):
+        failures += fail(
+            "worker must register functional task before surface resolution and replace it "
+            "with narrowed authority before AgentLoop construction"
+        )
+    if "let mut agent_rules = agent.permission_ruleset()" not in worker:
+        failures += fail("worker does not apply the resolved child agent tool permissions")
 
     # 2. No ambient `None` ceiling in the worker child surface path:
     # the only `None` parent-ceiling call must be outside worker.rs
@@ -89,6 +109,20 @@ def main() -> int:
     for token in ("mint_delegation_ceiling", "child_allowed_tools"):
         if token not in batch:
             failures += fail(f"src/agent/tool_batch.rs lacks {token!r}")
+    context_start = batch.find("pub(super) fn build_tool_execution_context(")
+    context_end = batch.find("// ─── Broker invocation context", context_start)
+    execution_context = batch[context_start:context_end]
+    if "self.parent_tool_authority.clone()" not in execution_context:
+        failures += fail("non-task child calls do not carry inherited parent authority")
+    if "eligible_effects" not in batch or "lookup_contract" not in batch:
+        failures += fail("delegation mint must pin exact per-tool broker contract effects")
+
+    # Broker independently checks the pinned snapshot and current canonical
+    # effect before any tool execution; allowed_tools is name-only.
+    if "parent.check_tool(" not in broker or "check_invocation_session(" not in broker:
+        failures += fail("ToolBroker does not enforce inherited parent authority")
+    if "eligible_effects" not in authority or "contract.effect_class.as_str()" not in broker:
+        failures += fail("per-name effect ceiling is not enforced at broker admission")
 
     # 5. Execution context carries the snapshot (host side only).
     if "parent_tool_authority" not in backend:

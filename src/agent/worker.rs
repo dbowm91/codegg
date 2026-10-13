@@ -1293,6 +1293,12 @@ async fn execute_agent_task(
             }
         };
 
+    let subagent_session_id = request
+        .parent_id
+        .as_ref()
+        .map(|parent_id| format!("{}-sub-{}", parent_id, request.task_id))
+        .unwrap_or_else(|| format!("subagent-{}", request.task_id));
+
     // Nested delegation is opt-in at the resolved agent definition. The
     // shared pool is installed only when the target has an explicit `task`
     // permission and the request did not inherit a task denial.
@@ -1347,7 +1353,7 @@ async fn execute_agent_task(
         let mut task_tool = crate::tool::task::TaskTool::new(
             subagent_pool.task_store(),
             Some(subagent_pool.spawner()),
-            Some(request.parent_id.clone().unwrap_or_default()),
+            Some(subagent_session_id.clone()),
             inherited_denied,
         )
         .with_depth(request.depth)
@@ -1402,13 +1408,21 @@ async fn execute_agent_task(
             Some(groups) => task_tool.with_run_group_service(Some(groups)),
             None => task_tool,
         };
-        // M003: registration is deferred until the validated child
-        // ceiling is known (see below); the narrowed snapshot is
-        // attached first so nested delegation can only shrink.
+        // Make the functional tool visible to surface resolution. At this
+        // point it carries only the already validated parent ceiling; the
+        // worker is not yet running and cannot expose an intermediate
+        // registry to the model. It is replaced with the narrowed child
+        // ceiling before the broker and AgentLoop are constructed.
+        let task_tool = task_tool.with_parent_tool_authority(validated_authority.clone());
+        tool_registry.register(task_tool.clone());
         nested_task_tool = Some(task_tool);
     }
 
-    let mut agent_rules = crate::permission::PermissionRuleset::default();
+    // The resolved agent's tool permissions are part of the child
+    // authorization contract (including explicit `task: allow` for
+    // nested delegation). Merge them with the workspace path envelope
+    // below rather than using role permissions only as a registry hint.
+    let mut agent_rules = agent.permission_ruleset();
     if !request.allowed_paths.is_empty() {
         for path in &request.allowed_paths {
             // Allow the path itself and everything under it
@@ -1490,7 +1504,7 @@ async fn execute_agent_task(
     // M003: narrow the delegation snapshot to this child's effective
     // surface for broker admission and nested delegation. The ancestry
     // upper bound is retained transitively without ever broadening.
-    let child_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot> =
+    let mut child_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot> =
         validated_authority.as_ref().map(|snapshot| {
             let narrowed = snapshot.narrow_for_child(&surface);
             tracing::debug!(
@@ -1536,6 +1550,17 @@ async fn execute_agent_task(
             }
         }
     }
+    if let (Some(authority), Some(workspace_root)) =
+        (child_authority.as_mut(), request.workspace_root.as_ref())
+    {
+        // Workspace containment or durable lineage has been validated
+        // above. Pin broker scope to this actual child root, including an
+        // authorized isolated worktree, before constructing the loop.
+        authority.bind_child_workspace_scope(workspace_root.to_string_lossy().into_owned());
+    }
+    if let Some(authority) = child_authority.as_mut() {
+        authority.bind_child_session(subagent_session_id.clone());
+    }
     if let Some(task_tool) = nested_task_tool {
         tool_registry.register(task_tool.with_parent_tool_authority(child_authority.clone()));
     }
@@ -1559,11 +1584,6 @@ async fn execute_agent_task(
     // global lookup at execution time).
     let mcp_service = search_runtime.mcp();
 
-    let subagent_session_id = request
-        .parent_id
-        .as_ref()
-        .map(|parent_id| format!("{}-sub-{}", parent_id, request.task_id))
-        .unwrap_or_else(|| format!("subagent-{}", request.task_id));
     let subagent_session_id_for_context = subagent_session_id.clone();
     let workspace_root = request
         .workspace_root

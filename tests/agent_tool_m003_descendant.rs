@@ -67,6 +67,11 @@ mod tests {
         workspace: &str,
         mcp_generation: &str,
     ) -> ParentToolAuthoritySnapshot {
+        let eligible_effects = surface
+            .tools
+            .iter()
+            .map(|tool| (tool.canonical_name.clone(), "non_idempotent".to_string()))
+            .collect();
         ParentToolAuthoritySnapshot::mint(ParentAuthorityMintInput {
             parent_session_id: session.into(),
             parent_turn_id: Some("turn-1".into()),
@@ -78,6 +83,7 @@ mod tests {
             plugin_activation_rev: String::new(),
             policy_revision: "config:1".into(),
             max_effect_class: "non_idempotent".into(),
+            eligible_effects,
             now_ms: chrono::Utc::now().timestamp_millis(),
         })
     }
@@ -337,6 +343,7 @@ mod tests {
             plugin_activation_rev: String::new(),
             policy_revision: "config:1".into(),
             max_effect_class: "read_only".into(),
+            eligible_effects: BTreeMap::from([("read".into(), "read_only".into())]),
             now_ms: now,
         });
         assert_eq!(
@@ -618,7 +625,7 @@ mod tests {
         store: &Arc<Mutex<TaskStore>>,
         task_id: u64,
     ) -> codegg::tool::task::SubAgentTask {
-        for _ in 0..400 {
+        for _ in 0..4_000 {
             if let Some(task) = store.lock().await.get_task(task_id).await {
                 match task.status {
                     TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Interrupted => {
@@ -629,7 +636,8 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        panic!("task {task_id} did not finish");
+        let last = store.lock().await.get_task(task_id).await;
+        panic!("task {task_id} did not finish; last state: {last:?}");
     }
 
     fn tool_names(request: &ChatRequest) -> Vec<String> {
@@ -651,7 +659,12 @@ mod tests {
         responses: Vec<Vec<ChatEvent>>,
         workspace: std::path::PathBuf,
         denied: Vec<String>,
-    ) -> (Vec<ChatRequest>, codegg::tool::task::SubAgentTask) {
+    ) -> (
+        Vec<ChatRequest>,
+        codegg::tool::task::SubAgentTask,
+        Arc<Mutex<Vec<ChatRequest>>>,
+        Arc<Mutex<TaskStore>>,
+    ) {
         let pool = crate::common::pool::isolated_pool().await;
         let provider = ScriptedProvider {
             responses,
@@ -708,9 +721,23 @@ mod tests {
             .send_async(request)
             .await
             .expect("spawn");
-        let task = wait_completed(&task_store, created).await;
+        let task = match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_completed(&task_store, created),
+        )
+        .await
+        {
+            Ok(task) => task,
+            Err(_) => {
+                let requests = requests.lock().await;
+                panic!(
+                    "task {created} did not finish; provider requests: {:?}",
+                    requests.iter().map(tool_names).collect::<Vec<_>>()
+                );
+            }
+        };
         let reqs = requests.lock().await.clone();
-        (reqs, task)
+        (reqs, task, requests, task_store)
     }
 
     fn text_finish(text: &str) -> Vec<ChatEvent> {
@@ -718,6 +745,26 @@ mod tests {
             ChatEvent::TextDelta(text.to_string().into()),
             ChatEvent::Finish {
                 stop_reason: "stop".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ]
+    }
+
+    fn nested_spawn_call(workspace: &std::path::Path) -> Vec<ChatEvent> {
+        vec![
+            ChatEvent::ToolCall(codegg::provider::ToolCall {
+                id: Arc::new("nested-task-1".into()),
+                name: Arc::new("task".into()),
+                arguments: serde_json::json!({
+                    "action": "spawn",
+                    "description": "M003 nested child",
+                    "prompt": "complete the nested probe",
+                    "agent": "test-agent",
+                    "allowed_paths": [workspace.to_string_lossy()],
+                }),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
                 usage: TokenUsage::default(),
             },
         ]
@@ -742,7 +789,7 @@ mod tests {
         // enforcement under test, and staleness has its own matrix test.
         let snapshot =
             mint_for_with_generation(parent, "sess-m003-e2e", &workspace.to_string_lossy(), "");
-        let (reqs, task) = spawn_under_ceiling(
+        let (reqs, task, _, _) = spawn_under_ceiling(
             snapshot,
             test_agent("test-agent", false),
             vec![text_finish("done")],
@@ -783,7 +830,7 @@ mod tests {
         let snapshot =
             mint_for_with_generation(parent, "sess-m003-nest", &workspace.to_string_lossy(), "");
         assert!(!snapshot.eligible_tools.contains("task"));
-        let (reqs, task) = spawn_under_ceiling(
+        let (reqs, task, _, _) = spawn_under_ceiling(
             snapshot,
             test_agent("test-agent", true),
             vec![text_finish("no delegation needed")],
@@ -810,6 +857,92 @@ mod tests {
                 "task must never be advertised"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn worker_child_advertises_and_executes_authorized_nested_task() {
+        let workspace =
+            std::env::temp_dir().join(format!("m003-nest-allow-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&workspace);
+        // The host parent surface includes task. The child role also allows
+        // delegation, so its functional TaskTool must be installed before
+        // the child provider surface is resolved.
+        let parent = parent_surface_for(&["read", "task", "tool_search"], &[]);
+        let snapshot = mint_for_with_generation(
+            parent,
+            "sess-m003-nest-allow",
+            &workspace.to_string_lossy(),
+            "",
+        );
+        let (mut reqs, task, live_requests, task_store) = spawn_under_ceiling(
+            snapshot,
+            test_agent("test-agent", true),
+            vec![
+                nested_spawn_call(&workspace),
+                text_finish("grandchild completed"),
+            ],
+            workspace,
+            vec![],
+        )
+        .await;
+        assert_eq!(
+            task.status,
+            TaskStatus::Completed,
+            "child result: {:?}",
+            task.result
+        );
+        let grandchild = wait_completed(&task_store, 2).await;
+        assert_eq!(
+            grandchild.status,
+            TaskStatus::Completed,
+            "grandchild result: {:?}",
+            grandchild.result
+        );
+        for _ in 0..200 {
+            reqs = live_requests.lock().await.clone();
+            if reqs
+                .iter()
+                .any(|request| request_texts(request).contains("complete the nested probe"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!reqs.is_empty(), "child must issue a provider request");
+        assert!(
+            tool_names(&reqs[0]).contains(&"task".to_string()),
+            "authorized child surface omitted task: {:?}",
+            tool_names(&reqs[0])
+        );
+        assert!(
+            tool_names(&reqs[0]).contains(&"tool_search".to_string()),
+            "authorized child surface omitted tool_search: {:?}",
+            tool_names(&reqs[0])
+        );
+        assert!(
+            reqs.len() >= 2,
+            "nested task did not start a grandchild provider turn"
+        );
+        assert!(
+            reqs.iter()
+                .any(|request| request.messages.iter().any(|message| {
+                    matches!(message, codegg::provider::Message::Tool { content, .. }
+                    if content.contains("Subagent spawned for task: M003 nested child"))
+                })),
+            "child provider transcript has no successful nested task result: {:?}",
+            reqs.iter()
+                .flat_map(|request| request.messages.iter())
+                .filter_map(|message| match message {
+                    codegg::provider::Message::Tool { content, .. } => Some(content.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            reqs.iter()
+                .any(|request| request_texts(request).contains("complete the nested probe")),
+            "no grandchild provider request received the nested prompt"
+        );
     }
 
     fn request_texts(request: &ChatRequest) -> String {
@@ -978,7 +1111,7 @@ mod tests {
             mint_for_with_generation(parent, "sess-m003-forge", &workspace.to_string_lossy(), "");
         // Attacker adds `task` but cannot re-mint the fingerprint.
         forged.eligible_tools.insert("task".into());
-        let (reqs, task) = spawn_under_ceiling(
+        let (reqs, task, _, _) = spawn_under_ceiling(
             forged,
             test_agent("test-agent", true),
             vec![text_finish("must never run")],

@@ -10,6 +10,15 @@ tags: [tools, scheduler, execution]
 Production model tool calls enter through `ToolBroker`. Do not add a second
 direct execution path for a tool that the broker already owns.
 
+Every child-loop call carries its worker-bound `ParentToolAuthoritySnapshot`
+to broker admission. The broker checks the current canonical tool name and
+effect against the exact per-name ceiling, bound child session, workspace,
+integrity, and expiry independently of the current grant and `allowed_tools`
+manifest. Old snapshots without a per-name effect envelope fail closed.
+`ProcessExec` still requires the existing sandbox and tool permission gates.
+The snapshot's SHA-256 is an integrity checksum, not sender authentication;
+trust comes from host AgentLoop/TaskTool or scheduler-owned carriage.
+
 Heavy work such as tests, managed processes, subagent dispatch, and tool
 programs is submitted through `JobSubmissionService` to `JobScheduler`.
 Preserve the typed job request, permission decision, cancellation, and durable
@@ -63,3 +72,8 @@ Before editing, read:
 Verify process-spawning changes with `python3 scripts/check_execution_ownership.py`; scheduler changes also require
 `python3 scripts/check_scheduler_bypass.py`. Keep the ownership manifest in
 sync. Skills describe contracts; they do not grant execution permission.
+
+For descendant authority changes, also run
+`python3 scripts/check_descendant_tool_ceiling.py` and the
+`agent_tool_m003_descendant`, `tool_broker_integration`, and `subagent` test
+targets.

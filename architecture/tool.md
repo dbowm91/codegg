@@ -626,6 +626,15 @@ telemetry pipeline); the retired direct `McpService::call_tool` model fork is
 gone. `McpService::call_tool()` remains only for non-model compatibility
 consumers (native eggsearch wrappers).
 
+For model-driven child turns, `BrokerInvocationContext` carries the
+host-pinned parent authority on every tool call. Broker admission checks
+the exact canonical name and current contract effect against the snapshot's
+per-name ceiling before execution, independently of the normal grant,
+sandbox, and approval checks. The worker only exposes nested `task` after
+installing a functional task tool before surface resolution, then replaces
+its candidate authority with the narrowed child snapshot before the loop
+starts.
+
 ### `expose_in_definitions` Filtering
 
 `Tool::expose_in_definitions()` (default `true`) is the model-facing

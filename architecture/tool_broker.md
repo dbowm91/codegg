@@ -63,7 +63,7 @@ AgentLoop / Tool Program
 | `ToolContractCatalog` | `src/tool/contract.rs:471` | Pre-built HashMap of tool contracts |
 | `ToolBroker` | `src/tool/broker.rs:495` | Execution pipeline: catalog, config, optional artifact store |
 | `ToolBrokerConfig` | `src/tool/broker.rs:40` | `default_timeout_ms`, `max_input_bytes`, `max_output_display_bytes`, `max_output_bytes` |
-| `BrokerInvocationContext` | `src/tool/broker.rs:72` | Rich caller context with 21 fields: `caller`, `cwd`, `session_id`, `workspace_id`, `agent_id`, `turn_id`, `job_id`, `attempt_id`, `permission_mode`, `timeout_ms`, `submission_key`, `authority`, `cancellation`, `deadline`, `principal_ref`, `workspace_path_policy_id`, `allowed_tools`, `parent_tool_authority` (M003 descendant ceiling, forwarded into the inner execution context for `task` delegation), `current_policy_revision`, `execution_audit`, `audit_emitter` |
+| `BrokerInvocationContext` | `src/tool/broker.rs:72` | Rich caller context with 21 fields, including `allowed_tools` and `parent_tool_authority` (the inherited child ceiling checked for every child invocation and forwarded to `task` for further narrowing) |
 | `BrokerAuthority` | `src/tool/broker.rs:163` | `Unverified` / `Verified { grant: ToolAuthorityGrant }` |
 | `BrokerResult` | `src/tool/broker.rs:440` | Typed result with contract, invocation_id, elapsed_ms |
 | `BrokerError` | `src/tool/broker.rs:1281` | `NotFound` / `NoContract` / `CallerDenied` / `InputTooLarge` / `Execution` / `AuthorityError` |
@@ -117,12 +117,18 @@ This ensures existing tools work without modification.
    session binding, permission mode, principal, and path policy
    (9 dimensions). Manifest, contract snapshot, and policy revision
    are verified conditionally for programmatic callers.
-   **Descendant ceiling (M003)**: agent child loops bind
-   `allowed_tools` to the validated parent eligible set, so the
-   manifest check denies any child tool outside the pinned ceiling —
-   including tools injected after child launch. The delegation
-   snapshot itself travels in `parent_tool_authority` into the inner
-   execution context for `task` delegation end to end.
+   **Descendant ceiling (M003)**: agent child loops bind `allowed_tools`
+   to the validated parent eligible set, and the broker independently
+   validates `parent_tool_authority` on every child call. It checks
+   integrity, expiry, worker-bound child session/workspace, exact
+   canonical name, and the pinned per-name maximum effect against the
+   current broker contract before execution. Missing effect entries fail
+   closed, including on older serialized payloads. The same snapshot reaches
+   `task` for re-narrowing.
+   Its SHA-256 is an unkeyed integrity checksum; authenticity comes from
+   host-owned AgentLoop/TaskTool or scheduler payload carriage, not a
+   cryptographic sender signature. The independent grant effect check,
+   sandbox, and tool-specific approvals remain in force.
    `allowed_effect_class` is a **ceiling**, not an exact-match label:
    the check is `tool_class.severity() <= grant_ceiling.severity()`,
    ordered `read_only < read_validate < safe_repeat < idempotent_mutating

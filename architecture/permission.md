@@ -317,6 +317,12 @@ Modes are activated via `[mode.review]` (etc.) in config; the
 permission checker merges mode rules into agent-level rules via
 `with_active_mode()`.
 
+Child workers seed `PermissionChecker::with_agent_rules()` from the resolved
+agent's `permission_ruleset()` and then add the request's workspace path
+envelope. An explicit `task: allow` therefore governs the nested tool's real
+invocation as well as whether the worker constructs its functional
+`TaskTool`; registry eligibility alone does not grant permission.
+
 ### PermissionRegistry (`crates/codegg-core/src/bus/mod.rs:88`)
 
 The ask-response broker. **All methods are synchronous (`fn`), NOT
