@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active (planning; ADR-0024 accepted; M001 ready for handoff)
+Status: active (planning; ADR-0024 accepted; M001 ready as three ordered correctives; M002/M003 dependency-blocked)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -19,7 +19,7 @@ Make command risk classification a non-authoritative approval signal and make au
 
 Invariants: operator and parent/child Deny/ceiling never lifted by syntax, classifier miss or routing; approval never counts as OS isolation; required unavailable confinement fails before target; no trusted Git metadata code execution in elevated context; no unbounded secret-bearing logs.
 
-Capabilities: legitimate shell/wrapper/script and Git requests reach the correct review/contained route rather than arbitrary prefix denials; users can explain approval vs kernel denial; operator-selected textual pattern preferences remain supported but are explicitly best-effort.
+Capabilities: ordinary in-scope developer operations (inspection, formatting, builds, tests, linters, scripts, ordinary workspace cleanup) run with minimal user prompting inside their already-authorized sandbox; new authority, explicit operator Ask/Deny, invalid requests and missing required enforcement remain subject to correct typed decisions. Legitimate shell/wrapper/script and Git requests reach the proper review/contained route rather than arbitrary prefix denials; operator-selected textual preferences remain best-effort.
 
 Infrastructure: consolidated authorization-vs-advisory disposition, typed reason/provenance, consistent approval precedence/route context and effect-equivalence test harness.
 
@@ -46,6 +46,15 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 ## 6. Dependency graph
 
+### M001 internal handoff ordering — avoid a permissive-but-incorrect policy
+
+- **M001 C001** `plans/implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md`: **ready**. First fix config catch-all rule shadowing, explicit scoped Deny precedence and persisted first-token approval reuse for compound shell. This is the release-blocking correctness gate.
+- **M001 C002** `plans/implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md`: blocked on C001 closure. Reclassify built-in syntax-only hard blocks, classifier critical severity and Eggsact command-preflight "high risk" as advisory, while preserving explicit operator Deny, deterministic invalidity and existing human-shell behavior.
+- **M001 C003** `plans/implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md`: blocked on C001/C002 closure. Qualify everyday developer workflow behavior with an exact-revision corpus, prompt counts, routing, obtained filesystem isolation, explicit Deny/Ask preservation and honest network limitations. Ordinary Bash syntax alone is not an escalation signal.
+- The parent M001 must not close until all three C001–C003 evidence records and the original inventory criteria pass. This sub-slicing **does not** promote C001–C003 into new Linux execution milestones or re-open historical Linux Git C001 closure. M002 cross-tool routing still depends on parent M001, not on Linux backend promotion.
+
+### Existing workstream dependencies
+
 - M001 Syntax-only blocker audit and policy classification: **ready**; hard dependency ADR-0024 accepted; interface independent of Linux feature rollout.
 - M002 Reviewer/preflight/permission/route convergence: **blocked hard M001**; `ApprovalRouter` and `ExecutionPolicySnapshot` existing interfaces are stable.
 - M003 Cross-tool effect-equivalence/observability qualification: **blocked hard M002**; OS-level native Linux test availability is an **operational** evidence dependency, not a license to weaken launch.
@@ -57,7 +66,10 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 | ID | Class | Handoff | Status | Exit |
 |---|---|---|---|---|
-| M001 | invariant | `implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md` | ready | Syntax-only builtins classified/advisory; explicit admin text filters preserved; FullHost warnings and safeguards truthful |
+| M001 | invariant | `implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md` | ready, sliced C001–C003 | Permission matching and narrow grants correct, built-in syntax signals advisory, routine developer work low-friction; explicit rules and FullHost warnings truthful |
+| M001 C001 | invariant | `implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md` | **ready** | Specific configured rules not shadowed; compound commands cannot reuse a first-token grant |
+| M001 C002 | invariant | `implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md` | blocked: C001 | No built-in syntax-only hard denial; risk classifier and command preflight advisory, explicit user policy intact |
+| M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | blocked: C001/C002 | Everyday coding commands low-friction with zero unnecessary **syntax-caused** prompts inside authorized sandbox; exact native limitations recorded |
 | M002 | infrastructure | `implementation/command-authorization-and-execution-boundaries/002-approval-preflight-and-routing-convergence.md` | blocked: M001 | one approval precedence and execution ceiling across shell/typed tools; denied capability cannot be laundered |
 | M003 | invariant | `implementation/command-authorization-and-execution-boundaries/003-equivalent-effects-and-execution-observability.md` | blocked: M002 | equivalent forbidden effects cannot bypass actual enforcement by changing invocation surface; transparent unknown/unsupported |
 
@@ -75,6 +87,10 @@ Documentation: `architecture/permission.md`, `architecture/security.md`, `archit
 
 ## 9. Verification strategy
 
+The acceptance corpus must include routine developer requests and realistic shell compositions, not only catastrophic regex triggers. Test `cargo fmt/check/test/clippy`, `uv run pytest`, `ruff`, `python -c`, `npm/pnpm/yarn`, `go test`, `make/just`, `git status/diff`, in-workspace `mkdir/rm -rf target`, `env VAR=...`, `bash -c`, basic pipelines and quoted substitutions. In a session already authorized for the scoped workspace and action, measure **zero unnecessary prompts caused solely by shell syntax**; account separately for deliberate `default=ask`, explicit configured Ask, legitimate destructive risk, missing Git contained backend, ungranted network/credentials or real capability violations. The goal is a usable coding assistant, not unconditional approval by executable-name prefix. Current Linux Landlock-only networking and Unix IPC remain unrestricted; no optional offline promise may appear until a real backend is qualified.
+
+
+
 Use paired same-effect shell/wrapper/script/Python/native binary/typed Git fixtures with synthetic secrets and marker files. Verify real filesystem read/write, outside-workspace denial, offline TCP/UDP, Git trusted metadata hijack, intentionally destructive allowed-workspace change, and explicit operator preferences. Test on exact native kernel where guarantees claimed; unsupported/partial host reports unavailable and no target marker for required mode. Verify approval matrix including protected child agent ceilings, Automatic and Yolo and no double approval on reroute. Run focused tests, static guards and `scripts/verify.sh quick` with closure matrix; avoid routine CI bloat.
 
 ## 10. Risks
@@ -86,8 +102,8 @@ Use paired same-effect shell/wrapper/script/Python/native binary/typed Git fixtu
 
 ## 11. Completion
 
-No normative security claim relies on command-name/text patterns. Explicit real Deny and execution ceilings survive alternate tool routes; operator selected command-text controls remain functional and clearly labeled. Legitimate workflows are not unnecessarily made opaque; outcomes and obtained containment are truthful. Native adversarial and standard regression evidence recorded in all three closure records.
+No normative security claim relies on command-name/text patterns. Explicit Deny and execution ceilings survive alternate tool routes; operator-selected command-text controls remain functional and labeled. Parent M001 closes only after its C001–C003 exact-revision closure evidence including the routine-command friction baseline and post-change counts. Legitimate coding workflows execute without syntax-induced obstruction under existing authority, while true extra authority remains separately granted. Native adversarial and standard regression evidence record obtained containment, not imagined network/IPC restriction.
 
 ## 12. Status
 
-M001 ready for handoff; M002 blocked on M001; M003 blocked on M002. Linux C001 typed Git corrective may proceed once M001 classification interface is stable. Linux enhanced backend is not yet implemented.
+M001 ready with C001 first; C002 blocked on C001; C003 blocked on C001/C002. M002 blocked on parent M001; M003 blocked on M002. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim.

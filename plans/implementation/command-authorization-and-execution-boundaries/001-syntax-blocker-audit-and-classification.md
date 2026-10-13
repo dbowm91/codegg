@@ -68,3 +68,15 @@ All built-in syntax hard denials in the inventory either become advisory or are 
 ## 10. Stop conditions
 
 Stop for loss of explicit Deny precedence, unconditional host execution from missing sandbox, unreviewed migration of persisted user preferences, unverified approval ordering or a classifier-specific policy path that can grant authority. Do not "fix" a failed test by changing the workspace sandbox profile.
+
+## 11. 2026-10-13 research addendum — ordinary coding workflows as the default UX
+
+The implementation is now split into three registered correctives while retaining this parent M001 invariant:
+
+1. **C001 permission precedence and saved-grant scope:** `004-m001-permission-precedence-and-scope-corrective.md` (**ready**). Fix the `config_ruleset` specific Bash pattern vs catch-all order: `find_tool_rule_with_args` currently visits the catch-all first. Prevent a saved `cmd:cargo` Allow from silently covering a compound `cargo test; other-script`. Preserve explicit user Deny and signed persisted decision compatibility.
+2. **C002 builtin classification/preflight:** `005-m001-advisory-policy-and-preflight-corrective.md` (hard: C001). Reconcile Bash hard regex/literal denials, `SecurityService` critical-risk heuristic denial and Eggsact `command_preflight` high-risk block. Explicit user-selected text denials and actual invalid tool contracts remain enforceable as their appropriate narrow controls. Do not change independent human shell semantics without separate approval.
+3. **C003 normal developer friction qualification:** `006-m001-developer-workflow-friction-qualification.md` (hard: C001/C002). Validate everyday Rust/Python/JS/Go/build/test/format/lint, shell wrappers and local workspace cleanup. In an already-authorized workspace session, shell grammar alone does not trigger repeated approvals. New network, credential, host scope, protected Git or unsupported backend authority remains an actual separate request.
+
+**Default-product norm:** permission to perform routine work derives from an actual authorized workspace and approval context, not from command-name safety claims or a vast static allowlist. Do not auto-approve everything simply because `cargo`, `python`, `make` or `npm` is argv0: build/test scripts can run arbitrary repository code. Avoid moving a synthetic blocklist into a different parser and calling that sandboxing. An opted-in strict operator preference may intentionally prompt more; preserve it and report that choice honestly.
+
+**Required closure evidence:** explicit Deny-vs-catchall and persisted compound grant tests, default-vs-explicit `deny_critical_commands` compatibility assessment, ordinary command prompt-count corpus, one logical review per tool invocation, human-shell nonregression, FullHost/YOLO warnings, and actual Linux Landlock-only limitations. Parent M001 closure is blocked until C001–C003 close; M002 routing is not independently promoted as a workaround. No production implementation or tests were performed in the planning pass.
