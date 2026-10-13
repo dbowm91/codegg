@@ -1,6 +1,6 @@
 # Windows Native Sandbox C027 — Restricted Primary-Token Win32 Interop Corrective
 
-Status: active (bounded test-only feasibility corrective)
+Status: implemented; closed (negative bounded feasibility)
 
 Baseline: `ba04a4875587cd689220267a8ede419f9d2f5f81` on `work/windows-native-sandbox-foundation`; 2026-10-13.
 
