@@ -47,6 +47,12 @@ C030 and C031 are therefore terminally blocked as unselected alternatives. This 
 
 Broker path adds Windows service privilege and untrusted IPC authorization surface; guest path adds virtualization/edition, single-instance or VM pooling, data-copy and output-promotion complexity. The current `Required` fail-closed behavior remains mandatory. No production binary, protocol, schema, user setting, installer, account or ACL change is authorized by this rejected ADR.
 
+## Subsequent independent feasibility decision (ADR-0022; 2026-10-13)
+
+A later research comparison identified a **third** process-launch topology not decided by ADR-0021: a fixed, non-elevated runner first launched *as the sandbox account* by `CreateProcessWithLogonW`, which then restricts its own primary token and uses `CreateProcessAsUserW`. Codex and Anthropic use this pattern; Microsoft explicitly documents an exception to `SE_ASSIGNPRIMARYTOKEN_NAME` for a restricted version of the caller's primary token. This does not establish Codegg security or solve potential quota/toolchain problems. See `plans/adrs/ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` and its C032/C033/C034 **test-only** research plans.
+
+**ADR-0021's rejection remains unchanged:** C030 elevated SCM broker and C031 guest stay terminally blocked and unselected; C029 closure remains no-admission. No production Windows constrained execution, source ACL mutation, or new `Enforced` security guarantee follows from the successor feasibility decision.
+
 ## Supporting authoritative references
 
 - https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw

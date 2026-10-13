@@ -16,6 +16,7 @@ Related ADRs:
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
 - `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md` (accepted: bounded feasibility direction only; production not approved)
+- `plans/adrs/ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` (accepted: test-only parallel C032/C033 successor feasibility and C034 comparison; no backend admission)
 - `plans/adrs/ADR-0020-windows-native-sandbox-after-appcontainer-feasibility.md` (accepted: bounded C019–C022 candidate comparison only; no production backend)
 
 Repository research baseline: `8e9d8b01e5c229715c8e4dea929e050b391e252c` (2026-10-10). This roadmap does not claim Windows execution or native security tests have already been qualified.
@@ -176,6 +177,18 @@ Decision `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` i
 
 **Dependency classes:** C027 negative historical evidence is not a successful launcher; C028's pre-user-entry timeout result informed C029, which is now closed as no-admission. Rejected ADR-0021 leaves C030/C031 terminally blocked and unselected. These paths remain **mutually exclusive** and neither is eligible. No automatic C025/C026 reopening or C011/M004–M006/C015–C018 unblocking, no Windows production `Required` or filesystem/network `Enforced`.
 
+## ADR-0022 bounded successor feasibility
+
+**New independent decision, not a retroactive reversal:** ADR-0022 accepts only C032/C033 *test-only* experiments and their C034 comparison, after reviewing public two-hop dedicated-account designs and Microsoft's caller-restricted-token privilege exception. ADR-0021/C029 remain rejected/no-admission for the privileged SCM broker or Windows guest; C030/C031 stay terminally blocked and unselected. C024–C028 historical failures remain immutable. This is the first explicitly registered non-SCM, non-guest **runner-as-sandbox-account** experiment; do not treat it as an already tested topology.
+
+- **C032 — ready for implementation, native operationally gated:** `plans/implementation/windows-native-sandbox/032-two-stage-dedicated-principal-read-confinement-feasibility.md`. Reuse C021's positive first-hop identity and C019 oracle; a trusted helper **as the sandbox account** restricts its own primary token and attempts to launch a real read-restricted child. Same-file broad-group ordinary-read positive vs restricted-read denied, Git/native shell, handles/IPC/alias/Job verification. Disposable operator-consented Windows fixture only; no service/installer/product integration.
+- **C033 — ready for implementation, native operationally gated:** `plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md`. Independently pin MXC successor version and serviced Windows 11 tier, use deny-and-record if supported, diagnose C020 toolchain failures and complete actual-child access/handle checks; no permissive audit counts as security.
+- **C034 — blocked on C032/C033 written outcomes:** `plans/implementation/windows-native-sandbox/034-independent-successor-comparison-and-capability-decision.md`. Can close no-admission on negatives/blocked; positive *future production proposal* requires independent review. Separate obtained read, write, credential, process and network dimensions; weaker write-only mode would require an additional explicit policy/approval ADR, **not** a silent change to existing `ReadOnly`/`WorkspaceWrite`.
+
+**Dependencies:** ADR-0022 accepted + C019 closed (hard) → C032/C033 in parallel (operational: appropriate native VM/Windows build/consent) → C034 hard-depends on written candidate dispositions. This does not unblock C011/M004–M006/C015–C018; any production candidate requires a further independently accepted integration ADR, native security/lifecycle/host-matrix requalification and new implementation plans.
+
+**Current production truth:** Windows `SandboxRequest::Required` remains unavailable; no filesystem/network `Enforced`, no FullHost fallback, no original-host ACL mutation or unqualified automatic production sandbox. A green test-only workflow is not proof of security admission.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -246,6 +259,9 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C027 | closed (negative bounded feasibility) | `plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md` | `plans/closure/windows-native-sandbox/027-status.md` | Corrected Unicode interop; no unrestricted token-taking child control; no restricted-token read result; Windows production admission unavailable |
 | C028 | conditionally closed (negative hosted phase; privileged VM comparison blocked) | `plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md` | `plans/closure/windows-native-sandbox/028-status.md` | Run `38396698509`, SHA `33c82f56`: four profile/CRT combinations timed out before user entry; token, session, Job and suspend count were verified. No child context or restricted read proof. |
 | C029 | closed (no admission) | `plans/implementation/windows-native-sandbox/029-broker-vs-guest-architecture-decision.md` | `plans/closure/windows-native-sandbox/029-status.md` | ADR-0021 rejected; Windows constrained execution unavailable |
+| C032 | ready (test-only; native host/consent operational gate) | `plans/implementation/windows-native-sandbox/032-two-stage-dedicated-principal-read-confinement-feasibility.md` | — | ADR-0022 accepted; C019/C021 closed; no two-hop native security evidence yet |
+| C033 | ready (test-only; serviced Windows 11 operational gate) | `plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md` | — | ADR-0022 accepted; C019/C020 evidence; MXC SDK/tier/toolchain qualification not yet run |
+| C034 | blocked | `plans/implementation/windows-native-sandbox/034-independent-successor-comparison-and-capability-decision.md` | — | Requires written C032 and C033 dispositions and independent security review before any positive proposal |
 | C030 | blocked (terminal — broker unselected) | `plans/implementation/windows-native-sandbox/030-consented-privileged-broker-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and consented isolated Windows VM |
 | C031 | blocked (terminal — guest unselected) | `plans/implementation/windows-native-sandbox/031-windows-guest-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and supported isolated virtualization host |
 | C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 closed negative; requires an accepted successor architecture decision and a newly qualified strict-positive feasibility gate |
