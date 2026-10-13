@@ -30,6 +30,8 @@ pub struct AgentLoopBuildInput {
     pub workspace_service_lease: Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    pub job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     /// M003: resolved effective approval mode for this turn. `None` means
     /// the `Interactive` default; daemon turns resolve the persisted
     /// principal preference before construction.
@@ -79,6 +81,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     agent_loop.set_task_state_policy(input.task_state_policy);
     if let Some(svc) = input.notification_service {
         agent_loop.set_notification_service(svc);
+    }
+    if let Some(svc) = input.job_notification_service {
+        agent_loop.set_job_notification_service(svc);
     }
     if let Some(mode) = input.approval_mode {
         agent_loop.set_approval_mode(mode);

@@ -372,6 +372,27 @@ persisted on the attempt. If RunStore begin fails, the job/attempt
 record is kept and a structured persistence warning is recorded — the
 process is never retried solely to obtain a `RunId`.
 
+### Background jobs and terminal notices (M001)
+
+`test.execution_mode=background` submits the same canonical `JobKind::Test`
+through `JobSubmissionService` with a `SubmissionKey test-bg:<digest>` (same
+key + same fingerprint reuses the job; same key + different payload
+conflicts; distinct calls stay distinct), then durably subscribes
+`(job_id, session, turn, invocation_key)` before returning a stable
+`JobHandle { job_id, kind, status, submitted_at, inspect_ref, cancel_ref }`.
+Foreground behavior is unchanged. Background requires a real
+host-originated session context or fails without spawning.
+
+One `JobTerminalNotice` per subscribed job is persisted from the final
+outcome only (`Completed|Failed|Cancelled|TimedOut|Expired`; `Interrupted`
+is retryable, never final). The notice carries kind, status, bounded
+summary (2,048 chars), and RunStore link — never stdout dumps or secrets.
+The `job` model tool (`status|wait|cancel|output`) reuses the
+`JobGet/JobWait/JobCancel` authority plus exact-owner session scope;
+`wait` timeout means still-running. See `architecture/scheduler.md`
+"Generic job terminal notices" and `architecture/authorization.md" for the
+owner rule.
+
 ### Boundary Enforcement
 
 `crates/codegg-core/src/jobs/` is UI-, server-, plugin-, and auth-free:

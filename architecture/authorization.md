@@ -69,6 +69,13 @@ in-memory daemons without a pool decide under the same broad policy.
   session). `lsp_preview_apply` uses this scope so team authorization
   resolves through the owning session project before checked mutation.
 - `via_job` — `job_id` locator resolved through the job's session.
+- `job exact-owner` (M001) — the `job` model tool adds a session-equality
+  check on top of `via_job`: the caller's `ToolExecutionContext.session_id`
+  must equal the job/notice owning session. Knowledge of a `JobId` alone
+  confers no rights; forged session/turn, guessed ids, and second-principal
+  access return the same denied message as not-found without leaking
+  existence. Authorized callers cannot choose untrusted session/turn ids;
+  background lineage is host-resolved, never model-supplied.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed

@@ -183,7 +183,7 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell
-        "bash" | "terminal" | "test" | "python_script" => ToolCategory::ShellExec,
+        "bash" | "terminal" | "test" | "python_script" | "job" => ToolCategory::ShellExec,
         // Explicit checked LSP preview application is a filesystem
         // mutation; keep the semantic map named and aligned with the tool
         // contract rather than relying on the conservative fallback.

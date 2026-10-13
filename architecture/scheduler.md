@@ -466,6 +466,21 @@ durable queued jobs. Schedule occurrence uniqueness is enforced by
 to `ScheduleStore`, while standalone compatibility task loops remain
 explicitly outside daemon guarantees.
 
+### Generic job terminal notices (M001)
+
+`src/scheduler/job_notifications.rs` owns one logical notice per
+subscribed background job (`notice_id = job_id`). The scheduler holds an
+optional `JobNotificationService` (installed by the daemon turn runtime);
+after every durable terminal transition — executor completion,
+unschedulable validation failure, and queued cancellation — it attempts
+one idempotent `record_terminal` for explicitly subscribed jobs only.
+`Interrupted` never notifies; running/progress and wait timeouts are not
+terminals. Notification failure never fails the job; `recover_from_store`
+backfills completion-before-subscribe and restart gaps. Delivery uses the
+same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
+mechanics as Tool Program M017, with a separate `job_notification` /
+`job_background_subscription` table pair (migration v73).
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:

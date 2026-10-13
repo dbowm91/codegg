@@ -100,6 +100,8 @@ pub(super) struct AgentLoopServices {
     pub(super) tool_broker: Arc<crate::tool::ToolBroker>,
     pub(super) notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    pub(super) job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     pub(super) run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
     pub(super) goal_store: Option<Arc<crate::goal::GoalStore>>,
     pub(super) habit_store: Option<Arc<codegg_core::memory::habit::HabitStore>>,

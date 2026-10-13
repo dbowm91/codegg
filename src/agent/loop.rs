@@ -373,6 +373,7 @@ impl AgentLoop {
                 runtime_asset_pin: None,
                 tool_broker,
                 notification_service: None,
+                job_notification_service: None,
                 run_control: None,
                 goal_store: pool
                     .as_ref()
@@ -501,6 +502,14 @@ impl AgentLoop {
         service: Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>,
     ) {
         self.services.notification_service = Some(service);
+    }
+
+    /// Set the generic job notification service (M001).
+    pub fn set_job_notification_service(
+        &mut self,
+        service: Arc<crate::scheduler::job_notifications::JobNotificationService>,
+    ) {
+        self.services.job_notification_service = Some(service);
     }
 
     /// Build a `ProjectionConfig` from the loaded `[context]` config section.

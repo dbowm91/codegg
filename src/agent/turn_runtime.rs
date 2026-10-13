@@ -257,6 +257,21 @@ impl TurnRuntime for DefaultTurnRuntime {
         if let Err(error) = notification_service.recover_from_pool().await {
             tracing::warn!(error = %error, "failed to recover tool-program notifications");
         }
+        // M001: generic job terminal notices share the daemon pool.
+        let job_notification_service = Arc::new(match pool.clone() {
+            Some(pool) => {
+                crate::scheduler::job_notifications::JobNotificationService::with_pool(pool)
+            }
+            None => crate::scheduler::job_notifications::JobNotificationService::new(),
+        });
+        // Install the service on the scheduler so every durable terminal
+        // transition attempts one idempotent notice for subscribed jobs.
+        if let Some(submission) = submission.clone() {
+            submission
+                .scheduler()
+                .set_job_notification_service(job_notification_service.clone())
+                .await;
+        }
         let workspace_locks = workspace_service_lease.as_ref().map(|lease| lease.locks());
 
         // ── Provider resolution ──────────────────────────────────────
@@ -385,6 +400,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 repository_id,
                 turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
+                job_notification_service: Some(job_notification_service.clone()),
                 workspace_locks,
                 lsp_service: lsp_service.clone(),
                 document_service,
@@ -753,6 +769,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             execution,
             workspace_service_lease,
             notification_service: Some(notification_service),
+            job_notification_service: Some(job_notification_service),
             approval_mode,
             sandbox_profile,
             credential_observer,

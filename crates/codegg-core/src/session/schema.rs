@@ -238,6 +238,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 72 {
         migrate_and_record(pool, 72).await?;
     }
+    if current_version < 73 {
+        migrate_and_record(pool, 73).await?;
+    }
 
     Ok(())
 }
@@ -322,6 +325,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             70 => migrate_v70(&mut tx).await?,
             71 => migrate_v71(&mut tx).await?,
             72 => migrate_v72(&mut tx).await?,
+            73 => migrate_v73(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2898,6 +2902,69 @@ async fn migrate_v71(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Async background jobs M001: durable generic job background subscriptions
+/// and terminal notifications.
+///
+/// Two additive tables, mirroring the Tool Program `tool_program_notification`
+/// shape without mutating its IDs or rows (M017 stays authoritative):
+///
+/// - `job_background_subscription`: one row per explicitly subscribed
+///   background job, written after durable job acceptance and before the
+///   `JobHandle` is returned. Foreground or historic jobs never gain rows
+///   here, so they can never retroactively create action items.
+/// - `job_notification`: one row per logical terminal (`notice_id = job_id`),
+///   with CAS claim/ack state, bounded payload, and durable injection key.
+///
+/// No historical job row is backfilled: absent subscription means "not a
+/// background job", which is exactly the pre-M001 behavior.
+async fn migrate_v73(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS job_background_subscription (
+            job_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            invocation_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_background_subscription_session ON job_background_subscription(session_id, created_at)",
+        r#"
+        CREATE TABLE IF NOT EXISTS job_notification (
+            notice_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            run_id TEXT,
+            payload_digest TEXT NOT NULL,
+            state TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            claim_owner TEXT,
+            claim_lease_until INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            delivered_at INTEGER,
+            injection_key TEXT NOT NULL,
+            injected_event_id TEXT,
+            UNIQUE(job_id, notice_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_notification_session ON job_notification(session_id, state, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_job_notification_job ON job_notification(job_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
     Ok(())
 }
 

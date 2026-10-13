@@ -34,6 +34,8 @@ pub struct SessionToolContext {
     pub runtime_assets: RuntimeAssetContext,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    pub job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// Daemon-resolved LSP service shared by prompt context collection and
     /// the model-facing LSP tool. `None` preserves explicit unavailable
@@ -103,6 +105,7 @@ pub fn build_session_tool_registry(
         turn_id,
         runtime_assets: asset_context,
         notification_service,
+        job_notification_service,
         workspace_locks,
         lsp_service,
         document_service,
@@ -186,6 +189,7 @@ pub fn build_session_tool_registry(
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
         notification_service,
+        job_notification_service,
         search_runtime,
         research_provider,
         research_model,

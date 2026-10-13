@@ -28,22 +28,41 @@ impl AgentLoop {
     /// Recovery for cross-process crashes is delegated to
     /// [`crate::agent::tool_program_recovery::inject_recoverable_notifications`].
     pub(super) async fn inject_pending_notifications(&self, messages: &mut Vec<Message>) {
-        let Some(ref svc) = self.services.notification_service else {
-            return;
-        };
-        let report = crate::agent::tool_program_recovery::inject_recoverable_notifications(
-            self.services.event_store.as_deref(),
-            svc,
-            &self.session_id,
-            |text| {
-                messages.push(Message::System {
-                    content: std::sync::Arc::new(text),
-                });
-            },
-        )
-        .await;
-        for error in &report.errors {
-            tracing::error!(%error, "Tool Program notification recovery error");
+        if let Some(ref svc) = self.services.notification_service {
+            let report = crate::agent::tool_program_recovery::inject_recoverable_notifications(
+                self.services.event_store.as_deref(),
+                svc,
+                &self.session_id,
+                |text| {
+                    messages.push(Message::System {
+                        content: std::sync::Arc::new(text),
+                    });
+                },
+            )
+            .await;
+            for error in &report.errors {
+                tracing::error!(%error, "Tool Program notification recovery error");
+            }
+        }
+        // M001: generic job terminal notices share the same safe-boundary
+        // injection. No consumption-only toast: every notice becomes one
+        // durable session event plus one system message at the next turn.
+        if let Some(ref svc) = self.services.job_notification_service {
+            let report =
+                crate::agent::job_notification_recovery::inject_recoverable_job_notifications(
+                    self.services.event_store.as_deref(),
+                    svc,
+                    &self.session_id,
+                    |text| {
+                        messages.push(Message::System {
+                            content: std::sync::Arc::new(text),
+                        });
+                    },
+                )
+                .await;
+            for error in &report.errors {
+                tracing::error!(%error, "Job notification recovery error");
+            }
         }
     }
 

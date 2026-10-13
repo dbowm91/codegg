@@ -34,6 +34,7 @@ pub mod grep;
 pub mod image;
 pub mod integrated_config;
 pub mod invalid;
+pub mod job;
 pub mod list;
 pub mod lsp;
 pub mod lsp_preview_apply;
@@ -359,6 +360,11 @@ pub struct ToolRegistryOptions {
     /// Optional notification service for background tool program completions.
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    /// Optional daemon-owned generic job notification service
+    /// (async-background-jobs M001). When `Some`, `test` background mode
+    /// and the `job` control tool are enabled.
+    pub job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     /// Explicit runtime-owned search/MCP services for search/evidence
     /// wrapper tools (M005). When `None`, wrappers receive an isolated
     /// default context (default config, no shared service). Production
@@ -771,7 +777,25 @@ impl ToolRegistry {
         } else {
             test_tool
         };
+        let test_tool = if let Some(ref svc) = options.job_notification_service {
+            test_tool.with_job_notifications(svc.clone())
+        } else {
+            test_tool
+        };
         registry.register(test_tool);
+        // M001: bounded job status/wait/cancel/output adapter. Same auth as
+        // CoreRequest::JobGet/JobWait/JobCancel plus exact-owner session
+        // scope; knowledge of a JobId alone confers no rights.
+        {
+            let mut job_tool = crate::tool::job::JobTool::new();
+            if let Some(submission) = options.submission.clone() {
+                job_tool = job_tool.with_submission(submission);
+            }
+            if let Some(ref svc) = options.job_notification_service {
+                job_tool = job_tool.with_notifications(svc.clone());
+            }
+            registry.register(job_tool);
+        }
         // Python execution is scheduler-owned like every other heavy surface.
         // Without the submission service PythonScriptTool::execute fails
         // closed with ToolError::Disabled, so omitting this made the tool
@@ -1229,6 +1253,7 @@ impl ToolRegistry {
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,
+            job_notification_service: None,
             search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
                 &config.search.clone().unwrap_or_default(),
             )),
@@ -1283,6 +1308,7 @@ impl ToolRegistry {
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,
+            job_notification_service: None,
             search_runtime: None,
             research_provider: None,
             research_model: None,
