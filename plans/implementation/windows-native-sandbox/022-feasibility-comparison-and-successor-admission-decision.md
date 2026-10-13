@@ -1,6 +1,6 @@
 # Windows Native Sandbox C022 — MXC Versus Dedicated Principal Disposition and Successor Gate
 
-Status: blocked (hard: C020 and C021 written candidate dispositions, and C019 common probe closure)
+Status: conditionally closed (insufficient evidence for production admission; bounded comparison and explicit successor gate recorded)
 Date: 2026-10-12
 Primary class: infrastructure / security feasibility
 Objective: Compare both native candidate experiments against identical security/compatibility criteria, choose a next integration planning direction or explicitly retain Windows constrained unavailability.

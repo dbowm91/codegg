@@ -1,6 +1,6 @@
 # Windows Native Sandbox C021 — Dedicated Windows Principal Native Feasibility
 
-Status: active (C019 shared oracle accepted; disposable GitHub-hosted Windows VM authorized)
+Status: conditionally closed (bounded dedicated-principal matrix passed; operational lifecycle, independent review and network qualification remain outstanding)
 Date: 2026-10-12
 Primary class: infrastructure / security feasibility
 Objective: Independently prove or reject a separately provisioned Windows principal with narrow staging access, useful native developer tools, real denied host reads/writes and controlled process lifecycle.
