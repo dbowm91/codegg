@@ -204,6 +204,8 @@ fn run() {
                 "marker",
                 "child-proof",
             ) && proof["secret_match"] == true
+                && proof["host_path_read_ok"] == true
+                && proof["host_path_secret_match"] == true
                 && proof["handle_inheritable"] == true
         });
     let _ = file.seek(SeekFrom::Start(0));
@@ -221,12 +223,13 @@ fn run() {
         clear_policy_on_exit: Some(true),
     };
     let command = format!(
-        "\"{}\" --child \"{}\" \"{}\" {} {}",
+        "\"{}\" --child \"{}\" \"{}\" {} {} \"{}\"",
         helper.display(),
         child_entry.display(),
         child_proof.display(),
         nonce,
-        handle_value
+        handle_value,
+        secret.display()
     );
     let capture_path = capture.join(format!("mxc-{nonce}")).join("denials.json");
     let _ = fs::create_dir_all(capture_path.parent().unwrap());
@@ -310,6 +313,9 @@ fn run() {
         && mxc_proof.as_ref().is_some_and(|proof| {
             proof["secret_match"] == false
                 && proof["probe_exception"] == 0
+                && proof["host_path_read_ok"] == false
+                && proof["host_path_read_error"] == 5
+                && proof["host_path_secret_match"] == false
                 && (proof["handle_present"] == false
                     || (proof["handle_inheritable"] == true && proof["read_error"] == 5))
         });
@@ -362,7 +368,7 @@ fn run() {
         "mxc_stdout":mxc_stdout, "mxc_stderr":mxc_stderr,
         "mxc_denial_capture_present":denial_doc.is_some(), "mxc_denial_document":denial_doc,
         "gate_a": if mxc_entry_valid {"child-entered"} else {"failed-or-unavailable"},
-        "gate_b": if !control_read_valid {"invalid-uncontained-positive-control"} else if mxc_proof.as_ref().is_some_and(|p| p["secret_match"] == true) {"security-failure-secret-readable"} else if gate_b_passed && mxc_proof.as_ref().is_some_and(|p| p["handle_present"] == false) {"running-child-attempted-but-handle-not-present"} else if gate_b_passed {"running-child-attempted-and-access-denied"} else {"failed-or-unavailable"},
+        "gate_b": if !control_read_valid {"invalid-uncontained-positive-control"} else if mxc_proof.as_ref().is_some_and(|p| p["secret_match"] == true || p["host_path_secret_match"] == true) {"security-failure-secret-readable"} else if mxc_proof.as_ref().is_some_and(|p| p["host_path_read_error"] == 5 && p["probe_exception"] != 0) {"host-path-denied; inherited-handle-probe-exception-unqualified"} else if gate_b_passed && mxc_proof.as_ref().is_some_and(|p| p["handle_present"] == false) {"running-child-attempted-but-handle-not-present"} else if gate_b_passed {"running-child-attempted-and-access-denied"} else {"failed-or-unavailable"},
         "gate_c": if gate_c_passed {"stage-proof-and-token-evidence-present"} else if mxc_proof_valid {"stage-proof-present; token-evidence-incomplete"} else {"failed-or-unavailable"},
         "gate_d": if denial_doc.is_some() {"per-invocation-capture-present"} else {"capture-missing"},
         "failed_gates": failed_gates,

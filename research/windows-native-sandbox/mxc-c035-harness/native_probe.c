@@ -27,7 +27,7 @@ static int write_text(const wchar_t *path, const wchar_t *text) {
 }
 
 static int child(int argc, wchar_t **argv) {
-    if (argc != 6) return 40;
+    if (argc != 7) return 40;
     const wchar_t *entry_path = argv[2], *proof_path = argv[3], *nonce = argv[4];
     wchar_t entry[512];
     _snwprintf_s(entry, 512, _TRUNCATE, L"{\"pid\":%lu,\"nonce\":\"%s\",\"phase\":\"entry\"}", GetCurrentProcessId(), nonce);
@@ -84,12 +84,34 @@ static int child(int argc, wchar_t **argv) {
         read_ok = FALSE;
     }
     BOOL secret_match = read_ok && read_bytes == 21 && memcmp(secret, "synthetic-c035-secret", 21) == 0;
+    HANDLE host_file = INVALID_HANDLE_VALUE;
+    DWORD host_path_error = 0, host_path_bytes = 0;
+    BOOL host_path_read_ok = FALSE, host_path_secret_match = FALSE;
+    char host_path_secret[128] = {0};
+    __try {
+        host_file = CreateFileW(argv[6], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, NULL);
+        if (host_file != INVALID_HANDLE_VALUE) {
+            host_path_read_ok = ReadFile(host_file, host_path_secret, sizeof(host_path_secret),
+                                         &host_path_bytes, NULL);
+            host_path_error = host_path_read_ok ? 0 : GetLastError();
+            host_path_secret_match = host_path_read_ok && host_path_bytes == 21 &&
+                memcmp(host_path_secret, "synthetic-c035-secret", 21) == 0;
+            CloseHandle(host_file);
+        } else {
+            host_path_error = GetLastError();
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        host_path_error = GetExceptionCode();
+        if (host_file != INVALID_HANDLE_VALUE) CloseHandle(host_file);
+    }
     wchar_t proof[2048];
     _snwprintf_s(proof, 2048, _TRUNCATE,
-        L"{\"pid\":%lu,\"nonce\":\"%s\",\"marker\":\"child-proof\",\"entry_error\":%d,\"handle_present\":%s,\"handle_inheritable\":%s,\"handle_flags\":%lu,\"handle_error\":%lu,\"file_type\":%lu,\"file_type_error\":%lu,\"read_ok\":%s,\"read_error\":%lu,\"probe_exception\":%lu,\"secret_match\":%s,\"token_user\":\"%s\",\"group_count\":%lu,\"group_sids\":%s,\"integrity_sid\":\"%s\",\"token_type\":%lu,\"token_observed\":%s}",
+        L"{\"pid\":%lu,\"nonce\":\"%s\",\"marker\":\"child-proof\",\"entry_error\":%d,\"handle_present\":%s,\"handle_inheritable\":%s,\"handle_flags\":%lu,\"handle_error\":%lu,\"file_type\":%lu,\"file_type_error\":%lu,\"read_ok\":%s,\"read_error\":%lu,\"probe_exception\":%lu,\"secret_match\":%s,\"host_path_read_ok\":%s,\"host_path_read_error\":%lu,\"host_path_secret_match\":%s,\"token_user\":\"%s\",\"group_count\":%lu,\"group_sids\":%s,\"integrity_sid\":\"%s\",\"token_type\":%lu,\"token_observed\":%s}",
         GetCurrentProcessId(), nonce, entry_error, has_flags ? L"true" : L"false",
         (has_flags && (flags & HANDLE_FLAG_INHERIT)) ? L"true" : L"false", flags, handle_error, type, type_error,
-        read_ok ? L"true" : L"false", read_error, probe_exception, secret_match ? L"true" : L"false", user_sid,
+        read_ok ? L"true" : L"false", read_error, probe_exception, secret_match ? L"true" : L"false",
+        host_path_read_ok ? L"true" : L"false", host_path_error, host_path_secret_match ? L"true" : L"false", user_sid,
         group_count, group_sids, integrity_sid, (DWORD)token_type, token ? L"true" : L"false");
     int proof_error = write_text(proof_path, proof);
     if (token) CloseHandle(token);
@@ -113,8 +135,8 @@ static int control(int argc, wchar_t **argv) {
         CloseHandle(secret); return 52;
     }
     wchar_t command[2048];
-    _snwprintf_s(command, 2048, _TRUNCATE, L"\"%s\" --child \"%s\" \"%s\" \"%s\" %llu",
-        argv[3], argv[4], argv[5], argv[6], (unsigned long long)(uintptr_t)secret);
+    _snwprintf_s(command, 2048, _TRUNCATE, L"\"%s\" --child \"%s\" \"%s\" \"%s\" %llu \"%s\"",
+        argv[3], argv[4], argv[5], argv[6], (unsigned long long)(uintptr_t)secret, argv[2]);
     BOOL created = CreateProcessW(argv[3], command, NULL, NULL, TRUE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, NULL, NULL, &si.StartupInfo, &pi);
     DeleteProcThreadAttributeList(si.lpAttributeList);
