@@ -301,7 +301,10 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
     );
     let out = tool
         .execute_structured(
-            serde_json::json!({"command": "printf landlock-ok", "workdir": root.path()}),
+            serde_json::json!({
+                "command": "printf landlock-ok; python3 -c \"print('x'*60000)\"",
+                "workdir": root.path()
+            }),
             Some(ctx),
         )
         .await
@@ -353,6 +356,17 @@ async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_netwo
             .get("execution.exit_code")
             .map(String::as_str),
         Some("0")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.output_truncated")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.metadata.get("execution.cleanup").map(String::as_str),
+        Some("complete")
     );
 }
 
