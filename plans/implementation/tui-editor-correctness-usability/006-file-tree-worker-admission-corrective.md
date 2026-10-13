@@ -1,6 +1,8 @@
 # TUI Editor Post-Closure Corrective C004 — File-Tree Worker Lifetime and Admission
 
-Status: ready for handoff
+Status: implemented; closed
+
+Implementation: `b9400c98`
 
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`; recheck HEAD before changes.
 

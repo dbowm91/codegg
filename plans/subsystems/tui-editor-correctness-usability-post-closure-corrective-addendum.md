@@ -1,6 +1,6 @@
 # TUI Editor Correctness/Usability — Post-Closure Corrective Addendum
 
-Status: active (C003 and C004 ready; C005 blocked on proposed ADR-0022)
+Status: active (C003 ready; C004 closed at `b9400c98`; C005 blocked on proposed ADR-0022)
 
 Parent historical roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` (C001, C002, M003, M004 recorded closed; keep their closures immutable).
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`, reviewed 2026-10-13. Implementation agents MUST recheck current head and unrelated changes.
@@ -95,7 +95,7 @@ Exit: one bounded native daemon listing API with explicit `file.read` and canoni
 | Milestone | Status | Implementation plan | Required closure record | Blocker |
 |---|---|---|---|---|
 | C003 | ready | `plans/implementation/tui-editor-correctness-usability/005-completion-verdict-and-request-fence-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md` | none |
-| C004 | ready | `plans/implementation/tui-editor-correctness-usability/006-file-tree-worker-admission-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md` | none |
+| C004 | closed | `plans/implementation/tui-editor-correctness-usability/006-file-tree-worker-admission-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md` | none (`b9400c98`) |
 | C005 | blocked | `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md` | ADR-0022 proposed; acceptance required |
 
 This addendum closes only when all three are strictly qualified **or** the maintainers explicitly defer C005, with the local-only remote limitation prominently documented and enforced fail-closed. Completing local C003/C004 must not be delayed by the separate ADR gate. Each milestone's closure record must map acceptance criteria to exact tests, implementation SHA/CI, unresolved severity and a truthful recommendation.
