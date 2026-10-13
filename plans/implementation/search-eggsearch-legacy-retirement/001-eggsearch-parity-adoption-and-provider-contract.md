@@ -1,6 +1,6 @@
 # Plan 001 — Eggsearch Parity Release Adoption and Provider Contract
 
-Status: blocked
+Status: ready
 
 Source roadmap:
 
@@ -17,6 +17,16 @@ Hard dependencies:
 1. `eggstack/eggsearch` CodeGG legacy-search-parity M003 is accepted.
 2. A tagged eggsearch release exists that contains the exact accepted M001/M002
    provider surface and M003 qualification candidate.
+
+Dependency disposition (2026-10-13): **satisfied**. Upstream
+`eggstack/eggsearch/plans/closure/codegg-legacy-search-parity/005-status.md`
+strictly closes parity M003–M005, confirms published immutable v0.4.1
+(tag `v0.4.1` at `32769d684417567dfb30fc5adea1475cee7f0ed0`),
+and unblocks CodeGG downstream adoption at `>=0.4.1`.
+The published v0.4.1 release passed the ten-tool/provid​​er contract smoke;
+CodeGG must still run its own pinned-binary compatibility and installation
+qualification before closing M001. v0.4.2 is not automatically substituted
+without equivalent release/contract qualification.
 
 Relevant predecessor evidence:
 
