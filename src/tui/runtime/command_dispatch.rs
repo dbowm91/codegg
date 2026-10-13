@@ -1751,6 +1751,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, root, listing,
             );
         }
+        TuiCommand::FileTreeFailed {
+            request_id,
+            generation,
+            root,
+            message,
+        } => {
+            super::super::commands::file_tree::apply_failure(
+                app, request_id, generation, root, message,
+            );
+        }
         TuiCommand::ChangeReviewAccepted {
             request_id,
             generation,

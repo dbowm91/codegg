@@ -20,7 +20,10 @@
 use super::daemon::CoreDaemon;
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};
-use codegg_protocol::document::DocumentScope;
+use codegg_protocol::document::{
+    DocumentScope, WorkspaceDirectoryListRequestDto, WorkspaceDirectoryListResultDto,
+    WorkspaceDirectoryListStatusDto, MAX_DIRECTORY_LISTING_RESPONSE_BYTES,
+};
 
 use crate::core::global_agent_authority as global_agent;
 
@@ -760,12 +763,203 @@ impl CoreDaemon {
                 }
                 Ok(CoreResponse::Ack)
             }
+            CoreRequest::WorkspaceDirectoryList { request } => {
+                Ok(self.directory_listing(request).await)
+            }
             _ => Ok(doc_error(
                 "document_unimplemented",
                 "unsupported document request",
             )),
         }
     }
+
+    /// C005 (ADR-0022, accepted): daemon-owned workspace directory listing.
+    ///
+    /// Server-side authorization already passed in
+    /// `handle_request_with_client` before dispatch (`DirectProject` +
+    /// `FileRead`); denials for team principals are masked as not-found by
+    /// the `observe_private` rule, so this method never needs its own
+    /// role logic. It resolves the daemon-owned canonical root, enforces
+    /// prefix containment with the same sequence `DocumentOpen` uses,
+    /// then runs the single shared walk on a blocking worker under the
+    /// daemon's single-flight admission. It never reads file bytes.
+    async fn directory_listing(&self, request: WorkspaceDirectoryListRequestDto) -> CoreResponse {
+        let workspace_id = match codegg_core::workspace::WorkspaceId::parse(&request.workspace_id) {
+            Ok(id) => id,
+            Err(error) => {
+                return doc_error("document_invalid_workspace", error.to_string());
+            }
+        };
+        let Some(workspace) = self.workspaces.resolve(&workspace_id).await else {
+            return doc_error("document_not_found", "workspace not found");
+        };
+        if let Err(code) = self
+            .verify_project_workspace(&request.project_id, &workspace_id)
+            .await
+        {
+            return doc_error(code, "project or workspace not found");
+        }
+        let prefix = match request.validate_prefix() {
+            Ok(prefix) => prefix,
+            Err(reason) => return doc_error("document_invalid_path", reason),
+        };
+        // Single-flight admission: the permit is held from here until the
+        // blocking walk completes, so an aborted waiter can never free a
+        // worker that is still scanning and rapid refreshes cannot pile up
+        // unbounded workers. Contention answers `busy`, never queues.
+        let _permit = match self.directory_listing_permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return CoreResponse::WorkspaceDirectoryList {
+                    result: WorkspaceDirectoryListResultDto {
+                        workspace_id: request.workspace_id,
+                        prefix: request.prefix,
+                        nodes: Vec::new(),
+                        truncated: false,
+                        truncated_reason: None,
+                        examined: 0,
+                        status: WorkspaceDirectoryListStatusDto::Busy,
+                    },
+                };
+            }
+        };
+        let root = workspace.canonical_root.clone();
+        let scanned =
+            tokio::task::spawn_blocking(move || blocking_directory_scan(&root, &prefix)).await;
+        // The walk never panics by construction and the containment
+        // checks above already passed, so any failure here is a mid-flight
+        // filesystem surprise (vanished root, I/O error). Fail closed
+        // with no daemon paths in the message.
+        let listing = match scanned {
+            Ok(Ok(listing)) => listing,
+            Ok(Err(_)) | Err(_) => {
+                return CoreResponse::WorkspaceDirectoryList {
+                    result: WorkspaceDirectoryListResultDto {
+                        workspace_id: request.workspace_id,
+                        prefix: request.prefix,
+                        nodes: Vec::new(),
+                        truncated: false,
+                        truncated_reason: None,
+                        examined: 0,
+                        status: WorkspaceDirectoryListStatusDto::Unavailable,
+                    },
+                };
+            }
+        };
+        let (nodes, budget_reason) =
+            trim_to_budget(listing.nodes, MAX_DIRECTORY_LISTING_RESPONSE_BYTES);
+        let (truncated, truncated_reason) = match (listing.truncated, budget_reason) {
+            (true, Some(budget)) => (
+                true,
+                Some(match listing.truncated_reason {
+                    Some(walk) => format!("{walk}; {budget}"),
+                    None => budget,
+                }),
+            ),
+            (true, None) => (true, listing.truncated_reason),
+            (false, Some(budget)) => (true, Some(budget)),
+            (false, None) => (false, None),
+        };
+        CoreResponse::WorkspaceDirectoryList {
+            result: WorkspaceDirectoryListResultDto {
+                workspace_id: request.workspace_id,
+                prefix: request.prefix,
+                nodes,
+                truncated,
+                truncated_reason,
+                examined: listing.examined,
+                status: WorkspaceDirectoryListStatusDto::Ready,
+            },
+        }
+    }
+}
+
+/// Blocking half of the daemon directory listing. Runs on a `spawn_blocking`
+/// worker: canonicalizes the daemon-owned root, confines `prefix` with the
+/// same symlink/containment sequence `DocumentService::open` applies, then
+/// executes the single shared walk.
+fn blocking_directory_scan(
+    root: &std::path::Path,
+    prefix: &str,
+) -> Result<crate::directory_listing::DirectoryListing, &'static str> {
+    let canonical_root = std::fs::canonicalize(root).map_err(|_| "workspace root unavailable")?;
+    let target = canonical_root.join(prefix);
+    reject_scan_symlink_components(&canonical_root, &target)?;
+    let canonical_target =
+        std::fs::canonicalize(&target).map_err(|_| "listed directory unavailable")?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err("listed directory escapes the workspace root");
+    }
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    Ok(crate::directory_listing::walk_directory(
+        &canonical_target,
+        prefix,
+        &cancel,
+    ))
+}
+
+/// Mirror of `DocumentService::reject_symlink_components` for the listing
+/// path: every component from the root to the target must exist without a
+/// symlink, checked on raw metadata so a resolved target can never hide
+/// one. Kept local (rather than sharing the private helper) so the
+/// document write path and the metadata read path cannot drift through a
+/// shared signature change unnoticed — both are pinned by their own tests.
+fn reject_scan_symlink_components(
+    root: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), &'static str> {
+    let relative = target
+        .strip_prefix(root)
+        .map_err(|_| "listed directory escapes the workspace root")?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        if std::fs::symlink_metadata(&current)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err("listed directory traverses a symlink");
+        }
+    }
+    Ok(())
+}
+
+/// Enforce the serialized wire cap by trimming trailing top-level nodes.
+///
+/// Returns the retained nodes plus a truncation reason when anything was
+/// trimmed. When even the first node does not fit, returns it anyway with
+/// a reason: a single node always fits in practice (bounded depth, names,
+/// and node count), and dropping everything would turn a cap into a
+/// silent empty listing.
+fn trim_to_budget(
+    mut nodes: Vec<codegg_protocol::document::WorkspaceDirectoryNodeDto>,
+    max_bytes: usize,
+) -> (
+    Vec<codegg_protocol::document::WorkspaceDirectoryNodeDto>,
+    Option<String>,
+) {
+    let fits = |nodes: &Vec<codegg_protocol::document::WorkspaceDirectoryNodeDto>| {
+        serde_json::to_string(nodes).is_ok_and(|json| json.len() <= max_bytes)
+    };
+    if fits(&nodes) {
+        return (nodes, None);
+    }
+    while nodes.len() > 1 {
+        nodes.pop();
+        if fits(&nodes) {
+            return (
+                nodes,
+                Some(format!(
+                    "listing trimmed to fit the {max_bytes}-byte response budget"
+                )),
+            );
+        }
+    }
+    (
+        nodes,
+        Some(format!(
+            "listing exceeds the {max_bytes}-byte response budget"
+        )),
+    )
 }
 
 fn document_error(error: crate::document_service::DocumentServiceError) -> CoreResponse {
@@ -1015,4 +1209,72 @@ impl CoreDaemon {
 fn sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegg_protocol::document::{WorkspaceDirectoryNodeDto, WorkspaceDirectoryNodeKindDto};
+
+    fn node(name: &str, path: &str) -> WorkspaceDirectoryNodeDto {
+        WorkspaceDirectoryNodeDto {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            depth: 1,
+            kind: WorkspaceDirectoryNodeKindDto::File,
+            children: None,
+        }
+    }
+
+    #[test]
+    fn trim_to_budget_keeps_fitting_listings_untouched() {
+        let nodes = vec![node("a.txt", "a.txt"), node("b.txt", "b.txt")];
+        let (kept, reason) = trim_to_budget(nodes.clone(), 1_048_576);
+        assert_eq!(kept, nodes);
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn trim_to_budget_trims_trailing_nodes_with_a_reason() {
+        let nodes = vec![
+            node("a.txt", "a.txt"),
+            node("b.txt", "b.txt"),
+            node("c.txt", "c.txt"),
+        ];
+        let full = serde_json::to_string(&nodes).expect("serializes").len();
+        // A budget between one and all nodes forces a deterministic trim of
+        // trailing entries (never a silent empty listing, never a failure).
+        let one = serde_json::to_string(&nodes[..1])
+            .expect("serializes")
+            .len();
+        let (kept, reason) = trim_to_budget(nodes, one);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "a.txt");
+        assert!(
+            reason.is_some_and(|r| r.contains(&one.to_string())),
+            "the reason must name the byte budget"
+        );
+        assert!(full > one);
+    }
+
+    #[test]
+    fn symlink_components_are_rejected_without_following_them() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let real = root.path().join("real");
+        std::fs::create_dir_all(&real).expect("mkdir");
+        assert!(reject_scan_symlink_components(root.path(), &real).is_ok());
+        assert!(reject_scan_symlink_components(root.path(), &root.path().join("missing")).is_ok());
+        // Escaping the root is refused even when nothing is a symlink.
+        assert!(reject_scan_symlink_components(root.path(), std::path::Path::new("/etc")).is_err());
+        #[cfg(unix)]
+        {
+            let link = root.path().join("linked");
+            std::os::unix::fs::symlink(&real, &link).expect("symlink");
+            assert!(reject_scan_symlink_components(root.path(), &link).is_err());
+            // A symlink nested below a real directory is still caught.
+            let nested = real.join("nested-link");
+            std::os::unix::fs::symlink(&real, &nested).expect("symlink");
+            assert!(reject_scan_symlink_components(root.path(), &nested).is_err());
+        }
+    }
 }

@@ -410,6 +410,7 @@ impl CoreDaemon {
                 codegg_core::collaboration::CollaborationService::with_defaults(deps.pool.clone()),
             ),
             documents: Arc::new(crate::document_service::DocumentService::new()),
+            directory_listing_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             project_init_drafts: Arc::new(super::project_init::ProjectInitDraftRegistry::new()),
             work_orders: Arc::new(codegg_core::work_order::WorkOrderService::with_defaults(
                 deps.pool.clone(),

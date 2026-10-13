@@ -76,6 +76,9 @@ run_quick() {
     echo "==> python3 scripts/check_tui_editor_text_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py)
 
+    echo "==> python3 scripts/check_daemon_listing_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
+
     echo "==> python3 scripts/check_http_route_disposition.py"
     (cd "$REPO_ROOT" && python3 scripts/check_http_route_disposition.py)
 

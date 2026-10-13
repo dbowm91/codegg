@@ -840,8 +840,9 @@ means closing it, and only a closed one steps further out.
 Three rules keep this a navigator rather than a second document surface:
 
 1. **The box holds no file text and performs no reads.** The listing arrives
-   already walked; `r` emits `TuiMsg::FilesRefresh` and the command layer owns
-   the async read. Rendering never touches the filesystem.
+   as daemon-origin metadata; `r` emits `TuiMsg::FilesRefresh` and the
+   command layer owns the async daemon round-trip. Rendering never touches
+   the filesystem.
 2. **Opening a row is an intent, not an attachment.** `Enter` on a file emits
    `TuiMsg::FilesOpenSelected { path }`, handled in `App::process_msg` by
    calling `open_editor` — the same seam `/open` and the Ctrl+T pane use, so
@@ -853,11 +854,12 @@ Three rules keep this a navigator rather than a second document surface:
    the generation-guarded completion in `commands::file_tree::apply_listing`.
    The copy is made only when a box is actually mounted.
 
-Authority is unchanged from the Ctrl+T pane: the walk and the open both
-resolve the root through `App::project_execution_context()`, never
-`session_state.project_dir` or the process cwd. Files opened from `/files` are
-therefore `DocumentScope::Workspace`, and the editor's `[project]` badge is
-the honest reading.
+Authority is unchanged from the Ctrl+T pane: the listing request and the
+open both resolve the tab binding through `App::project_execution_context()`,
+never `session_state.project_dir` or the process cwd — and the listing
+itself is enumerated on the daemon host, never the TUI host. Files opened
+from `/files` are therefore `DocumentScope::Workspace`, and the editor's
+`[project]` badge is the honest reading.
 
 ### Swappable side panel (`src/tui/panels/`)
 
@@ -1801,9 +1803,10 @@ authorization, and symlink policy remain the daemon's decision in
 
 `Route::Editor` renders a workspace file tree in a pane to the left of the
 buffer, shown with `Ctrl-T` and hidden by default so the M006-A surface is
-unchanged until the user asks for it. `src/tui/file_tree.rs` holds the walk
-and the node model, `src/tui/app/state/file_tree.rs` the view state, and
-`src/tui/components/file_tree.rs` the widget.
+unchanged until the user asks for it. `src/directory_listing.rs` holds the
+single shared walk, `src/tui/file_tree.rs` the presentation node model
+(delegating to the shared walk), `src/tui/app/state/file_tree.rs` the view
+state, and `src/tui/components/file_tree.rs` the widget.
 
 **The tree is a navigator, not a content path.** It enumerates directory
 *entries* and never reads file bytes. Opening an entry calls the existing
@@ -1830,11 +1833,21 @@ built from validated component names rather than by joining arbitrary
 strings, so a tree-derived path is always workspace-relative and cannot
 contain `..`.
 
-**Authority.** The root is the active tab's explicit
-`ProjectExecutionContext::workspace_root`, resolved at the command boundary
-exactly as `open_editor` resolves it. There is no `current_dir()` read and no
-path-as-identity, so `scripts/check_tui_project_authority.py` holds by
-construction.
+**Authority (C005/ADR-0022).** Directory enumeration is daemon-owned: the
+command layer sends `CoreRequest::WorkspaceDirectoryList` carrying the
+tab's canonical project/workspace binding, and the daemon resolves its own
+canonical root, enforces `DirectProject + FileRead` containment, and walks
+with the single shared walker. The TUI displays only daemon-origin
+metadata keyed to the echoed daemon workspace identity plus the existing
+generation/root/request fencing — it never walks its own filesystem, in
+any mode including standalone. A same-spelled local path can describe a
+different machine's directory, so there is deliberately no local `read_dir`
+fallback: an unavailable daemon listing is an explicit error, and
+`scripts/check_daemon_listing_authority.py` rejects reintroducing TUI-side
+enumeration on the listing path. The tab's `workspace_root` remains only
+fencing state (which workspace the pane believes it shows). There is no
+`current_dir()` read and no path-as-identity, so
+`scripts/check_tui_project_authority.py` holds by construction.
 
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
@@ -1845,12 +1858,15 @@ unchanged, so a focused tree never swallows composer or editor input. `Esc`
 returns focus to the editor buffer without changing the route, preserving
 the non-modal composer contract.
 
-**Async discipline.** The walk is blocking directory I/O and runs on a
-scoped `TuiTaskKind::FileTree` task. A completion carries the request id, the
+**Async discipline.** The listing is a daemon round-trip on a scoped
+`TuiTaskKind::FileTree` task. A completion carries the request id, the
 tree generation, and the root it was issued for; a completion that is stale,
-cancelled, or for another workspace is discarded rather than rendered.
-Switching projects resets selection and expansion, because a path from the
-previous project is meaningless in the next.
+cancelled, for another workspace, or answered for a different daemon scope
+is discarded rather than rendered. Failures arrive as an explicit
+`FileTreeFailed` completion and are fail-visible in the pane. Switching
+projects resets selection and expansion, because a path from the previous
+project is meaningless in the next. Advisory daemon statuses stay visible:
+`busy` names the retry key, and bound hits carry their truncation reason.
 
 ### Command mode and agent management (M006-F)
 
@@ -2851,8 +2867,36 @@ every entry, superseded by `begin_rebuild`, `reset_for_project`, and
 `prepare_shutdown`, so a superseded scan exits within one *completed* entry —
 not a wall-clock bound, since one syscall cannot be preempted. Stale
 completions are still refused by generation/root/request. With no command
-channel the UI reports an explicit error instead of walking synchronously on
-the event loop. `local_walk_root` fails closed on non-absolute,
-non-directory, symlinked, or unreadable roots rather than treating a
-same-name local path as authoritative; remote listing stays unsupported until
-a daemon-authorized transport exists.
+channel the UI reports an explicit error instead of requesting synchronously
+on the event loop.
+
+C005 daemon-owned listing (ADR-0022, accepted): the TUI no longer walks at
+all. `src/tui/commands/file_tree.rs` sends `WorkspaceDirectoryList` with
+the tab's project/workspace binding over the attached core client; the
+daemon resolves its canonical root, verifies the project/workspace binding,
+validates the prefix, and runs the single shared walk
+(`src/directory_listing.rs`, extracted verbatim from the TUI walker) on a
+`spawn_blocking` worker under a per-daemon single-flight semaphore.
+Contended scans answer `busy`; the permit is held from admission until the
+blocking walk completes. The wire response echoes `workspace_id`/`prefix`
+and carries inert nested entries plus `truncated`/`truncated_reason`/
+`examined`/`status`; responses over the 512 KiB serialized cap are trimmed
+from trailing top-level nodes with an explicit reason. TUI-side single
+flight is unchanged (one round-trip in flight, latest-only pending,
+`Waiting`, generation/root/request fencing) with one addition: the echoed
+daemon workspace identity must match the request before anything renders,
+and failures arrive as `FileTreeFailed` with no local fallback in any mode.
+`local_walk_root` remains only as the retired client-side refusal point
+(kept with its tests, never called on a listing path); the new invariant
+is enforced by `scripts/check_daemon_listing_authority.py`, which rejects
+`read_dir`/`build_tree*`/`local_walk_root` on the listing path outside the
+two walker homes. The background `@`-mention indexer in `tui/app/mod.rs`
+(`index_files_sync`) is a separate client-side index explicitly deferred
+by the C005 plan, not covered by that guard.
+
+C005 flush fix: hitting a walk bound previously `return`ed out of the walk
+before the retained-entry flush loops, so a node-budget truncation always
+presented an empty tree alongside its (correct) reason. Bound hits now
+`break` to the flush, keeping everything retained up to the bound with the
+explicit reason. Pre-set cancellation still returns empty; mid-walk cancel
+keeps retained-so-far as a truncated listing rather than blanking it.

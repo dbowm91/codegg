@@ -30,6 +30,7 @@ pub mod core;
 pub mod decision;
 #[cfg(feature = "decision-runtime-sdm")]
 pub mod decision_sdm;
+pub mod directory_listing;
 pub mod document_service;
 pub mod eggsact;
 pub mod error;

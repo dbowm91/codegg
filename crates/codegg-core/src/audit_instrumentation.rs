@@ -707,6 +707,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "audit_capabilities",
     "document_capabilities",
     "document_read",
+    // C005 (ADR-0022): the directory listing is the same shape —
+    // `direct_project` + `file.read`, inert metadata, no mutation — so it
+    // shares the reads' classification rather than emitting per-refresh
+    // audit events. Denial *is* audited upstream by `authorize_request`.
+    "workspace_directory_list",
     // `/init` is a bounded, explicitly authorized project-file preview;
     // the publication operation below is structurally audited.
     "project_init_draft",

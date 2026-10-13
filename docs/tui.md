@@ -433,14 +433,18 @@ its start followed by a `…[too long]` marker, and the status row adds
 cursor position itself stays exact, but horizontal scrolling and motion stop
 at the end of the shown prefix; normal files are unaffected.
 
-The file tree (Ctrl+T pane and `/files`) walks at most 100,000 directory
-entries and keeps at most 4096, saying which limit stopped it. At most one
-scan runs at a time; a refresh that arrives while a scan is active waits as
-one queued latest request and the pane says "waiting for prior scan…" instead
-of piling up workers. A refresh that is superseded, or a workspace that is no
-longer local, never paints a stale or foreign listing: the pane keeps its
-previous state and says why. Remote directory listing is unsupported; only a
-readable local workspace directory is listed.
+The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
+listing for the active workspace: the daemon walks at most 100,000
+directory entries and keeps at most 4096, saying which limit stopped it.
+At most one scan runs at a time on each side; a refresh that arrives while
+a request is active waits as one queued latest request and the pane says
+"waiting for prior scan…" instead of piling up workers. A refresh that is
+superseded, or a listing answered for a different workspace, never paints
+a stale or foreign listing: the pane keeps its previous state and says
+why. Listings unavailable from the daemon are explicit errors — the tree
+never falls back to reading the local machine's own files, so a
+same-spelled local directory can never masquerade as the workspace. A busy
+daemon asks for an explicit retry with `r`.
 
 ## Where to go next
 

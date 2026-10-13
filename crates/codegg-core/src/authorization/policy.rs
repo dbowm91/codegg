@@ -113,6 +113,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        // C005 (ADR-0022 §2, accepted): a directory listing discloses
+        // filenames and structure, so it carries the same
+        // `DirectProject` + `FileRead` gate as opening a file. There is
+        // deliberately no weaker `project.observe` shortcut: observing
+        // project lifecycle must never imply filename access.
+        R::WorkspaceDirectoryList { .. } => OperationDescriptor::new(
+            "workspace_directory_list",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
         R::DocumentWriterAcquire { .. }
         | R::DocumentChange { .. }
         | R::DocumentSave { .. }

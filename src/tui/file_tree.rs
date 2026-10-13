@@ -26,19 +26,27 @@
 //!   runs on `spawn_blocking` (see `commands::file_tree::rebuild`), never on
 //!   a Tokio worker.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::sync::atomic::AtomicBool;
+
+use crate::directory_listing::{
+    LISTING_IGNORED_DIRS, MAX_LISTING_DEPTH, MAX_LISTING_EXAMINED, MAX_LISTING_NAME_BYTES,
+    MAX_LISTING_NODES,
+};
 
 /// Maximum directory depth walked, counted from the workspace root at `0`.
-pub const MAX_TREE_DEPTH: usize = 12;
+///
+/// Single-sourced from [`crate::directory_listing`]: the TUI navigator and
+/// the daemon-owned listing execute the same walk, so the bounds cannot
+/// drift between the two authorities.
+pub const MAX_TREE_DEPTH: usize = MAX_LISTING_DEPTH;
 
 /// Maximum number of entries retained across the whole tree.
 ///
 /// The walk stops once the budget is exhausted and reports truncation, so a
 /// repository with a million files costs a bounded walk and a bounded
 /// allocation rather than exhausting memory.
-pub const MAX_TREE_NODES: usize = 4_096;
+pub const MAX_TREE_NODES: usize = MAX_LISTING_NODES;
 
 /// Maximum number of directory entries *examined* across the whole walk.
 ///
@@ -47,29 +55,19 @@ pub const MAX_TREE_NODES: usize = 4_096;
 /// over millions of filtered-out entries that would otherwise cost unbounded
 /// scanning while retaining nothing. Independent of [`MAX_TREE_NODES`]:
 /// a tree can exhaust either budget, and the truncation reason says which.
-pub const MAX_TREE_EXAMINED: usize = 100_000;
+pub const MAX_TREE_EXAMINED: usize = MAX_LISTING_EXAMINED;
 
 /// Maximum byte length of a single entry name.
 ///
 /// Names longer than this are skipped rather than truncated, so a tree-derived
 /// path can never be a silently mangled version of a real name.
-pub const MAX_TREE_NAME_BYTES: usize = 255;
+pub const MAX_TREE_NAME_BYTES: usize = MAX_LISTING_NAME_BYTES;
 
 /// Directories never descended into.
 ///
 /// This mirrors the composer's `@` file-mention indexer so a user does not see
 /// `node_modules` in the tree and then in autocomplete, or the reverse.
-pub const TREE_IGNORED_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
-    "target",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".cargo",
-    "dist",
-    "build",
-];
+pub const TREE_IGNORED_DIRS: &[&str] = LISTING_IGNORED_DIRS;
 
 /// Whether an entry can be opened as a document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -93,16 +91,6 @@ pub struct TreeNode {
     pub children: Option<Vec<TreeNode>>,
 }
 
-impl TreeNode {
-    fn child(parent: &str, name: &str) -> String {
-        if parent.is_empty() {
-            name.to_string()
-        } else {
-            format!("{parent}/{name}")
-        }
-    }
-}
-
 /// Result of one bounded walk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TreeListing {
@@ -123,11 +111,12 @@ pub struct TreeListing {
 
 /// Walk `root` into a bounded listing.
 ///
-/// Symlinks are skipped at every depth, ignored directories are not descended
-/// into, unreadable directories are skipped rather than treated as fatal, and
-/// the walk stops at the first bound it reaches. Never cancelled; see
-/// [`build_tree_with_cancel`] for the cancellable form the command layer
-/// uses.
+/// Delegates to the single shared walker in [`crate::directory_listing`]:
+/// symlinks are skipped at every depth, ignored directories are not
+/// descended into, unreadable directories are skipped rather than treated
+/// as fatal, and the walk stops at the first bound it reaches. Never
+/// cancelled; see [`build_tree_with_cancel`] for the cancellable form the
+/// command layer uses.
 pub fn build_tree(root: &Path) -> TreeListing {
     static NEVER: AtomicBool = AtomicBool::new(false);
     build_tree_with_cancel(root, &NEVER)
@@ -135,72 +124,44 @@ pub fn build_tree(root: &Path) -> TreeListing {
 
 /// Walk `root` into a bounded listing, exiting early when `cancel` is set.
 ///
-/// Checks `cancel` on every entry and before descending into each
-/// subdirectory, so a superseded walk finishes within one entry of the
-/// request even if its async waiter was already aborted. A cancelled walk
-/// reports `truncated` with a cancellation reason rather than a partial
-/// listing presented as complete.
+/// Delegates to [`crate::directory_listing::walk_directory`] and converts
+/// the neutral nodes into presentation nodes. A cancelled walk reports
+/// `truncated` with a cancellation reason rather than a partial listing
+/// presented as complete.
 pub fn build_tree_with_cancel(root: &Path, cancel: &AtomicBool) -> TreeListing {
-    let mut listing = TreeListing::default();
-    let mut budget = MAX_TREE_NODES;
-    let mut examined = 0usize;
-    if budget == 0 {
-        listing.truncated = true;
-        listing.truncated_reason = Some("node budget is zero".to_string());
-        return listing;
-    }
-    walk(
-        root,
-        "",
-        0,
-        &mut budget,
-        &mut examined,
-        MAX_TREE_EXAMINED,
-        cancel,
-        &mut listing,
-    );
-    listing.examined = examined;
-    listing.nodes.sort_by(|left, right| {
-        left.kind
-            .cmp(&right.kind)
-            .then_with(|| left.name.cmp(&right.name))
-    });
-    listing
+    from_shared_listing(crate::directory_listing::walk_directory(root, "", cancel))
 }
 
-/// Account for one iterated directory entry (including iterator `Err`s).
-///
-/// C004: every item yielded by `read_dir` — `Ok` or `Err` — consumes
-/// iteration work and must observe cancellation and both budgets. Returns
-/// `false` when the walk must stop (truncation reason already recorded).
-fn account_one_entry(
-    cancel: &AtomicBool,
-    examined: &mut usize,
-    max_examined: usize,
-    budget: usize,
-    listing: &mut TreeListing,
-) -> bool {
-    if cancel.load(Ordering::Relaxed) {
-        listing.truncated = true;
-        listing.truncated_reason = Some("tree walk cancelled".to_string());
-        return false;
+/// Convert one shared-walk listing into presentation nodes.
+pub(crate) fn from_shared_listing(
+    listing: crate::directory_listing::DirectoryListing,
+) -> TreeListing {
+    TreeListing {
+        nodes: listing.nodes.into_iter().map(from_shared_node).collect(),
+        truncated: listing.truncated,
+        truncated_reason: listing.truncated_reason,
+        examined: listing.examined,
     }
-    *examined = examined.saturating_add(1);
-    if *examined > max_examined {
-        listing.truncated = true;
-        listing.truncated_reason = Some(format!(
-            "stopped after examining the maximum of {max_examined} entries"
-        ));
-        return false;
+}
+
+/// Convert one shared-walk node (and its subtree) into a presentation node.
+pub(crate) fn from_shared_node(
+    node: codegg_protocol::document::WorkspaceDirectoryNodeDto,
+) -> TreeNode {
+    TreeNode {
+        name: node.name,
+        path: node.path,
+        depth: node.depth,
+        kind: match node.kind {
+            codegg_protocol::document::WorkspaceDirectoryNodeKindDto::Directory => {
+                TreeNodeKind::Directory
+            }
+            codegg_protocol::document::WorkspaceDirectoryNodeKindDto::File => TreeNodeKind::File,
+        },
+        children: node
+            .children
+            .map(|children| children.into_iter().map(from_shared_node).collect()),
     }
-    if budget == 0 {
-        listing.truncated = true;
-        listing.truncated_reason = Some(format!(
-            "stopped at the maximum of {MAX_TREE_NODES} entries"
-        ));
-        return false;
-    }
-    true
 }
 
 /// Refuse a workspace root that is not a proven-local readable directory.
@@ -232,137 +193,6 @@ pub fn local_walk_root(root: &Path) -> Result<(), String> {
             "refusing to list workspace root {}: not a readable local directory ({error}); remote directory listing is unsupported",
             root.display()
         )),
-    }
-}
-
-fn walk(
-    directory: &Path,
-    relative: &str,
-    depth: usize,
-    budget: &mut usize,
-    examined: &mut usize,
-    max_examined: usize,
-    cancel: &AtomicBool,
-    listing: &mut TreeListing,
-) {
-    if cancel.load(Ordering::Relaxed) {
-        listing.truncated = true;
-        listing.truncated_reason = Some("tree walk cancelled".to_string());
-        return;
-    }
-    if depth >= MAX_TREE_DEPTH {
-        listing.truncated = true;
-        listing.truncated_reason =
-            Some(format!("stopped at the maximum depth of {MAX_TREE_DEPTH}"));
-        return;
-    }
-
-    // `read_dir` failing is not fatal: a permission-denied or concurrently
-    // removed subdirectory must not blank the rest of the tree.
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return;
-    };
-
-    // A map rather than a Vec so siblings are grouped by kind and sorted
-    // deterministically without a second pass, and so a name can never appear
-    // twice for the same parent.
-    let mut directories: BTreeMap<String, PathBuf> = BTreeMap::new();
-    let mut files: BTreeMap<String, PathBuf> = BTreeMap::new();
-
-    // C004: do not use `entries.flatten()`. An `Err` item still consumed
-    // iteration work (a directory entry that could not be read), so it must
-    // consume the examined budget and observe cancellation, or a long stream
-    // of errors bypasses both bounds. Count first, then skip.
-    for next in entries {
-        // Examined before any filtering: ignored, symlink, special,
-        // unreadable, and iterator-error entries all cost scanning even
-        // though they retain nothing. This is the budget that stops a walk
-        // over millions of filtered-out entries.
-        if !account_one_entry(cancel, examined, max_examined, *budget, listing) {
-            return;
-        }
-        let Ok(entry) = next else {
-            // The entry could not be read (concurrent removal, I/O error).
-            // Counted above; skipped without retaining anything.
-            continue;
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.is_empty() || name.len() > MAX_TREE_NAME_BYTES || name.contains('\0') {
-            // Skipped, not truncated into: a mangled name could produce a
-            // path that resolves somewhere the user did not select.
-            continue;
-        }
-        // Checked on the raw entry. `canonicalize` would resolve a symlink and
-        // report the target as an ordinary file or directory, so testing the
-        // resolved path would never detect one.
-        if entry.path().is_symlink() {
-            continue;
-        }
-        // `is_dir`/`is_file` follow symlinks, which are already excluded above.
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        let (name, file_type) = if file_type.is_dir() {
-            if TREE_IGNORED_DIRS.contains(&name.as_str()) {
-                continue;
-            }
-            (name, file_type)
-        } else if file_type.is_file() {
-            (name, file_type)
-        } else {
-            // Sockets, FIFOs, and device nodes are neither navigable nor
-            // openable as documents.
-            continue;
-        };
-        *budget = budget.saturating_sub(1);
-        if file_type.is_dir() {
-            directories.insert(name, entry.path());
-        } else {
-            files.insert(name, entry.path());
-        }
-    }
-
-    for (name, path) in directories {
-        if cancel.load(Ordering::Relaxed) {
-            listing.truncated = true;
-            listing.truncated_reason = Some("tree walk cancelled".to_string());
-            return;
-        }
-        let child_relative = TreeNode::child(relative, &name);
-        let mut children = Vec::new();
-        let mut child_listing = TreeListing::default();
-        walk(
-            &path,
-            &child_relative,
-            depth + 1,
-            budget,
-            examined,
-            max_examined,
-            cancel,
-            &mut child_listing,
-        );
-        if child_listing.truncated {
-            listing.truncated = true;
-            listing.truncated_reason = child_listing.truncated_reason;
-        }
-        children.append(&mut child_listing.nodes);
-        listing.nodes.push(TreeNode {
-            name,
-            path: child_relative.clone(),
-            depth: depth + 1,
-            kind: TreeNodeKind::Directory,
-            children: Some(children),
-        });
-    }
-
-    for (name, _path) in files {
-        listing.nodes.push(TreeNode {
-            path: TreeNode::child(relative, &name),
-            name,
-            depth: depth + 1,
-            kind: TreeNodeKind::File,
-            children: None,
-        });
     }
 }
 
@@ -719,31 +549,27 @@ mod tests {
 
     // ── C002 examined-entry budget, cancellation, locality ──────────────
 
+    use crate::directory_listing::account_one_entry;
+    use crate::directory_listing::DirectoryListing as SharedListing;
+    use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
 
-    /// Walk with explicit budgets, bypassing the production constants so
-    /// the examined-cap branch is reachable without creating 100k files.
+    /// Walk with explicit budgets via the shared walker, bypassing the
+    /// production constants so the examined-cap branch is reachable
+    /// without creating 100k files.
     fn walk_with(
         root: &Path,
         max_nodes: usize,
         max_examined: usize,
         cancel: &AtomicBool,
     ) -> TreeListing {
-        let mut listing = TreeListing::default();
-        let mut budget = max_nodes;
-        let mut examined = 0usize;
-        walk(
+        from_shared_listing(crate::directory_listing::walk_with_budgets(
             root,
             "",
-            0,
-            &mut budget,
-            &mut examined,
+            max_nodes,
             max_examined,
             cancel,
-            &mut listing,
-        );
-        listing.examined = examined;
-        listing
+        ))
     }
 
     fn live_cancel() -> AtomicBool {
@@ -755,13 +581,14 @@ mod tests {
         let root = temp();
         // Symlinks are fast to create and all filtered out: 200 examined,
         // zero retained. The examined cap (50 here) must stop the walk even
-        // though the node budget is untouched.
+        // though the node budget is untouched. Dangling links (no real
+        // file alongside) so nothing is retainable by construction — a
+        // retainable file must flush even when a later bound fires.
         #[cfg(unix)]
         {
-            std::fs::write(root.path().join("target.txt"), b"x").expect("write");
             for i in 0..200 {
                 std::os::unix::fs::symlink(
-                    root.path().join("target.txt"),
+                    root.path().join("missing-target.txt"),
                     root.path().join(format!("link{i:04}")),
                 )
                 .expect("symlink");
@@ -782,6 +609,35 @@ mod tests {
             assert!(listing.nodes.is_empty(), "nothing was retainable");
             assert!(listing.examined > 50, "examined counts filtered entries");
         }
+    }
+
+    #[test]
+    fn retainable_entries_flush_when_a_later_bound_fires() {
+        // C005 regression: hitting a bound must not blank entries retained
+        // earlier in the same walk. Three real files with a node budget of
+        // two: the walk truncates, but exactly the two retained files must
+        // still be listed (order-independent count, so readdir order cannot
+        // flake it).
+        let root = temp();
+        write(root.path(), "a.txt");
+        write(root.path(), "b.txt");
+        write(root.path(), "c.txt");
+        let listing = walk_with(root.path(), 2, 10_000, &live_cancel());
+        assert!(listing.truncated);
+        assert_eq!(
+            listing.nodes.len(),
+            2,
+            "the two retained files must survive the node cap, got {:?}",
+            names(&listing)
+        );
+        assert!(
+            listing
+                .truncated_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("entries") && !r.contains("examining")),
+            "the reason must name the node bound, got {:?}",
+            listing.truncated_reason
+        );
     }
 
     #[test]
@@ -916,13 +772,13 @@ mod tests {
 
     /// C004: iterator `Err`s still consume examined work and observe
     /// cancellation/budgets. `account_one_entry` is the exact function the
-    /// walk calls per item (both `Ok` and `Err`), so driving it with a
-    /// synthetic 200-error stream proves a long error flood cannot bypass
-    /// the examined cap or a cancel flag.
+    /// shared walk calls per item (both `Ok` and `Err`), so driving it
+    /// with a synthetic 200-error stream proves a long error flood cannot
+    /// bypass the examined cap or a cancel flag.
     #[test]
     fn iterator_error_stream_consumes_examined_and_respects_cancel() {
         let live = AtomicBool::new(false);
-        let mut listing = TreeListing::default();
+        let mut listing = SharedListing::default();
         let mut examined = 0usize;
         // 200 errors against a budget of 50: must stop with the examined
         // reason, having counted every error.
@@ -947,7 +803,7 @@ mod tests {
 
         // Cancellation is observed even mid-flood.
         let cancelled = AtomicBool::new(true);
-        let mut listing = TreeListing::default();
+        let mut listing = SharedListing::default();
         let mut examined = 0usize;
         assert!(!account_one_entry(
             &cancelled,

@@ -217,6 +217,8 @@ Groups present in `CoreRequest` but not enumerated above (see
 `Document*` (9: `DocumentCapabilities`, `DocumentOpen`,
 `DocumentSnapshotGet`, `DocumentStatusGet`, `DocumentWriterAcquire`,
 `DocumentChange`, `DocumentSave`, `DocumentReload`, `DocumentClose`),
+`WorkspaceDirectoryList` (C005/ADR-0022: daemon-owned directory metadata,
+`direct_project` + `file.read`, 512 KiB wire cap, single-flight admission),
 `ActiveGoalLoad`,
 `ManagedWorktree*` (4), `WorkPlanBindRepository` /
 `WorkPlanRepositoryBinding` (2) plus `WorkOrderBindRepository`,

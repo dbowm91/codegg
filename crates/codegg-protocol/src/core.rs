@@ -1094,6 +1094,12 @@ pub enum CoreResponse {
         conflicted: bool,
         writer: bool,
     },
+    /// C005 (ADR-0022 §3): daemon-owned workspace directory listing.
+    /// Advisory metadata only; opening an entry still routes through
+    /// `DocumentOpen`, which independently reauthorizes.
+    WorkspaceDirectoryList {
+        result: document::WorkspaceDirectoryListResultDto,
+    },
     AssetRefresh {
         report: AssetRefreshReportDto,
     },
@@ -2028,6 +2034,16 @@ pub enum CoreRequest {
     DocumentClose {
         project_id: String,
         document_id: String,
+    },
+    /// C005 (ADR-0022 §3): one bounded daemon-owned workspace directory
+    /// listing — inert metadata only (`direct_project` + `file.read`).
+    ///
+    /// The daemon resolves the session's project/workspace and permitted
+    /// root, enforces containment, then lists entries on the daemon host.
+    /// No file bodies, no absolute daemon paths. Old daemons report
+    /// `Unsupported`; clients must never fall back to a local `read_dir`.
+    WorkspaceDirectoryList {
+        request: document::WorkspaceDirectoryListRequestDto,
     },
     AssetRefresh {
         request: AssetRefreshRequestDto,

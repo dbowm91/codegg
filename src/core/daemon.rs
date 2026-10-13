@@ -87,6 +87,12 @@ pub struct CoreDaemon {
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
     /// Process-local canonical editor document buffers and connection leases.
     pub documents: Arc<crate::document_service::DocumentService>,
+    /// C005 (ADR-0022 §4): single-flight admission for daemon-owned
+    /// directory scans. One permit per daemon: a contended scan answers
+    /// `busy` instead of queueing unbounded blocking workers. The permit
+    /// is held from admission until the blocking walk completes, so an
+    /// aborted waiter can never free a worker that is still scanning.
+    pub directory_listing_permits: Arc<tokio::sync::Semaphore>,
     /// Ephemeral one-use previews for guarded root `AGENTS.md` publication.
     pub project_init_drafts: Arc<super::project_init::ProjectInitDraftRegistry>,
     /// Project Work Orders M001: daemon-owned project work-order
@@ -538,6 +544,7 @@ impl CoreDaemon {
                 | CoreRequest::DocumentSave { .. }
                 | CoreRequest::DocumentReload { .. }
                 | CoreRequest::DocumentClose { .. }
+                | CoreRequest::WorkspaceDirectoryList { .. }
                 | CoreRequest::ProjectInitDraftGet { .. }
                 | CoreRequest::ProjectInitPublish { .. }
         );
@@ -948,6 +955,9 @@ impl CoreDaemon {
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
             CoreRequest::HumanShellRunCreate { request } => Some(request.project_id.as_str()),
+            // C005: the listing carries its locator nested in the DTO,
+            // exactly like the human-shell and LSP DTO-carrying reads.
+            CoreRequest::WorkspaceDirectoryList { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),

@@ -47,10 +47,18 @@ pub struct ScanRequest {
     /// `AsyncUiRequestState` id at request time.
     pub request_id: u64,
     /// Workspace root captured at request time. Compared on completion and
-    /// before launching a queued scan; never logged.
+    /// before launching a queued scan; never logged. Fencing state only —
+    /// C005 never walks it.
     pub root: PathBuf,
     /// Frontend tab that issued the request, for scope fencing.
     pub tab_id: Option<String>,
+    /// Canonical project binding at request time. Sent on the daemon
+    /// request; never logged.
+    pub project_id: String,
+    /// Canonical workspace binding at request time. Sent on the daemon
+    /// request and matched against the echoed daemon identity before any
+    /// entry renders; never logged.
+    pub workspace_id: String,
 }
 
 /// Admission decision for a new rebuild.
@@ -321,6 +329,8 @@ mod tests {
             request_id,
             root: PathBuf::from(root),
             tab_id: Some("tab-a".to_string()),
+            project_id: "project-test".to_string(),
+            workspace_id: "workspace-test".to_string(),
         }
     }
 

@@ -573,6 +573,7 @@ not a Core operation):
 | `workspace_archive` | opaque | `project.configure` |
 | `workspace_config_reload` | opaque | `project.configure` |
 | `workspace_dashboard` | enumeration | `project.read` |
+| `workspace_directory_list` | direct_project | `file.read` |
 | `workspace_list` | opaque | `project.read` |
 | `workspace_register` | opaque | `project.configure` |
 | `workspace_services_snapshot` | global | `none` |
