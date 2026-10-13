@@ -1,6 +1,6 @@
 # Windows Native Sandbox C044 — Compiled native two-hop launch and read-boundary diagnostic
 
-Status: ready for bounded research; operational disposable consented Windows host
+Status: blocked — harness landed at `edde2bebe`, Windows execution not-run (closure `plans/closure/windows-native-sandbox/044-status.md`)
 Class: infrastructure (test-only candidate)
 Baseline: main a7b116af3243623099b80cc200b843a36b0ce3d2 (refresh exact SHA before implementation).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (ADR-0027 successor addendum).
