@@ -91,7 +91,7 @@ Class: infrastructure. Wire the four predecessor guards plus new corrective cove
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/003-guard-ci-and-integration-qualification.md`.
 
-Dependencies: C001 **hard (satisfied)**, C002 **hard (satisfied)**; CI access and main reconciliation were operational. **Conditionally closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md`: local enforced checks pass on `667005a6`; the exact-base workspace suite has four upstream TUI failures, and hosted exact-ref CI/Desktop dispatch is pending after push. No registered downstream plan was newly unblocked by C003.
+Dependencies: C001 **hard (satisfied)**, C002 **hard (satisfied)**; CI access and main reconciliation were operational. **Conditionally closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md`: local enforced checks pass on `667005a6`; the exact-base workspace suite has four upstream TUI failures; hosted CI failed on upstream Clippy; and exact-ref Desktop E2E is still running. No registered downstream plan was newly unblocked by C003.
 
 ## 5. Cross-cutting requirements
 

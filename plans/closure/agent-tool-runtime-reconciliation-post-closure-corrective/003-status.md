@@ -24,7 +24,7 @@ C003 implementation commit `3528ef6e` is based on `667005a6`. This record and th
 
 C003 installed and enforced the tool-runtime guard set in `scripts/verify.sh quick` and hosted CI, added offline positive/negative fixtures for every guard, documented the guard contract and updated the Desktop E2E workflow with manual dispatch. The branch was rebased onto current main without conflicts or lost commits. Current-main quick verification, workspace Clippy and all seven focused tool-runtime integration binaries pass.
 
-C003 is **conditionally closed**, not strictly closed. The complete workspace CI-profile run on current main exposed four reproducible TUI failures introduced by upstream commits `845d77db` and `667005a6`, outside this branch's runtime diff. Exact-ref hosted CI and Desktop E2E are being requested after push; their results will be appended before handoff. The failures block a green full-suite claim and are not silently attributed to this tool-runtime corrective.
+C003 is **conditionally closed**, not strictly closed. The complete workspace CI-profile run on current main exposed four reproducible TUI failures introduced by upstream commits `845d77db` and `667005a6`, outside this branch's runtime diff. The exact-ref hosted CI run failed in upstream Clippy code; the Desktop E2E run has passed its build, renderer, host and boundary checks and is still executing its built-app WebDriver trajectory. The failures and in-progress run block a green full-qualification claim and are not silently attributed to this tool-runtime corrective.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -33,11 +33,11 @@ C003 is **conditionally closed**, not strictly closed. The complete workspace CI
 | C001 and C002 accepted before qualification | Separate accepted closure records; current replay ledger above | Pass |
 | All predecessor and corrective source guards execute in quick | Current-main `scripts/verify.sh quick` ran broker adapter, descriptor snapshot, descendant ceiling, disclosure wire, retry admission and fixture runner; each guard accepted checked-in source | Pass |
 | Every guard rejects a forbidden mutation | `scripts/test_tool_runtime_guards.py` mutated each of the five source boundaries; all five guards rejected their negative fixture | Pass |
-| Hosted CI uses the same explicit guard order | `.github/workflows/ci.yml` runs the six tool-runtime commands; workflow YAML parses | Pass locally; exact hosted result pending below |
+| Hosted CI uses the same explicit guard order | [CI run 38482051870](https://github.com/dbowm91/codegg/actions/runs/38482051870), exact SHA `453ecd1b943c227b6ea39477f22b63eef7aad338` | All tool-runtime guards, mutation fixtures and format passed; Clippy failed on upstream `src/tui/components/messages.rs:4043`; workspace tests were skipped |
 | Current-main integration preserved unrelated work | Rebased from `a7b116af` onto fetched `667005a6`; the two upstream commits changed TUI paths, with no conflicts. The complete TUI changes and tests remain present. | Pass |
 | C001/C002 focused runtime behavior after final rebase | Seven focused binaries passed, 173 tests total | Pass |
 | Full workspace and optional-feature qualification | Current-main broad suite has four reproducible upstream TUI failures; the required optional feature suite also exposed the upstream poolless shell test failure on the preceding `a7b116af` base. Details in sections 4 and 10. | Conditional |
-| Exact-ref hosted CI and Desktop E2E | Requested after push for the implementation revision; record run IDs/URLs and result below | Pending at record creation |
+| Exact-ref hosted CI and Desktop E2E | [CI run 38482051870](https://github.com/dbowm91/codegg/actions/runs/38482051870) and [Desktop E2E run 38482058408](https://github.com/dbowm91/codegg/actions/runs/38482058408), both at SHA `453ecd1b943c227b6ea39477f22b63eef7aad338` | CI failed in upstream Clippy; Desktop is still running the WebDriver trajectory after all prior steps passed |
 
 ## 3. Production and infrastructure changes
 
@@ -76,7 +76,7 @@ C001's fake-MCP timeout-after-dispatch and native ambiguous-effect regressions p
 
 C003's full workspace failures are in TUI panel behavior and panel key advertising. They reproduce independently and are outside the C003 code diff. The suite reports no C001/C002 regression among the focused binaries. On the prior current-main base, the optional-feature standalone shell test also failed independently; that test was introduced by mainline commit `9f9bde93` and is outside this branch's diff.
 
-No test cancellation or partial hosted run will be counted as green. Hosted run outcomes must be attached by exact SHA after they complete.
+No test cancellation or partial hosted run will be counted as green. The exact-ref Desktop E2E run remains in progress; its result must be appended after completion.
 
 ## 7. Compatibility and migration
 
@@ -90,17 +90,18 @@ No new security finding was identified in the C003 implementation. The outstandi
 
 ## 9. Documentation and operations
 
-Updated `architecture/testing.md`, `architecture/tool_broker.md`, `architecture/agent-tool-surface.md`, `plans/registry.md`, and the corrective addendum. The registry now records C001/C002 replay SHAs through current main `667005a6`, the C003 conditional disposition, and the four upstream test failures. Workflow YAML was parsed locally. Exact hosted URLs and statuses are to be added after dispatch.
+Updated `architecture/testing.md`, `architecture/tool_broker.md`, `architecture/agent-tool-surface.md`, `plans/registry.md`, and the corrective addendum. The registry records C001/C002 replay SHAs through current main `667005a6`, the C003 conditional disposition, and the four upstream test failures. Workflow YAML was parsed locally. Hosted runs are linked above; the Desktop run is still executing.
 
 ## 10. Unresolved findings
 
 - **Medium, qualification blocker — upstream TUI panel regressions.** On `667005a6`, these tests fail in the full suite and independently: `tui_agents_panel::the_agents_command_loads_its_panel_instead_of_recursing`, `tui_agents_panel::the_agents_panel_takes_the_keyboard`, `tui_chat_surfaces::the_focused_panel_advertises_its_own_keys`, and `tui_chat_surfaces::the_session_panel_advertises_its_own_keys`. The mainline TUI implementation came in `845d77db` and `667005a6`; none of these files are changed by the tool-runtime corrective. Owner is the TUI workstream. C003 makes no speculative fix to unrelated TUI code.
 - **Medium, optional-feature qualification gap — poolless shell output.** On base `a7b116af`, `core::daemon::tests::poolless_standalone_human_shell_uses_registered_workspace` failed with `server,plugins,lsp-test-support`, including in isolation, but passed in the default-feature isolated run. Its test source is from upstream `9f9bde93`; the exact `667005a6` optional-feature suite has not been completed. No tool-runtime source was implicated.
-- Hosted `CI / verify` and Desktop E2E exact-ref outcomes remain operational evidence and must be recorded before recommending integration. No PR was open for this branch during the audit. The branch will be pushed, then hosted workflows will be requested through available dispatch triggers.
+- [Hosted `CI / verify`](https://github.com/dbowm91/codegg/actions/runs/38482051870) ran on exact SHA `453ecd1b943c227b6ea39477f22b63eef7aad338`; all guards, fixtures and format passed, then upstream Clippy failed at `src/tui/components/messages.rs:4043`. Workspace tests were skipped. No PR was open for this branch during the audit.
+- [Hosted Desktop E2E](https://github.com/dbowm91/codegg/actions/runs/38482058408) ran on the same exact SHA. Boundary, daemon build, renderer and host checks passed; the built-app WebDriver trajectory was still in progress when this record was updated. This is not counted as a pass.
 
 ## 11. Roadmap disposition
 
-C003 is conditionally closed at implementation `3528ef6e` on current-main base `667005a6`. C001 and C002 remain accepted and closed. C003's code and guard acceptance criteria are met, while strict all-suite and hosted closure are withheld because of the named upstream failures and pending exact-ref hosted evidence.
+C003 is conditionally closed at implementation `3528ef6e` on current-main base `667005a6`. C001 and C002 remain accepted and closed. C003's code and guard acceptance criteria are met, while strict all-suite and hosted closure are withheld because of the named upstream failures and the in-progress exact-ref Desktop E2E run.
 
 A registry/reference search found no registered downstream plan with a hard or soft dependency on C003 or this corrective addendum. No plan is newly unblocked. The specified three-plan sequence is complete as far as current dependencies permit; no other eligible plan exists in this corrective directory.
 
@@ -110,4 +111,4 @@ A registry/reference search found no registered downstream plan with a hard or s
 - The implementation and closure replay SHAs for C001/C002 are updated through `667005a6` in the addendum and registry; historical closure records remain untouched.
 - The four current-main TUI failures and optional-feature shell failure are recorded as unresolved qualification findings with upstream ownership.
 - No downstream plans were unblocked; no unrelated corrective was started.
-- Append exact hosted CI and Desktop E2E workflow run URLs, exact SHA and final statuses here after dispatch.
+- Exact hosted CI and Desktop E2E run URLs and SHA are recorded above. Append the Desktop E2E final status when the WebDriver trajectory completes.
