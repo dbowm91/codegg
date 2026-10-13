@@ -1,8 +1,8 @@
 # Windows Native Sandbox C032 — Two-stage Dedicated-principal Strict Read-confinement Feasibility
 
-Status: **ready for test-only implementation**; operationally gated by disposable administrator-consented Windows fixture for native execution
+Status: **active (test-only implementation)**; hosted diagnostics are explicitly non-admission evidence
 Primary class: security/infrastructure
-Baseline: `work/windows-native-sandbox-foundation` at `c7e2dae404d5b58f6bd927aa8d99b4d518c4f23d` (refresh HEAD before edits).
+Baseline: `work/windows-native-sandbox-foundation` at `920aa08ea484a9230e1508e9bbaad58fbaefd498` (refreshed after rebase).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0022-bounded-successor-feasibility`.
 Authority: accepted feasibility-only ADR-0022; ADR-0004, ADR-0016, ADR-0020; ADR-0021 historical no-admission unaffected.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.

@@ -1,0 +1,23 @@
+name: Windows two-hop feasibility (test only)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows-two-hop-feasibility.yml'
+      - 'scripts/windows_two_hop_feasibility.ps1'
+      - 'plans/implementation/windows-native-sandbox/032-two-stage-dedicated-principal-read-confinement-feasibility.md'
+
+permissions:
+  contents: read
+
+jobs:
+  two-hop-diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bounded two-hop synthetic fixture
+        shell: pwsh
+        run: ./scripts/windows_two_hop_feasibility.ps1
