@@ -585,7 +585,7 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - production hosted Tool Program transport;
 - seccomp, namespace, container, or remote-execution sandbox expansion;
 - persistent search indexing;
-- search-backend retirement is no longer unregistered/deferred: new compatibility evidence is owned by `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md`, currently blocked on the upstream eggsearch parity qualification/release;
+- search-backend retirement is registered under `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md`: upstream parity/release qualification closed at eggsearch v0.4.1, CodeGG adoption M001 is ready, and CodeGG backend deletion M002 remains hard-blocked on adoption closure;
 - automatic dependency-update bots or continuous binary-size/audit gates;
 - OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
 - generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
