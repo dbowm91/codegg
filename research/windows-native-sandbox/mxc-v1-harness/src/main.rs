@@ -132,6 +132,9 @@ fn main() {
     let extended_secret = PathBuf::from(format!(r"\?{}", secret.display()));
     let setup = (|| -> io::Result<()> {
         fs::create_dir_all(&stage)?;
+        fs::create_dir_all(stage.join("localappdata"))?;
+        fs::create_dir_all(stage.join("appdata"))?;
+        fs::create_dir_all(stage.join("profile"))?;
         fs::create_dir_all(&host)?;
         fs::create_dir_all(&sibling)?;
         fs::write(&secret, "synthetic-c020-secret")?;
@@ -252,6 +255,9 @@ fn main() {
             ),
             ("SystemRoot".into(), system_root.clone()),
             ("WINDIR".into(), system_root.clone()),
+            ("USERPROFILE".into(), stage.join("profile").to_string_lossy().into_owned()),
+            ("LOCALAPPDATA".into(), stage.join("localappdata").to_string_lossy().into_owned()),
+            ("APPDATA".into(), stage.join("appdata").to_string_lossy().into_owned()),
             ("TEMP".into(), stage.to_string_lossy().into_owned()),
             ("TMP".into(), stage.to_string_lossy().into_owned()),
             ("PATH".into(), path_value),

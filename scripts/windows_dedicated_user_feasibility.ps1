@@ -172,15 +172,6 @@ try {
         throw "Could not mark the synthetic secret handle inheritable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
     $pipeName = "codegg-c021-$runId"
-    $pipeSecurity = [IO.Pipes.PipeSecurity]::new()
-    $pipeSecurity.SetAccessRuleProtection($true, $false)
-    foreach ($sid in @($adminSid, $systemSid)) {
-        $pipeRule = [IO.Pipes.PipeAccessRule]::new(
-            [Security.Principal.SecurityIdentifier]::new($sid),
-            [IO.Pipes.PipeAccessRights]::FullControl,
-            [Security.AccessControl.AccessControlType]::Allow)
-        [void]$pipeSecurity.AddAccessRule($pipeRule)
-    }
     $operatorPipe = [IO.Pipes.NamedPipeServerStream]::new(
         $pipeName,
         [IO.Pipes.PipeDirection]::InOut,
@@ -188,8 +179,7 @@ try {
         [IO.Pipes.PipeTransmissionMode]::Byte,
         [IO.Pipes.PipeOptions]::Asynchronous,
         0,
-        0,
-        $pipeSecurity)
+        0)
 
     $resultPath = Join-Path $stage 'child-result.json'
     $childScriptPath = Join-Path $stage 'child-probe.ps1'
