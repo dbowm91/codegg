@@ -3590,6 +3590,21 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.load_initial_session_via_core(request).await;
     }
 
+    // The launch directory owns the session. Every session-scoped surface
+    // (chat, files, agents, models) resolves its binding through the active
+    // session, so opening CodeGG in a folder and having to press Ctrl+N before
+    // any of them respond reads as a broken install rather than a missing
+    // keystroke.
+    //
+    // The inproc branch above has no plain-launch case — it only acted for an
+    // explicit `--fork`/`--session`/`--continue` — so `--standalone` reached
+    // the event loop with no session at all. This closes that gap for every
+    // mode, and is a no-op whenever a session is already bound, which keeps
+    // the explicit-id paths exactly as they were.
+    if !cli.no_session {
+        app.ensure_launch_session();
+    }
+
     // Kick off an async project catalog refresh so the eventual
     // picker UI has bounded summaries available without blocking the
     // event loop. The completion lands as a `ProjectCatalogRefreshed`

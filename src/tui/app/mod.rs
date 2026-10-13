@@ -576,6 +576,14 @@ pub struct App {
     /// `ChatDialog` resolve against this project, and completions push a
     /// fresh snapshot into the window without a new fetch.
     pub chat_panel_project: Option<String>,
+    /// What the open panel picker was routing, if one is open.
+    ///
+    /// `TuiMsg::SelectPanel` means "show me this panel" to the manager and
+    /// "put this content in this panel" to the picker, and the message cannot
+    /// tell them apart — so the picker records its intent here and the message
+    /// handler spends it. Cleared on every commit, so a picker the user
+    /// abandoned cannot load its content into the next panel they pick.
+    pub pending_panel_picker_subject: Option<&'static str>,
     /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
     /// and written back when the manager changes one.
     ///
@@ -901,6 +909,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 working_since: None,
                 running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -949,6 +959,7 @@ impl App {
                 task_submit_started: false,
                 task_model_choice: None,
                 chat_seed: None,
+                stop_armed_at: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1169,6 +1180,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            pending_panel_picker_subject: None,
             panel_hotkeys: saved_panel_hotkeys,
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1468,6 +1480,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 working_since: None,
                 running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1516,6 +1530,7 @@ impl App {
                 task_submit_started: false,
                 task_model_choice: None,
                 chat_seed: None,
+                stop_armed_at: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1706,6 +1721,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            pending_panel_picker_subject: None,
             panel_hotkeys: Default::default(),
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1792,10 +1808,11 @@ impl App {
         }
         self.session_state.working_since = None;
         self.session_state.session_status = SessionStatus::Error;
-        self.messages_state.toasts.error(
+        self.messages_state.toasts.error(&format!(
             "turn stalled: the core produced no event for over 5 minutes. \
-             The turn may still be running — press esc to cancel it.",
-        );
+             The turn may still be running — press {} twice to stop it.",
+            crate::tui::commands::turn_control::STOP_KEY_LABEL,
+        ));
         true
     }
 
@@ -1815,8 +1832,15 @@ impl App {
         }
         use crate::protocol::core::CoreEvent as E;
         match event {
-            E::TurnStarted { .. } => {
+            E::TurnStarted { turn_id, .. } => {
                 self.messages_state.messages.finalize_streaming();
+                // The daemon mints this id and `TurnCancel` rejects a
+                // mismatch, so it is the only thing that can stop the turn it
+                // just announced. It was discarded here, which is why nothing
+                // in the TUI could interrupt a running agent.
+                self.session_state.active_turn_id = Some(turn_id.clone());
+                // A fresh turn supersedes any earlier stop.
+                self.session_state.stopped_turn = false;
                 // Announce the turn in the chat tail. Everything below
                 // re-arms this on the next event, so the one-line
                 // indicator follows the agent's actual phase
@@ -1862,7 +1886,7 @@ impl App {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state
                     .messages
-                    .begin_activity(format!("running {tool_name}"));
+                    .begin_activity(tool_activity_label(&tool_name, &arguments));
                 self.session_state.running_tool =
                     Some(crate::tui::app::state::session::RunningTool::new(
                         tool_id.clone(),
@@ -1920,6 +1944,12 @@ impl App {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state.messages.end_activity();
                 self.messages_state.messages.finalize_streaming();
+                // The turn is over either way, so it can no longer be
+                // cancelled. `stopped_turn` deliberately survives: the user
+                // asked to stop, and the stopped badge plus `/resume` are
+                // still what they should see until they resume or send a new
+                // prompt.
+                self.session_state.active_turn_id = None;
                 self.session_state.session_status = if stop_reason == "error" {
                     SessionStatus::Error
                 } else {
@@ -1964,6 +1994,8 @@ impl App {
                 // The single most important arm: without it a failed turn
                 // left the status pinned on "working" with no explanation.
                 self.messages_state.messages.finalize_streaming();
+                self.messages_state.messages.end_activity();
+                self.session_state.active_turn_id = None;
                 self.session_state.session_status = SessionStatus::Error;
                 self.status_bar.set_thinking(false, None);
                 self.messages_state.toasts.error(&message);
@@ -3460,6 +3492,12 @@ impl App {
             Some(InputAction::SelectModel) => self.process_msg(TuiMsg::OpenModelDialog),
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
+            Some(InputAction::ToggleAgentRun) => {
+                crate::tui::commands::turn_control::toggle_stop_or_resume(
+                    self,
+                    crate::tui::commands::turn_control::STOP_KEY_LABEL,
+                );
+            }
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
             // Every direction shares one contextual dispatcher: it docks the
             // open box when there is one, and selects a pane when there is
@@ -4871,14 +4909,16 @@ impl App {
                     .to_string();
 
                 if args.is_empty() {
-                    // Bare `/agents`: open the management panel, which is the
-                    // interactive surface. The *text* listing stays on
-                    // `/agents show` and `/agents --all` below, so nothing
-                    // that was reachable before becomes unreachable.
-                    crate::tui::commands::panels::open_panel_box(
-                        self,
-                        crate::tui::panels::SidePanelId::Agents,
-                    );
+                    // Bare `/agents`: open a box, like every other `/` command
+                    // that brings up a surface, and let the user say which
+                    // panel it should go to. It used to jump straight into the
+                    // side column, so the command had no box of its own and
+                    // no way to ask where its content belonged — and a list
+                    // that is already the whole answer looks like nothing
+                    // happened. The *text* listing stays on `/agents show`
+                    // and `/agents --all` below, so nothing that was
+                    // reachable before becomes unreachable.
+                    crate::tui::commands::panels::open_panel_picker(self, "agents");
                     return;
                 }
 
@@ -5532,6 +5572,12 @@ impl App {
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
+            }
+            B::Stop => {
+                crate::tui::commands::turn_control::stop(self);
+            }
+            B::StartTurn => {
+                crate::tui::commands::turn_control::start(self);
             }
             B::Share => {
                 if let Some(ref session) = self.session_state.session {
@@ -11558,8 +11604,36 @@ impl App {
                 crate::tui::chat_browser::input_hints(seed)
             ));
         }
-        self.panel_host
+        // The LLM buffer has no panel to advertise keys for, which is exactly
+        // why its own keys were undiscoverable: the one surface where a turn
+        // runs long, and the one surface with nothing written above the input.
+        // Only during a turn — an idle buffer has nothing to stop.
+        let agent_keys = self.llm_buffer_key_hints()?;
+        if let Some(panel) = self
+            .panel_host
             .composer_hints(self.chat_panel_project.as_deref())
+        {
+            return Some(format!("{agent_keys} · {panel}"));
+        }
+        Some(agent_keys)
+    }
+
+    /// The stop/resume keys for the main buffer, or `None` when idle.
+    ///
+    /// Distinct from the strip's own trailing hint: that one is drawn only
+    /// while the working strip is up, and this one is what reserves the row.
+    fn llm_buffer_key_hints(&self) -> Option<String> {
+        let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
+        if self.session_state.stopped_turn {
+            return Some(format!("{key} start agent · /start · i type"));
+        }
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            if crate::tui::commands::turn_control::stop_armed(self) {
+                return Some(format!("press {key} again to stop agent"));
+            }
+            return Some(format!("{key} stop agent (press twice) · /stop · i type"));
+        }
+        None
     }
 
     /// Arm the shared composer for a chat reply or edit.
@@ -13904,6 +13978,69 @@ impl App {
             .toasts
             .info("Handoff exported to clipboard");
     }
+}
+
+/// Describe what the agent is doing, for the one-line activity throbber.
+///
+/// The bare tool name answers "is something happening" but not "what". A turn
+/// that spends ninety seconds in `bash` looks identical to a turn that spent
+/// ninety seconds thinking, and the user cannot tell which to wait out — so
+/// the label carries the argument that identifies the work.
+///
+/// Bounded twice over: the summary is capped in [`SUMMARY_MAX`] characters and
+/// flattened to a single line, because this draws into one fixed-height row.
+/// It is never *more* revealing than the transcript itself, which already
+/// renders these same arguments in full above the strip.
+fn tool_activity_label(tool_name: &str, arguments: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        // Unparseable arguments are not a reason to lose the tool name.
+        return format!("running {tool_name}");
+    };
+    let Some(summary) = summarize_tool_arguments(&value) else {
+        return format!("running {tool_name}");
+    };
+    if summary.is_empty() {
+        return format!("running {tool_name}");
+    }
+    format!("running {tool_name} · {summary}")
+}
+
+/// Argument keys worth naming, in priority order, per tool.
+///
+/// Ordered rather than scanned because the *first* meaningful argument is the
+/// one that identifies the work; a tool with a dozen knobs still gets a label
+/// that names the one that matters.
+const TOOL_SUMMARY_KEYS: &[&str] = &[
+    "command",
+    "path",
+    "file_path",
+    "pattern",
+    "query",
+    "url",
+    "name",
+    "description",
+];
+
+/// Cap on the argument summary appended to a tool label.
+const SUMMARY_MAX: usize = 48;
+
+/// Pick the most identifying bounded argument out of a tool call's arguments.
+fn summarize_tool_arguments(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in TOOL_SUMMARY_KEYS {
+        let Some(raw) = object.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let flattened = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flattened.is_empty() {
+            continue;
+        }
+        return Some(crate::tui::wrap::ellipsize_to_width(
+            &flattened,
+            SUMMARY_MAX,
+        ));
+    }
+    None
 }
 
 fn index_files_sync(dir: &str) -> Vec<String> {

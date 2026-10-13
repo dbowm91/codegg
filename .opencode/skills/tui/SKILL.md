@@ -449,14 +449,53 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
-- **The working strip owns turn liveness.** `render_working_strip` draws one
-  throbber row plus one row per advertised subagent between the transcript and
-  the composer, reserved from the prompt allocation and carved back off like
-  the hint line and the todo strip. It draws only while `Working`.
+- **The working strip owns turn liveness, and it names the way out.**
+  `render_working_strip` draws one throbber row plus one row per advertised
+  subagent between the transcript and the composer, reserved from the prompt
+  allocation and carved back off like the hint line and the todo strip. It
+  draws while `Working` **or** while `SessionState::stopped_turn` — a stopped
+  turn keeps the strip deliberately, because the user's next question is
+  whether it is still stopped and how to carry on, and an indicator that
+  vanishes the instant work stops answers neither. Row 0 pairs the phase with
+  the key that changes it (`x to stop`, `press x again to stop agent` while a
+  confirmation is armed, `■ stopped · press x or /start` once stopped): a
+  long pause with no way out is what reads as a dropped connection.
   `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
   because the strip is carved out of the prompt chunk — the reverse order
   resolves every subagent click to click-to-focus. Hit rects live in
   `SubagentState::hits` and are rebuilt every frame.
+- **A turn must be interruptible, and the id is what makes it so.**
+  `TurnCancel` is addressed by `(session_id, turn_id)` and the daemon
+  *rejects* a mismatch, so `SessionState::active_turn_id` — bound from
+  `TurnStarted`, cleared by every terminal turn event — is the only thing that
+  can stop a turn. A cancelled turn arrives as an ordinary `TurnCompleted`,
+  so `stopped_turn` is what distinguishes "I stopped this" from "it
+  finished", and it deliberately survives `TurnCompleted`. `/stop` marks it
+  optimistically and undoes only on a real failure, because the daemon's
+  cancel is cooperative and the lag would otherwise be visible. There is no
+  protocol-level resume, so `/start` **re-submits**; never imply it revives
+  the cancelled turn. `x` is one key for both directions — the state says
+  which applies — and the destructive one takes a second press inside
+  `STOP_ARM_WINDOW`, expired by the render pump rather than only on the next
+  key. Bare-char binding, so Insert types the letter.
+- **The launch directory starts its own session.** `App::ensure_launch_session`
+  runs once from `main.rs` and is a no-op whenever a session is bound, because
+  every session-scoped surface resolves through it and a launch without one
+  reads as a broken install rather than a missing `Ctrl+N`. It reuses
+  `sessions::start_new_session` so the request carries the **typed**
+  `(project_id, workspace_id)` pair, and is deliberately not
+  `App::new_session` (that clears the view and can open a template picker).
+- **Two panel boxes, one list implementation.** `PanelManagerDialog` and
+  `PanelPickerDialog` (opened by bare `/agents`) share query/cursor/scroll/
+  mode/keymap through `PanelListState`; two boxes that both list panels must
+  agree on what `j` does. The cursor is an index into `SidePanelId::ALL`,
+  never into the filtered view — filtering narrows visibility without
+  renumbering what `Enter` acts on. The picker commits the **same**
+  `TuiMsg::SelectPanel` the manager emits; `App::pending_panel_picker_subject`
+  is what gives the selection its second half (load the content into the
+  chosen panel), and it is spent on commit so an abandoned picker cannot leak
+  into the next pick. A panel row that a user selects must do something:
+  `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
   `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
   A snapshot that arrives replaces the rows; a *missing* snapshot does not,

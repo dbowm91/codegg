@@ -572,3 +572,111 @@ fn a_search_highlight_survives_a_re_render() {
     app.messages_state.messages.clear_search();
     let _ = render_to_buffer(&mut app, 100, 30);
 }
+
+// ---------------------------------------------------------------------------
+// 4. Stopping, resuming, and the agent activity indicator
+// ---------------------------------------------------------------------------
+//
+// A turn the user cannot interrupt is a turn they can only wait out, and a
+// long wait with no changing pixels reads as a dropped connection rather than
+// as work. These cover the three answers that make it legible: the key is
+// discoverable, the destructive direction is confirmed rather than
+// single-keystroke, and the stopped state stays visible.
+
+#[test]
+fn a_working_turn_names_the_key_that_stops_it() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        text.contains("to stop"),
+        "the working strip must advertise the stop key; a long pause with no \
+         way out is what reads as a disconnect. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn the_stop_confirmation_is_visible_between_the_two_presses() {
+    let mut app = test_app();
+    // A fresh app composes (Insert), and bare-char bindings are Normal-mode
+    // only so `x` can never shadow a letter being typed. Reaching for the stop
+    // key therefore means leaving Insert first.
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.session_state.session_status = SessionStatus::Working;
+
+    // First press: arm, and say what completes it. Without this the second
+    // press looks like a no-op and the key reads as broken.
+    let _ = render_to_buffer(&mut app, 100, 30);
+    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(
+        app.prompt_state.stop_armed_at.is_some(),
+        "one press must arm, not stop"
+    );
+    assert!(
+        app.session_state.session_status == SessionStatus::Working,
+        "an armed confirmation must not have stopped the turn"
+    );
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+    assert!(
+        text.contains("again to stop agent"),
+        "the armed state must say which press completes it. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn a_single_x_in_insert_mode_is_typed_rather_than_stopping_the_agent() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Insert;
+
+    let _ = render_to_buffer(&mut app, 100, 30);
+    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+    assert!(
+        app.prompt_state.stop_armed_at.is_none(),
+        "`x` while composing must be a letter, never a stop"
+    );
+    assert!(
+        app.prompt_state.prompt.get_text().contains('x'),
+        "the letter must have reached the composer"
+    );
+}
+
+#[test]
+fn a_stopped_turn_stays_visible_and_names_the_way_back() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.session_state.stopped_turn = true;
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        text.contains("stopped"),
+        "a stopped agent must say so. Rendered:\n{text}"
+    );
+    assert!(
+        text.contains("/start"),
+        "the stopped state must name the way out. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn an_idle_agent_shows_no_stop_affordance() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.session_state.stopped_turn = false;
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        !text.contains("to stop") && !text.contains("stopped"),
+        "nothing to stop and nothing stopped means no stop affordance. \
+         Rendered:\n{text}"
+    );
+}

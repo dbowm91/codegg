@@ -640,6 +640,12 @@ impl App {
                 crate::tui::commands::interactive_terminal::spawn_default_terminal_for_panel(self)
             }
             TuiMsg::SelectPanel { panel } => {
+                // A panel picker exists to route *content* into the chosen
+                // panel, so its selection has a second half the manager's does
+                // not: load that content. Claimed before the dialog is closed
+                // so a stale selection cannot load into a panel the user has
+                // since abandoned.
+                let routed = self.pending_panel_picker_subject.take();
                 // Focus follows the pick: the manager exists to get the user
                 // *to* a panel, and landing there without the keyboard would
                 // make the choice look inert. A live-loading box stays open
@@ -650,6 +656,12 @@ impl App {
                     == crate::tui::commands::panels::SelectOutcome::Selected
                 {
                     crate::tui::commands::panels::focus_panel(self);
+                }
+                if routed.is_some() {
+                    crate::tui::commands::panels::open_panel_box(
+                        self,
+                        crate::tui::panels::SidePanelId::Agents,
+                    );
                 }
             }
             TuiMsg::SetPanelPlacement { placement } => {

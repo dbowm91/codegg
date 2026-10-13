@@ -110,6 +110,14 @@ pub enum InputAction {
     SelectModel,
     ClearSession,
     NewSession,
+    /// Stop the running turn, or resume a stopped one (`x`, Normal mode
+    /// only).
+    ///
+    /// One key for both directions because the state already says which one
+    /// applies: a stopped agent resumes, a working one stops. Stopping is the
+    /// destructive direction, so it takes a confirmed second press inside a
+    /// short window — see `turn_control::toggle_stop_or_resume`.
+    ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
     /// Open the side-panel manager (`Shift+S`), Normal mode only.
@@ -216,6 +224,13 @@ pub enum ActionKey {
     SelectModel,
     ClearSession,
     NewSession,
+    /// Stop the running turn, or resume a stopped one (`x`, Normal mode
+    /// only).
+    ///
+    /// One key for both directions because the state already says which one
+    /// applies: a stopped agent resumes, a working one stops. Stopping is the
+    /// destructive direction, so it takes a confirmed second press.
+    ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
     /// Open the side-panel manager (`Shift+S`, Normal mode only).
@@ -292,6 +307,7 @@ impl ActionKey {
             Self::SelectModel,
             Self::ClearSession,
             Self::NewSession,
+            Self::ToggleAgentRun,
             Self::ToggleSidebar,
             Self::FocusSidebar,
             Self::ToggleSection,
@@ -348,6 +364,7 @@ impl ActionKey {
             Self::SelectModel => InputAction::SelectModel,
             Self::ClearSession => InputAction::ClearSession,
             Self::NewSession => InputAction::NewSession,
+            Self::ToggleAgentRun => InputAction::ToggleAgentRun,
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
             Self::OpenPanelManager => InputAction::OpenPanelManager,
@@ -409,6 +426,7 @@ impl ActionKey {
             Self::SelectModel => "Select model",
             Self::ClearSession => "Clear session",
             Self::NewSession => "New session",
+            Self::ToggleAgentRun => "Stop / resume agent (x)",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
             Self::OpenPanelManager => "Open panel manager (Shift+S)",
@@ -507,6 +525,10 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // chord is retired and this is now the only spelling, which
             // makes the mode gate the whole reason the key is safe.
             | InputAction::OpenPanelManager
+            // Already covered by the bare-char rule, but stated here because
+            // it is load-bearing: `x` must never be claimed while composing,
+            // or typing a word containing it would stop the agent.
+            | InputAction::ToggleAgentRun
     )
 }
 
@@ -580,6 +602,12 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // `q` quits from Normal mode. Insert mode skips bare-char bindings, so
     // this costs nothing while typing.
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
+    // `x` stops a running turn and resumes a stopped one. Bare char, so it is
+    // Normal-mode only and can never shadow an `x` typed into the composer.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('x')),
+        InputAction::ToggleAgentRun,
+    );
     map.insert((KeyModifiers::NONE, KeyCode::Up), InputAction::NavigateUp);
     map.insert(
         (KeyModifiers::NONE, KeyCode::Down),
