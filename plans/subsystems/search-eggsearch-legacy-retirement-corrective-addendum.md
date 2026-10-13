@@ -1,6 +1,6 @@
 # Search / Eggsearch Legacy Backend Retirement Corrective Addendum
 
-Status: blocked
+Status: active (M001 ready; M002 blocked on M001)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -59,11 +59,13 @@ CodeGG M001 parity release adoption / contract reconciliation
 CodeGG M002 builtin backend retirement
 ```
 
-The CodeGG workstream is intentionally **blocked** today.
-
-M001 may not implement against an untagged moving eggsearch branch merely to
-make the cleanup start earlier. The normal CodeGG packaging contract pins and
-validates a concrete eggsearch version; the parity release must exist first.
+The former upstream release blocker is **satisfied** as of 2026-10-13:
+`eggstack/eggsearch/plans/closure/codegg-legacy-search-parity/005-status.md`
+records strict closure of the upstream parity work and immutable published
+`v0.4.1` tag at `32769d684417567dfb30fc5adea1475cee7f0ed0`.
+CodeGG M001 is now **ready** to adopt and independently qualify the released
+surface (`>=0.4.1`); M002 remains blocked on actual CodeGG M001 closure.
+M001 MUST use a pinned released artifact, not an untagged moving branch.
 
 ## 3. Current-state findings that justify retirement
 
@@ -166,16 +168,18 @@ The upstream M003 closure record is authoritative if the final matrix differs.
 
 ### M001 — Eggsearch parity release adoption and provider-contract reconciliation
 
-Status: blocked.
+Status: ready (upstream release gate satisfied; CodeGG pinned-binary acceptance is M001 work).
 
 Plan:
 
 - `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`
 
-Hard/operational blockers:
+Satisfied upstream release prerequisites:
 
-- eggsearch legacy-search-parity M003 accepted;
-- tagged eggsearch release exists carrying that accepted surface.
+- parity M003-M005 accepted and qualified in the v0.4.1 closure;
+- immutable published `v0.4.1` release carries that accepted surface.
+
+Remaining downstream gates are M001 acceptance evidence, not prerequisites.
 
 Outcome:
 
@@ -272,5 +276,5 @@ The workstream closes when:
 
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
-| M001 eggsearch parity release adoption + provider contract | blocked | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | eggsearch parity M003 + qualifying tagged release |
+| M001 eggsearch parity release adoption + provider contract | ready | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | None; upstream v0.4.1 is qualified/published (upstream closure M005) |
 | M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | CodeGG M001 |
