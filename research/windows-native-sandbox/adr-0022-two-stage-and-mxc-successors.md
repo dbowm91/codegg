@@ -1,4 +1,4 @@
-# Windows native sandbox successors — two-stage caller-token and MXC diagnostics (ADR-0022)
+# Windows native sandbox successors — two-stage caller-token and MXC diagnostics (ADR-0024)
 
 Status: new bounded test-only research justification; **no new native qualification** as of 2026-10-13.
 Baseline branch: `work/windows-native-sandbox-foundation` at `c7e2dae404d5b58f6bd927aa8d99b4d518c4f23d`.
@@ -32,4 +32,4 @@ Source: https://github.com/microsoft/mxc/blob/main/src/core/mxc-sdk/README.md
 
 ## Side-by-side qualification and decision
 
-Both candidates consume C019's actual-child oracle and share identical read/write/alias/handle/IPC/Job tests; C032 tests normal -> same-user restricted token, C033 tests selected MXC tier and actual deny policy. Common failure classes are: **launch_failed**, **initialized_no_tool**, **read_exposed**, **filesystem_enforced**, **network_unqualified**, **not_run**, **host_blocked**. No mixed "CI passed" classification. C034 independently decides if a positive candidate deserves a *new* production ADR; no existing closure is reclassified. ADR-0021's broker/guest rejection remains effective.
+Both candidates consume C019's actual-child oracle and share identical read/write/alias/handle/IPC/Job tests; C032 tests normal -> same-user restricted token, C033 tests selected MXC tier and actual deny policy. Common failure classes are: **launch_failed**, **initialized_no_tool**, **read_exposed**, **filesystem_enforced**, **network_unqualified**, **not_run**, **host_blocked**. No mixed "CI passed" classification. C034 independently decides if a positive candidate deserves a *new* production ADR; no existing closure is reclassified. ADR-0023's broker/guest rejection remains effective.

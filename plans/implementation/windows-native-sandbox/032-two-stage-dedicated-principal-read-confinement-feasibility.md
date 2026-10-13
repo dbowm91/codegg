@@ -4,7 +4,7 @@ Status: **implemented (negative bounded launch feasibility)**
 Primary class: security/infrastructure
 Baseline: `work/windows-native-sandbox-foundation` at `920aa08ea484a9230e1508e9bbaad58fbaefd498` (refreshed after rebase).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0022-bounded-successor-feasibility`.
-Authority: accepted feasibility-only ADR-0022; ADR-0004, ADR-0016, ADR-0020; ADR-0021 historical no-admission unaffected.
+Authority: accepted feasibility-only ADR-0024; ADR-0004, ADR-0016, ADR-0020; ADR-0023 historical no-admission unaffected.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 Predecessors: C019 actual-child security oracle, C021 first-hop success, C024/C027/C028 negative host-side token-launch evidence; C029 remains closed without admission.
 

@@ -4,7 +4,7 @@ Status: **implemented; conditionally closed as a bounded negative test-only cand
 Primary class: corrective / security-infrastructure
 Planning baseline: `80139df351e9a77f46f7b09f904a0d6e854939b4` on `work/windows-native-sandbox-foundation`; implementation agent MUST refresh head/evidence before edits.
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0023-mxc-helper-diagnostic-corrective`.
-Architecture authority: **ADR-0023 (accepted for test-only C035 only)**; ADR-0022 prior bounded feasibility, ADR-0020 C019 oracle, ADR-0016 process authority, ADR-0004 approval/security policy. ADR-0021 rejection and C034 no-admission remain effective.
+Architecture authority: **ADR-0025 (accepted for test-only C035 only)**; ADR-0024 prior bounded feasibility, ADR-0020 C019 oracle, ADR-0016 process authority, ADR-0004 approval/security policy. ADR-0023 rejection and C034 no-admission remain effective.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 Corrective predecessor: `plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md` and `plans/closure/windows-native-sandbox/033-status.md`; C034 comparison at `plans/closure/windows-native-sandbox/034-status.md`.
 

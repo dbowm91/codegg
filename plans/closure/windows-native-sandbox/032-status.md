@@ -94,4 +94,4 @@ C032 is closed as a negative bounded launch-feasibility experiment. C034's writt
 
 - Mark C032 closed (negative bounded launch feasibility) and link this record from the registry and subsystem roadmap.
 - Record that C034 may proceed to a no-admission comparison using C032's written negative disposition.
-- Keep all production Windows sandbox and terminally blocked ADR-0021 routes unavailable.
+- Keep all production Windows sandbox and terminally blocked ADR-0023 routes unavailable.

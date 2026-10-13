@@ -27,4 +27,4 @@ The test held the default desktop, target-token environment block, and unredirec
 
 ## Disposition
 
-C028 is conditionally closed as negative bounded feasibility. Windows constrained execution remains unavailable. C029 needs an explicit maintainer ADR-0021 decision before either mutually exclusive C030 broker or C031 guest feasibility plan can start.
+C028 is conditionally closed as negative bounded feasibility. Windows constrained execution remains unavailable. C029 needs an explicit maintainer ADR-0023 decision before either mutually exclusive C030 broker or C031 guest feasibility plan can start.

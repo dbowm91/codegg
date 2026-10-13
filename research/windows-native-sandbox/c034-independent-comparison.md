@@ -2,7 +2,7 @@
 
 Status: **closed — no admissible production candidate**
 Date: 2026-10-13
-Authority: ADR-0022 test-only successor feasibility; ADR-0021 no-admission remains unchanged.
+Authority: ADR-0024 test-only successor feasibility; ADR-0023 no-admission remains unchanged.
 
 ## Evidence identity
 
@@ -30,11 +30,11 @@ The hosted workflow conclusions mean the probes reported and cleaned their synth
 
 C032 removed the specific cross-account token transition that blocked C024/C027, but its inner restricted process did not reach the first user instruction on the hosted Windows Server 2025 image. The timeout is not evidence of denied reads. No shell/tool compatibility or child token attestation exists.
 
-C033 provided stronger bounded evidence on a serviced Windows 11 ARM host: BaseContainer selected, direct and alias reads denied against the same broad-readable synthetic object, and block-mode capture produced a complete 13-event summary. Its native helper failed before an inherited-handle result, and the child SID/group observation and independent stage-write assertion were absent. The experiment also did not test network, restart, or concurrency. These gaps are sufficient to reject production admission under ADR-0022's explicit gates without treating any missing operation as denied.
+C033 provided stronger bounded evidence on a serviced Windows 11 ARM host: BaseContainer selected, direct and alias reads denied against the same broad-readable synthetic object, and block-mode capture produced a complete 13-event summary. Its native helper failed before an inherited-handle result, and the child SID/group observation and independent stage-write assertion were absent. The experiment also did not test network, restart, or concurrency. These gaps are sufficient to reject production admission under ADR-0024's explicit gates without treating any missing operation as denied.
 
 The executable production route remains **none**. Retain fail-closed Windows constrained execution: `SandboxRequest::Required` remains unavailable, no filesystem or network `Enforced` value is emitted, and there is no unrestricted fallback. No write-only security profile is introduced. Choosing one would require a separate explicit policy/approval decision.
 
-No independent positive security review was requested or claimed because neither candidate was strict-positive and no production proposal is made. There is no follow-on implementation in this line. C030/C031 remain terminally blocked under the rejected ADR-0021 decision; C011/M004–M006 and C015–C018 remain blocked.
+No independent positive security review was requested or claimed because neither candidate was strict-positive and no production proposal is made. There is no follow-on implementation in this line. C030/C031 remain terminally blocked under the rejected ADR-0023 decision; C011/M004–M006 and C015–C018 remain blocked.
 
 ## Operations and future reconsideration gates
 

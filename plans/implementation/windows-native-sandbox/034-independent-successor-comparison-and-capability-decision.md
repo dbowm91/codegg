@@ -4,7 +4,7 @@ Status: **implemented (closed — no admissible production candidate)**
 Primary class: security invariant / architecture
 Baseline: `work/windows-native-sandbox-foundation` at `cd4bc1e25dd858a0b53a43a9935eedfbb359031e`; evidence runs use the exact SHAs recorded in the C032/C033 closure records.
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0022-bounded-successor-feasibility`.
-Authority: ADR-0022 feasibility, ADR-0004/0016/0019/0020; ADR-0021 rejection intact.
+Authority: ADR-0024 feasibility, ADR-0004/0016/0019/0020; ADR-0023 rejection intact.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 
 ## 1. Objective

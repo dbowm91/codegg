@@ -27,8 +27,8 @@ C034 is closed with **no admissible production candidate**. C032's restricted ch
 | Freeze C032 identity and result | Exact SHA `cd4bc1e25dd858a0b53a43a9935eedfbb359031e`; hosted run `38405423203`; `plans/closure/windows-native-sandbox/032-status.md` | pass | Windows Server 2025 Datacenter build 26100. Inner restricted child was created suspended, Job-verified and resumed, then timed out before entry. |
 | Freeze C033 identity and result | Exact SHA `ff0443ca33a14282dc81fdffd35240265151549f`; hosted run `38404451372`; `plans/closure/windows-native-sandbox/033-status.md` | pass | Windows 11 Enterprise 25H2 ARM64 build 26200, UBR 9457. Thirteen non-truncated block-mode events; native helper initialization failed. |
 | Compare shared read/write/tool/handle criteria | `research/windows-native-sandbox/c034-independent-comparison.md` | pass | Pass, fail, not-run and unavailable dimensions remain distinct. No missing probe is described as denial. |
-| Decide admission against strict gates | ADR-0022, C032/C033 closure records, comparison research | pass | No candidate is strict-positive; no production candidate selected. |
-| Preserve fail-closed production policy | ADR-0022 and Windows native sandbox roadmap | pass | No Windows `Required`, filesystem/network `Enforced`, or unrestricted fallback. |
+| Decide admission against strict gates | ADR-0024, C032/C033 closure records, comparison research | pass | No candidate is strict-positive; no production candidate selected. |
+| Preserve fail-closed production policy | ADR-0024 and Windows native sandbox roadmap | pass | No Windows `Required`, filesystem/network `Enforced`, or unrestricted fallback. |
 
 ## 3. Production implementation evidence
 
@@ -55,7 +55,7 @@ These repository checks are run on the final closure changes before commit. Host
 - No unrestricted fallback, original-user ACL mutation, privileged service, or agent-controlled elevated command path is introduced.
 - No filesystem or network `Enforced` guarantee is claimed.
 - No write-only security profile or changed policy-reporting behavior is introduced.
-- C011/M004–M006 and C015–C018 remain blocked; C030/C031 remain terminally blocked under ADR-0021.
+- C011/M004–M006 and C015–C018 remain blocked; C030/C031 remain terminally blocked under ADR-0023.
 
 ## 6. Failure and recovery review
 
@@ -83,7 +83,7 @@ The comparison preserves a no-admission result because neither candidate satisfi
 
 ## 11. Roadmap disposition
 
-ADR-0022's bounded feasibility line is complete: C032 and C033 are closed negative, and C034 is closed no-admission. No remaining plan in this line is eligible. No downstream milestone is unblocked. C030/C031 remain terminally blocked; C011/M004–M006 and C015–C018 remain blocked.
+ADR-0024's bounded feasibility line is complete: C032 and C033 are closed negative, and C034 is closed no-admission. No remaining plan in this line is eligible. No downstream milestone is unblocked. C030/C031 remain terminally blocked; C011/M004–M006 and C015–C018 remain blocked.
 
 ## 12. Registry updates
 

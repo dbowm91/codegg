@@ -67,6 +67,9 @@ run_quick() {
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 
+    echo "==> python3 scripts/check_adr_integrity.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_adr_integrity.py)
+
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 

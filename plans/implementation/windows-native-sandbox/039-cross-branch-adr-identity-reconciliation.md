@@ -1,6 +1,6 @@
 # Windows Native Sandbox C039 — Cross-branch ADR Identity Reconciliation
 
-Status: **ready for controlled documentation reconciliation**; no new sandbox mechanism or architecture decision
+Status: **active**; no new sandbox mechanism or architecture decision
 Primary class: architecture/governance corrective
 Baseline: `work/windows-native-sandbox-foundation` HEAD `631ae9488f251ac70e91b9c8299d2c1c3bff83fa`; `main` HEAD `b9ba494c1b21638c2e2f660301ba207ce8859682`; common baseline `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`. Refresh both heads and allocation table before implementation.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#post-adr-0024-pr-111-mainline-reconciliation`.
@@ -9,7 +9,7 @@ Authority: no Windows security-profile change. Prior Windows ADR decisions and C
 
 ## 1. Defect found in the live merge audit
 
-Mainline accepted/proposed TUI work independently allocated `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md` and `plans/adrs/ADR-0022-daemon-authorized-workspace-directory-listing.md` (now on `main`, at `b9ba494c`). The Windows branch independently has `ADR-0021-windows-privileged-launch-vs-guest-isolation.md` and `ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` plus Windows ADR-0023/0024. The filename suffixes are different, so Git does **not** report these as textual conflicts, but two different decisions have the same global ADR ID. The active mainline `plans/adrs/README.md` explicitly requires monotonically increasing ADR IDs that are never reused and documents a cross-branch reservation. This is a **semantic conflict** distinct from the sole observed overlapping text file `plans/registry.md` (C040).
+Mainline TUI work independently allocated `ADR-0021-native-editor-completion-read-and-local-edit.md` and `ADR-0022-daemon-authorized-workspace-directory-listing.md` (now on `main`, at `b9ba494c`). The Windows branch independently has `ADR-0021-windows-privileged-launch-vs-guest-isolation.md` and `ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` plus Windows ADR-0023/0024. The filename suffixes are different, so Git does **not** report these as textual conflicts, but two different decisions have the same global ADR ID. The active mainline `plans/adrs/README.md` explicitly requires monotonically increasing ADR IDs that are never reused and documents a cross-branch reservation. This is a **semantic conflict** distinct from the sole observed overlapping text file `plans/registry.md` (C040).
 
 Do not turn a successful `git merge` exit into a declaration of governance correctness while duplicate IDs remain. Conversely, do not silently rewrite accepted ADR content or prior closure outcomes to make an ID appear historically unique.
 

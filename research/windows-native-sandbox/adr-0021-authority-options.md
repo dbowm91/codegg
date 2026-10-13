@@ -1,6 +1,6 @@
-# ADR-0021 research: Win32 launch authority or native Windows guest
+# ADR-0023 research: Win32 launch authority or native Windows guest
 
-Status: evidence-based comparison; ADR-0021 rejected with no admission (2026-10-13)
+Status: evidence-based comparison; ADR-0023 rejected with no admission (2026-10-13)
 Baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843`; 2026-10-13.
 
 ## Current native evidence
@@ -27,12 +27,12 @@ Record `ResumeThread` **previous suspend count** (not only failure), first-instr
 
 A broker pipe with default DACL can grant overly broad access. The privileged server must **check** `ImpersonateNamedPipeClient` and abort if it fails; caller-supplied PID/name is not authentication. Broker cannot be an elevated shell or take raw agent-generated arbitrary launch parameters. Windows Sandbox is unavailable on Windows Home; mappings/clipboard/network are security-sensitive. WSL2 is a Linux execution profile, not Windows native toolchain parity.
 
-## Subsequent independent successor considered under ADR-0022
+## Subsequent independent successor considered under ADR-0024
 
-Newly verified external precedents (OpenAI Codex Windows launcher and Anthropic sandbox-runtime) use an initial `CreateProcessWithLogonW` login to a separate standard account and an in-account runner which restricts **its own** primary token before `CreateProcessAsUserW`. This topology differs from C024/C027's original-caller/foreign-token failures and C030's elevated SCM broker. Microsoft's `CreateProcessAsUserW` documentation exempts the restricted-caller-token case from `SE_ASSIGNPRIMARYTOKEN_NAME`, not necessarily other privileges/launch initialization requirements. C032 implements only a bounded two-hop synthetic native feasibility; C033 separately requalifies MXC with effective-tier/denial-capture proof; C034 issues a comparison. See ADR-0022 and `research/windows-native-sandbox/adr-0022-two-stage-and-mxc-successors.md`. No admission or historical reversal is implied.
+Newly verified external precedents (OpenAI Codex Windows launcher and Anthropic sandbox-runtime) use an initial `CreateProcessWithLogonW` login to a separate standard account and an in-account runner which restricts **its own** primary token before `CreateProcessAsUserW`. This topology differs from C024/C027's original-caller/foreign-token failures and C030's elevated SCM broker. Microsoft's `CreateProcessAsUserW` documentation exempts the restricted-caller-token case from `SE_ASSIGNPRIMARYTOKEN_NAME`, not necessarily other privileges/launch initialization requirements. C032 implements only a bounded two-hop synthetic native feasibility; C033 separately requalifies MXC with effective-tier/denial-capture proof; C034 issues a comparison. See ADR-0024 and `research/windows-native-sandbox/adr-0022-two-stage-and-mxc-successors.md`. No admission or historical reversal is implied.
 
 ## Decision rule
 
-C028 is conditionally closed with the negative pre-user-entry phase result. The maintainer's C029 disposition rejects route selection and retains no admission. ADR-0021 is rejected; C030 broker and C031 guest remain terminally blocked as unselected alternatives. Reconsideration requires a new explicit architecture decision and fresh qualified evidence, plus each route's operational host. Even a positive feasibility result cannot mark filesystem/network `Enforced` or unblock C011/M004 without a later independently reviewed production security path.
+C028 is conditionally closed with the negative pre-user-entry phase result. The maintainer's C029 disposition rejects route selection and retains no admission. ADR-0023 is rejected; C030 broker and C031 guest remain terminally blocked as unselected alternatives. Reconsideration requires a new explicit architecture decision and fresh qualified evidence, plus each route's operational host. Even a positive feasibility result cannot mark filesystem/network `Enforced` or unblock C011/M004 without a later independently reviewed production security path.
 
 Microsoft references: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw ; https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights ; https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/ .

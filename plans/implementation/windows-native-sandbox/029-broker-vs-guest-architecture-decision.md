@@ -4,7 +4,7 @@ Status: implemented (no-admission disposition; Windows constrained execution rem
 Primary class: invariant/architecture
 Repository baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843` on `work/windows-native-sandbox-foundation` (2026-10-13).
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0021-launch-authority-decision-gate`.
-Architecture decision: `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` (rejected; no admission); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
+Architecture decision: `plans/adrs/ADR-0023-windows-privileged-launch-vs-guest-isolation.md` (rejected; no admission); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
 Canonical references: `plans/000-long-term-specification.md` sections 4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` section 8; `plans/003-planning-process.md`; ADR-0004, ADR-0016, ADR-0020.
 Immutable evidence: C024, C026 and C027 status records.
 
@@ -14,7 +14,7 @@ Compare an opt-in privileged launcher with native Windows VM/guest isolation, se
 
 ## 2. Readiness and dependencies
 
-Requires C028 actual bounded phase/VM disposition, positive or negative. If VM unavailable a no-admission/blocked decision is valid, but broker choice cannot imply launch success. Proposed ADR-0021 requires explicit maintainer approval.
+Requires C028 actual bounded phase/VM disposition, positive or negative. If VM unavailable a no-admission/blocked decision is valid, but broker choice cannot imply launch success. Proposed ADR-0023 requires explicit maintainer approval.
 
 ## 3. Current repo evidence
 
@@ -30,7 +30,7 @@ Research, threat model, OS/toolchain/cost matrix, approved ADR disposition. Excl
 
 ## 6. Required changes
 
-Record the maintainer decision in ADR-0021. The decision is no admission: reject route selection, keep Windows constrained execution unavailable, and leave C030/C031 terminally blocked as unselected alternatives.
+Record the maintainer decision in ADR-0023. The decision is no admission: reject route selection, keep Windows constrained execution unavailable, and leave C030/C031 terminally blocked as unselected alternatives.
 
 ## 7. Ordered work packages
 
@@ -54,7 +54,7 @@ Docs only: `git diff --check`; `python3 scripts/check_sandbox_contract.py`; `pyt
 
 ## 12. Documentation updates
 
-ADR-0021 rejection/no-admission decision, C029 closure, and updated registry/roadmap terminal blocked states. No trust-boundary implementation or production path is authorized.
+ADR-0023 rejection/no-admission decision, C029 closure, and updated registry/roadmap terminal blocked states. No trust-boundary implementation or production path is authorized.
 
 ## 13. Acceptance criteria
 

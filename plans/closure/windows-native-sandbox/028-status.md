@@ -77,7 +77,7 @@ The test principal and fixture directories are per-run. The native probe writes 
 
 - Trace matrix and exact result: `research/windows-native-sandbox/c028-launch-trace.md`.
 - VM-only comparison and operator gates: `research/windows-native-sandbox/adr-0021-authority-options.md` and C028 plan.
-- Registry and roadmap now record C028's conditional negative closure; C029 remains blocked on explicit maintainer ADR-0021 disposition.
+- Registry and roadmap now record C028's conditional negative closure; C029 remains blocked on explicit maintainer ADR-0023 disposition.
 
 ## 10. Unresolved findings
 
@@ -88,10 +88,10 @@ The test principal and fixture directories are per-run. The native probe writes 
 
 ## 11. Roadmap disposition
 
-C028's hosted phase is conditionally closed with a negative pre-user-entry result. C029 may use this disposition as evidence, but remains blocked pending explicit maintainer acceptance/rejection of proposed ADR-0021. C030 and C031 remain mutually exclusive and blocked. No C025/C026, C011/M004–M006, or C015–C018 plan is unblocked.
+C028's hosted phase is conditionally closed with a negative pre-user-entry result. C029 may use this disposition as evidence, but remains blocked pending explicit maintainer acceptance/rejection of proposed ADR-0023. C030 and C031 remain mutually exclusive and blocked. No C025/C026, C011/M004–M006, or C015–C018 plan is unblocked.
 
 ## 12. Registry updates
 
 - Mark C028 conditionally closed and link this record from `plans/registry.md` and the Windows native sandbox roadmap.
-- Keep C029 blocked pending maintainer ADR-0021 disposition.
+- Keep C029 blocked pending maintainer ADR-0023 disposition.
 - Keep C030 and C031 blocked pending C029 selection and their distinct host requirements.

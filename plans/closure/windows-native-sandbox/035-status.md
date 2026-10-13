@@ -26,7 +26,7 @@ Native evidence: [Windows MXC C035 run 38417084880](https://github.com/dbowm91/c
 
 C035 isolated and improved the C033 startup diagnosis. A separately compiled ARM64 helper reached its first user entry both in an uncontained `CreateProcessW` control and in the MXC BaseContainer child. The uncontained control read the Everyone-readable synthetic file through both its path and a verified inherited handle. The MXC child wrote a fresh nonce/PID-bound stage proof, reported its token user/groups/integrity/type, and received `ERROR_ACCESS_DENIED` when opening the same synthetic file by path.
 
-The inherited-handle gate did not qualify: the MXC child reported the supplied handle absent and its probe raised `STATUS_INVALID_HANDLE` (`0xC0000008`). C035 also did not produce its separately named MXC denial JSON despite the path denial. These results do not establish inherited-handle denial or independently attributable C035 telemetry. The native candidate remains negative and no production capability is admitted. Further evidence requires a new explicit architecture decision because ADR-0023 authorized only this corrective.
+The inherited-handle gate did not qualify: the MXC child reported the supplied handle absent and its probe raised `STATUS_INVALID_HANDLE` (`0xC0000008`). C035 also did not produce its separately named MXC denial JSON despite the path denial. These results do not establish inherited-handle denial or independently attributable C035 telemetry. The native candidate remains negative and no production capability is admitted. Further evidence requires a new explicit architecture decision because ADR-0025 authorized only this corrective.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -74,7 +74,7 @@ git diff --check
 - No backend registration, `ManagedProcessService` change, public API/configuration change, Windows `Required` enablement, or filesystem/network `Enforced` claim was added.
 - All fixture files and profile directories were created under the disposable run root. Only the synthetic secret received the explicit broad-read ACEs; its contents hash and post-grant ACL snapshot remained stable during the MXC invocation.
 - Capture mode remained `block`; the harness does not interpret missing output, startup failure, invalid handles, or nonzero exits as a denial.
-- C033 and C034 historical records remain unchanged. The rejected ADR-0021 broker/guest choices and C034 no-admission decision remain effective.
+- C033 and C034 historical records remain unchanged. The rejected ADR-0023 broker/guest choices and C034 no-admission decision remain effective.
 
 ## 6. Failure and recovery review
 
@@ -106,7 +106,7 @@ The C035 workflow records OS edition/version/build/UBR/architecture, workflow ru
 
 ## 11. Roadmap disposition
 
-C035 is **conditionally closed as a bounded negative test-only candidate**. The startup, stage-write, and token-identity gaps were answered by the minimal helper. The inherited-handle and per-invocation telemetry gates remain incomplete. ADR-0023's authority expires here; these findings do not authorize another corrective run or production integration. Windows constrained execution stays unavailable, and C011/M004–M006/C015–C018 remain blocked.
+C035 is **conditionally closed as a bounded negative test-only candidate**. The startup, stage-write, and token-identity gaps were answered by the minimal helper. The inherited-handle and per-invocation telemetry gates remain incomplete. ADR-0025's authority expires here; these findings do not authorize another corrective run or production integration. Windows constrained execution stays unavailable, and C011/M004–M006/C015–C018 remain blocked.
 
 ## 12. Registry updates
 

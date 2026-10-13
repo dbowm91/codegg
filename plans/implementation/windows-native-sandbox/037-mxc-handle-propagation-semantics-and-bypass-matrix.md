@@ -4,10 +4,10 @@ Status: **closed — bounded negative/incomplete; no production admission**
 Primary class: security invariant corrective
 Baseline: `work/windows-native-sandbox-foundation` at `e8ebeb1df8a9b97907ffebfbaf47d05c13f16f77` after the C036 toolchain correction.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.
-Authority: ADR-0024 only; historical C033/C035 closed-negative and C034 no-admission unchanged; ADR-0021 privileged alternatives still rejected.
+Authority: ADR-0026 only; historical C033/C035 closed-negative and C034 no-admission unchanged; ADR-0023 privileged alternatives still rejected.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 Prior: `plans/closure/windows-native-sandbox/035-status.md` and `research/windows-native-sandbox/mxc-c035-harness/native_probe.c`.
-Dependency: C035 closed and ADR-0024 accepted; *independent* of C036. Operational Windows 11 25H2 ARM64 or explicitly equivalent eligible serviced host.
+Dependency: C035 closed and ADR-0026 accepted; *independent* of C036. Operational Windows 11 25H2 ARM64 or explicitly equivalent eligible serviced host.
 
 ## Problem statement and strict threat model
 

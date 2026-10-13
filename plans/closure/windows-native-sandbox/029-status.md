@@ -24,11 +24,11 @@ C029 is closed with the maintainer's explicit **no-admission** decision. Neither
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Compare broker, guest, and unavailable default | `research/windows-native-sandbox/adr-0021-authority-options.md`; ADR-0021 alternatives and consequences | pass | Broker IPC/privilege and guest bridge/edition/concurrency risks remain unqualified. |
+| Compare broker, guest, and unavailable default | `research/windows-native-sandbox/adr-0021-authority-options.md`; ADR-0023 alternatives and consequences | pass | Broker IPC/privilege and guest bridge/edition/concurrency risks remain unqualified. |
 | Use C028 native phase evidence | Run `38396698509`; `plans/closure/windows-native-sandbox/028-status.md`; `research/windows-native-sandbox/c028-launch-trace.md` | pass | Four token-child cases timed out before user entry after token, session, Job, and suspend-count checks. No child read denial was proved. |
-| Record a maintainer disposition | User decision received 2026-10-13; `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` | pass | No admission; neither test-only route selected. |
+| Record a maintainer disposition | User decision received 2026-10-13; `plans/adrs/ADR-0023-windows-privileged-launch-vs-guest-isolation.md` | pass | No admission; neither test-only route selected. |
 | Keep unselected candidates out of execution | C030/C031 implementation plans; subsystem roadmap; registry | pass | Both are terminally blocked and require a new explicit architecture decision to reconsider. |
-| Preserve production fail-closed state | ADR-0021 and subsystem roadmap | pass | No backend, privileged install, ACL change, production `Required`, or filesystem/network `Enforced` claim. |
+| Preserve production fail-closed state | ADR-0023 and subsystem roadmap | pass | No backend, privileged install, ACL change, production `Required`, or filesystem/network `Enforced` claim. |
 
 ## 3. Production implementation evidence
 
@@ -71,7 +71,7 @@ The unavailable default avoids introducing unqualified privileged IPC, service i
 
 ## 9. Documentation and operations
 
-- Rejected ADR-0021 with the explicit no-admission rationale.
+- Rejected ADR-0023 with the explicit no-admission rationale.
 - Recorded C029 closure and the terminal unselected state of C030/C031 in the registry and Windows native sandbox roadmap.
 - Updated the ADR comparison research disposition.
 
@@ -87,4 +87,4 @@ Milestone closed. No next feasibility plan is eligible. C030 and C031 remain ter
 
 ## 12. Registry updates
 
-The registry and subsystem roadmap record ADR-0021 as rejected with no admission, C029 as closed, and C030/C031 as terminally blocked. Windows constrained execution and downstream security milestones remain unavailable/blocked.
+The registry and subsystem roadmap record ADR-0023 as rejected with no admission, C029 as closed, and C030/C031 as terminally blocked. Windows constrained execution and downstream security milestones remain unavailable/blocked.

@@ -4,7 +4,7 @@ Status: **closed — no candidate; no production admission**
 Primary class: security/architecture review
 Baseline: `work/windows-native-sandbox-foundation` at `84faa0bd585e7161361bdb255f29e70cdf7ab619` (refresh before handoff).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.
-Authority: ADR-0024 comparison only; ADR-0022/C034 no-admission; ADR-0023/C035 negative preserved.
+Authority: ADR-0026 comparison only; ADR-0024/C034 no-admission; ADR-0025/C035 negative preserved.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 
 ## Objective and decision contract

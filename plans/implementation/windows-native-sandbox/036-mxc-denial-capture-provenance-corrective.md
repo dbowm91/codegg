@@ -4,10 +4,10 @@ Status: **closed — bounded negative/incomplete; no production admission**
 Primary class: security infrastructure corrective
 Baseline: `work/windows-native-sandbox-foundation` at `a8bd3dafa389c1d71b4126f5bcbfa6efb1037fee` after the C036/C037/C038 plan rebase.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.
-Architecture authority: accepted ADR-0024 for C036 only; ADR-0023 C035 historical closure and ADR-0022 C034 no-admission remain intact.
+Architecture authority: accepted ADR-0026 for C036 only; ADR-0025 C035 historical closure and ADR-0024 C034 no-admission remain intact.
 Canonical: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8; `plans/003-planning-process.md`.
 Prior: `plans/implementation/windows-native-sandbox/035-mxc-native-helper-and-handle-boundary-corrective.md` and `plans/closure/windows-native-sandbox/035-status.md` (exact run `38417084880` / SHA `3fbe6201`).
-Hard prerequisites: C035 negative closure and accepted ADR-0024. Interface: pinned MXC SDK v1.0.0, C035 report schema and actual-child entry proof. Operational: eligible serviced Windows 11 ARM64 host.
+Hard prerequisites: C035 negative closure and accepted ADR-0026. Interface: pinned MXC SDK v1.0.0, C035 report schema and actual-child entry proof. Operational: eligible serviced Windows 11 ARM64 host.
 
 ## Objective, bounded hypothesis and evidence
 
