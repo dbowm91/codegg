@@ -16,6 +16,7 @@ Related ADRs:
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
 - `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md` (accepted: bounded feasibility direction only; production not approved)
+- `plans/adrs/ADR-0024-windows-mxc-capture-and-handle-semantics-review.md` (accepted for bounded test-only C036/C037 + C038 review only; no production selection)
 - `plans/adrs/ADR-0023-windows-mxc-helper-diagnostic-corrective.md` (accepted: test-only C035 native helper, inherited handle, stage/identity and deny-event evidence recovery; no admission)
 - `plans/adrs/ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` (accepted: test-only parallel C032/C033 successor feasibility and C034 comparison; no backend admission)
 - `plans/adrs/ADR-0020-windows-native-sandbox-after-appcontainer-feasibility.md` (accepted: bounded C019–C022 candidate comparison only; no production backend)
@@ -196,6 +197,16 @@ Decision `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` i
 
 **Dependency and stop:** C033/C034 are closed historical evidence; ADR-0023 explicitly authorizes this **one diagnostic corrective**, not selection of MXC or reversal of C034 no-admission. C035 may close strict-positive test-only, negative, or blocked; it cannot by itself unblock C011/M004–M006 or C015–C018. Even a positive result requires a later independent security review and separate accepted *production* ADR, lifecycle/host-version/cancellation/concurrency and network qualification. Windows `SandboxRequest::Required` remains unavailable/fail-closed with no filesystem/network `Enforced`. Do not mutate original host ACLs or admit privileged broker/guest C030/C031.
 
+## ADR-0024 capture and handle semantics follow-up
+
+**Decision:** `plans/adrs/ADR-0024-windows-mxc-capture-and-handle-semantics-review.md` approves one bounded, test-only post-C035 research batch. C035 remains conditionally closed negative; ADR-0023 is exhausted, C034 no-admission remains intact. C036 and C037 run independently using pinned MXC v1.0.0 and native Windows 11 ARM64 evidence; C038 reviews their written dispositions before any future architecture proposal.
+
+- **C036 — ready:** `plans/implementation/windows-native-sandbox/036-mxc-denial-capture-provenance-corrective.md`. C035 read a literal `denials.json` despite MXC's documented per-run stamped output paths. Verify *pinned* SDK v1.0.0 contract and obtain validated output metadata, process-correlated block-mode denial JSON, negative/stale controls, original-host integrity, and exact-SHA native evidence. Don't infer a capture subsystem fault from a missing literal file.
+- **C037 — ready:** `plans/implementation/windows-native-sandbox/037-mxc-handle-propagation-semantics-and-bypass-matrix.md`. Separate a raw numeric handle value from a **transferred** handle; prove uncontained inherit-on positive/inherit-off negative, MXC ambient-transfer semantics and child/descendant/stdio/IPC safety. If MXC SDK doesn't expose intentional handle passing, report that limitation and qualify **no ambient transfer only**, not transferred-handle access denial.
+- **C038 — blocked:** `plans/implementation/windows-native-sandbox/038-mxc-post-c035-security-disposition.md`. Await exact-SHA C036+C037 closures (negative/blocked accepted); review remaining tool/host/lifecycle/network gaps, then issue explicit stop or future production-review proposal. Not itself a backend-admission decision.
+
+**Non-negotiable:** all C036–C038 work is test-only, uses synthetic fixtures, retains production Windows `SandboxRequest::Required` unavailable/fail-closed, never asserts filesystem/network `Enforced`, never changes original populated host ACLs and never silently expands tool authority. C011/M004–M006/C015–C018 remain blocked; C030/C031 terminally blocked. Any future production backend would need a *new* explicit accepted ADR, independently audited security and real process/reboot/concurrency/network qualification. The unrelated Linux shell-policy CI failure has its own registered corrective and does not gate these experimental probes.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -270,6 +281,9 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C033 | closed (negative bounded feasibility) | `plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md` | `plans/closure/windows-native-sandbox/033-status.md` | Run `38404451372`, SHA `ff0443ca`: 13 block-mode denial events; native helper/handle requirement failed. |
 | C034 | closed — no admission | `plans/implementation/windows-native-sandbox/034-independent-successor-comparison-and-capability-decision.md` | `plans/closure/windows-native-sandbox/034-status.md` | C032/C033 comparison selected no production candidate; Windows constrained execution stays unavailable. |
 | C035 | conditionally closed (bounded negative; no admission) | `plans/implementation/windows-native-sandbox/035-mxc-native-helper-and-handle-boundary-corrective.md` | `plans/closure/windows-native-sandbox/035-status.md` | Run `38417084880`, exact SHA `3fbe6201`: native entry and stage/token proof pass; inherited handle reports `STATUS_INVALID_HANDLE`, C035 denial JSON absent. Further evidence requires a new accepted ADR. |
+| C036 | ready (test-only; Windows 11 ARM64 host gate) | `plans/implementation/windows-native-sandbox/036-mxc-denial-capture-provenance-corrective.md` | — | ADR-0024; verify stamped MXC capture output/metadata for pinned SDK, correlate child denial + negative controls, no admission |
+| C037 | ready (test-only; Windows 11 ARM64 host gate) | `plans/implementation/windows-native-sandbox/037-mxc-handle-propagation-semantics-and-bypass-matrix.md` | — | ADR-0024; prove actual launch handle transfer semantics, ambient/explicit capability matrix, distinguish not transferred from denied |
+| C038 | blocked (C036+C037 closures) | `plans/implementation/windows-native-sandbox/038-mxc-post-c035-security-disposition.md` | — | ADR-0024; security disposition only, no production decision |
 | C030 | blocked (terminal — broker unselected) | `plans/implementation/windows-native-sandbox/030-consented-privileged-broker-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and consented isolated Windows VM |
 | C031 | blocked (terminal — guest unselected) | `plans/implementation/windows-native-sandbox/031-windows-guest-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and supported isolated virtualization host |
 | C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 closed negative; requires an accepted successor architecture decision and a newly qualified strict-positive feasibility gate |
