@@ -220,6 +220,20 @@ pub struct PluginService {
     registry, hook_timeout, builtin_runtime, policy,
     activation_store, pinned_activation,
 }
+```
+
+### Tool-definition hook confinement (M002)
+
+`dispatch_tool_definition` output never becomes authority directly. Request
+preparation confines it via `confine_hook_definitions`
+(`src/agent/tool_descriptor_snapshot.rs`) in both cache-hit and uncached
+paths: additions outside the resolved authorized names, renames, invalid
+schemas, collisions and parameter widening are rejected; canonical parameters
+and `defer_loading` are preserved and only bounded description rewordings
+(16 KiB, NUL-stripped) survive. Removals (hook returns a subset) are allowed.
+Cache identity includes the deterministic plugin activation revision (sorted
+active ids), so activation changes invalidate `tool_def_cache`. Plugin
+metadata is never an effect-class or capability grant.
 
 // src/plugin/service.rs:625
 pub enum PluginError { CommandNotFound, PluginNotFound, PluginDisabled, Registry, Runtime }

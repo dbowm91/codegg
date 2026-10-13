@@ -2,7 +2,7 @@
 
 use super::r#loop::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_path_within_workspace, is_test_command, is_workspace_file_mutation, parse_mcp_tool_name,
+    is_path_within_workspace, is_test_command, is_workspace_file_mutation,
     truncate_test_event_preview, AgentLoop, ToolPermissionOutcome, ToolTimeoutConfig,
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
@@ -1300,118 +1300,18 @@ impl AgentLoop {
             effective_max = 1;
         }
         let permit_timeout = Duration::from_secs(tool_timeout_secs);
+        // M001 (agent-tool-runtime-reconciliation): no `mcp__*` fork. Every
+        // model call — native, plugin and raw MCP — enters the ordinary
+        // broker batch pipeline below through its session-pinned `Tool`
+        // adapter, preserving max-parallel admission, progress recovery, hook
+        // order, auditable receipts, deterministic ordering and display.
+        // The retired direct `McpService::call_tool` branch used a fixed
+        // 60-second deadline with ad hoc lock retries outside broker
+        // dispatch and the regular hook pipeline; adapter execution now uses
+        // the context deadline/cancellation token via the broker watchdog.
         let regular_tool_count = allowed_tools.len();
         let registry = &self.services.tool_registry;
-
-        let mut mcp_tool_calls = Vec::with_capacity(4);
-        let regular_tools: Vec<_> = allowed_tools
-            .into_iter()
-            .filter(|(idx, tc, _)| {
-                if tc.name.starts_with("mcp__") {
-                    mcp_tool_calls.push((*idx, tc.clone()));
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        let mcp_timeout = Duration::from_secs(60);
-        let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
-        for (orig_idx, tc) in mcp_tool_calls {
-            let name = tc.name.clone();
-            let mcp_arc = self.services.mcp_service.clone();
-            mcp_futures.push(async move {
-                if let Some((server, tool)) = parse_mcp_tool_name(&name) {
-                    if let Some(mcp_arc) = mcp_arc {
-                        // Retry up to 3 times with brief backoff if RwLock is held
-                        let mut last_err = None;
-                        for attempt in 0..3 {
-                            if attempt > 0 {
-                                tokio::time::sleep(Duration::from_millis(50 * (attempt as u64))).await;
-                            }
-                            match mcp_arc.try_read() {
-                                Ok(mcp) => {
-                                    let call_result = tokio::time::timeout(
-                                        mcp_timeout,
-                                        mcp.call_tool(server, tool, tc.arguments.clone()),
-                                    )
-                                    .await;
-                                    match call_result {
-                                        Ok(Ok(result)) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome::success(result),
-                                            );
-                                        }
-                                        Ok(Err(e)) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome {
-                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                                    model_text: format!("Error: {}", e),
-                                                },
-                                            );
-                                        }
-                                        Err(_) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome {
-                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::Timeout,
-                                                    model_text: format!(
-                                                        "Error: MCP tool '{}' on server '{}' timed out after {:?}",
-                                                        tool, server, mcp_timeout
-                                                    ),
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    last_err = Some(format!(
-                                        "MCP service locked (attempt {}/3)",
-                                        attempt + 1
-                                    ));
-                                }
-                            }
-                        }
-                        (
-                            orig_idx,
-                            tc.id.to_string(),
-                            ToolExecutionOutcome {
-                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                model_text: format!("Error: {}", last_err.unwrap_or_default()),
-                            },
-                        )
-                    } else {
-                        (
-                            orig_idx,
-                            tc.id.to_string(),
-                            ToolExecutionOutcome {
-                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                model_text: "Error: MCP service not available".into(),
-                            },
-                        )
-                    }
-                } else {
-                    (
-                        orig_idx,
-                        tc.id.to_string(),
-                        ToolExecutionOutcome {
-                            status: crate::agent::progress_recovery::ToolExecutionStatus::ProtocolError,
-                            model_text: format!("Error: Invalid MCP tool name '{}'", name),
-                        },
-                    )
-                }
-            });
-        }
-        let mcp_results = futures_util::future::join_all(mcp_futures).await;
-        for result in mcp_results {
-            tool_results.push(result);
-        }
+        let regular_tools: Vec<_> = allowed_tools;
 
         let mut results = Vec::with_capacity(regular_tool_count);
         let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
@@ -1837,7 +1737,35 @@ impl AgentLoop {
                                         "broker: native tool completed with provenance"
                                     );
                                 }
-                                Ok::<String, ToolError>(broker_result.value.display)
+                                // M001 (agent-tool-runtime-reconciliation): preserve
+                                // the broker's typed terminal status. A JSON-RPC
+                                // transport success with MCP `isError=true`
+                                // normalizes to `Error` and must not become a
+                                // successful answer. Previously the display was
+                                // returned as `Ok` unconditionally, which
+                                // misclassified structured failures as success.
+                                match broker_result.value.terminal_status {
+                                    crate::tool::contract::ToolTerminalStatus::Success => {
+                                        Ok::<String, ToolError>(broker_result.value.display)
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Denied => {
+                                        Err(ToolError::Permission(broker_result.value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Cancelled => {
+                                        Err(ToolError::Timeout(format!(
+                                            "cancelled: {}",
+                                            broker_result.value.display
+                                        )))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::TimedOut => {
+                                        Err(ToolError::Timeout(broker_result.value.display))
+                                    }
+                                    crate::tool::contract::ToolTerminalStatus::Error
+                                    | crate::tool::contract::ToolTerminalStatus::InfrastructureError
+                                    | crate::tool::contract::ToolTerminalStatus::UncertainSideEffect => {
+                                        Err(ToolError::Execution(broker_result.value.display))
+                                    }
+                                }
                             };
                             // The tool enforces its own deadline and returns a result carrying the
                             // output it collected before being killed, so this wrapper must

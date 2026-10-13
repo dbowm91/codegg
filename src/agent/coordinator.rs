@@ -22,6 +22,14 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
 /// Cache key and partitions for the resolved model-facing tool surface.
+///
+/// The trailing three fields are the M002 generation owners: acting agent
+/// identity, deterministic plugin activation revision, and the
+/// `ToolDescriptorSnapshot` input fingerprint (MCP generation, visible
+/// revision, server identities, permitted set, policy, plugin activation,
+/// agent, hidden set). Any of those changes invalidates the cache; the
+/// resolved surface fingerprint itself is diagnostics-only and never part
+/// of the key.
 pub(super) type ToolDefCache = (
     Option<String>,
     bool,
@@ -33,6 +41,9 @@ pub(super) type ToolDefCache = (
     Option<ToolDeferralConfig>,
     Vec<ToolDefinition>,
     Vec<ToolDefinition>,
+    String,
+    String,
+    String,
 );
 
 /// All long-lived capabilities used by one loop.
@@ -55,6 +66,10 @@ pub(super) struct AgentLoopServices {
     pub(super) context_tracker: ContextTracker,
     pub(super) progress_recovery: RecoveryController,
     pub(super) recovery_parallel_limit: Option<usize>,
+    // M001: retained for M002 turn-boundary refresh/generation ownership, not
+    // for execution. Model calls never use this handle directly; they go
+    // through the session-pinned `McpToolAdapter` + `ToolBroker`.
+    #[allow(dead_code)]
     pub(super) mcp_service: Option<Arc<RwLock<crate::mcp::McpService>>>,
     /// Explicit runtime-owned search/MCP context (M005), derived at
     /// loop construction from the loop's `Config` plus its daemon-owned

@@ -430,6 +430,31 @@ impl TurnRuntime for DefaultTurnRuntime {
             }
         }
 
+        // M001 (agent-tool-runtime-reconciliation): install one session-pinned
+        // MCP adapter per exposed raw tool before any broker snapshot or
+        // prompt surface is built. The registry is the single canonical
+        // origin; `build_tool_definitions` must not append a second raw copy.
+        if let Some(mcp_arc) = mcp_service.as_ref() {
+            let policy = crate::tool::mcp_adapter::mcp_exposure_policy_for_turn(
+                &search_runtime,
+                tool_registry.tool_backends(),
+            );
+            let report = crate::tool::mcp_adapter::register_mcp_adapters(
+                &mut tool_registry,
+                mcp_arc,
+                &policy,
+            )
+            .await;
+            tracing::debug!(
+                registered = report.registered.len(),
+                hidden = report.hidden.len(),
+                collisions = report.collisions.len(),
+                rejected = report.rejected.len(),
+                generation = %report.generation,
+                "installed session MCP broker adapters"
+            );
+        }
+
         // ── Memory context ───────────────────────────────────────────
         let memory_context = memory_store
             .as_ref()

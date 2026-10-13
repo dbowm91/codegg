@@ -7,7 +7,10 @@ schema-free descriptors so selecting among large tools does not inflate the
 context window. An exact selected name can request `detail: "schema"`; the
 response is resolved from the live catalog after the current policy and
 hidden-tool checks. The expanded schema is descriptive only; calls still
-enter through `ToolBroker`.
+enter through `ToolBroker`. External MCP tools share this path: their
+descriptors enter the live catalog via `McpToolAdapter` (single origin), so
+keyword search yields compact candidates and exact `name` + `detail: "schema"`
+resolves the actual JSON Schema with host-assigned risk (M002).
 
 `git_query` is the model-facing deferred read facade for bounded status, diff,
 log, and branch inspection. It delegates to `GitReadTool`, while `git` retains
@@ -614,8 +617,14 @@ it, and records provenance via `tracing::debug!`. The returned
 `StructuredToolResult` is collapsed to `structured.output` for the
 model — identical to the legacy `execute()` path.
 
-MCP tools (`mcp__server__tool`) dispatch through
-`McpService::call_tool` and are not funnelled through `execute_capture`.
+MCP tools (`mcp__server__tool`) are session-pinned `McpToolAdapter`
+instances (`src/tool/mcp_adapter.rs`) registered in the ordinary
+`ToolRegistry` before broker snapshot construction. Every model-controlled
+call funnels through `ToolBroker` like native/plugin tools (same approval,
+hooks, grants, schema/size/deadline/cancellation, typed-result/artifact and
+telemetry pipeline); the retired direct `McpService::call_tool` model fork is
+gone. `McpService::call_tool()` remains only for non-model compatibility
+consumers (native eggsearch wrappers).
 
 ### `expose_in_definitions` Filtering
 

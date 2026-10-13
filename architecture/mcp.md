@@ -57,7 +57,14 @@ It lives in `crates/codegg-core/src/error.rs`.
 3. **Tool calls**: `McpService::call_tool_structured()` looks up the
    target server, acquires a write lock on the client, and dispatches
    `tools/call`. The response is returned as `McpToolCallResult` with
-   both text and optional structured JSON.
+   both text and optional structured JSON. Model-controlled calls never
+   use this seam directly: the session-pinned `McpToolAdapter`
+   (`src/tool/mcp_adapter.rs`) is the single model entry point and invokes
+   the pinned client handle only after broker admission (M001
+   agent-tool-runtime-reconciliation). `McpService::call_tool()` remains
+   for non-model compatibility consumers (native eggsearch wrappers) and
+   must never be reintroduced as a model bypass (guard:
+   `scripts/check_mcp_broker_adapter.py`).
 
 4. **Shutdown**: `McpService::shutdown_all()` disconnects every server
    in order. Local clients kill the child process; remote clients send
@@ -189,7 +196,23 @@ pub struct McpExposurePolicy {
 When `show_raw` is `false` (the default), `list_filtered_tools` returns
 an empty vec. This is how eggsearch's raw MCP tools are kept hidden
 from the model — the native wrappers (`websearch`, `webfetch`) own that
-surface.
+surface. The model-facing registry path does not call `list_filtered_tools`
+directly: `mcp_exposure_policy_for_turn` (single canonical construction in
+`src/tool/mcp_adapter.rs`) feeds adapter registration, and request
+preparation derives definitions from the registry only.
+
+### Descriptor generation lifecycle (M002)
+
+Each turn builds an immutable `ToolDescriptorSnapshot`
+(`src/agent/tool_descriptor_snapshot.rs`) with the MCP catalog fingerprint,
+visible `mcp__*` revision, per-server origin/liveness/counts, permitted names,
+policy revision, plugin activation revision, agent identity, hidden set, and
+the resolved surface fingerprint (diagnostics only). Its input fingerprint keys
+`tool_def_cache`, so any inventory, origin, policy, activation, agent, or
+hidden-set change invalidates cached definitions. Refresh is turn-boundary
+rebuild (fresh registry per turn); in-flight pins fail closed on mismatch and
+never rebind. No polling, no durable catalog DB, no long-lived write lock
+across `tools/list` fetch.
 
 ### Structured Call Path
 

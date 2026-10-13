@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation M001 — MCP Broker Transport Adapter
 
-Status: ready for handoff
+Status: implemented; closed (`plans/closure/agent-tool-runtime-reconciliation/001-status.md`)
 
 Repository baseline: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 

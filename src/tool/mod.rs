@@ -39,6 +39,7 @@ pub mod lsp;
 pub mod lsp_preview_apply;
 pub mod lsp_read;
 pub(crate) mod lsp_security;
+pub mod mcp_adapter;
 pub mod mcp_resource;
 pub mod memory;
 pub mod patch_util;

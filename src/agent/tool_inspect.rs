@@ -159,6 +159,11 @@ pub(super) fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
     tc.arguments.get("subcommand")?.as_str().map(String::from)
 }
 
+/// Legacy `mcp__<server>__<tool>` splitter retained for compatibility diagnostics.
+/// Model execution no longer dispatches through this helper: raw MCP calls are
+/// broker-mediated via `McpToolAdapter` (M001). Kept so external tooling and
+/// historical tests keep a single parsing seam.
+#[allow(dead_code)]
 pub(super) fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
     let delimiter_pos = rest.rfind("__")?;

@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation M002 — External Tool Discovery and Generation
 
-Status: sequenced; blocked until M001 closure
+Status: implemented; closed (`plans/closure/agent-tool-runtime-reconciliation/002-status.md`)
 
 Repository baseline: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 

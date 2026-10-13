@@ -1183,6 +1183,27 @@ async fn execute_agent_task(
         sandbox_profile: Some(effective_child),
         ..Default::default()
     });
+    // M001 (agent-tool-runtime-reconciliation): install session-pinned MCP
+    // adapters before any deny filtering or surface computation, so denied
+    // `mcp__*` globs still remove the adapter and the child surface includes
+    // the same broker-backed tools as the parent turn.
+    if let Some(mcp_arc) = search_runtime.mcp() {
+        let policy = crate::tool::mcp_adapter::mcp_exposure_policy_for_turn(
+            &search_runtime,
+            tool_registry.tool_backends(),
+        );
+        let report =
+            crate::tool::mcp_adapter::register_mcp_adapters(&mut tool_registry, &mcp_arc, &policy)
+                .await;
+        tracing::debug!(
+            registered = report.registered.len(),
+            hidden = report.hidden.len(),
+            collisions = report.collisions.len(),
+            rejected = report.rejected.len(),
+            generation = %report.generation,
+            "installed subagent MCP broker adapters"
+        );
+    }
     // Subagents must NEVER have access to in-flight planning tools
     // (todowrite/todoread), long-horizon goal tools (goal_get,
     // goal_update_progress, goal_request_completion — not in

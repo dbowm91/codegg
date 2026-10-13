@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation M003 — Descendant Tool Authority Ceilings
 
-Status: sequenced; blocked until M002 closure
+Status: ready for handoff (unblocked by M002 closure `plans/closure/agent-tool-runtime-reconciliation/002-status.md`; rebaseline before code change)
 
 Repository baseline: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 

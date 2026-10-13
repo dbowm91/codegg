@@ -607,6 +607,17 @@ impl McpService {
             .collect()
     }
 
+    /// Clone the concrete client handle for one server while holding the
+    /// service read guard.
+    ///
+    /// The clone preserves the pinned server instance across the network
+    /// await after the guard is dropped, so a concurrent disconnect /
+    /// reconnect cannot silently redirect a validated call to a replacement
+    /// descriptor. Returns `None` when the server is absent.
+    pub fn pinned_client_handle(&self, server: &str) -> Option<McpClientType> {
+        self.servers.get(server).map(|entry| entry.client.clone())
+    }
+
     pub async fn handle_tool_list_changed(
         &mut self,
         server: &str,

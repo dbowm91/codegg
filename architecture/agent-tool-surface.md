@@ -150,6 +150,26 @@ After selection, the model requests an exact current schema with
 same policy allow-list and hidden-tool filter, so discovery does not grant
 authority or replace broker invocation.
 
+External reconciliation (M002 agent-tool-runtime-reconciliation): third-party
+MCP descriptors enter the real session `ToolCatalog` through `McpToolAdapter`
+registration (single canonical origin, `src/tool/mcp_adapter.rs`), so
+`tool_search` resolves exact schemas for `mcp__*` with the same
+category/effect metadata as native tools. One immutable
+`ToolDescriptorSnapshot` (`src/agent/tool_descriptor_snapshot.rs`) pins the
+turn's MCP generation, visible revision, server origins, permitted names,
+policy revision, plugin activation revision, agent identity, hidden set, and
+resolved surface fingerprint; its input fingerprint (never the surface
+fingerprint itself) keys `tool_def_cache`, so server add/remove/reconnect,
+`tools/list_changed` (turn-boundary rebuild), plugin activation changes, and
+agent changes all invalidate cached definitions. In-flight calls use the
+pinned adapter and fail closed on generation mismatch; refresh affects future
+turns only. Plugin `dispatch_tool_definition` output is confined by
+`confine_hook_definitions` in both cache-hit and uncached paths: additions,
+renames, invalid schemas and parameter widening are rejected, canonical
+parameters/deferral are preserved, and only bounded description rewordings
+survive. Guards: `scripts/check_mcp_broker_adapter.py`,
+`scripts/check_tool_descriptor_snapshot.py`.
+
 M003 adds deferred `git_query` for bounded status, diff, log, and branch
 inspection. It delegates to the existing Git reader and cannot name mutation,
 recovery, network, or raw-subcommand operations. LSP and task remain their
@@ -177,9 +197,18 @@ restore `definitions()` without reconstructing registry state.
 
 ### MCP Tools
 
-MCP tool names are namespaced (`mcp__server__tool`) and therefore cannot
-shadow native tools. They are added by `AgentLoop` after the native
-surface is resolved, before provider dispatch.
+MCP tool names are namespaced (`mcp__server__tool`) and validated strictly
+(no `__` inside server/tool components, bounded lengths) so one
+server-provided name cannot shadow native/plugin tools. Each exposed raw
+tool is a session-pinned `McpToolAdapter` (`src/tool/mcp_adapter.rs`)
+registered in the ordinary `ToolRegistry` before broker snapshot
+construction (turn/worker async pass plus the `AgentLoop::new` sync safety
+net). The registry is the single canonical origin: request preparation
+derives model-facing definitions from registered tools and no second
+`list_filtered_tools` append path exists (M001). The adapter's conservative
+`DirectOnly`/`NonIdempotent`/no-retry contract, pinned-schema check, and
+`isError`-as-failure translation preserve broker hooks, grants, structured
+results, provenance and artifact semantics.
 
 ## Key Types & APIs
 

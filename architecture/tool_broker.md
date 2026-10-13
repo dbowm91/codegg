@@ -135,6 +135,15 @@ This ensures existing tools work without modification.
    denied to `Agent` callers, and invisible to model disclosure.
 5. **Workspace artifacts**: `with_artifact_store()` attaches the
    canonical artifact store for large output spillover.
+5b. **MCP broker mediation (M001 agent-tool-runtime-reconciliation)**:
+   raw `mcp__*` model calls execute through session-pinned
+   `McpToolAdapter` (`src/tool/mcp_adapter.rs`) registered before this
+   broker's catalog snapshot. The retired `tool_batch.rs` direct
+   `McpService::call_tool` fork is gone; adapter calls use the context
+   deadline/cancellation token (no independent 60 s timer), preserve
+   `structuredContent` and `isError`-as-`Error`, enforce pinned-schema
+   staleness before transport, and keep `DirectOnly`/`NonIdempotent`/
+   no-retry conservatism. Guard: `scripts/check_mcp_broker_adapter.py`.
 6. **Trusted audit preservation (M001)**: `BrokerInvocationContext`
    carries `execution_audit: Option<TrustedExecutionAuditContext>`
    threaded only from daemon-owned admission. `execute_with_retry`

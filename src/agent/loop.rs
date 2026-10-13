@@ -47,8 +47,8 @@ pub use super::loop_output::AgentLoopTerminalOutput;
 pub(super) use super::tool_inspect::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
     is_file_modifying_tool, is_path_within_workspace, is_soft_stop_reason, is_test_command,
-    is_workspace_file_mutation, parse_mcp_tool_name, tool_outcome_is_success,
-    truncate_test_event_preview, ToolPermissionOutcome, ToolTimeoutConfig,
+    is_workspace_file_mutation, tool_outcome_is_success, truncate_test_event_preview,
+    ToolPermissionOutcome, ToolTimeoutConfig,
 };
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
@@ -298,6 +298,46 @@ impl AgentLoop {
             Some(workspace_root.to_string_lossy().into_owned()).filter(|path| !path.is_empty()),
             std::env::var("HOME").ok().filter(|path| !path.is_empty()),
         );
+
+        // M001 (agent-tool-runtime-reconciliation): safety-net registration
+        // of session-pinned MCP adapters before the broker snapshot. Turn and
+        // subagent construction already registered asynchronously (so prompt
+        // surfaces include raw tools); this best-effort sync pass covers
+        // direct `AgentLoop::new` callers (exec/standalone/tests) via
+        // `try_read` without blocking on a write-locked service. The policy
+        // is derived from the loop's `Config` (the authoritative search
+        // snapshot for this turn), not the registry's possibly-default
+        // runtime, so `expose_raw_mcp_tools` and custom `server_name` in
+        // `Config` agree with admission.
+        if let Some(mcp_arc) = mcp_service.clone() {
+            let search_runtime_for_policy =
+                crate::search_backend::SearchRuntimeContext::from_config(
+                    &config.search.clone().unwrap_or_default(),
+                )
+                .with_mcp_opt(Some(mcp_arc.clone()));
+            let policy = crate::tool::mcp_adapter::mcp_exposure_policy_for_turn(
+                &search_runtime_for_policy,
+                tool_registry.tool_backends(),
+            );
+            let report = crate::tool::mcp_adapter::try_register_mcp_adapters_sync(
+                &mut tool_registry,
+                &mcp_arc,
+                &policy,
+            );
+            if !report.registered.is_empty()
+                || !report.collisions.is_empty()
+                || !report.rejected.is_empty()
+            {
+                tracing::debug!(
+                    registered = report.registered.len(),
+                    hidden = report.hidden.len(),
+                    collisions = report.collisions.len(),
+                    rejected = report.rejected.len(),
+                    generation = %report.generation,
+                    "installed MCP broker adapters in AgentLoop::new"
+                );
+            }
+        }
 
         // Build the canonical tool broker from the configured registry.
         // The broker does not own the registry; it holds a pre-built catalog.

@@ -907,84 +907,81 @@ impl AgentLoop {
             .and_then(|e| e.lsp_tool)
             .unwrap_or(false);
 
-        // Build an MCP exposure policy from the resolved
-        // `[search]` and `[tool_backends.*]` config so raw
-        // Codegg-managed backends (eggsearch today, future
-        // egglsp/eggsentry MCP adapters) are hidden by default while
-        // user-configured third-party MCP servers stay visible.
-        // The search config comes from the loop-owned explicit runtime
-        // context (M005), never a process-global slot.
-        let search_cfg = self.services.search_runtime.config().clone();
-        let tool_backends = self.services.tool_registry.tool_backends();
-        let expose_raw_search = search_cfg.expose_raw_mcp_tools();
-        let eggsearch_server = search_cfg
-            .eggsearch
-            .as_ref()
-            .and_then(|e| e.server_name.clone())
-            .unwrap_or_else(|| "eggsearch".to_string());
-        let mut hidden_servers: Vec<String> = Vec::new();
-        // Always hide eggsearch raw tools unless explicitly opted
-        // in via `[search].expose_raw_mcp_tools = true`.
-        if !expose_raw_search {
-            hidden_servers.push(eggsearch_server.clone());
-        }
-        // Per-domain backend config: when the user has set
-        // `expose_raw_mcp_tools = true` for a managed backend,
-        // unhide that server. This is the forward-compatible hook
-        // for the future `egglsp` and `eggsentry` MCP adapters.
-        for domain_cfg in [
-            tool_backends.lsp.as_ref(),
-            tool_backends.security.as_ref(),
-            tool_backends.context.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(server) = domain_cfg.server_name.as_ref() {
-                if domain_cfg.expose_raw_mcp_tools() {
-                    hidden_servers.retain(|s| s != server);
-                } else if !hidden_servers.iter().any(|s| s == server) {
-                    hidden_servers.push(server.clone());
-                }
-            }
-        }
-        let policy = crate::mcp::McpExposurePolicy {
-            show_raw: true,
-            hidden_servers,
-        };
-
-        let mcp_tools = if let Some(ref mcp_arc) = self.services.mcp_service {
-            match mcp_arc.try_read() {
-                Ok(mcp) => mcp.list_filtered_tools(&policy),
-                Err(_) => {
-                    tracing::debug!("MCP service write-locked during tool def building, retrying");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    mcp_arc
-                        .try_read()
-                        .map(|mcp| mcp.list_filtered_tools(&policy))
-                        .unwrap_or_default()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-        // Set defer_loading on MCP tools based on the catalog
-        let catalog = self.services.tool_registry.catalog();
-        let mcp_tools: Vec<_> = mcp_tools
-            .into_iter()
-            .map(|mut t| {
-                if catalog.is_deferred(&t.name) {
-                    t.defer_loading = Some(true);
-                }
-                t
+        // M001 (agent-tool-runtime-reconciliation): the registry is the
+        // single canonical origin for raw MCP definitions. Adapters were
+        // installed before broker construction (turn/worker async pass plus
+        // the `AgentLoop::new` sync safety net), so `tool_registry.list()`
+        // already contains exactly the policy-visible `mcp__*` set. No
+        // second `list_filtered_tools` append path exists; that bypass is
+        // retired. The exposure policy construction stays canonical in
+        // `mcp_adapter::mcp_exposure_policy_for_turn` (same inputs as
+        // registration) so cache identity agrees with admission.
+        //
+        // M002: the same inputs feed an immutable `ToolDescriptorSnapshot`
+        // (generation, visible revision, server identities, permitted set,
+        // policy, plugin activation, agent, hidden set). Its fingerprint is
+        // the cache identity for the descriptor universe; the resolved
+        // surface fingerprint is diagnostics-only and never part of the key.
+        let policy = crate::tool::mcp_adapter::mcp_exposure_policy_for_turn(
+            &self.services.search_runtime,
+            self.services.tool_registry.tool_backends(),
+        );
+        let expose_raw_search = self.services.search_runtime.config().expose_raw_mcp_tools();
+        // Cache identity is based on the registry's visible MCP surface (the
+        // registered adapters), not its cardinality and not a second service
+        // listing. Sorting makes this stable across the HashMap-backed
+        // service and the digest contains no credentials or transport
+        // configuration.
+        let registry_mcp_tools: Vec<crate::provider::ToolDefinition> = self
+            .services
+            .tool_registry
+            .list()
+            .iter()
+            .filter(|tool| tool.name().starts_with("mcp__"))
+            .filter(|tool| tool.expose_in_definitions())
+            .map(|tool| crate::provider::ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description().to_string(),
+                parameters: tool.parameters(),
+                defer_loading: if tool.defer_loading() {
+                    Some(true)
+                } else {
+                    None
+                },
             })
             .collect();
-
-        // Cache identity is based on the complete provider-visible MCP
-        // surface, not its cardinality. Sorting makes this stable across the
-        // HashMap-backed service and the digest contains no credentials or
-        // transport configuration.
-        let mcp_tool_revision = mcp_tool_surface_revision(&mcp_tools);
+        let mcp_tool_revision = mcp_tool_surface_revision(&registry_mcp_tools);
+        // M002 snapshot inputs (no locks held across awaits beyond the
+        // bounded `try_read` inside the helper).
+        let (mcp_generation, mcp_servers) =
+            super::tool_descriptor_snapshot::snapshot_mcp_identities(
+                self.services.mcp_service.as_ref(),
+            );
+        let plugin_activation_revision =
+            super::tool_descriptor_snapshot::plugin_activation_revision(
+                self.plugin_service.as_ref(),
+            );
+        let current_agent_name = self.state.current_agent.clone();
+        let permitted_pre_surface: std::collections::BTreeSet<String> = self
+            .services
+            .tool_registry
+            .list()
+            .iter()
+            .filter(|tool| tool.expose_in_definitions())
+            .map(|tool| tool.name().to_string())
+            .collect();
+        let permission_version_for_snapshot = self.permission_version().to_string();
+        let snapshot = super::tool_descriptor_snapshot::ToolDescriptorSnapshot::builder(
+            mcp_generation,
+            mcp_tool_revision.clone(),
+            mcp_servers,
+            permitted_pre_surface,
+            permission_version_for_snapshot,
+            plugin_activation_revision.clone(),
+            current_agent_name.clone(),
+            policy.hidden_servers.clone(),
+        );
+        let snapshot_fingerprint = snapshot.fingerprint();
         let contextual_immediate = self.contextual_immediate_tools().await;
         let contextual_revision = contextual_immediate
             .iter()
@@ -1005,6 +1002,9 @@ impl AgentLoop {
             ref cache_tool_deferral,
             ref cached_defs,
             ref cached_deferred,
+            ref cache_agent,
+            ref cache_plugin_activation,
+            ref cache_snapshot_fp,
         )) = self.services.tool_def_cache
         {
             if cache_model.as_ref().map(|s| s.as_str()) == model.map(|s| s.as_str())
@@ -1015,30 +1015,57 @@ impl AgentLoop {
                 && cache_contextual_revision == &contextual_revision
                 && cache_expose_raw == expose_raw_search
                 && cache_tool_deferral == &self.services.config.tool_deferral
+                && cache_agent == &current_agent_name
+                && cache_plugin_activation == &plugin_activation_revision
+                && cache_snapshot_fp == &snapshot_fingerprint
                 && self.services.tool_advisor_mode != crate::tool_advisor::AdvisorMode::Promote
             {
                 let mut definitions = cached_defs.clone();
                 self.services.deferred_tool_definitions = cached_deferred.clone();
 
+                // M002 §5D: confine hook output to the cached authorized
+                // surface. Additions, renames, invalid schemas and
+                // permission-expanding parameter changes are rejected;
+                // bounded description rewordings survive with canonical
+                // parameters and deferral preserved.
                 if let Some(ref plugin_svc) = self.plugin_service {
                     let input = serde_json::json!({
                         "tools": definitions,
                         "model": model,
                     });
                     let hook_result = plugin_svc.dispatch_tool_definition(input).await;
-                    if let Some(tools) = hook_result.output.get("tools").and_then(|v| v.as_array())
-                    {
-                        return tools
+                    if hook_result.output.get("tools").is_some() {
+                        let canonical: std::collections::BTreeMap<
+                            String,
+                            crate::provider::ToolDefinition,
+                        > = definitions
                             .iter()
-                            .filter_map(|t| {
-                                Some(crate::provider::ToolDefinition {
-                                    name: t.get("name")?.as_str()?.to_string(),
-                                    description: t.get("description")?.as_str()?.to_string(),
-                                    parameters: t.get("parameters")?.clone(),
-                                    defer_loading: None,
-                                })
-                            })
+                            .cloned()
+                            .map(|d| (d.name.clone(), d))
                             .collect();
+                        let confined = super::tool_descriptor_snapshot::confine_hook_definitions(
+                            &hook_result.output,
+                            &canonical,
+                        );
+                        if !confined.is_empty() || hook_result.output.get("tools").is_some() {
+                            // An empty confined set with a present hook array
+                            // means every entry was rejected: advertise
+                            // nothing from the hook rather than falling back
+                            // to the unconfined cache.
+                            let mut confined_plus_deferred = confined;
+                            confined_plus_deferred
+                                .extend(self.services.deferred_tool_definitions.iter().cloned());
+                            // Re-validate deferred against the same canonical
+                            // set so the hook cannot smuggle a deferred-only
+                            // addition.
+                            let canonical_deferred: std::collections::BTreeSet<String> =
+                                cached_deferred.iter().map(|d| d.name.clone()).collect();
+                            confined_plus_deferred.retain(|d| {
+                                canonical.contains_key(&d.name)
+                                    || canonical_deferred.contains(&d.name)
+                            });
+                            return confined_plus_deferred;
+                        }
                     }
                 }
 
@@ -1077,9 +1104,11 @@ impl AgentLoop {
         let all_definitions =
             self.apply_tool_exposure_filter(&contextual_immediate, all_definitions);
 
-        // Include MCP tools in the definitions for deferral partitioning
-        let mut all_definitions = all_definitions;
-        all_definitions.extend(mcp_tools);
+        // M001: no second MCP append. `all_definitions` already contains the
+        // registry's `mcp__*` adapters (the single canonical origin), so
+        // extending with a separately listed raw set would advertise every
+        // raw tool twice and reintroduce the pre-broker bypass.
+        let all_definitions = all_definitions;
 
         // Resolve the complete model-facing surface once.  Prompt assembly,
         // provider schemas, palette reduction, and diagnostics all consume
@@ -1355,6 +1384,11 @@ impl AgentLoop {
             .tool_registry
             .set_search_tool_available_tools(available_names);
 
+        // M002: cache identity includes the acting agent, the deterministic
+        // plugin activation revision, and the full descriptor snapshot
+        // fingerprint (MCP generation, visible revision, origins, permitted
+        // set, policy, hidden set). The resolved surface fingerprint is
+        // diagnostics-only and never part of the key.
         self.services.tool_def_cache = Some((
             model.map(|s| s.to_string()),
             self.state.plan_mode,
@@ -1365,30 +1399,57 @@ impl AgentLoop {
             expose_raw_search,
             self.services.config.tool_deferral.clone(),
             definitions.clone(),
-            deferred,
+            deferred.clone(),
+            current_agent_name.clone(),
+            plugin_activation_revision.clone(),
+            snapshot_fingerprint.clone(),
         ));
+
+        // M002 observability: bounded generation/omission telemetry (no
+        // credentials, endpoints, or full schemas). The surface fingerprint
+        // plus counts let operators distinguish "no tools because hidden"
+        // from "no tools because disconnected".
+        {
+            let snapshotted = snapshot.with_surface(surface.fingerprint.clone());
+            tracing::debug!(
+                mcp_generation = %snapshotted.mcp_generation,
+                mcp_visible_revision = %snapshotted.mcp_visible_revision,
+                permitted = snapshotted.permitted_names.len(),
+                advertised = surface.tools.len(),
+                omitted = surface.omissions.len(),
+                policy_revision = %snapshotted.policy_revision,
+                plugin_activation = %snapshotted.plugin_activation_revision,
+                agent = %snapshotted.agent_name,
+                surface_fingerprint = %surface.fingerprint,
+                "resolved tool descriptor snapshot"
+            );
+        }
 
         let mut result = definitions;
         result.extend(self.services.deferred_tool_definitions.iter().cloned());
 
+        // M002 §5D: confine hook output to the resolved authorized surface.
+        // The canonical map is the pre-hook result (immediate + deferred);
+        // surviving entries keep canonical parameters/deferral with only a
+        // bounded description rewording. Additions, renames, invalid schemas
+        // and widening parameter edits are rejected.
         if let Some(ref plugin_svc) = self.plugin_service {
             let input = serde_json::json!({
                 "tools": result,
                 "model": model,
             });
             let hook_result = plugin_svc.dispatch_tool_definition(input).await;
-            if let Some(tools) = hook_result.output.get("tools").and_then(|v| v.as_array()) {
-                return tools
-                    .iter()
-                    .filter_map(|t| {
-                        Some(crate::provider::ToolDefinition {
-                            name: t.get("name")?.as_str()?.to_string(),
-                            description: t.get("description")?.as_str()?.to_string(),
-                            parameters: t.get("parameters")?.clone(),
-                            defer_loading: None,
-                        })
-                    })
-                    .collect();
+            if hook_result.output.get("tools").is_some() {
+                let canonical: std::collections::BTreeMap<String, crate::provider::ToolDefinition> =
+                    result
+                        .iter()
+                        .cloned()
+                        .map(|d| (d.name.clone(), d))
+                        .collect();
+                return super::tool_descriptor_snapshot::confine_hook_definitions(
+                    &hook_result.output,
+                    &canonical,
+                );
             }
         }
 

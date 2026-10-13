@@ -47,6 +47,7 @@ pub mod specialized_runtime;
 pub mod task_tool_runtime;
 pub mod title;
 mod tool_batch;
+pub mod tool_descriptor_snapshot;
 mod tool_inspect;
 pub mod tool_program_recovery;
 pub mod tool_surface;
