@@ -1,6 +1,6 @@
 # Eggsearch Evidence Workflows C001 — Tagged Retrieval-Dimension Contract Normalization
 
-Status: closing
+Status: closed
 Primary class: correctness / compatibility corrective
 Planning baseline: `agent/eggsearch-evidence-workflow-20261013`, M001 implementation `6be801e3a02349630a153f4141e9a69dce789584` (2026-10-13).
 Source: `plans/subsystems/eggsearch-evidence-workflows-post-closure-corrective-addendum.md`.

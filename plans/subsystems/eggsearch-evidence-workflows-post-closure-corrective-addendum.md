@@ -1,6 +1,6 @@
 # Eggsearch Evidence Workflows — M001 Post-Closure Retrieval Contract Corrective
 
-Status: active (C001 closing)
+Status: closed
 Primary class: correctness / compatibility
 Repository baseline: `agent/eggsearch-evidence-workflow-20261013`; implementation `6be801e3a02349630a153f4141e9a69dce789584`; accepted historical closure `plans/closure/eggsearch-evidence-workflows/001-status.md`.
 
@@ -43,13 +43,14 @@ Preserve M001's successful work: structured receipt transport, nested dates, sou
 
 ### C001 — Tagged-retrieval-summary dimension normalization
 
-Status: **closing**. Plan:
+Status: **closed**. Closure:
+`plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`. Plan:
 `plans/implementation/eggsearch-evidence-workflows-corrective/001-tagged-retrieval-dimension-normalization.md`.
 
 Dependencies:
 - M001 implementation and its historical closure: **satisfied**.
 - Published eggsearch v0.4.1 retrieval contract: **interface**, established via tagged source and deterministic fixture. **No hard dependency** on CodeGG legacy-retirement M001 or runtime pin adoption.
-- A **real installed binary smoke**, if available, is operational/qualification evidence; cannot be replaced with a fabricated claim. A contract-derived offline fixture is required for implementation closure.
+- A **real installed binary smoke**, if available, is operational/qualification evidence; cannot be replaced with a fabricated claim. Contract-derived offline fixtures and the tagged source serialization test provide implementation closure; no live v0.4.1 binary smoke was run.
 - Legacy-retirement M001 provider/version upgrade: separate **parallel** workstream; coordinate edits on common paths and requalify C001 against the newly pinned release when it lands.
 
 Required outcome:
@@ -60,16 +61,16 @@ Required outcome:
 
 ## 5. Dependency update and closing conditions
 
-M001's historical closure remains recorded **closed**. Until C001 strict closure, **M004 structured-context projection additionally hard-blocks on C001**, because the producer status it would display is not yet verified against the current authoritative upstream shape.
+M001's historical closure remains recorded **closed**. C001 strict closure is recorded at `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`, so M004's C001 dependency is satisfied; M004 remains hard-blocked on the separate legacy-retirement M001 release adoption.
 
 M002/M003 still depend on CodeGG's **separate** legacy-retirement M001 (release pin adoption), not this correction. M005 remains gated by M002/M004. C001 may run in parallel with the separate legacy-retirement M001, but must not cause two agents to edit the same file concurrently.
 
-C001 closes only with:
+C001's closure record contains:
 1. implementation SHA and tagged v0.4.1 fixture/source fingerprint;
 2. requirement-to-test matrix including failures and unknowns;
 3. `research` coordinator/report/store proof, no-match vs failure, and no false-complete cases;
 4. focus/quick verification results plus explicit unrun evidence;
 5. independent inspection of conformance to the upstream `ResponseRetrievalSummary` types;
-6. a new `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md` record classifying any residual findings.
+6. the new `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md` record classifying residual findings.
 
-No automatic closure or change to historical M001 closure is authorized by this planning-only commit.
+The historical M001 closure was not changed.
