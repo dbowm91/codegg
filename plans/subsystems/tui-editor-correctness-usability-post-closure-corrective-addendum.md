@@ -1,6 +1,6 @@
 # TUI Editor Correctness/Usability — Post-Closure Corrective Addendum
 
-Status: active (C003 closed at `1e74aa19`; C004 closed at `b9400c98`; C005 closed at `e37774a9`)
+Status: active (C003/C004/C005 historical closures retained; C006 ready for implementation)
 
 Parent historical roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` (C001, C002, M003, M004 recorded closed; keep their closures immutable).
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`, reviewed 2026-10-13. Implementation agents MUST recheck current head and unrelated changes.
@@ -94,9 +94,9 @@ Exit: one bounded native daemon listing API with explicit `file.read` and canoni
 
 | Milestone | Status | Implementation plan | Required closure record | Blocker |
 |---|---|---|---|---|
-| C003 | ready | `plans/implementation/tui-editor-correctness-usability/005-completion-verdict-and-request-fence-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md` | none |
+| C003 | closed (`1e74aa19`) | `plans/implementation/tui-editor-correctness-usability/005-completion-verdict-and-request-fence-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md` | none |
 | C004 | closed | `plans/implementation/tui-editor-correctness-usability/006-file-tree-worker-admission-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md` | none (`b9400c98`) |
-| C005 | blocked | `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md` | ADR-0022 proposed; acceptance required |
+| C005 | closed (`e37774a9`) | `plans/implementation/tui-editor-correctness-usability/007-daemon-scoped-directory-listing-corrective.md` | `plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md` | historical ADR-0022 accepted Option B; acceptance-date provenance under C006 review |
 
 This addendum closes only when all three are strictly qualified **or** the maintainers explicitly defer C005, with the local-only remote limitation prominently documented and enforced fail-closed. Completing local C003/C004 must not be delayed by the separate ADR gate. Each milestone's closure record must map acceptance criteria to exact tests, implementation SHA/CI, unresolved severity and a truthful recommendation.
 
@@ -107,3 +107,22 @@ C003: if precise UTF-16 conversion beyond a fixed byte budget requires a new imm
 ## 9. Handoff order
 
 Two independent implementation agents may implement C003 and C004 now on the active TUI branch, preserving unrelated edits. The ADR-0022 review may proceed in parallel but **must not be treated as acceptance**. After maintainer decision, activate C005 with a fresh baseline; if rejected, record an explicit local-only fail-closed alternative and retain C005 blocked/superseded per governance.
+
+
+## 10. C006 — Daemon directory scan lifetime and serialized-wire budget (2026-10-13)
+
+**Status: ready for implementation.** Implementation plan: `plans/implementation/tui-editor-correctness-usability/008-daemon-listing-admission-wire-budget-corrective.md`. Required new closure: `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md`. Source baseline: TUI branch `f5cc17f24dc05a9e73938e2fd3328f23f5207f53`.
+
+This is a new post-closure finding under the original C005 implementation; it does not rewrite or reopen its historical closure (`plans/closure/tui-editor-correctness-usability-post-closure-corrective/005-status.md`), nor C003/C004's records.
+
+1. **Daemon single-flight bound is unproven under handler cancellation.** In `src/core/daemon_documents.rs::directory_listing`, the `OwnedSemaphorePermit` lives in the async handler and is released if its future is dropped while the `spawn_blocking` walker keeps running. A new listing can then start another worker. Move the owned permit into the actual blocking worker, with a deterministic held-worker/aborted-handler/second-request-Busy/worker-exit/third-request-Ready regression and measured peak live workers.
+2. **512 KiB response guarantee is incomplete.** `trim_to_budget` checks serialized `nodes` only, stops at one remaining root, and returns it even when a giant subtree exceeds the budget. It excludes `CoreResponse::WorkspaceDirectoryList` metadata, discriminator and truncation text. C006 must constrain the **final serialized response** to `MAX_DIRECTORY_LISTING_RESPONSE_BYTES` while preserving accepted ADR-0022 policy of trimming **trailing whole top-level nodes**, including the last root if needed. Report `truncated=true` with a bounded reason when all roots are removed. Recursive child pruning requires a separate ADR clarification.
+3. **ADR-0022 acceptance chronology.** Its text states `2026-10-14` but implementation/closure commits `e37774a9`/`193a4441` are dated `2026-10-13`. Verify a real approval source, then correct the timestamp or visibly mark provenance unresolved; never fabricate historical approval.
+
+**Dependencies:** C005 implementation/Option B exists. No new protocol or authorization is required for this narrow correctness repair. C006 is independent of the separate client-local `@`-mention indexer and real `rust-analyzer` qualification.
+
+**Invariants:** daemon-owned root, `DirectProject + FileRead`; selected-file `DocumentOpen` reauthorization; daemon-wide worker admission remains held until actual blocking completion, not async waiter cancellation; finite depth/nodes/examined/name/wire limits; no local-TUI walk fallback; no second document text authority.
+
+**Verification and closure:** deterministic cancellation/permit race, worker panic/error/abort-before-start, full serialized-byte assertions on nested single-root and escape-heavy responses, all-roots-removed truncation, no O(n²) full reserialization, authorization/static guards, focused integration, quick verification, Clippy/format and exact-head hosted CI. Strict closure requires actual results, exact implementation SHA and `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md`. Otherwise label conditional; do not claim tests executed by this planning registration.
+
+**Handoff:** one C006 implementation agent may start now. Historical C003/C004/C005 closures stay unchanged; the existing approved directory-listing architecture is preserved.
