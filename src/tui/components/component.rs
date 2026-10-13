@@ -73,6 +73,7 @@ pub enum DialogType {
     TaskView,
     TriggerSecret,
     WorkspaceDashboard,
+    PolicySelector,
     None,
 }
 
@@ -133,6 +134,7 @@ impl From<DialogType> for Dialog {
             DialogType::TaskView => Dialog::TaskView,
             DialogType::TriggerSecret => Dialog::TriggerSecret,
             DialogType::WorkspaceDashboard => Dialog::WorkspaceDashboard,
+            DialogType::PolicySelector => Dialog::PolicySelector,
             DialogType::None => Dialog::None,
             DialogType::PanelManager => Dialog::PanelManager,
         }
@@ -192,6 +194,7 @@ impl From<Dialog> for DialogType {
             Dialog::TaskView => DialogType::TaskView,
             Dialog::TriggerSecret => DialogType::TriggerSecret,
             Dialog::WorkspaceDashboard => DialogType::WorkspaceDashboard,
+            Dialog::PolicySelector => DialogType::PolicySelector,
         }
     }
 }
@@ -314,6 +317,7 @@ mod tests {
             (DialogType::TaskView, Dialog::TaskView),
             (DialogType::TriggerSecret, Dialog::TriggerSecret),
             (DialogType::WorkspaceDashboard, Dialog::WorkspaceDashboard),
+            (DialogType::PolicySelector, Dialog::PolicySelector),
             (DialogType::None, Dialog::None),
         ];
 

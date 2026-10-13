@@ -187,21 +187,50 @@ impl<'a> ToolBatchExecutor<'a> {
 }
 
 impl AgentLoop {
+    /// The registry age bound armed alongside every approval router.
+    ///
+    /// Always `Some`. Returning `None` here disables age-based eviction
+    /// entirely, which is what left a waiter whose response was lost parked
+    /// forever on "waiting for command/tool output..." — `respond_scoped`
+    /// silently drops a response whose `session_id` does not match, and with
+    /// no eviction nothing else can wake that task.
+    ///
+    /// When the operator configured an approval timeout the guard sits one
+    /// grace period above it, so the router's own deadline fires first and the
+    /// waiter unregisters itself cleanly rather than being evicted mid-wait.
+    /// Otherwise the guard is long enough never to fire against a user who is
+    /// still deciding.
+    fn orphan_guard_ttl(approval_timeout: Option<Duration>) -> Option<Duration> {
+        const REGISTRY_GRACE: Duration = Duration::from_secs(60);
+        /// Ceiling when no approval timeout is configured.
+        const ORPHAN_GUARD: Duration = Duration::from_secs(24 * 60 * 60);
+
+        Some(
+            approval_timeout
+                .map(|t| t.saturating_add(REGISTRY_GRACE))
+                .unwrap_or(ORPHAN_GUARD),
+        )
+    }
+
     /// Build the router for one tool batch, carrying the operator's
     /// human-wait bound.
     ///
     /// `permission.approval_timeout_secs` is absent by default, and an absent
     /// value means *wait indefinitely* — the approval dialog stays up and the
-    /// turn stays parked until the user decides.
+    /// turn stays parked until the user decides. That wait is intentional and
+    /// is NOT bounded here.
     ///
-    /// The registry's leak guard is moved in lockstep: it is only ever a
-    /// backstop for a waiter dropped mid-await (a cancelled turn), and it
-    /// must never evict a request this router is still waiting on. When a
-    /// timeout is configured the guard sits one grace period above it, so the
-    /// router's own deadline wins and the waiter unregisters itself cleanly.
+    /// The registry's leak guard is separate and is always armed. It is a
+    /// backstop for a waiter that can never be woken (a lost response whose
+    /// channel was dropped out from under it, a responder that returned
+    /// `false`, or a waiter dropped mid-await). Evicting an entry drops its
+    /// sender, which the awaiting task observes as `CHANNEL_CLOSED_DENY` — a
+    /// typed deny that reaches the model — rather than an unbounded park that
+    /// leaves the turn spinning on "waiting for command/tool output..." with
+    /// no error. When a timeout *is* configured the guard sits one grace period
+    /// above it, so the router's own deadline wins and the waiter unregisters
+    /// itself cleanly.
     fn new_approval_router(&self, snapshot: ExecutionPolicySnapshot) -> ApprovalRouter {
-        const REGISTRY_GRACE: Duration = Duration::from_secs(60);
-
         let timeout = self
             .services
             .config
@@ -211,9 +240,7 @@ impl AgentLoop {
             .filter(|secs| *secs > 0)
             .map(Duration::from_secs);
 
-        codegg_core::bus::PermissionRegistry::set_pending_ttl(
-            timeout.map(|t| t.saturating_add(REGISTRY_GRACE)),
-        );
+        codegg_core::bus::PermissionRegistry::set_pending_ttl(Self::orphan_guard_ttl(timeout));
 
         ApprovalRouter::new(snapshot).with_approval_timeout(timeout)
     }
@@ -2489,5 +2516,49 @@ mod broker_watchdog_ordering_tests {
             tool_ms < broker,
             "tool deadline ({tool_ms}ms) must come first"
         );
+    }
+}
+
+#[cfg(test)]
+mod orphan_guard_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// The human wait is intentionally unbounded by default, but the registry
+    /// age bound must never be `None`: that disables age-based eviction and
+    /// leaves a waiter whose response was lost parked forever.
+    #[test]
+    fn orphan_guard_is_always_armed() {
+        assert!(
+            AgentLoop::orphan_guard_ttl(None).is_some(),
+            "an unbounded human wait must still arm a registry orphan guard"
+        );
+        assert!(
+            AgentLoop::orphan_guard_ttl(Some(Duration::from_secs(300))).is_some(),
+            "a configured timeout must arm a registry orphan guard"
+        );
+    }
+
+    /// With a configured approval timeout the guard must sit above it, so the
+    /// router's own deadline wins and the waiter unregisters cleanly instead
+    /// of being evicted mid-wait.
+    #[test]
+    fn guard_outranks_the_router_deadline() {
+        let timeout = Duration::from_secs(300);
+        let guard = AgentLoop::orphan_guard_ttl(Some(timeout)).expect("armed");
+        assert!(
+            guard > timeout,
+            "guard {guard:?} must exceed the router deadline {timeout:?}"
+        );
+        assert_eq!(guard, timeout + Duration::from_secs(60));
+    }
+
+    /// Without a configured timeout the guard is a long ceiling: long enough
+    /// that it never fires against a user still deciding, short enough that a
+    /// stranded waiter is eventually released.
+    #[test]
+    fn unbounded_wait_uses_a_long_but_finite_guard() {
+        let guard = AgentLoop::orphan_guard_ttl(None).expect("armed");
+        assert_eq!(guard, Duration::from_secs(24 * 60 * 60));
     }
 }

@@ -568,6 +568,12 @@ impl App {
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }
+            Dialog::PolicySelector => {
+                if let Some(ref mut selector) = self.dialog_state.policy_selector {
+                    selector.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(selector.clone()));
+                }
+            }
             Dialog::Plugin => {
                 if let Some(spec) = self.plugin_ui_state.get_dialog("active") {
                     let lines =

@@ -43,9 +43,20 @@ use crate::error::ToolError;
 
 pub(crate) const MAX_COMMAND_LENGTH: usize = 100_000;
 
-/// Command prefixes and full commands that are blocked before any shell is
-/// spawned. This is shared with the retained `terminal` compatibility tool so
-/// there is one owner for the default blocked-command policy.
+/// Catastrophic command prefixes, rejected before any shell is spawned.
+///
+/// This is the *hard-deny* tier, and it is deliberately short: system
+/// destruction, raw-device writes, fork bombs, and host power transitions.
+/// Everything else that is worth noticing is an escalation signal in
+/// [`ASK_PATTERNS`] instead, reviewed by the permission layer.
+///
+/// Privilege escalation (`sudo`, `su`, `pkexec`), shell wrappers (`bash -c`),
+/// and reading `/etc/shadow` were previously terminal denials here. They are
+/// review concerns, not catastrophic ones — and as denials they achieved
+/// little: `sh -c`, `/bin/bash -c`, `env bash -c`, or a one-line script file
+/// all reach the same action, so blocking the spelling only pushed callers to
+/// another spelling while denying legitimate work like `bash -c 'cargo test'`
+/// or `chown -R user:group ./dist`.
 pub(crate) fn default_blocked_commands() -> std::collections::HashSet<&'static str> {
     std::collections::HashSet::from([
         "rm -rf /",
@@ -57,15 +68,10 @@ pub(crate) fn default_blocked_commands() -> std::collections::HashSet<&'static s
         "dd if=/dev/zero",
         ":(){:|:&};:",
         "chmod -R 777 /",
-        "chown -R",
-        "curl -sL | sh",
-        "wget -q -O- | sh",
-        "bash -c",
-        "zcat /dev/urandom",
         "> /dev/sd",
         "fdisk",
         "parted",
-        "lsblk",
+        "zcat /dev/urandom",
         "umount /",
         "init 0",
         "shutdown",
@@ -74,13 +80,6 @@ pub(crate) fn default_blocked_commands() -> std::collections::HashSet<&'static s
         "telinit 0",
         "poweroff",
         "halt",
-        "cat /etc/passwd",
-        "cat /etc/shadow",
-        "sudo su",
-        "sudo -i",
-        "sudo bash",
-        "su root",
-        "pkexec",
     ])
 }
 
@@ -121,12 +120,82 @@ pub(crate) fn plan_to_planned_backend(
     }
 }
 
-/// Named command-injection patterns. Each entry is a human-readable name
-/// plus a regex. We iterate them individually so we can return which
-/// pattern matched (helps users understand why a command was rejected)
-/// and so we can fix false positives (e.g. `find -exec`) without
-/// weakening security.
-static BLOCKED_PATTERNS: &[(&str, &str)] = &[
+/// Shell patterns, split by disposition.
+///
+/// ## Why two tiers rather than one blocklist
+///
+/// An earlier revision shipped every pattern here as a terminal **deny**,
+/// evaluated inside the tool before the permission system was consulted. That
+/// made the table a hard boundary for the *invocation*, not for the program —
+/// and any such boundary is trivially bypassed, which Anthropic documents for
+/// Claude Code: "a deny or ask rule covers the invocation Claude usually
+/// produces and is not a security boundary around the program." Blocking
+/// `curl ... | sh` while `/usr/bin/curl …`, `sh -c 'curl …'`, or a
+/// download-then-run in two steps all pass does not stop the action; it only
+/// teaches the caller to reword. Gemini reached the same conclusion and
+/// deprecated its blocklist outright in favour of allowlisting.
+///
+/// The split follows that guidance:
+///
+/// * [`HARD_DENY_PATTERNS`] — small, catastrophic, mode-independent. Genuinely
+///   unrecoverable damage where prompting is the wrong answer. These stay a
+///   deterministic deny in *every* approval mode, which is the invariant
+///   `policy_surface` already advertises ("Deterministic hard denies still
+///   deny"). They are enforced here, below the permission layer, so no mode
+///   and no user rule can weaken them.
+/// * [`ASK_PATTERNS`] — everything else. These are signal, not a wall. They
+///   are consulted by the permission layer *before* execution and raise a
+///   normal `PermissionResult::Ask`, so the operator decides under the
+///   configured approval mode and sandbox.
+///
+/// Containment is the real boundary: `SandboxProfile` (ReadOnly /
+/// WorkspaceWrite / FullHost) plus Landlock, which a regex cannot emulate.
+///
+/// Patterns are matched against `sanitize_command`, which blanks
+/// single-quoted regions first. POSIX `sh` makes `$`, backtick, `&`, and
+/// friends literal inside `'...'`, so blanking them is semantically exact and
+/// removes the bulk of the false positives without weakening any rule.
+///
+/// Two anchoring conventions are used below:
+///   * `exec` / `eval` / dot-source are anchored to *command position* — start
+///     of input or a command separator. A bare `\s` boundary also matched
+///     `docker exec`, `cargo eval`, and `find . -name '*.sh'`.
+///   * absolute-path rules target *system* paths explicitly instead of any
+///     path starting with `/`, so `/tmp` scratch writes stay legal.
+static HARD_DENY_PATTERNS: &[(&str, &str)] = &[
+    // The canonical fork bomb is `:(){:|:&};:`. The previous regex
+    // (`:\(\)\s*:\s*\|`) required a space after `:()` and so never matched it;
+    // that shape was only caught by the literal blocked-command list.
+    (
+        "fork bomb :(){:|:",
+        r":\s*\(\s*\)\s*\{[^}]*\|[^}]*\}\s*;\s*:",
+    ),
+    (
+        "fork bomb with rm -rf",
+        r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf",
+    ),
+    ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
+    (
+        "rm -rf /",
+        r"rm\s+(-[a-zA-Z]*[rR][fF]|-rf|-fr)\s+(?:/\s*$|/\*|\s+/\s|~|\$HOME)",
+    ),
+    (
+        "mkfs on a block device",
+        r"mkfs(\.\w+)?\s+/dev/(?:sd|nvme|hd|vd|loop|mmcblk|disk|rd)[a-z0-9]*",
+    ),
+    (
+        "dd writing to a raw block device",
+        r"\bof=/dev/(?:sd|nvme|hd|vd|loop|mmcblk|disk|rd)[a-z0-9]*",
+    ),
+    (
+        "system shutdown or reboot",
+        r"(?:^|[;&|()\s])(?:shutdown|reboot|poweroff|halt)\b",
+    ),
+    ("kill -9 -1", r"kill\s+-9\s+-1"),
+];
+
+/// Escalation signals. Not a security boundary — see the module notes above.
+static ASK_PATTERNS: &[(&str, &str)] = &[
     ("command substitution $(...)", r"\$\("),
     ("braced command substitution ${...}", r"\$\{"),
     ("backtick substitution", r"`"),
@@ -134,24 +203,45 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
         "variable expansion $VAR or special parameter",
         r"\$([A-Za-z_][A-Za-z0-9_]*|[0-9!@#?*$-])",
     ),
-    ("pipe to shell |/.*sh", r"\|/.*sh"),
-    ("pipe to shell |/.*bash", r"\|/.*bash"),
-    ("redirect to /dev", r"> /dev/"),
-    ("input redirect from /dev", r"< /dev/"),
-    ("stderr redirect to /dev", r"2> /dev/"),
+    // `curl … | sh` (no path component) is caught: the old pattern required a
+    // `/` immediately after the pipe and missed the common spelling.
+    ("pipe to shell", r"\|\s*(?:/\S+?/)?\s*(?:ba|z|k|da|a)?sh\b"),
+    // Block devices only. `> /dev/null` is the overwhelmingly common and safe
+    // case.
     (
-        "fork bomb with rm -rf",
-        r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf",
+        "redirect to block device",
+        r">\s*/dev/(?:sd|nvme|hd|vd|loop|mmcblk|disk|rd)[a-z0-9]*",
     ),
-    ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
+    (
+        "input redirect from block device",
+        r"<\s*/dev/(?:sd|nvme|hd|vd|loop|mmcblk|disk|rd)[a-z0-9]*",
+    ),
     ("printf injection %{...}|&", r"%\{[^}]*\|\s*&"),
     ("eval(", r"eval\s*\("),
-    ("eval command", r"(?:^|[\s;&|()<>])eval(?:\s+|\(|$)"),
-    ("standalone exec command", r"(?:^|[\s;&|()<>])exec\s+"),
-    ("source shell script", r"source\s+.*\.sh"),
-    ("dot-source shell script", r"\.\s+.*\.sh"),
+    // Command position only: keeps `ls; eval x` and `cat f | eval x`, frees
+    // `cargo eval`.
+    ("eval command", r"(?:^|[;&|()<>\n\r]\s*)eval(?:\s+|\(|$)"),
+    // Command position only: keeps `ls; exec ls`, frees `docker exec`.
+    ("standalone exec command", r"(?:^|[;&|()<>\n\r]\s*)exec\s+"),
+    (
+        "source shell script",
+        r"(?:^|[;&|()<>\n\r]\s*)source\s+[^\n]*\.sh",
+    ),
+    // Command position only: `. ./setup.sh` is caught, `find . -name
+    // '*.sh'` and `diff --color . a.sh` are not.
+    (
+        "dot-source shell script",
+        r"(?:^|[;&|()<>\n\r]\s*)\.\s+\S+\.sh",
+    ),
     ("base64 -d", r"base64\s+-d"),
     ("xxd -r", r"xxd\s+-r"),
+    // These deliberately require whitespace immediately after the bare
+    // interpreter name. `python3 -c` / `node -e` are the *routed* forms:
+    // command-intent owns them and hands them to the scheduler-owned Python
+    // executor. Blocking the versioned spelling here would defeat
+    // `route_python` and force inline code back through the raw shell. An
+    // unversioned `python` may resolve to an arbitrary interpreter, so only
+    // that is rejected as an unowned inline-code path.
     ("perl -e", r"perl\s+-e"),
     ("python -c", r"python\s+-c"),
     ("ruby -e", r"ruby\s+-e"),
@@ -159,7 +249,6 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
     ("nohup background (trailing &)", r"nohup\s+.*&\s*$"),
     ("nohup with &", r"nohup\s+.*\s+&"),
     ("disown -a", r"disown\s+-a"),
-    ("kill -9 -1", r"kill\s+-9\s+-1"),
     ("killall -9", r"killall\s+-9"),
     ("pkill -9", r"pkill\s+-9"),
     ("chmod to /etc", r"chmod\s+[0-7]{4}\s+/etc"),
@@ -169,41 +258,166 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
     ("chmod to /ssh", r"chmod\s+[0-7]{4}\s+/ssh"),
     ("chmod to /proc", r"chmod\s+[0-7]{4}\s+/proc"),
     ("chmod to /sys", r"chmod\s+[0-7]{4}\s+/sys"),
-    ("chmod 777 to /", r"chmod\s+777\s+/"),
-    ("chown to /etc", r"chown\s+.*\s+/etc"),
-    ("chown to /home", r"chown\s+.*\s+/home"),
-    ("chown to /root", r"chown\s+.*\s+/root"),
-    ("chown to /var", r"chown\s+.*\s+/var"),
-    ("chown to /ssh", r"chown\s+.*\s+/ssh"),
-    ("chown to /proc", r"chown\s+.*\s+/proc"),
-    ("chown to /sys", r"chown\s+.*\s+/sys"),
-    ("wget -O /", r"wget\s+.*-O\s+/"),
-    ("curl -o /", r"curl\s+.*-o\s+/"),
-    ("fork bomb :(){:|:", r":\(\)\s*:\s*\|"),
+    (
+        "chmod 777 to a system path",
+        r"chmod\s+777\s+/(?:etc|usr|bin|sbin|boot|lib|var|opt|dev|proc|sys|root|home|srv)(?:/|\s|$)",
+    ),
+    (
+        "chown to a system path",
+        r"chown\s+.*\s+/(?:etc|usr|bin|sbin|boot|lib|var|opt|dev|proc|sys|root|home|srv)(?:/|\s|$)",
+    ),
+    (
+        "wget -O to a system path",
+        r"wget\s+.*-O\s+/(?:etc|usr|bin|sbin|boot|lib|var|opt|dev|proc|sys|root|home|srv)(?:/|\s|$)",
+    ),
+    (
+        "curl -o to a system path",
+        r"curl\s+.*-o\s+/(?:etc|usr|bin|sbin|boot|lib|var|opt|dev|proc|sys|root|home|srv)(?:/|\s|$)",
+    ),
     ("standalone &", r"(?:^|\s)&(?:[\s]|$)"),
+    // Shell wrappers: a classic injection shape, but blocking the spelling
+    // achieves nothing (`sh -c`, `/bin/bash -c`, and a one-line script file
+    // all reach the same action) while denying ordinary use such as
+    // `bash -c 'cargo test'`.
+    (
+        "shell wrapper -c",
+        r"(?:^|[;&|()<>\n\r])\s*(?:ba|z|k|c|da|a)?sh\s+-c\b",
+    ),
+    // Privilege escalation: worth reviewing, not catastrophic.
+    ("sudo", r"(?:^|[;&|()<>\n\r])\s*sudo\b"),
+    ("su", r"(?:^|[;&|()<>\n\r])\s*su\b"),
+    ("pkexec", r"(?:^|[;&|()<>\n\r])\s*pkexec\b"),
+    // Credential material. Reading `/etc/passwd` is ordinary work; reading
+    // `/etc/shadow` is worth a look.
+    (
+        "read a credential file",
+        r"\b(?:cat|head|tail|less|more|strings)\b[^\n]*/etc/(?:shadow|gshadow|sudoers)\b",
+    ),
 ];
 
-static BLOCKED_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
-    BLOCKED_PATTERNS
+static HARD_DENY_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
+    HARD_DENY_PATTERNS
         .iter()
         .map(|(name, pat)| {
             (
                 *name,
-                Regex::new(pat).expect("invalid blocked pattern regex"),
+                Regex::new(pat).expect("invalid hard-deny pattern regex"),
             )
         })
         .collect()
 });
 
-/// Returns the name of the first matching blocked pattern, or None.
+static ASK_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
+    ASK_PATTERNS
+        .iter()
+        .map(|(name, pat)| (*name, Regex::new(pat).expect("invalid ask pattern regex")))
+        .collect()
+});
+
+/// Returns the name of the first matching *hard-deny* pattern, or None.
+///
+/// Hard denies are enforced here, below the permission layer, so that no
+/// approval mode and no user rule can weaken them. The permission layer's
+/// "deterministic hard denies still deny" invariant depends on this being the
+/// tool-side floor rather than a permission result.
 pub(crate) fn find_blocked_pattern(command: &str) -> Option<&'static str> {
-    let sanitized = strip_quoted_heredoc_bodies(command);
-    for (name, re) in BLOCKED_PATTERN_REGEXES.iter() {
+    let sanitized = sanitize_command(command);
+    for (name, re) in HARD_DENY_PATTERN_REGEXES.iter() {
         if re.is_match(&sanitized) {
             return Some(*name);
         }
     }
     None
+}
+
+/// Returns the name of the first matching *escalation* pattern, or None.
+///
+/// Consumed by the permission layer before execution so these surface as a
+/// normal approval prompt under the configured mode, rather than as a
+/// terminal rejection. This is deliberately advisory: it shapes the operator's
+/// decision, it does not enforce one.
+pub fn find_ask_pattern(command: &str) -> Option<&'static str> {
+    let sanitized = sanitize_command(command);
+    for (name, re) in ASK_PATTERN_REGEXES.iter() {
+        if re.is_match(&sanitized) {
+            return Some(*name);
+        }
+    }
+    None
+}
+
+/// Neutralize regions the shell would treat as literal before pattern
+/// matching.
+///
+/// Three transformations, applied in order:
+///
+/// 1. Quoted heredoc *bodies* are dropped (existing behaviour) — a quoted
+///    delimiter disables expansion inside the body.
+/// 2. Backslash-escaped characters are blanked. Outside single quotes a
+///    backslash makes the next character literal, so `"\$HOME"` prints
+///    `$HOME` and is data rather than an expansion.
+/// 3. Single-quoted regions are blanked to spaces of equal length. POSIX
+///    `sh` performs no expansion inside `'...'`, so a `$VAR`, backtick, `$(`,
+///    `${`, or standalone `&` found there is data, not syntax.
+///
+/// Blanking preserves byte offsets so surrounding command structure — and
+/// therefore command-position anchoring — stays intact.
+///
+/// Double-quoted regions are deliberately **not** blanked: an unescaped
+/// `$VAR` and `$( )` do expand there, so they must still be caught.
+fn sanitize_command(command: &str) -> String {
+    blank_shell_literals(&strip_quoted_heredoc_bodies(command))
+}
+
+/// Blank single-quoted regions and backslash-escaped characters.
+///
+/// Handles the POSIX `'\''` idiom (close quote, escaped quote, reopen) by
+/// treating the escaped quote as data within the region.
+fn blank_shell_literals(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            // Outside single quotes a backslash makes the next character
+            // literal. Emit a space in its place so `"\$HOME"` no longer
+            // looks like an expansion.
+            '\\' => {
+                out.push('\\');
+                if let Some(next) = chars.next() {
+                    if next != '\n' {
+                        out.push(' ');
+                    } else {
+                        out.push('\n');
+                    }
+                }
+            }
+            '\'' => {
+                // Start of a single-quoted region: emit a placeholder so the
+                // token boundary that preceded the quote is preserved.
+                out.push(' ');
+                loop {
+                    match chars.next() {
+                        None => break,
+                        // Inside single quotes a backslash is literal too, so
+                        // `'\''` is data and must not end the region.
+                        Some('\\') => {
+                            if matches!(chars.peek(), Some('\'')) {
+                                chars.next();
+                                out.push(' ');
+                            }
+                        }
+                        Some('\'') => {
+                            out.push(' ');
+                            break;
+                        }
+                        Some(_) => out.push(' '),
+                    }
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn strip_quoted_heredoc_bodies(command: &str) -> String {
@@ -462,11 +676,40 @@ mod tests {
     use crate::config::schema::CommandIntentConfig;
     use crate::config::schema::RouteLevel;
 
+    /// No tier of the shell policy fires: neither hard-deny nor escalation.
     fn assert_allowed(command: &str) {
+        assert_not_signalled(command);
+    }
+
+    /// The escalation tier: surfaced to the permission layer as an approval
+    /// prompt, not rejected by the tool.
+    fn assert_asks(command: &str, expected_name_contains: &str) {
+        let pat = find_ask_pattern(command);
+        assert!(
+            pat.is_some(),
+            "expected an ask signal but got none: {command}"
+        );
+        let pat = pat.unwrap();
+        assert!(
+            pat.contains(expected_name_contains),
+            "expected ask pattern containing '{}', got '{}' for cmd: {}",
+            expected_name_contains,
+            pat,
+            command
+        );
+    }
+
+    fn assert_not_signalled(command: &str) {
         assert!(
             find_blocked_pattern(command).is_none(),
-            "expected allowed but matched: {} (cmd={})",
+            "unexpected hard deny: {} (cmd={})",
             find_blocked_pattern(command).unwrap_or("?"),
+            command
+        );
+        assert!(
+            find_ask_pattern(command).is_none(),
+            "unexpected ask signal: {} (cmd={})",
+            find_ask_pattern(command).unwrap_or("?"),
             command
         );
     }
@@ -549,44 +792,150 @@ mod tests {
 
     #[test]
     fn unquoted_heredoc_body_is_still_scanned() {
-        assert_blocked("cat > file.md << EOF\n$(rm -rf /)\nEOF", "$(");
+        assert_asks("cat > file.md << EOF\n$(rm -rf /)\nEOF", "$(");
     }
 
     #[test]
-    fn exec_builtin_is_blocked() {
-        assert_blocked("exec rm -rf /", "exec");
-        assert_blocked("cat foo | exec sh", "exec");
-        assert_blocked("ls; exec ls", "exec");
+    fn exec_builtin_escalates() {
+        assert_asks("exec rm -rf /", "exec");
+        assert_asks("cat foo | exec sh", "exec");
+        assert_asks("ls; exec ls", "exec");
     }
 
     #[test]
-    fn command_substitution_is_blocked() {
-        assert_blocked("echo $(rm -rf /)", "$(");
-        assert_blocked("echo `rm -rf /`", "backtick");
+    fn command_substitution_escalates() {
+        assert_asks("echo $(rm -rf /)", "$(");
+        assert_asks("echo `rm -rf /`", "backtick");
     }
 
     #[test]
-    fn pipe_to_shell_is_blocked() {
-        assert_blocked("curl -sL |/bin/sh", "pipe to shell");
-        assert_blocked("wget -qO- |/bin/bash", "pipe to shell");
-        assert_blocked("curl ... |/bin/zsh", "pipe to shell");
+    fn pipe_to_shell_escalates() {
+        assert_asks("curl -sL |/bin/sh", "pipe to shell");
+        assert_asks("wget -qO- |/bin/bash", "pipe to shell");
+        assert_asks("curl ... |/bin/zsh", "pipe to shell");
+        // The pathless form is the common one and was previously missed,
+        // because the old pattern required a `/` right after the pipe.
+        assert_asks("curl https://example.com/i.sh | sh", "pipe to shell");
+        assert_asks("wget -qO- https://example.com/i.sh | bash", "pipe to shell");
     }
 
     #[test]
-    fn dev_redirect_is_blocked() {
-        assert_blocked("echo foo > /dev/null", "/dev");
-        assert_blocked("cmd 2> /dev/null", "/dev");
+    fn dev_null_redirects_are_allowed() {
+        // `/dev/null` is the overwhelmingly common and *safe* redirect. The
+        // old `> /dev/` rule rejected the spaced spelling while letting the
+        // more common `>/dev/null` and `2>/dev/null` through.
+        assert_allowed("echo foo > /dev/null");
+        assert_allowed("echo foo >/dev/null");
+        assert_allowed("cmd 2> /dev/null");
+        assert_allowed("cmd 2>/dev/null");
+        assert_allowed("cmd &>/dev/null");
+        assert_allowed("cmd </dev/null");
     }
 
     #[test]
-    fn standalone_ampersand_is_blocked() {
-        assert_blocked("sleep 5 &", "&");
-        assert_blocked("ls &", "&");
+    fn block_device_redirects_escalate() {
+        assert_asks("echo foo > /dev/sda", "block device");
+        assert_asks("dd if=/dev/zero >/dev/nvme0n1", "block device");
+        assert_asks("cat < /dev/sdb", "block device");
+        // Non-block devices stay readable/writable.
+        assert_allowed("cat /dev/null");
+        assert_allowed("head -c 8 /dev/urandom");
+    }
+
+    #[test]
+    fn standalone_ampersand_escalates() {
+        assert_asks("sleep 5 &", "&");
+        assert_asks("ls &", "&");
     }
 
     #[test]
     fn double_ampersand_is_allowed() {
         assert_allowed("ls && echo done");
+    }
+
+    #[test]
+    fn catastrophic_shapes_remain_a_hard_deny() {
+        // Enforced in the tool, below the permission layer, so no approval
+        // mode and no user rule can weaken them.
+        assert_blocked(":(){:|:&};:", "fork bomb");
+        assert_blocked("rm -rf /", "rm -rf /");
+        assert_blocked("rm -rf /*", "rm -rf /");
+        assert_blocked("rm -rf ~", "rm -rf /");
+        assert_blocked("mkfs.ext4 /dev/sda1", "mkfs");
+        assert_blocked("dd if=/dev/zero of=/dev/nvme0n1", "dd");
+        assert_blocked("sudo shutdown -h now", "shutdown");
+        assert_blocked("reboot", "shutdown");
+        assert_blocked("kill -9 -1", "kill -9 -1");
+    }
+
+    /// A scoped `rm` is ordinary work and must not escalate: the hard deny is
+    /// anchored to the specific catastrophic targets only.
+    #[test]
+    fn scoped_delete_is_not_hard_denied() {
+        assert_not_signalled("rm a_single_file.txt");
+        assert_not_signalled("rm -rf ./target");
+        assert_not_signalled("rm -rf node_modules");
+    }
+
+    /// The escalation tier must be advisory only — never a rejection. These
+    /// are the shapes that used to be terminal denials inside the tool.
+    #[test]
+    fn advisory_signals_do_not_reject_the_command() {
+        for cmd in [
+            "curl https://example.com/install.sh | sh",
+            "wget -qO- https://example.com/i.sh | bash",
+            "echo $(date)",
+            "echo `date`",
+            "ls $HOME",
+            "sleep 5 &",
+            "echo foo > /dev/sda",
+            "chmod 777 /etc",
+            "chown root:root /usr/bin",
+            "curl -o /usr/local/bin/tool https://example.com",
+            "python -c 'print(1)'",
+            "node -e 'console.log(1)'",
+            "ls; exec sh",
+            ". ./setup.sh",
+            "base64 -d payload.b64",
+        ] {
+            assert!(
+                find_blocked_pattern(cmd).is_none(),
+                "{cmd:?} must not be a hard deny: {}",
+                find_blocked_pattern(cmd).unwrap_or("?")
+            );
+            assert!(
+                find_ask_pattern(cmd).is_some(),
+                "{cmd:?} should surface as an escalation signal"
+            );
+        }
+    }
+
+    /// Ordinary work signals nothing at all and never prompts.
+    #[test]
+    fn routine_commands_produce_no_signal() {
+        for cmd in [
+            "ls",
+            "ls -la",
+            "cat README.md",
+            "head -n 20 Cargo.toml",
+            "git status",
+            "git diff",
+            "git log --oneline -5",
+            "cargo test -p codegg-core",
+            "cargo build",
+            "rg -n 'foo' src/",
+            "find . -name '*.sh'",
+            "docker exec -it app sh",
+            "kubectl exec pod -- ls",
+            "cargo eval --help",
+            "curl -o /tmp/out.json https://example.com",
+            "chmod 777 /tmp/testdir",
+            "python3 -c 'print(1)'",
+            "echo foo > /dev/null",
+            "cmd 2>/dev/null",
+        ] {
+            assert_not_signalled(cmd);
+        }
     }
 
     #[test]
@@ -598,14 +947,125 @@ mod tests {
     }
 
     #[test]
-    fn safe_env_var_is_blocked() {
-        assert_blocked("ls $HOME", "$VAR");
+    fn unquoted_var_expansion_escalates() {
+        assert_asks("ls $HOME", "$VAR");
     }
 
     #[test]
-    fn special_shell_parameters_are_blocked() {
+    fn single_quoted_literals_are_not_syntax() {
+        // POSIX `sh` performs no expansion inside '...', so these are data.
+        assert_allowed("echo '$HOME'");
+        assert_allowed("rg -n 'passes & fails' .");
+        assert_allowed("rg -n 'should return `Option<T>`' src/");
+        assert_allowed("echo 'run `cargo test` to verify'");
+        assert_allowed("grep -rn '$(rm -rf /)' .");
+        assert_allowed("echo 'Terms & Conditions'");
+        assert_allowed("echo 'a; eval b'");
+    }
+
+    #[test]
+    fn backslash_escaped_characters_are_literals() {
+        // Outside single quotes a backslash makes the next character literal,
+        // so `"\$HOME"` prints `$HOME` rather than expanding it.
+        assert_allowed(r#"echo "\$HOME""#);
+        assert_allowed(r#"echo "\`date\`""#);
+        // The escaped form is literal, but the unescaped one is not.
+        assert_asks(r#"echo "$HOME""#, "variable expansion");
+    }
+
+    #[test]
+    fn double_quoted_expansion_still_escalates() {
+        // `$VAR` and `$( )` DO expand inside double quotes, so blanking must
+        // not extend to them.
+        assert_asks(r#"echo "$HOME""#, "variable expansion");
+        assert_asks(r#"echo "$(rm -rf /)""#, "$(");
+        assert_asks(r#"echo "${HOME}""#, "braced command substitution");
+        assert_asks(r#"echo "`rm -rf /`""#, "backtick");
+    }
+
+    #[test]
+    fn exec_and_eval_match_only_in_command_position() {
+        // The family that the old `\s`-boundary rule broke.
+        assert_allowed("docker exec -it app sh");
+        assert_allowed("docker exec app npm test");
+        assert_allowed("kubectl exec pod -- ls");
+        assert_allowed("cargo exec");
+        assert_allowed("cargo eval --help");
+        assert_allowed("./evaluate_results.sh");
+        // ...while the genuinely dangerous forms stay blocked.
+        assert_asks("exec sh", "exec");
+        assert_asks("ls; exec sh", "exec");
+        assert_asks("cat f | exec sh", "exec");
+        assert_asks("ls && exec sh", "exec");
+        assert_asks("eval", "eval");
+        assert_asks("ls; eval 'rm -rf /'", "eval");
+    }
+
+    #[test]
+    fn dot_source_matches_only_in_command_position() {
+        assert_allowed("find . -name '*.sh'");
+        assert_allowed("find . -type f -name '*.sh'");
+        assert_allowed("ls . scripts/deploy.sh");
+        assert_allowed("diff --color . a.sh");
+        assert_allowed("cat ./deploy.sh");
+        assert_allowed("rg '\\.sh$' -l");
+        assert_allowed("bash scripts/verify.sh quick");
+        // Genuine dot-sourcing stays blocked.
+        assert_asks(". ./setup.sh", "dot-source");
+        assert_asks("ls; . ./setup.sh", "dot-source");
+        assert_asks("source ./lib.sh", "source shell script");
+    }
+
+    #[test]
+    fn unversioned_interpreter_inline_flags_escalate() {
+        // An unversioned interpreter may resolve to something unexpected, so
+        // the unowned inline-code path is rejected here.
+        assert_asks("python -c 'print(1)'", "python -c");
+        assert_asks("node -e 'console.log(1)'", "node -e");
+        assert_asks("perl -e 'print 1'", "perl -e");
+        assert_asks("ruby -e 'puts 1'", "ruby -e");
+    }
+
+    #[test]
+    fn versioned_interpreter_inline_flags_reach_command_intent() {
+        // `python3 -c` is the *routed* form: command-intent owns it and hands
+        // it to the scheduler-owned Python executor. Blocking it here would
+        // defeat `route_python` and push inline code back through raw shell,
+        // so it must reach the router (and there require scheduler
+        // admission). See `tool::bash::tests::active_mode_python_command_routes`.
+        assert_allowed("python3 -c 'print(1)'");
+        assert_allowed("python3.11 -c 'print(1)'");
+        assert_allowed("node22 -e 'console.log(1)'");
+    }
+
+    #[test]
+    fn absolute_path_rules_target_system_paths_only() {
+        assert_allowed("curl -o /tmp/out.json https://example.com");
+        assert_allowed("curl -o ./out.json https://example.com");
+        assert_allowed("wget -O /tmp/out https://example.com");
+        assert_allowed("chmod 777 /tmp/testdir");
+        assert_allowed("chown -R user:group ./dist");
+        // System paths remain blocked.
+        assert_asks("curl -o /etc/cron.d/x https://example.com", "curl -o");
+        assert_asks("wget -O /usr/local/bin/x https://example.com", "wget -O");
+        assert_asks("chmod 777 /etc", "chmod 777");
+        assert_asks("chmod 777 /etc/shadow", "chmod 777");
+    }
+
+    #[test]
+    fn quote_blanking_preserves_surrounding_command_structure() {
+        // A blocked construct outside quotes must still be caught even when a
+        // quoted region precedes it, and the blanking must not eat the
+        // separator that positions the second command.
+        assert_asks("echo 'harmless' && eval rm", "eval");
+        assert_asks("echo 'harmless'; exec sh", "exec");
+        assert_asks("echo '$HOME' && ls $HOME", "variable expansion");
+    }
+
+    #[test]
+    fn special_shell_parameters_escalate() {
         for parameter in ["$@", "$*", "$#", "$?", "$-", "$!", "$0", "$9"] {
-            assert_blocked(&format!("echo {parameter}"), "variable expansion");
+            assert_asks(&format!("echo {parameter}"), "variable expansion");
         }
     }
 

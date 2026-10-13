@@ -1272,6 +1272,15 @@ pub struct PermissionConfig {
     pub bash: Option<PermissionRule>,
     pub bash_allow_patterns: Option<Vec<String>>,
     pub bash_deny_patterns: Option<Vec<String>>,
+    /// Extra shell patterns that escalate to an approval prompt.
+    ///
+    /// Additive to the built-in escalation signals (`curl … | sh`, redirects
+    /// to a block device, inline interpreters, `chmod`/`chown` to a system
+    /// path, …). This is a *review* control, not a boundary: it shapes the
+    /// operator's decision under the configured approval mode. For a true
+    /// boundary use `bash_deny_patterns` or the sandbox profile — a pattern
+    /// match constrains the invocation, not the program.
+    pub bash_ask_patterns: Option<Vec<String>>,
     pub allow_all_bash: Option<bool>,
     pub task: Option<PermissionRule>,
     pub todowrite: Option<String>,

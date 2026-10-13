@@ -772,11 +772,15 @@ impl ToolRegistry {
             test_tool
         };
         registry.register(test_tool);
-        let python_tool = if let Some(ref store) = options.run_store {
-            crate::python_script::tool::PythonScriptTool::with_run_store(store.clone())
-        } else {
-            crate::python_script::tool::PythonScriptTool::new()
-        };
+        // Python execution is scheduler-owned like every other heavy surface.
+        // Without the submission service PythonScriptTool::execute fails
+        // closed with ToolError::Disabled, so omitting this made the tool
+        // permanently non-functional in production despite being advertised
+        // in the tool schema.
+        let python_tool = crate::python_script::tool::PythonScriptTool::with_scheduler(
+            options.run_store.clone(),
+            options.submission.clone(),
+        );
         registry.register(python_tool);
         let tool_program_tool = if let Some(submission) = options.submission.clone() {
             let mut tool =
@@ -1566,6 +1570,135 @@ pub fn convert_lsp_cache_config(
         max_bytes: cfg.max_bytes.unwrap_or(4 * 1024 * 1024),
         ttl_seconds: cfg.ttl_seconds.unwrap_or(300),
     })
+}
+
+#[cfg(test)]
+mod python_submission_wiring_tests {
+    use super::*;
+    use crate::error::ToolError;
+    use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
+    use codegg_core::workspace_services::{
+        ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
+    };
+
+    /// Build a real `JobSubmissionService` so the test exercises the same
+    /// wiring production uses (`src/core/daemon_turns.rs` threads
+    /// `deps.submission` into `ToolRegistryOptions`).
+    async fn submission_service_for_test() -> Arc<crate::scheduler::JobSubmissionService> {
+        use codegg_core::jobs::{DaemonGeneration, InMemoryJobStore, JobStore};
+
+        let root = tempfile::tempdir().expect("temp workspace");
+        let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+            .await
+            .expect("workspace registry");
+        workspace_registry
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let scheduler = crate::scheduler::JobScheduler::new(
+            store.clone(),
+            services.clone(),
+            crate::scheduler::ResolvedSchedulerConfig::default(),
+            DaemonGeneration::new_unchecked("gen-test"),
+        );
+        crate::scheduler::JobSubmissionService::new(
+            store,
+            scheduler,
+            services,
+            DaemonGeneration::new_unchecked("gen-test"),
+        )
+    }
+
+    /// `python_script` is advertised in the tool schema and documented as a
+    /// real capability, but it used to be constructed *without* the
+    /// submission service, so `execute` always failed closed with
+    /// `ToolError::Disabled` in the daemon runtime. Every existing test
+    /// constructed the tool directly and so never exercised the production
+    /// registration path — the two `Disabled` tests actually pinned the
+    /// defect rather than catching it.
+    ///
+    /// `ToolRegistryOptions::default()` legitimately carries no submission
+    /// service (subagents and tool-program sandboxes do not get one), so the
+    /// negative control below is the *unwired* shape and this test builds the
+    /// registry the way the daemon does (`src/core/daemon_turns.rs` threads
+    /// `deps.submission` into `ToolRegistryOptions`).
+    #[tokio::test]
+    async fn python_tool_is_constructed_with_submission_service() {
+        // Negative control: without a service the tool fails closed with the
+        // scheduler-admission message. This is the exact state production was
+        // stuck in, so it pins the signature of the defect.
+        let unwired = ToolRegistry::with_options(ToolRegistryOptions::default());
+        let unwired_result = unwired
+            .get("python_script")
+            .expect("registered")
+            .execute(serde_json::json!({
+                "code": "print('hello-python')",
+                "mode": "analyze"
+            }))
+            .await;
+        let disabled_without_scheduler = matches!(
+            &unwired_result,
+            Err(ToolError::Disabled(msg)) if msg.contains("scheduler admission")
+        );
+        assert!(
+            disabled_without_scheduler,
+            "negative control: an unscheduled registry must still fail closed, got {unwired_result:?}"
+        );
+
+        let submission = submission_service_for_test().await;
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            submission: Some(submission),
+            ..ToolRegistryOptions::default()
+        });
+        let result = registry
+            .get("python_script")
+            .expect("python_script must be registered")
+            .execute(serde_json::json!({
+                "code": "print('hello-python')",
+                "mode": "analyze",
+                // Bounded so the test proves reachability quickly rather
+                // than running a real analysis to completion.
+                "timeout": 2
+            }))
+            .await;
+
+        if let Err(ToolError::Disabled(msg)) = result {
+            panic!(
+                "python_script must not fail closed on scheduler admission when a \
+                 submission service is configured: {msg}"
+            );
+        }
+    }
+
+    /// The permission layer must classify `python_script` as `ShellExec`, the
+    /// same authority tier as `bash`. It previously fell through to the
+    /// catch-all `Mutating` arm while the tool itself reported `ShellExec`.
+    #[test]
+    fn python_script_is_classified_as_shell_exec() {
+        assert_eq!(
+            crate::permission::tool_category_for_name("python_script"),
+            ToolCategory::ShellExec
+        );
+    }
+
+    /// The tool's own reported category must agree with the permission
+    /// layer's name-based map, or the approval prompt renders the wrong
+    /// authority tier.
+    #[test]
+    fn python_script_category_agrees_with_permission_map() {
+        let declared = crate::python_script::tool::PythonScriptTool::new().category();
+        assert_eq!(
+            declared,
+            crate::permission::tool_category_for_name("python_script"),
+            "tool category and permission map disagree for python_script"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -158,8 +158,8 @@ A few commonly used entries:
 | `/agents` | List available agents |
 | `/sessions` | Session browser |
 | `/policy` | Current approval and sandbox policy detail |
-| `/approval` | Select approval mode (`/approval-mode` is an alias) |
-| `/sandbox` | Select sandbox profile (`/sandbox-profile` is an alias) |
+| `/approval` | Approval-mode fast-select (`/approval-mode` is an alias) |
+| `/sandbox` | Sandbox-profile fast-select (`/sandbox-profile` is an alias) |
 | `/themes` | Theme picker (`/theme` is an alias) |
 | `/connect`, `/connections` | Provider connection management |
 | `/doctor` | In-app diagnostics for the search backend, MCP servers, and providers |
@@ -308,6 +308,34 @@ the sandbox decides *how far the process can reach*. Neither implies the other.
 | `read-only` | Filesystem writes are denied by containment. Network has no OS isolation. |
 | `workspace-write` | Writes are confined to the workspace roots on supported hosts. Network has no OS isolation. |
 | `full-host` | CodeGG filesystem containment is disabled — the agent has your OS user's host authority outside the workspace, and network access is unrestricted. |
+
+### Fast-select keys
+
+Bare `/approval` and `/sandbox` open a selector seeded on the value currently in
+force. Both answer in one keystroke:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k`, `↓` / `↑` | Move the cursor |
+| `1` – `3` | Select that row immediately — no Enter needed |
+| `Enter` | Select the highlighted row |
+| `Esc` | Cancel, changing nothing |
+
+`/approval yolo` and friends still work as the argument form and take the same
+confirmation path.
+
+The permission dialog answers the same way, with the letter keys as the primary
+affordance:
+
+| Key | Action |
+|-----|--------|
+| `y` / `1` | Allow once |
+| `p` / `2` | Always allow — arms a confirmation, never grants outright |
+| `n` / `3` | Deny once |
+| `4` | Always deny — also arms a confirmation |
+| `j` / `k`, `↓` / `↑` | Move the cursor |
+| `Enter` | Select the highlighted row |
+| `Esc` | Cancel |
 
 ### Confirmations
 

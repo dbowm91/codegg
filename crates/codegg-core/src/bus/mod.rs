@@ -117,9 +117,12 @@ impl PermissionRegistry {
 
     /// Bound how long an unanswered request survives in the registry.
     ///
-    /// `None` disables age-based eviction entirely. Call this once per
-    /// process with the configured approval timeout plus a grace margin, so
-    /// the router's timeout fires first and the waiter unregisters itself.
+    /// `None` disables age-based eviction entirely. Production callers pass
+    /// `Some`: either the configured approval timeout plus a grace margin (so
+    /// the router's timeout fires first and the waiter unregisters itself), or
+    /// a long orphan guard when no timeout is configured. Evicting an entry
+    /// drops its sender, so a waiter that can never be woken resolves as a
+    /// closed-channel deny instead of parking forever.
     pub fn set_pending_ttl(ttl: Option<std::time::Duration>) {
         let encoded = match ttl {
             Some(d) => d.as_millis().min(u128::from(u64::MAX - 1)) as u64,

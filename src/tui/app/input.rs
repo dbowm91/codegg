@@ -563,6 +563,24 @@ impl App {
                 self.dialog_state.permission_perm_id = None;
                 self.close_dialog();
             }
+            TuiMsg::PolicyOptionSelected {
+                approval_mode,
+                sandbox_profile,
+            } => {
+                // `resolve_policy_selection` tears the selector down and
+                // returns the parsed target; `request_policy_change` then
+                // owns the warning matrix, any extra confirmation, and the
+                // daemon CAS. Neither step can be skipped from here.
+                if let Some((mode, profile)) =
+                    crate::tui::commands::policy::resolve_policy_selection(
+                        self,
+                        approval_mode,
+                        sandbox_profile,
+                    )
+                {
+                    crate::tui::commands::policy::request_policy_change(self, mode, profile);
+                }
+            }
             TuiMsg::SubmitQuestionAnswers { answers_json } => {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();

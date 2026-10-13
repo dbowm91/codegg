@@ -70,6 +70,9 @@ pub enum Dialog {
     /// per-project activity rows). FocusManager-owned; see
     /// `workspace_dashboard.rs`. Not a durable Workspace object.
     WorkspaceDashboard,
+    /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
+    /// `policy_selector.rs`.
+    PolicySelector,
 }
 
 impl Dialog {
@@ -123,6 +126,7 @@ impl Dialog {
                 | Self::TaskView
                 | Self::TriggerSecret
                 | Self::WorkspaceDashboard
+                | Self::PolicySelector
         )
     }
 }
@@ -312,6 +316,14 @@ pub enum TuiMsg {
         session_ids: Vec<String>,
     },
     ConfirmResult(Option<bool>),
+    /// A row in the `/approval` / `/sandbox` fast-select was chosen. Exactly
+    /// one axis is populated; `App::process_msg` forwards it to
+    /// `policy::request_policy_change`, so the warning matrix and the
+    /// daemon CAS still apply.
+    PolicyOptionSelected {
+        approval_mode: Option<String>,
+        sandbox_profile: Option<String>,
+    },
     ReviewOpenDiff {
         path: String,
     },

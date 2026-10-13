@@ -199,7 +199,15 @@
     "bash": "ask",
     "edit": "ask",
     // Bash patterns are global, not per-rule.
+    //
+    // `_ask` escalates to an approval prompt. It shapes the operator's
+    // decision; it is NOT a boundary — a pattern match constrains the
+    // invocation, not the program, so `sh -c '…'` and an absolute path still
+    // pass. Use `bash_deny_patterns` or the sandbox profile for containment.
+    // Built-in escalation signals already cover pipe-to-shell, redirects to a
+    // block device, inline interpreters, and chmod/chown to system paths.
     "bash_allow_patterns": ["git status", "git diff", "git log"],
+    "bash_ask_patterns": ["terraform apply", "kubectl delete"],
     "bash_deny_patterns": ["rm -rf", "git push --force"],
     "tools": {
       "webfetch": "allow"

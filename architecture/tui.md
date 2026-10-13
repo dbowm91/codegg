@@ -1479,12 +1479,12 @@ pub enum Dialog {
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Logs, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
-    Team, TeamTokenSecret, TriggerSecret,
-    TaskSchedule, TaskView, WorkspaceDashboard,
+    Team, Control, TeamTokenSecret, TriggerSecret,
+    TaskSchedule, TaskView, WorkspaceDashboard, PolicySelector,
 }
 ```
 
-49 variants.
+51 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -1505,12 +1505,12 @@ pub enum DialogType {
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Logs, Plugin, RunDetail, Collaborators, ProjectChat,
-    Team, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
-    TriggerSecret, WorkspaceDashboard, None,
+    Team, Control, TeamTokenSecret, ProjectPicker, TaskSchedule, TaskView,
+    TriggerSecret, WorkspaceDashboard, PolicySelector, None,
 }
 ```
 
-47 variants, matching `Dialog` 1:1 through the exhaustive compatibility
+51 variants, matching `Dialog` 1:1 through the exhaustive compatibility
 conversions.
 
 `TaskSchedule` is the WorkOrder scheduling sheet

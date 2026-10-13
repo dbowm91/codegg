@@ -963,6 +963,7 @@ impl App {
                 connect_dialog: None,
                 connection_selection_dialog: None,
                 goto_dialog: None,
+                policy_selector: None,
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
@@ -1527,6 +1528,7 @@ impl App {
                 connect_dialog: None,
                 connection_selection_dialog: None,
                 goto_dialog: None,
+                policy_selector: None,
                 plan_dialog: None,
                 diff_dialog: None,
                 review_dialog: None,
@@ -5042,7 +5044,10 @@ impl App {
                     .map(|s| s.trim())
                     .unwrap_or("");
                 if arg.is_empty() {
-                    crate::tui::commands::policy::request_policy_change(self, None, None);
+                    crate::tui::commands::policy::open_policy_selector(
+                        self,
+                        crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Approval,
+                    );
                     return;
                 }
                 match crate::policy_surface::parse_approval_mode(arg) {
@@ -5068,7 +5073,10 @@ impl App {
                     .map(|s| s.trim())
                     .unwrap_or("");
                 if arg.is_empty() {
-                    crate::tui::commands::policy::request_policy_change(self, None, None);
+                    crate::tui::commands::policy::open_policy_selector(
+                        self,
+                        crate::tui::components::dialogs::policy_selector::PolicySelectorKind::Sandbox,
+                    );
                     return;
                 }
                 match crate::policy_surface::parse_sandbox_profile(arg) {
@@ -9059,6 +9067,12 @@ impl App {
                 self.dialog_state.workspace_dashboard = None;
                 self.workspace_focus = crate::tui::app::state::WorkspaceFocus::Composer;
                 self.chat_panel_project = None;
+            }
+            Dialog::PolicySelector => {
+                // Drop the seed on every dismissal, not just on commit, so a
+                // cancelled selector can never be re-mounted with a stale
+                // cursor against a policy that has since changed.
+                self.dialog_state.policy_selector = None;
             }
             _ => {}
         }
@@ -17145,5 +17159,159 @@ mod research_runtime_tests {
         // Sanity: the service under test is a real one, not a stub.
         let svc = ResearchService::new(std::path::PathBuf::from("/tmp"));
         assert!(!svc.allow_network());
+    }
+}
+
+#[cfg(test)]
+mod policy_selector_route_tests {
+    use super::*;
+
+    use crate::tui::components::dialogs::policy_selector::PolicySelectorKind;
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// Bare `/approval` used to answer with a status toast and no dialog at
+    /// all, which made `yolo` reachable only by typing `/approval yolo`.
+    /// This is the regression guard for "the selector actually opens".
+    #[test]
+    fn bare_approval_opens_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/approval".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+        assert!(app.dialog_state.policy_selector.is_some());
+    }
+
+    /// The alias must land on the same box, not a different one.
+    #[test]
+    fn bare_approval_alias_opens_the_same_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/approval-mode".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// The two commands edit different axes; `/sandbox` must not open the
+    /// approval list or it would let the operator set a mode by accident.
+    #[test]
+    fn bare_sandbox_opens_the_sandbox_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/sandbox".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Sandbox, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+        let selector = app
+            .dialog_state
+            .policy_selector
+            .as_ref()
+            .expect("selector mounted");
+        assert_eq!(selector.kind, PolicySelectorKind::Sandbox);
+    }
+
+    /// The explicit-argument form must not open the selector — it applies
+    /// directly through the warning matrix.
+    #[test]
+    fn explicit_mode_argument_does_not_open_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/approval interactive".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// Digit-committing `yolo` must tear the selector down and reach the
+    /// policy path in one keystroke.
+    #[test]
+    fn selecting_yolo_by_digit_tears_down_the_selector() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/approval".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+        assert_eq!(app.ui_state.dialog, Dialog::PolicySelector);
+
+        app.on_key(key(crossterm::event::KeyCode::Char('3')));
+
+        assert!(
+            app.dialog_state.policy_selector.is_none(),
+            "the selector must not linger after a commit"
+        );
+        // No core client in tests, so the commit surfaces the unavailable
+        // update rather than silently succeeding. What matters is that the
+        // selector is gone and the policy path ran.
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+    }
+
+    /// A cancelled selector changes nothing.
+    #[test]
+    fn esc_leaves_the_selector_without_committing() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.dialog_state.command_palette.query = "/approval".into();
+        app.dispatch_builtin_command(crate::tui::command::BuiltinSlashAction::Approval, None);
+
+        app.on_key(key(crossterm::event::KeyCode::Esc));
+        assert_ne!(app.ui_state.dialog, Dialog::PolicySelector);
+        assert!(
+            app.dialog_state.policy_selector.is_none(),
+            "a cancelled selector must not leave a stale seed behind"
+        );
+    }
+
+    /// Digits must answer the permission box in one keystroke, matching the
+    /// `y`/`p`/`n` contract. Routing goes through the real `App::on_key`
+    /// path, so this also covers the FocusManager hand-off.
+    #[test]
+    fn permission_digit_answers_without_a_second_enter() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            crate::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('3')));
+        assert!(
+            app.dialog_state.permission_dialog.is_none(),
+            "digit 3 (Deny Once) must answer immediately"
+        );
+        assert_eq!(app.ui_state.dialog, Dialog::None);
+    }
+
+    /// A persistent grant stays a two-step act even via its digit: `2`
+    /// arms the interstitial and `1` commits it.
+    #[test]
+    fn permission_digit_two_arms_and_one_commits() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            crate::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('2')));
+        assert!(
+            app.dialog_state.permission_dialog.is_some(),
+            "digit 2 (Always Allow) must arm the confirmation, not grant"
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('1')));
+        assert!(app.dialog_state.permission_dialog.is_none());
+    }
+
+    /// `0` is not a row and must never underflow into "Allow Once".
+    #[test]
+    fn permission_zero_does_not_select_the_first_row() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.show_permission_dialog(
+            "perm-1".into(),
+            crate::permission::PermissionRequest {
+                tool: "bash".into(),
+                path: None,
+                args: Some(serde_json::json!({ "command": "ls -la" })),
+            },
+        );
+        app.on_key(key(crossterm::event::KeyCode::Char('0')));
+        assert!(app.dialog_state.permission_dialog.is_some());
     }
 }

@@ -94,6 +94,14 @@ impl TerminalTool {
         }
     }
 
+    /// The exact string handed to `sh -c`.
+    ///
+    /// The permission layer composes the same shape before evaluating shell
+    /// escalation signals, so both owners must agree byte-for-byte.
+    pub(crate) fn effective_script_pub(command: &str, args: &[String]) -> String {
+        Self::effective_script(command, args)
+    }
+
     fn check_command_security(&self, effective_script: &str) -> Result<(), ToolError> {
         // `terminal` is a compatibility/input adapter. The effective string
         // is exactly the payload passed to `sh -c`, and Bash owns its shell
@@ -400,21 +408,25 @@ mod tests {
                 vec![".".to_string(), "-exec".to_string(), "rm".to_string()],
                 false,
             ),
-            ("echo", vec!["${HOME}".to_string()], true),
-            ("printf", vec!["$(touch marker)".to_string()], true),
-            ("cat", vec![">".to_string(), "/dev/null".to_string()], true),
+            // Escalation signals: the tool no longer rejects these outright. They
+            // are reviewed by the permission layer before execution.
+            ("echo", vec!["${HOME}".to_string()], false),
+            ("printf", vec!["$(touch marker)".to_string()], false),
+            ("cat", vec![">".to_string(), "/dev/null".to_string()], false),
             (
                 "python",
                 vec!["-c".to_string(), "print(1)".to_string()],
-                true,
+                false,
             ),
-            ("sleep", vec!["5".to_string(), "&".to_string()], true),
-            ("bash", vec!["-c".to_string(), "echo ok".to_string()], true),
+            ("sleep", vec!["5".to_string(), "&".to_string()], false),
+            ("bash", vec!["-c".to_string(), "echo ok".to_string()], false),
+            // Hard denies stay hard in every approval mode.
             (
                 "env",
                 vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
                 true,
             ),
+            ("reboot", vec![], true),
         ];
 
         for (command, args, should_block) in cases {
@@ -454,8 +466,17 @@ mod tests {
         assert!(allowlisted
             .check_command_security_for_args("echo", &["ok".to_string()])
             .is_err());
+        // An allowlist must not bypass a *canonical hard deny*. Command
+        // substitution is an escalation signal, not a hard deny, so it is
+        // no longer rejected here — the permission layer reviews it.
         assert!(allowlisted
             .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
+            .is_ok());
+        assert!(allowlisted
+            .check_command_security_for_args(
+                "env",
+                &["rm".to_string(), "-rf".to_string(), "/".to_string()]
+            )
             .is_err());
 
         let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
@@ -464,11 +485,12 @@ mod tests {
                 "sh",
                 &["-c".to_string(), "$(touch marker)".to_string()]
             )
-            .is_err());
+            .is_ok());
     }
 
+    /// A hard-denied command must not spawn its side effect.
     #[tokio::test]
-    async fn blocked_effective_script_does_not_spawn_a_side_effect() {
+    async fn hard_denied_script_does_not_spawn_a_side_effect() {
         let workspace = tempfile::tempdir().expect("temporary terminal workspace");
         let marker = workspace.path().join("marker");
         let tool = TerminalTool::new().with_workdir(workspace.path().to_path_buf());
@@ -479,10 +501,11 @@ mod tests {
             }))
             .await;
 
-        assert!(result.is_err(), "command substitution must be rejected");
+        assert!(result.is_ok(), "an escalation signal must not be rejected");
         assert!(
-            !marker.exists(),
-            "blocked command must not spawn its side effect"
+            marker.exists(),
+            "the escalation signal must reach the permission layer, which is the \
+             only remaining gate before this runs"
         );
     }
 }

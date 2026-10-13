@@ -183,7 +183,7 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell
-        "bash" | "terminal" | "test" => ToolCategory::ShellExec,
+        "bash" | "terminal" | "test" | "python_script" => ToolCategory::ShellExec,
         // Explicit checked LSP preview application is a filesystem
         // mutation; keep the semantic map named and aligned with the tool
         // contract rather than relying on the conservative fallback.
@@ -1143,9 +1143,27 @@ impl PermissionChecker {
                             "destructive_pattern": pattern_name,
                         })),
                     });
-                } else {
-                    return PermissionResult::Allow;
                 }
+                // Advisory escalation signals (pipe-to-shell, redirects to a
+                // block device, inline interpreters, chmod/chown to a system
+                // path, …). These used to be terminal rejections inside the
+                // bash tool, which made them a boundary around the
+                // *invocation* rather than the program — trivially bypassed,
+                // and it only taught callers to reword. They are reviewed
+                // here instead so the operator decides under the configured
+                // approval mode and sandbox. Genuinely catastrophic shapes
+                // stay hard-denied in the tool and are never reachable.
+                if let Some(pattern_name) = crate::tool::bash::policy::find_ask_pattern(cmd) {
+                    return PermissionResult::Ask(PermissionRequest {
+                        tool: tool.to_string(),
+                        path: path.map(|p| p.to_string()),
+                        args: Some(serde_json::json!({
+                            "command": cmd,
+                            "ask_pattern": pattern_name,
+                        })),
+                    });
+                }
+                return PermissionResult::Allow;
             }
         }
 
@@ -1571,6 +1589,18 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
                         level: PermissionLevel::Deny,
                         paths: None,
                         bash_patterns: Some(deny_patterns.clone()),
+                    });
+                }
+            }
+            // Extra operator-defined escalation signals. Additive to the
+            // built-in ones in `tool::bash::policy::find_ask_pattern`.
+            if let Some(ask_patterns) = &perm.bash_ask_patterns {
+                if !ask_patterns.is_empty() {
+                    tool_rules.push(ToolRule {
+                        tool: "bash".to_string(),
+                        level: PermissionLevel::Ask,
+                        paths: None,
+                        bash_patterns: Some(ask_patterns.clone()),
                     });
                 }
             }

@@ -36,6 +36,62 @@ policy, in this order:
 
 This does not replace the permission system. It adds an additional safety layer.
 
+## Shell Blocked Patterns
+
+The `bash` and `terminal` tools enforce shell safety in two tiers, and the
+distinction matters.
+
+**Hard deny** is reserved for a short list of catastrophic shapes: fork bombs,
+`rm -rf` against `/` or `~`, `mkfs` on a block device, `dd` writing to a raw
+device, disk partitioning (`fdisk`/`parted`), system shutdown/reboot, and
+`kill -9 -1`. These are rejected inside the tool, *below* the permission
+system, so no approval mode and no user rule can weaken them. A scoped delete
+like `rm -rf ./target` is ordinary work and is not in this tier.
+
+**Escalation signals** cover everything else of note — pipe-to-shell, redirects
+to a block device, `$VAR`/`$( )`/backticks, `eval`/`exec`, dot-sourcing, inline
+interpreters, `chmod`/`chown` to system paths, shell wrappers (`bash -c`),
+privilege escalation (`sudo`/`su`/`pkexec`), credential-file reads, and
+backgrounding. These are not rejections. They are surfaced to the permission
+layer *before* execution as a normal approval prompt, so you decide under the
+configured approval mode and sandbox.
+
+### Why the escalation tier is not a blocklist
+
+A regex blocklist is a boundary around an *invocation*, not around a *program*.
+`Bash(curl *)` stops `curl https://x` but not `/usr/bin/curl https://x` or
+`sh -c 'curl https://x'`; a two-step download-then-run passes regardless. The
+practical effect of hard-blocking is not prevention — it is teaching the caller
+to reword, while the underlying action proceeds unchanged.
+
+For that reason CodeGG follows the same direction the major agents took:
+
+- **Claude Code** documents the limitation itself ("not a security boundary
+  around the program") and recommends broad-allow plus a narrow `PreToolUse`
+  hook.
+- **Gemini CLI** deprecated its blocklist outright (`tools.exclude`) in favour
+  of an allowlisting policy engine, noting that "clever users may find ways to
+  bypass simple string-based blocks."
+- **Codex** uses a sandbox plus `prefix_rule` allow/prompt/forbid decisions.
+- **OpenCode** ships allow/ask/deny rules that default to allow.
+
+Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
+`full_host`) plus Landlock, which a regex cannot emulate.
+
+### Tuning
+
+Three global pattern lists configure the review controls:
+
+| Key | Effect |
+|---|---|
+| `permission.bash_allow_patterns` | auto-approve without prompting (adds to a built-in read-only set: `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `wc`, `diff`, `cargo`, read-only `git`, …) |
+| `permission.bash_ask_patterns` | escalate to a prompt (additive to the built-in signals) |
+| `permission.bash_deny_patterns` | reject outright (your own rules; the catastrophic tier above is separate and cannot be relaxed) |
+
+An escalation signal resolves under the active `approval_mode`: `interactive`
+prompts you, `automatic` routes to the bounded reviewer, and `yolo`
+auto-approves escalations while hard denies and the sandbox still apply.
+
 ## Security Tool
 
 The `security` tool provides deterministic analysis:
