@@ -1,6 +1,6 @@
 # Windows Native Sandbox C028 — Token Launch Initialization and VM Privilege Diagnosis
 
-Status: ready for handoff (hosted phase probe; privileged comparison VM-gated)
+Status: implemented (negative bounded hosted phase; privileged comparison remains VM-gated)
 Primary class: infrastructure/invariant
 Repository baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843` on `work/windows-native-sandbox-foundation` (2026-10-13).
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0021-launch-authority-decision-gate`.
