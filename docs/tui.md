@@ -406,6 +406,10 @@ and refused with a message; nothing is ever inserted on your behalf, and
 every acceptance is one ordinary edit with one undo step. An empty answer
 ("no suggestions") looks different from a warming server, a changed
 document, or a server without completions, and a truncated list says so.
+A reconnect never lets an old answer paint over a new request, even when
+everything else lines up. On a very long single line, F8 past the first
+32 KiB refuses with "Line too long for completion at this position"
+instead of guessing the cursor.
 
 ### Semantic highlighting limits and truncation
 

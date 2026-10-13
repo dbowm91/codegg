@@ -265,11 +265,18 @@ fn apply_finished(
     match command {
         TuiCommand::EditorCompletionFinished {
             request_id,
+            completion_epoch,
             scope,
             result,
             error,
         } => {
-            app.apply_editor_completion(*request_id, scope.clone(), result.clone(), error.clone());
+            app.apply_editor_completion(
+                *request_id,
+                *completion_epoch,
+                scope.clone(),
+                result.clone(),
+                error.clone(),
+            );
             (*request_id, scope.clone())
         }
         other => panic!("expected completion finished, got {other:?}"),
@@ -1019,4 +1026,267 @@ async fn f8_with_an_open_popup_supersedes_with_a_fresh_request() {
     assert_eq!(fake.seen().len(), 2);
     assert_eq!(app.editor_state.completion.candidates.len(), 1);
     assert_eq!(app.editor_state.completion.candidates[0].label, "b");
+}
+
+// ---------------------------------------------------------------------------
+// C003. Trigger budget, typed wire statuses, and reconnect fencing
+// ---------------------------------------------------------------------------
+
+/// Tolerant core fake for the reconnect test: scripted completion answers,
+/// graceful `Error` for every other request (presence negotiation and
+/// friends must degrade, never panic, when the transport reconnects).
+struct TolerantClient {
+    script: Mutex<VecDeque<FakeReply>>,
+    seen: Mutex<Vec<LspCompletionRequestDto>>,
+}
+
+impl TolerantClient {
+    fn new(replies: Vec<FakeReply>) -> Self {
+        Self {
+            script: Mutex::new(replies.into()),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl CoreClient for TolerantClient {
+    async fn request(
+        &self,
+        request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        match request.payload {
+            CoreRequest::LspCompletionGet { request } => {
+                self.seen.lock().unwrap().push(request);
+                match self.script.lock().unwrap().pop_front() {
+                    Some(FakeReply::Result(result)) => {
+                        Ok(CoreResponse::LspCompletionResult { result })
+                    }
+                    Some(FakeReply::Error(message)) => Ok(CoreResponse::Error {
+                        code: "injected".to_string(),
+                        message,
+                    }),
+                    None => panic!("no scripted completion reply left"),
+                }
+            }
+            other => Ok(CoreResponse::Error {
+                code: "unscripted".to_string(),
+                message: format!("tolerant client has no script for {other:?}"),
+            }),
+        }
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (_tx, rx) = mpsc::channel(8);
+        rx
+    }
+}
+
+fn last_toast(app: &App) -> Option<String> {
+    app.messages_state
+        .toasts
+        .history()
+        .next()
+        .map(|record| record.message.clone())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn giant_line_refuses_f8_without_sending_or_allocating_the_prefix() {
+    // One 2 MiB logical line with the cursor at the end: far past the
+    // 32 KiB position budget. F8 must refuse visibly — no daemon request,
+    // no popup, no truncated/wrong cursor.
+    let line = "a".repeat(2 * 1024 * 1024);
+    let Harness { mut app, fake, .. } =
+        harness(&line, true, vec![], line.len(), EditorMode::Insert).await;
+
+    app.on_key(key(KeyCode::F(8)));
+
+    assert!(
+        fake.seen().is_empty(),
+        "an over-budget line must never send a completion request"
+    );
+    assert!(
+        !app.editor_state.completion.is_open(),
+        "refusal leaves the popup closed"
+    );
+    assert_eq!(
+        last_toast(&app).as_deref(),
+        Some("Line too long for completion at this position")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_boundary_sends_exactly_and_refuses_just_past_it() {
+    // Cursor exactly at the 32 KiB budget sends with the exact column;
+    // ten bytes further refuses. Both orders prove the boundary is exact,
+    // not approximate.
+    let budget = codegg_document::DocumentSnapshot::MAX_COMPLETION_PREFIX_BYTES;
+    let line = "a".repeat(budget + 10);
+    let Harness {
+        mut app,
+        mut rx,
+        fake,
+        ..
+    } = harness(
+        &line,
+        true,
+        vec![ready(vec![], false, false)],
+        budget,
+        EditorMode::Insert,
+    )
+    .await;
+
+    app.on_key(key(KeyCode::F(8)));
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+    let seen = fake.seen();
+    assert_eq!(seen.len(), 1, "at-budget positions still send");
+    assert_eq!(seen[0].character, budget as u32);
+    assert_eq!(
+        app.editor_state.completion.status,
+        CompletionViewStatus::Ready
+    );
+
+    app.editor_state
+        .session
+        .as_mut()
+        .expect("session")
+        .presentation_mut()
+        .cursor_byte = budget + 10;
+    app.on_key(key(KeyCode::F(8)));
+    assert_eq!(
+        fake.seen().len(),
+        1,
+        "ten bytes past the budget must not send"
+    );
+    assert_eq!(
+        last_toast(&app).as_deref(),
+        Some("Line too long for completion at this position")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_wire_constructor_renders_stale_not_an_identity_error() {
+    // The exact daemon `stale` constructor on a revision-7 request: before
+    // the fix this presented the generic "another document revision" Error
+    // because the revision check ran before the status match.
+    let Harness {
+        mut app, mut rx, ..
+    } = harness(
+        LIB_RS,
+        true,
+        vec![FakeReply::Result(LspCompletionResultDto::stale(
+            "doc-1".to_string(),
+            8,
+            Some(8),
+        ))],
+        20,
+        EditorMode::Insert,
+    )
+    .await;
+
+    // The request goes out at revision 0 while the daemon answers stale
+    // at revision 8: a true newer-revision echo. Before the fix the
+    // revision check ran before the status match, so this presented the
+    // generic identity Error; now it must map to Stale.
+    app.on_key(key(KeyCode::F(8)));
+    apply_finished(&mut app, &recv_completion(&mut rx).await);
+    assert_eq!(
+        app.editor_state.completion.status,
+        CompletionViewStatus::Stale
+    );
+    assert!(app.editor_state.completion.candidates.is_empty());
+    assert!(app.editor_state.completion.is_open());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_epoch_fence_drops_a_queued_pre_reset_answer() {
+    // F8 issues request 1 under epoch E0. A reconnect clears completion
+    // (epoch E1) without touching generation or scope; F8 reuses id 1
+    // under E1. The queued E0 answer must drop even though scope and id
+    // coincide; the E1 answer renders. Both application orders hold.
+    let candidates_a = vec![applicable("a", (1, 4), (1, 8), "a")];
+    let candidates_b = vec![applicable("b", (1, 4), (1, 8), "b")];
+    let lease = Some("lease-1");
+    let transport = Arc::new(ScriptedDocTransport::new(LIB_RS, lease));
+    let controller = Arc::new(DocumentController::new(transport));
+    controller
+        .open(
+            "project-1".to_string(),
+            "ws-1".to_string(),
+            "src/lib.rs".to_string(),
+            true,
+            DocumentScope::Workspace,
+        )
+        .await
+        .expect("scripted open succeeds");
+    let mut session = TuiDocumentSession::from_controller(controller.clone());
+    session.presentation_mut().cursor_byte = 20;
+    session.presentation_mut().mode = EditorMode::Insert;
+    session.presentation_mut().focus = EditorFocus::Buffer;
+
+    let mut app = App::new_for_testing("/tmp/tui-completion".to_string());
+    if let Some(tab) = app.project_tabs.active_mut() {
+        tab.project_id = Some("project-1".to_string());
+        tab.workspace_id = Some("ws-1".to_string());
+        tab.session_id = Some("session-1".to_string());
+    }
+    app.ui_state.routes.navigate_to(Route::Editor);
+    app.editor_state.session = Some(session);
+    app.editor_state.path = Some("src/lib.rs".to_string());
+    app.editor_state.status = EditorStatus::Synced;
+
+    let fake = Arc::new(TolerantClient::new(vec![
+        ready(candidates_a, false, false),
+        ready(candidates_b, false, false),
+    ]));
+    app.set_core_client(fake.clone());
+    let (tx, mut rx) = mpsc::channel(16);
+    app.tui_cmd_tx = Some(tx);
+
+    app.on_key(key(KeyCode::F(8)));
+    let first = recv_completion(&mut rx).await;
+    let first_id = match &first {
+        TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+        other => panic!("expected completion finished, got {other:?}"),
+    };
+
+    // The transport reconnects before the first answer is applied. The
+    // generation and scope binding are unchanged — only the epoch moves.
+    app.on_projection_reconnect();
+    app.on_key(key(KeyCode::F(8)));
+    // The reconnect also triggers background refreshes (presence) whose
+    // completions share the channel; skip anything that is not the
+    // completion under test.
+    let second = loop {
+        let command = recv_completion(&mut rx).await;
+        if matches!(command, TuiCommand::EditorCompletionFinished { .. }) {
+            break command;
+        }
+    };
+    let second_id = match &second {
+        TuiCommand::EditorCompletionFinished { request_id, .. } => *request_id,
+        other => panic!("expected completion finished, got {other:?}"),
+    };
+    assert_eq!(
+        (first_id, second_id),
+        (1, 1),
+        "the fence under test is id reuse across the reset"
+    );
+
+    // Old answer first: dropped, new request stays live.
+    apply_finished(&mut app, &first);
+    assert!(
+        app.editor_state.completion.candidates.is_empty(),
+        "the pre-reconnect answer must drop despite matching scope+id"
+    );
+    assert!(app.editor_state.completion.loading);
+    // New answer: renders.
+    apply_finished(&mut app, &second);
+    assert_eq!(app.editor_state.completion.candidates.len(), 1);
+    assert_eq!(app.editor_state.completion.candidates[0].label, "b");
+    // Late duplicate of the old answer cannot paint over the new one.
+    apply_finished(&mut app, &first);
+    assert_eq!(app.editor_state.completion.candidates.len(), 1);
+    assert_eq!(app.editor_state.completion.candidates[0].label, "b");
+    assert_eq!(fake.seen.lock().unwrap().len(), 2, "both triggers sent");
 }

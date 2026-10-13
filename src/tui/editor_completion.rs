@@ -77,6 +77,18 @@ pub struct EditorCompletionState {
     pub error: Option<String>,
     pub loading: bool,
     pub request_id: u64,
+    /// Lifetime-unique fencing epoch (C003/F2).
+    ///
+    /// Monotonic for the process lifetime and bumped on every path that
+    /// resets `request_id` (`clear`, `reset_for_scope`), so a request id
+    /// is never reused within one epoch. Completions carry the epoch they
+    /// were issued under; an old completion arriving after a clear,
+    /// dismiss-then-clear, reconnect, tab switch, or scope ping-pong
+    /// mismatches and is dropped even when scope and request id coincide.
+    /// `u64` rollover is unreachable in practice; arithmetic still uses
+    /// `wrapping_add` so exhaustion degrades to a documented fence rather
+    /// than a panic.
+    pub epoch: u64,
     pub popup_open: bool,
 }
 
@@ -85,10 +97,18 @@ impl EditorCompletionState {
         if self.scope.as_ref() == Some(&scope) {
             return;
         }
+        let epoch = self.epoch.wrapping_add(1);
         *self = Self {
             scope: Some(scope),
+            epoch,
             ..Self::default()
         };
+    }
+
+    /// The current fencing epoch. Captured at request time and echoed on
+    /// the completion so `apply` can reject pre-reset answers.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Begin one request, superseding any in flight.
@@ -96,7 +116,8 @@ impl EditorCompletionState {
     /// A re-trigger while loading starts a newer request rather than
     /// queueing behind the old one: completions carry request ids, so the
     /// superseded answer is dropped on arrival and can never paint over the
-    /// newer one. Returns the new request id.
+    /// newer one. Returns the new request id; pair it with [`Self::epoch`]
+    /// for the full fence.
     pub fn begin(&mut self, scope: &EditorCompletionScope) -> u64 {
         if self.scope.as_ref() != Some(scope) {
             self.reset_for_scope(scope.clone());
@@ -115,51 +136,94 @@ impl EditorCompletionState {
 
     /// Store one finished request.
     ///
-    /// Returns `false` — dropping the result — when the scope moved on or
-    /// the request id is not the latest. A stale response may be counted
-    /// diagnostically by the caller but is never shown as actionable.
+    /// Returns `false` — dropping the result — when the epoch moved on
+    /// (clear/reset/reconnect since issue), the scope moved on, or the
+    /// request id is not the latest. A dropped response is never shown as
+    /// actionable, no matter how well its scope matches.
     pub fn apply(
         &mut self,
         request_id: u64,
+        epoch: u64,
         scope: &EditorCompletionScope,
         result: Option<LspCompletionResultDto>,
         error: Option<String>,
     ) -> bool {
-        if self.scope.as_ref() != Some(scope) || self.request_id != request_id || !self.loading {
+        if self.epoch != epoch
+            || self.scope.as_ref() != Some(scope)
+            || self.request_id != request_id
+            || !self.loading
+        {
             return false;
         }
         self.loading = false;
         match (result, error) {
             (Some(result), _) => {
-                // Identity is checked before anything is shown: a result for
-                // another document or revision is discarded, not displayed.
-                if result.document_id != scope.document_id || result.revision != scope.revision {
+                // Document identity is checked before anything is shown,
+                // for every status: a result for another document is
+                // discarded, not displayed.
+                if result.document_id != scope.document_id {
                     self.status = CompletionViewStatus::Error;
-                    self.error = Some("completion answer is for another document revision".into());
+                    self.error = Some("completion answer is for another document".into());
                     self.candidates.clear();
                     return true;
                 }
-                self.status = match result.status {
-                    LspCompletionStatus::Ready => CompletionViewStatus::Ready,
-                    LspCompletionStatus::NotReady => CompletionViewStatus::NotReady,
-                    LspCompletionStatus::Stale => CompletionViewStatus::Stale,
-                    LspCompletionStatus::Unsynced => CompletionViewStatus::Unsynced,
-                    LspCompletionStatus::Unsupported => CompletionViewStatus::Unsupported,
-                };
-                self.truncated = result.truncated;
-                self.incomplete = result.incomplete;
-                // Defense in depth: the protocol caps at 100 candidates, but
-                // a misbehaving daemon must not grow frontend state without
-                // bound. Dropping here sets `truncated` so the popup stays
-                // honest about what it shows.
-                let mut candidates = result.candidates;
-                if candidates.len() > codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES {
-                    candidates.truncate(codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES);
-                    self.truncated = true;
+                match result.status {
+                    LspCompletionStatus::Ready => {
+                        // Ready is bound to the exact requested revision,
+                        // including the sync witness when the daemon sent
+                        // one. Anything else is malformed, not actionable.
+                        let synced_ok = result
+                            .synced_revision
+                            .is_none_or(|synced| synced == scope.revision);
+                        if result.revision != scope.revision || !synced_ok {
+                            self.status = CompletionViewStatus::Error;
+                            self.error =
+                                Some("completion answer is for another document revision".into());
+                            self.candidates.clear();
+                            return true;
+                        }
+                        self.status = CompletionViewStatus::Ready;
+                        self.truncated = result.truncated;
+                        self.incomplete = result.incomplete;
+                        // Defense in depth: the protocol caps at 100
+                        // candidates, but a misbehaving daemon must not grow
+                        // frontend state without bound. Dropping here sets
+                        // `truncated` so the popup stays honest about what
+                        // it shows.
+                        let mut candidates = result.candidates;
+                        if candidates.len() > codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES {
+                            candidates
+                                .truncate(codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES);
+                            self.truncated = true;
+                        }
+                        self.candidates = candidates;
+                        self.selected = 0;
+                        self.error = None;
+                    }
+                    // Non-ready statuses keep their typed meaning regardless
+                    // of revision: `NotReady` carries the constructor's
+                    // placeholder revision by design, and `Stale` legitimately
+                    // echoes the daemon-current (newer) revision. Candidates
+                    // are always disarmed: a non-ready answer with payload —
+                    // whether a hostile peer or a malformed daemon — is
+                    // displayed as its status, never as suggestions.
+                    LspCompletionStatus::NotReady => {
+                        self.status = CompletionViewStatus::NotReady;
+                        self.disarm_non_ready(&result);
+                    }
+                    LspCompletionStatus::Stale => {
+                        self.status = CompletionViewStatus::Stale;
+                        self.disarm_non_ready(&result);
+                    }
+                    LspCompletionStatus::Unsynced => {
+                        self.status = CompletionViewStatus::Unsynced;
+                        self.disarm_non_ready(&result);
+                    }
+                    LspCompletionStatus::Unsupported => {
+                        self.status = CompletionViewStatus::Unsupported;
+                        self.disarm_non_ready(&result);
+                    }
                 }
-                self.candidates = candidates;
-                self.selected = 0;
-                self.error = None;
             }
             (None, Some(message)) => {
                 self.status = CompletionViewStatus::Error;
@@ -173,6 +237,17 @@ impl EditorCompletionState {
             }
         }
         true
+    }
+
+    /// Display a non-ready answer as its typed status with no actionable
+    /// candidates. Copies only the presentation flags; payload bodies are
+    /// never trusted from a non-ready result.
+    fn disarm_non_ready(&mut self, result: &LspCompletionResultDto) {
+        self.truncated = result.truncated;
+        self.incomplete = result.incomplete;
+        self.candidates.clear();
+        self.selected = 0;
+        self.error = None;
     }
 
     pub fn select_next(&mut self) {
@@ -215,9 +290,16 @@ impl EditorCompletionState {
     /// Called on local edit, undo/redo, save, reload, resync, close,
     /// attachment switch, session change, and disconnect: anything that
     /// moves the text or the binding invalidates the popup and any pending
-    /// request id with it.
+    /// request id with it. Bumps the fencing epoch so a request id issued
+    /// afterwards can never collide with a pre-clear completion still in
+    /// flight — even across reconnects that leave generation and scope
+    /// unchanged.
     pub fn clear(&mut self) {
-        *self = Self::default();
+        let epoch = self.epoch.wrapping_add(1);
+        *self = Self {
+            epoch,
+            ..Self::default()
+        };
     }
 
     /// One-line status for the popup header, if the popup is open.
@@ -307,9 +389,21 @@ mod tests {
         assert!(state.loading);
         assert!(state.popup_open);
         // The superseded answer is dropped on arrival.
-        assert!(!state.apply(first, &scope, Some(ready_result("doc-1", 7)), None));
+        assert!(!state.apply(
+            first,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
         assert!(state.loading);
-        assert!(state.apply(second, &scope, Some(ready_result("doc-1", 7)), None));
+        assert!(state.apply(
+            second,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
         assert!(!state.loading);
         assert_eq!(state.status, CompletionViewStatus::Ready);
     }
@@ -321,9 +415,21 @@ mod tests {
         let request = state.begin(&scope);
         let mut other = scope.clone();
         other.revision = 8;
-        assert!(!state.apply(request, &other, Some(ready_result("doc-1", 8)), None));
+        assert!(!state.apply(
+            request,
+            state.epoch(),
+            &other,
+            Some(ready_result("doc-1", 8)),
+            None
+        ));
         assert!(state.loading, "a fenced apply must not clear loading");
-        assert!(!state.apply(request + 1, &scope, Some(ready_result("doc-1", 7)), None));
+        assert!(!state.apply(
+            request + 1,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
         assert!(state.loading);
     }
 
@@ -350,7 +456,7 @@ mod tests {
             let request = state.begin(&scope);
             let mut result = ready_result("doc-1", 7);
             result.status = status;
-            assert!(state.apply(request, &scope, Some(result), None));
+            assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
             assert_eq!(state.status, view, "{status:?}");
             assert!(state.candidates.is_empty());
         }
@@ -361,13 +467,217 @@ mod tests {
         let scope = scope();
         let mut state = EditorCompletionState::default();
         let request = state.begin(&scope);
-        assert!(state.apply(request, &scope, Some(ready_result("doc-2", 7)), None));
+        assert!(state.apply(
+            request,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-2", 7)),
+            None
+        ));
         assert_eq!(state.status, CompletionViewStatus::Error);
         assert!(state.candidates.is_empty());
         let mut state = EditorCompletionState::default();
         let request = state.begin(&scope);
-        assert!(state.apply(request, &scope, Some(ready_result("doc-1", 9)), None));
+        assert!(state.apply(
+            request,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 9)),
+            None
+        ));
         assert_eq!(state.status, CompletionViewStatus::Error);
+    }
+
+    /// F1: the exact wire constructors keep their typed statuses on a
+    /// nonzero-revision request. Before the fix both presented the generic
+    /// "another document revision" Error.
+    #[test]
+    fn real_not_ready_and_stale_constructors_keep_typed_status() {
+        let scope = scope();
+        // Cold server: the constructor's placeholder revision 0 is normal,
+        // not an identity error, on a revision-7 request.
+        let mut state = EditorCompletionState::default();
+        let request = state.begin(&scope);
+        let epoch = state.epoch();
+        assert!(state.apply(
+            request,
+            epoch,
+            &scope,
+            Some(LspCompletionResultDto::not_ready("doc-1".into())),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::NotReady);
+        assert!(state.candidates.is_empty());
+        assert_eq!(state.status_line(), Some("language server warming…"));
+        // True stale: the daemon-current revision 8 legitimately differs
+        // from the requested 7 and must not become a generic Error.
+        let mut state = EditorCompletionState::default();
+        let request = state.begin(&scope);
+        let epoch = state.epoch();
+        assert!(state.apply(
+            request,
+            epoch,
+            &scope,
+            Some(LspCompletionResultDto::stale("doc-1".into(), 8, Some(8))),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::Stale);
+        assert!(state.candidates.is_empty());
+        assert_eq!(state.status_line(), Some("document changed — re-trigger"));
+        // Unsynced/unsupported with mismatched revisions are equally typed.
+        for (result, view) in [
+            (
+                LspCompletionResultDto::unsynced("doc-1".into(), 9, Some(5)),
+                CompletionViewStatus::Unsynced,
+            ),
+            (
+                LspCompletionResultDto::unsupported("doc-1".into(), 0, None),
+                CompletionViewStatus::Unsupported,
+            ),
+        ] {
+            let mut state = EditorCompletionState::default();
+            let request = state.begin(&scope);
+            assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
+            assert_eq!(state.status, view);
+            assert!(state.candidates.is_empty());
+        }
+    }
+
+    /// F1 defensive: a non-ready answer carrying candidates — hostile peer
+    /// or malformed daemon — is displayed as its status with the payload
+    /// disarmed, never as suggestions. A malformed Ready (wrong revision,
+    /// inconsistent sync witness) is an Error, never actionable.
+    #[test]
+    fn hostile_and_malformed_payloads_are_never_actionable() {
+        let scope = scope();
+        let mut hostile = LspCompletionResultDto::not_ready("doc-1".into());
+        hostile.candidates = vec![candidate("evil")];
+        let mut state = EditorCompletionState::default();
+        let request = state.begin(&scope);
+        assert!(state.apply(request, state.epoch(), &scope, Some(hostile), None));
+        assert_eq!(state.status, CompletionViewStatus::NotReady);
+        assert!(state.candidates.is_empty());
+        assert!(state.selected_candidate().is_none());
+        // Ready with a stale revision.
+        let mut state = EditorCompletionState::default();
+        let request = state.begin(&scope);
+        assert!(state.apply(
+            request,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 8)),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::Error);
+        assert!(state.candidates.is_empty());
+        // Ready with the right revision but an inconsistent sync witness.
+        let mut state = EditorCompletionState::default();
+        let request = state.begin(&scope);
+        let mut inconsistent = ready_result("doc-1", 7);
+        inconsistent.candidates = vec![candidate("x")];
+        inconsistent.synced_revision = Some(9);
+        assert!(state.apply(request, state.epoch(), &scope, Some(inconsistent), None));
+        assert_eq!(state.status, CompletionViewStatus::Error);
+        assert!(state.candidates.is_empty());
+        assert!(state.selected_candidate().is_none());
+    }
+
+    /// F2: a request id reused after `clear` cannot admit a pre-clear
+    /// answer, even with an identical scope. Captures the old epoch before
+    /// the fix point (both requests would be id 1, epoch 0).
+    #[test]
+    fn reused_request_id_after_clear_needs_a_new_epoch() {
+        let scope = scope();
+        let mut state = EditorCompletionState::default();
+        let first = state.begin(&scope);
+        let first_epoch = state.epoch();
+        assert_eq!(first, 1);
+        // Reconnect/edit/switch drops everything without touching the
+        // generation or scope binding.
+        state.clear();
+        let second = state.begin(&scope);
+        let second_epoch = state.epoch();
+        assert_eq!(second, 1, "ids restart after clear");
+        assert_ne!(first_epoch, second_epoch);
+        // The old answer arrives late with a matching scope and id — and
+        // is dropped on the epoch fence while the new request stays live.
+        assert!(!state.apply(
+            first,
+            first_epoch,
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert!(state.loading);
+        assert!(state.apply(
+            second,
+            second_epoch,
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::Ready);
+    }
+
+    /// F2: scope ping-pong (A → B → A) reuses ids with an identical scope
+    /// and must still fence the late A answer.
+    #[test]
+    fn scope_ping_pong_does_not_resurrect_an_old_answer() {
+        let scope_a = scope();
+        let mut scope_b = scope();
+        scope_b.revision = 8;
+        let mut state = EditorCompletionState::default();
+        let a_first = state.begin(&scope_a);
+        let a_first_epoch = state.epoch();
+        let _b = state.begin(&scope_b);
+        let a_second = state.begin(&scope_a);
+        let a_second_epoch = state.epoch();
+        assert_eq!((a_first, a_second), (1, 1));
+        assert_ne!(a_first_epoch, a_second_epoch);
+        assert!(!state.apply(
+            a_first,
+            a_first_epoch,
+            &scope_a,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert!(state.loading);
+        assert!(state.apply(
+            a_second,
+            a_second_epoch,
+            &scope_a,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::Ready);
+    }
+
+    /// F2: dismiss-then-retrigger without an intervening clear keeps
+    /// incrementing ids (no reset, no reuse), so the fence holds without
+    /// an epoch change.
+    #[test]
+    fn dismiss_then_retrigger_does_not_reuse_ids() {
+        let scope = scope();
+        let mut state = EditorCompletionState::default();
+        let first = state.begin(&scope);
+        state.dismiss();
+        let second = state.begin(&scope);
+        assert_eq!((first, second), (1, 2));
+        assert!(!state.apply(
+            first,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert!(state.apply(
+            second,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
+        assert_eq!(state.status, CompletionViewStatus::Ready);
     }
 
     #[test]
@@ -375,7 +685,7 @@ mod tests {
         let scope = scope();
         let mut state = EditorCompletionState::default();
         let request = state.begin(&scope);
-        assert!(state.apply(request, &scope, None, Some("boom".into())));
+        assert!(state.apply(request, state.epoch(), &scope, None, Some("boom".into())));
         assert_eq!(state.status, CompletionViewStatus::Error);
         assert_eq!(state.error.as_deref(), Some("boom"));
         assert!(state.popup_open);
@@ -387,7 +697,13 @@ mod tests {
         let scope = scope();
         let mut state = EditorCompletionState::default();
         let request = state.begin(&scope);
-        assert!(state.apply(request, &scope, Some(ready_result("doc-1", 7)), None));
+        assert!(state.apply(
+            request,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
         state.select_next();
         state.select_previous();
         assert_eq!(state.selected, 0);
@@ -402,7 +718,7 @@ mod tests {
         let request = state.begin(&scope);
         let mut result = ready_result("doc-1", 7);
         result.candidates = vec![candidate("b"), candidate("a")];
-        assert!(state.apply(request, &scope, Some(result), None));
+        assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
         assert_eq!(
             state.selected_candidate().map(|c| c.label.as_str()),
             Some("b")
@@ -432,9 +748,19 @@ mod tests {
         let request = state.begin(&scope);
         let mut result = ready_result("doc-1", 7);
         result.candidates = vec![candidate("b")];
-        assert!(state.apply(request, &scope, Some(result), None));
+        assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
         state.clear();
-        assert_eq!(state, EditorCompletionState::default());
+        // Everything resets except the fencing epoch, which must survive
+        // so the next request id cannot collide with a pre-clear answer.
+        let epoch = state.epoch;
+        assert_ne!(epoch, 0, "resets must advance the fence");
+        assert_eq!(
+            state,
+            EditorCompletionState {
+                epoch,
+                ..EditorCompletionState::default()
+            }
+        );
     }
 
     #[test]
@@ -444,7 +770,13 @@ mod tests {
         assert_eq!(state.status_line(), None, "closed popup has no line");
         let request = state.begin(&scope);
         assert_eq!(state.status_line(), Some("completion…"));
-        assert!(state.apply(request, &scope, Some(ready_result("doc-1", 7)), None));
+        assert!(state.apply(
+            request,
+            state.epoch(),
+            &scope,
+            Some(ready_result("doc-1", 7)),
+            None
+        ));
         assert_eq!(state.status_line(), Some("no suggestions"));
     }
 

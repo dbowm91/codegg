@@ -802,29 +802,58 @@ fn validate_semantic_tokens(
 
 // ── Completion (M004) ────────────────────────────────────────────────────────
 
+/// Why a completion scope could not be built for an explicit request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionScopeError {
+    /// No bound session, attachment, snapshot, or read scope.
+    Unavailable,
+    /// The cursor sits past the bounded position budget on a giant line.
+    /// Refused visibly rather than allocating the whole prefix or sending
+    /// a truncated/wrong UTF-16 cursor.
+    LineTooLong,
+}
+
 /// Build the completion scope for an explicit user request.
 ///
 /// The read scope proves session/project/workspace/path binding; the
 /// attachment adds the real document identity and daemon revision; the
-/// cursor resolves to the UTF-16 position the server will see. Returns
-/// `None` when anything is missing, leaving the popup closed: a completion
-/// request without a bound attachment is a client bug, reported by the
-/// caller rather than sent half-formed.
-fn current_completion_scope(app: &App) -> Option<EditorCompletionScope> {
-    let read_scope = current_lsp_scope(app)?;
-    let session = app.editor_state.session.as_ref()?;
-    let attachment = session.attachment_info()?;
-    let snapshot = session.try_snapshot()?;
+/// cursor resolves to the UTF-16 position the server will see through a
+/// bounded rope-chunk walk (C003/F3), never by materializing a giant line
+/// prefix. Returns an error when anything is missing or the line is over
+/// budget, leaving the popup closed: a completion request without a bound
+/// attachment is a client bug, and an over-budget line is an explicit
+/// refusal — neither is ever sent half-formed.
+fn current_completion_scope(app: &App) -> Result<EditorCompletionScope, CompletionScopeError> {
+    let read_scope = current_lsp_scope(app).ok_or(CompletionScopeError::Unavailable)?;
+    let session = app
+        .editor_state
+        .session
+        .as_ref()
+        .ok_or(CompletionScopeError::Unavailable)?;
+    let attachment = session
+        .attachment_info()
+        .ok_or(CompletionScopeError::Unavailable)?;
+    let snapshot = session
+        .try_snapshot()
+        .ok_or(CompletionScopeError::Unavailable)?;
     let cursor = session.presentation().cursor_byte.min(snapshot.len_bytes());
     let line = editor::cursor_line(&snapshot, cursor);
-    let row_start = editor::line_start(&snapshot, line)?;
-    let prefix = snapshot.read_bytes(row_start, cursor).ok()?;
-    Some(EditorCompletionScope {
+    let row_start = editor::line_start(&snapshot, line).ok_or(CompletionScopeError::Unavailable)?;
+    let character = snapshot
+        .utf16_column_bounded(row_start, cursor)
+        .map_err(|error| {
+            if error == codegg_document::DocumentError::CompletionPrefixTooLong {
+                CompletionScopeError::LineTooLong
+            } else {
+                CompletionScopeError::Unavailable
+            }
+        })?;
+    Ok(EditorCompletionScope {
         read_scope,
         document_id: attachment.document_id,
         revision: attachment.revision,
         line: u32::try_from(line).unwrap_or(u32::MAX),
-        character: u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX),
+        character,
     })
 }
 
@@ -835,16 +864,30 @@ fn current_completion_scope(app: &App) -> Option<EditorCompletionScope> {
 /// state guard drops the older answer on arrival. Nothing here polls,
 /// retries, or auto-accepts.
 pub(crate) fn start_editor_completion(app: &mut App) {
-    let Some(scope) = current_completion_scope(app) else {
-        app.messages_state
-            .toasts
-            .warning("Completion needs a session-bound workspace document — open a file first");
-        return;
+    let scope = match current_completion_scope(app) {
+        Ok(scope) => scope,
+        Err(CompletionScopeError::LineTooLong) => {
+            app.messages_state
+                .toasts
+                .warning("Line too long for completion at this position");
+            return;
+        }
+        Err(CompletionScopeError::Unavailable) => {
+            app.messages_state
+                .toasts
+                .warning("Completion needs a session-bound workspace document — open a file first");
+            return;
+        }
     };
     let request_id = app.editor_state.completion.begin(&scope);
+    // C003/F2: the epoch travels with the completion so a pre-reset answer
+    // can never satisfy a post-reset request, even when scope and request
+    // id coincide after a clear, reconnect, or scope ping-pong.
+    let epoch = app.editor_state.completion.epoch();
     let Some(client) = app.core_client.clone() else {
         app.editor_state.completion.apply(
             request_id,
+            epoch,
             &scope,
             None,
             Some("daemon unavailable".to_string()),
@@ -864,6 +907,7 @@ pub(crate) fn start_editor_completion(app: &mut App) {
     if let Err(error) = request.validate() {
         app.editor_state.completion.apply(
             request_id,
+            epoch,
             &scope,
             None,
             Some(format!("invalid completion request: {error:?}")),
@@ -905,6 +949,7 @@ pub(crate) fn start_editor_completion(app: &mut App) {
             };
             Some(TuiCommand::EditorCompletionFinished {
                 request_id,
+                completion_epoch: epoch,
                 scope: task_scope,
                 result,
                 error,
@@ -914,6 +959,7 @@ pub(crate) fn start_editor_completion(app: &mut App) {
     if task_id.is_none() {
         app.editor_state.completion.apply(
             request_id,
+            epoch,
             &scope,
             None,
             Some("TUI command channel unavailable".to_string()),
@@ -923,12 +969,16 @@ pub(crate) fn start_editor_completion(app: &mut App) {
 
 /// Apply one finished completion request.
 ///
-/// Generation- and scope-fenced like the read path: answers for a moved
-/// cursor, an old revision, or a previous attachment are dropped by the
-/// state guard rather than displayed.
+/// Generation-, scope-, and epoch-fenced like the read path: answers for a
+/// moved cursor, an old revision, a previous attachment, or a pre-reset
+/// epoch are dropped by the state guard rather than displayed. The epoch
+/// is what survives a reconnect that leaves generation and scope
+/// unchanged: `clear` on reconnect bumps it, so a queued pre-reconnect
+/// answer can never satisfy the post-reconnect request.
 pub(crate) fn apply_editor_completion(
     app: &mut App,
     request_id: u64,
+    completion_epoch: u64,
     scope: EditorCompletionScope,
     result: Option<LspCompletionResultDto>,
     error: Option<String>,
@@ -940,7 +990,7 @@ pub(crate) fn apply_editor_completion(
     }
     app.editor_state
         .completion
-        .apply(request_id, &scope, result, error);
+        .apply(request_id, completion_epoch, &scope, result, error);
 }
 
 /// Answer one key for the completion popup, if it owns the key.

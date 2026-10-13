@@ -11899,12 +11899,18 @@ impl App {
     pub fn apply_editor_completion(
         &mut self,
         request_id: u64,
+        completion_epoch: u64,
         scope: crate::tui::editor_completion::EditorCompletionScope,
         result: Option<crate::protocol::lsp::LspCompletionResultDto>,
         error: Option<String>,
     ) {
         crate::tui::commands::editor::apply_editor_completion(
-            self, request_id, scope, result, error,
+            self,
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
         );
     }
 

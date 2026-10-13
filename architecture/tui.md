@@ -2773,6 +2773,35 @@ guard and never paints. Untrusted labels, details, and error strings render
 as sanitized literal spans, and the popup hides (keys still live) on
 terminals too narrow to fit it.
 
+C003 status and fencing corrections (`src/tui/editor_completion.rs`).
+Identity binding is split from status-specific revision policy: the
+document id is verified for every status, but only `Ready` requires the
+exact requested revision (plus a consistent sync witness when present).
+`NotReady` keeps its constructor placeholder revision and `Stale` its
+newer daemon-current echo — both render their typed states instead of the
+generic revision Error. Every non-ready answer is disarmed (candidates
+cleared), so a hostile or malformed peer can never smuggle suggestions
+into a warming/stale/unsynced/unsupported popup, and a malformed Ready
+(wrong revision, inconsistent witness) is an Error, never actionable.
+
+Request fencing is a process-lifetime epoch, not just a counter: every
+path that resets the request id (`clear`, `reset_for_scope`) bumps
+`epoch`, and completions carry the epoch they were issued under
+(`TuiCommand::EditorCompletionFinished.completion_epoch`). A queued
+pre-reset answer can never satisfy a post-reset request even when scope
+and request id coincide — the exact shape a reconnect leaves behind,
+since reconnect clears completion without touching generation or scope.
+Telemetry exposes counts only; no result contents, paths, or source text
+are logged.
+
+C003 trigger budget (`crates/codegg-document`). The F8 cursor resolves
+through `utf16_column_bounded`, which walks borrowed rope chunks with a
+32 KiB prefix cap matching the C002 line-render budget — no prefix
+materialization, exact surrogate-pair counting. Past the budget F8
+refuses visibly ("Line too long for completion at this position") rather
+than sending a truncated or wrong UTF-16 cursor; ordinary lines resolve
+exactly as before.
+
 ### Semantic token fidelity (C001)
 
 Structural validation (`src/tui/editor_lsp.rs::validate_semantic_tokens`)

@@ -1472,7 +1472,7 @@ mod tests {
             incomplete,
         );
         result.status = status;
-        assert!(state.apply(request, &scope, Some(result), None));
+        assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
         state
     }
 
@@ -1613,7 +1613,13 @@ mod tests {
             }
         };
         let request = errored.begin(&scope);
-        assert!(errored.apply(request, &scope, None, Some("boom\n\x1b[0m".into())));
+        assert!(errored.apply(
+            request,
+            errored.epoch(),
+            &scope,
+            None,
+            Some("boom\n\x1b[0m".into())
+        ));
         let rows = render_with_completion("fn main() {}\n", 80, 24, &errored).join("\n");
         assert!(rows.contains("boom"), "error text shows:\n{rows}");
         assert!(!rows.contains('\x1b'), "error text is sanitized:\n{rows}");

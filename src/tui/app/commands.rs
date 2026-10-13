@@ -154,6 +154,11 @@ pub enum TuiCommand {
     /// than displayed.
     EditorCompletionFinished {
         request_id: u64,
+        /// Lifetime fencing epoch captured at request time (C003/F2).
+        /// Checked against the live state before anything renders, so a
+        /// pre-reset answer can never satisfy a post-reset request even
+        /// when scope and request id coincide.
+        completion_epoch: u64,
         scope: crate::tui::editor_completion::EditorCompletionScope,
         result: Option<crate::protocol::lsp::LspCompletionResultDto>,
         error: Option<String>,
