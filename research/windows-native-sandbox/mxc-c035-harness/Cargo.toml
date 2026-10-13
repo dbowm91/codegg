@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "codegg-mxc-c035-corrective"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mxc-sdk = "=1.0.0"
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

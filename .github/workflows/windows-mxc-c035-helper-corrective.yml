@@ -1,0 +1,118 @@
+name: Windows MXC C035 native-helper corrective (test only)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows-mxc-c035-helper-corrective.yml'
+      - 'research/windows-native-sandbox/mxc-c035-harness/**'
+      - 'research/windows-native-sandbox/mxc-c033-harness/**'
+      - 'plans/implementation/windows-native-sandbox/035-mxc-native-helper-and-handle-boundary-corrective.md'
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-c035-corrective:
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record Windows host inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance Win32_OperatingSystem
+          $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $evidence = [ordered]@{
+            edition = $os.Caption
+            version = $os.Version
+            build = [int]$current.CurrentBuild
+            ubr = [int]$current.UBR
+            display_version = $current.DisplayVersion
+            architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            mxc_sdk = '1.0.0'
+            rust = '1.93.1 (isolated test-only toolchain)'
+            git_sha = '${{ github.sha }}'
+            workflow_run_id = '${{ github.run_id }}'
+            qualification = 'Evidence collection only; no production admission claim.'
+          }
+          $json = $evidence | ConvertTo-Json -Compress
+          "C035_HOST=$json"
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Build minimal ARM64 native helper and record PE provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = 'research/windows-native-sandbox/mxc-c035-harness/native_probe.c'
+          $helper = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-native-probe.exe'
+          cl.exe /nologo /O2 /W4 /DUNICODE /D_UNICODE /Fe:$helper $source advapi32.lib
+          if ($LASTEXITCODE -ne 0) { throw "cl.exe failed: $LASTEXITCODE" }
+          $machine = dumpbin.exe /headers $helper | Select-String 'machine \(' | Select-Object -First 1
+          $imports = dumpbin.exe /imports $helper | Select-String 'DLL Name:' | ForEach-Object { $_.Line.Trim() }
+          $hash = (Get-FileHash -Algorithm SHA256 $helper).Hash
+          $evidence = [ordered]@{ helper_sha256=$hash; machine=$machine.Line.Trim(); imports=$imports; compiler=(cl.exe 2>&1 | Select-Object -First 1) }
+          $json = $evidence | ConvertTo-Json -Compress
+          "C035_HELPER=$json"
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "C035_NATIVE_HELPER=$helper" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Preserve C033 baseline on this runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $console = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c033-console.txt'
+          cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c033-harness/Cargo.toml 2>&1 | Tee-Object -FilePath $console
+          if ($LASTEXITCODE -ne 0) { throw "C033 baseline runner failed: $LASTEXITCODE" }
+          $line = Get-Content $console | Where-Object { $_ -like 'C033_REPORT=*' } | Select-Object -Last 1
+          $ok = $false
+          if ($line) {
+            $report = $line.Substring('C033_REPORT='.Length) | ConvertFrom-Json
+            $required = @('direct_read=denied','junction_read=denied','case_alias_read=denied','hardlink_read=denied','ads_read=denied','outside_write=denied','pipe=denied')
+            $stdout = [string]$report.stdout
+            $ok = $report.result -eq 'Exited(0)' -and $report.same_file_normal_child_baseline -eq 'allowed' -and $report.host_acl_unchanged -and $report.secret_acl_unchanged -and $report.secret_unchanged -and $report.denial_capture.document_present -and @($required | Where-Object { $stdout -notlike "*$_*" }).Count -eq 0
+            $report | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'codegg-c033-baseline.json')
+          }
+          "C035_C033_BASELINE_OK=$ok"
+          "C035_C033_BASELINE_OK=$ok" | Add-Content -LiteralPath $env:GITHUB_ENV
+          if (-not $ok) { 'C033 regression baseline: INCOMPLETE OR FAILED.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
+          else { 'C033 regression baseline: preserved for tested read, alias, outside-write, pipe, positive-read, and ACL observations.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
+
+      - name: Run C035 native startup, inheritance and stage probes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $reportPath = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-report.json'
+          $env:C035_NATIVE_HELPER = $env:C035_NATIVE_HELPER
+          $env:C035_REPORT_JSON = $reportPath
+          cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-console.txt')
+          if ($LASTEXITCODE -ne 0) { throw "C035 evidence runner failed: $LASTEXITCODE" }
+          if (Test-Path $reportPath) {
+            $report = Get-Content -Raw $reportPath | ConvertFrom-Json
+            $summary = if ($report.qualified) { 'Native security qualification: SUCCEEDED (test-only).' } else { 'Native security qualification: FAILED OR INCOMPLETE. This workflow records evidence only; job success is not admission.' }
+            $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          } else {
+            'Native security qualification: FAILED OR INCOMPLETE. No machine-readable report was produced.' | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw 'C035 report missing'
+          }
+
+      - name: Upload redacted C035 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-mxc-c035-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codegg-mxc-c035-report.json
+            ${{ runner.temp }}/codegg-mxc-c035-console.txt
+            ${{ runner.temp }}/codegg-mxc-c033-console.txt
+            ${{ runner.temp }}/codegg-c033-baseline.json
+          if-no-files-found: warn
+          retention-days: 7
