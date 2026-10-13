@@ -84,7 +84,7 @@ Class: invariant. Enforce host-attested descendant effect/name scope at broker e
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/002-descendant-effect-and-nested-task-corrective.md`.
 
-Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is closed. **Closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md` (`d213150c`, `7ced77b0`).
+Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is closed. **Closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md`. Original implementations `d213150c`, `7ced77b0` were reconciled onto `main` as `f20721ba`, `77266575`.
 
 ### C003 — Enforced guards, current-main integration and hosted qualification
 Class: infrastructure. Wire the four predecessor guards plus new corrective coverage into quick+CI; verify independent guard self-tests/negative fixtures; integrate against current main with no unrelated code loss; hosted CI/desktop verification; issue new corrective closure records and accurate implementation SHA ledger.

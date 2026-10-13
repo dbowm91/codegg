@@ -24,24 +24,30 @@ scripts/verify.sh full     # broad verification before handoff or release
 7. `check_execution_ownership.py`
 8. `check_tui_project_authority.py`
 9. `check_tui_editor_text_authority.py`
-10. `check_http_route_disposition.py`
-11. `check_audit_coverage.py`
-12. `check_scheduler_bypass.py`
-13. `check_provider_wire_boundary.py`
-14. `check_provider_wire_cutover.py`
-15. `check_openai_endpoint_composition.py`
-16. `check_provider_catalog_consistency.py`
-17. `check_provider_resilience_ownership.py`
-18. `check_eggwork_target_routing.py`
-19. `check_mcp_broker_adapter.py`
-20. `check_tool_descriptor_snapshot.py`
-21. `check_descendant_tool_ceiling.py`
-22. `check_tool_disclosure_wire.py`
-23. `check_tool_retry_admission.py`
-24. `test_tool_runtime_guards.py` (positive and negative source fixtures)
-25. `cargo check --workspace --all-targets --locked`
+10. `check_daemon_listing_authority.py`
+11. `check_http_route_disposition.py`
+12. `check_audit_coverage.py`
+13. `check_scheduler_bypass.py`
+14. `check_config_merge_coverage.py`
+15. `check_provider_wire_boundary.py`
+16. `check_provider_wire_cutover.py`
+17. `check_provider_qualification.py`
+18. `check_provider_multi_surface_dispatch.py`
+19. `check_openai_endpoint_composition.py`
+20. `check_provider_catalog_consistency.py`
+21. `check_no_hardcoded_models.py`
+22. `check_provider_resilience_ownership.py`
+23. `check_eggwork_target_routing.py`
+24. `check_first_party_skills.py`
+25. `check_mcp_broker_adapter.py`
+26. `check_tool_descriptor_snapshot.py`
+27. `check_descendant_tool_ceiling.py`
+28. `check_tool_disclosure_wire.py`
+29. `check_tool_retry_admission.py`
+30. `test_tool_runtime_guards.py` (positive and negative source fixtures)
+31. `cargo check --workspace --all-targets --locked`
 
-Quick runs **25 steps** (24 checks plus the workspace `cargo check`). The
+Quick runs **31 steps** (30 checks plus the workspace `cargo check`). The
 tool-runtime guard suite follows the ordinary repository guards: M001 broker
 adapter, M002 descriptor snapshot, M003 descendant authority, M004 disclosure
 wire, C001 retry admission, then an offline positive/negative fixture runner.
@@ -347,6 +353,13 @@ fast path).
 
 CI uses default features, bounded resources. Optional feature, plugin,
 example, LSP, and cross-platform checks remain local.
+
+Desktop E2E is a separate visible-window workflow in
+`.github/workflows/desktop-e2e.yml`. Pull requests and main pushes run it only
+for its declared desktop/client/projection paths; `workflow_dispatch` supports
+exact-revision qualification when a handoff requires the run without changing
+those product paths. A dispatched run must use the reviewed branch ref and its
+final code SHA; CI does not imply Desktop E2E passed.
 
 ### CI economy policy
 
