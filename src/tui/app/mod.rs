@@ -16844,6 +16844,26 @@ mod projection_adoption_tests {
     }
 
     #[test]
+    fn on_projection_reconnect_clears_stale_semantic_highlight() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.editor_state.lsp.semantic_tokens = vec![codegg_protocol::lsp::LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        app.editor_state.lsp.semantic_revision = Some(9);
+        app.editor_state.lsp.semantic_truncated = true;
+        app.editor_state.lsp.semantic_incomplete = true;
+        app.on_projection_reconnect();
+        assert!(app.editor_state.lsp.semantic_tokens.is_empty());
+        assert_eq!(app.editor_state.lsp.semantic_revision, None);
+        assert!(!app.editor_state.lsp.semantic_truncated);
+        assert!(!app.editor_state.lsp.semantic_incomplete);
+    }
+
+    #[test]
     fn enter_raw_compatibility_keeps_app_intact() {
         let mut app = App::new_for_testing("/tmp".into());
         app.enter_projection_raw_compatibility("test fallback");

@@ -731,14 +731,17 @@ pub(crate) fn apply_editor_lsp_read(
         return;
     }
     if operation == LspReadOperation::SemanticTokens {
-        let tokens = match app.editor_state.lsp.read_result.take() {
+        // A `Ready` with zero tokens is a valid empty highlight; `NotReady`,
+        // errors, and wrong-operation payloads carry no semantic truth and
+        // clear the presentation instead of masquerading as empty.
+        let ready = match app.editor_state.lsp.read_result.take() {
             Some(LspReadResultDto {
                 status: LspReadStatus::Ready,
                 payload:
-                    Some(crate::protocol::lsp::LspReadPayloadDto::SemanticTokens { tokens, .. }),
+                    Some(crate::protocol::lsp::LspReadPayloadDto::SemanticTokens { tokens, truncated }),
                 ..
-            }) => tokens,
-            _ => Vec::new(),
+            }) => Some((tokens, truncated)),
+            _ => None,
         };
         let current_revision = app
             .editor_state
@@ -746,12 +749,32 @@ pub(crate) fn apply_editor_lsp_read(
             .as_ref()
             .and_then(|session| session.try_snapshot())
             .map(|snapshot| snapshot.revision().get());
-        app.editor_state.lsp.semantic_tokens =
-            if current_revision == app.editor_state.lsp.semantic_revision {
-                validate_semantic_tokens(app, tokens)
-            } else {
-                Vec::new()
-            };
+        match (ready, current_revision) {
+            (Some((tokens, truncated)), Some(current))
+                if Some(current) == app.editor_state.lsp.semantic_revision =>
+            {
+                match validate_semantic_tokens(app, tokens) {
+                    Some(validated) => {
+                        app.editor_state
+                            .lsp
+                            .store_semantic(current, validated, truncated);
+                    }
+                    None => {
+                        // No snapshot to validate against: fail closed with
+                        // no highlight rather than painting unvalidated spans.
+                        app.editor_state.lsp.clear_semantic();
+                    }
+                }
+            }
+            (Some(_), _) => {
+                // Late completion after edit, resync, reconnect, or switch
+                // is discarded without painting a different revision.
+                app.editor_state.lsp.clear_semantic();
+            }
+            (None, _) => {
+                app.editor_state.lsp.clear_semantic();
+            }
+        }
         app.editor_state.lsp.panel = None;
     }
 }
@@ -759,16 +782,15 @@ pub(crate) fn apply_editor_lsp_read(
 fn validate_semantic_tokens(
     app: &App,
     tokens: Vec<crate::protocol::lsp::LspSemanticTokenDto>,
-) -> Vec<crate::protocol::lsp::LspSemanticTokenDto> {
-    let Some(snapshot) = app
+) -> Option<crate::tui::editor_lsp::ValidatedSemanticTokens> {
+    let snapshot = app
         .editor_state
         .session
         .as_ref()
-        .and_then(|session| session.try_snapshot())
-    else {
-        return Vec::new();
-    };
-    crate::tui::editor_lsp::validate_semantic_tokens(&snapshot, tokens)
+        .and_then(|session| session.try_snapshot())?;
+    Some(crate::tui::editor_lsp::validate_semantic_tokens(
+        &snapshot, tokens,
+    ))
 }
 
 /// Close the attachment and leave the editor view.
@@ -975,6 +997,19 @@ pub(crate) fn apply_editor_operation_finished(
             editor::clear_history(session.presentation_mut());
         }
     }
+    // Reload, resync, and save can replace the replica revision; stale
+    // semantic spans must never paint against the new text. Save re-reads
+    // immediately below, reload/resync leave a clean no-highlight state
+    // until the next explicit LSP request.
+    if matches!(
+        operation,
+        EditorOperation::Reload | EditorOperation::Resync | EditorOperation::Save
+    ) {
+        app.editor_state.lsp.clear_semantic();
+        if !app.editor_state.lsp.diagnostics.is_empty() {
+            app.editor_state.lsp.diagnostics_stale = true;
+        }
+    }
     if operation == EditorOperation::Close {
         app.editor_state.detach();
     } else if operation == EditorOperation::Save {
@@ -1091,8 +1126,7 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 cursor_before,
                 anchor_before,
             );
-            state.lsp.semantic_tokens.clear();
-            state.lsp.semantic_revision = None;
+            state.lsp.clear_semantic();
             if !state.lsp.diagnostics.is_empty() {
                 state.lsp.diagnostics_stale = true;
             }
@@ -1190,6 +1224,10 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     // position the user is leaving, so redoing returns to where the edit
     // left the cursor rather than to the undo point.
     editor::record_redo(presentation, entry.rebased(cursor_leaving, None));
+    state.lsp.clear_semantic();
+    if !state.lsp.diagnostics.is_empty() {
+        state.lsp.diagnostics_stale = true;
+    }
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
 }
@@ -1228,6 +1266,10 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
         None => presentation.cursor_byte = entry.cursor_before,
     }
     editor::restore_undo(presentation, entry.rebased(cursor_leaving, None));
+    state.lsp.clear_semantic();
+    if !state.lsp.diagnostics.is_empty() {
+        state.lsp.diagnostics_stale = true;
+    }
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
 }
@@ -2828,6 +2870,71 @@ mod tests {
             draft, "theirs",
             "the local draft was never silently accepted"
         );
+    }
+
+    // ── Semantic stale lifecycle (C001) ─────────────────────────────────
+
+    fn seed_semantic(state: &mut EditorState) {
+        use codegg_protocol::lsp::LspSemanticTokenDto;
+        state.lsp.semantic_tokens = vec![LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        state.lsp.semantic_revision = state
+            .session
+            .as_ref()
+            .and_then(|s| s.try_snapshot())
+            .map(|snap| snap.revision().get());
+        state.lsp.semantic_truncated = true;
+        state.lsp.semantic_incomplete = true;
+    }
+
+    fn assert_no_semantic(state: &EditorState) {
+        assert!(state.lsp.semantic_tokens.is_empty());
+        assert_eq!(state.lsp.semantic_revision, None);
+        assert!(!state.lsp.semantic_truncated);
+        assert!(!state.lsp.semantic_incomplete);
+    }
+
+    #[tokio::test]
+    async fn a_local_edit_undo_and_redo_clear_stale_semantic_state() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        seed_semantic(&mut state);
+        editor_insert_literal(&mut state, "!");
+        assert_no_semantic(&state);
+
+        seed_semantic(&mut state);
+        editor_undo(&mut state);
+        assert_no_semantic(&state);
+
+        // Redo needs an undone entry: edit, undo, then redo clears again.
+        editor_insert_literal(&mut state, "?");
+        seed_semantic(&mut state);
+        editor_undo(&mut state);
+        assert_no_semantic(&state);
+        // Re-seed to prove redo also clears (revision changed again).
+        seed_semantic(&mut state);
+        editor_redo(&mut state);
+        assert_no_semantic(&state);
+    }
+
+    #[tokio::test]
+    async fn detach_clears_semantic_so_reopened_path_starts_fresh() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        seed_semantic(&mut state);
+        let generation = state.generation;
+        state.detach();
+        assert_no_semantic(&state);
+        assert_ne!(state.generation, generation);
+        // Reopening the same path starts with no highlight until the next
+        // validated read; a late completion for the old generation must be
+        // discarded by the caller (generation check in apply_editor_lsp_read).
+        let daemon = FakeDaemon::new("base", true);
+        let reopened = open_state(&daemon, true).await;
+        assert_no_semantic(&reopened);
     }
 
     // ── Key routing ─────────────────────────────────────────────────────

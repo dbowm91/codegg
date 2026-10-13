@@ -2730,3 +2730,39 @@ editor generation. Semantic-token overlays are accepted only for the same
 controller snapshot revision and valid non-overlapping UTF-16 ranges;
 unknown token types and malformed/stale results render as plain text. The
 TUI retains no document text outside the controller snapshot.
+
+### Semantic token fidelity (C001)
+
+Structural validation (`src/tui/editor_lsp.rs::validate_semantic_tokens`)
+is separated from style mapping (`src/tui/components/editor.rs::token_style`)
+and bounded drawing (`line_spans`). The frontend received-token cap is
+`MAX_EDITOR_SEMANTIC_TOKENS`, which mirrors the protocol maximum
+`MAX_LSP_SEMANTIC_TOKENS` (1000); the 100-item `MAX_EDITOR_READ_ITEMS` cap
+applies only to read-panel item lists. Responses with 101/500/1000 valid
+tokens highlight normally; only a response exceeding 1000 fails closed as a
+whole.
+
+Well-formed unknown token types (including ordinary `variable`,
+`parameter`, `property`, and `namespace`) are accepted structurally and
+render as plain text while valid neighbors keep their themed styles.
+Malformed spans (zero length, out-of-range line, split surrogate,
+out-of-range UTF-16, empty/inverted byte range, overlap, oversized line)
+are dropped individually without shifting later absolute offsets; only the
+over-cap case rejects the whole response. The daemon `truncated` flag is
+preserved in `EditorLspState::semantic_truncated`, and any local drop,
+whole-response rejection, or daemon truncation sets
+`semantic_incomplete` and shows `highlighting truncated` / `highlighting
+partial` in the status row. A truncated result is never represented as
+complete coverage. A `Ready` with zero tokens is a valid empty highlight
+(`revision=Some`, both flags false), never `NotReady`.
+
+Supported classes map through `Theme` slots (keyword→primary bold,
+string→success, number→warning, comment→muted italic,
+function/method/macro→secondary, type/class/enum/struct/interface/
+typeParameter/namespace→primary, variable/parameter/property and other
+standard kinds→foreground) so highlighting stays legible on dark and light
+themes; patching preserves the current-line background and diagnostic
+gutter. Local edit, undo, redo, reload, resync, save, attachment switch,
+and reconnect clear stale semantic state via `clear_semantic`; late
+completions after any of those are discarded by generation, scope, and
+snapshot-revision checks with no server calls on the render path.

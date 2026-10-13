@@ -389,6 +389,23 @@ workspace-relative target; other results remain display-only. The TUI does
 not start language servers itself and does not claim live diagnostic push
 updates.
 
+### Semantic highlighting limits and truncation
+
+Semantic highlighting covers up to 1000 tokens per file (the protocol
+maximum). Ordinary files with more than 100 tokens highlight normally;
+only a response beyond 1000 is rejected as a whole. Token types the theme
+does not style — including ordinary `variable`, `parameter`, `property`,
+and `namespace` kinds — render as plain text without erasing neighboring
+highlights. One malformed span drops only itself, never the whole file.
+
+When the language server reports more tokens than fit, the status row says
+`highlighting truncated`; when some spans were dropped locally it says
+`highlighting partial`. Either means the colors are incomplete coverage,
+not a complete file view. An empty highlight with no such notice is a real
+empty result, not a warming server. Editing, reloading, resyncing, or
+reconnecting clears the highlight until the next validated read, so colors
+never paint against a different revision.
+
 ## Where to go next
 
 - `architecture/tui.md` — module map, async command pattern, focus model

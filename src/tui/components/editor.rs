@@ -203,7 +203,7 @@ impl EditorWidget<'_> {
             }
             Line::from(spans)
         } else {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     format!("ln {line_number}"),
                     Style::default().fg(theme.muted),
@@ -246,7 +246,19 @@ impl EditorWidget<'_> {
                         theme.warning
                     }),
                 ),
-            ])
+            ];
+            // A truncated or partially validated semantic result is never
+            // represented as complete coverage. The signal lives in the
+            // status row so it survives viewport scrolling and narrow
+            // clipping of the text itself.
+            if let Some(note) = self.lsp.semantic_coverage_note() {
+                spans.push(Span::styled("  ", Style::default()));
+                spans.push(Span::styled(
+                    format!("· {note}"),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            Line::from(spans)
         };
         let rows = Rect {
             x: inner.x,
@@ -544,7 +556,11 @@ impl EditorWidget<'_> {
             .iter()
             .filter(|token| token.line as usize == line_index)
         {
-            let Some(style) = known_token_style(&token.token_type) else {
+            // Well-formed unknown token types render plain (`base`) while
+            // valid neighbors keep their theme styles. This is what stops
+            // one legitimate `variable`/`parameter`/`property` span from
+            // erasing every other highlight on the line.
+            let Some(style) = token_style(&self.theme, &token.token_type) else {
                 continue;
             };
             let Some(token_end) = token.character.checked_add(token.length) else {
@@ -594,16 +610,34 @@ fn severity_label(severity: u32) -> &'static str {
     }
 }
 
-fn known_token_style(token_type: &str) -> Option<Style> {
+/// Map one LSP semantic-token class to a theme slot.
+///
+/// Returns `None` for well-formed but unstyled token types, which the caller
+/// renders as plain text (`base`) while keeping valid neighbors. Only the
+/// style mapping returns `None`; structural validation in
+/// `crate::tui::editor_lsp::validate_semantic_tokens` never rejects a token
+/// for its type name.
+///
+/// All colors come from `Theme` so highlighting stays legible on both dark
+/// and light themes. No hardcoded ANSI colors: patching a theme slot over
+/// `base` preserves the current-line background and diagnostic gutter while
+/// changing only the foreground.
+pub(crate) fn token_style(theme: &Theme, token_type: &str) -> Option<Style> {
     Some(match token_type {
-        "keyword" => Style::default().fg(ratatui::style::Color::Yellow),
-        "string" => Style::default().fg(ratatui::style::Color::Green),
-        "number" => Style::default().fg(ratatui::style::Color::Cyan),
+        "keyword" | "modifier" => Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD),
+        "string" | "regexp" => Style::default().fg(theme.success),
+        "number" => Style::default().fg(theme.warning),
         "comment" => Style::default()
-            .fg(ratatui::style::Color::DarkGray)
+            .fg(theme.muted)
             .add_modifier(Modifier::ITALIC),
-        "function" | "method" => Style::default().fg(ratatui::style::Color::Magenta),
-        "type" | "class" | "enum" | "struct" => Style::default().fg(ratatui::style::Color::Blue),
+        "function" | "method" | "macro" => Style::default().fg(theme.secondary),
+        "type" | "class" | "enum" | "struct" | "interface" | "typeParameter" | "namespace" => {
+            Style::default().fg(theme.primary)
+        }
+        "variable" | "parameter" | "property" | "enumMember" | "event" | "operator"
+        | "decorator" | "label" => Style::default().fg(theme.foreground),
         _ => return None,
     })
 }
@@ -1011,5 +1045,273 @@ mod tests {
     fn bounded_pending_drops_an_over_long_prefix() {
         assert_eq!(bounded_pending("d"), "d");
         assert_eq!(bounded_pending("ddd"), "");
+    }
+
+    fn render_with_lsp(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+        lsp: crate::tui::editor_lsp::EditorLspState,
+        theme: Theme,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            ..TuiDocumentPresentation::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    notice: options.notice,
+                    mode: options.mode,
+                    focus: options.focus,
+                    pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    presentation: &mut presentation,
+                    theme: Arc::new(theme.clone()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn styled_token(
+        line: u32,
+        character: u32,
+        length: u32,
+        kind: &str,
+    ) -> codegg_protocol::lsp::LspSemanticTokenDto {
+        codegg_protocol::lsp::LspSemanticTokenDto {
+            line,
+            character,
+            length,
+            token_type: kind.to_string(),
+            modifiers: vec![],
+        }
+    }
+
+    #[test]
+    fn token_styles_come_from_theme_slots_and_stay_legible() {
+        for theme in [Theme::dark(), Theme::light()] {
+            // Every supported class maps to a theme slot, never a hardcoded
+            // ANSI color. Unknown vendor types stay plain (None).
+            let supported = [
+                "keyword",
+                "string",
+                "number",
+                "comment",
+                "function",
+                "method",
+                "type",
+                "class",
+                "enum",
+                "struct",
+                "variable",
+                "parameter",
+                "property",
+                "namespace",
+            ];
+            for kind in supported {
+                let style =
+                    token_style(&theme, kind).unwrap_or_else(|| panic!("{kind} must be styled"));
+                let fg = style.fg.expect("styled token must set a foreground");
+                assert_ne!(
+                    fg, theme.background,
+                    "{kind} foreground must differ from the background"
+                );
+            }
+            assert_eq!(token_style(&theme, "vendor_custom"), None);
+            assert_eq!(token_style(&theme, "totally_unknown"), None);
+        }
+        // Spot-check slots: keyword uses primary bold, comment uses muted
+        // italic, string uses success. Hardcoded Yellow/Green/DarkGray would
+        // fail this on at least one theme.
+        let dark = Theme::dark();
+        assert_eq!(
+            token_style(&dark, "keyword").unwrap().fg,
+            Some(dark.primary)
+        );
+        assert_eq!(token_style(&dark, "comment").unwrap().fg, Some(dark.muted));
+        assert_eq!(token_style(&dark, "string").unwrap().fg, Some(dark.success));
+    }
+
+    #[test]
+    fn unknown_tokens_render_plain_while_neighbors_keep_styles() {
+        use crate::tui::editor::EditorViewport;
+        let text = "let value = 42;";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let theme = Arc::new(Theme::default());
+        let mut presentation = TuiDocumentPresentation::default();
+        // `let` keyword 0..3, `value` variable 4..9 (plain), `42` number
+        // 12..14. The middle span is well-formed but unstyled in the old
+        // whitelist; it must not erase its neighbors.
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![
+                styled_token(0, 0, 3, "keyword"),
+                styled_token(0, 4, 5, "variable"),
+                styled_token(0, 12, 2, "number"),
+                styled_token(0, 4, 5, "vendor_custom_plain"),
+            ],
+        );
+        // `vendor_custom_plain` overlaps `variable` and is dropped; the
+        // three distinct spans survive validation.
+        assert_eq!(validated.accepted.len(), 3);
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let viewport = EditorViewport {
+            first_line: 0,
+            column: 0,
+            gutter: 3,
+            text_columns: 40,
+            visible_lines: 5,
+        };
+        let widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            mode: EditorMode::Normal,
+            focus: EditorFocus::Buffer,
+            pending_command: "",
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte: 0,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            presentation: &mut presentation,
+            theme,
+        };
+        let spans = widget.line_spans(0, viewport, Style::default());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("let"), "{joined}");
+        assert!(joined.contains("value"), "{joined}");
+        assert!(joined.contains("42"), "{joined}");
+        // At least the keyword and number spans carry a themed foreground;
+        // the plain middle does not erase them.
+        let themed = spans.iter().filter(|s| s.style.fg.is_some()).count();
+        assert!(
+            themed >= 2,
+            "keyword and number must keep themed styles: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_and_partial_highlights_are_disclosed_in_the_banner() {
+        let truncated = crate::tui::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_truncated: true,
+            semantic_incomplete: true,
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let joined = render_with_lsp("content", 60, 8, 0, defaults(), truncated, Theme::default())
+            .join("\n");
+        assert!(
+            joined.contains("truncated"),
+            "truncation must be explicit: {joined}"
+        );
+        let partial = crate::tui::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_incomplete: true,
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), partial, Theme::default()).join("\n");
+        assert!(
+            joined.contains("partial"),
+            "dropped spans must be explicit: {joined}"
+        );
+        let clean = crate::tui::editor_lsp::EditorLspState::default();
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), clean, Theme::default()).join("\n");
+        assert!(
+            !joined.contains("truncated") && !joined.contains("partial"),
+            "no signal without semantic data: {joined}"
+        );
+    }
+
+    #[test]
+    fn semantic_highlight_preserves_current_line_and_diagnostic_markers() {
+        use codegg_protocol::lsp::{LspDiagnosticDto, LspRangeDto};
+        let text = "alpha\nbeta\n";
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: vec![styled_token(0, 0, 5, "keyword")],
+            semantic_revision: Some(1),
+            diagnostics: vec![LspDiagnosticDto {
+                range: LspRangeDto {
+                    path: "src/lib.rs".into(),
+                    workspace_relative_path: None,
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 1,
+                },
+                severity: 1,
+                tag: 0,
+                code: None,
+                message: "broken".into(),
+                source: None,
+            }],
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        // Cursor on line 0, viewport shows both lines.
+        let joined = render_with_lsp(text, 40, 8, 0, defaults(), lsp, Theme::default()).join("\n");
+        assert!(joined.contains("alpha"), "{joined}");
+        assert!(
+            joined.contains("!"),
+            "{joined} diagnostic marker must survive"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_break_horizontal_clipping() {
+        let text = format!("{} // {}", "x".repeat(5000), "tail");
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![styled_token(0, 0, 3, "keyword")],
+        );
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let lines = render_with_lsp(&text, 30, 8, 0, defaults(), lsp, Theme::default());
+        let widest = lines
+            .iter()
+            .map(|line| line.trim_end().chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest <= 30,
+            "semantic spans must stay viewport-bounded: {widest}"
+        );
     }
 }

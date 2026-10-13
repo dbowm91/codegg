@@ -203,6 +203,14 @@ impl App {
         // bounded request); stale cached counts never survive an
         // epoch change and revocation clears via whole-page replace.
         crate::tui::commands::workspace_dashboard::resync_dashboard_after_reconnect(self);
+        // TUI editor C001: a reconnect may have replaced the daemon replica.
+        // Stale semantic spans must never paint against the resynced text;
+        // diagnostics are marked stale rather than cleared so the last
+        // complete set remains visible until the next refresh.
+        self.editor_state.lsp.clear_semantic();
+        if !self.editor_state.lsp.diagnostics.is_empty() {
+            self.editor_state.lsp.diagnostics_stale = true;
+        }
     }
 
     /// Presence M002: route a daemon `PresenceUpdated { project_id }`
