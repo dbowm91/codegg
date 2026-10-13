@@ -1,6 +1,6 @@
 # TUI Editor Correctness/Usability — Post-Closure Corrective Addendum
 
-Status: active (C003 ready; C004 closed at `b9400c98`; C005 closed at `e37774a9`)
+Status: active (C003 closed at `1e74aa19`; C004 closed at `b9400c98`; C005 closed at `e37774a9`)
 
 Parent historical roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` (C001, C002, M003, M004 recorded closed; keep their closures immutable).
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56`, reviewed 2026-10-13. Implementation agents MUST recheck current head and unrelated changes.
@@ -46,7 +46,7 @@ M006-D (`plans/closure/desktop-frontend-ide-foundation/006-status.md`) and C002 
 
 ## 4. Dependency graph
 
-`C003 — completion correctness`: **ready**. Hard deps M003/M004 closures (satisfied). Independent of C004/C005.
+`C003 — completion correctness`: **closed** at `1e74aa19` (closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md`). Hard deps M003/M004 closures (satisfied). Independent of C004/C005.
 
 `C004 — tree blocking-worker admission`: **closed** at `b9400c98` (closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/004-status.md`). Independent of C003. Soft interface integrated into C005 via the shared walker.
 
@@ -60,7 +60,7 @@ Do not block C003 or C004 on the ADR, a live rust-analyzer server, or unrelated 
 
 ### C003 — Completion verdict and request-fence correctness
 
-Plan `plans/implementation/tui-editor-correctness-usability/005-completion-verdict-and-request-fence-corrective.md`. Status **ready**.
+Plan `plans/implementation/tui-editor-correctness-usability/005-completion-verdict-and-request-fence-corrective.md`. Status **implemented; closed** at `1e74aa19`.
 
 Exit: real daemon NotReady/Stale DTO constructors map to intended popup states; every non-ready state non-actionable; late results cannot become a new request across reconnect/clear/same attachment; F8 on huge line has measured bounded input/UTF-16 work with explicit refusal beyond supported range; ordinary Ready insertion still applies one controller transaction/undo. Closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md`.
 

@@ -1,6 +1,6 @@
 # TUI Editor Post-Closure Corrective C003 — Completion Verdict and Request-Fence Correctness
 
-Status: ready for handoff
+Status: implemented; closed — implementation `1e74aa19` on branch `plans/tui-editor-correctness-usability-20261013`; closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/003-status.md`.
 
 Baseline: `plans/tui-editor-correctness-usability-20261013` at `0266de94780e6f69c8f0fe6f1cfb44ea0aeb4b56` (2026-10-13); recheck branch head before changes.
 
