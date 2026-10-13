@@ -4503,6 +4503,71 @@ async fn m001_midstream_tool_start_is_explicit_and_not_executed() {
 }
 
 #[tokio::test]
+async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("shell-dispatched");
+    let command = format!("echo $(touch '{}')", marker.display());
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_shell_escalation".to_string().into(),
+            name: "bash".to_string().into(),
+            arguments: serde_json::json!({"command": command}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Approved shell command completed".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(codegg::tool::bash::BashTool::new());
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider,
+        registry,
+        PermissionChecker::new(None, None),
+    );
+    agent_loop.set_session_id("shell-escalation-approval-gate");
+
+    let perm_id = "call_shell_escalation-bash".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+    let request = make_chat_request("Run the bounded shell probe");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+
+    wait_for_permission_pending(&perm_id, &mut rx, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        !marker.exists(),
+        "Ask-class shell command must not dispatch before approval"
+    );
+
+    assert!(PermissionRegistry::respond_scoped(
+        "shell-escalation-approval-gate",
+        &perm_id,
+        PermissionDecision::AllowOnce,
+    ));
+    let result = handle.await.unwrap();
+    assert!(
+        result.is_ok(),
+        "approved command should complete: {result:?}"
+    );
+    assert!(
+        marker.exists(),
+        "the bounded command should dispatch after the explicit AllowOnce decision"
+    );
+}
+
+#[tokio::test]
 async fn m001_transient_503_retries_before_visible_output() {
     let provider_inner = M001StatusProvider::new(1, M001FailKind::Server503);
     let provider = Box::new(provider_inner.clone());

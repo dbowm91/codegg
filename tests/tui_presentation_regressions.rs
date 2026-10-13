@@ -3,6 +3,7 @@
 //! sidebar width, and the live token meter.
 
 use codegg::tui::app::{App, TodoEntry, TuiMsg};
+use codegg::tui::panels::PanelPlacement;
 use ratatui::layout::Rect;
 
 // ---------------------------------------------------------------- streaming
@@ -295,24 +296,20 @@ fn hidden_sidebar_returns_the_full_width_to_the_chat() {
     let layout = &app.ui_state.layout;
     let area = Rect::new(0, 0, 200, 50);
 
-    let visible = layout.split(area, true);
-    let hidden = layout.split(area, false);
+    let visible = layout.split(area, &[PanelPlacement::Right]);
+    let hidden = layout.split(area, &[]);
 
     assert!(
-        visible.len() >= 2,
+        visible.right.is_some(),
         "a visible sidebar must reserve its own columns"
     );
-    assert_eq!(
-        hidden.len(),
-        1,
-        "a hidden sidebar must not reserve a dead column strip"
-    );
-    assert_eq!(
-        hidden[0].width, area.width,
-        "the chat pane must regain the whole window when the sidebar is hidden"
+    assert!(
+        hidden.right.is_none() && hidden.main.width == area.width,
+        "a hidden sidebar must not reserve a dead column strip — the chat pane \
+         has to regain the whole window"
     );
     assert!(
-        visible[0].width < area.width,
+        visible.main.width < area.width,
         "with the sidebar shown, the chat pane is narrower"
     );
 }
@@ -321,9 +318,12 @@ fn hidden_sidebar_returns_the_full_width_to_the_chat() {
 fn narrow_terminal_never_reserves_a_starved_sidebar() {
     let app = App::new_for_testing("/tmp/codegg-regression-layout-narrow".to_string());
     let area = Rect::new(0, 0, 10, 20);
-    let chunks = app.ui_state.layout.split(area, true);
-    assert_eq!(chunks.len(), 1, "too-narrow frames get no sidebar split");
-    assert_eq!(chunks[0], area);
+    let regions = app.ui_state.layout.split(area, &[PanelPlacement::Right]);
+    assert!(
+        regions.right.is_none(),
+        "too-narrow frames get no sidebar split"
+    );
+    assert_eq!(regions.main, area);
 }
 
 // -------------------------------------------------------------- quit / Esc

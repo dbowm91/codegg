@@ -113,6 +113,16 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileRead),
         ),
+        // C005 (ADR-0022 §2, accepted): a directory listing discloses
+        // filenames and structure, so it carries the same
+        // `DirectProject` + `FileRead` gate as opening a file. There is
+        // deliberately no weaker `project.observe` shortcut: observing
+        // project lifecycle must never imply filename access.
+        R::WorkspaceDirectoryList { .. } => OperationDescriptor::new(
+            "workspace_directory_list",
+            ScopeKind::DirectProject,
+            Some(Capability::FileRead),
+        ),
         R::DocumentWriterAcquire { .. }
         | R::DocumentChange { .. }
         | R::DocumentSave { .. }
@@ -799,6 +809,15 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         // observability capability would understate what is disclosed.
         R::LspReadGet { .. } => OperationDescriptor::new(
             "lsp_read_get",
+            ScopeKind::ViaSession,
+            Some(Capability::FileRead),
+        ),
+        // M003 (ADR-0021 §4). The completion read discloses the same source
+        // content as the other LSP reads, so it shares their `ViaSession` +
+        // `FileRead` gate. There is deliberately no weaker `project.observe`
+        // shortcut: suggestions carry code and snippets.
+        R::LspCompletionGet { .. } => OperationDescriptor::new(
+            "lsp_completion_get",
             ScopeKind::ViaSession,
             Some(Capability::FileRead),
         ),
@@ -1829,6 +1848,9 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::LspReadGet {
             request: dummy_lsp_read_get(),
         },
+        R::LspCompletionGet {
+            request: dummy_lsp_completion_get(),
+        },
         R::LspDiagnosticsGet {
             request: dummy_lsp_diagnostics_get(),
         },
@@ -2414,6 +2436,19 @@ fn dummy_lsp_read_get() -> codegg_protocol::lsp::LspReadRequestDto {
         line: None,
         column: None,
         query: None,
+    }
+}
+
+fn dummy_lsp_completion_get() -> codegg_protocol::lsp::LspCompletionRequestDto {
+    codegg_protocol::lsp::LspCompletionRequestDto {
+        session_id: String::new(),
+        path: String::new(),
+        document_id: String::new(),
+        revision: 0,
+        line: 0,
+        character: 0,
+        trigger_character: None,
+        max_candidates: 1,
     }
 }
 

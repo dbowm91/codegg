@@ -342,6 +342,18 @@
     "2": "terminal"
   },
 
+  // Which edge the side panel is docked to: "right" (the default), "left",
+  // or "bottom" (a full-width row under the input box). The panel manager's
+  // layout strip writes this for you when you press `p`.
+  //
+  // This moves the directionals with it. With the panel on the left,
+  // Shift+H enters it and Shift+L comes back; under the buffer it is
+  // Shift+J and Shift+K. The two remaining directions keep cycling which
+  // panel is loaded.
+  //
+  // An unrecognised value falls back to "right" rather than failing startup.
+  "panel_placement": "right",
+
   "instructions": [
     "Always write tests before committing code",
     "Use meaningful commit messages"

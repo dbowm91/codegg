@@ -703,7 +703,7 @@ implementations, the three `CoreRuntimeMode` variants, the
 `DaemonPaths` / `DaemonInstanceGuard` / `DaemonInstanceMetadata` /
 `DaemonConnectError` / `ConnectOrStartOptions` types and their
 declarations in `instance.rs`, the `ConnectOrStartOptions` 10 s / 100 ms
-defaults, `STORAGE_LAYOUT_VERSION` = 68, `PROTOCOL_VERSION` = 2, and the
+defaults, `STORAGE_LAYOUT_VERSION` = 72, `PROTOCOL_VERSION` = 2, and the
 `ExecutionContext` / `WorkspaceRegistry` contract.
 
 Second pass (2026-10-06) against `src/core/daemon.rs`,

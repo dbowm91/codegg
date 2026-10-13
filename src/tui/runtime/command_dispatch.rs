@@ -1731,6 +1731,22 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, scope, operation, result, error,
             );
         }
+        TuiCommand::EditorCompletionFinished {
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_completion(
+                app,
+                request_id,
+                completion_epoch,
+                scope,
+                result,
+                error,
+            );
+        }
         TuiCommand::FileTreeListed {
             request_id,
             generation,
@@ -1739,6 +1755,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             super::super::commands::file_tree::apply_listing(
                 app, request_id, generation, root, listing,
+            );
+        }
+        TuiCommand::FileTreeFailed {
+            request_id,
+            generation,
+            root,
+            message,
+        } => {
+            super::super::commands::file_tree::apply_failure(
+                app, request_id, generation, root, message,
             );
         }
         TuiCommand::ChangeReviewAccepted {

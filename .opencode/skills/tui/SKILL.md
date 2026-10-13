@@ -154,17 +154,28 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   list; `Char` is the explicit non-configurable input exception.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
-  owns which `SidePanelId` is active and whether it holds focus. 33 panels
-  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 29
+  owns which `SidePanelId` is active, whether it holds focus, and which edge of
+  the frame it lives on (`PanelPlacement`: `Right` — the default and the
+  shipped layout — `Left`, or `Bottom`, a full-width row under the main input
+  box). Placement is changed with `p` in the **panel manager box**
+  (`Shift+S` in Normal mode, or `/panels` from anywhere) and persisted as
+  `ui.panel_placement`; the strip is deliberately **display-only** rather than
+  rows in the navigable list, because "which edge" and "which panel" are
+  different questions and merging them renumbers every panel row. 33 panels
+  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 28
   **hosted** — one per `/` command that brings up a box. Which one is loaded
-  is chosen by the **panel manager box** (`Shift+S` in Normal mode, or
-  `/panels` from anywhere), which renders `SidePanelId::ALL` directly — the list it shows
-  *is* the registry. To add a **hosted** panel (the common case): an enum
+  is chosen by the same manager, which renders `SidePanelId::ALL` directly —
+  the list it shows *is* the registry. To add a **hosted** panel (the common case): an enum
   variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
   `load_command`/`config_key` arms. The host builds its `HostPanel` from
-  `ALL`, so there is no host field, no `panel()` arm and no render-path
-  branch. To add a **bespoke** panel also write a `SidePanel` impl and add
-  arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  `ALL` filtered on **`SidePanelId::is_bespoke()`**, so there is no host field,
+  no `panel()` arm and no render-path branch. To add a **bespoke** panel: add
+  it to `is_bespoke()`, write a `SidePanel` impl, and add arms in `panel()`,
+  `panel_is_empty()`, `composer_hints()`. That list is load-bearing, not
+  documentation — a bespoke panel left out of it keeps a hosted placeholder,
+  and `materialize_hosted_panel` reads that placeholder as "an unloaded box"
+  and calls `open_panel_box`, which calls `select_panel`, which calls it again.
+  That loop killed the process on `/agents`.
   Docking is a **move**: `App::close_dialog` returns the component it
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
   box's filter, cursor and scroll. Selecting an empty hosted panel loads it
@@ -284,6 +295,18 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   delegating, and `App::on_key` answers it ahead of the modal short-circuit
   for the same reason. Keep the two spellings in lockstep — a third route is
   a third thing to keep working.
+- **The manager's fixed rows are budgeted, not free.** Its chunks are
+  `[Length(3) title, Length(3) filter, Min(1) list, Length(3) footer]` in a box
+  roughly 44 columns wide. Adding a fifth `Length(3)` chunk looks correct at
+  40 rows tall and then, at 24, the fixed rows exceed the box and the **footer
+  — the only place its keys are written down — is pushed off the bottom
+  entirely**. That is why the `PanelPlacement` strip shares the title block's
+  inner row instead of taking a chunk. When something new has to go in the
+  box, draw it inside an existing block's interior or take it from the list;
+  never add a fixed chunk. Relatedly, the list scrolls
+  (`PanelManagerDialog::scroll`) because 33 panels do not fit in ~10 rows and
+  `j` must never walk the highlight off the bottom — the highlight is the only
+  thing saying which panel `Enter` commits to.
 - **A toast is its message and a border, nothing else.** The live column is
   a fixed 60×10 overlay at the top right (`App::render`), so every row a
   toast spends is a row of transcript it hides. It previously drew a
@@ -314,23 +337,67 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   governs their `j`/`k`. Never add a bespoke `direction_of` check to a
   dialog that is a viewer box — the central gate already covers it, and a
   second copy is a second rule that can drift.
-- **The directionals are one gesture family with two meanings.**
+- **The directionals are one gesture family, and their meaning is geometry.**
   `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
   `InputAction::Direction*` and then to one dispatcher,
-  `commands::panels::move_directionally`: a dockable box is open → the box is
-  *moved* into the panel; no box is open → the direction *selects a pane*
-  (`→` into the column, `←` back to the main buffer, `↑`/`↓` cycle the loaded
-  panel type). Resolve it there, never per surface, or a box and its panel will
-  drift. Normal-mode only via `is_normal_only`. Uppercase letters only —
-  `Char('l')` is a bare `l`, a within-surface verb, never the gesture — and
-  each is bound with *and* without `SHIFT` because terminals disagree on the
-  encoding. `Shift+Up/Down` and `Shift+J/K` were once reserved for a stacked
-  layout; they are bound now because `↑`/`↓` cycle the panel list, so the key
-  is no longer advertising an absent capability.
+  `commands::panels::move_directionally`. It asks, in order: a box is open →
+  dock it to the edge the direction names; the keyboard is in the main buffer
+  and the direction names an edge that is **showing** a panel → take the
+  keyboard there; the keyboard is in a panel and the direction leads **away**
+  from its edge → return to the main buffer; otherwise `cycle_step(dir)` walks
+  the loaded panel type. Never branch on a side per surface, or a box and its
+  panel drift. **The main buffer is a stop, not a gap** — it sits *between* the
+  columns, so two `Shift+H` from Chat reach Terminal and one lands in the
+  buffer; routing past it made the surface the user spends most of their time
+  unreachable by the gesture that names it. `PanelPlacement::named_by` returns
+  `None` for `Up`, so `Shift+K` names no edge and can never shadow the way out
+  of a bottom panel. Normal-mode only via `is_normal_only`.
+- **Edges are slots, and a panel moves between them.**
+  `SidePanelHost` holds one `PanelSlot {panel, visible, history}` per
+  `PanelPlacement`. Panel *state* stays keyed by `SidePanelId`, so
+  `host.dock(id, edge)` moves a panel — keeping its cursor, filter and scroll —
+  and never loads one panel on two edges at once. The edge being vacated
+  restores its remembered state, **collapsed-ness included**, so an edge the
+  user had put away comes back put away rather than popping open. If you add a
+  new edge, add the slot, the `PanelPlacement` arm, and a geometry arm in
+  `TuiLayout::split`; do not add a second "which panel is where" map.
+- **A gesture naming an empty edge moves the panel there; it does not refuse.**
+  This replaced a deliberate refusal and the difference matters. A dead end
+  told the user their key was wrong when the frame had a perfectly good place
+  for the panel; swapping keeps the gesture truthful. `ui_state.sidebar_visible`
+  is a derived mirror of `host.any_visible()` kept only for the session
+  manifest — **never branch behavior on it**, because it cannot say *which*
+  edge is up and will silently answer a coarser question than the one asked.
+  Uppercase letters only — `Char('l')` is a bare `l`, a within-surface verb,
+  never the gesture — and each is bound with *and* without `SHIFT` because
+  terminals disagree on the encoding. A box dock gesture pointing at a side
+  with no panel is refused **out loud** rather than docked to the wrong one; a
+  user whose box lands on the wrong side has learned the gesture lies. That
+  refusal is what a second column deletes.
+  `TuiLayout::split` returns `(main, panel)` whatever the side, so render
+  chunks are indexed by role, never position.
   `App::input_target()` is derived from panel focus on every read — never
   latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
   reads the same value; when `Chat` is armed but unbound, text is dropped with
   a warning rather than rerouted to the agent.
+- **The manager opens in Normal, and opening it must not change the frame.**
+  Two rules that keep reading as one bug when either is broken. (1) It used to
+  force the selected edge visible, on the reasoning that a strip describing a
+  collapsed column is confusing — so a panel the user had deliberately put away
+  with `Ctrl+B` came back the moment they reached for `Shift+S`. A box that only
+  *describes* the layout cannot be the reason a column reappears; the strip now
+  names the state (`[Left collapsed]`, live edge only, because three states in a
+  44-column box wrap). (2) It carries **NOR/INS** like every other dockable box:
+  in Normal the highlight moves and `Shift+H/J/K/L` puts the highlighted panel on
+  that edge; in Insert, `Shift+H` is the letter `H` and belongs in the filter.
+  It opens in Normal because it is reached with a Normal-mode chord and is read
+  before it is typed into — opening in Insert made `j`/`k` filter text, which is
+  indistinguishable from a dead pane. The manager's directional is
+  `TuiMsg::MovePanelTo`, deliberately **not** `MoveDirection`: the latter
+  resolves the keyboard position between edges already in use, which is the wrong
+  question while the manager is modal. Moving and loading stay separate acts, for
+  the same reason walking the list never materializes an empty panel — a gesture
+  that silently starts a daemon load is not a positioning gesture.
 - **Every surface the composer can target needs a name.** The badge row reads
   `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
   destination is `App::composer_destination_title`: the focused panel's

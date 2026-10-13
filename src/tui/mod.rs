@@ -2644,6 +2644,8 @@ mod async_cmd_tests {
 }
 pub mod document_session;
 pub mod editor;
+pub mod editor_completion;
 pub mod editor_lsp;
 pub mod file_tree;
+pub mod file_tree_coordinator;
 pub mod unified_diff;

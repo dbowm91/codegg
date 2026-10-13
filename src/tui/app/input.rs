@@ -652,6 +652,19 @@ impl App {
                     crate::tui::commands::panels::focus_panel(self);
                 }
             }
+            TuiMsg::SetPanelPlacement { placement } => {
+                // The manager stays open: moving the panel does not end the
+                // box, and closing it would throw away a half-typed filter
+                // over a change the user may want to undo with the next key.
+                crate::tui::commands::panels::set_panel_placement(self, placement);
+                crate::tui::commands::panels::sync_manager_placement(self);
+            }
+            TuiMsg::CyclePanelPlacement => {
+                crate::tui::commands::panels::cycle_manager_placement(self);
+            }
+            TuiMsg::MovePanelTo { panel, placement } => {
+                crate::tui::commands::panels::move_manager_panel(self, panel, placement);
+            }
             TuiMsg::SavePanelHotkey { digit, panel } => {
                 crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
             }

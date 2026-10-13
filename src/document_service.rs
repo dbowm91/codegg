@@ -126,6 +126,28 @@ pub struct DocumentService {
     by_id: DashMap<String, Arc<Mutex<OpenDocument>>>,
     by_key: DashMap<String, String>,
     key_locks: DashMap<String, Weak<Mutex<()>>>,
+    /// M003: daemon revision last successfully delivered to the warm language
+    /// server per document id, or absent when never pushed or after a push
+    /// failure. This is the synchronization witness the completion read
+    /// compares against the daemon-current revision: equal means the server
+    /// saw exactly this snapshot, anything else is `Unsynced`. The map holds
+    /// revisions only, never text.
+    lsp_synced_revision: DashMap<String, u64>,
+}
+
+/// M003: the daemon-side binding one completion read validates against.
+///
+/// The attachment's workspace, path and current revision plus the revision
+/// last delivered to the language server. Returned without a reader
+/// check: the completion handler performs its own session-workspace
+/// containment and locator-coherence checks, and `file.read` was already
+/// authorized before dispatch.
+pub struct CompletionBinding {
+    pub workspace_id: String,
+    pub relative_path: String,
+    pub revision: u64,
+    pub text: String,
+    pub lsp_synced_revision: Option<u64>,
 }
 
 /// Holds per-document operation gates while an external mutation checks and
@@ -288,6 +310,37 @@ impl DocumentService {
         Ok(doc.snapshot(client))
     }
 
+    /// M003: read the completion binding for one attachment id.
+    ///
+    /// Returns `None` for an unknown id. The caller — the completion
+    /// handler — still verifies the attachment's workspace against the
+    /// session's workspace and the locator path against the attachment's
+    /// path; this lookup alone authorizes nothing.
+    pub async fn completion_binding(&self, id: &str) -> Option<CompletionBinding> {
+        let entry = self.by_id.get(id).map(|doc| doc.value().clone())?;
+        let doc = entry.lock().await;
+        Some(CompletionBinding {
+            workspace_id: doc.key.workspace_id.clone(),
+            relative_path: doc.key.relative_path.clone(),
+            revision: doc.buffer.revision().get(),
+            text: doc.buffer.snapshot().to_string(),
+            lsp_synced_revision: self.lsp_synced_revision.get(id).map(|revision| *revision),
+        })
+    }
+
+    /// M003: record that `revision` of `id` was delivered to the language
+    /// server. Called only from the managed-document push path on success.
+    pub fn record_lsp_synced(&self, id: &str, revision: u64) {
+        self.lsp_synced_revision.insert(id.to_owned(), revision);
+    }
+
+    /// M003: forget the sync witness for `id`. Called when a push fails and
+    /// when the document is evicted, so a stale revision can never later
+    /// read as synchronized.
+    pub fn clear_lsp_synced(&self, id: &str) {
+        self.lsp_synced_revision.remove(id);
+    }
+
     pub async fn status(
         &self,
         id: &str,
@@ -363,6 +416,7 @@ impl DocumentService {
                 drop(doc);
                 self.by_id.remove(id);
                 self.by_key.remove(&key);
+                self.lsp_synced_revision.remove(id);
                 return true;
             }
             return false;
@@ -754,6 +808,7 @@ impl DocumentService {
         for (id, key) in remove {
             self.by_id.remove(&id);
             self.by_key.remove(&key.to_key_string());
+            self.lsp_synced_revision.remove(&id);
         }
     }
 

@@ -124,6 +124,10 @@ impl App {
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            // M004: a tab switch moves the project context out from under
+            // the popup's scope binding, so the popup closes even though
+            // the attachment itself survives.
+            self.editor_state.completion.clear();
             // C001: dropping the transient trigger bearer on scope loss.
             // Metadata stays cached; the secret is never carried across
             // projects/tabs.
@@ -203,6 +207,17 @@ impl App {
         // bounded request); stale cached counts never survive an
         // epoch change and revocation clears via whole-page replace.
         crate::tui::commands::workspace_dashboard::resync_dashboard_after_reconnect(self);
+        // TUI editor C001: a reconnect may have replaced the daemon replica.
+        // Stale semantic spans must never paint against the resynced text;
+        // diagnostics are marked stale rather than cleared so the last
+        // complete set remains visible until the next refresh.
+        self.editor_state.lsp.clear_semantic();
+        // M004: a reconnect invalidates the popup and its pending request
+        // outright — suggestions carry no resync semantics worth keeping.
+        self.editor_state.completion.clear();
+        if !self.editor_state.lsp.diagnostics.is_empty() {
+            self.editor_state.lsp.diagnostics_stale = true;
+        }
     }
 
     /// Presence M002: route a daemon `PresenceUpdated { project_id }`

@@ -277,6 +277,13 @@ pub struct Config {
     /// on load rather than failing the boot, because a typo in a preference
     /// is not worth refusing to start over.
     pub panel_hotkeys: Option<HashMap<String, String>>,
+    /// Which edge the side panel is docked to: `right`, `left` or `bottom`.
+    ///
+    /// Written by the panel manager's layout strip (`p`). Absent or
+    /// unrecognised means `right`, which is the layout that shipped first —
+    /// so a config that predates this key, or a hand-edited typo, still
+    /// starts with a panel the user recognises rather than with none.
+    pub panel_placement: Option<String>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,

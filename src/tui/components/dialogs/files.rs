@@ -123,7 +123,9 @@ impl FilesDialog {
             )));
         } else if rows.is_empty() {
             lines.push(Line::from(Span::styled(
-                if self.state.status == FileTreeStatus::Loading {
+                if self.state.status == FileTreeStatus::Loading
+                    || self.state.status == FileTreeStatus::Waiting
+                {
                     "Loading…"
                 } else {
                     "No files to show"

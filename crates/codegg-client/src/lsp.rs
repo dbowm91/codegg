@@ -14,8 +14,9 @@
 
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
 use codegg_protocol::lsp::{
-    LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspFileDiagnosticsDto, LspReadOperation,
-    LspReadRequestDto, LspReadResultDto, LspReadStatus,
+    LspCompletionRequestDto, LspCompletionResultDto, LspDiagnosticsGetRequestDto,
+    LspDiagnosticsResultDto, LspFileDiagnosticsDto, LspReadOperation, LspReadRequestDto,
+    LspReadResultDto, LspReadStatus,
 };
 
 use crate::local::LocalSocketClient;
@@ -76,6 +77,29 @@ impl LocalSocketClient {
         }
     }
 
+    /// One bounded inert LSP completion read (ADR-0021, Option B).
+    ///
+    /// Returns the daemon's verdict as-is: `Ready` (possibly with zero
+    /// candidates), `NotReady`, `Stale`, `Unsynced` or `Unsupported`. Three
+    /// things this accessor deliberately never does:
+    ///
+    /// - synthesize an edit from a candidate (candidates are inert data; only
+    ///   an explicit user acceptance through the controller may apply one);
+    /// - replay a request after a reconnect (a retried request gets a new
+    ///   envelope and a fresh revision check daemon-side);
+    /// - infer success from an old server's absence: an old daemon answers a
+    ///   new variant with `Error`, which maps to `Rejected` below, never to
+    ///   an empty `Ready`.
+    pub async fn lsp_completion(
+        &self,
+        request: LspCompletionRequestDto,
+    ) -> Result<LspCompletionResultDto, LspReadClientError> {
+        let response = self
+            .request(envelope(CoreRequest::LspCompletionGet { request }))
+            .await?;
+        map_completion_response(response)
+    }
+
     /// The authoritative current diagnostics for a project.
     ///
     /// This is the correctness authority. The project-scoped push stream is a
@@ -100,6 +124,23 @@ impl LocalSocketClient {
                 "unexpected daemon response: {other:?}"
             ))),
         }
+    }
+}
+
+/// Map one daemon envelope to a completion verdict.
+///
+/// Pure so the mapping is unit-testable without a socket: every shape is
+/// covered, and an unknown response is a loud `Rejected`, never an inferred
+/// success.
+pub fn map_completion_response(
+    response: CoreResponse,
+) -> Result<LspCompletionResultDto, LspReadClientError> {
+    match response {
+        CoreResponse::LspCompletionResult { result } => Ok(result),
+        CoreResponse::Error { message, .. } => Err(LspReadClientError::Rejected(message)),
+        other => Err(LspReadClientError::Rejected(format!(
+            "unexpected daemon response: {other:?}"
+        ))),
     }
 }
 
@@ -356,6 +397,38 @@ mod tests {
             reconciler.reconcile(&authoritative(vec![file("src/lib.rs", 5)])),
             ReconcileDecision::NoBaseline
         );
+    }
+
+    #[test]
+    fn completion_result_passes_through_verbatim() {
+        use codegg_protocol::lsp::{LspCompletionResultDto, LspCompletionStatus};
+        let result = LspCompletionResultDto::ready(
+            "doc-1".to_string(),
+            9,
+            Some(9),
+            Vec::new(),
+            false,
+            false,
+        );
+        let back = map_completion_response(CoreResponse::LspCompletionResult {
+            result: result.clone(),
+        })
+        .expect("a completion result is a success");
+        assert_eq!(back, result);
+        assert_eq!(back.status, LspCompletionStatus::Ready);
+    }
+
+    #[test]
+    fn completion_rejection_is_never_an_inferred_success() {
+        // An old daemon answers the unknown variant with `Error`; a confused
+        // daemon answers something else. Both must be loud rejections.
+        let denied = map_completion_response(CoreResponse::Error {
+            code: "unsupported".to_string(),
+            message: "unknown".to_string(),
+        });
+        assert!(matches!(denied, Err(LspReadClientError::Rejected(_))));
+        let confused = map_completion_response(CoreResponse::Ack);
+        assert!(matches!(confused, Err(LspReadClientError::Rejected(_))));
     }
 
     #[test]

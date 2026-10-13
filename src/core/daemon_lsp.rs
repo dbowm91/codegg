@@ -52,6 +52,13 @@ pub enum LspReadDenial {
     SessionNotFound,
     /// The daemon has no `LspService` in this process.
     ServiceUnavailable,
+    /// M003: the document attachment id is unknown, or the attachment does
+    /// not live under the session's workspace.
+    AttachmentNotFound,
+    /// M003: the language server request failed after all preconditions
+    /// passed. Distinct from `NotReady`: the server was warm, but the query
+    /// itself errored.
+    ServerFailed,
 }
 
 impl LspReadDenial {
@@ -65,16 +72,22 @@ impl LspReadDenial {
         match self {
             Self::IncoherentRequest => "the read request is not valid for this operation",
             Self::InvalidPath => "the requested path is not a valid workspace-relative path",
-            Self::OutsideWorkspace | Self::SessionNotFound => "the requested path is not available",
+            Self::OutsideWorkspace | Self::SessionNotFound | Self::AttachmentNotFound => {
+                "the requested path is not available"
+            }
             Self::ServiceUnavailable => "LSP is unavailable for this request",
+            Self::ServerFailed => "the language server request failed",
         }
     }
 
     pub fn code(self) -> &'static str {
         match self {
             Self::IncoherentRequest | Self::InvalidPath => "invalid_lsp_read",
-            Self::OutsideWorkspace | Self::SessionNotFound => "lsp_read_not_found",
+            Self::OutsideWorkspace | Self::SessionNotFound | Self::AttachmentNotFound => {
+                "lsp_read_not_found"
+            }
             Self::ServiceUnavailable => "lsp_unavailable",
+            Self::ServerFailed => "lsp_server_failed",
         }
     }
 }
@@ -102,6 +115,9 @@ impl CoreDaemon {
                 self.lsp_diagnostics_subscribe(request, trusted_client_id)
                     .await
             }
+            CoreRequest::LspCompletionGet { request } => {
+                Ok(super::daemon_lsp_completion::completion_response(self, request).await)
+            }
             other => Ok(CoreResponse::Error {
                 code: "unsupported_lsp_request".into(),
                 message: format!("{other:?} is not an LSP read request"),
@@ -114,7 +130,10 @@ impl CoreDaemon {
     /// The locator is validated fail-closed before it reaches SQL: session ids
     /// are opaque and must never be usable as paths. The workspace comes from
     /// the session row, so a caller cannot name a root it does not own.
-    async fn lsp_workspace_root(&self, session_id: &str) -> Result<PathBuf, LspReadDenial> {
+    pub(crate) async fn lsp_workspace_root(
+        &self,
+        session_id: &str,
+    ) -> Result<PathBuf, LspReadDenial> {
         let Some(pool) = self.pool.clone() else {
             return Err(LspReadDenial::ServiceUnavailable);
         };
@@ -146,7 +165,7 @@ impl CoreDaemon {
     }
 
     /// The daemon's `LspService`, or a denial.
-    fn lsp_service(&self) -> Result<Arc<LspService>, LspReadDenial> {
+    pub(crate) fn lsp_service(&self) -> Result<Arc<LspService>, LspReadDenial> {
         self.deps
             .lsp_service
             .clone()
@@ -155,7 +174,7 @@ impl CoreDaemon {
 
     /// Resolve a workspace-relative path against the daemon-owned root using
     /// the same containment primitive as the write path.
-    fn resolve_target(root: &Path, relative: &str) -> Result<PathBuf, LspReadDenial> {
+    pub(crate) fn resolve_target(root: &Path, relative: &str) -> Result<PathBuf, LspReadDenial> {
         if relative.is_empty() || relative.starts_with('/') || relative.starts_with('\\') {
             return Err(LspReadDenial::InvalidPath);
         }

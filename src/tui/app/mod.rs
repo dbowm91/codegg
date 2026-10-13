@@ -483,6 +483,10 @@ pub struct App {
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
+    /// C004: single-flight admission for file-tree blocking scans. At most
+    /// one blocking scan executes; newer rebuilds coalesce as one pending
+    /// latest intent. Abort of the async waiter never frees capacity early.
+    pub file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator,
     /// Plugin-owned UI surfaces: dialogs, panels, and status items.
     /// Consumed by `apply_plugin_ui_effect` and rendered by
     /// `PluginUiRenderer`.
@@ -753,6 +757,13 @@ impl App {
                     &raw.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
                 )
             })
+            .unwrap_or_default();
+        // Which edge the panel is docked to. Same tolerance as the hotkeys
+        // above: an unrecognised value falls back to the default layout
+        // rather than refusing to start.
+        let saved_panel_placement = cfg
+            .and_then(|c| c.panel_placement.as_deref())
+            .and_then(crate::tui::panels::PanelPlacement::parse)
             .unwrap_or_default();
         debug_log!(
             "loaded {} keybindings, custom config: {}",
@@ -1028,7 +1039,7 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            panel_host: crate::tui::panels::SidePanelHost::new(),
+            panel_host: crate::tui::panels::SidePanelHost::with_placement(saved_panel_placement),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -1139,6 +1150,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             plugin_manager: None, // initialized lazily after construction
             project_tabs,
@@ -1673,6 +1686,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
             plugin_manager: None, // initialized lazily after construction
@@ -3146,6 +3161,18 @@ impl App {
 
     pub fn prepare_shutdown(&mut self) {
         self.invalidate_pending_session_submit(false);
+        // C004 bounded shutdown policy: signal the in-flight blocking scan
+        // cooperatively (it exits at its next entry, within the examined
+        // budget), drop any queued latest intent, and abort waiters. A worker
+        // stuck inside a kernel `read_dir` syscall cannot be joined on a
+        // bounded deadline — the shutdown does not wait for it and never
+        // claims it was joined. The worker's `RunningGuard` still releases
+        // its instrumentation count on exit; its late completion (if any)
+        // mismatches the cleared admission and is discarded.
+        self.file_tree_state.cancel_in_flight();
+        self.file_tree_coordinator.clear_pending();
+        tracing::debug!("{}", self.file_tree_coordinator.diagnostics());
+        self.file_tree_coordinator.force_clear_for_shutdown();
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
         if active > 0 {
@@ -3287,7 +3314,7 @@ impl App {
         // what lets one bottom composer deliver to either target, because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
-        let panel_active = self.ui_state.sidebar_visible
+        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
             && self.ui_state.input_mode == InputMode::Normal;
         // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
@@ -3486,7 +3513,7 @@ impl App {
             Some(InputAction::ToggleSection) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
-                } else if self.ui_state.sidebar_visible {
+                } else if self.panel_host.any_visible() {
                     self.sidebar.toggle_focused();
                 }
             }
@@ -9586,20 +9613,15 @@ impl App {
         }
     }
 
+    /// Hide or show the panel buffer (`Ctrl+B`).
+    ///
+    /// Thin delegation: the behaviour lives in
+    /// `commands::panels::toggle_selected_pane`, which is scoped to the
+    /// *selected* pane rather than to a right-hand column, so a left or
+    /// bottom placement is closed by the same key without this method growing
+    /// a branch per side.
     fn toggle_sidebar(&mut self) {
-        self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
-        if self.ui_state.sidebar_visible {
-            // Focus the active panel, not the session sidebar: the column
-            // may be showing chat, and focusing a panel the user cannot see
-            // would strand every key in an invisible surface.
-            crate::tui::commands::panels::focus_panel(self);
-            if self.panel_host.active() == crate::tui::panels::SidePanelId::Session {
-                self.sidebar.focus_sidebar();
-            }
-        } else {
-            crate::tui::commands::panels::blur_panel(self);
-            self.sidebar.blur_sidebar();
-        }
+        crate::tui::commands::panels::toggle_selected_pane(self);
     }
 
     /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,
@@ -11883,6 +11905,28 @@ impl App {
             unauthorized,
             unsupported,
             reconnect_epoch,
+        );
+    }
+
+    /// M004: apply a finished completion read. Stale, superseded, and
+    /// wrong-scope answers are dropped by the state guard; nothing is
+    /// fabricated. Used by the runtime dispatch arm and by trajectory
+    /// tests driving completions without the runtime loop.
+    pub fn apply_editor_completion(
+        &mut self,
+        request_id: u64,
+        completion_epoch: u64,
+        scope: crate::tui::editor_completion::EditorCompletionScope,
+        result: Option<crate::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    ) {
+        crate::tui::commands::editor::apply_editor_completion(
+            self,
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
         );
     }
 
@@ -16855,6 +16899,26 @@ mod projection_adoption_tests {
         app.on_projection_reconnect();
         assert!(app.projection_client.is_unsupported());
         assert_eq!(app.projection_client.reconnect_epoch(), 1);
+    }
+
+    #[test]
+    fn on_projection_reconnect_clears_stale_semantic_highlight() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.editor_state.lsp.semantic_tokens = vec![codegg_protocol::lsp::LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        app.editor_state.lsp.semantic_revision = Some(9);
+        app.editor_state.lsp.semantic_truncated = true;
+        app.editor_state.lsp.semantic_incomplete = true;
+        app.on_projection_reconnect();
+        assert!(app.editor_state.lsp.semantic_tokens.is_empty());
+        assert_eq!(app.editor_state.lsp.semantic_revision, None);
+        assert!(!app.editor_state.lsp.semantic_truncated);
+        assert!(!app.editor_state.lsp.semantic_incomplete);
     }
 
     #[test]

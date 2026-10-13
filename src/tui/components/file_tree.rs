@@ -191,6 +191,8 @@ impl<'a> FileTreeView<'a> {
         match &self.state.status {
             FileTreeStatus::Idle => String::new(),
             FileTreeStatus::Loading => "· loading…".to_string(),
+            // C004: explicit busy state while a prior blocking scan drains.
+            FileTreeStatus::Waiting => "· waiting for prior scan…".to_string(),
             FileTreeStatus::Ready => String::new(),
             FileTreeStatus::Error(message) => format!("· {message}"),
         }
@@ -200,6 +202,7 @@ impl<'a> FileTreeView<'a> {
         match &self.state.status {
             FileTreeStatus::Error(message) => message.clone(),
             FileTreeStatus::Loading => "Scanning workspace…".to_string(),
+            FileTreeStatus::Waiting => "Waiting for prior scan to stop…".to_string(),
             _ => "Empty workspace".to_string(),
         }
     }
