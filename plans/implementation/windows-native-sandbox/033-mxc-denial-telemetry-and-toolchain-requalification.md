@@ -1,6 +1,6 @@
 # Windows Native Sandbox C033 — MXC Denial Telemetry and Native Toolchain Requalification
 
-Status: **active (test-only implementation)**; hosted Windows 11 ARM is an eligible diagnostics host
+Status: **implemented (negative bounded candidate feasibility)**
 Primary class: infrastructure/security
 Baseline: `work/windows-native-sandbox-foundation` at `920aa08ea484a9230e1508e9bbaad58fbaefd498` (refreshed after rebase).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0022-bounded-successor-feasibility`.

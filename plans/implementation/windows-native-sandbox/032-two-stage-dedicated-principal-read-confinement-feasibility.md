@@ -1,6 +1,6 @@
 # Windows Native Sandbox C032 — Two-stage Dedicated-principal Strict Read-confinement Feasibility
 
-Status: **active (test-only implementation)**; hosted diagnostics are explicitly non-admission evidence
+Status: **implemented (negative bounded launch feasibility)**
 Primary class: security/infrastructure
 Baseline: `work/windows-native-sandbox-foundation` at `920aa08ea484a9230e1508e9bbaad58fbaefd498` (refreshed after rebase).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0022-bounded-successor-feasibility`.
