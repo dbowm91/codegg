@@ -272,8 +272,8 @@ pub async fn init_pool_at_for_migration(db_path: &Path)
 
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
-initialization. `session/schema.rs` contains 73 `CREATE TABLE`
-statements; migrations v1–v68 are all present as `migrate_v<N>` functions
+initialization. `session/schema.rs` contains 76 `CREATE TABLE`
+statements; migrations v1–v72 are all present as `migrate_v<N>` functions
 (declaration order in the file is not numeric — `migrate_v67`,
 `migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
 defined at the end).
