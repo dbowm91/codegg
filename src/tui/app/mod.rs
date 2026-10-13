@@ -11875,6 +11875,22 @@ impl App {
         );
     }
 
+    /// M004: apply a finished completion read. Stale, superseded, and
+    /// wrong-scope answers are dropped by the state guard; nothing is
+    /// fabricated. Used by the runtime dispatch arm and by trajectory
+    /// tests driving completions without the runtime loop.
+    pub fn apply_editor_completion(
+        &mut self,
+        request_id: u64,
+        scope: crate::tui::editor_completion::EditorCompletionScope,
+        result: Option<crate::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    ) {
+        crate::tui::commands::editor::apply_editor_completion(
+            self, request_id, scope, result, error,
+        );
+    }
+
     /// Project Collaboration M002: apply a send completion (failures
     /// retain the draft; nothing is fabricated).
     #[allow(clippy::too_many_arguments)]

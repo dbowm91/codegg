@@ -841,6 +841,7 @@ impl App {
                 busy,
                 snapshot: &snapshot,
                 lsp: &self.editor_state.lsp,
+                completion: &self.editor_state.completion,
                 presentation: session.presentation_mut(),
                 theme,
             }

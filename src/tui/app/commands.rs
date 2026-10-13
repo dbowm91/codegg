@@ -148,6 +148,16 @@ pub enum TuiCommand {
         result: Option<crate::protocol::lsp::LspReadResultDto>,
         error: Option<String>,
     },
+    /// Completion of one M003 completion read. Carries the request id and
+    /// the full completion scope (document identity, revision, cursor), so
+    /// a result for a moved cursor or an old revision is discarded rather
+    /// than displayed.
+    EditorCompletionFinished {
+        request_id: u64,
+        scope: crate::tui::editor_completion::EditorCompletionScope,
+        result: Option<crate::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    },
     /// Completion of a bounded M006-D workspace tree walk. Carries the
     /// request id, the tree generation, and the root the walk was issued
     /// for, so a completion for a superseded walk or a workspace the user

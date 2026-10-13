@@ -29,8 +29,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
 use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
-    LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspReadOperation, LspReadRequestDto,
-    LspReadResultDto, LspReadStatus,
+    LspCompletionApplicabilityDto, LspCompletionRequestDto, LspCompletionResultDto,
+    LspCompletionUnsupportedReason, LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto,
+    LspReadOperation, LspReadRequestDto, LspReadResultDto, LspReadStatus,
 };
 
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
@@ -42,6 +43,7 @@ use crate::tui::editor::{
 };
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+use super::super::editor_completion::EditorCompletionScope;
 use super::super::editor_lsp::EditorLspScope;
 
 /// Maximum length of a workspace-relative path accepted by the open command.
@@ -504,6 +506,9 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
     let Some(scope) = current_lsp_scope(app) else {
         return;
     };
+    // The diagnostics panel takes the centered surface; a completion popup
+    // underneath would be stale context, so the explicit gesture wins.
+    app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_diagnostics(&scope) else {
         return;
     };
@@ -589,6 +594,8 @@ fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Opti
             .warning("LSP is unavailable: select a session-bound workspace document first");
         return;
     };
+    // A read result panel takes the centered surface; see above.
+    app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_read(&scope) else {
         app.messages_state
             .toasts
@@ -793,6 +800,282 @@ fn validate_semantic_tokens(
     ))
 }
 
+// ── Completion (M004) ────────────────────────────────────────────────────────
+
+/// Build the completion scope for an explicit user request.
+///
+/// The read scope proves session/project/workspace/path binding; the
+/// attachment adds the real document identity and daemon revision; the
+/// cursor resolves to the UTF-16 position the server will see. Returns
+/// `None` when anything is missing, leaving the popup closed: a completion
+/// request without a bound attachment is a client bug, reported by the
+/// caller rather than sent half-formed.
+fn current_completion_scope(app: &App) -> Option<EditorCompletionScope> {
+    let read_scope = current_lsp_scope(app)?;
+    let session = app.editor_state.session.as_ref()?;
+    let attachment = session.attachment_info()?;
+    let snapshot = session.try_snapshot()?;
+    let cursor = session.presentation().cursor_byte.min(snapshot.len_bytes());
+    let line = editor::cursor_line(&snapshot, cursor);
+    let row_start = editor::line_start(&snapshot, line)?;
+    let prefix = snapshot.read_bytes(row_start, cursor).ok()?;
+    Some(EditorCompletionScope {
+        read_scope,
+        document_id: attachment.document_id,
+        revision: attachment.revision,
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        character: u32::try_from(prefix.encode_utf16().count()).unwrap_or(u32::MAX),
+    })
+}
+
+/// Start one completion request on explicit user action.
+///
+/// Opens the popup in its loading state and issues the M003 read through
+/// the scoped task seam. A re-trigger supersedes the in-flight request: the
+/// state guard drops the older answer on arrival. Nothing here polls,
+/// retries, or auto-accepts.
+pub(crate) fn start_editor_completion(app: &mut App) {
+    let Some(scope) = current_completion_scope(app) else {
+        app.messages_state
+            .toasts
+            .warning("Completion needs a session-bound workspace document — open a file first");
+        return;
+    };
+    let request_id = app.editor_state.completion.begin(&scope);
+    let Some(client) = app.core_client.clone() else {
+        app.editor_state.completion.apply(
+            request_id,
+            &scope,
+            None,
+            Some("daemon unavailable".to_string()),
+        );
+        return;
+    };
+    let request = LspCompletionRequestDto {
+        session_id: scope.read_scope.session_id.clone(),
+        path: scope.read_scope.path.clone(),
+        document_id: scope.document_id.clone(),
+        revision: scope.revision,
+        line: scope.line,
+        character: scope.character,
+        trigger_character: None,
+        max_candidates: codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES as u32,
+    };
+    if let Err(error) = request.validate() {
+        app.editor_state.completion.apply(
+            request_id,
+            &scope,
+            None,
+            Some(format!("invalid completion request: {error:?}")),
+        );
+        return;
+    }
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    // The completion keeps `scope` for the spawn-failure path below; the
+    // task gets its own clone.
+    let task_scope = scope.clone();
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_completion",
+        tab_id,
+        None,
+        None,
+        async move {
+            let response = client
+                .request(crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspCompletionGet { request },
+                ))
+                .await;
+            let (result, error) = match response {
+                Ok(crate::protocol::core::CoreResponse::LspCompletionResult { result }) => {
+                    (Some(result), None)
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    (None, Some(message))
+                }
+                Ok(other) => (
+                    None,
+                    Some(format!("unexpected completion response: {other:?}")),
+                ),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(TuiCommand::EditorCompletionFinished {
+                request_id,
+                scope: task_scope,
+                result,
+                error,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.completion.apply(
+            request_id,
+            &scope,
+            None,
+            Some("TUI command channel unavailable".to_string()),
+        );
+    }
+}
+
+/// Apply one finished completion request.
+///
+/// Generation- and scope-fenced like the read path: answers for a moved
+/// cursor, an old revision, or a previous attachment are dropped by the
+/// state guard rather than displayed.
+pub(crate) fn apply_editor_completion(
+    app: &mut App,
+    request_id: u64,
+    scope: EditorCompletionScope,
+    result: Option<LspCompletionResultDto>,
+    error: Option<String>,
+) {
+    if app.editor_state.generation != scope.read_scope.generation
+        || current_lsp_scope(app).as_ref() != Some(&scope.read_scope)
+    {
+        return;
+    }
+    app.editor_state
+        .completion
+        .apply(request_id, &scope, result, error);
+}
+
+/// Answer one key for the completion popup, if it owns the key.
+///
+/// Runs inside `handle_editor_key` after the LSP panel and before the F-key
+/// match, so popup keys never reach buffer editing or global bindings:
+/// - `F8` always starts a request: closed opens the popup, open supersedes
+///   the in-flight answer with a fresh one. Dismissal is `Esc`'s job, so a
+///   stale or warming state is one key away from a refresh.
+/// - With the popup open, `Up`/`Down` (and `j`/`k` in Normal mode, where
+///   they are navigation rather than text) move the selection, `Enter`
+///   accepts the selected candidate, and `Esc` dismisses.
+/// - Any other key dismisses the popup first and falls through, so typing
+///   both clears the popup (clear-on-edit) and inserts normally. A
+///   keystroke is never both typed and interpreted as popup input.
+fn handle_completion_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::F(8) {
+        start_editor_completion(app);
+        return true;
+    }
+    if !app.editor_state.completion.is_open() {
+        return false;
+    }
+    let normal_mode = app.editor_state.mode() == EditorMode::Normal;
+    match key.code {
+        KeyCode::Esc => {
+            app.editor_state.completion.dismiss();
+            true
+        }
+        KeyCode::Enter => {
+            accept_selected_completion(app);
+            true
+        }
+        KeyCode::Up => {
+            app.editor_state.completion.select_previous();
+            true
+        }
+        KeyCode::Down => {
+            app.editor_state.completion.select_next();
+            true
+        }
+        KeyCode::Char('k') if normal_mode => {
+            app.editor_state.completion.select_previous();
+            true
+        }
+        KeyCode::Char('j') if normal_mode => {
+            app.editor_state.completion.select_next();
+            true
+        }
+        _ => {
+            app.editor_state.completion.dismiss();
+            false
+        }
+    }
+}
+
+/// Accept the selected candidate after re-validating everything.
+///
+/// The popup is advisory: this re-checks scope, generation, attachment
+/// identity, and revision against the CURRENT state, resolves the edit
+/// against the CURRENT snapshot, and only then submits the single
+/// transaction through the shared edit path — one undo unit on acceptance.
+/// Anything stale, mismatched, non-applicable, or unresolvable is refused
+/// with a notice and no text, disk, or history change.
+fn accept_selected_completion(app: &mut App) {
+    let Some(scope) = app.editor_state.completion.scope.clone() else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    if current_lsp_scope(app).as_ref() != Some(&scope.read_scope)
+        || app.editor_state.generation != scope.read_scope.generation
+    {
+        app.editor_state.completion.clear();
+        app.messages_state
+            .toasts
+            .info("Completion expired — re-trigger to refresh");
+        return;
+    }
+    let candidate = app.editor_state.completion.selected_candidate().cloned();
+    let Some(candidate) = candidate else {
+        app.messages_state.toasts.info("No completion selected");
+        return;
+    };
+    let edit = match &candidate.applicability {
+        LspCompletionApplicabilityDto::Applicable { edit } => edit.clone(),
+        LspCompletionApplicabilityDto::NonApplicable { reason } => {
+            app.messages_state.toasts.warning(match reason {
+                LspCompletionUnsupportedReason::Snippet => {
+                    "Snippet completions can't be applied yet"
+                }
+                LspCompletionUnsupportedReason::AdditionalEdits => {
+                    "Completion needs additional edits — not applied"
+                }
+                LspCompletionUnsupportedReason::Command => {
+                    "Completion carries a server command — not applied"
+                }
+                LspCompletionUnsupportedReason::OutOfRange => {
+                    "Completion range is outside the current text"
+                }
+                LspCompletionUnsupportedReason::EditTooLarge => "Completion edit is too large",
+                LspCompletionUnsupportedReason::InsertAndReplace => {
+                    "Completion range shape isn't supported yet"
+                }
+            });
+            return;
+        }
+    };
+    let Some(session) = app.editor_state.session.as_ref() else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    let attachment = session.attachment_info();
+    let snapshot = session.try_snapshot();
+    let (Some(attachment), Some(snapshot)) = (attachment, snapshot) else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    if attachment.document_id != scope.document_id || attachment.revision != scope.revision {
+        app.editor_state.completion.clear();
+        app.messages_state
+            .toasts
+            .info("Completion expired — re-trigger to refresh");
+        return;
+    }
+    let stay_insert = app.editor_state.mode() == EditorMode::Insert;
+    let Some(resolved) = editor::resolve_completion_edit(&snapshot, &edit, stay_insert) else {
+        app.messages_state
+            .toasts
+            .warning("Completion no longer applies to the current text");
+        return;
+    };
+    submit_edit(&mut app.editor_state, resolved);
+    app.editor_state.completion.dismiss();
+}
+
 /// Close the attachment and leave the editor view.
 ///
 /// The close is asynchronous because it is a `DocumentClose` round trip.
@@ -926,6 +1209,9 @@ where
     let request_id = app.editor_state.request.begin();
     let generation = app.editor_state.generation;
     app.editor_state.operation = Some(operation);
+    // Save, reload, resync, and close all move the text or the binding out
+    // from under a popup: clear it at initiation, not at completion.
+    app.editor_state.completion.clear();
     if operation == EditorOperation::Save {
         app.editor_state.status = EditorStatus::Flushing;
     }
@@ -1127,6 +1413,9 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 anchor_before,
             );
             state.lsp.clear_semantic();
+            // Any local edit — including a completion accept — invalidates
+            // the popup and its pending request: the text moved on.
+            state.completion.clear();
             if !state.lsp.diagnostics.is_empty() {
                 state.lsp.diagnostics_stale = true;
             }
@@ -1225,6 +1514,7 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     // left the cursor rather than to the undo point.
     editor::record_redo(presentation, entry.rebased(cursor_leaving, None));
     state.lsp.clear_semantic();
+    state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
         state.lsp.diagnostics_stale = true;
     }
@@ -1267,6 +1557,7 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
     }
     editor::restore_undo(presentation, entry.rebased(cursor_leaving, None));
     state.lsp.clear_semantic();
+    state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
         state.lsp.diagnostics_stale = true;
     }
@@ -1443,6 +1734,9 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     if handle_lsp_panel_key(app, key) {
         return true;
     }
+    if handle_completion_key(app, key) {
+        return true;
+    }
     match key.code {
         KeyCode::F(2) => {
             refresh_editor_diagnostics(app);
@@ -1551,6 +1845,8 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
             };
             open_editor(app, &path);
         }
+        // `:complete` takes no argument; the parser already refuses one.
+        EditorCommandName::Complete => start_editor_completion(app),
     }
 }
 

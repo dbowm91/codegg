@@ -1,6 +1,10 @@
 # TUI Editor Correctness/Usability M004 — Completion Presentation and Qualification
 
-Status: blocked: M003 completion contract not yet closed; C001 semantic-token corrective must be closed. Work may be planned but cannot be implemented against a speculative protocol.
+Status: active (M003 closed `plans/closure/tui-editor-correctness-usability/003-status.md`, C001/C002 closed; implementation in progress).
+
+Prior status was `blocked: M003 completion contract not yet closed`. All hard
+gates are satisfied; the M003 `LspCompletionGet` contract is the binding
+authority for this milestone.
 
 Baseline: `main` `6b611b5ca7f019783a91f04530d5ae56124f7ee9` (2026-10-13), to be refreshed on activation.
 Roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` M004.

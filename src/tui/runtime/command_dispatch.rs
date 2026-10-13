@@ -1731,6 +1731,16 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, scope, operation, result, error,
             );
         }
+        TuiCommand::EditorCompletionFinished {
+            request_id,
+            scope,
+            result,
+            error,
+        } => {
+            super::super::commands::editor::apply_editor_completion(
+                app, request_id, scope, result, error,
+            );
+        }
         TuiCommand::FileTreeListed {
             request_id,
             generation,

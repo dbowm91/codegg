@@ -104,6 +104,8 @@ pub enum EditorCommandName {
     New,
     /// `:open <path>` — open a workspace-relative path.
     Open,
+    /// `:complete` — request language-server completions at the cursor.
+    Complete,
 }
 
 impl EditorCommandName {
@@ -118,6 +120,7 @@ impl EditorCommandName {
             Self::WriteAll => "wa",
             Self::New => "new",
             Self::Open => "open",
+            Self::Complete => "complete",
         }
     }
 
@@ -132,6 +135,7 @@ impl EditorCommandName {
             Self::WriteAll => "write all open documents",
             Self::New => "create a new file from a template",
             Self::Open => "open a workspace-relative path",
+            Self::Complete => "complete the word at the cursor",
         }
     }
 
@@ -157,6 +161,7 @@ impl EditorCommandName {
         Self::WriteAll,
         Self::New,
         Self::Open,
+        Self::Complete,
     ];
 }
 
@@ -193,6 +198,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "wa" | "wall" => EditorCommandName::WriteAll,
         "new" => EditorCommandName::New,
         "open" | "o" => EditorCommandName::Open,
+        "complete" => EditorCommandName::Complete,
         _ => return None,
     };
     let argument = argument.filter(|value| !value.is_empty());
@@ -219,11 +225,12 @@ pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
     // An empty query is the discovery path, and it is served in *declared*
     // order — not alphabetically — so the registry reads as a curated menu
     // rather than an index. Sorting it by score would reorder the list for
-    // no benefit.
+    // no benefit. The whole registry is offered, not the query bound: a
+    // command the empty palette hides is undiscoverable, and the registry
+    // itself is the bound.
     if query.is_empty() {
         return EditorCommandName::ALL
             .iter()
-            .take(MAX_EDITOR_COMMAND_MATCHES)
             .map(|command| EditorCommandMatch {
                 command: *command,
                 score: 0,
@@ -692,6 +699,51 @@ pub fn delete_range(
     }
     let transaction = TextTransaction::new(vec![TextEdit::new(start..end, String::new())]);
     build_edit(snapshot, transaction, start, false)
+}
+
+/// Resolve one M003 applicable completion edit against the current snapshot.
+///
+/// Validates the DTO's UTF-16 range against `snapshot` and builds the single
+/// forward/inverse pair through the shared [`build_edit`], so an accepted
+/// completion is exactly one controller edit with one undo unit — the same
+/// shape as a typed edit. Returns `None` for out-of-snapshot ranges,
+/// reversed ranges, oversized replacement text, and no-op edits: each is a
+/// refusal the caller reports rather than applying something the server did
+/// not mean. Pure deletions (range plus empty text) are meaningful and kept.
+pub fn resolve_completion_edit(
+    snapshot: &DocumentSnapshot,
+    edit: &codegg_protocol::lsp::LspCompletionEditDto,
+    stay_insert: bool,
+) -> Option<EditorEdit> {
+    if edit.new_text.len() > codegg_protocol::lsp::MAX_LSP_COMPLETION_EDIT_BYTES {
+        return None;
+    }
+    let start_line = usize::try_from(edit.start_line).ok()?;
+    let end_line = usize::try_from(edit.end_line).ok()?;
+    let start_row = line_start(snapshot, start_line)?;
+    let start_row_end = line_content_end(snapshot, start_line)?;
+    let end_row = line_start(snapshot, end_line)?;
+    let end_row_end = line_content_end(snapshot, end_line)?;
+    let start_text = snapshot.read_bytes(start_row, start_row_end).ok()?;
+    let end_text = snapshot.read_bytes(end_row, end_row_end).ok()?;
+    let start_col =
+        crate::tui::editor_lsp::utf16_column_to_byte(&start_text, edit.start_character)?;
+    let end_col = crate::tui::editor_lsp::utf16_column_to_byte(&end_text, edit.end_character)?;
+    let start = start_row + start_col;
+    let end = end_row + end_col;
+    if end < start {
+        return None;
+    }
+    if start == end && edit.new_text.is_empty() {
+        return None;
+    }
+    let transaction = TextTransaction::new(vec![TextEdit::new(start..end, edit.new_text.clone())]);
+    build_edit(
+        snapshot,
+        transaction,
+        start + edit.new_text.len(),
+        stay_insert,
+    )
 }
 
 // ── Resolution against a presentation record ────────────────────────────────
@@ -1249,6 +1301,102 @@ mod tests {
             cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         }
+    }
+
+    // ── Completion edit resolution ────────────────────────────────────
+
+    fn completion_edit(
+        start: (u32, u32),
+        end: (u32, u32),
+        new_text: &str,
+    ) -> codegg_protocol::lsp::LspCompletionEditDto {
+        codegg_protocol::lsp::LspCompletionEditDto {
+            start_line: start.0,
+            start_character: start.1,
+            end_line: end.0,
+            end_character: end.1,
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_completion_replace_resolves_to_one_forward_and_inverse() {
+        // Line 0 is 12 bytes, so "    prin" is bytes 12..20 and the word
+        // itself is 16..20: the assertion is on bytes, not UTF-16 units.
+        let snapshot = snapshot_of("fn main() {\n    prin\n}\n");
+        let edit = completion_edit((1, 4), (1, 8), "println!");
+        let resolved = resolve_completion_edit(&snapshot, &edit, true).expect("resolves");
+        assert_eq!(resolved.transaction.edits.len(), 1);
+        assert_eq!(
+            resolved.transaction.edits[0].range.start, 16,
+            "byte range, not UTF-16"
+        );
+        assert_eq!(resolved.transaction.edits[0].range.end, 20);
+        assert_eq!(resolved.transaction.edits[0].insert, "println!");
+        assert_eq!(resolved.inverse.edits.len(), 1);
+        assert_eq!(resolved.inverse.edits[0].insert, "prin");
+        assert_eq!(resolved.cursor_after, 16 + "println!".len());
+        assert!(resolved.stay_insert);
+    }
+
+    #[test]
+    fn a_completion_insert_at_cursor_resolves_to_a_zero_width_replace() {
+        let snapshot = snapshot_of("fn main() {\n    prin\n}\n");
+        let edit = completion_edit((1, 8), (1, 8), "tln!");
+        let resolved = resolve_completion_edit(&snapshot, &edit, false).expect("resolves");
+        assert_eq!(resolved.transaction.edits[0].range.start, 20);
+        assert_eq!(resolved.transaction.edits[0].range.end, 20);
+        assert!(!resolved.stay_insert);
+    }
+
+    #[test]
+    fn completion_ranges_validate_utf16_exactly() {
+        // "a😀b": the emoji is 2 UTF-16 units; column 2 splits the pair.
+        let snapshot = snapshot_of("a😀b\n");
+        let split = completion_edit((0, 0), (0, 2), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &split, false).is_none(),
+            "a split surrogate must refuse"
+        );
+        let whole = completion_edit((0, 0), (0, 3), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &whole, false).is_some(),
+            "exact surrogate span resolves"
+        );
+        // "a😀b" is 4 UTF-16 units, so 4 is the valid line end and 5 is
+        // past it.
+        let past_end = completion_edit((0, 0), (0, 5), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &past_end, false).is_none(),
+            "past-the-end refuses"
+        );
+        let reversed = completion_edit((0, 3), (0, 0), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &reversed, false).is_none(),
+            "reversed ranges refuse"
+        );
+    }
+
+    #[test]
+    fn completion_refuses_absent_lines_noop_edits_and_oversized_text() {
+        let snapshot = snapshot_of("ab\n");
+        let absent = completion_edit((9, 0), (9, 1), "x");
+        assert!(resolve_completion_edit(&snapshot, &absent, false).is_none());
+        let noop = completion_edit((0, 1), (0, 1), "");
+        assert!(
+            resolve_completion_edit(&snapshot, &noop, false).is_none(),
+            "a no-op is not an edit"
+        );
+        let deletion = completion_edit((0, 0), (0, 1), "");
+        let resolved = resolve_completion_edit(&snapshot, &deletion, false).expect("deletes");
+        assert_eq!(resolved.transaction.edits[0].insert, "");
+        assert_eq!(resolved.inverse.edits[0].insert, "a");
+        let big = "x".repeat(codegg_protocol::lsp::MAX_LSP_COMPLETION_EDIT_BYTES + 1);
+        let oversized = completion_edit((0, 0), (0, 1), &big);
+        assert!(
+            resolve_completion_edit(&snapshot, &oversized, false).is_none(),
+            "oversized edits refuse even when the DTO claims otherwise"
+        );
     }
 
     // ── Offset clamping ───────────────────────────────────────────────
@@ -1840,6 +1988,18 @@ mod tests {
         );
         assert!(EditorCommandName::Open.takes_argument());
         assert!(!EditorCommandName::Write.takes_argument());
+    }
+
+    #[test]
+    fn complete_parses_without_an_argument() {
+        assert_eq!(
+            parse_editor_command("complete"),
+            Some((EditorCommandName::Complete, None))
+        );
+        assert!(!EditorCommandName::Complete.takes_argument());
+        assert_eq!(parse_editor_command("complete now"), None);
+        assert_eq!(EditorCommandName::Complete.spec(), "complete");
+        assert!(EditorCommandName::ALL.contains(&EditorCommandName::Complete));
     }
 
     #[test]

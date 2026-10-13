@@ -389,6 +389,24 @@ workspace-relative target; other results remain display-only. The TUI does
 not start language servers itself and does not claim live diagnostic push
 updates.
 
+### Completion
+
+With the editor buffer focused, press F8 — or type `:complete` in Normal
+mode — to ask the language server for completions at the cursor. A popup
+lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
+Normal mode) move the selection, `Enter` applies the selected item, and
+`Esc` dismisses the popup without touching anything. Typing anything else
+dismisses the popup first and inserts normally.
+
+Only supported plain-text edits can be applied, and only after the editor
+re-checks the document identity, revision, and edit range against the
+current text. Anything else — snippets, edits needing extra changes,
+server commands, stale or out-of-range results — is shown as unavailable
+and refused with a message; nothing is ever inserted on your behalf, and
+every acceptance is one ordinary edit with one undo step. An empty answer
+("no suggestions") looks different from a warming server, a changed
+document, or a server without completions, and a truncated list says so.
+
 ### Semantic highlighting limits and truncation
 
 Semantic highlighting covers up to 1000 tokens per file (the protocol

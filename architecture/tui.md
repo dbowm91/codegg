@@ -2731,6 +2731,32 @@ controller snapshot revision and valid non-overlapping UTF-16 ranges;
 unknown token types and malformed/stale results render as plain text. The
 TUI retains no document text outside the controller snapshot.
 
+### Completion popup and transactional acceptance (M004)
+
+The completion popup consumes the M003 `LspCompletionGet` surface and
+nothing else. The trigger is `F8` with the buffer focused (claimed inside
+`handle_editor_key`, so it never falls through to the global bindings) and
+`:complete` from Normal mode; terminals that cannot send `F8` always have
+the command spelling. While open, the popup owns exactly `Up`/`Down`
+(`j`/`k` only in Normal mode, where they are navigation rather than text),
+`Enter`, and `Esc`; every other key dismisses first and processes normally,
+so a keystroke is never both typed and interpreted as popup input. `Esc`
+dismisses and preserves the editing mode — it never quits the editor — and
+a re-trigger supersedes the in-flight request by request id.
+
+The selection is advisory until acceptance. `Enter` re-validates scope,
+generation, attachment identity, and revision against the current state,
+resolves the DTO's UTF-16 range against the current snapshot, and submits
+the single forward/inverse pair through the shared `submit_edit` path: one
+controller edit, one undo unit, redo replays the forward text. Non-applicable
+candidates, identity mismatches, stale revisions, lost writer leases, and
+unresolvable ranges are refused with a notice and change nothing. The popup
+clears on edit, undo/redo, save, reload, resync, close, detach, tab switch,
+and reconnect; a late, superseded, or wrong-scope answer drops in the state
+guard and never paints. Untrusted labels, details, and error strings render
+as sanitized literal spans, and the popup hides (keys still live) on
+terminals too narrow to fit it.
+
 ### Semantic token fidelity (C001)
 
 Structural validation (`src/tui/editor_lsp.rs::validate_semantic_tokens`)

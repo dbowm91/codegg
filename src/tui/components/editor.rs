@@ -81,6 +81,8 @@ pub struct EditorWidget<'a> {
     pub snapshot: &'a DocumentSnapshot,
     /// Bounded diagnostics and semantic spans for this document generation.
     pub lsp: &'a crate::tui::editor_lsp::EditorLspState,
+    /// Bounded completion popup state for this document generation.
+    pub completion: &'a crate::tui::editor_completion::EditorCompletionState,
     /// Focused editor presentation, mutated only to resolve the viewport.
     pub presentation: &'a mut crate::tui::document_session::TuiDocumentPresentation,
     pub theme: Arc<Theme>,
@@ -121,6 +123,7 @@ impl EditorWidget<'_> {
             self.render_text(frame, text_area);
         }
         self.render_lsp_panel(frame, area);
+        self.render_completion_popup(frame, area);
     }
 
     fn mode_label(&self) -> &'static str {
@@ -516,6 +519,138 @@ impl EditorWidget<'_> {
         );
     }
 
+    /// Bounded completion popup for the M003 read.
+    ///
+    /// Renders typed candidates and explicit non-ready states only; it never
+    /// reads document text, so it cannot paint stale content. Untrusted
+    /// server strings arrive pre-sanitized by
+    /// [`crate::tui::editor_completion::sanitize_completion_text`] and are
+    /// rendered as literal spans. On terminals too narrow to fit, the popup
+    /// stays hidden while its keys keep working.
+    fn render_completion_popup(&self, frame: &mut Frame, area: Rect) {
+        use crate::tui::editor_completion::{
+            sanitize_completion_text, CompletionViewStatus, MAX_COMPLETION_DETAIL_CHARS,
+            MAX_COMPLETION_LABEL_CHARS, MAX_COMPLETION_POPUP_ROWS, MAX_COMPLETION_POPUP_WIDTH,
+        };
+        let state = self.completion;
+        if !state.is_open() {
+            return;
+        }
+        let Some(status) = state.status_line() else {
+            return;
+        };
+        let theme = Arc::clone(&self.theme);
+        let mut lines: Vec<Line> = Vec::new();
+        match state.status {
+            CompletionViewStatus::Loading => {
+                lines.push(Line::from("Requesting…"));
+            }
+            CompletionViewStatus::Ready => {
+                if state.candidates.is_empty() {
+                    lines.push(Line::from("No suggestions"));
+                } else {
+                    let rows = MAX_COMPLETION_POPUP_ROWS;
+                    let start = state
+                        .selected
+                        .min(state.candidates.len().saturating_sub(1))
+                        .saturating_sub(rows / 2)
+                        .min(state.candidates.len().saturating_sub(rows));
+                    for (offset, candidate) in
+                        state.candidates.iter().skip(start).take(rows).enumerate()
+                    {
+                        let index = start + offset;
+                        let applicable = matches!(
+                            candidate.applicability,
+                            codegg_protocol::lsp::LspCompletionApplicabilityDto::Applicable { .. }
+                        );
+                        let mut row = format!(
+                            "{} {}",
+                            if index == state.selected { ">" } else { " " },
+                            sanitize_completion_text(&candidate.label, MAX_COMPLETION_LABEL_CHARS),
+                        );
+                        if let Some(kind) = &candidate.kind {
+                            row.push_str("  (");
+                            row.push_str(&sanitize_completion_text(kind, 24));
+                            row.push(')');
+                        }
+                        if let Some(detail) = &candidate.detail {
+                            let detail =
+                                sanitize_completion_text(detail, MAX_COMPLETION_DETAIL_CHARS);
+                            if !detail.is_empty() {
+                                row.push_str("  ");
+                                row.push_str(&detail);
+                            }
+                        }
+                        if !applicable {
+                            row.push_str("  · unavailable");
+                        }
+                        let style = if index == state.selected {
+                            Style::default().bg(theme.selection).fg(theme.foreground)
+                        } else if applicable {
+                            Style::default().fg(theme.foreground)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+            }
+            CompletionViewStatus::NotReady => {
+                lines.push(Line::from("Language server warming — retry shortly"));
+            }
+            CompletionViewStatus::Stale => {
+                lines.push(Line::from("Document changed — press F8 to refresh"));
+            }
+            CompletionViewStatus::Unsynced => {
+                lines.push(Line::from("Server hasn't seen this revision yet"));
+            }
+            CompletionViewStatus::Unsupported => {
+                lines.push(Line::from("Server has no completion provider"));
+            }
+            CompletionViewStatus::Error => {
+                lines.push(Line::from(sanitize_completion_text(
+                    state.error.as_deref().unwrap_or("completion failed"),
+                    120,
+                )));
+            }
+            CompletionViewStatus::Idle => return,
+        }
+        if state.truncated {
+            lines.push(Line::from(Span::styled(
+                "…list truncated",
+                Style::default().fg(theme.warning),
+            )));
+        } else if state.incomplete {
+            lines.push(Line::from(Span::styled(
+                "…more may exist server-side",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        let height = ((lines.len() + 2) as u16).min(area.height).min(16);
+        let width = area.width.min(MAX_COMPLETION_POPUP_WIDTH);
+        if height < 3 || width < 24 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        let block = Block::default()
+            .title(format!(
+                " Completion · {status} · ↑↓ select · Enter apply · Esc "
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        lines.truncate(inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     /// The visible display-column slice of `line_index`, truncated to the
     /// viewport width.
     ///
@@ -770,6 +905,7 @@ mod tests {
             ..TuiDocumentPresentation::default()
         };
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -789,6 +925,7 @@ mod tests {
                     busy: options.busy,
                     snapshot: &snapshot,
                     lsp: &lsp,
+                    completion: &completion,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }
@@ -1234,6 +1371,7 @@ mod tests {
             cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         };
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -1253,6 +1391,7 @@ mod tests {
                     busy: options.busy,
                     snapshot: &snapshot,
                     lsp: &lsp,
+                    completion: &completion,
                     presentation: &mut presentation,
                     theme: Arc::new(theme.clone()),
                 }
@@ -1267,6 +1406,274 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    // ── Completion popup rendering ────────────────────────────────────
+
+    use codegg_protocol::lsp::{
+        LspCompletionApplicabilityDto, LspCompletionCandidateDto, LspCompletionEditDto,
+        LspCompletionResultDto, LspCompletionStatus,
+    };
+
+    fn completion_candidate(label: &str, applicable: bool) -> LspCompletionCandidateDto {
+        LspCompletionCandidateDto {
+            label: label.to_string(),
+            detail: Some(format!("detail {label}")),
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            applicability: if applicable {
+                LspCompletionApplicabilityDto::Applicable {
+                    edit: LspCompletionEditDto {
+                        start_line: 1,
+                        start_character: 4,
+                        end_line: 1,
+                        end_character: 8,
+                        new_text: label.to_string(),
+                    },
+                }
+            } else {
+                LspCompletionApplicabilityDto::NonApplicable {
+                    reason: codegg_protocol::lsp::LspCompletionUnsupportedReason::Snippet,
+                }
+            },
+        }
+    }
+
+    fn completion_state(
+        candidates: Vec<LspCompletionCandidateDto>,
+        status: LspCompletionStatus,
+        truncated: bool,
+        incomplete: bool,
+    ) -> crate::tui::editor_completion::EditorCompletionState {
+        use crate::tui::editor_completion::EditorCompletionScope;
+        use crate::tui::editor_lsp::EditorLspScope;
+        let mut state = crate::tui::editor_completion::EditorCompletionState::default();
+        let scope = EditorCompletionScope {
+            read_scope: EditorLspScope {
+                generation: 0,
+                session_id: "session".into(),
+                project_id: "project".into(),
+                workspace_id: "workspace".into(),
+                path: "src/lib.rs".into(),
+            },
+            document_id: "doc".into(),
+            revision: 0,
+            line: 1,
+            character: 8,
+        };
+        let request = state.begin(&scope);
+        let mut result = LspCompletionResultDto::ready(
+            "doc".into(),
+            0,
+            Some(0),
+            candidates,
+            truncated,
+            incomplete,
+        );
+        result.status = status;
+        assert!(state.apply(request, &scope, Some(result), None));
+        state
+    }
+
+    fn render_with_completion(
+        text: &str,
+        width: u16,
+        height: u16,
+        completion: &crate::tui::editor_completion::EditorCompletionState,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: 0,
+            focus: EditorFocus::Buffer,
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let options = Options {
+            status: "synced",
+            notice: None,
+            mode: EditorMode::Normal,
+            focus: EditorFocus::Buffer,
+            pending_command: "",
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            writable: true,
+            busy: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    notice: options.notice,
+                    mode: options.mode,
+                    focus: options.focus,
+                    pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn completion_popup_lists_candidates_with_selection() {
+        let state = completion_state(
+            vec![
+                completion_candidate("println!", true),
+                completion_candidate("print", true),
+                completion_candidate("snip", false),
+            ],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "labels render:\n{rows}");
+        assert!(rows.contains("> println!"), "first row selected:\n{rows}");
+        assert!(
+            rows.contains("unavailable"),
+            "non-applicable is marked:\n{rows}"
+        );
+        assert!(
+            rows.contains("suggestions"),
+            "header names the state:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_neutralizes_malicious_labels() {
+        let mut evil = completion_candidate("a\x1b[31mb\nc\td", true);
+        evil.detail = Some("x".repeat(500));
+        let state = completion_state(vec![evil], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(!rows.contains('\x1b'), "no escape survives:\n{rows}");
+        assert!(
+            rows.contains("a [31mb c d"),
+            "controls become spaces:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_states_render_distinctly() {
+        for (status, word) in [
+            (LspCompletionStatus::NotReady, "warming"),
+            (LspCompletionStatus::Stale, "re-trigger"),
+            (LspCompletionStatus::Unsynced, "revision"),
+            (LspCompletionStatus::Unsupported, "provider"),
+        ] {
+            let state = completion_state(vec![], status, false, false);
+            let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+            assert!(rows.contains(word), "{status:?} must say {word}:\n{rows}");
+        }
+        let state = completion_state(vec![], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("No suggestions"),
+            "empty Ready differs:\n{rows}"
+        );
+        let mut errored = crate::tui::editor_completion::EditorCompletionState::default();
+        let scope = {
+            use crate::tui::editor_completion::EditorCompletionScope;
+            use crate::tui::editor_lsp::EditorLspScope;
+            EditorCompletionScope {
+                read_scope: EditorLspScope {
+                    generation: 0,
+                    session_id: "s".into(),
+                    project_id: "p".into(),
+                    workspace_id: "w".into(),
+                    path: "src/lib.rs".into(),
+                },
+                document_id: "doc".into(),
+                revision: 0,
+                line: 0,
+                character: 0,
+            }
+        };
+        let request = errored.begin(&scope);
+        assert!(errored.apply(request, &scope, None, Some("boom\n\x1b[0m".into())));
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &errored).join("\n");
+        assert!(rows.contains("boom"), "error text shows:\n{rows}");
+        assert!(!rows.contains('\x1b'), "error text is sanitized:\n{rows}");
+    }
+
+    #[test]
+    fn completion_popup_hides_on_terminals_too_narrow_to_fit() {
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        // 1x1 and narrow frames must not panic; the keys keep working
+        // because state and rendering are independent.
+        let tiny = render_with_completion("fn main() {}\n", 1, 1, &state).join("\n");
+        assert!(!tiny.contains("println!"), "no room means no popup");
+        let narrow = render_with_completion("fn main() {}\n", 20, 24, &state).join("\n");
+        assert!(
+            !narrow.contains("println!"),
+            "under 24 columns means no popup"
+        );
+        let wide = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(wide.contains("println!"), "room means popup");
+    }
+
+    #[test]
+    fn completion_popup_scrolls_long_lists_and_marks_budgets() {
+        let candidates: Vec<_> = (0..15)
+            .map(|index| completion_candidate(&format!("item-{index:02}"), true))
+            .collect();
+        let mut state = completion_state(candidates, LspCompletionStatus::Ready, true, true);
+        for _ in 0..14 {
+            state.select_next();
+        }
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("item-14"),
+            "selected tail is visible:\n{rows}"
+        );
+        assert!(!rows.contains("item-00"), "the head scrolled away:\n{rows}");
+        assert!(
+            rows.contains("truncated"),
+            "the count cap is disclosed:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_on_a_huge_line_stays_bounded() {
+        // The popup reads DTO strings only, never the snapshot, so a
+        // megabyte line cannot blow the frame budget through this path.
+        let text = "x".repeat(1024 * 1024);
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion(&text, 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "popup renders over huge lines");
     }
 
     fn styled_token(
@@ -1356,6 +1763,7 @@ mod tests {
             semantic_revision: Some(1),
             ..crate::tui::editor_lsp::EditorLspState::default()
         };
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let viewport = EditorViewport {
             first_line: 0,
             column: 0,
@@ -1379,6 +1787,7 @@ mod tests {
             busy: false,
             snapshot: &snapshot,
             lsp: &lsp,
+            completion: &completion,
             presentation: &mut presentation,
             theme,
         };
