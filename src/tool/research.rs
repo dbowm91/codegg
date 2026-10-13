@@ -92,6 +92,38 @@ impl ResearchTool {
         self
     }
 
+    /// Attach the turn's provider so research runs its model-backed
+    /// phases (evidence extraction, claim construction, and semantic
+    /// verification) instead of the deterministic fallbacks.
+    ///
+    /// Mirrors [`Self::with_search_runtime`]'s ownership rule: when the
+    /// service handle is uniquely owned (the normal registry path) the
+    /// provider is installed; if the handle is shared elsewhere we warn
+    /// rather than silently leaving one caller's research provider-less.
+    pub fn with_model_backed_phases(
+        mut self,
+        provider: Arc<dyn crate::provider::Provider>,
+        model: String,
+    ) -> Self {
+        match Arc::try_unwrap(self.service) {
+            Ok(svc) => {
+                self.service = Arc::new(svc.with_model_backed_phases(provider, model));
+            }
+            Err(shared) => {
+                tracing::warn!(
+                    "research tool service is shared; research will run without model-backed phases"
+                );
+                self.service = shared;
+            }
+        }
+        self
+    }
+
+    /// Whether the wrapped service runs model-backed research phases.
+    pub fn model_backed_phases_enabled(&self) -> bool {
+        self.service.model_backed_phases_enabled()
+    }
+
     pub fn set_service(&mut self, service: Arc<ResearchService>) {
         self.service = service;
     }
@@ -244,5 +276,46 @@ mod tests {
             .unwrap();
         let res = rt.block_on(t.execute(json!({"question": "  "})));
         assert!(matches!(res, Err(ToolError::Execution(_))));
+    }
+
+    fn stub() -> Arc<dyn crate::provider::Provider> {
+        Arc::new(crate::research::tests::StubProvider)
+    }
+
+    #[test]
+    fn model_backed_phases_are_off_by_default() {
+        assert!(!ResearchTool::with_default_service().model_backed_phases_enabled());
+    }
+
+    #[test]
+    fn with_model_backed_phases_enables_the_model_path() {
+        // Regression: nothing in production ever attached a provider, so the
+        // tool's service stayed model-less and research silently used the
+        // deterministic fallbacks for extraction/claims/verification.
+        let t = ResearchTool::with_default_service().with_model_backed_phases(stub(), "m".into());
+        assert!(t.model_backed_phases_enabled());
+    }
+
+    #[test]
+    fn search_runtime_and_model_backed_phases_are_independent() {
+        // This is the exact production order in `build_research_tool`: the
+        // search runtime is attached first, then the provider. Neither
+        // builder may clobber the other's decision.
+        use crate::config::schema::{SearchBackendConfig, SearchConfig};
+
+        let enabled = ResearchTool::with_default_service()
+            .with_search_runtime(crate::search_backend::SearchRuntimeContext::new(
+                SearchConfig {
+                    backend: Some(SearchBackendConfig::Eggsearch),
+                    ..Default::default()
+                },
+            ))
+            .with_model_backed_phases(stub(), "m".into());
+        assert!(enabled.model_backed_phases_enabled());
+
+        let disabled = ResearchTool::with_default_service()
+            .with_search_runtime(crate::search_backend::SearchRuntimeContext::disabled())
+            .with_model_backed_phases(stub(), "m".into());
+        assert!(disabled.model_backed_phases_enabled());
     }
 }

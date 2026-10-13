@@ -3121,10 +3121,23 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // is idempotent: the daemon's TurnSubmit handler will reuse the
     // same Arc<RwLock<McpService>> rather than spawning a second
     // eggsearch process.
-    if !is_socket_mode {
-        let (_mcp_service, _report) =
-            codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-    }
+    //
+    // `bootstrap_search_runtime` (rather than the legacy
+    // `bootstrap_search_backend`) also hands back the owned context that
+    // `/research` needs to derive its network authorization from
+    // `[search].backend`. In socket mode the daemon owns the transport, so
+    // the CLI must not spawn a second eggsearch process; a config-only
+    // context still carries the resolved `SearchConfig` and therefore the
+    // correct network decision, just without the eggsearch MCP transport.
+    let search_runtime = if is_socket_mode {
+        Some(codegg::search_backend::SearchRuntimeContext::from_config(
+            &config.search.clone().unwrap_or_default(),
+        ))
+    } else {
+        let (ctx, _report) =
+            codegg::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+        Some(ctx)
+    };
 
     // Only initialize heavy local resources for inproc/stdio modes.
     // In socket mode the daemon owns the DB, providers, scheduler, etc.
@@ -3210,6 +3223,11 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.set_memory_store(mm.clone());
     }
     app.set_models(model_ids.clone());
+    // Lets the `/research` command reach the network under the same
+    // `[search].backend` authority as `websearch`.
+    if let Some(rt) = search_runtime {
+        app.set_search_runtime(rt);
+    }
     // Daemon-client mode deliberately does not resolve project agents in the
     // CLI process. Keep App's compiled-in agents as the rendering and input
     // fallback until a daemon-owned asset snapshot is available; replacing

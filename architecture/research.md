@@ -119,6 +119,46 @@ issue their own HTTP requests via `reqwest` rather than routing through
 directly. A hardcoded `true` would therefore have let those three bypass
 a disabled search backend.
 
+#### Who attaches a search runtime
+
+Network access is only real for callers that supply a `SearchRuntimeContext`:
+
+| Caller | Network? | Notes |
+| --- | --- | --- |
+| Agent `research` tool | yes | `turn_runtime.rs` passes `search_runtime` into `SessionToolContext`; `build_research_tool` attaches it. |
+| TUI `/research` | yes | `launch_tui` calls `bootstrap_search_runtime` and stores the context on `App` via `set_search_runtime`; the handler attaches it. |
+| TUI research **browser** (`/research runs`, `/research open`) | n/a | `start_research_list_runs` / `load_run` / `load_section` only read artifacts from disk. They deliberately do not attach a runtime. |
+| Daemon-client (socket) mode | config only | The daemon owns the transport, so the CLI builds a config-only context: `[search].backend` still decides the network policy, but eggsearch has no MCP transport. Non-eggsearch adapters still work. |
+| `ResearchService::new()` with no runtime | no | Local-only by design. |
+
+### Model-Backed Phases
+
+Three pipeline phases use an LLM: evidence extraction
+(`coordinator.rs` phase 3), claim construction (phase 4), and semantic
+verification (phase 7b). Each is gated on
+`if let (Some(provider), Some(model))`; with no provider all three fall back
+to deterministic implementations.
+
+The provider is supplied by the **turn**, not by research:
+
+- `ToolRegistryOptions::research_provider` / `research_model` carry it.
+- `turn_runtime.rs` clones the turn's own provider (the same handle the
+  background title task reuses as `title_provider`) and pairs it with the
+  turn's model.
+- `build_research_tool` attaches it via
+  `ResearchService::with_model_backed_phases`, an in-place variant of
+  `with_provider` — the constructor form cannot upgrade a service that was
+  already built with a workspace root.
+
+Both fields are required. A provider without a model id leaves the
+coordinator's guard unsatisfied, so `build_research_tool` ignores it rather
+than installing a provider that would silently never be called.
+
+`ResearchTool::with_model_backed_phases` mirrors
+`ResearchTool::with_search_runtime`'s `Arc::try_unwrap` rule: on a uniquely
+owned service it installs the provider, and on a shared handle it warns
+instead of aliasing another owner's service.
+
 ### Adapter Collection Shape
 
 Adapters split into two kinds, which determines whether flipping

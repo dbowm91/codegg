@@ -393,6 +393,15 @@ impl TurnRuntime for DefaultTurnRuntime {
                     pin: asset_pin.clone(),
                 },
                 search_runtime: Some(search_runtime.clone()),
+                // Hand the research tool this turn's own provider and model
+                // (the same ones the title background task reuses at
+                // `title_provider`) so evidence extraction, claim
+                // construction, and semantic verification run model-backed
+                // instead of degrading to their deterministic fallbacks.
+                // `clone_box` + `Arc::from` converts the turn's boxed
+                // provider into the shared handle `with_provider` takes.
+                research_provider: Some(Arc::from(provider.clone_box())),
+                research_model: Some(model.clone()),
                 // M005: thread the daemon-resolved sandbox profile into
                 // ToolRegistry/BashTool construction so constrained turns
                 // receive the Landlock policy for the authoritative

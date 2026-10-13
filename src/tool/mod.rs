@@ -366,6 +366,22 @@ pub struct ToolRegistryOptions {
     /// tools never consult the deprecated process-global slots at
     /// execution time.
     pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
+    /// Turn-resolved provider handed to the `research` tool.
+    ///
+    /// Research only uses an LLM for three phases — evidence extraction,
+    /// claim construction, and semantic verification. Without this the
+    /// coordinator runs its deterministic fallbacks for all three, so a
+    /// production turn would collect sources and then synthesize an
+    /// answer with no model reasoning anywhere in the pipeline. Must be
+    /// paired with [`Self::research_model`].
+    pub research_provider: Option<Arc<dyn crate::provider::Provider>>,
+    /// Model id paired with [`Self::research_provider`].
+    ///
+    /// Both fields must be `Some` for the model-backed research path to
+    /// activate; either one alone leaves research on the deterministic
+    /// fallback (this mirrors the coordinator's own
+    /// `if let (Some(provider), Some(model))` guard).
+    pub research_model: Option<String>,
     /// M005 execution-reliability: resolved sandbox profile for shell
     /// execution. `None` means the `WorkspaceWrite` default (M003); pass
     /// `Some(FullHost)` only for an explicit user-selected FullHost turn.
@@ -379,6 +395,37 @@ pub struct ToolRegistryOptions {
     pub project_identity: Option<String>,
     /// Host-owned resolved extension catalog used by read-only discovery.
     pub extension_catalog: Option<Arc<crate::plugin::marketplace::MarketplaceService>>,
+}
+
+/// Build the session's `research` tool.
+///
+/// Split out of [`ToolRegistry::with_options`] so the two independent
+/// decisions it makes — network authorization (from the search runtime)
+/// and model-backed phases (from the turn's provider) — are directly
+/// testable. The tool itself is the only place that knows whether the
+/// model-backed path actually took, because the registry stores tools
+/// as un-downcastable `Box<dyn Tool>`.
+pub(crate) fn build_research_tool(
+    workspace_root: Option<&std::path::PathBuf>,
+    provider: Option<Arc<dyn crate::provider::Provider>>,
+    model: Option<String>,
+    search_runtime: crate::search_backend::SearchRuntimeContext,
+) -> crate::tool::research::ResearchTool {
+    let tool = match workspace_root {
+        Some(root) => crate::tool::research::ResearchTool::new(std::sync::Arc::new(
+            crate::research::service::ResearchService::new(root.clone()),
+        ))
+        .with_search_runtime(search_runtime),
+        None => crate::tool::research::ResearchTool::with_default_service()
+            .with_search_runtime(search_runtime),
+    };
+    match (provider, model) {
+        (Some(provider), Some(model)) => tool.with_model_backed_phases(provider, model),
+        // Either half alone leaves the coordinator's
+        // `if let (Some(provider), Some(model))` guard unsatisfied, so a
+        // lone provider is inert and there is nothing to warn about.
+        _ => tool,
+    }
 }
 
 impl ToolRegistry {
@@ -547,20 +594,12 @@ impl ToolRegistry {
         registry.register(crate::tool::websearch::WebSearchTool::with_search_runtime(
             search_runtime.clone(),
         ));
-        let research_tool = options
-            .workspace_root
-            .as_ref()
-            .map(|root| {
-                crate::tool::research::ResearchTool::new(std::sync::Arc::new(
-                    crate::research::service::ResearchService::new(root.clone()),
-                ))
-                .with_search_runtime(search_runtime.clone())
-            })
-            .unwrap_or_else(|| {
-                crate::tool::research::ResearchTool::with_default_service()
-                    .with_search_runtime(search_runtime.clone())
-            });
-        registry.register(research_tool);
+        registry.register(build_research_tool(
+            options.workspace_root.as_ref(),
+            options.research_provider.clone(),
+            options.research_model.clone(),
+            search_runtime.clone(),
+        ));
 
         // Evidence/search wrapper tools — only register when evidence backend
         // is enabled AND backend mode is "eggsearch" (these tools require
@@ -1189,6 +1228,8 @@ impl ToolRegistry {
             search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
                 &config.search.clone().unwrap_or_default(),
             )),
+            research_provider: None,
+            research_model: None,
             sandbox_profile: None,
             memory_store: None,
             project_identity: None,
@@ -1239,6 +1280,8 @@ impl ToolRegistry {
             asset_pin: None,
             notification_service: None,
             search_runtime: None,
+            research_provider: None,
+            research_model: None,
             sandbox_profile: None,
             memory_store: None,
             project_identity: None,
@@ -1893,5 +1936,56 @@ mod compatibility_surface_tests {
             .expect("canonical repo_search should be registered");
         assert_eq!(alias.category(), canonical.category());
         assert!(alias.description().contains("repo_search"));
+    }
+
+    #[test]
+    fn build_research_tool_enables_model_backed_phases_when_a_provider_is_supplied() {
+        // Regression: `ResearchService::with_provider` had no production
+        // callers, so the turn's provider never reached research and every
+        // run silently degraded to deterministic extraction/claims.
+        use crate::config::schema::{SearchBackendConfig, SearchConfig};
+
+        let root = std::path::PathBuf::from("/tmp/research-wiring");
+        let tool = build_research_tool(
+            Some(&root),
+            Some(Arc::new(crate::research::tests::StubProvider)),
+            Some("m".to_string()),
+            crate::search_backend::SearchRuntimeContext::new(SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            }),
+        );
+        assert!(tool.model_backed_phases_enabled());
+        assert_eq!(tool.name(), "research");
+    }
+
+    #[test]
+    fn build_research_tool_without_a_provider_stays_deterministic() {
+        // The default registry path passes no provider; research must remain
+        // on its fallbacks rather than borrowing an ambient one.
+        let root = std::path::PathBuf::from("/tmp/research-wiring");
+        let tool = build_research_tool(
+            Some(&root),
+            None,
+            None,
+            crate::search_backend::SearchRuntimeContext::default(),
+        );
+        assert!(!tool.model_backed_phases_enabled());
+    }
+
+    #[test]
+    fn build_research_tool_ignores_a_provider_without_a_model() {
+        // The coordinator gates every model-backed phase on
+        // `if let (Some(provider), Some(model))`, so a lone provider is
+        // inert. Guarding here keeps that invariant local instead of
+        // relying on the coordinator's fall-through.
+        let root = std::path::PathBuf::from("/tmp/research-wiring");
+        let tool = build_research_tool(
+            Some(&root),
+            Some(Arc::new(crate::research::tests::StubProvider)),
+            None,
+            crate::search_backend::SearchRuntimeContext::default(),
+        );
+        assert!(!tool.model_backed_phases_enabled());
     }
 }

@@ -86,6 +86,18 @@ impl ResearchService {
         }
     }
 
+    /// Attach a provider to an already-constructed service.
+    ///
+    /// [`Self::with_provider`] is a constructor, so it cannot upgrade a
+    /// service built by a different constructor. The turn path builds the
+    /// service first (it needs the workspace root) and only afterwards
+    /// learns which provider the turn resolved, so it needs this in-place
+    /// variant. Preserves the artifact root and `allow_network`.
+    pub fn with_model_backed_phases(mut self, provider: Arc<dyn Provider>, model: String) -> Self {
+        self.coordinator = self.coordinator.with_provider(provider, model);
+        self
+    }
+
     /// Attach an explicit runtime-owned search/MCP context (M005),
     /// forwarding to the eggsearch evidence adapter. Consuming builder:
     /// `ResearchTool::with_search_runtime` uses this on its uniquely
@@ -119,6 +131,14 @@ impl ResearchService {
     pub fn with_network(mut self, allow: bool) -> Self {
         self.allow_network = allow;
         self
+    }
+
+    /// Whether the model-backed research phases are active for this service.
+    ///
+    /// `false` means evidence extraction, claim construction, and semantic
+    /// verification all fall back to their deterministic implementations.
+    pub fn model_backed_phases_enabled(&self) -> bool {
+        self.coordinator.model_backed_phases_enabled()
     }
 
     /// Whether this service will let network source adapters run.
@@ -506,6 +526,45 @@ mod tests {
     fn service_artifact_root() {
         let tmp = tempfile::tempdir().unwrap();
         let service = ResearchService::new(tmp.path().to_path_buf());
+        assert_eq!(
+            service.artifact_root(),
+            tmp.path().join(".codegg").join("research")
+        );
+    }
+
+    #[test]
+    fn model_backed_phases_are_off_by_default() {
+        // Regression guard: a plain service must stay on the deterministic
+        // fallback path. If this ever flips, research silently starts
+        // spending tokens with no caller opting in.
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf());
+        assert!(!service.model_backed_phases_enabled());
+    }
+
+    #[test]
+    fn with_model_backed_phases_enables_the_model_path() {
+        // Regression: `with_provider` had no production callers, so evidence
+        // extraction, claim construction, and semantic verification never
+        // executed — every run used the deterministic fallbacks.
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf())
+            .with_model_backed_phases(Arc::new(crate::research::tests::StubProvider), "m".into());
+        assert!(service.model_backed_phases_enabled());
+    }
+
+    #[test]
+    fn with_model_backed_phases_preserves_network_and_artifact_root() {
+        // The two policies are independent: attaching a provider must not
+        // re-derive (or clobber) the network authorization that
+        // `with_search_runtime` already decided, because the coordinator is
+        // rebuilt in place.
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf())
+            .with_network(true)
+            .with_model_backed_phases(Arc::new(crate::research::tests::StubProvider), "m".into());
+        assert!(service.allow_network());
+        assert!(service.model_backed_phases_enabled());
         assert_eq!(
             service.artifact_root(),
             tmp.path().join(".codegg").join("research")

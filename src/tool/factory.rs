@@ -47,6 +47,13 @@ pub struct SessionToolContext {
     /// before building the registry; when `None`, the registry falls
     /// back to an isolated config-derived default context.
     pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
+    /// Turn-resolved provider + model handed to the `research` tool so its
+    /// model-backed phases (evidence extraction, claim construction, semantic
+    /// verification) actually execute. `None` leaves research on its
+    /// deterministic fallbacks. Both fields must be `Some` to take effect.
+    pub research_provider: Option<Arc<dyn crate::provider::Provider>>,
+    /// Model id paired with [`Self::research_provider`].
+    pub research_model: Option<String>,
     /// M005 execution-reliability: resolved sandbox profile for this
     /// session/turn. `None` means the `WorkspaceWrite` default. Daemon
     /// turn construction threads the persisted principal preference here;
@@ -100,6 +107,8 @@ pub fn build_session_tool_registry(
         lsp_service,
         document_service,
         search_runtime,
+        research_provider,
+        research_model,
         sandbox_profile,
         memory_store,
         project_identity,
@@ -178,6 +187,8 @@ pub fn build_session_tool_registry(
         asset_pin: asset_context.pin,
         notification_service,
         search_runtime,
+        research_provider,
+        research_model,
         sandbox_profile,
         memory_store,
         project_identity,

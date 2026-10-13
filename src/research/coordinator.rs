@@ -65,6 +65,14 @@ impl ResearchCoordinator {
         self
     }
 
+    /// Whether the model-backed evidence/claim/verification phases will run.
+    ///
+    /// Both halves must be present; the pipeline gates every model-backed
+    /// phase on `if let (Some(provider), Some(model))`.
+    pub fn model_backed_phases_enabled(&self) -> bool {
+        self.provider.is_some() && self.model.is_some()
+    }
+
     /// Attach an explicit runtime-owned search/MCP context (M005) to the
     /// eggsearch evidence adapter. The adapter is swapped (matched by its
     /// stable `"eggsearch"` adapter name) so deep-research evidence

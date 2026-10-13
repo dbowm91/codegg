@@ -408,6 +408,15 @@ pub struct App {
     /// LSP-backed operations.  Created once at startup in local
     /// (non-socket) mode; `None` in remote/socket mode.
     pub lsp_tool: Option<Arc<crate::tool::lsp::LspTool>>,
+    /// Runtime-owned search/MCP context for the `/research` command.
+    ///
+    /// `/research` runs the pipeline in-process, so without this it built a
+    /// `ResearchService` with no `SearchRuntimeContext` — which means
+    /// `allow_network` stayed `false` and every web adapter returned
+    /// `NetworkNotAllowed`. Set once at startup (see `set_search_runtime`);
+    /// `None` keeps `/research` local-only, which is the correct behavior
+    /// for socket/daemon-client mode where the daemon owns the transport.
+    pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
     /// Cached one-line LSP status for the footer, refreshed by
     /// [`TuiCommand::LspStatusRefreshRequested`]. The render pass only
     /// reads this field: computing the status requires awaiting the live
@@ -1078,6 +1087,7 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            search_runtime: None,
             lsp_status_cache: None,
             lsp_status_requested_at: None,
             security_review_running: None,
@@ -1638,6 +1648,7 @@ impl App {
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
             lsp_tool: None,
+            search_runtime: None,
             lsp_status_cache: None,
             lsp_status_requested_at: None,
             security_review_running: None,
@@ -10228,13 +10239,17 @@ impl App {
         };
 
         let project_dir = self.active_workspace_root().unwrap_or_default();
+        // Built here rather than inside the spawned task so the search-runtime
+        // attachment is a method the tests can call directly — asserting on
+        // `ResearchService` alone would pass even if this handler stopped
+        // passing the runtime along.
+        let service = self.research_service(project_dir);
         self.messages_state
             .toasts
             .info(&format!("Starting research: {}", question));
 
         self.task_registry
             .spawn(TuiTaskKind::Research, "research-answer", async move {
-                let service = crate::research::service::ResearchService::new(project_dir.clone());
                 match service
                     .answer_for_agent(&question, parsed_mode, parsed_depth)
                     .await
@@ -12074,6 +12089,38 @@ impl App {
     /// liveness hint into the bounded action projection.
     pub fn on_chat_action_hint(&mut self, action: crate::protocol::core::ChatActionDto) {
         crate::tui::commands::chat::on_chat_action_updated(self, action);
+    }
+
+    /// Build the `/research` service for `project_root`.
+    ///
+    /// This is the single place the command decides whether research may
+    /// reach the network. Attaching the App's search context is what lets
+    /// `ResearchService::with_search_runtime` derive `allow_network` from
+    /// `[search].backend`, so `/research` obeys the same kill-switch as
+    /// `websearch`. With no context installed (socket/daemon-client mode
+    /// without a transport) the service stays local-only by design.
+    pub(crate) fn research_service(
+        &self,
+        project_root: std::path::PathBuf,
+    ) -> crate::research::service::ResearchService {
+        let service = crate::research::service::ResearchService::new(project_root);
+        match self.search_runtime.clone() {
+            Some(runtime) => service.with_search_runtime(runtime),
+            None => {
+                tracing::debug!("/research has no search runtime context; running local-only");
+                service
+            }
+        }
+    }
+
+    /// Install the runtime-owned search/MCP context used by `/research`.
+    ///
+    /// Called once at startup. Attaching the context is what lets
+    /// `ResearchService::with_search_runtime` derive `allow_network` from
+    /// `[search].backend`, so the same kill-switch that governs `websearch`
+    /// also governs the `/research` command.
+    pub fn set_search_runtime(&mut self, runtime: crate::search_backend::SearchRuntimeContext) {
+        self.search_runtime = Some(runtime);
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
@@ -16992,5 +17039,65 @@ mod reasoning_strip_warning_tests {
             !last.contains("drops this setting"),
             "Off must not warn on a stripping provider, got {last:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod research_runtime_tests {
+    use super::*;
+    use crate::config::schema::{SearchBackendConfig, SearchConfig};
+
+    /// `/research` builds its service in-process, so the only thing that can
+    /// give it network access is a `SearchRuntimeContext` on the App. Before
+    /// this was wired, every web adapter returned `NetworkNotAllowed` and the
+    /// command silently degraded to a local-only run regardless of config.
+    #[test]
+    fn research_command_has_no_search_runtime_by_default() {
+        let app = App::new_for_testing("/tmp".to_string());
+        assert!(app.search_runtime.is_none());
+    }
+
+    #[test]
+    fn set_search_runtime_is_retained_by_the_app() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        app.set_search_runtime(crate::search_backend::SearchRuntimeContext::new(
+            SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            },
+        ));
+        assert!(app.search_runtime.is_some());
+    }
+
+    /// The contract `/research` actually depends on: the handler builds its
+    /// service through `App::research_service`, and that is the only thing
+    /// that can give the run network access. If the handler stops passing
+    /// the App's search runtime along, this fails.
+    #[test]
+    fn research_service_takes_its_network_policy_from_the_app_search_runtime() {
+        use crate::research::service::ResearchService;
+
+        let root = std::path::PathBuf::from("/tmp");
+        let mut app = App::new_for_testing("/tmp".to_string());
+
+        // No runtime installed -> local-only.
+        assert!(!app.research_service(root.clone()).allow_network());
+
+        // Enabled backend -> web adapters may run.
+        app.set_search_runtime(crate::search_backend::SearchRuntimeContext::new(
+            SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            },
+        ));
+        assert!(app.research_service(root.clone()).allow_network());
+
+        // The same authority that governs websearch also gates research.
+        app.set_search_runtime(crate::search_backend::SearchRuntimeContext::disabled());
+        assert!(!app.research_service(root).allow_network());
+
+        // Sanity: the service under test is a real one, not a stub.
+        let svc = ResearchService::new(std::path::PathBuf::from("/tmp"));
+        assert!(!svc.allow_network());
     }
 }
