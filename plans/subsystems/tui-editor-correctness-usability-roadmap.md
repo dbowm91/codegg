@@ -78,7 +78,7 @@ Plan: `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-
 
 ### M003 — Daemon-owned editor completion transport
 
-Plan: `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md`. Status: **blocked pending ADR-0021 acceptance**. One bounded read contract and client API with stable attachment/snapshot identity, warm-only LSP, explicit edit support and rejection, and no mutation. Exit: typed, authorized, backwards-compatible completion candidates can be requested against synced document text without starting LSP, exposing secrets outside file.read, or invoking commands.
+Plan: `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md`. Status: **active** (ADR-0021 accepted Option B 2026-10-13). One bounded read contract and client API with stable attachment/snapshot identity, warm-only LSP, explicit edit support and rejection, and no mutation. Exit: typed, authorized, backwards-compatible completion candidates can be requested against synced document text without starting LSP, exposing secrets outside file.read, or invoking commands.
 
 ### M004 — Completion popup, transactional acceptance and qualification
 
@@ -110,5 +110,5 @@ Close this roadmap only when C001, C002, M003 and M004 have individual closure f
 |---|---|---|---|
 | C001 | closed | `plans/implementation/tui-editor-correctness-usability/001-semantic-token-fidelity.md` | `plans/closure/tui-editor-correctness-usability/001-status.md` (`32fd7505`) |
 | C002 | closed | `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-render-and-tree-walk.md` | `plans/closure/tui-editor-correctness-usability/002-status.md` (`bd891348f`) |
-| M003 | blocked: ADR-0021 proposed | `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md` | pending |
+| M003 | active | `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md` | pending |
 | M004 | blocked: M003 + C001 | `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md` | pending |

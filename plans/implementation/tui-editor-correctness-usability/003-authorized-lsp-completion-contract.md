@@ -1,6 +1,11 @@
 # TUI Editor Correctness/Usability M003 — Authorized LSP Completion Contract
 
-Status: blocked pending acceptance of proposed ADR-0021. Planning complete; **do not implement or mark ready** until the selected completion/edit ownership contract is approved.
+Status: active (ADR-0021 accepted Option B 2026-10-13; implementation in progress).
+
+Prior status was `blocked pending acceptance of proposed ADR-0021`. The readiness
+investigation confirmed no LSP synced-version witness exists yet and that a
+daemon last-pushed-revision ledger is buildable inside this milestone's scope;
+that design is covered by the acceptance record in the ADR.
 
 Repository baseline: `main` `6b611b5ca7f019783a91f04530d5ae56124f7ee9`; verify current HEAD at activation.
 Roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` M003.

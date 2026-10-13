@@ -1,8 +1,13 @@
 # ADR-0021: Native Editor Completion — Authorized Read and Revision-Checked Local Edit
 
-Status: proposed (recommendation: Option B; **not accepted**, no implementation authority yet)
+Status: accepted (Option B)
 
 Date: 2026-10-13
+
+Acceptance: 2026-10-13 — project maintainer accepted the recommended Option B
+(dedicated typed completion read + controller-owned application) with the
+M003 readiness proviso that the daemon last-pushed-revision ledger is built
+inside M003 scope. No implementation authority existed before this date.
 
 Decision owners: project maintainers
 
@@ -49,7 +54,7 @@ Reuses existing family but invites accidental use of its point request (which ha
 
 Combines user-interface preference with daemon filesystem/document authority; risks bypassing the controller/undo path, makes preview and writer-lease semantics harder, and crosses ADR-0008/0011 ownership. Rejected.
 
-## Recommended decision (pending acceptance)
+## Decision (accepted: Option B)
 
 1. Define a new bounded `LspCompletionGet` native read and `LspCompletionResult` response, with an explicit request DTO that binds `session_id`, authorized workspace-relative document path, actual document attachment identity, synchronized snapshot revision/version token, cursor UTF-16 position and bounded trigger intent. The implementation agent must use the real `document.v1` attachment identifiers/revisions, not fabricate a parallel counter. A request whose local revision has not been synchronized to the daemon cannot yield applicable suggestions; return a typed stale/not-ready outcome or wait asynchronously for acknowledged synchronization, without blocking rendering.
 2. The daemon resolves the session/project/workspace and attachment, authenticates the request with the existing `ViaSession + FileRead` descriptor and the same containment helper as M006-B, then confirms a compatible **already-warm** language server and document snapshot. No call path may transitively reach `get_or_create_client` for a cold request; refactor the `egglsp` helper as needed.
