@@ -6,12 +6,22 @@ on:
       - '.github/workflows/windows-dedicated-user-feasibility.yml'
       - 'scripts/windows_dedicated_user_feasibility.ps1'
       - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+      - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
   pull_request:
     paths:
       - '.github/workflows/windows-dedicated-user-feasibility.yml'
       - 'scripts/windows_dedicated_user_feasibility.ps1'
       - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+      - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
   workflow_dispatch:
+    inputs:
+      run_read_boundary:
+        description: Run the C024 broad-readable host fixture and restricted-token probe
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -26,3 +36,26 @@ jobs:
       - name: Create and exercise one disposable standard principal
         shell: pwsh
         run: ./scripts/windows_dedicated_user_feasibility.ps1
+
+  read-boundary:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_read_boundary
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record C024 test runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          "Runner identity: $($identity.Name)"
+          "Administrator role: $($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+
+      - name: Run bounded broad-readable and restricted-token comparison
+        shell: pwsh
+        run: ./scripts/windows_dedicated_user_read_boundary.ps1

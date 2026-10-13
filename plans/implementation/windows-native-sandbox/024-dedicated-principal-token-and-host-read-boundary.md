@@ -1,6 +1,6 @@
 # Windows Native Sandbox C024 — Dedicated-Principal Token and Host-Read Isolation
 
-Status: ready for handoff (test-only feasibility)
+Status: active (test-only feasibility)
 
 Repository baseline: `4d61f9622ee037313ce4781eb5b5666142d95a5d` on `work/windows-native-sandbox-foundation`; refresh HEAD before implementation.
 
