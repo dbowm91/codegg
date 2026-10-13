@@ -1,8 +1,8 @@
 # Agent Tool Runtime Post-Closure Corrective C003 — Guard, CI and Integration Qualification
 
-Status: active — hard dependencies C001 and C002 have accepted closures; current-main reconciliation and hosted execution remain to be qualified
+Status: conditionally closed — accepted at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md`; current-main full suite has four reproducible upstream TUI failures, and hosted exact-ref dispatch is pending after push
 
-Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` implementation audit; current `main` at audit `b9ba494c1b21638c2e2f660301ba207ce8859682`. Rebaseline both at handoff; preserve later branch commits.
+Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` implementation audit; current `main` at audit `b9ba494c1b21638c2e2f660301ba207ce8859682`; final integration base `667005a66e491efae6a28fca43931e05e94214f8`.
 
 Source roadmap: `plans/subsystems/agent-tool-runtime-reconciliation-post-closure-corrective-addendum.md#4-milestones-and-dependencies`.
 

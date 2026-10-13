@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation — Post-Closure Corrective Addendum
 
-Status: active — C001 and C002 closed; C003 active
+Status: conditionally closed — C001/C002 closed; C003 conditionally closed with upstream TUI qualification failures recorded
 
 Audit baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` on `planning/agent-tool-runtime-reconciliation` (2026-10-13).
 Integration base at audit: `b9ba494c1b21638c2e2f660301ba207ce8859682` (`main`); refs have diverged.
@@ -75,7 +75,7 @@ Class: invariant. Replace/reconcile the batch retry loop with ToolBroker-owned c
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/001-contract-safe-tool-retry-admission.md`.
 
-Closure: `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/001-status.md` — closed at implementation `8d13bfd6`; fake MCP after-dispatch timeout and native ambiguous-effect counters prove one AgentLoop dispatch. Focused suites, quick, Clippy and the MCP adapter guard passed.
+Closure: `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/001-status.md` — closed at original implementation `8d13bfd6`; current-main replays `411e8474` (`a7b116af`) and `27d88df5` (`667005a6`). Fake MCP after-dispatch timeout and native ambiguous-effect counters prove one AgentLoop dispatch. Focused suites, quick, Clippy and the MCP adapter guard passed.
 
 Dependencies: M001 broker adapter closed, existing ToolBroker retry machinery closed. **Closed**.
 
@@ -84,14 +84,14 @@ Class: invariant. Enforce host-attested descendant effect/name scope at broker e
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/002-descendant-effect-and-nested-task-corrective.md`.
 
-Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is closed. **Closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md`. Original implementations `d213150c`, `7ced77b0` were reconciled onto `main` as `f20721ba`, `77266575`.
+Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is closed. **Closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md`. Original implementations `d213150c`, `7ced77b0` were replayed onto audit-base `b9ba494c` as `f20721ba`, `77266575`, then reconciled onto `main` `a7b116af` as `94e1ea42`, `c4275def`, and latest `main` `667005a6` as `ecf63e07`, `f99a267e`.
 
 ### C003 — Enforced guards, current-main integration and hosted qualification
 Class: infrastructure. Wire the four predecessor guards plus new corrective coverage into quick+CI; verify independent guard self-tests/negative fixtures; integrate against current main with no unrelated code loss; hosted CI/desktop verification; issue new corrective closure records and accurate implementation SHA ledger.
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/003-guard-ci-and-integration-qualification.md`.
 
-Dependencies: C001 **hard (satisfied)**, C002 **hard (satisfied)**; CI access and main reconciliation **operational**. **Active**; no other plans were newly unblocked by C002.
+Dependencies: C001 **hard (satisfied)**, C002 **hard (satisfied)**; CI access and main reconciliation were operational. **Conditionally closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md`: local enforced checks pass on `667005a6`; the exact-base workspace suite has four upstream TUI failures, and hosted exact-ref CI/Desktop dispatch is pending after push. No registered downstream plan was newly unblocked by C003.
 
 ## 5. Cross-cutting requirements
 
