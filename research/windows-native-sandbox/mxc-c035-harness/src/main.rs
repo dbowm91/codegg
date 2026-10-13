@@ -113,6 +113,9 @@ fn run() {
     if let Err(error) = fs::create_dir_all(&stage)
         .and_then(|_| fs::create_dir_all(&capture))
         .and_then(|_| fs::create_dir_all(&host))
+        .and_then(|_| fs::create_dir_all(stage.join("localappdata")))
+        .and_then(|_| fs::create_dir_all(stage.join("appdata")))
+        .and_then(|_| fs::create_dir_all(stage.join("profile")))
     {
         report(
             json!({"schema":"codegg.mxc_c035.v1","qualified":false,"gate":"setup","reason":error.to_string()}),
@@ -246,6 +249,22 @@ fn run() {
             (
                 "C035_NATIVE_HELPER".into(),
                 helper.to_string_lossy().into_owned(),
+            ),
+            (
+                "USERPROFILE".into(),
+                stage.join("profile").to_string_lossy().into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".into(),
+                stage.join("localappdata").to_string_lossy().into_owned(),
+            ),
+            (
+                "APPDATA".into(),
+                stage.join("appdata").to_string_lossy().into_owned(),
+            ),
+            (
+                "SystemDrive".into(),
+                std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()),
             ),
             ("TEMP".into(), stage.to_string_lossy().into_owned()),
             ("TMP".into(), stage.to_string_lossy().into_owned()),
