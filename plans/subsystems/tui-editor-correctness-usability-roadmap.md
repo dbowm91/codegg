@@ -109,6 +109,6 @@ Close this roadmap only when C001, C002, M003 and M004 have individual closure f
 | Milestone | Status | Plan | Closure |
 |---|---|---|---|
 | C001 | closed | `plans/implementation/tui-editor-correctness-usability/001-semantic-token-fidelity.md` | `plans/closure/tui-editor-correctness-usability/001-status.md` (`32fd7505`) |
-| C002 | ready | `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-render-and-tree-walk.md` | pending |
+| C002 | closed | `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-render-and-tree-walk.md` | `plans/closure/tui-editor-correctness-usability/002-status.md` (`bd891348f`) |
 | M003 | blocked: ADR-0021 proposed | `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md` | pending |
 | M004 | blocked: M003 + C001 | `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md` | pending |

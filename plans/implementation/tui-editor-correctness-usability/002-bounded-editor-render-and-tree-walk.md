@@ -1,6 +1,9 @@
 # TUI Editor Correctness/Usability C002 — Bounded Rendering and Tree Scheduling
 
-Status: ready for handoff
+Status: implemented; closed
+
+Implementation: `bd891348f`
+Closure: `plans/closure/tui-editor-correctness-usability/002-status.md`
 
 Baseline: `main` `6b611b5ca7f019783a91f04530d5ae56124f7ee9` (2026-10-13); re-inspect before implementation.
 Roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` C002.
