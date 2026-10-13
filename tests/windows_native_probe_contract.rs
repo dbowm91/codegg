@@ -141,19 +141,19 @@ fn resource_identity(path: &Path) -> String {
 fn child_script(action: Action) -> &'static str {
     match action {
         Action::ProjectionReadWrite => {
-            "$p=Join-Path $env:C019_STAGE 'stage.txt'; [IO.File]::WriteAllText($p,'stage-ok'); if ([IO.File]::ReadAllText($p) -eq 'stage-ok') {'C019_RESULT=allowed'} else {'C019_RESULT=failed'}"
+            "$p=[IO.Path]::Combine($env:CODEGG_C014_PROJECTION,'stage.txt'); [IO.File]::WriteAllText($p,'stage-ok'); if ([IO.File]::ReadAllText($p) -eq 'stage-ok') {[Console]::WriteLine('C019_RESULT=allowed')} else {[Console]::WriteLine('C019_RESULT=failed')}"
         }
         Action::GitInit => {
-            "$p=Join-Path $env:C019_STAGE 'git-init'; & $env:C019_GIT init --quiet $p 2>&1 | Out-String | Write-Output; if ($LASTEXITCODE -eq 0) {'C019_RESULT=allowed'} else {'C019_RESULT=failed'}"
+            "$p=[IO.Path]::Combine($env:CODEGG_C014_PROJECTION,'git-init'); & $env:C019_GIT init --quiet $p; if ($LASTEXITCODE -eq 0) {[Console]::WriteLine('C019_RESULT=allowed')} else {[Console]::WriteLine('C019_RESULT=failed')}"
         }
         Action::GitStatus => {
-            "& $env:C019_GIT -C (Join-Path $env:C019_STAGE 'git-init') status --porcelain 2>&1 | Out-String | Write-Output; if ($LASTEXITCODE -eq 0) {'C019_RESULT=allowed'} else {'C019_RESULT=failed'}"
+            "$p=[IO.Path]::Combine($env:CODEGG_C014_PROJECTION,'git-init'); & $env:C019_GIT init --quiet $p; if ($LASTEXITCODE -eq 0) {& $env:C019_GIT -C $p status --porcelain; if ($LASTEXITCODE -eq 0) {[Console]::WriteLine('C019_RESULT=allowed')} else {[Console]::WriteLine('C019_RESULT=failed')}} else {[Console]::WriteLine('C019_RESULT=failed')}"
         }
         Action::PythonVersion => {
-            "& $env:C019_PYTHON --version 2>&1 | Out-String | Write-Output; if ($LASTEXITCODE -eq 0) {'C019_RESULT=allowed'} else {'C019_RESULT=failed'}"
+            "& $env:C019_PYTHON --version; if ($LASTEXITCODE -eq 0) {[Console]::WriteLine('C019_RESULT=allowed')} else {[Console]::WriteLine('C019_RESULT=failed')}"
         }
         Action::CargoVersion => {
-            "& $env:C019_CARGO --version 2>&1 | Out-String | Write-Output; if ($LASTEXITCODE -eq 0) {'C019_RESULT=allowed'} else {'C019_RESULT=failed'}"
+            "& $env:C019_CARGO --version; if ($LASTEXITCODE -eq 0) {[Console]::WriteLine('C019_RESULT=allowed')} else {[Console]::WriteLine('C019_RESULT=failed')}"
         }
         Action::DirectHostRead => "$p=$env:C019_CREDENTIAL",
         Action::JunctionHostRead => "$p=$env:C019_JUNCTION_CREDENTIAL",
@@ -169,7 +169,7 @@ fn child_script(action: Action) -> &'static str {
             "$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $env:C019_PIPE, [IO.Pipes.PipeDirection]::InOut); try {$pipe.Connect(500); 'C019_RESULT=leaked'} catch {'C019_RESULT=denied'} finally {$pipe.Dispose()}"
         }
         Action::NullDeviceAccess => {
-            "$s=$null; try {$s=[IO.File]::Open('\\\\.\\NUL',[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); 'C019_RESULT=allowed'} catch { 'C019_RESULT=denied:'+$_.Exception.GetType().Name } finally {if ($s) {$s.Dispose()}}"
+            "$s=$null; try {$s=[IO.File]::Open('NUL',[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); [Console]::WriteLine('C019_RESULT=allowed')} catch {[Console]::WriteLine('C019_RESULT=denied:'+$_.Exception.GetType().Name)} finally {if ($s) {$s.Dispose()}}"
         }
         Action::UncHostReadUnavailable => "'C019_RESULT=not_run'",
         Action::InheritedHandleNotTransferred => "'C019_RESULT=not_run'",
@@ -179,7 +179,7 @@ fn child_script(action: Action) -> &'static str {
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
-    let token = "Write-Output 'C019_CHILD_STARTED';";
+    let token = "[Console]::WriteLine('C019_CHILD_STARTED');";
     if matches!(
         action,
         Action::DirectHostRead
@@ -263,10 +263,10 @@ async fn execute(
         OsString::from("-Command"),
         OsString::from(script.clone()),
     ];
-    // Start within the authorized writable stage just as a real projection
-    // workload would. System32 is executable/readable but is not the workspace
-    // root and is an invalid working directory for relative tool behavior.
-    let cwd = stage.to_path_buf();
+    // Request the managed launcher's private AppContainer temp projection.
+    // It grants only that disposable package-local directory and starts from
+    // the OS runtime without changing a host path ACL.
+    let cwd = PathBuf::from(r"C:\__codegg_test_profile_temp__");
     let mut request = ManagedProcessRequest::new(
         std::iter::once(shell.clone().into_os_string())
             .chain(args.iter().cloned())
@@ -276,7 +276,6 @@ async fn execute(
     );
     request.timeout = Some(Duration::from_secs(30));
     let mut environment = EnvironmentPolicy::sanitized()
-        .with_var("C019_STAGE", stage.as_os_str())
         .with_var("C019_PIPE", pipe)
         .with_var("C019_ACTION", format!("{action:?}"))
         .with_var("C019_CREDENTIAL", resources.credential.as_os_str())
@@ -412,7 +411,15 @@ async fn execute(
         } else {
             "denied"
         },
-        resource_identity: resource_identity(resource),
+        resource_identity: if matches!(
+            action,
+            Action::ProjectionReadWrite | Action::GitInit | Action::GitStatus
+        ) {
+            "per-child AppContainer-private temporary projection (dynamic path supplied to child)"
+                .to_owned()
+        } else {
+            resource_identity(resource)
+        },
         child_evidence: evidence,
         provenance: format!("job=windows-c019 attempt={action:?}"),
         error,
@@ -424,19 +431,9 @@ async fn execute(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c019_shared_native_security_probe_contract() {
     let fixture = tempfile::tempdir().expect("C019 disposable fixture");
-    let stage_parent = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .expect("SystemRoot is set")
-        .parent()
-        .expect("SystemRoot has a volume root")
-        .to_path_buf();
-    let stage = stage_parent.join(format!(
-        "codegg-c019-stage-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let stage_parent_dacl_before =
-        codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap();
-    std::fs::create_dir(&stage).expect("create unique disposable AppContainer stage");
+    // This sentinel asks the managed test launcher to create and grant a fresh
+    // per-child AppContainer-private temp projection. No host path is leased.
+    let stage = PathBuf::from(r"C:\__codegg_test_profile_temp__");
     let host = fixture.path().join("original-host");
     let sibling = fixture.path().join("original-sibling");
     let outside_write = fixture.path().join("outside-stage-write.txt");
@@ -598,8 +595,7 @@ async fn c019_shared_native_security_probe_contract() {
         "contract": "codegg.windows_native_probe.v1",
         "host": "windows-hosted-runner",
         "fixture_integrity": {
-            "stage_parent_dacl_before_sha256": format!("{:x}", Sha256::digest(&stage_parent_dacl_before)),
-            "stage_parent_dacl_unchanged": codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap() == stage_parent_dacl_before,
+            "stage": "per-child AppContainer-private temporary projection",
             "host_dacl_before_sha256": format!("{:x}", Sha256::digest(&host_dacl_before)),
             "sibling_dacl_before_sha256": format!("{:x}", Sha256::digest(&sibling_dacl_before)),
             "host_credential_unchanged": std::fs::read(&credential).unwrap() == credential_before,
@@ -620,10 +616,6 @@ async fn c019_shared_native_security_probe_contract() {
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&sibling).unwrap(),
         sibling_dacl_before
     );
-    assert_eq!(
-        codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap(),
-        stage_parent_dacl_before
-    );
     assert!(
         observations.iter().any(|observation| observation.executed),
         "C019 must execute at least one actual child operation"
@@ -639,5 +631,4 @@ async fn c019_shared_native_security_probe_contract() {
         std::fs::remove_file(&outside_write)
             .expect("remove C019-owned outside-stage file if the probe unexpectedly wrote it");
     }
-    std::fs::remove_dir_all(&stage).expect("remove C019-owned stage after children exit");
 }
