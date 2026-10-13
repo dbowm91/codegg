@@ -67,13 +67,15 @@ fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
 fn start_pipe_fixture() -> io::Result<(Runtime, JoinHandle<()>, String)> {
     let pipe_name = format!("codegg-c020-{}", std::process::id());
     let pipe_path = format!(r"\\.\pipe\{pipe_name}");
-    let server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(&pipe_path)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
+    let _runtime_guard = runtime.enter();
+    let server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe_path)?;
+    drop(_runtime_guard);
     let task = runtime.spawn(async move {
         let mut server = server;
         if server.connect().await.is_ok() {
