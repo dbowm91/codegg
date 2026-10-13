@@ -109,8 +109,9 @@ function Set-FixtureAcl([string] $Path, [string[]] $Sids, [bool] $BroadRead = $f
     $acl.SetAccessRuleProtection($true, $false)
     $full = [Security.AccessControl.FileSystemRights]::FullControl
     foreach ($sid in $Sids) {
+        $sidReference = [Security.Principal.SecurityIdentifier]::new($sid)
         $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-            $sid, $full,
+            $sidReference, $full,
             [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit,
             [Security.AccessControl.PropagationFlags]::None,
             [Security.AccessControl.AccessControlType]::Allow)
@@ -119,8 +120,9 @@ function Set-FixtureAcl([string] $Path, [string[]] $Sids, [bool] $BroadRead = $f
     if ($BroadRead) {
         $read = [Security.AccessControl.FileSystemRights]::ReadAndExecute
         foreach ($sid in @('S-1-5-32-545', 'S-1-5-11', 'S-1-1-0')) {
+            $sidReference = [Security.Principal.SecurityIdentifier]::new($sid)
             $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-                $sid, $read,
+                $sidReference, $read,
                 [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit,
                 [Security.AccessControl.PropagationFlags]::None,
                 [Security.AccessControl.AccessControlType]::Allow)
