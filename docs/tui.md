@@ -458,6 +458,74 @@ workspace-relative target; other results remain display-only. The TUI does
 not start language servers itself and does not claim live diagnostic push
 updates.
 
+### Completion
+
+With the editor buffer focused, press F8 — or type `:complete` in Normal
+mode — to ask the language server for completions at the cursor. A popup
+lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
+Normal mode) move the selection, `Enter` applies the selected item, and
+`Esc` dismisses the popup without touching anything. Typing anything else
+dismisses the popup first and inserts normally.
+
+Only supported plain-text edits can be applied, and only after the editor
+re-checks the document identity, revision, and edit range against the
+current text. Anything else — snippets, edits needing extra changes,
+server commands, stale or out-of-range results — is shown as unavailable
+and refused with a message; nothing is ever inserted on your behalf, and
+every acceptance is one ordinary edit with one undo step. An empty answer
+("no suggestions") looks different from a warming server, a changed
+document, or a server without completions, and a truncated list says so.
+A reconnect never lets an old answer paint over a new request, even when
+everything else lines up. On a very long single line, F8 past the first
+32 KiB refuses with "Line too long for completion at this position"
+instead of guessing the cursor.
+
+### Semantic highlighting limits and truncation
+
+Semantic highlighting covers up to 1000 tokens per file (the protocol
+maximum). Ordinary files with more than 100 tokens highlight normally;
+only a response beyond 1000 is rejected as a whole. Token types the theme
+does not style — including ordinary `variable`, `parameter`, `property`,
+and `namespace` kinds — render as plain text without erasing neighboring
+highlights. One malformed span drops only itself, never the whole file.
+
+When the language server reports more tokens than fit, the status row says
+`highlighting truncated`; when some spans were dropped locally it says
+`highlighting partial`. Either means the colors are incomplete coverage,
+not a complete file view. An empty highlight with no such notice is a real
+empty result, not a warming server. Editing, reloading, resyncing, or
+reconnecting clears the highlight until the next validated read, so colors
+never paint against a different revision.
+
+### Very long lines and large file trees
+
+One logical line is one screen row, and each visible line examines at most
+32 KiB per frame (256 KiB for the whole frame). A line past 32 KiB shows
+its start followed by a `…[too long]` marker, and the status row adds
+`line too long — showing prefix` when the cursor is on such a line. The
+cursor position itself stays exact, but horizontal scrolling and motion stop
+at the end of the shown prefix; normal files are unaffected.
+
+The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
+listing for the active workspace: the daemon walks at most 100,000
+directory entries and keeps at most 4096, saying which limit stopped it.
+The complete listing response (entries plus workspace/prefix, status,
+and truncation reason) is capped at 512 KiB on the wire: oversized trees
+are trimmed from the trailing top-level entries with an explicit reason,
+down to an explicitly truncated empty listing when even one giant nested
+directory cannot fit — never a silent empty project and never an oversize
+payload. At most one scan runs at a time on each side; the daemon holds
+its admission until the actual filesystem scan exits, so cancelling a
+request cannot start a second scan behind it. A refresh that arrives while
+a request is active waits as one queued latest request and the pane says
+"waiting for prior scan…" instead of piling up workers. A refresh that is
+superseded, or a listing answered for a different workspace, never paints
+a stale or foreign listing: the pane keeps its previous state and says
+why. Listings unavailable from the daemon are explicit errors — the tree
+never falls back to reading the local machine's own files, so a
+same-spelled local directory can never masquerade as the workspace. A busy
+daemon asks for an explicit retry with `r`.
+
 ## Where to go next
 
 - `architecture/tui.md` — module map, async command pattern, focus model

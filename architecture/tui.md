@@ -840,8 +840,9 @@ means closing it, and only a closed one steps further out.
 Three rules keep this a navigator rather than a second document surface:
 
 1. **The box holds no file text and performs no reads.** The listing arrives
-   already walked; `r` emits `TuiMsg::FilesRefresh` and the command layer owns
-   the async read. Rendering never touches the filesystem.
+   as daemon-origin metadata; `r` emits `TuiMsg::FilesRefresh` and the
+   command layer owns the async daemon round-trip. Rendering never touches
+   the filesystem.
 2. **Opening a row is an intent, not an attachment.** `Enter` on a file emits
    `TuiMsg::FilesOpenSelected { path }`, handled in `App::process_msg` by
    calling `open_editor` — the same seam `/open` and the Ctrl+T pane use, so
@@ -853,11 +854,12 @@ Three rules keep this a navigator rather than a second document surface:
    the generation-guarded completion in `commands::file_tree::apply_listing`.
    The copy is made only when a box is actually mounted.
 
-Authority is unchanged from the Ctrl+T pane: the walk and the open both
-resolve the root through `App::project_execution_context()`, never
-`session_state.project_dir` or the process cwd. Files opened from `/files` are
-therefore `DocumentScope::Workspace`, and the editor's `[project]` badge is
-the honest reading.
+Authority is unchanged from the Ctrl+T pane: the listing request and the
+open both resolve the tab binding through `App::project_execution_context()`,
+never `session_state.project_dir` or the process cwd — and the listing
+itself is enumerated on the daemon host, never the TUI host. Files opened
+from `/files` are therefore `DocumentScope::Workspace`, and the editor's
+`[project]` badge is the honest reading.
 
 ### Swappable side panel (`src/tui/panels/`)
 
@@ -1899,9 +1901,10 @@ authorization, and symlink policy remain the daemon's decision in
 
 `Route::Editor` renders a workspace file tree in a pane to the left of the
 buffer, shown with `Ctrl-T` and hidden by default so the M006-A surface is
-unchanged until the user asks for it. `src/tui/file_tree.rs` holds the walk
-and the node model, `src/tui/app/state/file_tree.rs` the view state, and
-`src/tui/components/file_tree.rs` the widget.
+unchanged until the user asks for it. `src/directory_listing.rs` holds the
+single shared walk, `src/tui/file_tree.rs` the presentation node model
+(delegating to the shared walk), `src/tui/app/state/file_tree.rs` the view
+state, and `src/tui/components/file_tree.rs` the widget.
 
 **The tree is a navigator, not a content path.** It enumerates directory
 *entries* and never reads file bytes. Opening an entry calls the existing
@@ -1928,11 +1931,21 @@ built from validated component names rather than by joining arbitrary
 strings, so a tree-derived path is always workspace-relative and cannot
 contain `..`.
 
-**Authority.** The root is the active tab's explicit
-`ProjectExecutionContext::workspace_root`, resolved at the command boundary
-exactly as `open_editor` resolves it. There is no `current_dir()` read and no
-path-as-identity, so `scripts/check_tui_project_authority.py` holds by
-construction.
+**Authority (C005/ADR-0022).** Directory enumeration is daemon-owned: the
+command layer sends `CoreRequest::WorkspaceDirectoryList` carrying the
+tab's canonical project/workspace binding, and the daemon resolves its own
+canonical root, enforces `DirectProject + FileRead` containment, and walks
+with the single shared walker. The TUI displays only daemon-origin
+metadata keyed to the echoed daemon workspace identity plus the existing
+generation/root/request fencing — it never walks its own filesystem, in
+any mode including standalone. A same-spelled local path can describe a
+different machine's directory, so there is deliberately no local `read_dir`
+fallback: an unavailable daemon listing is an explicit error, and
+`scripts/check_daemon_listing_authority.py` rejects reintroducing TUI-side
+enumeration on the listing path. The tab's `workspace_root` remains only
+fencing state (which workspace the pane believes it shows). There is no
+`current_dir()` read and no path-as-identity, so
+`scripts/check_tui_project_authority.py` holds by construction.
 
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
@@ -1943,12 +1956,15 @@ unchanged, so a focused tree never swallows composer or editor input. `Esc`
 returns focus to the editor buffer without changing the route, preserving
 the non-modal composer contract.
 
-**Async discipline.** The walk is blocking directory I/O and runs on a
-scoped `TuiTaskKind::FileTree` task. A completion carries the request id, the
+**Async discipline.** The listing is a daemon round-trip on a scoped
+`TuiTaskKind::FileTree` task. A completion carries the request id, the
 tree generation, and the root it was issued for; a completion that is stale,
-cancelled, or for another workspace is discarded rather than rendered.
-Switching projects resets selection and expansion, because a path from the
-previous project is meaningless in the next.
+cancelled, for another workspace, or answered for a different daemon scope
+is discarded rather than rendered. Failures arrive as an explicit
+`FileTreeFailed` completion and are fail-visible in the pane. Switching
+projects resets selection and expansion, because a path from the previous
+project is meaningless in the next. Advisory daemon statuses stay visible:
+`busy` names the retry key, and bound hits carry their truncation reason.
 
 ### Command mode and agent management (M006-F)
 
@@ -2828,3 +2844,208 @@ editor generation. Semantic-token overlays are accepted only for the same
 controller snapshot revision and valid non-overlapping UTF-16 ranges;
 unknown token types and malformed/stale results render as plain text. The
 TUI retains no document text outside the controller snapshot.
+
+### Completion popup and transactional acceptance (M004)
+
+The completion popup consumes the M003 `LspCompletionGet` surface and
+nothing else. The trigger is `F8` with the buffer focused (claimed inside
+`handle_editor_key`, so it never falls through to the global bindings) and
+`:complete` from Normal mode; terminals that cannot send `F8` always have
+the command spelling. While open, the popup owns exactly `Up`/`Down`
+(`j`/`k` only in Normal mode, where they are navigation rather than text),
+`Enter`, and `Esc`; every other key dismisses first and processes normally,
+so a keystroke is never both typed and interpreted as popup input. `Esc`
+dismisses and preserves the editing mode — it never quits the editor — and
+a re-trigger supersedes the in-flight request by request id.
+
+The selection is advisory until acceptance. `Enter` re-validates scope,
+generation, attachment identity, and revision against the current state,
+resolves the DTO's UTF-16 range against the current snapshot, and submits
+the single forward/inverse pair through the shared `submit_edit` path: one
+controller edit, one undo unit, redo replays the forward text. Non-applicable
+candidates, identity mismatches, stale revisions, lost writer leases, and
+unresolvable ranges are refused with a notice and change nothing. The popup
+clears on edit, undo/redo, save, reload, resync, close, detach, tab switch,
+and reconnect; a late, superseded, or wrong-scope answer drops in the state
+guard and never paints. Untrusted labels, details, and error strings render
+as sanitized literal spans, and the popup hides (keys still live) on
+terminals too narrow to fit it.
+
+C003 status and fencing corrections (`src/tui/editor_completion.rs`).
+Identity binding is split from status-specific revision policy: the
+document id is verified for every status, but only `Ready` requires the
+exact requested revision (plus a consistent sync witness when present).
+`NotReady` keeps its constructor placeholder revision and `Stale` its
+newer daemon-current echo — both render their typed states instead of the
+generic revision Error. Every non-ready answer is disarmed (candidates
+cleared), so a hostile or malformed peer can never smuggle suggestions
+into a warming/stale/unsynced/unsupported popup, and a malformed Ready
+(wrong revision, inconsistent witness) is an Error, never actionable.
+
+Request fencing is a process-lifetime epoch, not just a counter: every
+path that resets the request id (`clear`, `reset_for_scope`) bumps
+`epoch`, and completions carry the epoch they were issued under
+(`TuiCommand::EditorCompletionFinished.completion_epoch`). A queued
+pre-reset answer can never satisfy a post-reset request even when scope
+and request id coincide — the exact shape a reconnect leaves behind,
+since reconnect clears completion without touching generation or scope.
+Telemetry exposes counts only; no result contents, paths, or source text
+are logged.
+
+C003 trigger budget (`crates/codegg-document`). The F8 cursor resolves
+through `utf16_column_bounded`, which walks borrowed rope chunks with a
+32 KiB prefix cap matching the C002 line-render budget — no prefix
+materialization, exact surrogate-pair counting. Past the budget F8
+refuses visibly ("Line too long for completion at this position") rather
+than sending a truncated or wrong UTF-16 cursor; ordinary lines resolve
+exactly as before.
+
+### Semantic token fidelity (C001)
+
+Structural validation (`src/tui/editor_lsp.rs::validate_semantic_tokens`)
+is separated from style mapping (`src/tui/components/editor.rs::token_style`)
+and bounded drawing (`line_spans`). The frontend received-token cap is
+`MAX_EDITOR_SEMANTIC_TOKENS`, which mirrors the protocol maximum
+`MAX_LSP_SEMANTIC_TOKENS` (1000); the 100-item `MAX_EDITOR_READ_ITEMS` cap
+applies only to read-panel item lists. Responses with 101/500/1000 valid
+tokens highlight normally; only a response exceeding 1000 fails closed as a
+whole.
+
+Well-formed unknown token types (including ordinary `variable`,
+`parameter`, `property`, and `namespace`) are accepted structurally and
+render as plain text while valid neighbors keep their themed styles.
+Malformed spans (zero length, out-of-range line, split surrogate,
+out-of-range UTF-16, empty/inverted byte range, overlap, oversized line)
+are dropped individually without shifting later absolute offsets; only the
+over-cap case rejects the whole response. The daemon `truncated` flag is
+preserved in `EditorLspState::semantic_truncated`, and any local drop,
+whole-response rejection, or daemon truncation sets
+`semantic_incomplete` and shows `highlighting truncated` / `highlighting
+partial` in the status row. A truncated result is never represented as
+complete coverage. A `Ready` with zero tokens is a valid empty highlight
+(`revision=Some`, both flags false), never `NotReady`.
+
+Supported classes map through `Theme` slots (keyword→primary bold,
+string→success, number→warning, comment→muted italic,
+function/method/macro→secondary, type/class/enum/struct/interface/
+typeParameter/namespace→primary, variable/parameter/property and other
+standard kinds→foreground) so highlighting stays legible on dark and light
+themes; patching preserves the current-line background and diagnostic
+gutter. Local edit, undo, redo, reload, resync, save, attachment switch,
+and reconnect clear stale semantic state via `clear_semantic`; late
+completions after any of those are discarded by generation, scope, and
+snapshot-revision checks with no server calls on the render path.
+
+### Bounded rendering and tree scheduling (C002)
+
+Per-frame editor work is bounded in input bytes, not output rows.
+`MAX_RENDER_LINE_BYTES` (32 KiB) caps source bytes examined for one visible
+logical line; `MAX_FRAME_SOURCE_BYTES` (256 KiB) caps the frame total across
+`render_text` and `longest_visible_width` together. `line_content_end`
+inspects at most the last two bytes for a terminator instead of reading the
+line; `line_slice`/`line_spans` read at most the 32 KiB prefix window;
+`display_column`/`offset_at_column`/`resolve_viewport` saturate at the window
+instead of scanning a multi-megabyte line. `measure_frame_cost` mirrors the
+render loop exactly so tests assert deterministic budgets rather than
+wall-clock time.
+
+A line past the per-line budget renders its prefix as plain text (no
+per-token spans, which would cost the whole line) with a warning-styled
+`…[too long]` row suffix; rows past the frame budget render as the marker
+alone with zero content bytes read. The banner adds `line too long —
+showing prefix` when the cursor line or cursor column is past the window, so
+a truncated frame is never presented as complete. Cursor and selection byte
+offsets stay exact; horizontal motion past the prefix clamps to the prefix
+end. Ordinary short lines render exactly as before.
+
+The tree walk counts *examined* entries independently of retained nodes
+(`MAX_TREE_EXAMINED` 100,000 vs `MAX_TREE_NODES` 4096): ignored, symlink,
+special, unreadable, and iterator-error entries consume the examined budget
+while retaining nothing, and the truncation reason names which budget fired.
+Iterator `Err`s are counted via `account_one_entry` (C004): the old
+`entries.flatten()` silently dropped errors without counting work or checking
+cancellation, letting an error flood bypass both bounds. `TreeListing`
+carries the examined count as result metadata.
+
+C004 single-flight admission (`src/tui/file_tree_coordinator.rs`): at most
+one blocking scan executes (global cap 1, preferred per plan), with at most
+one coalesced latest-only pending intent. The permit is held from event-loop
+`try_admit` until the blocking work's completion arrives; aborting the async
+waiter never frees capacity early, so the old "one live task" registry count
+(which counted waiters, not workers) is replaced by instrumentation
+(`running`/`peak_running`) proving peak actual workers ≤ 1 across 100
+superseding rebuilds. A rebuild arriving while a scan is active supersedes
+intent immediately (generation bump + cancel flag) but spawns nothing and
+aborts nothing; the active scan drains as one accounted, finite-budget prior
+operation, then the pending latest runs. The newest request shows an explicit
+`Waiting` state ("waiting for prior scan…") while the prior scan drains; the
+event loop stays responsive. Every scan is fenced to
+request/generation/project/tab/root and revalidated before the delayed scan
+and again before display, so late A after a switch to B never renders and
+`/files` shares the one guarded state. A stale completion never cancels the
+current request (that would strand the queued intent). Shutdown signals the
+flag once, drops the queue, force-clears admission, aborts waiters, and
+reports a bounded policy: a worker stuck in a kernel syscall is not joined
+and no deadline is claimed; its `RunningGuard` still releases on exit and its
+late completion mismatches and is discarded. Diagnostics (`diagnostics()`)
+expose counts only, never paths. Walks run on `spawn_blocking` inside a
+generation-scoped async task; the blocking scan checks a cooperative flag on
+every entry, superseded by `begin_rebuild`, `reset_for_project`, and
+`prepare_shutdown`, so a superseded scan exits within one *completed* entry —
+not a wall-clock bound, since one syscall cannot be preempted. Stale
+completions are still refused by generation/root/request. With no command
+channel the UI reports an explicit error instead of requesting synchronously
+on the event loop.
+
+C005 daemon-owned listing (ADR-0022, accepted): the TUI no longer walks at
+all. `src/tui/commands/file_tree.rs` sends `WorkspaceDirectoryList` with
+the tab's project/workspace binding over the attached core client; the
+daemon resolves its canonical root, verifies the project/workspace binding,
+validates the prefix, and runs the single shared walk
+(`src/directory_listing.rs`, extracted verbatim from the TUI walker) on a
+`spawn_blocking` worker under a per-daemon single-flight semaphore.
+Contended scans answer `busy`; the permit is held from admission until the
+blocking walk completes. The wire response echoes `workspace_id`/`prefix`
+and carries inert nested entries plus `truncated`/`truncated_reason`/
+`examined`/`status`; responses over the 512 KiB serialized cap are trimmed
+from trailing top-level nodes with an explicit reason. TUI-side single
+flight is unchanged (one round-trip in flight, latest-only pending,
+`Waiting`, generation/root/request fencing) with one addition: the echoed
+daemon workspace identity must match the request before anything renders,
+and failures arrive as `FileTreeFailed` with no local fallback in any mode.
+`local_walk_root` remains only as the retired client-side refusal point
+(kept with its tests, never called on a listing path); the new invariant
+is enforced by `scripts/check_daemon_listing_authority.py`, which rejects
+`read_dir`/`build_tree*`/`local_walk_root` on the listing path outside the
+two walker homes. The background `@`-mention indexer in `tui/app/mod.rs`
+(`index_files_sync`) is a separate client-side index explicitly deferred
+by the C005 plan, not covered by that guard.
+
+C005 flush fix: hitting a walk bound previously `return`ed out of the walk
+before the retained-entry flush loops, so a node-budget truncation always
+presented an empty tree alongside its (correct) reason. Bound hits now
+`break` to the flush, keeping everything retained up to the bound with the
+explicit reason. Pre-set cancellation still returns empty; mid-walk cancel
+keeps retained-so-far as a truncated listing rather than blanking it.
+
+C006 worker-owned admission and full-response cap (post-C005 corrective):
+the daemon's single-flight `OwnedSemaphorePermit` is moved into the
+`spawn_blocking` closure, so aborting the async waiter cannot free a
+scanner that is still alive — the permit releases only when the blocking
+closure exits, including error and panic unwind. Contention still answers
+`busy`; abnormal exits surface sanitized `unavailable`. Actual worker
+entry/exit is instrumented per daemon (`DirectoryListingProbe`:
+`active`/`peak` counters plus a test-only blocking gate; production
+installs no gate). The 512 KiB cap is enforced on the complete serialized
+`CoreResponse::WorkspaceDirectoryList` (discriminator + `workspace_id` /
+`prefix` + `status` + `examined` + combined walker/wire truncation reason
++ retained nodes) via the same `serde_json` serializer the socket/stdio
+transports use — never a nodes-only estimate. Trimming removes trailing
+whole top-level nodes in prefix order, down to zero retained roots if even
+the last nested root cannot fit; an all-roots-removed `Ready` carries
+`truncated=true` with a bounded wire reason and is visibly distinct from a
+genuinely empty `Ready`. If even that cannot fit, the daemon fails closed
+to `unavailable` (then a bounded `Error`), never an oversize payload. The
+enforcer binary-searches the longest fitting prefix in `O(log n)` full
+serializations, never `O(n)` pops. ADR-0022 Option B is unchanged; its
+acceptance-date provenance is marked unverified (see its C006 note).

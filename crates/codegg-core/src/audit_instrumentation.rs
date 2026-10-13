@@ -707,6 +707,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "audit_capabilities",
     "document_capabilities",
     "document_read",
+    // C005 (ADR-0022): the directory listing is the same shape —
+    // `direct_project` + `file.read`, inert metadata, no mutation — so it
+    // shares the reads' classification rather than emitting per-refresh
+    // audit events. Denial *is* audited upstream by `authorize_request`.
+    "workspace_directory_list",
     // `/init` is a bounded, explicitly authorized project-file preview;
     // the publication operation below is structurally audited.
     "project_init_draft",
@@ -725,6 +730,10 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "lsp_read_get",
     "lsp_diagnostics_get",
     "lsp_diagnostics_subscribe",
+    // M003 (ADR-0021): the completion read is the same shape — `via_session`
+    // + `file.read`, inert candidates, no mutation — so it shares the reads'
+    // classification rather than inventing per-keystroke audit events.
+    "lsp_completion_get",
     "managed_worktree_get",
     "managed_worktree_list",
     "memory_forget",

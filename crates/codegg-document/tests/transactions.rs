@@ -95,3 +95,54 @@ proptest! {
         prop_assert_eq!(buffer.snapshot().to_string(), original);
     }
 }
+
+fn snapshot_of(text: &str) -> codegg_document::DocumentSnapshot {
+    DocumentBuffer::new(text).snapshot()
+}
+
+#[test]
+fn utf16_column_is_exact_for_ascii_tabs_combining_and_astral() {
+    // "a\té\u{301}🌍x": a=1, tab=1, é=1, combining mark=1, astral=2, x=1.
+    let text = "a\té\u{301}🌍x";
+    let snapshot = snapshot_of(text);
+    let bytes = text.len();
+    assert_eq!(snapshot.utf16_column_bounded(0, bytes).unwrap(), 7);
+    // Prefix "a\té\u{301}" is 1 + 1 + 2 + 2 = 6 bytes, 4 units.
+    assert_eq!(snapshot.utf16_column_bounded(0, 6).unwrap(), 4);
+    assert_eq!(snapshot.utf16_column_bounded(0, 0).unwrap(), 0);
+}
+
+#[test]
+fn utf16_column_refuses_past_the_prefix_budget() {
+    let budget = codegg_document::DocumentSnapshot::MAX_COMPLETION_PREFIX_BYTES;
+    let line = "a".repeat(budget + 1);
+    let snapshot = snapshot_of(&line);
+    assert_eq!(
+        snapshot.utf16_column_bounded(0, budget + 1).unwrap_err(),
+        DocumentError::CompletionPrefixTooLong
+    );
+    // Exactly at budget still resolves precisely, with no refusal.
+    assert_eq!(
+        snapshot.utf16_column_bounded(0, budget).unwrap(),
+        budget as u32
+    );
+    assert_eq!(snapshot.utf16_column_bounded(0, 0).unwrap(), 0);
+}
+
+#[test]
+fn utf16_column_rejects_bad_ranges_without_reading() {
+    let snapshot = snapshot_of("héllo");
+    assert_eq!(
+        snapshot.utf16_column_bounded(3, 1).unwrap_err(),
+        DocumentError::ReversedRange
+    );
+    assert_eq!(
+        snapshot.utf16_column_bounded(0, 999).unwrap_err(),
+        DocumentError::OutOfBounds
+    );
+    // Offset 1 splits 'h'(1 byte) from 'é'(2 bytes): byte 2 is inside é.
+    assert_eq!(
+        snapshot.utf16_column_bounded(0, 2).unwrap_err(),
+        DocumentError::InvalidBoundary
+    );
+}

@@ -72,6 +72,40 @@ impl DocumentSnapshot {
         Ok(start..end)
     }
 
+    /// Maximum line-prefix bytes examined when converting a byte offset
+    /// to a UTF-16 column for completion triggers (C003). Matches the C002
+    /// 32 KiB/line render budget: positions past this refuse visibly
+    /// rather than allocating and scanning a multi-megabyte line prefix.
+    pub const MAX_COMPLETION_PREFIX_BYTES: usize = 32 * 1024;
+
+    /// Count the UTF-16 code units in `[line_start, offset)` without
+    /// materializing the prefix.
+    ///
+    /// Iterates the rope's borrowed chunks, so work and allocation stay
+    /// proportional to the capped prefix, never to the line. Fails
+    /// visibly (`CompletionPrefixTooLong`) past the budget rather than
+    /// sending a truncated or wrong cursor to the server. Surrogate pairs
+    /// count exactly (astral chars contribute two units).
+    pub fn utf16_column_bounded(&self, line_start: usize, offset: usize) -> Result<u32> {
+        if line_start > offset {
+            return Err(DocumentError::ReversedRange);
+        }
+        if offset > self.len_bytes() {
+            return Err(DocumentError::OutOfBounds);
+        }
+        if !self.is_byte_boundary(line_start) || !self.is_byte_boundary(offset) {
+            return Err(DocumentError::InvalidBoundary);
+        }
+        if offset - line_start > Self::MAX_COMPLETION_PREFIX_BYTES {
+            return Err(DocumentError::CompletionPrefixTooLong);
+        }
+        let mut units: u64 = 0;
+        for chunk in self.text.byte_slice(line_start..offset).chunks() {
+            units += chunk.encode_utf16().count() as u64;
+        }
+        u32::try_from(units).map_err(|_| DocumentError::CompletionPrefixTooLong)
+    }
+
     pub fn byte_to_position(&self, offset: usize) -> Result<crate::BytePosition> {
         if offset > self.len_bytes() {
             return Err(DocumentError::OutOfBounds);

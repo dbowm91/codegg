@@ -152,6 +152,31 @@ regenerate. Merging an apply into a *dirty* buffer — rather than refusing it �
 is not in scope for M006-E and is deferred to a future ADR; the rejection in
 `src/lsp/mutation.rs` is unchanged by that milestone.
 
+## Completion sync witness (M003, ADR-0021)
+
+The completion read needed a mapping the codebase did not have: controller
+revision → daemon attachment revision → revision last delivered to the
+language server. The first two existed (`Attachment.daemon_revision` on the
+replica, `DocumentSnapshotDto.revision` with CAS on the service); the third
+did not, because the managed push carried text and dirty state only and the
+LSP-side version counter is an unrelated local increment. M003 adds the third
+as a revision-only ledger on `DocumentService`, recorded on push success and
+cleared on push failure and on eviction. It holds no text, so it cannot become
+a second document buffer.
+
+| Layer | Revision source | Meaning |
+|---|---|---|
+| Controller replica | `Attachment.daemon_revision` (acked) vs optimistic `buffer+pending` | What the frontend believes is durable |
+| Daemon attachment | `DocumentSnapshotDto.revision`, CAS on `base_revision` | Current truth for the document |
+| LSP witness | `lsp_synced_revision` per document id, `None` when never pushed or failed | Snapshot the server actually saw |
+
+The completion handler requires caller == daemon-current (`Stale` otherwise)
+and daemon-current == witness (`Unsynced` otherwise) before any server
+contact. A restarted or replaced server replays managed documents without
+rebinding them to daemon revisions, so a fresh push — through the ordinary
+open/change/snapshot paths — is what re-establishes the witness, never a
+guess.
+
 ## Source verification
 
 Verified 2026-10-06 against `crates/codegg-document/` (manifest and all five

@@ -44,6 +44,28 @@ pub const MAX_EDITOR_PENDING_COMMAND: usize = 2;
 /// Minimum display columns reserved for the horizontal scroll indicator.
 const MIN_EDITOR_TEXT_COLUMNS: u16 = 1;
 
+/// Maximum source bytes examined for one visible logical line in one frame.
+///
+/// C002: the renderer never materializes a whole logical line larger than
+/// this. A line beyond the cap renders from its prefix and is visibly marked
+/// truncated; cursor and selection byte offsets stay exact, but horizontal
+/// motion past the prefix end clamps to the prefix. Ordinary short lines
+/// render exactly as before.
+pub const MAX_RENDER_LINE_BYTES: usize = 32 * 1024;
+
+/// Maximum source bytes examined across all visible lines in one frame.
+///
+/// C002: `longest_visible_width` stops measuring once the frame total reaches
+/// this, so a tall viewport of huge lines cannot make one frame expensive.
+/// The per-line cap above applies first; this caps their sum.
+pub const MAX_FRAME_SOURCE_BYTES: usize = 256 * 1024;
+
+/// Visible suffix marking a huge line rendered from its prefix.
+///
+/// The renderer appends this (warning-styled) instead of silently showing a
+/// prefix as if it were the whole line.
+pub const TRUNCATED_LINE_SUFFIX: &str = " …[too long]";
+
 /// Maximum length of the `:` command line.
 ///
 /// The line names one command and at most one argument, so a short bound is
@@ -82,6 +104,8 @@ pub enum EditorCommandName {
     New,
     /// `:open <path>` — open a workspace-relative path.
     Open,
+    /// `:complete` — request language-server completions at the cursor.
+    Complete,
 }
 
 impl EditorCommandName {
@@ -96,6 +120,7 @@ impl EditorCommandName {
             Self::WriteAll => "wa",
             Self::New => "new",
             Self::Open => "open",
+            Self::Complete => "complete",
         }
     }
 
@@ -110,6 +135,7 @@ impl EditorCommandName {
             Self::WriteAll => "write all open documents",
             Self::New => "create a new file from a template",
             Self::Open => "open a workspace-relative path",
+            Self::Complete => "complete the word at the cursor",
         }
     }
 
@@ -135,6 +161,7 @@ impl EditorCommandName {
         Self::WriteAll,
         Self::New,
         Self::Open,
+        Self::Complete,
     ];
 }
 
@@ -171,6 +198,7 @@ pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<Str
         "wa" | "wall" => EditorCommandName::WriteAll,
         "new" => EditorCommandName::New,
         "open" | "o" => EditorCommandName::Open,
+        "complete" => EditorCommandName::Complete,
         _ => return None,
     };
     let argument = argument.filter(|value| !value.is_empty());
@@ -197,11 +225,12 @@ pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
     // An empty query is the discovery path, and it is served in *declared*
     // order — not alphabetically — so the registry reads as a curated menu
     // rather than an index. Sorting it by score would reorder the list for
-    // no benefit.
+    // no benefit. The whole registry is offered, not the query bound: a
+    // command the empty palette hides is undiscoverable, and the registry
+    // itself is the bound.
     if query.is_empty() {
         return EditorCommandName::ALL
             .iter()
-            .take(MAX_EDITOR_COMMAND_MATCHES)
             .map(|command| EditorCommandMatch {
                 command: *command,
                 score: 0,
@@ -412,13 +441,68 @@ pub fn line_start(snapshot: &DocumentSnapshot, line: usize) -> Option<usize> {
     snapshot.line_range(line).ok().map(|range| range.start)
 }
 
+/// Byte length of `line` including its terminator, without reading content.
+///
+/// Cheap: `line_range` alone, so the renderer can decide the bounded path
+/// before examining a single content byte.
+pub fn line_byte_len(snapshot: &DocumentSnapshot, line: usize) -> Option<usize> {
+    snapshot
+        .line_range(line)
+        .ok()
+        .map(|range| range.end.saturating_sub(range.start))
+}
+
+/// Whether `line` exceeds the per-line render budget and will be shown
+/// truncated. Cheap: length only, no content read.
+pub fn line_is_truncated(snapshot: &DocumentSnapshot, line: usize) -> bool {
+    line_byte_len(snapshot, line).is_some_and(|len| len > MAX_RENDER_LINE_BYTES)
+}
+
+/// Walk `offset` back onto a UTF-8 character boundary (at most three steps
+/// in valid UTF-8). Used to clip a budget window without splitting a char.
+fn boundary_back(snapshot: &DocumentSnapshot, offset: usize) -> usize {
+    let mut candidate = offset.min(snapshot.len_bytes());
+    while candidate > 0 && !snapshot.is_byte_boundary(candidate) {
+        candidate -= 1;
+    }
+    candidate
+}
+
+/// Exclusive end of the bounded prefix of `start..end`: at most
+/// `MAX_RENDER_LINE_BYTES` past `start`, adjusted back to a character
+/// boundary so the caller can read it directly.
+pub fn bounded_prefix_end(snapshot: &DocumentSnapshot, start: usize, end: usize) -> usize {
+    let capped = start.saturating_add(MAX_RENDER_LINE_BYTES).min(end);
+    if capped >= end {
+        return end;
+    }
+    boundary_back(snapshot, capped).max(start)
+}
+
 /// Byte offset of the last content byte on `line`, excluding the line
 /// terminator. Equals the line start for an empty line.
+///
+/// C002: inspects at most the last two bytes rather than reading the whole
+/// line, so a multi-megabyte line costs a constant here.
 pub fn line_content_end(snapshot: &DocumentSnapshot, line: usize) -> Option<usize> {
     let range = snapshot.line_range(line).ok()?;
-    let text = snapshot.read_bytes(range.start, range.end).ok()?;
-    let trimmed = text.trim_end_matches('\n').trim_end_matches('\r');
-    Some(range.start + trimmed.len())
+    if range.start >= range.end {
+        return Some(range.start);
+    }
+    // The terminator, if any, is `\n`, `\r`, or `\r\n` at the very end.
+    let mut tail_start = range.end.saturating_sub(2).max(range.start);
+    while tail_start < range.end && !snapshot.is_byte_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = snapshot.read_bytes(tail_start, range.end).ok()?;
+    let terminator = if tail.ends_with("\r\n") {
+        2
+    } else if tail.ends_with('\n') || tail.ends_with('\r') {
+        1
+    } else {
+        0
+    };
+    Some(range.end.saturating_sub(terminator))
 }
 
 /// Byte offset of the end of the last line, excluding any terminator.
@@ -615,6 +699,51 @@ pub fn delete_range(
     }
     let transaction = TextTransaction::new(vec![TextEdit::new(start..end, String::new())]);
     build_edit(snapshot, transaction, start, false)
+}
+
+/// Resolve one M003 applicable completion edit against the current snapshot.
+///
+/// Validates the DTO's UTF-16 range against `snapshot` and builds the single
+/// forward/inverse pair through the shared [`build_edit`], so an accepted
+/// completion is exactly one controller edit with one undo unit — the same
+/// shape as a typed edit. Returns `None` for out-of-snapshot ranges,
+/// reversed ranges, oversized replacement text, and no-op edits: each is a
+/// refusal the caller reports rather than applying something the server did
+/// not mean. Pure deletions (range plus empty text) are meaningful and kept.
+pub fn resolve_completion_edit(
+    snapshot: &DocumentSnapshot,
+    edit: &codegg_protocol::lsp::LspCompletionEditDto,
+    stay_insert: bool,
+) -> Option<EditorEdit> {
+    if edit.new_text.len() > codegg_protocol::lsp::MAX_LSP_COMPLETION_EDIT_BYTES {
+        return None;
+    }
+    let start_line = usize::try_from(edit.start_line).ok()?;
+    let end_line = usize::try_from(edit.end_line).ok()?;
+    let start_row = line_start(snapshot, start_line)?;
+    let start_row_end = line_content_end(snapshot, start_line)?;
+    let end_row = line_start(snapshot, end_line)?;
+    let end_row_end = line_content_end(snapshot, end_line)?;
+    let start_text = snapshot.read_bytes(start_row, start_row_end).ok()?;
+    let end_text = snapshot.read_bytes(end_row, end_row_end).ok()?;
+    let start_col =
+        crate::tui::editor_lsp::utf16_column_to_byte(&start_text, edit.start_character)?;
+    let end_col = crate::tui::editor_lsp::utf16_column_to_byte(&end_text, edit.end_character)?;
+    let start = start_row + start_col;
+    let end = end_row + end_col;
+    if end < start {
+        return None;
+    }
+    if start == end && edit.new_text.is_empty() {
+        return None;
+    }
+    let transaction = TextTransaction::new(vec![TextEdit::new(start..end, edit.new_text.clone())]);
+    build_edit(
+        snapshot,
+        transaction,
+        start + edit.new_text.len(),
+        stay_insert,
+    )
 }
 
 // ── Resolution against a presentation record ────────────────────────────────
@@ -936,8 +1065,11 @@ pub fn resolve_viewport(
 
     // Horizontal: keep the cursor's display column on screen, then clamp to
     // the longest visible line so the view never scrolls past content.
+    // C002: the cursor column is the bounded prefix width when the cursor
+    // sits past the render window of a huge line; the byte offset is
+    // untouched, only the scroll target saturates.
     let cursor_start = line_start(snapshot, cursor_line).unwrap_or(0);
-    let cursor_column = display_width(snapshot, cursor_start..presentation.cursor_byte);
+    let cursor_column = bounded_display_width(snapshot, cursor_start..presentation.cursor_byte).0;
     let mut column = presentation.viewport_column;
     if cursor_column < column {
         column = cursor_column;
@@ -960,6 +1092,10 @@ pub fn resolve_viewport(
 }
 
 /// Display width of a byte range, in terminal columns.
+///
+/// The caller must pass a bounded range on the render path; use
+/// [`bounded_display_width`] when the range can come from a pathological
+/// line. Exact for ordinary short ranges.
 pub fn display_width(snapshot: &DocumentSnapshot, range: std::ops::Range<usize>) -> usize {
     snapshot
         .read_bytes(range.start, range.end)
@@ -970,44 +1106,165 @@ pub fn display_width(snapshot: &DocumentSnapshot, range: std::ops::Range<usize>)
         .unwrap_or(0)
 }
 
+/// Display width of `range` capped to the per-line render budget.
+///
+/// Returns the width of the examined prefix and whether the range was cut.
+/// The render path uses this (via [`bounded_display_column`] and
+/// [`longest_visible_width`]) so a cursor at the far end of a multi-megabyte
+/// line costs 32 KiB, not the whole line.
+pub fn bounded_display_width(
+    snapshot: &DocumentSnapshot,
+    range: std::ops::Range<usize>,
+) -> (usize, bool) {
+    let end = bounded_prefix_end(snapshot, range.start, range.end);
+    let truncated = end < range.end;
+    (display_width(snapshot, range.start..end), truncated)
+}
+
 /// Longest display width among the visible lines, in terminal columns.
+///
+/// C002: each line contributes at most its 32 KiB prefix, and measurement
+/// stops once the frame total reaches 256 KiB. Lines past the frame budget
+/// contribute nothing further; use [`frame_truncated_lines`] for the honest
+/// truncation signal shown in the UI.
 pub fn longest_visible_width(
     snapshot: &DocumentSnapshot,
     first_line: usize,
     visible_lines: usize,
 ) -> usize {
     let mut widest = 0usize;
+    let mut examined = 0usize;
     for line in first_line..(first_line + visible_lines) {
         if line >= snapshot.len_lines() {
+            break;
+        }
+        if examined >= MAX_FRAME_SOURCE_BYTES {
             break;
         }
         let Some(start) = line_start(snapshot, line) else {
             break;
         };
         let end = line_content_end(snapshot, line).unwrap_or(start);
-        widest = widest.max(display_width(snapshot, start..end));
+        let window_end = bounded_prefix_end(snapshot, start, end);
+        examined = examined.saturating_add(window_end.saturating_sub(start));
+        widest = widest.max(display_width(snapshot, start..window_end));
     }
     widest
 }
 
+/// Number of visible lines exceeding the per-line render budget.
+///
+/// Cheap length check, no content read. The banner shows this so a truncated
+/// frame is never presented as complete.
+pub fn frame_truncated_lines(
+    snapshot: &DocumentSnapshot,
+    first_line: usize,
+    visible_lines: usize,
+) -> usize {
+    (first_line..first_line.saturating_add(visible_lines))
+        .take_while(|line| *line < snapshot.len_lines())
+        .filter(|line| line_is_truncated(snapshot, *line))
+        .count()
+}
+
+/// Deterministic per-frame input cost for the visible window.
+///
+/// Counts source bytes the bounded render path would examine (prefix windows
+/// only), the largest single `read_bytes` window, how many visible lines are
+/// truncated, and how many column-seeking scans run (one per visible line).
+/// Tests assert budgets on this rather than on wall-clock time, which shared
+/// CI cannot calibrate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameCost {
+    pub total_bytes: usize,
+    pub max_line_bytes: usize,
+    pub truncated_lines: usize,
+    pub column_scans: usize,
+}
+
+/// Measure [`FrameCost`] for `visible_lines` starting at `first_line`.
+///
+/// Mirrors the `render_text` loop exactly: row sizes come from the cheap
+/// length check, rows past the 256 KiB frame budget cost zero bytes and
+/// count as truncated, and one column-seeking scan runs per rendered row.
+pub fn measure_frame_cost(
+    snapshot: &DocumentSnapshot,
+    first_line: usize,
+    visible_lines: usize,
+) -> FrameCost {
+    let mut total_bytes = 0usize;
+    let mut max_line_bytes = 0usize;
+    let mut truncated_lines = 0usize;
+    let mut column_scans = 0usize;
+    let mut remaining = MAX_FRAME_SOURCE_BYTES;
+    for line in first_line..first_line.saturating_add(visible_lines) {
+        if line >= snapshot.len_lines() {
+            break;
+        }
+        let row_bytes = line_byte_len(snapshot, line)
+            .unwrap_or(0)
+            .min(MAX_RENDER_LINE_BYTES);
+        max_line_bytes = max_line_bytes.max(row_bytes);
+        let per_line_truncated = line_is_truncated(snapshot, line);
+        if row_bytes > remaining {
+            // Frame-capped: the renderer shows a marker without reading.
+            truncated_lines += 1;
+            continue;
+        }
+        remaining = remaining.saturating_sub(row_bytes);
+        total_bytes = total_bytes.saturating_add(row_bytes);
+        column_scans += 1;
+        if per_line_truncated {
+            truncated_lines += 1;
+        }
+    }
+    FrameCost {
+        total_bytes,
+        max_line_bytes,
+        truncated_lines,
+        column_scans,
+    }
+}
+
 /// Display column of `offset` within its own line.
+///
+/// C002: saturates at the prefix width when `offset` lies past the 32 KiB
+/// render window. The byte offset itself stays exact; only the displayed
+/// column is bounded. Pair with [`display_column_truncated`] for the UI
+/// signal.
 pub fn display_column(snapshot: &DocumentSnapshot, offset: usize) -> usize {
     let offset = clamp_offset(snapshot, offset);
     let start = line_start(snapshot, cursor_line(snapshot, offset)).unwrap_or(0);
-    display_width(snapshot, start..offset)
+    bounded_display_width(snapshot, start..offset).0
+}
+
+/// Whether [`display_column`] saturated for `offset` (cursor past the render
+/// window of a huge line). The banner shows this instead of a bare column.
+pub fn display_column_truncated(snapshot: &DocumentSnapshot, offset: usize) -> bool {
+    let offset = clamp_offset(snapshot, offset);
+    let start = line_start(snapshot, cursor_line(snapshot, offset)).unwrap_or(0);
+    bounded_display_width(snapshot, start..offset).1
 }
 
 /// Byte offset for a display column on `line`, clamped to the line's content
 /// end so a click or motion can never land past the terminator.
+///
+/// C002: the scan examines at most 32 KiB. A column past the prefix end
+/// resolves to the prefix end — horizontal motion on a huge line is limited
+/// to its rendered prefix, which the UI marks with [`TRUNCATED_LINE_SUFFIX`].
+/// Normal lines are unaffected.
 pub fn offset_at_column(snapshot: &DocumentSnapshot, line: usize, column: usize) -> Option<usize> {
     let start = line_start(snapshot, line)?;
     let end = line_content_end(snapshot, line)?;
+    let window_end = bounded_prefix_end(snapshot, start, end);
     let mut offset = start;
     let mut consumed = 0usize;
-    while offset < end {
+    while offset < window_end {
         // `next_char_boundary` is `None` at the end of the document, which
         // is a legitimate position here, not a failure.
-        let next = next_char_boundary(snapshot, offset).unwrap_or(end).min(end);
+        let next = next_char_boundary(snapshot, offset)
+            .unwrap_or(window_end)
+            .min(window_end);
         if next == offset {
             break;
         }
@@ -1018,7 +1275,7 @@ pub fn offset_at_column(snapshot: &DocumentSnapshot, line: usize, column: usize)
         consumed += width;
         offset = next;
     }
-    Some(clamp_offset(snapshot, offset.min(end)))
+    Some(clamp_offset(snapshot, offset.min(window_end)))
 }
 
 /// Resolve a `BytePosition` into a clamped byte offset.
@@ -1044,6 +1301,102 @@ mod tests {
             cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         }
+    }
+
+    // ── Completion edit resolution ────────────────────────────────────
+
+    fn completion_edit(
+        start: (u32, u32),
+        end: (u32, u32),
+        new_text: &str,
+    ) -> codegg_protocol::lsp::LspCompletionEditDto {
+        codegg_protocol::lsp::LspCompletionEditDto {
+            start_line: start.0,
+            start_character: start.1,
+            end_line: end.0,
+            end_character: end.1,
+            new_text: new_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_completion_replace_resolves_to_one_forward_and_inverse() {
+        // Line 0 is 12 bytes, so "    prin" is bytes 12..20 and the word
+        // itself is 16..20: the assertion is on bytes, not UTF-16 units.
+        let snapshot = snapshot_of("fn main() {\n    prin\n}\n");
+        let edit = completion_edit((1, 4), (1, 8), "println!");
+        let resolved = resolve_completion_edit(&snapshot, &edit, true).expect("resolves");
+        assert_eq!(resolved.transaction.edits.len(), 1);
+        assert_eq!(
+            resolved.transaction.edits[0].range.start, 16,
+            "byte range, not UTF-16"
+        );
+        assert_eq!(resolved.transaction.edits[0].range.end, 20);
+        assert_eq!(resolved.transaction.edits[0].insert, "println!");
+        assert_eq!(resolved.inverse.edits.len(), 1);
+        assert_eq!(resolved.inverse.edits[0].insert, "prin");
+        assert_eq!(resolved.cursor_after, 16 + "println!".len());
+        assert!(resolved.stay_insert);
+    }
+
+    #[test]
+    fn a_completion_insert_at_cursor_resolves_to_a_zero_width_replace() {
+        let snapshot = snapshot_of("fn main() {\n    prin\n}\n");
+        let edit = completion_edit((1, 8), (1, 8), "tln!");
+        let resolved = resolve_completion_edit(&snapshot, &edit, false).expect("resolves");
+        assert_eq!(resolved.transaction.edits[0].range.start, 20);
+        assert_eq!(resolved.transaction.edits[0].range.end, 20);
+        assert!(!resolved.stay_insert);
+    }
+
+    #[test]
+    fn completion_ranges_validate_utf16_exactly() {
+        // "a😀b": the emoji is 2 UTF-16 units; column 2 splits the pair.
+        let snapshot = snapshot_of("a😀b\n");
+        let split = completion_edit((0, 0), (0, 2), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &split, false).is_none(),
+            "a split surrogate must refuse"
+        );
+        let whole = completion_edit((0, 0), (0, 3), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &whole, false).is_some(),
+            "exact surrogate span resolves"
+        );
+        // "a😀b" is 4 UTF-16 units, so 4 is the valid line end and 5 is
+        // past it.
+        let past_end = completion_edit((0, 0), (0, 5), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &past_end, false).is_none(),
+            "past-the-end refuses"
+        );
+        let reversed = completion_edit((0, 3), (0, 0), "x");
+        assert!(
+            resolve_completion_edit(&snapshot, &reversed, false).is_none(),
+            "reversed ranges refuse"
+        );
+    }
+
+    #[test]
+    fn completion_refuses_absent_lines_noop_edits_and_oversized_text() {
+        let snapshot = snapshot_of("ab\n");
+        let absent = completion_edit((9, 0), (9, 1), "x");
+        assert!(resolve_completion_edit(&snapshot, &absent, false).is_none());
+        let noop = completion_edit((0, 1), (0, 1), "");
+        assert!(
+            resolve_completion_edit(&snapshot, &noop, false).is_none(),
+            "a no-op is not an edit"
+        );
+        let deletion = completion_edit((0, 0), (0, 1), "");
+        let resolved = resolve_completion_edit(&snapshot, &deletion, false).expect("deletes");
+        assert_eq!(resolved.transaction.edits[0].insert, "");
+        assert_eq!(resolved.inverse.edits[0].insert, "a");
+        let big = "x".repeat(codegg_protocol::lsp::MAX_LSP_COMPLETION_EDIT_BYTES + 1);
+        let oversized = completion_edit((0, 0), (0, 1), &big);
+        assert!(
+            resolve_completion_edit(&snapshot, &oversized, false).is_none(),
+            "oversized edits refuse even when the DTO claims otherwise"
+        );
     }
 
     // ── Offset clamping ───────────────────────────────────────────────
@@ -1446,6 +1799,147 @@ mod tests {
         assert_eq!(offset_at_column(&snapshot, 1, 4), Some(7));
     }
 
+    // ── C002 bounded render budgets ─────────────────────────────────────
+
+    fn huge_single_line(megabytes: usize) -> DocumentSnapshot {
+        DocumentBuffer::new("x".repeat(megabytes * 1024 * 1024)).snapshot()
+    }
+
+    #[test]
+    fn line_content_end_does_not_read_a_huge_line() {
+        let bytes = 4 * 1024 * 1024;
+        let snapshot = huge_single_line(4);
+        let end = line_content_end(&snapshot, 0).expect("line exists");
+        assert_eq!(end, bytes, "a one-line document has no terminator");
+        assert_eq!(line_byte_len(&snapshot, 0), Some(bytes));
+        assert!(line_is_truncated(&snapshot, 0));
+        // The cost proof lives in `frame_cost_*` below; this asserts the
+        // answer is exact without materializing the line.
+    }
+
+    #[test]
+    fn frame_cost_stays_within_budget_for_a_4mib_single_line() {
+        let snapshot = huge_single_line(4);
+        let cost = measure_frame_cost(&snapshot, 0, 24);
+        assert!(
+            cost.total_bytes <= MAX_FRAME_SOURCE_BYTES,
+            "frame must cost at most 256 KiB, got {}",
+            cost.total_bytes
+        );
+        assert!(
+            cost.max_line_bytes <= MAX_RENDER_LINE_BYTES,
+            "one line must cost at most 32 KiB, got {}",
+            cost.max_line_bytes
+        );
+        assert_eq!(cost.total_bytes, MAX_RENDER_LINE_BYTES);
+        assert_eq!(cost.truncated_lines, 1);
+        // The rope reports a trailing empty line past the final newline (or
+        // end of text); it costs zero bytes and one scan, like the renderer.
+        assert_eq!(cost.column_scans, 2);
+    }
+
+    #[test]
+    fn frame_cost_stays_within_budget_for_many_huge_lines() {
+        let text = (0..30)
+            .map(|_| "y".repeat(1024 * 1024))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let snapshot = snapshot_of(&text);
+        let cost = measure_frame_cost(&snapshot, 0, 30);
+        assert!(
+            cost.total_bytes <= MAX_FRAME_SOURCE_BYTES,
+            "frame total must stay within 256 KiB, got {}",
+            cost.total_bytes
+        );
+        assert!(cost.max_line_bytes <= MAX_RENDER_LINE_BYTES);
+        // 8 full 32 KiB windows fit in 256 KiB; the remaining 22 rows are
+        // frame-capped markers, still counted as truncated.
+        assert_eq!(cost.truncated_lines, 30);
+        assert_eq!(cost.total_bytes, MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn frame_cost_is_exact_for_ordinary_lines() {
+        let snapshot = snapshot_of("ab\ncdef\n");
+        let cost = measure_frame_cost(&snapshot, 0, 10);
+        // Row sizes include the terminator (3 + 5); the budget is
+        // deliberately conservative by one byte per line.
+        assert_eq!(cost.total_bytes, 3 + 5);
+        assert_eq!(cost.max_line_bytes, 5);
+        assert_eq!(cost.truncated_lines, 0);
+        // Two content lines plus the rope's trailing empty line, which costs
+        // zero bytes — the same rows the renderer walks.
+        assert_eq!(cost.column_scans, 3);
+    }
+
+    #[test]
+    fn cursor_at_the_far_right_of_a_huge_line_saturates_honestly() {
+        let snapshot = huge_single_line(1);
+        let end = snapshot.len_bytes();
+        let column = display_column(&snapshot, end);
+        assert!(
+            column <= MAX_RENDER_LINE_BYTES,
+            "column display must saturate at the window, got {column}"
+        );
+        assert!(
+            display_column_truncated(&snapshot, end),
+            "the banner signal must fire for a cursor past the window"
+        );
+        assert!(!display_column_truncated(&snapshot, 0));
+        assert_eq!(display_column(&snapshot, 0), 0);
+    }
+
+    #[test]
+    fn motion_past_a_huge_line_prefix_clamps_to_the_prefix() {
+        let snapshot = huge_single_line(1);
+        let start = line_start(&snapshot, 0).expect("line exists");
+        let landed = offset_at_column(&snapshot, 0, usize::MAX).expect("clamps");
+        let window_end = bounded_prefix_end(&snapshot, start, snapshot.len_bytes());
+        assert_eq!(landed, window_end);
+        assert!(landed <= start + MAX_RENDER_LINE_BYTES);
+        assert!(landed > start, "the whole prefix stays reachable");
+        // Ordinary lines keep exact motion.
+        let small = snapshot_of("ab\ncdef");
+        assert_eq!(offset_at_column(&small, 0, 99), Some(2));
+    }
+
+    #[test]
+    fn bounded_prefix_matches_exact_for_short_lines_tabs_and_unicode() {
+        // Tabs (variable advance), wide CJK (width 2), and a combining mark
+        // (width 0) must measure exactly when inside the budget.
+        let snapshot = snapshot_of("a\t\te\u{301}€\t汉\nend");
+        let line = 0;
+        assert!(!line_is_truncated(&snapshot, line));
+        let start = line_start(&snapshot, line).expect("line exists");
+        let end = line_content_end(&snapshot, line).expect("end exists");
+        assert_eq!(bounded_prefix_end(&snapshot, start, end), end);
+        let (bounded, truncated) = bounded_display_width(&snapshot, start..end);
+        assert!(!truncated);
+        // Whatever the width walk computes for tabs, wide, and combining
+        // characters, the bounded path must agree exactly inside the budget.
+        assert_eq!(bounded, display_width(&snapshot, start..end));
+    }
+
+    #[test]
+    fn bounded_prefix_end_never_splits_a_multibyte_char() {
+        // Fill the window edge with a 3-byte char so the 32 KiB cut lands
+        // inside one.
+        let mut text = "a".repeat(MAX_RENDER_LINE_BYTES - 2);
+        text.push('€');
+        text.push_str(&"b".repeat(1024));
+        let snapshot = snapshot_of(&text);
+        assert!(line_is_truncated(&snapshot, 0));
+        let start = line_start(&snapshot, 0).expect("line exists");
+        let end = line_content_end(&snapshot, 0).expect("end exists");
+        let window_end = bounded_prefix_end(&snapshot, start, end);
+        assert!(window_end <= start + MAX_RENDER_LINE_BYTES);
+        assert!(snapshot.is_byte_boundary(window_end));
+        assert!(
+            snapshot.read_bytes(start, window_end).is_ok(),
+            "the window must be directly readable"
+        );
+    }
+
     #[test]
     fn command_spellings_parse_to_their_canonical_names() {
         assert_eq!(
@@ -1494,6 +1988,18 @@ mod tests {
         );
         assert!(EditorCommandName::Open.takes_argument());
         assert!(!EditorCommandName::Write.takes_argument());
+    }
+
+    #[test]
+    fn complete_parses_without_an_argument() {
+        assert_eq!(
+            parse_editor_command("complete"),
+            Some((EditorCommandName::Complete, None))
+        );
+        assert!(!EditorCommandName::Complete.takes_argument());
+        assert_eq!(parse_editor_command("complete now"), None);
+        assert_eq!(EditorCommandName::Complete.spec(), "complete");
+        assert!(EditorCommandName::ALL.contains(&EditorCommandName::Complete));
     }
 
     #[test]

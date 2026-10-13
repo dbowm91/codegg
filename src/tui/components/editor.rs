@@ -10,12 +10,17 @@
 //! what keeps the gutter, the current-line highlight, and cursor arithmetic
 //! deterministic; soft wrap is deferred to a later milestone.
 //!
-//! ## Bounded work
+//! ## Bounded work (C002)
 //!
 //! Only the visible slice is materialized, bounded by the viewport height,
-//! and each visible line is read with a single bounded `read_bytes` call.
-//! Per-frame cost is a function of the viewport, not of the document, so a
-//! multi-megabyte file renders exactly like a small one.
+//! and each visible line examines at most
+//! [`MAX_RENDER_LINE_BYTES`](crate::tui::editor::MAX_RENDER_LINE_BYTES)
+//! (32 KiB) with the frame total capped at
+//! [`MAX_FRAME_SOURCE_BYTES`](crate::tui::editor::MAX_FRAME_SOURCE_BYTES)
+//! (256 KiB). A line past the per-line budget renders from its prefix with
+//! a visible `…[too long]` marker and a banner note — never a silent
+//! prefix. Cursor and selection byte offsets stay exact; horizontal motion
+//! past the prefix clamps to it. See `docs/tui.md` for the exact contract.
 //!
 //! The widget never reads a file: every byte arrives through
 //! `DocumentController::try_snapshot()`, which is daemon-authorized.
@@ -76,6 +81,8 @@ pub struct EditorWidget<'a> {
     pub snapshot: &'a DocumentSnapshot,
     /// Bounded diagnostics and semantic spans for this document generation.
     pub lsp: &'a crate::tui::editor_lsp::EditorLspState,
+    /// Bounded completion popup state for this document generation.
+    pub completion: &'a crate::tui::editor_completion::EditorCompletionState,
     /// Focused editor presentation, mutated only to resolve the viewport.
     pub presentation: &'a mut crate::tui::document_session::TuiDocumentPresentation,
     pub theme: Arc<Theme>,
@@ -116,6 +123,7 @@ impl EditorWidget<'_> {
             self.render_text(frame, text_area);
         }
         self.render_lsp_panel(frame, area);
+        self.render_completion_popup(frame, area);
     }
 
     fn mode_label(&self) -> &'static str {
@@ -203,7 +211,7 @@ impl EditorWidget<'_> {
             }
             Line::from(spans)
         } else {
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
                     format!("ln {line_number}"),
                     Style::default().fg(theme.muted),
@@ -246,7 +254,35 @@ impl EditorWidget<'_> {
                         theme.warning
                     }),
                 ),
-            ])
+            ];
+            // A truncated or partially validated semantic result is never
+            // represented as complete coverage. The signal lives in the
+            // status row so it survives viewport scrolling and narrow
+            // clipping of the text itself.
+            if let Some(note) = self.lsp.semantic_coverage_note() {
+                spans.push(Span::styled("  ", Style::default()));
+                spans.push(Span::styled(
+                    format!("· {note}"),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            // C002: a huge line under the cursor renders from its 32 KiB
+            // prefix with a `…[too long]` marker on the row itself. The
+            // banner repeats the signal so the degradation is visible even
+            // when the row marker scrolls out of view; other huge lines in
+            // the viewport carry their own row markers.
+            if editor::line_is_truncated(
+                self.snapshot,
+                editor::cursor_line(self.snapshot, self.cursor_byte),
+            ) || editor::display_column_truncated(self.snapshot, self.cursor_byte)
+            {
+                spans.push(Span::styled("  ", Style::default()));
+                spans.push(Span::styled(
+                    "· line too long — showing prefix",
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            Line::from(spans)
         };
         let rows = Rect {
             x: inner.x,
@@ -276,11 +312,20 @@ impl EditorWidget<'_> {
 
         let total_lines = self.snapshot.len_lines();
         let mut lines: Vec<Line> = Vec::with_capacity(viewport.visible_lines as usize);
+        // C002 frame budget: content reads across all visible rows cost at
+        // most 256 KiB. Rows past the budget render as a marker without
+        // reading a single content byte, so a viewport full of huge lines
+        // stays bounded. Row byte sizes come from the cheap length check,
+        // never from a content read.
+        let mut frame_remaining = editor::MAX_FRAME_SOURCE_BYTES;
         for row in 0..viewport.visible_lines as usize {
             let line_index = viewport.first_line + row;
             if line_index >= total_lines {
                 break;
             }
+            let row_bytes = editor::line_byte_len(self.snapshot, line_index)
+                .unwrap_or(0)
+                .min(editor::MAX_RENDER_LINE_BYTES);
             let is_current = line_index == cursor_line;
             let number = format!(
                 "{:>width$} ",
@@ -313,7 +358,21 @@ impl EditorWidget<'_> {
             } else {
                 Style::default()
             };
-            spans.extend(self.line_spans(line_index, viewport, text_style));
+            if row_bytes > frame_remaining {
+                // Frame budget exhausted: no content read for this row, just
+                // the honest marker. The banner note (cursor line) and the
+                // per-row markers on the lines that did render already say
+                // the frame is partial.
+                spans.push(Span::styled(
+                    crate::tui::editor::TRUNCATED_LINE_SUFFIX,
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                frame_remaining = frame_remaining.saturating_sub(row_bytes);
+                spans.extend(self.line_spans(line_index, viewport, text_style));
+            }
             lines.push(Line::from(spans));
         }
         // An empty document still has one logical line, so `lines` is
@@ -460,17 +519,153 @@ impl EditorWidget<'_> {
         );
     }
 
+    /// Bounded completion popup for the M003 read.
+    ///
+    /// Renders typed candidates and explicit non-ready states only; it never
+    /// reads document text, so it cannot paint stale content. Untrusted
+    /// server strings arrive pre-sanitized by
+    /// [`crate::tui::editor_completion::sanitize_completion_text`] and are
+    /// rendered as literal spans. On terminals too narrow to fit, the popup
+    /// stays hidden while its keys keep working.
+    fn render_completion_popup(&self, frame: &mut Frame, area: Rect) {
+        use crate::tui::editor_completion::{
+            sanitize_completion_text, CompletionViewStatus, MAX_COMPLETION_DETAIL_CHARS,
+            MAX_COMPLETION_LABEL_CHARS, MAX_COMPLETION_POPUP_ROWS, MAX_COMPLETION_POPUP_WIDTH,
+        };
+        let state = self.completion;
+        if !state.is_open() {
+            return;
+        }
+        let Some(status) = state.status_line() else {
+            return;
+        };
+        let theme = Arc::clone(&self.theme);
+        let mut lines: Vec<Line> = Vec::new();
+        match state.status {
+            CompletionViewStatus::Loading => {
+                lines.push(Line::from("Requesting…"));
+            }
+            CompletionViewStatus::Ready => {
+                if state.candidates.is_empty() {
+                    lines.push(Line::from("No suggestions"));
+                } else {
+                    let rows = MAX_COMPLETION_POPUP_ROWS;
+                    let start = state
+                        .selected
+                        .min(state.candidates.len().saturating_sub(1))
+                        .saturating_sub(rows / 2)
+                        .min(state.candidates.len().saturating_sub(rows));
+                    for (offset, candidate) in
+                        state.candidates.iter().skip(start).take(rows).enumerate()
+                    {
+                        let index = start + offset;
+                        let applicable = matches!(
+                            candidate.applicability,
+                            codegg_protocol::lsp::LspCompletionApplicabilityDto::Applicable { .. }
+                        );
+                        let mut row = format!(
+                            "{} {}",
+                            if index == state.selected { ">" } else { " " },
+                            sanitize_completion_text(&candidate.label, MAX_COMPLETION_LABEL_CHARS),
+                        );
+                        if let Some(kind) = &candidate.kind {
+                            row.push_str("  (");
+                            row.push_str(&sanitize_completion_text(kind, 24));
+                            row.push(')');
+                        }
+                        if let Some(detail) = &candidate.detail {
+                            let detail =
+                                sanitize_completion_text(detail, MAX_COMPLETION_DETAIL_CHARS);
+                            if !detail.is_empty() {
+                                row.push_str("  ");
+                                row.push_str(&detail);
+                            }
+                        }
+                        if !applicable {
+                            row.push_str("  · unavailable");
+                        }
+                        let style = if index == state.selected {
+                            Style::default().bg(theme.selection).fg(theme.foreground)
+                        } else if applicable {
+                            Style::default().fg(theme.foreground)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+            }
+            CompletionViewStatus::NotReady => {
+                lines.push(Line::from("Language server warming — retry shortly"));
+            }
+            CompletionViewStatus::Stale => {
+                lines.push(Line::from("Document changed — press F8 to refresh"));
+            }
+            CompletionViewStatus::Unsynced => {
+                lines.push(Line::from("Server hasn't seen this revision yet"));
+            }
+            CompletionViewStatus::Unsupported => {
+                lines.push(Line::from("Server has no completion provider"));
+            }
+            CompletionViewStatus::Error => {
+                lines.push(Line::from(sanitize_completion_text(
+                    state.error.as_deref().unwrap_or("completion failed"),
+                    120,
+                )));
+            }
+            CompletionViewStatus::Idle => return,
+        }
+        if state.truncated {
+            lines.push(Line::from(Span::styled(
+                "…list truncated",
+                Style::default().fg(theme.warning),
+            )));
+        } else if state.incomplete {
+            lines.push(Line::from(Span::styled(
+                "…more may exist server-side",
+                Style::default().fg(theme.warning),
+            )));
+        }
+        let height = ((lines.len() + 2) as u16).min(area.height).min(16);
+        let width = area.width.min(MAX_COMPLETION_POPUP_WIDTH);
+        if height < 3 || width < 24 {
+            return;
+        }
+        let rect = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        let block = Block::default()
+            .title(format!(
+                " Completion · {status} · ↑↓ select · Enter apply · Esc "
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.primary))
+            .style(Style::default().bg(theme.background));
+        let inner = block.inner(rect);
+        frame.render_widget(Clear, rect);
+        frame.render_widget(block, rect);
+        lines.truncate(inner.height as usize);
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
     /// The visible display-column slice of `line_index`, truncated to the
     /// viewport width.
     ///
-    /// Reads at most one window per line rather than the whole line, so a
-    /// pathologically long line cannot make a frame expensive.
+    /// C002: examines at most the 32 KiB prefix window
+    /// (`bounded_prefix_end`), never the whole logical line, so a
+    /// pathologically long line costs a bounded window per frame. The
+    /// truncation marker itself is added by [`Self::line_spans`]; this
+    /// returns the text window only.
     fn line_slice(&self, line_index: usize, viewport: EditorViewport) -> String {
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
             return String::new();
         };
         let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
-        let text = match self.snapshot.read_bytes(start, end) {
+        let window_end = editor::bounded_prefix_end(self.snapshot, start, end);
+        let text = match self.snapshot.read_bytes(start, window_end) {
             Ok(text) => text,
             Err(_) => return String::new(),
         };
@@ -504,8 +699,19 @@ impl EditorWidget<'_> {
             return vec![];
         };
         let end = editor::line_content_end(self.snapshot, line_index).unwrap_or(start);
-        if end.saturating_sub(start) > 16 * 1024 {
-            return vec![Span::styled(self.line_slice(line_index, viewport), base)];
+        // C002 bounded fallback: a line past the 32 KiB budget renders its
+        // prefix as plain text with a visible marker. Per-token spans are
+        // skipped on this path — mapping them would cost the whole line —
+        // and ordinary short lines keep their exact highlighting below.
+        if editor::bounded_prefix_end(self.snapshot, start, end) < end {
+            let mut spans = vec![Span::styled(self.line_slice(line_index, viewport), base)];
+            spans.push(Span::styled(
+                crate::tui::editor::TRUNCATED_LINE_SUFFIX,
+                Style::default()
+                    .fg(self.theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            return spans;
         }
         let Ok(line) = self.snapshot.read_bytes(start, end) else {
             return vec![];
@@ -544,7 +750,11 @@ impl EditorWidget<'_> {
             .iter()
             .filter(|token| token.line as usize == line_index)
         {
-            let Some(style) = known_token_style(&token.token_type) else {
+            // Well-formed unknown token types render plain (`base`) while
+            // valid neighbors keep their theme styles. This is what stops
+            // one legitimate `variable`/`parameter`/`property` span from
+            // erasing every other highlight on the line.
+            let Some(style) = token_style(&self.theme, &token.token_type) else {
                 continue;
             };
             let Some(token_end) = token.character.checked_add(token.length) else {
@@ -594,16 +804,34 @@ fn severity_label(severity: u32) -> &'static str {
     }
 }
 
-fn known_token_style(token_type: &str) -> Option<Style> {
+/// Map one LSP semantic-token class to a theme slot.
+///
+/// Returns `None` for well-formed but unstyled token types, which the caller
+/// renders as plain text (`base`) while keeping valid neighbors. Only the
+/// style mapping returns `None`; structural validation in
+/// `crate::tui::editor_lsp::validate_semantic_tokens` never rejects a token
+/// for its type name.
+///
+/// All colors come from `Theme` so highlighting stays legible on both dark
+/// and light themes. No hardcoded ANSI colors: patching a theme slot over
+/// `base` preserves the current-line background and diagnostic gutter while
+/// changing only the foreground.
+pub(crate) fn token_style(theme: &Theme, token_type: &str) -> Option<Style> {
     Some(match token_type {
-        "keyword" => Style::default().fg(ratatui::style::Color::Yellow),
-        "string" => Style::default().fg(ratatui::style::Color::Green),
-        "number" => Style::default().fg(ratatui::style::Color::Cyan),
+        "keyword" | "modifier" => Style::default()
+            .fg(theme.primary)
+            .add_modifier(Modifier::BOLD),
+        "string" | "regexp" => Style::default().fg(theme.success),
+        "number" => Style::default().fg(theme.warning),
         "comment" => Style::default()
-            .fg(ratatui::style::Color::DarkGray)
+            .fg(theme.muted)
             .add_modifier(Modifier::ITALIC),
-        "function" | "method" => Style::default().fg(ratatui::style::Color::Magenta),
-        "type" | "class" | "enum" | "struct" => Style::default().fg(ratatui::style::Color::Blue),
+        "function" | "method" | "macro" => Style::default().fg(theme.secondary),
+        "type" | "class" | "enum" | "struct" | "interface" | "typeParameter" | "namespace" => {
+            Style::default().fg(theme.primary)
+        }
+        "variable" | "parameter" | "property" | "enumMember" | "event" | "operator"
+        | "decorator" | "label" => Style::default().fg(theme.foreground),
         _ => return None,
     })
 }
@@ -677,6 +905,7 @@ mod tests {
             ..TuiDocumentPresentation::default()
         };
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -696,6 +925,7 @@ mod tests {
                     busy: options.busy,
                     snapshot: &snapshot,
                     lsp: &lsp,
+                    completion: &completion,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }
@@ -952,6 +1182,120 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("line0")));
     }
 
+    // ── C002 huge-line degradation ────────────────────────────────────
+
+    fn mib_of_x(megabytes: usize) -> String {
+        "x".repeat(megabytes * 1024 * 1024)
+    }
+
+    /// Frame input cost for `text` the way the renderer accounts it: the
+    /// deterministic budget from `measure_frame_cost`, not wall-clock time.
+    fn frame_cost(
+        text: &str,
+        first_line: usize,
+        visible_lines: usize,
+    ) -> crate::tui::editor::FrameCost {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        crate::tui::editor::measure_frame_cost(&snapshot, first_line, visible_lines)
+    }
+
+    #[test]
+    fn a_1mib_single_line_renders_a_marked_prefix_within_budget() {
+        let text = mib_of_x(1);
+        let cost = frame_cost(&text, 0, 24);
+        assert!(
+            cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES,
+            "frame cost {} exceeds 256 KiB",
+            cost.total_bytes
+        );
+        assert_eq!(cost.truncated_lines, 1);
+
+        // Cursor at the start: the prefix is visible and honestly marked.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a truncated line must be visibly marked, got:\n{joined}"
+        );
+        for line in joined.lines() {
+            assert!(
+                line.chars().count() <= 80,
+                "every row stays viewport-bounded: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_at_the_far_right_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(1);
+        let cursor = text.len();
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+
+        // The cursor byte is past the render window; the frame must still
+        // render within budget and say the line is truncated rather than
+        // silently showing a prefix as the whole line.
+        let joined = paint(&text, 80, 24, cursor);
+        assert!(
+            joined.contains("too long"),
+            "far-right cursor on a huge line must stay marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn cursor_in_the_middle_of_a_huge_line_stays_bounded_and_marked() {
+        let text = mib_of_x(2);
+        let joined = paint(&text, 80, 24, text.len() / 2);
+        assert!(
+            joined.contains("too long"),
+            "mid-line cursor on a huge line must stay marked, got:\n{joined}"
+        );
+        let cost = frame_cost(&text, 0, 24);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn a_viewport_of_huge_lines_stays_within_the_frame_budget() {
+        let text = (0..30)
+            .map(|_| "y".repeat(1024 * 1024))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cost = frame_cost(&text, 0, 30);
+        assert!(
+            cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES,
+            "30 huge lines must cost at most 256 KiB, got {}",
+            cost.total_bytes
+        );
+        // Rendering must not panic and must mark the frame partial.
+        let joined = paint(&text, 80, 24, 0);
+        assert!(
+            joined.contains("too long"),
+            "a frame of huge lines must be marked, got:\n{joined}"
+        );
+    }
+
+    #[test]
+    fn a_1x1_terminal_with_a_huge_line_does_not_panic_and_marks() {
+        let text = mib_of_x(1);
+        let lines = render(&text, 1, 1, 0, defaults());
+        assert_eq!(lines.len(), 1);
+        let cost = frame_cost(&text, 0, 1);
+        assert!(cost.total_bytes <= crate::tui::editor::MAX_FRAME_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn tabs_and_wide_unicode_inside_the_budget_render_exactly() {
+        // Inside the budget nothing changes: tabs, wide CJK, and combining
+        // marks render with the same widths as before C002.
+        let text = "a\tb汉e\u{301}f";
+        let joined = paint(text, 40, 8, 0);
+        assert!(joined.contains('a'), "{joined}");
+        assert!(joined.contains('b'), "{joined}");
+        assert!(joined.contains('汉'), "{joined}");
+        assert!(!joined.contains("too long"), "{joined}");
+        let cost = frame_cost(text, 0, 8);
+        assert_eq!(cost.truncated_lines, 0);
+    }
+
     #[test]
     fn the_gutter_width_does_not_change_as_the_cursor_moves() {
         let text = (0..120).map(|i| format!("line{i}\n")).collect::<String>();
@@ -1011,5 +1355,551 @@ mod tests {
     fn bounded_pending_drops_an_over_long_prefix() {
         assert_eq!(bounded_pending("d"), "d");
         assert_eq!(bounded_pending("ddd"), "");
+    }
+
+    fn render_with_lsp(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+        lsp: crate::tui::editor_lsp::EditorLspState,
+        theme: Theme,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            ..TuiDocumentPresentation::default()
+        };
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    notice: options.notice,
+                    mode: options.mode,
+                    focus: options.focus,
+                    pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion: &completion,
+                    presentation: &mut presentation,
+                    theme: Arc::new(theme.clone()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    // ── Completion popup rendering ────────────────────────────────────
+
+    use codegg_protocol::lsp::{
+        LspCompletionApplicabilityDto, LspCompletionCandidateDto, LspCompletionEditDto,
+        LspCompletionResultDto, LspCompletionStatus,
+    };
+
+    fn completion_candidate(label: &str, applicable: bool) -> LspCompletionCandidateDto {
+        LspCompletionCandidateDto {
+            label: label.to_string(),
+            detail: Some(format!("detail {label}")),
+            kind: Some("function".to_string()),
+            filter_text: None,
+            sort_text: None,
+            applicability: if applicable {
+                LspCompletionApplicabilityDto::Applicable {
+                    edit: LspCompletionEditDto {
+                        start_line: 1,
+                        start_character: 4,
+                        end_line: 1,
+                        end_character: 8,
+                        new_text: label.to_string(),
+                    },
+                }
+            } else {
+                LspCompletionApplicabilityDto::NonApplicable {
+                    reason: codegg_protocol::lsp::LspCompletionUnsupportedReason::Snippet,
+                }
+            },
+        }
+    }
+
+    fn completion_state(
+        candidates: Vec<LspCompletionCandidateDto>,
+        status: LspCompletionStatus,
+        truncated: bool,
+        incomplete: bool,
+    ) -> crate::tui::editor_completion::EditorCompletionState {
+        use crate::tui::editor_completion::EditorCompletionScope;
+        use crate::tui::editor_lsp::EditorLspScope;
+        let mut state = crate::tui::editor_completion::EditorCompletionState::default();
+        let scope = EditorCompletionScope {
+            read_scope: EditorLspScope {
+                generation: 0,
+                session_id: "session".into(),
+                project_id: "project".into(),
+                workspace_id: "workspace".into(),
+                path: "src/lib.rs".into(),
+            },
+            document_id: "doc".into(),
+            revision: 0,
+            line: 1,
+            character: 8,
+        };
+        let request = state.begin(&scope);
+        let mut result = LspCompletionResultDto::ready(
+            "doc".into(),
+            0,
+            Some(0),
+            candidates,
+            truncated,
+            incomplete,
+        );
+        result.status = status;
+        assert!(state.apply(request, state.epoch(), &scope, Some(result), None));
+        state
+    }
+
+    fn render_with_completion(
+        text: &str,
+        width: u16,
+        height: u16,
+        completion: &crate::tui::editor_completion::EditorCompletionState,
+    ) -> Vec<String> {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: 0,
+            focus: EditorFocus::Buffer,
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let options = Options {
+            status: "synced",
+            notice: None,
+            mode: EditorMode::Normal,
+            focus: EditorFocus::Buffer,
+            pending_command: "",
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            writable: true,
+            busy: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    notice: options.notice,
+                    mode: options.mode,
+                    focus: options.focus,
+                    pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn completion_popup_lists_candidates_with_selection() {
+        let state = completion_state(
+            vec![
+                completion_candidate("println!", true),
+                completion_candidate("print", true),
+                completion_candidate("snip", false),
+            ],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "labels render:\n{rows}");
+        assert!(rows.contains("> println!"), "first row selected:\n{rows}");
+        assert!(
+            rows.contains("unavailable"),
+            "non-applicable is marked:\n{rows}"
+        );
+        assert!(
+            rows.contains("suggestions"),
+            "header names the state:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_neutralizes_malicious_labels() {
+        let mut evil = completion_candidate("a\x1b[31mb\nc\td", true);
+        evil.detail = Some("x".repeat(500));
+        let state = completion_state(vec![evil], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(!rows.contains('\x1b'), "no escape survives:\n{rows}");
+        assert!(
+            rows.contains("a [31mb c d"),
+            "controls become spaces:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_states_render_distinctly() {
+        for (status, word) in [
+            (LspCompletionStatus::NotReady, "warming"),
+            (LspCompletionStatus::Stale, "re-trigger"),
+            (LspCompletionStatus::Unsynced, "revision"),
+            (LspCompletionStatus::Unsupported, "provider"),
+        ] {
+            let state = completion_state(vec![], status, false, false);
+            let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+            assert!(rows.contains(word), "{status:?} must say {word}:\n{rows}");
+        }
+        let state = completion_state(vec![], LspCompletionStatus::Ready, false, false);
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("No suggestions"),
+            "empty Ready differs:\n{rows}"
+        );
+        let mut errored = crate::tui::editor_completion::EditorCompletionState::default();
+        let scope = {
+            use crate::tui::editor_completion::EditorCompletionScope;
+            use crate::tui::editor_lsp::EditorLspScope;
+            EditorCompletionScope {
+                read_scope: EditorLspScope {
+                    generation: 0,
+                    session_id: "s".into(),
+                    project_id: "p".into(),
+                    workspace_id: "w".into(),
+                    path: "src/lib.rs".into(),
+                },
+                document_id: "doc".into(),
+                revision: 0,
+                line: 0,
+                character: 0,
+            }
+        };
+        let request = errored.begin(&scope);
+        assert!(errored.apply(
+            request,
+            errored.epoch(),
+            &scope,
+            None,
+            Some("boom\n\x1b[0m".into())
+        ));
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &errored).join("\n");
+        assert!(rows.contains("boom"), "error text shows:\n{rows}");
+        assert!(!rows.contains('\x1b'), "error text is sanitized:\n{rows}");
+    }
+
+    #[test]
+    fn completion_popup_hides_on_terminals_too_narrow_to_fit() {
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        // 1x1 and narrow frames must not panic; the keys keep working
+        // because state and rendering are independent.
+        let tiny = render_with_completion("fn main() {}\n", 1, 1, &state).join("\n");
+        assert!(!tiny.contains("println!"), "no room means no popup");
+        let narrow = render_with_completion("fn main() {}\n", 20, 24, &state).join("\n");
+        assert!(
+            !narrow.contains("println!"),
+            "under 24 columns means no popup"
+        );
+        let wide = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(wide.contains("println!"), "room means popup");
+    }
+
+    #[test]
+    fn completion_popup_scrolls_long_lists_and_marks_budgets() {
+        let candidates: Vec<_> = (0..15)
+            .map(|index| completion_candidate(&format!("item-{index:02}"), true))
+            .collect();
+        let mut state = completion_state(candidates, LspCompletionStatus::Ready, true, true);
+        for _ in 0..14 {
+            state.select_next();
+        }
+        let rows = render_with_completion("fn main() {}\n", 80, 24, &state).join("\n");
+        assert!(
+            rows.contains("item-14"),
+            "selected tail is visible:\n{rows}"
+        );
+        assert!(!rows.contains("item-00"), "the head scrolled away:\n{rows}");
+        assert!(
+            rows.contains("truncated"),
+            "the count cap is disclosed:\n{rows}"
+        );
+    }
+
+    #[test]
+    fn completion_popup_on_a_huge_line_stays_bounded() {
+        // The popup reads DTO strings only, never the snapshot, so a
+        // megabyte line cannot blow the frame budget through this path.
+        let text = "x".repeat(1024 * 1024);
+        let state = completion_state(
+            vec![completion_candidate("println!", true)],
+            LspCompletionStatus::Ready,
+            false,
+            false,
+        );
+        let rows = render_with_completion(&text, 80, 24, &state).join("\n");
+        assert!(rows.contains("println!"), "popup renders over huge lines");
+    }
+
+    fn styled_token(
+        line: u32,
+        character: u32,
+        length: u32,
+        kind: &str,
+    ) -> codegg_protocol::lsp::LspSemanticTokenDto {
+        codegg_protocol::lsp::LspSemanticTokenDto {
+            line,
+            character,
+            length,
+            token_type: kind.to_string(),
+            modifiers: vec![],
+        }
+    }
+
+    #[test]
+    fn token_styles_come_from_theme_slots_and_stay_legible() {
+        for theme in [Theme::dark(), Theme::light()] {
+            // Every supported class maps to a theme slot, never a hardcoded
+            // ANSI color. Unknown vendor types stay plain (None).
+            let supported = [
+                "keyword",
+                "string",
+                "number",
+                "comment",
+                "function",
+                "method",
+                "type",
+                "class",
+                "enum",
+                "struct",
+                "variable",
+                "parameter",
+                "property",
+                "namespace",
+            ];
+            for kind in supported {
+                let style =
+                    token_style(&theme, kind).unwrap_or_else(|| panic!("{kind} must be styled"));
+                let fg = style.fg.expect("styled token must set a foreground");
+                assert_ne!(
+                    fg, theme.background,
+                    "{kind} foreground must differ from the background"
+                );
+            }
+            assert_eq!(token_style(&theme, "vendor_custom"), None);
+            assert_eq!(token_style(&theme, "totally_unknown"), None);
+        }
+        // Spot-check slots: keyword uses primary bold, comment uses muted
+        // italic, string uses success. Hardcoded Yellow/Green/DarkGray would
+        // fail this on at least one theme.
+        let dark = Theme::dark();
+        assert_eq!(
+            token_style(&dark, "keyword").unwrap().fg,
+            Some(dark.primary)
+        );
+        assert_eq!(token_style(&dark, "comment").unwrap().fg, Some(dark.muted));
+        assert_eq!(token_style(&dark, "string").unwrap().fg, Some(dark.success));
+    }
+
+    #[test]
+    fn unknown_tokens_render_plain_while_neighbors_keep_styles() {
+        use crate::tui::editor::EditorViewport;
+        let text = "let value = 42;";
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let theme = Arc::new(Theme::default());
+        let mut presentation = TuiDocumentPresentation::default();
+        // `let` keyword 0..3, `value` variable 4..9 (plain), `42` number
+        // 12..14. The middle span is well-formed but unstyled in the old
+        // whitelist; it must not erase its neighbors.
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![
+                styled_token(0, 0, 3, "keyword"),
+                styled_token(0, 4, 5, "variable"),
+                styled_token(0, 12, 2, "number"),
+                styled_token(0, 4, 5, "vendor_custom_plain"),
+            ],
+        );
+        // `vendor_custom_plain` overlaps `variable` and is dropped; the
+        // three distinct spans survive validation.
+        assert_eq!(validated.accepted.len(), 3);
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let viewport = EditorViewport {
+            first_line: 0,
+            column: 0,
+            gutter: 3,
+            text_columns: 40,
+            visible_lines: 5,
+        };
+        let widget = EditorWidget {
+            path: "src/lib.rs",
+            status: "synced",
+            notice: None,
+            mode: EditorMode::Normal,
+            focus: EditorFocus::Buffer,
+            pending_command: "",
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
+            cursor_byte: 0,
+            writable: true,
+            busy: false,
+            snapshot: &snapshot,
+            lsp: &lsp,
+            completion: &completion,
+            presentation: &mut presentation,
+            theme,
+        };
+        let spans = widget.line_spans(0, viewport, Style::default());
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(joined.contains("let"), "{joined}");
+        assert!(joined.contains("value"), "{joined}");
+        assert!(joined.contains("42"), "{joined}");
+        // At least the keyword and number spans carry a themed foreground;
+        // the plain middle does not erase them.
+        let themed = spans.iter().filter(|s| s.style.fg.is_some()).count();
+        assert!(
+            themed >= 2,
+            "keyword and number must keep themed styles: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn truncated_and_partial_highlights_are_disclosed_in_the_banner() {
+        let truncated = crate::tui::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_truncated: true,
+            semantic_incomplete: true,
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let joined = render_with_lsp("content", 60, 8, 0, defaults(), truncated, Theme::default())
+            .join("\n");
+        assert!(
+            joined.contains("truncated"),
+            "truncation must be explicit: {joined}"
+        );
+        let partial = crate::tui::editor_lsp::EditorLspState {
+            semantic_revision: Some(3),
+            semantic_incomplete: true,
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), partial, Theme::default()).join("\n");
+        assert!(
+            joined.contains("partial"),
+            "dropped spans must be explicit: {joined}"
+        );
+        let clean = crate::tui::editor_lsp::EditorLspState::default();
+        let joined =
+            render_with_lsp("content", 60, 8, 0, defaults(), clean, Theme::default()).join("\n");
+        assert!(
+            !joined.contains("truncated") && !joined.contains("partial"),
+            "no signal without semantic data: {joined}"
+        );
+    }
+
+    #[test]
+    fn semantic_highlight_preserves_current_line_and_diagnostic_markers() {
+        use codegg_protocol::lsp::{LspDiagnosticDto, LspRangeDto};
+        let text = "alpha\nbeta\n";
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: vec![styled_token(0, 0, 5, "keyword")],
+            semantic_revision: Some(1),
+            diagnostics: vec![LspDiagnosticDto {
+                range: LspRangeDto {
+                    path: "src/lib.rs".into(),
+                    workspace_relative_path: None,
+                    start_line: 0,
+                    start_column: 0,
+                    end_line: 0,
+                    end_column: 1,
+                },
+                severity: 1,
+                tag: 0,
+                code: None,
+                message: "broken".into(),
+                source: None,
+            }],
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        // Cursor on line 0, viewport shows both lines.
+        let joined = render_with_lsp(text, 40, 8, 0, defaults(), lsp, Theme::default()).join("\n");
+        assert!(joined.contains("alpha"), "{joined}");
+        assert!(
+            joined.contains("!"),
+            "{joined} diagnostic marker must survive"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_do_not_break_horizontal_clipping() {
+        let text = format!("{} // {}", "x".repeat(5000), "tail");
+        let snapshot = DocumentBuffer::new(&text).snapshot();
+        let validated = crate::tui::editor_lsp::validate_semantic_tokens(
+            &snapshot,
+            vec![styled_token(0, 0, 3, "keyword")],
+        );
+        let lsp = crate::tui::editor_lsp::EditorLspState {
+            semantic_tokens: validated.accepted,
+            semantic_revision: Some(1),
+            ..crate::tui::editor_lsp::EditorLspState::default()
+        };
+        let lines = render_with_lsp(&text, 30, 8, 0, defaults(), lsp, Theme::default());
+        let widest = lines
+            .iter()
+            .map(|line| line.trim_end().chars().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            widest <= 30,
+            "semantic spans must stay viewport-bounded: {widest}"
+        );
     }
 }
