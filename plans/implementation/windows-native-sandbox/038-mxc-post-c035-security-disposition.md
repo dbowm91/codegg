@@ -1,6 +1,6 @@
 # Windows Native Sandbox C038 — Post-C035 MXC Security Disposition and Stop/Proceed Gate
 
-Status: **blocked** — hard dependent on written C036 and C037 closures (positive, negative or blocked)
+Status: **closed — no candidate; no production admission**
 Primary class: security/architecture review
 Baseline: `work/windows-native-sandbox-foundation` at `84faa0bd585e7161361bdb255f29e70cdf7ab619` (refresh before handoff).
 Roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.

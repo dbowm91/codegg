@@ -1,6 +1,6 @@
 # Windows Native Sandbox C036 — MXC Denial-capture Path and Provenance Corrective
 
-Status: **active — test-only implementation; native execution operationally gated by Windows 11 ARM64**
+Status: **closed — bounded negative/incomplete; no production admission**
 Primary class: security infrastructure corrective
 Baseline: `work/windows-native-sandbox-foundation` at `a8bd3dafa389c1d71b4126f5bcbfa6efb1037fee` after the C036/C037/C038 plan rebase.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0024-capture-and-handle-semantics-follow-up`.
