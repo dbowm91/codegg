@@ -175,7 +175,7 @@ fn main() {
         std::process::exit(2);
     }
     #[cfg(windows)]
-    if std::env::args().nth(1).as_deref() == Some("--c020-inherited-handle-probe") {
+    if std::env::var("C020_PROBE_MODE").as_deref() == Ok("inherited-handle") {
         inherited_handle_probe();
         return;
     }
@@ -321,10 +321,7 @@ print(f"descendant_probe_pid={child.pid}")
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
     ];
-    lines.push(format!(
-        "{} --c020-inherited-handle-probe",
-        batch_quote(&handle_probe_executable)
-    ));
+    lines.push(batch_quote(&handle_probe_executable));
     lines.push(
         "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)".into(),
     );
@@ -437,6 +434,7 @@ print(f"descendant_probe_pid={child.pid}")
                 "C020_HANDLE_PROBE_RESULT".into(),
                 handle_probe_result.to_string_lossy().into_owned(),
             ),
+            ("C020_PROBE_MODE".into(), "inherited-handle".into()),
             (
                 "C020_DESCENDANT_PID_FILE".into(),
                 descendant_pid_file.to_string_lossy().into_owned(),
