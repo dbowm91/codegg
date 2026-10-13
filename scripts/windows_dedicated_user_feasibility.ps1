@@ -222,19 +222,23 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         C021_OUTSIDE_WRITE = Join-Path $hostFixture 'child-write.txt'
         C021_OUTSIDE_MOVE = Join-Path $hostFixture 'child-move.txt'
     }
-    $environmentText = (($environment.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join "`0") + "`0`0"
-    $environmentPointer = [Runtime.InteropServices.Marshal]::StringToHGlobalUni($environmentText)
+    $childEnvironmentSetup = ($environment.GetEnumerator() |
+        Where-Object { $_.Key.StartsWith('C021_', [StringComparison]::Ordinal) } |
+        ForEach-Object {
+            '$env:' + $_.Key + ' = ' + (ConvertTo-Json -InputObject ([string]$_.Value) -Compress)
+        }) -join "`n"
+    $script = $childEnvironmentSetup + "`n" + $script
     $startup = [C021StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C021StartupInfo])
     $processInfo = [C021ProcessInformation]::new()
-    $createFlags = 0x00000004 -bor 0x00000400
+    $createFlags = 0x00000004
 
     $passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
     try {
         $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordBstr)
         $created = [C021Native]::CreateProcessWithLogonW(
             $account, $null, $plainPassword, 0, $windowsPowerShell, $commandLine,
-            $createFlags, $environmentPointer, $stage, [ref]$startup, [ref]$processInfo)
+            $createFlags, [IntPtr]::Zero, $stage, [ref]$startup, [ref]$processInfo)
     } finally {
         if ($passwordBstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr) }
         $plainPassword = $null
