@@ -1,8 +1,12 @@
 # Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
 
-Status: **ready C001** (independent of Windows MXC native research; no architecture/API changes).
+Status: **ready C001 for upstream integration and exact-head qualification** (mainline already fixed the stale tests; independent of Windows MXC research).
 Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
 Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
+
+## Upstream implementation discovery (2026-10-13)
+
+At `main` SHA `b9ba494c1b21638c2e2f660301ba207ce8859682`, commit `9d32c35b516315adef21e30eb2a9e436826231e0` has **already replaced** the two historic stale hard-block assertions with hard-deny-versus-Ask tests in `tests/tool_execution.rs`. The Windows work branch `631ae9488f251ac70e91b9c8299d2c1c3bff83fa` has not integrated those mainline commits. C001 is **not yet closed**: the mainline tests must be brought into the Windows branch by C040, the actual approval/no-bypass path must be verified, and focused plus hosted CI must pass at the integrated SHA. Do not recreate the upstream test fix or restore regex denial.
 
 ## Current reality and intended distinction
 
@@ -12,7 +16,7 @@ Do not loosen canonical prohibitions for genuinely forbidden operations (e.g. de
 
 ## Dependency
 
-C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny-vs-ask-test-reconciliation.md` is ready. Native MXC research can run independently. Closing C001 requires exact-head general CI green **or** explicit truthful blocking evidence for failures outside C001. Draft PR merge conflicts are a separate integration/rebase issue and are not automatically solved by C001.
+C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny-vs-ask-test-reconciliation.md` is ready for exact-head validation after C040's mainline integration (or a faithful isolated preview). Native MXC research can run independently. Closing C001 requires exact-head general CI green **or** explicit truthful blocking evidence for failures outside C001. Draft PR merge conflicts are a separate integration/rebase issue and are not automatically solved by C001.
 
 ## Acceptance
 
