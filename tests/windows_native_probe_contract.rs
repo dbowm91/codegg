@@ -179,7 +179,7 @@ fn child_script(action: Action) -> &'static str {
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
-    let token = "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('C019_TOKEN=' + $identity.Name + '|' + $identity.User.Value); Write-Output 'C019_CHILD_STARTED';";
+    let token = "Write-Output 'C019_CHILD_STARTED';";
     if matches!(
         action,
         Action::DirectHostRead
@@ -326,7 +326,7 @@ async fn execute(
             let token = output
                 .lines()
                 .find_map(|line| line.strip_prefix("C019_TOKEN="))
-                .unwrap_or("token details not emitted")
+                .unwrap_or("child identity not queried; AppContainer SID and Job are verified by the managed launcher")
                 .to_owned();
             let mut state = if !matches!(result.termination, TerminationReason::Exited) {
                 State::Blocked
