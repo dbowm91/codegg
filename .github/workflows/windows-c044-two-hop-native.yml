@@ -71,7 +71,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "cl.exe failed: $LASTEXITCODE" }
           $hash = (Get-FileHash -Algorithm SHA256 $probe).Hash
           $object = Join-Path $env:RUNNER_TEMP 'c044-version.obj'
-          $compiler = (& cl.exe /Bv /nologo /c $source "/Fo:$object" 2>&1 | Out-String).Trim()
+          # cl.exe /Bv prints multiple lines; GITHUB_ENV accepts only
+          # single-line NAME=VALUE entries, so flatten to one line.
+          $compilerLines = (& cl.exe /Bv /nologo /c $source "/Fo:$object" 2>&1 | Out-String).Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+          $compiler = ($compilerLines -join ' / ')
           if ([string]::IsNullOrWhiteSpace($compiler)) { throw 'Compiler version evidence is missing.' }
           "C044_NATIVE_PROBE=$probe" | Add-Content -LiteralPath $env:GITHUB_ENV
           "C044_PROBE_SHA256=$hash" | Add-Content -LiteralPath $env:GITHUB_ENV
