@@ -161,6 +161,7 @@ fn run() {
     };
     let mut container = mxc_sdk::v1::configs::ProcessContainerConfig::default();
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
     let filesystem = FilesystemPolicy {
         readwrite_paths: vec![stage.to_string_lossy().into_owned()],
         readonly_paths: vec![
@@ -196,6 +197,19 @@ fn run() {
         timeout_ms: Some(20_000),
         environment: Some(vec![
             ("SystemRoot".into(), system_root),
+            (
+                "USERPROFILE".into(),
+                stage.join("profile").to_string_lossy().into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".into(),
+                stage.join("localappdata").to_string_lossy().into_owned(),
+            ),
+            (
+                "APPDATA".into(),
+                stage.join("appdata").to_string_lossy().into_owned(),
+            ),
+            ("SystemDrive".into(), system_drive),
             ("TEMP".into(), stage.to_string_lossy().into_owned()),
             ("TMP".into(), stage.to_string_lossy().into_owned()),
         ]),
@@ -313,6 +327,7 @@ fn run() {
         "schema":"codegg.mxc_c037.v1","qualified_test_only":qualified,"disposition":if qualified {"bounded-positive-test-only"} else {"negative-or-incomplete"},
         "sdk":{"crate":"mxc-sdk","version":"1.0.0","checksum":"e4866ca589a68edc8e931eba58eed9253ad1ce670e974aedc4830a1d94bca6cd","vcs_commit":"a846837d827b496fc4a08dfe60554515758c6647"},
         "host_tier":effective_tier,"tier_probe":{"tier":effective_tier,"error_present":!probe_json["error"].is_null()},"control_inherit_on_read":inherit_on,"control_inherit_off_read":inherit_off,
+        "ordinary_controls":{"inherit_on_exit":control_on.as_ref().ok().and_then(|output|output.status.code()),"inherit_off_exit":control_off.as_ref().ok().and_then(|output|output.status.code()),"inherit_on_proof":control_on_proof.as_ref().map(|proof|json!({"pid":proof["pid"],"secret_match":proof["secret_match"],"same_file":proof["handle_same_file"],"host_path_secret_match":proof["host_path_secret_match"],"host_path_read_error":proof["host_path_read_error"]})),"inherit_off_proof":control_off_proof.as_ref().map(|proof|json!({"pid":proof["pid"],"secret_match":proof["secret_match"],"same_file":proof["handle_same_file"],"host_path_secret_match":proof["host_path_secret_match"],"host_path_read_error":proof["host_path_read_error"]}))},
         "parent_handle_inheritable":inherit_flag_set,"mxc_ambient_transfer_observed":child_proof.as_ref().is_some_and(|p|p["handle_same_file"]==true),
         "source_handle_object_identity_available":source_identity.is_some(),
         "source_handle_owner_pid":std::process::id(),
