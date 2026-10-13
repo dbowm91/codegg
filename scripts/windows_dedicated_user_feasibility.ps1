@@ -233,7 +233,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
     try {
         $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordBstr)
         $created = [C021Native]::CreateProcessWithLogonW(
-            $account, '.', $plainPassword, 1, $windowsPowerShell, $commandLine,
+            $account, $null, $plainPassword, 0, $windowsPowerShell, $commandLine,
             $createFlags, $environmentPointer, $stage, [ref]$startup, [ref]$processInfo)
     } finally {
         if ($passwordBstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr) }

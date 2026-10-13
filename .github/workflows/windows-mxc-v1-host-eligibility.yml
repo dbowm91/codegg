@@ -21,6 +21,8 @@ jobs:
     runs-on: windows-11-arm
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+
       - name: Record serviced Windows 11 native process-isolation prerequisites
         shell: pwsh
         run: |
