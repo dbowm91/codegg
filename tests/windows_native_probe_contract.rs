@@ -320,7 +320,7 @@ async fn execute(
     eprintln!("C019_START action={action:?} restricted={restricted}");
     let result = ManagedProcessService::run(request).await;
     let elapsed_ms = started.elapsed().as_millis();
-    let (state, evidence, error, executed, token) = match result {
+    let (state, evidence, error, executed, token, job_verified) = match result {
         Ok(result) => {
             let output = result.stdout.to_string_lossy();
             let token = output
@@ -358,7 +358,14 @@ async fn execute(
                 let detail = format!("unexpected sandbox outcome: {:?}", result.sandbox);
                 error = Some(error.map_or(detail.clone(), |prior| format!("{prior}; {detail}")));
             }
-            (state, output, error, true, token)
+            (
+                state,
+                output,
+                error,
+                true,
+                token,
+                restricted && sandbox_verified,
+            )
         }
         Err(error) => (
             if matches!(
@@ -373,6 +380,7 @@ async fn execute(
             Some(error.to_string()),
             false,
             "child not started".to_owned(),
+            false,
         ),
     };
     Observation {
@@ -381,7 +389,7 @@ async fn execute(
             .unwrap_or_else(|_| "runner metadata unavailable".to_owned()),
         host_privilege: host_privilege(),
         token,
-        job_verified: restricted && executed,
+        job_verified,
         action,
         state,
         expected: if matches!(
@@ -411,8 +419,10 @@ async fn execute(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c019_shared_native_security_probe_contract() {
     let fixture = tempfile::tempdir().expect("C019 disposable fixture");
-    let stage = PathBuf::from(r"C:\__codegg_test_profile_temp__")
-        .join(format!("c019-{}", uuid::Uuid::new_v4().simple()));
+    let stage = std::env::temp_dir().join(format!(
+        "codegg-c019-stage-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir(&stage).expect("create unique disposable AppContainer stage");
     let host = fixture.path().join("original-host");
     let sibling = fixture.path().join("original-sibling");
