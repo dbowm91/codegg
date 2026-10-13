@@ -1,6 +1,6 @@
 # Asynchronous Background Jobs and External Completion Watching
 
-Status: active — M001–M003 closed; M004 ready
+Status: closed — M001–M004 closed; completion definition met (all milestones have accepted closure records under `plans/closure/async-background-jobs/`; unblock audit: nothing newly unblocked)
 
 Planning baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (default-branch source inspected 2026-10-13). Revalidate the actual implementation head before any code change.
 
@@ -80,7 +80,7 @@ Status: closed at `52d630fc` (closure `plans/closure/async-background-jobs/003-s
 Durable notification displayed for ended turns; opt-in, bounded, authorized wake/continuation only where the owning task has asked to resume. Active-turn safe-boundary wake, restart, cancel and TUI state are deterministic. Never silently reopen a completed interaction.
 
 ### M004 — GitHub Actions remote CI terminal watcher
-Status: ready (unblocked by M003 closure `52d630fc`; M002 soft closed). Plan: `plans/implementation/async-background-jobs/004-github-actions-completion-watch.md`.
+Status: closed at `6860aec9` (closure `plans/closure/async-background-jobs/004-status.md`).
 Watch one authorized, immutable GitHub run/commit/check identity, poll with daemon-owned finite scheduled observations (not LLM or shell), and emit one final notification when the remote CI reaches a terminal status. Safe cancellation/restart/rate limits and unverified/ambiguous results are explicit.
 
 ## Cross-cutting verification and closure
