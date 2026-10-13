@@ -86,4 +86,9 @@ jobs:
 
       - name: Build and run pinned MXC v1 native policy fixture
         shell: pwsh
-        run: cargo run --locked --manifest-path research/windows-native-sandbox/mxc-v1-harness/Cargo.toml
+        run: |
+          $manifest = Join-Path $env:GITHUB_WORKSPACE 'research/windows-native-sandbox/mxc-v1-harness/Cargo.toml'
+          if (-not (Test-Path -LiteralPath $manifest)) {
+            throw "Pinned MXC harness manifest is missing from the checked out workspace: $manifest"
+          }
+          cargo run --locked --manifest-path $manifest
