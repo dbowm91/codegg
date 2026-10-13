@@ -183,7 +183,7 @@ try {
     $source=Join-Path $PSScriptRoot 'windows_token_initialization_marker.c'
     $crt=Join-Path $root 'c028-crt.exe'; $noCrt=Join-Path $root 'c028-no-crt.exe'
     $compileCrt='call "{0}" >nul && cl.exe /nologo /W4 /WX /MT /O2 /Fe:"{1}" "{2}" user32.lib' -f $vcvars,$crt,$source
-    $compileNoCrt='call "{0}" >nul && cl.exe /nologo /W4 /WX /GS- /Zl /O2 /DC028_NO_CRT /Fe:"{1}" "{2}" /link /NODEFAULTLIB /ENTRY:C028NoCrtEntry kernel32.lib user32.lib' -f $vcvars,$noCrt,$source
+    $compileNoCrt='call "{0}" >nul && cl.exe /nologo /W4 /WX /GS- /Zl /O2 /DC028_NO_CRT /Fe:"{1}" "{2}" /link /NODEFAULTLIB /ENTRY:C028NoCrtEntry /SUBSYSTEM:CONSOLE kernel32.lib user32.lib' -f $vcvars,$noCrt,$source
     Push-Location $root
     try { & $env:ComSpec /d /c $compileCrt; if ($LASTEXITCODE -ne 0) { throw "CRT fixture compile failed: $LASTEXITCODE" }; & $env:ComSpec /d /c $compileNoCrt; if ($LASTEXITCODE -ne 0) { throw "no-CRT fixture compile failed: $LASTEXITCODE" } }
     finally { Pop-Location }

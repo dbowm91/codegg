@@ -20,7 +20,7 @@ static DWORD write_context(void) {
     DWORD error = ERROR_SUCCESS;
     const WCHAR *names[] = {L"USERNAME", L"USERPROFILE", L"TEMP", L"TMP", L"PATH"};
     for (DWORD i = 0; i < ARRAYSIZE(names); ++i) {
-        DWORD length = GetEnvironmentVariableW(names[i], value, ARRAYSIZE(value));
+        DWORD length = GetEnvironmentVariableW(names[i], value, (DWORD)ARRAYSIZE(value));
         if (length >= ARRAYSIZE(value)) { error = ERROR_BUFFER_OVERFLOW; break; }
         DWORD written = 0;
         if (!WriteFile(file, names[i], (DWORD)(lstrlenW(names[i]) * sizeof(WCHAR)), &written, NULL) ||
@@ -32,7 +32,7 @@ static DWORD write_context(void) {
     }
     DWORD desktopLength = 0;
     HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
-    if (!desktop || !GetUserObjectInformationW(desktop, UOI_NAME, value, sizeof(value), &desktopLength)) {
+    if (!desktop || !GetUserObjectInformationW(desktop, UOI_NAME, value, (DWORD)sizeof(value), &desktopLength)) {
         error = GetLastError();
     } else {
         DWORD written = 0;
