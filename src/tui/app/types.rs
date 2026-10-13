@@ -380,6 +380,15 @@ pub enum TuiMsg {
     /// this seed instead. `App::process_msg` puts the text in the prompt and
     /// records the context; nothing here is a daemon request.
     ChatComposerSeed(crate::tui::chat_browser::ChatComposeSeed),
+    /// The agents panel asked to act on one agent.
+    ///
+    /// A *selection*, not an instruction: the command layer resolves the
+    /// agent's provenance and decides whether the action is even available,
+    /// so a verb the panel could not offer is still refused here.
+    AgentPanelAction {
+        selection: crate::tui::panels::agents::AgentSelection,
+        name: String,
+    },
     OpenRunDetail {
         run_id: String,
     },

@@ -494,7 +494,7 @@ static DEFAULT_BINDINGS: Lazy<HashMap<(KeyModifiers, KeyCode), InputAction>> =
 /// that `Shift+Left`/`Shift+Right` performs while composing and stealing the
 /// letter itself for `Shift+H`/`Shift+L`. `handle_key_with_bindings` consults
 /// this so those keys stay ordinary text/caret input in Insert.
-fn is_normal_only(action: &InputAction) -> bool {
+pub(crate) fn is_normal_only(action: &InputAction) -> bool {
     matches!(
         action,
         InputAction::DirectionLeft

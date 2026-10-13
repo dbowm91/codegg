@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::document::{DocumentSnapshotDto, DocumentTransactionDto};
+use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
     JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto, ProjectHealthDto,
@@ -1073,6 +1073,16 @@ pub enum CoreResponse {
         disk_base_digest: String,
         lsp_degraded: bool,
     },
+    /// A workspace file was removed. `existed` is false when the target was
+    /// already absent, which the caller treats as success.
+    DocumentDeleted {
+        relative_path: String,
+        existed: bool,
+        /// Echoes the scope the delete was issued under, so the client knows
+        /// which registry refresh the removal implies.
+        #[serde(default)]
+        scope: document::DocumentScope,
+    },
     DocumentReloaded {
         revision: u64,
         lsp_degraded: bool,
@@ -1939,6 +1949,43 @@ pub enum CoreRequest {
         project_id: String,
         workspace_id: String,
         relative_path: String,
+        /// Which authority root confines this document. Defaults to
+        /// `Workspace`; `GlobalAgent` reaches the user-level agent root under
+        /// a stricter filename rule and is skipped by every workspace-only
+        /// path such as LSP synchronization.
+        #[serde(default)]
+        scope: document::DocumentScope,
+    },
+    /// Create one new workspace file and attach it.
+    ///
+    /// `DocumentOpen` requires the target to already exist, so a "create
+    /// this file" flow cannot be expressed through it. This is the additive
+    /// counterpart: it **never overwrites** (an existing target is refused),
+    /// revalidates the same containment rules `DocumentOpen` applies, and
+    /// returns the same `DocumentSnapshot` an open would, so the client
+    /// continues through the ordinary replica path.
+    DocumentCreate {
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        initial_text: String,
+        /// See [`CoreRequest::DocumentOpen::scope`].
+        #[serde(default)]
+        scope: document::DocumentScope,
+    },
+    /// Delete one workspace file.
+    ///
+    /// Used to drop a user-authored agent config, including the override
+    /// file that suppresses a built-in agent. Applies the same containment
+    /// rules as `DocumentCreate`; a missing target is reported as success so
+    /// the operation is idempotent.
+    DocumentDelete {
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        /// See [`CoreRequest::DocumentOpen::scope`].
+        #[serde(default)]
+        scope: document::DocumentScope,
     },
     DocumentSnapshotGet {
         project_id: String,

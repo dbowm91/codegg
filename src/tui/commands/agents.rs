@@ -22,16 +22,31 @@ use crate::util::truncate::truncate_prefix;
 /// refresh coordinator. The TUI never discovers assets or edits foreign
 /// harness directories locally.
 pub(crate) fn start_refresh_assets(app: &mut crate::tui::app::App) {
+    refresh_assets_for_session(app, true);
+}
+
+/// Refresh the asset registry, staying silent when nothing is bound.
+///
+/// The editor's `:wq` calls this after saving an agent config, and an editor
+/// user may have no session attached at all. Reporting that as an *error*
+/// would put a red toast on the screen after a save that actually succeeded;
+/// the refresh simply has nowhere to run. `report_unbound` is what the `/`
+/// command wants and the save path does not.
+pub(crate) fn refresh_assets_for_session(app: &mut crate::tui::app::App, report_unbound: bool) {
     let Some(session) = app.session_state.session.as_ref() else {
-        app.messages_state
-            .toasts
-            .error("Cannot refresh assets without an attached session");
+        if report_unbound {
+            app.messages_state
+                .toasts
+                .error("Cannot refresh assets without an attached session");
+        }
         return;
     };
     let Some(workspace_id) = session.workspace_id.clone() else {
-        app.messages_state
-            .toasts
-            .error("Asset refresh requires a canonical project/workspace binding");
+        if report_unbound {
+            app.messages_state
+                .toasts
+                .error("Asset refresh requires a canonical project/workspace binding");
+        }
         return;
     };
     let core_client = app.core_client.clone();

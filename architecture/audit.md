@@ -224,6 +224,25 @@ Coverage has four distinct categories (M004):
   content read and remains intentionally uninstrumented.
   Document capability/read calls are also bounded content reads; document
   change/save/reload use the `file_mutate` daemon mapping and exclude text.
+  The M006-F `document_create` and `document_delete` operations map to
+  `file_mutate` for the same reason: both materialize or remove bytes, and
+  neither carries document text into the event. Create is additionally never
+  destructive (an existing target is refused) and delete never removes a live
+  attachment, but both are recorded so the audit trail shows who added or
+  removed a file.
+
+  The same three operations also carry `DocumentScope`. Under
+  `DocumentScope::GlobalAgent` they write the user-level agent directory
+  instead of a workspace — **shared** state whose blast radius is every
+  project on the machine rather than one. The action mapping deliberately
+  stays `file_mutate` rather than growing a new action, because the
+  structural fact (bytes moved outside the daemon's session-scoped view)
+  is unchanged; the scope is what an operator will need to *discriminate* by
+  once one daemon serves many agents. `DocumentScope` therefore travels on the
+  request and on every `DocumentSnapshotDto` rather than being inferred at the
+  seam: the audit record, the authorization check, and the TUI all read the
+  same field, and none of them can be right about a global write while
+  another believes it was a workspace write.
 
 Live daemon seam (`src/core/daemon.rs`):
 

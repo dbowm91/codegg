@@ -26,6 +26,172 @@ pub(crate) enum CheckedTextWrite {
     Conflict { actual_hash: String },
 }
 
+/// Maximum directory depth a create may have to materialize.
+///
+/// Bounded so a create cannot be turned into arbitrary directory
+/// construction across the workspace tree.
+const MAX_CREATE_DEPTH: usize = 16;
+
+/// Outcome of a create-file request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckedFileCreate {
+    /// The file did not exist and now holds `text`.
+    Created { new_hash: String },
+    /// The file already exists. Reported rather than overwritten, because a
+    /// create that silently clobbers an existing file is data loss.
+    AlreadyExists,
+    /// The path resolved outside the workspace or through a symlink.
+    Rejected(String),
+}
+
+/// Create one new workspace file holding `text`.
+///
+/// `DocumentOpen` requires the target to already exist
+/// (`canonical_target.is_file()`), so "create a new agent config" cannot be
+/// expressed through the open surface. This is the additive counterpart, and
+/// it deliberately borrows **every** containment check
+/// [`checked_workspace_text_write`] applies — validated relative path,
+/// symlink-free components, canonical root prefix, size bound — and adds
+/// two of its own:
+///
+/// - **No overwrite.** An existing target is [`CheckedFileCreate::AlreadyExists`].
+///   Opening an existing file stays `DocumentOpen`'s job, so there is one
+///   way to reach an existing file and it never rewrites it.
+/// - **Bounded parent creation.** Missing parent directories are created up
+///   to [`MAX_CREATE_DEPTH`] components, each verified to stay under the
+///   canonical root.
+pub(crate) async fn checked_workspace_file_create(
+    workspace_root: &Path,
+    relative_path: &str,
+    text: &str,
+) -> CheckedFileCreate {
+    if text.len() > codegg_protocol::document::MAX_DOCUMENT_TEXT_BYTES {
+        return CheckedFileCreate::Rejected("document exceeds the text size limit".into());
+    }
+    if relative_path.split('/').count() > MAX_CREATE_DEPTH {
+        return CheckedFileCreate::Rejected(format!(
+            "create path is deeper than {MAX_CREATE_DEPTH} components"
+        ));
+    }
+    let root = match workspace_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => return CheckedFileCreate::Rejected(error.to_string()),
+    };
+    let path = match crate::tool::util::validate_target_path(Path::new(relative_path), &root) {
+        Ok(path) => path,
+        Err(error) => return CheckedFileCreate::Rejected(error.to_string()),
+    };
+    // `validate_target_path` already runs the symlink-component check and
+    // skips components that do not exist yet, which is exactly the case
+    // this request exists for: the leaf is missing by design.
+    if path.exists() {
+        return CheckedFileCreate::AlreadyExists;
+    }
+    let parent = match path.parent() {
+        Some(parent) => parent,
+        None => return CheckedFileCreate::Rejected("create target has no parent directory".into()),
+    };
+    if let Err(error) = create_parents(parent, &root) {
+        return CheckedFileCreate::Rejected(error);
+    }
+    // `create_new(true)` is the real guard: it fails rather than truncating,
+    // so a file that appeared between the check above and this write is not
+    // destroyed by the race.
+    let written = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())
+    })();
+    if let Err(error) = written {
+        return CheckedFileCreate::Rejected(error);
+    }
+    if let Some(parent) = path.parent() {
+        let _ = File::open(parent).and_then(|dir| dir.sync_all());
+    }
+    CheckedFileCreate::Created {
+        new_hash: sha256(text),
+    }
+}
+
+/// Outcome of a delete-file request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckedFileDelete {
+    Deleted,
+    /// Nothing was there to delete. Treated as success by the caller: the
+    /// user asked for the file to be gone, and it is.
+    Missing,
+    /// The path resolved outside the workspace or through a symlink.
+    Rejected(String),
+}
+
+/// Delete one workspace file.
+///
+/// Borrows the same containment checks as
+/// [`checked_workspace_file_create`] — validated relative path, symlink-free
+/// components, canonical root prefix — because "delete this agent config"
+/// is exactly as dangerous as "create a file outside the workspace" if the
+/// path is allowed to escape.
+pub(crate) async fn checked_workspace_file_delete(
+    workspace_root: &Path,
+    relative_path: &str,
+) -> CheckedFileDelete {
+    let root = match workspace_root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => return CheckedFileDelete::Rejected(error.to_string()),
+    };
+    let path = match crate::tool::util::validate_target_path(Path::new(relative_path), &root) {
+        Ok(path) => path,
+        Err(error) => return CheckedFileDelete::Rejected(error.to_string()),
+    };
+    let canonical = match path.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return CheckedFileDelete::Missing
+        }
+        Err(error) => return CheckedFileDelete::Rejected(error.to_string()),
+    };
+    if !canonical.starts_with(&root) || !canonical.is_file() {
+        return CheckedFileDelete::Rejected(
+            "delete target is not a regular file inside the workspace".into(),
+        );
+    }
+    match tokio::fs::remove_file(&canonical).await {
+        Ok(()) => {
+            if let Some(parent) = canonical.parent() {
+                let _ = File::open(parent).and_then(|dir| dir.sync_all());
+            }
+            CheckedFileDelete::Deleted
+        }
+        Err(error) => CheckedFileDelete::Rejected(error.to_string()),
+    }
+}
+
+/// Materialize missing parent directories, re-verifying containment.///
+/// Each level is canonicalized *after* creation, so a directory that is a
+/// symlink to somewhere outside the root is detected at the level it
+/// appears rather than trusted because its parent was fine.
+fn create_parents(parent: &Path, root: &Path) -> Result<(), String> {
+    if parent.exists() {
+        return Ok(());
+    }
+    create_parents(parent.parent().unwrap_or(root), root)?;
+    if let Err(error) = std::fs::create_dir(parent) {
+        // A concurrent creator winning the race is success, not failure.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error.to_string());
+        }
+    }
+    let canonical = parent.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical.starts_with(root) {
+        return Err("create directory escapes the workspace root".into());
+    }
+    Ok(())
+}
+
 /// Perform a one-file checked write under the caller's workspace lock. This
 /// is shared by document save while preview apply retains its multi-file
 /// checkpoint/rollback transaction.
@@ -450,6 +616,73 @@ mod tests {
     use codegg_core::session::schema::migrate;
     use sqlx::sqlite::SqlitePoolOptions;
 
+    /// The global-agent scope resolves its own root but must reuse these
+    /// helpers unchanged: a narrower *path* rule is not a weaker *write*
+    /// path. This exercises the full create → write → delete cycle against a
+    /// stand-in root using only the flat `<name>.toml` shape the global
+    /// validator accepts.
+    #[tokio::test]
+    async fn a_flat_global_agent_file_round_trips_through_the_shared_checks() {
+        use codegg_protocol::document::DocumentScope;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("agents");
+        std::fs::create_dir_all(&root).unwrap();
+        let name = DocumentScope::GlobalAgent
+            .validate_global_agent_filename("reviewer.toml")
+            .expect("the flat shape is the only one the global scope accepts");
+
+        let created = checked_workspace_file_create(&root, &name, "name = \"reviewer\"\n").await;
+        assert!(
+            matches!(created, CheckedFileCreate::Created { .. }),
+            "a bare <name>.toml must be creatable at the global root"
+        );
+        assert!(root.join("reviewer.toml").is_file());
+
+        let digest = sha256("name = \"reviewer\"\n");
+        let written = checked_workspace_text_write(
+            &root,
+            &name,
+            &digest,
+            "name = \"reviewer\"\ndescription = \"x\"\n",
+        )
+        .await
+        .expect("first write");
+        assert!(matches!(written, CheckedTextWrite::Written { .. }));
+
+        // A stale digest is a conflict, not a silent overwrite — the global
+        // scope inherits that from the shared writer.
+        let stale = checked_workspace_text_write(&root, &name, &digest, "clobber\n").await;
+        assert!(matches!(stale, Ok(CheckedTextWrite::Conflict { .. })));
+
+        assert_eq!(
+            checked_workspace_file_delete(&root, &name).await,
+            CheckedFileDelete::Deleted
+        );
+        assert!(!root.join("reviewer.toml").exists());
+    }
+
+    #[tokio::test]
+    async fn the_global_path_rule_holds_before_anything_touches_disk() {
+        use codegg_protocol::document::DocumentScope;
+
+        // Even against a root that *does* contain a nested directory, the
+        // global scope refuses the nested name outright: the rule is a
+        // property of the scope, not of what happens to exist.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("agents");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+
+        for refused in ["nested/build.toml", "../escape.toml", "build.txt", ".toml"] {
+            assert!(
+                DocumentScope::GlobalAgent
+                    .validate_global_agent_filename(refused)
+                    .is_err(),
+                "{refused:?} must never be a global agent path"
+            );
+        }
+    }
+
     async fn pool() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -717,6 +950,7 @@ mod tests {
                 "main.rs",
                 "editor",
                 false,
+                codegg_protocol::document::DocumentScope::Workspace,
             )
             .await
             .expect("open managed document");
@@ -830,6 +1064,93 @@ mod tests {
         assert!(matches!(
             validate_session_workspace_binding(&pool, "bad/session", "workspace-test").await,
             Err(LspSessionWorkspaceBindingError::Invalid(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_writes_a_new_file_and_makes_missing_parents() {
+        let root = tempfile::tempdir().unwrap();
+        match checked_workspace_file_create(root.path(), "nested/deep/agent.toml", "hi").await {
+            CheckedFileCreate::Created { .. } => {}
+            other => panic!("expected Created, got {other:?}"),
+        }
+        let written = std::fs::read_to_string(root.path().join("nested/deep/agent.toml")).unwrap();
+        assert_eq!(written, "hi");
+    }
+
+    #[tokio::test]
+    async fn create_refuses_to_overwrite_an_existing_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("agent.toml"), "original").unwrap();
+        assert_eq!(
+            checked_workspace_file_create(root.path(), "agent.toml", "replaced").await,
+            CheckedFileCreate::AlreadyExists
+        );
+        // The refusal must leave the original bytes alone.
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("agent.toml")).unwrap(),
+            "original"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_refuses_a_path_that_escapes_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let escape = format!(
+            "../{}/evil.toml",
+            outside.path().file_name().unwrap().to_string_lossy()
+        );
+        assert!(matches!(
+            checked_workspace_file_create(root.path(), &escape, "x").await,
+            CheckedFileCreate::Rejected(_)
+        ));
+        assert!(matches!(
+            checked_workspace_file_create(root.path(), "/etc/evil.toml", "x").await,
+            CheckedFileCreate::Rejected(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn create_refuses_a_deep_path() {
+        let root = tempfile::tempdir().unwrap();
+        let deep = (0..(MAX_CREATE_DEPTH + 2))
+            .map(|index| format!("d{index}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let path = format!("{deep}/agent.toml");
+        assert!(matches!(
+            checked_workspace_file_create(root.path(), &path, "x").await,
+            CheckedFileCreate::Rejected(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_removes_a_file_and_reports_a_missing_one() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("agent.toml"), "hi").unwrap();
+        assert_eq!(
+            checked_workspace_file_delete(root.path(), "agent.toml").await,
+            CheckedFileDelete::Deleted
+        );
+        assert!(!root.path().join("agent.toml").exists());
+        assert_eq!(
+            checked_workspace_file_delete(root.path(), "agent.toml").await,
+            CheckedFileDelete::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_a_directory_and_an_escape() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        assert!(matches!(
+            checked_workspace_file_delete(root.path(), "sub").await,
+            CheckedFileDelete::Rejected(_)
+        ));
+        assert!(matches!(
+            checked_workspace_file_delete(root.path(), "../escape.toml").await,
+            CheckedFileDelete::Rejected(_)
         ));
     }
 }

@@ -38,6 +38,8 @@ root and lifecycle modules.
 | `src/tui/runtime/` | Runtime loop and event routing |
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
 | `src/tui/route.rs` | `Route`/`RouteManager` primary views (Home, Session, Workspace, Editor) |
+| `src/tui/commands/agent_editor.rs` | M006-F agent config editing: the agent catalog, the `:new` template, provenance rules, and the panel-action resolver. Handles both scopes — `AgentRow` carries `origin` (what it is) *and* `scope` (where its file is), because a default's override may live at either. |
+| `src/tui/panels/agents.rs` | M006-F `/agents` management panel: presentation only (cursor, viewport, armed delete). Every action is a `TuiMsg::AgentPanelAction`; provenance is re-checked in the command layer so a hidden verb is still refused. Badges are `default` / `project` / `global`. |
 | `src/tui/ui_builders/` | Typed UI builders (`shell.rs`, `plugins.rs`, `stats.rs`) for complex panels |
 | `src/tui/task_lifecycle.rs` | `TuiTaskRegistry` - tracks spawned background tasks on `App` |
 | `src/tui/components/` | Widgets; `component.rs` has `DialogType`, `focus.rs` has `FocusManager` |
@@ -194,6 +196,65 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   completions → change review → **side panel (Normal only)** → Workspace →
   Editor → composer. Hotkeys come before the panel because a panel that
   swallowed the only key that leaves it would trap the keyboard.
+- **`:` is one registry, and it is modal.** The editor's command line opens
+  from Normal mode only (in Insert a colon is document text) and owns *every*
+  key while open, including the mode-independent `Ctrl+S` chords — a leaked
+  printable would insert into the document behind a line the user believes is
+  capturing it. `EditorCommandName::ALL` is the single list the parser, the
+  fuzzy palette, and the help all read. The palette matches the **command
+  name only**, never the argument, so `:open <TAB>` completes while the path
+  is still being typed. `fuzzy_score` returns `0` for both an empty query and
+  a total miss, so zero cannot separate them: exact prefixes are kept
+  explicitly and everything else must score above the floor. `:wq now` is
+  **refused**, not run as `:wq`. `:wq` sets
+  `EditorState::close_after_save` and closes from the save *completion* —
+  closing eagerly would discard the draft the user asked to keep.
+- **The editor replaces the main buffer, so the composer arms with `:`.**
+  `composer_refuses_bare_text()` is true only on `Route::Editor` with the
+  buffer unfocused, and the gate sits on the single `InputAction::Char` arm
+  so every typing path is covered by one rule. Scoped narrowly: a focused
+  side panel has its own composer and chat is a conversation, so both stay
+  freely typeable.
+- **The directionals survive the editor buffer.** With the buffer focused in
+  Normal mode, `Shift+H/J/K/L` still selects or docks a panel, routed through
+  `panels::handle_normal_only_action` — the same entry point `App::on_key`
+  uses for its five direction arms. Two dispatchers for one gesture family is
+  exactly how a box and its panel drift.
+- **Agent actions differ by provenance.** A **project** agent
+  (`<root>/.codegg/agents/<name>.toml`) and a **global** agent
+  (`~/.config/codegg/agents/<name>.toml`) can both be edited, deactivated,
+  and deleted; a built-in (`build`, `explore`) can be overridden, deactivated,
+  or restored, but **not** deleted — a built-in is compiled into
+  `generated.rs` and has no file, so deleting would only drop an override and
+  leave the agent present. Delete is armed (`d` then `d`), not immediate.
+  Saving or deleting an agent config triggers the daemon `AssetRefresh`, so
+  `:wq` refreshes `/agents` without a second command, at either scope.
+- **Global agent editing is a second authority, not a relaxed workspace.**
+  Never widen workspace containment to reach `~/.config/codegg/agents/`.
+  `DocumentScope::GlobalAgent` resolves its own root and write gate in
+  `src/core/global_agent_authority.rs` and accepts only a bare
+  `<name>.toml`; every global write still goes through `src/lsp/mutation.rs`.
+  The daemon arms are separate match blocks on purpose — they differ in
+  containment, locking, *and* side effects (no LSP managed document).
+- **A document's scope is part of its identity, and is always on screen.**
+  `DocumentScope` is in the `DocumentKey` string, so a global `build.toml`
+  and a workspace `build.toml` are two documents, never one attachment
+  served from the wrong root. It also travels on the wire rather than being
+  inferred, because it is the discriminator the future admin authorization
+  check needs when one daemon serves many agents. `is_agent_config_path` is
+  scope-qualified for the same reason: matching on the path alone would
+  refresh the wrong registry after a save.
+- **`t` on a default that already has an override opens it, never
+  re-creates.** Re-seeding the disable template would be refused as an
+  overwrite, which reads as a broken button.
+- **`DocumentCreate`/`DocumentDelete` are additive and contained.**
+  `DocumentOpen` requires the target to exist, so creating a file needed a new
+  request. Both live in `src/lsp/mutation.rs` and borrow every check
+  `checked_workspace_text_write` applies, plus: never overwrite an existing
+  target, bounded parent creation (16 components, each re-canonicalized),
+  `create_new(true)` so a race cannot destroy a file, and refuse to unlink a
+  live attachment. Both carry `Capability::FileModify` — grading either as a
+  read would let a read-only attachment create or destroy files.
 - **`Shift+S` is the only *chord* of the panel manager; `/panels` is the
   other route.** `Ctrl+Alt+W` is retired: the manager is a Normal-mode
   surface exactly like the directionals that drive the same panels, so one

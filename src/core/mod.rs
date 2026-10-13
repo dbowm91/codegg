@@ -33,6 +33,7 @@ pub mod daemon_work_orders;
 pub mod daemon_workspace_dashboard;
 pub mod eggpool;
 pub mod event_log;
+pub mod global_agent_authority;
 pub mod instance;
 pub mod lsp_diagnostics_store;
 pub mod notification;

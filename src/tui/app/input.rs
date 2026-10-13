@@ -156,6 +156,9 @@ impl App {
             TuiMsg::ChatComposerSeed(seed) => {
                 self.arm_chat_composer(seed);
             }
+            TuiMsg::AgentPanelAction { selection, name } => {
+                crate::tui::commands::agent_editor::apply_agent_selection(self, selection, &name);
+            }
             TuiMsg::ProjectInitApprove => {
                 let Some(draft) = self.dialog_state.project_init_draft.take() else {
                     return;

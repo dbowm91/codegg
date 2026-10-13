@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use codegg_client::{DocumentController, DocumentState, DocumentTransport};
 use codegg_document::{TextEdit, TextTransaction};
 use codegg_protocol::core::{CoreRequest, CoreResponse};
-use codegg_protocol::document::DocumentSnapshotDto;
+use codegg_protocol::document::{DocumentScope, DocumentSnapshotDto};
 use tokio::sync::Mutex;
 
 struct ScriptedTransport(Mutex<VecDeque<CoreResponse>>);
@@ -88,6 +88,7 @@ fn snapshot(text: &str, revision: u64, dirty: bool, writer: bool) -> CoreRespons
             conflicted: false,
             writer,
             disk_base_digest: "digest".into(),
+            scope: DocumentScope::Workspace,
         },
         writer_lease: writer.then(|| "lease-1".into()),
         lsp_degraded: false,
@@ -128,6 +129,7 @@ async fn writer_replica_flushes_conflicts_and_explicit_reload_preserves_authorit
             "workspace-1".into(),
             "src/lib.rs".into(),
             true,
+            DocumentScope::Workspace,
         )
         .await
         .unwrap();
@@ -170,6 +172,7 @@ async fn read_only_observer_polls_metadata_without_owning_text_edits() {
             "workspace-1".into(),
             "src/lib.rs".into(),
             false,
+            DocumentScope::Workspace,
         )
         .await
         .unwrap();
@@ -209,6 +212,7 @@ async fn tui_kind_controller_keeps_edit_through_save_and_reopen() {
             "workspace-1".into(),
             "src/lib.rs".into(),
             true,
+            DocumentScope::Workspace,
         )
         .await
         .unwrap();
@@ -240,6 +244,7 @@ async fn tui_kind_controller_keeps_edit_through_save_and_reopen() {
             "workspace-1".into(),
             "src/lib.rs".into(),
             true,
+            DocumentScope::Workspace,
         )
         .await
         .unwrap();

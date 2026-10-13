@@ -271,7 +271,11 @@ fn materialize_hosted_panel(app: &mut App, id: SidePanelId) -> bool {
 /// where `L` docks it as before. Panels that cannot act at all (a plan
 /// panel with no pending confirmation, a security panel with no receipt)
 /// toast why and leave the placeholder in place.
-fn open_panel_box(app: &mut App, id: SidePanelId) {
+///
+/// Also the entry point for a bare `/agents`: the panel is loaded and focused
+/// from the same `P::Agents` arm either way, so the slash command and
+/// `Shift+L` cannot disagree about what the panel shows.
+pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
     use crate::tui::app::Dialog;
     use SidePanelId as P;
     match id {
@@ -342,15 +346,25 @@ fn open_panel_box(app: &mut App, id: SidePanelId) {
         P::Models => app.open_dialog(Dialog::Model),
         P::Agents => match app.project_execution_context() {
             Ok(context) => {
-                let lines = crate::tui::commands::agents::format_agents_list_for_root(
-                    &app.agent_state,
-                    false,
+                // M006-F: `/agents` is the management panel, not a
+                // read-only dump. The rows come from the same registry the
+                // text form renders, so the panel and `/agents show` can
+                // never disagree about which agents exist. Loading is a
+                // synchronous registry read, so the panel is filled before
+                // it is shown rather than after a frame with stale rows.
+                let rows = crate::tui::commands::agent_editor::agent_rows_for_root(
                     &context.workspace_root,
                 );
-                app.open_info_dialog(
-                    crate::tui::components::dialogs::info::InfoType::Agents,
-                    lines,
-                );
+                app.panel_host.set_agents_rows(rows);
+                // `select_panel` is the one seam that both selects and
+                // focuses, so `/agents` and `Shift+L` land on the panel by
+                // exactly the same path rather than by a private shortcut.
+                select_panel(app, SidePanelId::Agents);
+                if !app.panel_host.is_focused() {
+                    app.messages_state
+                        .toasts
+                        .warning("Agents panel could not take focus — press L to select it");
+                }
             }
             Err(error) => {
                 app.messages_state.toasts.error(&error);
@@ -376,6 +390,45 @@ fn open_panel_box(app: &mut App, id: SidePanelId) {
         P::TaskView => crate::tui::commands::work_orders::open_task_view(app),
         P::Diff => app.handle_diff_command(None),
         P::Review => app.open_dialog(Dialog::Review),
+    }
+}
+
+/// Whether `action` is one of the Normal-mode-only gestures.
+///
+/// Re-exported from the input layer so the editor asks the same question
+/// `App::on_key` already answers, instead of growing a second list that
+/// could drift from the mode gate that makes the keys safe.
+pub(crate) use crate::tui::input::is_normal_only;
+
+/// Apply one Normal-mode-only gesture.
+///
+/// The single dispatcher for the directionals and the panel manager, shared
+/// by `App::on_key` and the editor buffer so `Shift+L` means the same thing
+/// whether the keyboard is in the composer or in the editor. Returns `true`
+/// when the gesture was handled.
+pub(crate) fn handle_normal_only_action(app: &mut App, action: InputAction) -> bool {
+    match action {
+        InputAction::DirectionLeft => {
+            move_directionally(app, PanelDirection::Left);
+            true
+        }
+        InputAction::DirectionRight => {
+            move_directionally(app, PanelDirection::Right);
+            true
+        }
+        InputAction::DirectionUp => {
+            move_directionally(app, PanelDirection::Up);
+            true
+        }
+        InputAction::DirectionDown => {
+            move_directionally(app, PanelDirection::Down);
+            true
+        }
+        InputAction::OpenPanelManager => {
+            toggle_panel_selector(app);
+            true
+        }
+        _ => false,
     }
 }
 

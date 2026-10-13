@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Weak};
 
 use codegg_document::{DocumentBuffer, DocumentLimits, TextEdit, TextTransaction};
-use codegg_protocol::document::{DocumentSnapshotDto, DocumentTransactionDto};
+use codegg_protocol::document::{DocumentScope, DocumentSnapshotDto, DocumentTransactionDto};
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -51,7 +51,39 @@ pub enum DocumentServiceError {
 struct DocumentKey {
     project_id: String,
     workspace_id: String,
+    /// Which authority root confines this document. Retained on the key so
+    /// the scope survives every later lookup that reconstructs it.
+    scope: DocumentScope,
     relative_path: String,
+}
+
+impl DocumentKey {
+    /// Stable attachment identity, used as the dedupe map key.
+    ///
+    /// The scope is part of this string rather than incidental. A global
+    /// agent `build.toml` and a workspace file `build.toml` are *different*
+    /// documents living under different authority roots; collapsing them
+    /// would let one be served from the other's root, which is exactly the
+    /// containment boundary the scope exists to draw.
+    fn to_key_string(&self) -> String {
+        Self::key_string(
+            &self.project_id,
+            &self.workspace_id,
+            self.scope,
+            &self.relative_path,
+        )
+    }
+
+    /// The same identity from borrowed parts, so `open` can compute it before
+    /// the owned key exists. Single source of truth for the key format.
+    fn key_string(
+        project_id: &str,
+        workspace_id: &str,
+        scope: DocumentScope,
+        relative_path: &str,
+    ) -> String {
+        format!("{project_id}\0{workspace_id}\0{scope:?}\0{relative_path}")
+    }
 }
 
 struct OpenDocument {
@@ -84,6 +116,7 @@ impl OpenDocument {
                 .as_ref()
                 .is_some_and(|(owner, _)| owner == client),
             disk_base_digest: self.base_digest.clone(),
+            scope: self.key.scope,
         }
     }
 }
@@ -115,9 +148,18 @@ impl DocumentService {
         relative_path: &str,
         client_id: &str,
         writable: bool,
+        scope: DocumentScope,
     ) -> Result<(DocumentSnapshotDto, Option<String>), DocumentServiceError> {
         let relative = validate_relative(relative_path)?;
-        let key_string = format!("{project_id}\0{workspace_id}\0{}", relative.display());
+        // The daemon has already confined `relative_path` to `scope`'s root
+        // before calling here; this service re-derives the identity from both
+        // so an attachment can never be keyed by path alone.
+        let key_string = DocumentKey::key_string(
+            &project_id,
+            &workspace_id,
+            scope,
+            &relative.to_string_lossy(),
+        );
         let lock = self.key_lock(&key_string)?;
         let _guard = lock.lock().await;
         if let Some(id) = self.by_key.get(&key_string).map(|id| id.value().clone()) {
@@ -168,8 +210,13 @@ impl DocumentService {
             key: DocumentKey {
                 project_id,
                 workspace_id,
+                scope,
                 relative_path: relative.to_string_lossy().into_owned(),
             },
+            // The authority root, whatever it is. Named `workspace_root` for
+            // historical reasons; under `GlobalAgent` it is the user-level
+            // agent directory. Every disk write derives from this field, so
+            // the scope chosen at open is the scope used at save.
             workspace_root: canonical_root,
             buffer: DocumentBuffer::new(text),
             base_digest,
@@ -186,6 +233,38 @@ impl DocumentService {
         self.by_id.insert(id.clone(), Arc::new(Mutex::new(doc)));
         self.by_key.insert(key_string, id);
         Ok((snapshot, lease))
+    }
+
+    /// Whether any document for `project_id` is currently attached to
+    /// `relative_path` under `scope`.
+    ///
+    /// Consulted before an unlink: removing a file that a live replica still
+    /// points at would leave the editor writing into a path that no longer
+    /// exists, which surfaces much later as a confusing save failure.
+    ///
+    /// The scope is matched exactly. A global agent and a workspace file may
+    /// legitimately share a name while living under different roots, and
+    /// deleting one must not be blocked because the other is open.
+    pub async fn is_path_attached(
+        &self,
+        project_id: &str,
+        relative_path: &str,
+        scope: DocumentScope,
+    ) -> bool {
+        // The workspace id is part of the attachment key but is not a
+        // parameter here, so the lookup walks live documents rather than
+        // guessing one workspace.
+        for entry in self.by_id.iter() {
+            let doc = entry.value().lock().await;
+            if doc.key.project_id == project_id
+                && doc.key.relative_path == relative_path
+                && doc.key.scope == scope
+                && !doc.readers.is_empty()
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub async fn snapshot(
@@ -280,10 +359,7 @@ impl DocumentService {
             }
             let evict = !doc.dirty && doc.readers.is_empty() && doc.writer.is_none();
             if evict {
-                let key = format!(
-                    "{}\0{}\0{}",
-                    doc.key.project_id, doc.key.workspace_id, doc.key.relative_path
-                );
+                let key = doc.key.to_key_string();
                 drop(doc);
                 self.by_id.remove(id);
                 self.by_key.remove(&key);
@@ -460,7 +536,11 @@ impl DocumentService {
         let mut candidates = Vec::new();
         for (id, entry) in documents {
             let doc = entry.lock().await;
+            // Workspace-scoped only. An LSP preview names workspace-relative
+            // paths, so a global agent attachment must neither block such a
+            // preview nor be mistaken for one.
             if doc.key.workspace_id == workspace_id
+                && doc.key.scope == DocumentScope::Workspace
                 && paths.contains(doc.key.relative_path.as_str())
             {
                 candidates.push((id, entry.clone(), doc.operation.clone()));
@@ -512,6 +592,7 @@ impl DocumentService {
             document_id: doc.id.clone(),
             project_id: doc.key.project_id.clone(),
             workspace_id: doc.key.workspace_id.clone(),
+            scope: doc.key.scope,
             path: doc.workspace_root.join(&doc.key.relative_path),
             relative_path: doc.key.relative_path.clone(),
             revision: expected_revision,
@@ -672,10 +753,7 @@ impl DocumentService {
         }
         for (id, key) in remove {
             self.by_id.remove(&id);
-            self.by_key.remove(&format!(
-                "{}\0{}\0{}",
-                key.project_id, key.workspace_id, key.relative_path
-            ));
+            self.by_key.remove(&key.to_key_string());
         }
     }
 
@@ -743,6 +821,10 @@ pub struct DocumentSaveSnapshot {
     pub document_id: String,
     pub project_id: String,
     pub workspace_id: String,
+    /// The scope this document was opened under. The daemon uses it to pick
+    /// the authority root and the write gate, so a save can never be
+    /// redirected at a different root than the one it was opened in.
+    pub scope: DocumentScope,
     pub path: PathBuf,
     pub relative_path: String,
     pub revision: u64,
@@ -829,6 +911,7 @@ mod tests {
                 "main.rs",
                 "client-a",
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -841,6 +924,7 @@ mod tests {
                 "main.rs",
                 "client-b",
                 false,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -853,7 +937,8 @@ mod tests {
                     temp.path(),
                     "main.rs",
                     "client-b",
-                    true
+                    true,
+                    DocumentScope::Workspace
                 )
                 .await,
             Err(DocumentServiceError::WriterBusy)
@@ -950,6 +1035,7 @@ mod tests {
                 "main.rs",
                 "client-c",
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -988,14 +1074,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_same_filename_at_two_scopes_is_two_distinct_documents() {
+        // This is the whole reason scope is part of the attachment key: a
+        // global agent `build.toml` and a workspace file `build.toml` live
+        // under different authority roots, and serving one from the other's
+        // root would break the containment the scope exists to draw.
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let global_root = temp.path().join("global");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::create_dir_all(&global_root).unwrap();
+        std::fs::write(workspace_root.join("build.toml"), "workspace").unwrap();
+        std::fs::write(global_root.join("build.toml"), "global").unwrap();
+
+        let service = DocumentService::new();
+        let (workspace_doc, _) = service
+            .open(
+                "p".into(),
+                "w".into(),
+                &workspace_root,
+                "build.toml",
+                "client-a",
+                false,
+                DocumentScope::Workspace,
+            )
+            .await
+            .unwrap();
+        let (global_doc, _) = service
+            .open(
+                "p".into(),
+                "w".into(),
+                &global_root,
+                "build.toml",
+                "client-a",
+                false,
+                DocumentScope::GlobalAgent,
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            workspace_doc.document_id, global_doc.document_id,
+            "the same filename at two scopes must not dedupe into one attachment"
+        );
+        assert_eq!(workspace_doc.text, "workspace");
+        assert_eq!(global_doc.text, "global");
+        assert_eq!(workspace_doc.scope, DocumentScope::Workspace);
+        assert_eq!(global_doc.scope, DocumentScope::GlobalAgent);
+        assert_eq!(service.by_id.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_attachment_only_blocks_deletes_in_its_own_scope() {
+        // Deleting a global agent must not be blocked because a workspace
+        // file of the same name happens to be open, and vice versa.
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(workspace_root.join("build.toml"), "workspace").unwrap();
+
+        let service = DocumentService::new();
+        service
+            .open(
+                "p".into(),
+                "w".into(),
+                &workspace_root,
+                "build.toml",
+                "client-a",
+                false,
+                DocumentScope::Workspace,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            service
+                .is_path_attached("p", "build.toml", DocumentScope::Workspace)
+                .await,
+            "the open workspace file is attached at workspace scope"
+        );
+        assert!(
+            !service
+                .is_path_attached("p", "build.toml", DocumentScope::GlobalAgent)
+                .await,
+            "an unrelated global path must not be reported as attached"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_lsp_clean_path_guard_ignores_a_global_attachment() {
+        // `lock_clean_paths` matches workspace-relative paths for an LSP
+        // preview. A global agent attachment is not one of those paths and
+        // must not be gated by (or mistaken for) that check.
+        let temp = tempfile::tempdir().unwrap();
+        let global_root = temp.path().join("global");
+        std::fs::create_dir_all(&global_root).unwrap();
+        std::fs::write(global_root.join("build.toml"), "global").unwrap();
+
+        let service = DocumentService::new();
+        service
+            .open(
+                "p".into(),
+                "w".into(),
+                &global_root,
+                "build.toml",
+                "client-a",
+                false,
+                DocumentScope::GlobalAgent,
+            )
+            .await
+            .unwrap();
+
+        // Same relative path, same workspace id — still not a workspace
+        // document, so acquiring the guard must succeed without waiting on
+        // (or sweeping in) the global attachment.
+        service
+            .lock_clean_paths("w", &["build.toml".to_string()])
+            .await
+            .expect("workspace preview guard acquisition");
+    }
+
+    #[tokio::test]
     async fn concurrent_first_opens_converge_on_one_document() {
         let temp = tempfile::tempdir().unwrap();
         tokio::fs::write(temp.path().join("main.rs"), "fn main() {}\n")
             .await
             .unwrap();
         let service = Arc::new(DocumentService::new());
-        let first = service.open("p".into(), "w".into(), temp.path(), "main.rs", "one", false);
-        let second = service.open("p".into(), "w".into(), temp.path(), "main.rs", "two", false);
+        let first = service.open(
+            "p".into(),
+            "w".into(),
+            temp.path(),
+            "main.rs",
+            "one",
+            false,
+            DocumentScope::Workspace,
+        );
+        let second = service.open(
+            "p".into(),
+            "w".into(),
+            temp.path(),
+            "main.rs",
+            "two",
+            false,
+            DocumentScope::Workspace,
+        );
         let (first, second) = tokio::join!(first, second);
         assert_eq!(first.unwrap().0.document_id, second.unwrap().0.document_id);
         assert_eq!(service.by_id.len(), 1);
@@ -1024,7 +1247,8 @@ mod tests {
                     root.path(),
                     "alias.txt",
                     "client",
-                    false
+                    false,
+                    DocumentScope::Workspace,
                 )
                 .await,
             Err(DocumentServiceError::InvalidPath)
@@ -1046,6 +1270,7 @@ mod tests {
                 "main.rs",
                 "writer",
                 false,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1143,6 +1368,7 @@ mod tests {
                 "clean.rs",
                 "reader",
                 false,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1179,6 +1405,7 @@ mod tests {
                 "dirty.rs",
                 "writer",
                 false,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1244,6 +1471,7 @@ mod tests {
                 "main.rs",
                 "writer",
                 false,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();

@@ -122,6 +122,17 @@ pub enum TuiCommand {
         error: Option<String>,
         state: codegg_client::DocumentState,
     },
+    /// Completion of a daemon-owned workspace file delete.
+    ///
+    /// Carries the path so the completion can decide whether the delete
+    /// belonged to an agent config and therefore needs an asset refresh.
+    DocumentDeleted {
+        path: String,
+        /// Authority root the delete ran under, so the completion knows which
+        /// registry refresh the removal implies.
+        scope: codegg_protocol::document::DocumentScope,
+        error: Option<String>,
+    },
     /// Completion of an authoritative current-file diagnostics pull.
     EditorDiagnosticsFinished {
         request_id: u64,

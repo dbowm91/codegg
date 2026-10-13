@@ -18,6 +18,7 @@ use codegg_client::{
 };
 use codegg_document::DocumentSnapshot;
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
+use codegg_protocol::document::DocumentScope;
 
 use crate::core::CoreClient;
 
@@ -67,6 +68,18 @@ pub struct TuiDocumentPresentation {
     /// Multi-key normal-mode command prefix (`d`, `g`). Bounded to
     /// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
     pub pending_command: String,
+    /// The `:` command line while command mode is open, without the leading
+    /// `:`. Empty when command mode is closed.
+    ///
+    /// Bounded to [`MAX_EDITOR_COMMAND_LINE`](super::editor::MAX_EDITOR_COMMAND_LINE).
+    /// This is a command *name*, never document text, so it is exempt from
+    /// the text-authority guard for the same reason `pending_command` is.
+    pub command_line: String,
+    /// Whether the `:` command line is open.
+    pub command_active: bool,
+    /// Index into [`complete_editor_command`](super::editor::complete_editor_command)
+    /// for the highlighted palette row.
+    pub command_selection: usize,
     /// Frontend-local undo history of inverse transactions.
     pub undo: Vec<EditorUndoEntry>,
     /// Frontend-local redo history of inverse transactions.
@@ -91,6 +104,76 @@ impl TuiDocumentPresentation {
         self.mode = EditorMode::Normal;
         super::editor::clear_history(self);
         self.focus = EditorFocus::Composer;
+        self.close_command_line();
+    }
+
+    /// Open the `:` command line, optionally seeded with `prefix`.
+    ///
+    /// Opening resets the selection to the best match so `Enter` on a fresh
+    /// `:` runs the first palette row rather than nothing.
+    pub fn open_command_line(&mut self, prefix: &str) {
+        self.command_active = true;
+        self.command_line = prefix
+            .chars()
+            .take(super::editor::MAX_EDITOR_COMMAND_LINE)
+            .collect();
+        self.command_selection = 0;
+    }
+
+    /// Close the `:` command line and discard whatever was typed.
+    pub fn close_command_line(&mut self) {
+        self.command_active = false;
+        self.command_line.clear();
+        self.command_selection = 0;
+    }
+
+    /// Current palette rows for the command line.
+    pub fn command_matches(&self) -> Vec<super::editor::EditorCommandMatch> {
+        super::editor::complete_editor_command(&self.command_line)
+    }
+
+    /// Append one character to the command line, bounded by
+    /// [`MAX_EDITOR_COMMAND_LINE`](super::editor::MAX_EDITOR_COMMAND_LINE).
+    ///
+    /// Returns `false` when the bound is already reached, so the caller can
+    /// leave the line untouched rather than silently dropping the keystroke
+    /// after mutating the cursor.
+    pub fn push_command_char(&mut self, ch: char) -> bool {
+        if self.command_line.chars().count() >= super::editor::MAX_EDITOR_COMMAND_LINE {
+            return false;
+        }
+        self.command_line.push(ch);
+        self.command_selection = 0;
+        true
+    }
+
+    /// Delete the last character of the command line.
+    pub fn pop_command_char(&mut self) {
+        self.command_line.pop();
+        self.command_selection = 0;
+    }
+
+    /// Move the palette selection by `delta`, clamped to the current rows.
+    pub fn move_command_selection(&mut self, delta: isize) {
+        let count = self.command_matches().len();
+        if count == 0 {
+            self.command_selection = 0;
+            return;
+        }
+        let next = if delta.is_negative() {
+            self.command_selection.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.command_selection
+                .saturating_add(delta.unsigned_abs())
+                .min(count - 1)
+        };
+        self.command_selection = next;
+    }
+
+    /// Replace the command line with `value`, as palette selection does.
+    pub fn accept_command_completion(&mut self, value: &str) {
+        self.command_line = value.to_string();
+        self.command_selection = 0;
     }
 }
 
@@ -143,16 +226,62 @@ impl TuiDocumentSession {
         self.controller.try_attachment_info()
     }
 
+    /// Attach one document under `scope`.
+    ///
+    /// `scope` decides which authority root the daemon confines the document
+    /// to; the TUI forwards it rather than choosing, so the daemon remains
+    /// the only place a root is resolved.
     pub async fn open(
         &self,
         project_id: String,
         workspace_id: String,
         relative_path: String,
         writable: bool,
+        scope: DocumentScope,
     ) -> Result<(), DocumentControllerError> {
         self.controller
-            .open(project_id, workspace_id, relative_path, writable)
+            .open(project_id, workspace_id, relative_path, writable, scope)
             .await
+    }
+
+    /// Create a new file holding `initial_text` under `scope` and attach it.
+    pub async fn create(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        initial_text: String,
+        scope: DocumentScope,
+    ) -> Result<(), DocumentControllerError> {
+        self.controller
+            .create(project_id, workspace_id, relative_path, initial_text, scope)
+            .await
+    }
+
+    /// Delete one file under `scope` through a fresh controller over the same
+    /// transport.
+    ///
+    /// A delete is not an attachment operation, so it needs no replica; it
+    /// only needs the same daemon and the same containment checks.
+    pub async fn delete_file(
+        client: Arc<dyn CoreClient>,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        scope: DocumentScope,
+    ) -> Result<bool, DocumentControllerError> {
+        let controller = DocumentController::new(Arc::new(CoreClientTransport(client)));
+        controller
+            .delete_file(project_id, workspace_id, relative_path, scope)
+            .await
+    }
+
+    /// The scope the attached document was opened under, if any.
+    ///
+    /// Drives the global/project badge in the editor chrome and decides
+    /// whether a successful save should refresh the agent registry.
+    pub fn scope(&self) -> Option<DocumentScope> {
+        self.controller.try_attachment_info().map(|info| info.scope)
     }
 
     pub async fn state(&self) -> DocumentState {
@@ -204,6 +333,7 @@ mod tests {
                     conflicted: false,
                     writer: true,
                     disk_base_digest: "digest".into(),
+                    scope: DocumentScope::Workspace,
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
@@ -217,6 +347,7 @@ mod tests {
                 "workspace".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();

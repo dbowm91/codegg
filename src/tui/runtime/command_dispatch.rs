@@ -1707,6 +1707,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app, request_id, generation, operation, error, state,
             );
         }
+        TuiCommand::DocumentDeleted { path, scope, error } => {
+            super::super::commands::editor::apply_document_deleted(app, path, scope, error);
+        }
         TuiCommand::EditorDiagnosticsFinished {
             request_id,
             scope,

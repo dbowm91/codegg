@@ -60,6 +60,8 @@ impl DaemonRequestFamily {
         match request {
             CoreRequest::DocumentCapabilities
             | CoreRequest::DocumentOpen { .. }
+            | CoreRequest::DocumentCreate { .. }
+            | CoreRequest::DocumentDelete { .. }
             | CoreRequest::DocumentSnapshotGet { .. }
             | CoreRequest::DocumentStatusGet { .. }
             | CoreRequest::DocumentWriterAcquire { .. }

@@ -44,6 +44,209 @@ pub const MAX_EDITOR_PENDING_COMMAND: usize = 2;
 /// Minimum display columns reserved for the horizontal scroll indicator.
 const MIN_EDITOR_TEXT_COLUMNS: u16 = 1;
 
+/// Maximum length of the `:` command line.
+///
+/// The line names one command and at most one argument, so a short bound is
+/// the whole grammar. Anything longer is refused at the keystroke rather
+/// than buffered, so this field can never grow into a second text buffer —
+/// the same reasoning that bounds
+/// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
+pub const MAX_EDITOR_COMMAND_LINE: usize = 64;
+
+/// Maximum number of `:` completions offered at once.
+///
+/// A bounded list keeps the overlay cheap to render every frame and stops a
+/// one-character query from producing an unbounded candidate set.
+pub const MAX_EDITOR_COMMAND_MATCHES: usize = 8;
+
+/// One `:` command the editor can execute.
+///
+/// Kept as data rather than a `match` arm at the call site so the palette,
+/// the parser, and the help line all read the *same* list: a command that
+/// cannot be discovered cannot be executed by muscle memory alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorCommandName {
+    /// `:w` — write the buffer to disk.
+    Write,
+    /// `:q` — close the document.
+    Quit,
+    /// `:wq` / `:x` — write, then close.
+    WriteQuit,
+    /// `:q!` — close, discarding the local draft.
+    ForceQuit,
+    /// `:e` — reload the buffer from disk.
+    Reload,
+    /// `:wa` — write every open document (one today).
+    WriteAll,
+    /// `:new` — create a new document from a template.
+    New,
+    /// `:open <path>` — open a workspace-relative path.
+    Open,
+}
+
+impl EditorCommandName {
+    /// The canonical spelling, shown in the palette and matched first.
+    pub fn spec(self) -> &'static str {
+        match self {
+            Self::Write => "w",
+            Self::Quit => "q",
+            Self::WriteQuit => "wq",
+            Self::ForceQuit => "q!",
+            Self::Reload => "e",
+            Self::WriteAll => "wa",
+            Self::New => "new",
+            Self::Open => "open",
+        }
+    }
+
+    /// One-line help shown next to the palette entry.
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::Write => "write the buffer to disk",
+            Self::Quit => "close this document",
+            Self::WriteQuit => "write, then close",
+            Self::ForceQuit => "close and discard unsaved changes",
+            Self::Reload => "reload from disk, discarding the draft",
+            Self::WriteAll => "write all open documents",
+            Self::New => "create a new file from a template",
+            Self::Open => "open a workspace-relative path",
+        }
+    }
+
+    /// Whether the command consumes a trailing argument.
+    ///
+    /// Drives the fuzzy palette: an argument-taking command is still a valid
+    /// completion while the user is mid-argument, and the palette narrows to
+    /// the spec only once the line is complete enough to run.
+    pub fn takes_argument(self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    /// Every command, in palette order.
+    ///
+    /// One list, so a new command is discoverable the moment it is
+    /// executable rather than only after a help line is also updated.
+    pub const ALL: &'static [EditorCommandName] = &[
+        Self::Write,
+        Self::Quit,
+        Self::WriteQuit,
+        Self::ForceQuit,
+        Self::Reload,
+        Self::WriteAll,
+        Self::New,
+        Self::Open,
+    ];
+}
+
+/// One palette row: the command plus the match quality that ordered it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorCommandMatch {
+    pub command: EditorCommandName,
+    /// Lower is better. Ties break on [`EditorCommandName::spec`] so the
+    /// ordering is deterministic across runs.
+    pub score: usize,
+}
+
+/// Resolve a complete `:` line (without the leading `:`) to a command and
+/// its argument.
+///
+/// Returns `None` for an unknown name. An extra argument is refused for a
+/// command that takes none, so `:wq now` is an error rather than a silent
+/// `:wq` — a mistyped command must never do half of what was asked.
+pub fn parse_editor_command(line: &str) -> Option<(EditorCommandName, Option<String>)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (name, argument) = match trimmed.split_once(char::is_whitespace) {
+        Some((name, rest)) => (name, Some(rest.trim())),
+        None => (trimmed, None),
+    };
+    let command = match name {
+        "w" => EditorCommandName::Write,
+        "q" => EditorCommandName::Quit,
+        "wq" | "x" => EditorCommandName::WriteQuit,
+        "q!" => EditorCommandName::ForceQuit,
+        "e" => EditorCommandName::Reload,
+        "wa" | "wall" => EditorCommandName::WriteAll,
+        "new" => EditorCommandName::New,
+        "open" | "o" => EditorCommandName::Open,
+        _ => return None,
+    };
+    let argument = argument.filter(|value| !value.is_empty());
+    if argument.is_some() && !command.takes_argument() {
+        return None;
+    }
+    Some((command, argument.map(str::to_string)))
+}
+
+/// Fuzzy completions for a partially typed `:` line.
+///
+/// Matches the command name only — never the argument — because the palette
+/// answers "which command did I mean", and `:open <TAB>` must complete the
+/// command while the path is still being typed.
+///
+/// An **exact prefix always outranks a mere subsequence**. `fuzzy_score` is
+/// a subsequence matcher, so the query `w` matches `new` (through its `w`)
+/// with a *better* raw score than it gives `w` itself; left uncorrected, the
+/// one-key query for `w` would rank `new` first. A prefix match is the
+/// stronger signal, so it is ranked ahead of every non-prefix match
+/// regardless of score, and only then ordered by score.
+pub fn complete_editor_command(query: &str) -> Vec<EditorCommandMatch> {
+    let query = query.trim();
+    // An empty query is the discovery path, and it is served in *declared*
+    // order — not alphabetically — so the registry reads as a curated menu
+    // rather than an index. Sorting it by score would reorder the list for
+    // no benefit.
+    if query.is_empty() {
+        return EditorCommandName::ALL
+            .iter()
+            .take(MAX_EDITOR_COMMAND_MATCHES)
+            .map(|command| EditorCommandMatch {
+                command: *command,
+                score: 0,
+            })
+            .collect();
+    }
+    // Two tiers, because a prefix match is a categorically stronger signal
+    // than a subsequence match: `fuzzy_score` is a subsequence matcher, so
+    // the query `w` matches `new` (through its `w`) as well as `w` itself.
+    // A flat score would let a subsequence outrank the exact prefix the user
+    // is typing. `PREFIX_TIER` therefore sits below any subsequence score.
+    const PREFIX_TIER: usize = 0;
+    const SUBSEQUENCE_TIER: usize = 1_000_000;
+
+    let mut matches: Vec<EditorCommandMatch> = EditorCommandName::ALL
+        .iter()
+        .filter_map(|command| {
+            let spec = command.spec();
+            if spec.starts_with(query) {
+                return Some(EditorCommandMatch {
+                    command: *command,
+                    // Within the tier, the shortest prefix wins: query `w`
+                    // ranks `w` ahead of `wq` and `wa`.
+                    score: PREFIX_TIER + spec.len(),
+                });
+            }
+            // `fuzzy_score` returns 0 for a total miss *and* for an empty
+            // query, so a non-matching command must be filtered by the score
+            // rather than merely sorted by it.
+            let score = crate::util::fuzzy::fuzzy_score(query, spec);
+            (score > 0).then_some(EditorCommandMatch {
+                command: *command,
+                score: SUBSEQUENCE_TIER + score,
+            })
+        })
+        .collect();
+    matches.sort_by(|left, right| {
+        left.score
+            .cmp(&right.score)
+            .then_with(|| left.command.spec().cmp(right.command.spec()))
+    });
+    matches.truncate(MAX_EDITOR_COMMAND_MATCHES);
+    matches
+}
+
 /// Buffer edit mode. `Normal` is a vi-style command mode over the buffer;
 /// `Insert` routes printable keys into the document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1241,5 +1444,152 @@ mod tests {
         assert_eq!(offset_at_column(&snapshot, 0, 99), Some(2));
         assert_eq!(offset_at_column(&snapshot, 1, 2), Some(5));
         assert_eq!(offset_at_column(&snapshot, 1, 4), Some(7));
+    }
+
+    #[test]
+    fn command_spellings_parse_to_their_canonical_names() {
+        assert_eq!(
+            parse_editor_command("w"),
+            Some((EditorCommandName::Write, None))
+        );
+        assert_eq!(
+            parse_editor_command("q"),
+            Some((EditorCommandName::Quit, None))
+        );
+        assert_eq!(
+            parse_editor_command("wq"),
+            Some((EditorCommandName::WriteQuit, None))
+        );
+        // `:x` is the vim spelling of the same intent, and must not become
+        // a second command with its own identity.
+        assert_eq!(
+            parse_editor_command("x"),
+            Some((EditorCommandName::WriteQuit, None))
+        );
+        assert_eq!(
+            parse_editor_command("q!"),
+            Some((EditorCommandName::ForceQuit, None))
+        );
+        assert_eq!(
+            parse_editor_command("  w  "),
+            Some((EditorCommandName::Write, None))
+        );
+    }
+
+    #[test]
+    fn a_stray_argument_refuses_the_whole_command() {
+        // `:wq now` must not silently run a `:wq`. Half of what was asked
+        // for is worse than refusing it.
+        assert_eq!(parse_editor_command("wq now"), None);
+        assert_eq!(parse_editor_command("q extra"), None);
+        assert_eq!(parse_editor_command(""), None);
+        assert_eq!(parse_editor_command("zz"), None);
+    }
+
+    #[test]
+    fn only_open_takes_an_argument() {
+        assert_eq!(
+            parse_editor_command("open src/main.rs"),
+            Some((EditorCommandName::Open, Some("src/main.rs".to_string())))
+        );
+        assert!(EditorCommandName::Open.takes_argument());
+        assert!(!EditorCommandName::Write.takes_argument());
+    }
+
+    #[test]
+    fn an_empty_query_offers_the_whole_registry_in_declared_order() {
+        let matches = complete_editor_command("");
+        assert_eq!(matches.len(), EditorCommandName::ALL.len());
+        // Declared order, not alphabetical: the empty palette is the
+        // discovery menu and reads as one.
+        assert_eq!(matches[0].command, EditorCommandName::ALL[0]);
+        assert_eq!(matches[1].command, EditorCommandName::ALL[1]);
+    }
+
+    #[test]
+    fn fuzzy_completion_narrows_and_ranks_a_prefix_first() {
+        let matches = complete_editor_command("w");
+        let names: Vec<&str> = matches.iter().map(|m| m.command.spec()).collect();
+        assert!(names.contains(&"w"), "{names:?}");
+        assert!(names.contains(&"wq"), "{names:?}");
+        // `w` is an exact prefix and `new` only a subsequence match, so `w`
+        // must rank first even though `fuzzy_score("w", "new")` is no worse.
+        assert_eq!(names[0], "w", "{names:?}");
+        // Within the prefix tier the shortest wins.
+        let wq_at = names.iter().position(|name| *name == "wq").unwrap();
+        assert!(wq_at > 0, "{names:?}");
+    }
+
+    #[test]
+    fn fuzzy_completion_excludes_commands_that_do_not_match() {
+        // `fuzzy_score` returns 0 for both an empty query and a total
+        // miss, so a non-matching command must be filtered by the prefix
+        // test rather than the score alone.
+        let names: Vec<&str> = complete_editor_command("qz")
+            .iter()
+            .map(|m| m.command.spec())
+            .collect();
+        assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn the_completion_list_stays_bounded() {
+        let matches = complete_editor_command("a");
+        assert!(
+            matches.len() <= MAX_EDITOR_COMMAND_MATCHES,
+            "{}",
+            matches.len()
+        );
+    }
+
+    #[test]
+    fn the_command_line_is_bounded_so_it_cannot_grow_into_a_buffer() {
+        let mut presentation = TuiDocumentPresentation::default();
+        presentation.open_command_line("");
+        for _ in 0..(MAX_EDITOR_COMMAND_LINE + 10) {
+            presentation.push_command_char('x');
+        }
+        assert_eq!(
+            presentation.command_line.chars().count(),
+            MAX_EDITOR_COMMAND_LINE
+        );
+        // A refused keystroke must not have disturbed the line.
+        assert!(!presentation.push_command_char('y'));
+        assert_eq!(
+            presentation.command_line.chars().count(),
+            MAX_EDITOR_COMMAND_LINE
+        );
+    }
+
+    #[test]
+    fn closing_the_command_line_discards_what_was_typed() {
+        let mut presentation = TuiDocumentPresentation::default();
+        presentation.open_command_line("");
+        presentation.push_command_char('w');
+        assert!(presentation.command_active);
+        presentation.close_command_line();
+        assert!(!presentation.command_active);
+        assert!(presentation.command_line.is_empty());
+    }
+
+    #[test]
+    fn palette_selection_stays_inside_the_current_rows() {
+        let mut presentation = TuiDocumentPresentation::default();
+        presentation.open_command_line("");
+        let count = presentation.command_matches().len();
+        presentation.move_command_selection(-5);
+        assert_eq!(presentation.command_selection, 0);
+        for _ in 0..(count + 5) {
+            presentation.move_command_selection(1);
+        }
+        assert_eq!(presentation.command_selection, count - 1);
+    }
+
+    #[test]
+    fn an_unknown_command_yields_nothing_to_run() {
+        // `parse_editor_command` returning `None` is what turns a typo into
+        // a notice rather than a silent no-op.
+        assert_eq!(parse_editor_command("write"), None);
+        assert_eq!(parse_editor_command("q!q"), None);
     }
 }

@@ -121,6 +121,22 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::FileModify),
         ),
+        // Creating a file is a write: it materializes bytes inside the
+        // workspace, so it carries `FileModify` rather than the read
+        // capability `DocumentOpen` uses. Grading it as a read would let a
+        // read-only attachment create files.
+        R::DocumentCreate { .. } => OperationDescriptor::new(
+            "document_create",
+            ScopeKind::DirectProject,
+            Some(Capability::FileModify),
+        ),
+        // Removing a user-authored file is destructive, so it carries the
+        // same modify capability a create does rather than any read grant.
+        R::DocumentDelete { .. } => OperationDescriptor::new(
+            "document_delete",
+            ScopeKind::DirectProject,
+            Some(Capability::FileModify),
+        ),
         R::ProjectInitDraftGet { .. } => OperationDescriptor::new(
             "project_init_draft",
             ScopeKind::DirectProject,

@@ -253,8 +253,16 @@ pub struct EditorState {
     /// One controller owns one attachment, so switching documents closes the
     /// previous controller before opening the next.
     pub session: Option<TuiDocumentSession>,
-    /// Workspace-relative path currently open or being opened.
+    /// Path currently open or being opened, relative to [`scope`].
     pub path: Option<String>,
+    /// Which authority root `path` is relative to.
+    ///
+    /// Part of the open document's identity, not a display detail: a global
+    /// agent `build.toml` and a workspace file `build.toml` are different
+    /// documents, so this must travel with `path` when deciding whether the
+    /// editor already holds what was asked for, and when deciding whether a
+    /// successful save should refresh the agent registry.
+    pub scope: codegg_protocol::document::DocumentScope,
     /// Request tracking for async lifecycle completions.
     pub request: AsyncUiRequestState,
     /// Bumped on close and on every document switch, so a completion for a
@@ -268,6 +276,13 @@ pub struct EditorState {
     pub status: EditorStatus,
     /// Whether the attachment was opened requesting the writer lease.
     pub wants_writer: bool,
+    /// Set by `:wq` so the document closes once — and only once — the
+    /// preceding save has been accepted by the daemon.
+    ///
+    /// Closing eagerly instead would discard the very draft the user asked
+    /// to keep, and leaving it unset on the completion would strand the
+    /// editor open after a successful write.
+    pub close_after_save: bool,
     /// Diagnostics, read results, and semantic spans bound to this document
     /// generation. Contains no document text.
     pub lsp: crate::tui::editor_lsp::EditorLspState,
@@ -278,12 +293,14 @@ impl Default for EditorState {
         Self {
             session: None,
             path: None,
+            scope: codegg_protocol::document::DocumentScope::default(),
             request: AsyncUiRequestState::new(),
             generation: 0,
             operation: None,
             notice: None,
             status: EditorStatus::Closed,
             wants_writer: false,
+            close_after_save: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
         }
     }
@@ -344,9 +361,11 @@ impl EditorState {
         self.operation = None;
         self.session = None;
         self.path = None;
+        self.scope = codegg_protocol::document::DocumentScope::default();
         self.status = EditorStatus::Closed;
         self.notice = None;
         self.wants_writer = false;
+        self.close_after_save = false;
         self.lsp.reset();
     }
 }

@@ -529,6 +529,8 @@ impl CoreDaemon {
                 | CoreRequest::ProjectionArtifactList { .. }
                 | CoreRequest::ProjectionArtifactRead { .. }
                 | CoreRequest::DocumentOpen { .. }
+                | CoreRequest::DocumentCreate { .. }
+                | CoreRequest::DocumentDelete { .. }
                 | CoreRequest::DocumentSnapshotGet { .. }
                 | CoreRequest::DocumentStatusGet { .. }
                 | CoreRequest::DocumentWriterAcquire { .. }

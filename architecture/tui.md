@@ -1800,6 +1800,216 @@ cancelled, or for another workspace is discarded rather than rendered.
 Switching projects resets selection and expansion, because a path from the
 previous project is meaningless in the next.
 
+### Command mode and agent management (M006-F)
+
+M006-F adds the `:` command line to the editor buffer and turns `/agents`
+into a management panel. It consumes the `document.v1` surface the earlier
+editor milestones established; the one *additive* protocol change is the
+create/delete pair described below.
+
+#### The `:` command line is modal, bounded, and one registry
+
+`:` opens the command line from **Normal mode only** — in Insert a colon is
+document text, and swallowing it would make a URL untypable.
+`editor::EditorCommandName::ALL` is the single command registry: the parser,
+the fuzzy palette, and the help line all read that list, so a command that
+cannot be discovered also cannot be run by muscle memory alone.
+
+| Behavior | Rule |
+|---|---|
+| Palette query | Matches the **command name only**, never the argument, so `:open <TAB>` completes the command while the path is still being typed. |
+| Empty query | Offers the whole registry in declared order — that is the discovery path for a user who has never pressed `:`. |
+| Stray argument | `:wq now` is **refused**, not silently run as `:wq`. Half of what was asked for is worse than refusing it. |
+| Exiting | `Esc` closes without side effects; it is the only exit that can never run anything. |
+| Modal capture | The line owns *every* key while open, including the mode-independent `Ctrl+S` chords. A leaked printable would insert into the document behind a line the user believes is capturing it. |
+| Bound | `MAX_EDITOR_COMMAND_LINE` (64), checked at the keystroke. The field holds a command *name*, never document text, so it is exempt from the editor text-authority guard for the same reason `pending_command` is. |
+
+`fuzzy_score` returns `0` for both an empty query and a total miss, so a score
+of zero cannot separate them. `complete_editor_command` therefore keeps exact
+prefix matches explicitly and requires a non-zero score for everything else —
+without that, `:qz` would offer commands that do not contain the query.
+
+#### `:wq` closes after the write, never before
+
+`EditorState::close_after_save` defers the close to the save completion.
+Closing eagerly would detach the controller and discard the very draft the
+user asked to keep; not setting it would strand the editor open after a
+successful write. The flag is cleared in `detach()` so a failed save cannot
+leave a stale close armed for the *next* document.
+
+A plain `:q` with an unflushed draft is refused with a message naming both
+escapes (`:w` first, or `:q!` to discard) — `:q!` is only reachable because
+that refusal exists.
+
+#### The editor replaces the main buffer; the composer arms with `:`
+
+While `Route::Editor` is active and the buffer does **not** hold focus,
+`composer_refuses_bare_text()` is true and `App::on_key` turns the first
+character into `:` + that character. The gate sits on the single
+`InputAction::Char` arm, so every path that could type a character is
+covered by one rule rather than by the keymap alone.
+
+It is scoped narrowly on purpose: a focused side panel is a *different*
+destination with its own composer, and chat is a conversation, so both stay
+freely typeable.
+
+#### The directionals stay live in the buffer
+
+With the buffer focused in **Normal mode**, `Shift+H/J/K/L` and the arrow
+twins select or dock a panel. This routes through
+`panels::handle_normal_only_action` — the *same* entry point `App::on_key`
+uses for its five direction arms — so `Shift+L` means the same thing whether
+the keyboard is in the composer or in the buffer. Two dispatchers for one
+gesture family is exactly how a box and its panel drift.
+
+#### `/agents` actions differ by provenance, and the panel says so
+
+`src/tui/panels/agents.rs` holds presentation only (cursor, viewport, armed
+action); every action becomes `TuiMsg::AgentPanelAction` and is resolved in
+`commands/agent_editor.rs`, which re-checks provenance so a verb the panel
+could not offer is still refused if it arrives another way.
+
+| Origin | Edit | Deactivate | Delete | Restore |
+|---|---|---|---|---|
+| Project (`<root>/.codegg/agents/<name>.toml`) | yes | yes | yes (`d` then `d` — armed, not immediate) | no |
+| Global (`~/.config/codegg/agents/<name>.toml`) | yes | yes | yes (armed, as above) | no |
+| Default (`build`, `explore`, …) | via override | yes | **no** | yes (drops the override) |
+
+A built-in agent is compiled into `generated.rs` and has **no file of its
+own**. Deleting one would only remove its override and leave the agent
+present, which is worse than offering no delete at all. Restore is exact
+precisely because the default has no saved copy to go stale: removing the
+override falls back to the compiled definition.
+
+#### Create and delete are additive, contained, and never overwrite
+
+`DocumentOpen` requires the target to already exist
+(`canonical_target.is_file()`), so "create this file" was not expressible.
+`DocumentCreate` and `DocumentDelete` are the additive pair. Both live in
+`src/lsp/mutation.rs` next to `checked_workspace_text_write` and borrow
+**every** containment check it applies — validated relative path,
+symlink-free components, canonical root prefix — because "delete this config"
+is as dangerous as "create a file outside the workspace" if the path can
+escape. Four additions of their own:
+
+- **No overwrite.** An existing target is `AlreadyExists`; the file is not
+  touched. Opening an existing file stays `DocumentOpen`'s job, so there is
+  one way to reach an existing file and it never rewrites it.
+- **Bounded parent creation.** Missing directories are materialized to
+  `MAX_CREATE_DEPTH` (16) components, each canonicalized *after* creation so
+  a directory that is a symlink is caught at the level it appears.
+- **`create_new(true)`.** A file that appears between the existence check
+  and the write is not destroyed by the race.
+- **Refuse to delete what is open.** The daemon rejects an unlink for a
+  live attachment; a client-side `remove_file` would leave a replica writing
+  to a path that no longer exists.
+
+Both carry `Capability::FileModify` in `authorization/policy.rs`. Grading
+either as a read would let a read-only attachment create or destroy files.
+
+#### Scope: two authorities, and the UI always says which
+
+An agent config lives in one of two places, and they are not
+interchangeable:
+
+| Scope | Location | Who sees the edit |
+|---|---|---|
+| `DocumentScope::Workspace` | `<root>/.codegg/agents/<name>.toml` | this project |
+| `DocumentScope::GlobalAgent` | `~/.config/codegg/agents/<name>.toml` | **every project on this machine** |
+
+`DocumentOpen` is workspace-contained by design, and a global agent is
+outside every workspace, so workspace containment can never reach it. The
+answer is **not** to relax that containment. `DocumentScope` establishes a
+second, separately named authority (`src/core/global_agent_authority.rs`) with
+its own root and its own write gate, and the global scope is **stricter** than
+the workspace scope, never wider:
+
+| | Workspace | GlobalAgent |
+|---|---|---|
+| Allowed shape | any workspace-relative path under the root | exactly `<name>.toml`, one level, no separators |
+| Name rule | `validate_relative` (no `..`, no absolute) | `[A-Za-z0-9_-]{1,64}`, bounded |
+| Write gate | that workspace's repository lock | a process-wide mutex for the agent directory |
+| LSP managed document | yes | **no** — it is not a workspace document |
+| External-disk refresh | yes | no |
+
+The narrow rule runs in `DocumentScope::validate_global_agent_filename`
+*before* any filesystem work, and then the shared checks still run: every
+global create/write/delete goes through `src/lsp/mutation.rs` exactly as a
+workspace write does. The global path adds a root and a gate; it never
+replaces a containment check with a cheaper one.
+
+**These are separate match arms, not one arm with a conditional root.** The
+two authorities differ in containment, locking, *and* side effects; folding
+them together is how a "just this once" LSP sync or repository lock ends up
+applied to a path outside the workspace it was written for. The global
+handlers live in their own `impl CoreDaemon` block in
+`src/core/daemon_documents.rs`.
+
+`DocumentScope` is part of the attachment key
+(`DocumentKey::key_string`), because a global `build.toml` and a workspace
+`build.toml` are different documents under different roots — collapsing them
+would let one be served from the other's root. It travels on the wire rather
+than being inferred server-side, because it is also the discriminator the
+future admin authorization check needs (§ *One daemon, many agents* below).
+
+#### The blast radius is always on screen
+
+`build.toml` reads the same at either scope, but `:wq` means "this project"
+in one case and "every project" in the other. The scope is therefore shown, not
+remembered:
+
+- the editor status row carries a `[project]` / `[global]` badge, warning-
+  coloured when global (`src/tui/components/editor.rs`);
+- the `/agents` row badge is `default` / `project` / `global`, with global in
+  the warning colour (`src/tui/panels/agents.rs`);
+- the new-agent template states its scope in a header comment, so the
+  distinction is still there after the buffer is closed.
+
+`is_agent_config_path(path, scope)` is **scope-qualified**. Matching on the
+path alone would treat a workspace file that happens to be called
+`build.toml` as a global agent and refresh the wrong registry after a save.
+
+#### Choosing a scope when creating
+
+`:new <name>` creates a project agent (the historical behaviour).
+`:new global <name>` creates a global one. `split_scope_word` consumes a
+leading `global`/`project` only when a name follows it, so `:new global` is
+still an agent *named* `global` — no agent name is unreachable.
+
+When the name already exists, `:new` opens the file that actually defines the
+agent rather than creating a second, shadowed definition: `:new global build`
+with a project `build` opens the project file, because that is the definition
+in effect. When a default carries overrides at **both** scopes the row
+presents the project one, for the same reason.
+
+#### One daemon, many agents (future)
+
+Today one daemon serves one OS user, so "who owns this file" and "who is
+asking" are the same question; an explicit authorization tier would be
+theatre, and adding one now would be untestable. The forward contract is
+recorded rather than assumed:
+
+- the global root is **shared** state — one agent's edit changes every
+  project and the user — so the requirement is per-**request**, not
+  per-document;
+- an admin capability must gate `DocumentOpen`, `DocumentCreate`,
+  `DocumentDelete`, and the save/reload path;
+- the audit trail must distinguish a global mutation from a workspace one so
+  an operator can attribute it;
+- every call resolves through `global_agent_authority::ensure_root` /
+  `existing_root`, which is the single seam where the check belongs.
+
+`DocumentScope` already travels on the request and the snapshot, so adding
+the gate later is additive rather than a rewrite of the containment rules.
+
+#### Saving refreshes the panel
+
+A successful save of a file matching `is_agent_config_path(path, scope)`
+triggers the same daemon `AssetRefresh` `/reload` already uses, so `:wq`
+makes the new agent appear without a second command, at either scope. A delete does the same. `set_rows`
+preserves the cursor **by name**, which is what makes a save-then-refresh
+feel stable: the list behind the cursor changes, the row under it does not.
+
 ### Agent change review (M006-E)
 
 `/review <preview-id>` opens a modal review of a pending LSP change candidate

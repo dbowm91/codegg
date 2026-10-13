@@ -56,6 +56,16 @@ pub struct EditorWidget<'a> {
     pub focus: EditorFocus,
     /// Pending normal-mode command prefix.
     pub pending_command: &'a str,
+    /// Whether the `:` command line is open.
+    pub command_active: bool,
+    /// Authority root the open document is confined to. Drives the global /
+    /// project badge in the status row, so a user editing a shared agent
+    /// config can see at a glance that a `:wq` will affect every project.
+    pub scope: codegg_protocol::document::DocumentScope,
+    /// The `:` line without its leading colon.
+    pub command_line: &'a str,
+    /// Highlighted palette row index.
+    pub command_selection: usize,
     /// Cursor byte offset into `snapshot`.
     pub cursor_byte: usize,
     /// Whether the attachment holds the writer lease.
@@ -125,37 +135,119 @@ impl EditorWidget<'_> {
         } else {
             format!(" {}", self.pending_command)
         };
-        let status_style = if self.notice.is_some() {
-            Style::default().fg(theme.error)
+        // The `:` line replaces the status text while it is open. It owns
+        // the banner row because that row is what the user is looking at
+        // when they typed `:`, and a separate floating line would read as a
+        // different surface than the one holding the keyboard.
+        let (banner_text, banner_style) = if self.command_active {
+            (
+                format!(":{}_", self.command_line),
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if let Some(notice) = self.notice {
+            (
+                format!("{notice}{pending}"),
+                Style::default().fg(theme.error),
+            )
         } else if !self.writable {
-            Style::default().fg(theme.warning)
+            (
+                format!("{}{pending}", self.status),
+                Style::default().fg(theme.warning),
+            )
         } else {
-            Style::default().fg(theme.muted)
-        };
-        let banner = self.notice.unwrap_or(self.status);
-        let first = Line::from(Span::styled(format!("{banner}{pending}"), status_style));
-        let second = Line::from(vec![
-            Span::styled(
-                format!("ln {line_number}"),
+            (
+                format!("{}{pending}", self.status),
                 Style::default().fg(theme.muted),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(format!("col {column}"), Style::default().fg(theme.muted)),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                if self.writable {
-                    "writable"
-                } else {
-                    "read-only — edits refused"
+            )
+        };
+        let first = Line::from(Span::styled(banner_text, banner_style));
+        let second = if self.command_active {
+            // One row of fuzzy matches, inlined after the cursor readout.
+            // A separate overlay would cover the document the command is
+            // about to act on, which is the one thing the user needs to see
+            // while choosing between `:w` and `:wq`.
+            let matches = editor::complete_editor_command(self.command_line);
+            let mut spans = vec![Span::styled(
+                format!("ln {line_number}  col {column}  "),
+                Style::default().fg(theme.muted),
+            )];
+            if matches.is_empty() {
+                spans.push(Span::styled(
+                    "no matching command",
+                    Style::default().fg(theme.error),
+                ));
+            }
+            for (index, candidate) in matches.iter().enumerate() {
+                if index > 0 {
+                    spans.push(Span::raw("  "));
                 }
-                .to_string(),
-                Style::default().fg(if self.writable {
-                    theme.muted
-                } else {
-                    theme.warning
-                }),
-            ),
-        ]);
+                let selected = index == self.command_selection;
+                let command = candidate.command;
+                spans.push(Span::styled(
+                    format!(":{}", command.spec()),
+                    if selected {
+                        Style::default()
+                            .fg(theme.background)
+                            .bg(theme.primary)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.foreground)
+                    },
+                ));
+                spans.push(Span::styled(
+                    format!(" {}", command.help()),
+                    Style::default().fg(theme.muted),
+                ));
+            }
+            Line::from(spans)
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!("ln {line_number}"),
+                    Style::default().fg(theme.muted),
+                ),
+                Span::styled("  ", Style::default()),
+                Span::styled(format!("col {column}"), Style::default().fg(theme.muted)),
+                Span::styled("  ", Style::default()),
+                // Always show which root this document is confined to. The
+                // difference is invisible in the path itself (`build.toml`
+                // reads the same at either scope) but it decides who sees
+                // the edit, so it must not be something the user has to
+                // remember.
+                Span::styled(
+                    format!(
+                        "[{}]  ",
+                        crate::tui::commands::agent_editor::scope_label(self.scope)
+                    ),
+                    Style::default().fg(if self.scope.is_global_agent() {
+                        theme.warning
+                    } else {
+                        theme.muted
+                    }),
+                ),
+                Span::styled(
+                    if !self.writable {
+                        "read-only — edits refused".to_string()
+                    } else if crate::tui::commands::agent_editor::is_agent_config_path(
+                        self.path, self.scope,
+                    ) {
+                        // In an agent file the interesting command is the one
+                        // that publishes the agent, so say so here rather
+                        // than making the user read `/help` for it.
+                        crate::tui::commands::agent_editor::AGENT_EDITOR_HINT.to_string()
+                    } else {
+                        "writable".to_string()
+                    },
+                    Style::default().fg(if self.writable {
+                        theme.muted
+                    } else {
+                        theme.warning
+                    }),
+                ),
+            ])
+        };
         let rows = Rect {
             x: inner.x,
             y: inner.y + inner.height.saturating_sub(CHROME_ROWS),
@@ -547,8 +639,12 @@ mod tests {
         mode: EditorMode,
         focus: EditorFocus,
         pending_command: &'a str,
+        command_active: bool,
+        command_line: &'a str,
+        command_selection: usize,
         writable: bool,
         busy: bool,
+        scope: codegg_protocol::document::DocumentScope,
     }
 
     fn defaults<'a>() -> Options<'a> {
@@ -558,8 +654,12 @@ mod tests {
             mode: EditorMode::Normal,
             focus: EditorFocus::Buffer,
             pending_command: "",
+            command_active: false,
+            command_line: "",
+            command_selection: 0,
             writable: true,
             busy: false,
+            scope: codegg_protocol::document::DocumentScope::Workspace,
         }
     }
 
@@ -587,6 +687,10 @@ mod tests {
                     mode: options.mode,
                     focus: options.focus,
                     pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    scope: options.scope,
                     cursor_byte: presentation.cursor_byte,
                     writable: options.writable,
                     busy: options.busy,
@@ -643,9 +747,13 @@ mod tests {
 
     #[test]
     fn a_read_only_attachment_says_so() {
+        // Wide enough for the whole readout row. The scope badge sits before
+        // the advisory on purpose: on a narrow box the badge and the cursor
+        // position survive truncation while the trailing hint is what gets
+        // cut, because the badge is the safety-relevant half.
         let joined = render(
             "content",
-            50,
+            60,
             8,
             0,
             Options {
@@ -657,6 +765,51 @@ mod tests {
         .join("\n");
         assert!(joined.contains("read-only"), "{joined}");
         assert!(joined.contains("edits refused"), "{joined}");
+    }
+
+    /// The scope badge is the only thing on screen that tells a user whether
+    /// `:wq` reaches this project or every project on the machine, and the
+    /// path reads identically at either scope. It must therefore always be
+    /// rendered, and it must change with the scope.
+    #[test]
+    fn the_status_row_always_names_the_authority_root() {
+        for (scope, expected) in [
+            (
+                codegg_protocol::document::DocumentScope::Workspace,
+                "[project]",
+            ),
+            (
+                codegg_protocol::document::DocumentScope::GlobalAgent,
+                "[global]",
+            ),
+        ] {
+            let joined = render(
+                "content",
+                60,
+                8,
+                0,
+                Options {
+                    scope,
+                    ..defaults()
+                },
+            )
+            .join("\n");
+            assert!(
+                joined.contains(expected),
+                "{scope:?} must show {expected}:\n{joined}"
+            );
+            // And never the other one — a badge that always rendered both
+            // would carry no information.
+            let other = if expected == "[project]" {
+                "[global]"
+            } else {
+                "[project]"
+            };
+            assert!(
+                !joined.contains(other),
+                "{scope:?} must not show {other}:\n{joined}"
+            );
+        }
     }
 
     /// The status banner is the row directly above the line/column

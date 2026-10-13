@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use codegg_document::{DocumentBuffer, DocumentLimits, DocumentSnapshot, TextTransaction};
 use codegg_protocol::core::{CoreRequest, CoreResponse, RequestEnvelope, PROTOCOL_VERSION};
 use codegg_protocol::document::{
-    DocumentSnapshotDto, DocumentTextEditDto, DocumentTextRangeDto, DocumentTransactionDto,
-    MAX_DOCUMENT_EDITS, MAX_DOCUMENT_INSERT_BYTES, MAX_DOCUMENT_TEXT_BYTES,
+    DocumentScope, DocumentSnapshotDto, DocumentTextEditDto, DocumentTextRangeDto,
+    DocumentTransactionDto, MAX_DOCUMENT_EDITS, MAX_DOCUMENT_INSERT_BYTES, MAX_DOCUMENT_TEXT_BYTES,
 };
 use std::sync::Mutex;
 use thiserror::Error;
@@ -103,6 +103,9 @@ struct PendingChange {
 pub struct DocumentAttachmentInfo {
     pub project_id: String,
     pub workspace_id: String,
+    /// Authority root in effect. The frontend renders this as the
+    /// global/project badge beside the file name.
+    pub scope: DocumentScope,
     pub relative_path: String,
     pub document_id: String,
     pub revision: u64,
@@ -131,6 +134,10 @@ impl DynamicTransport {
 struct Attachment {
     project_id: String,
     workspace_id: String,
+    /// Authority root this document was opened under. Retained so a
+    /// reconnect reopens at the *same* scope; reopening a global agent as a
+    /// workspace file would silently address a different root.
+    scope: DocumentScope,
     relative_path: String,
     document_id: String,
     writer_lease: Option<String>,
@@ -284,6 +291,7 @@ impl DocumentController {
         Some(DocumentAttachmentInfo {
             project_id: a.project_id.clone(),
             workspace_id: a.workspace_id.clone(),
+            scope: a.scope,
             relative_path: a.relative_path.clone(),
             document_id: a.document_id.clone(),
             revision: a.daemon_revision,
@@ -295,12 +303,17 @@ impl DocumentController {
             pending_changes: a.pending.len(),
         })
     }
+    /// Open one document under `scope`.
+    ///
+    /// `scope` selects the daemon's authority root: the bound workspace, or
+    /// the user-level agent directory under a stricter filename rule.
     pub async fn open(
         &self,
         project_id: String,
         workspace_id: String,
         relative_path: String,
         writable: bool,
+        scope: DocumentScope,
     ) -> Result<(), DocumentControllerError> {
         let _op = self.operation.lock().await;
         let open_epoch = {
@@ -325,6 +338,7 @@ impl DocumentController {
                 project_id: project_id.clone(),
                 workspace_id: workspace_id.clone(),
                 relative_path: relative_path.clone(),
+                scope,
             })
             .await;
         let response = match response {
@@ -383,29 +397,216 @@ impl DocumentController {
             ));
         }
         let buffer = DocumentBuffer::new(&snapshot.text);
+        self.install_replica(
+            project_id,
+            workspace_id,
+            scope,
+            relative_path,
+            snapshot.document_id,
+            snapshot.revision,
+            snapshot.dirty,
+            snapshot.conflicted,
+            buffer,
+            lease,
+            state.clone(),
+        );
+        lifecycle.finish(state);
+        Ok(())
+    }
+
+    /// Create one new workspace file holding `initial_text`, then attach it.
+    ///
+    /// Shares [`DocumentController::open`]'s entire replica-installation
+    /// path, because a freshly created document is attached by exactly the
+    /// same rules as an existing one — the only difference is who wrote the
+    /// first bytes. The daemon refuses to overwrite an existing target, so
+    /// this never silently replaces a file the user did not mean to replace.
+    #[allow(clippy::too_many_arguments)]
+    /// Create one new file holding `initial_text` under `scope`, then attach
+    /// it. The daemon never overwrites, and under [`DocumentScope::GlobalAgent`]
+    /// accepts only a bare `<name>.toml`.
+    pub async fn create(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        initial_text: String,
+        scope: DocumentScope,
+    ) -> Result<(), DocumentControllerError> {
+        let _op = self.operation.lock().await;
+        let open_epoch = {
+            let mut replica = self.replica.lock().expect("replica mutex poisoned");
+            if replica.attachment.is_some() {
+                return Err(DocumentControllerError::AlreadyOpen);
+            }
+            replica.lifecycle = ControllerLifecycle::Opening;
+            replica.lifecycle_epoch = replica.lifecycle_epoch.wrapping_add(1);
+            replica.state = DocumentState::Opening;
+            replica.lifecycle_epoch
+        };
+        let lifecycle = LifecycleGuard {
+            controller: self,
+            epoch: open_epoch,
+            restore: DocumentState::Closed,
+            finished: false,
+        };
+        let response = self
+            .transport
+            .request(CoreRequest::DocumentCreate {
+                project_id: project_id.clone(),
+                workspace_id: workspace_id.clone(),
+                relative_path: relative_path.clone(),
+                initial_text,
+                scope,
+            })
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                self.fail_open();
+                return Err(DocumentControllerError::Transport(error));
+            }
+        };
+        let (snapshot, lease) = match response {
+            CoreResponse::DocumentSnapshot {
+                snapshot,
+                writer_lease,
+                ..
+            } => (snapshot, writer_lease),
+            CoreResponse::Error { message, .. } => {
+                self.fail_open();
+                return Err(DocumentControllerError::Response(message));
+            }
+            r => {
+                self.fail_open();
+                return self.response_error(r);
+            }
+        };
+        // A create always intends to be edited, so the writer lease is
+        // required rather than requested as a fallback — a read-only new
+        // file would be a buffer the user cannot type into.
+        let Some(lease) = lease else {
+            self.fail_open();
+            return Err(DocumentControllerError::Response(
+                "created document did not receive a writer lease".into(),
+            ));
+        };
+        if snapshot.text.len() > MAX_DOCUMENT_TEXT_BYTES {
+            self.fail_open();
+            return Err(DocumentControllerError::Response(
+                "document snapshot exceeds the protocol size limit".into(),
+            ));
+        }
+        let state = if snapshot.conflicted {
+            DocumentState::Conflict
+        } else {
+            DocumentState::Synced
+        };
+        self.install_replica(
+            project_id,
+            workspace_id,
+            scope,
+            relative_path,
+            snapshot.document_id,
+            snapshot.revision,
+            snapshot.dirty,
+            snapshot.conflicted,
+            DocumentBuffer::new(&snapshot.text),
+            Some(lease),
+            state.clone(),
+        );
+        lifecycle.finish(state);
+        Ok(())
+    }
+
+    /// Delete one workspace file.
+    ///
+    /// Separate from [`DocumentController::close`], which only detaches an
+    /// attachment. Used to drop a user-authored agent config, including the
+    /// override that suppresses a built-in agent.
+    pub async fn delete_file(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        relative_path: String,
+        scope: DocumentScope,
+    ) -> Result<bool, DocumentControllerError> {
+        // Refuse locally when the caller is deleting the file this
+        // controller is attached to: the daemon enforces the same rule, and
+        // catching it here turns a round trip into an immediate answer.
+        //
+        // The scope is part of the comparison. A global agent and a workspace
+        // file may share a name; only the one actually open blocks the
+        // delete.
+        let attached_same_path = {
+            let replica = self.replica.lock().expect("replica mutex poisoned");
+            replica.attachment.as_ref().is_some_and(|attachment| {
+                attachment.relative_path == relative_path && attachment.scope == scope
+            })
+        };
+        if attached_same_path {
+            return Err(DocumentControllerError::Response(
+                "cannot delete the document this editor has open".into(),
+            ));
+        }
+        let response = self
+            .transport
+            .request(CoreRequest::DocumentDelete {
+                project_id,
+                workspace_id,
+                relative_path: relative_path.clone(),
+                scope,
+            })
+            .await
+            .map_err(DocumentControllerError::Transport)?;
+        match response {
+            CoreResponse::DocumentDeleted { existed, .. } => Ok(existed),
+            CoreResponse::Error { message, .. } => Err(DocumentControllerError::Response(message)),
+            r => self.response_error(r),
+        }
+    }
+
+    /// Install a freshly received snapshot as the local replica.
+    ///
+    /// The one place an attachment is built, shared by `open` and `create`
+    /// so the two can never disagree about what "attached" means.
+    #[allow(clippy::too_many_arguments)]
+    fn install_replica(
+        &self,
+        project_id: String,
+        workspace_id: String,
+        scope: DocumentScope,
+        relative_path: String,
+        document_id: String,
+        daemon_revision: u64,
+        dirty: bool,
+        conflicted: bool,
+        buffer: DocumentBuffer,
+        lease: Option<String>,
+        state: DocumentState,
+    ) {
         {
             let mut replica = self.replica.lock().expect("replica mutex poisoned");
             replica.attachment = Some(Attachment {
                 project_id,
                 workspace_id,
+                scope,
                 relative_path,
-                document_id: snapshot.document_id,
+                document_id,
                 writer_lease: lease,
-                daemon_revision: snapshot.revision,
+                daemon_revision,
                 buffer,
                 generation: self.generation,
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 in_flight: None,
-                dirty: snapshot.dirty,
-                conflicted: snapshot.conflicted,
+                dirty,
+                conflicted,
             });
-            replica.state = state.clone();
+            replica.state = state;
             replica.lifecycle = ControllerLifecycle::Idle;
             replica.local_edit_seq = 0;
         }
-        lifecycle.finish(state);
-        Ok(())
     }
     fn fail_open(&self) {
         let mut replica = self.replica.lock().expect("replica mutex poisoned");
@@ -906,6 +1107,7 @@ impl DocumentController {
         let (
             project_id,
             workspace_id,
+            scope,
             relative_path,
             document_id,
             wants_writer,
@@ -914,7 +1116,7 @@ impl DocumentController {
         ) = {
             let mut guard = self.replica.lock().expect("replica mutex poisoned");
             let prior_state = guard.state.clone();
-            let (project_id, workspace_id, relative_path, document_id, wants_writer) = {
+            let (project_id, workspace_id, scope, relative_path, document_id, wants_writer) = {
                 let a = guard
                     .attachment
                     .as_ref()
@@ -922,6 +1124,7 @@ impl DocumentController {
                 (
                     a.project_id.clone(),
                     a.workspace_id.clone(),
+                    a.scope,
                     a.relative_path.clone(),
                     a.document_id.clone(),
                     a.writer_lease.is_some(),
@@ -933,6 +1136,7 @@ impl DocumentController {
             (
                 project_id,
                 workspace_id,
+                scope,
                 relative_path,
                 document_id,
                 wants_writer,
@@ -952,6 +1156,7 @@ impl DocumentController {
                 project_id: project_id.clone(),
                 workspace_id,
                 relative_path,
+                scope,
             })
             .await;
         let response = match response {
@@ -1272,6 +1477,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1315,6 +1521,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1389,6 +1596,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1408,6 +1616,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1453,6 +1662,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1471,6 +1681,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1517,6 +1728,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("old-lease".into()),
                     lsp_degraded: false,
@@ -1539,6 +1751,7 @@ mod tests {
                         conflicted: false,
                         writer: false,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: None,
                     lsp_degraded: false,
@@ -1561,6 +1774,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1616,6 +1830,7 @@ mod tests {
                     conflicted: false,
                     writer: true,
                     disk_base_digest: "digest".into(),
+                    scope: DocumentScope::Workspace,
                 },
                 writer_lease: Some("lease-1".into()),
                 lsp_degraded: false,
@@ -1629,6 +1844,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1659,6 +1875,7 @@ mod tests {
                     conflicted: false,
                     writer: true,
                     disk_base_digest: "digest".into(),
+                    scope: DocumentScope::Workspace,
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
@@ -1672,6 +1889,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1715,6 +1933,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1753,6 +1972,7 @@ mod tests {
                     conflicted: false,
                     writer: true,
                     disk_base_digest: "d".into(),
+                    scope: DocumentScope::Workspace,
                 },
                 writer_lease: Some("lease".into()),
                 lsp_degraded: false,
@@ -1766,6 +1986,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1775,7 +1996,8 @@ mod tests {
                     "project-1".into(),
                     "workspace-1".into(),
                     "other.rs".into(),
-                    true
+                    true,
+                    DocumentScope::Workspace
                 )
                 .await,
             Err(DocumentControllerError::AlreadyOpen)
@@ -1800,7 +2022,13 @@ mod tests {
         });
         let controller = Arc::new(DocumentController::new(transport));
         assert!(controller
-            .open("p".into(), "w".into(), "f".into(), false)
+            .open(
+                "p".into(),
+                "w".into(),
+                "f".into(),
+                false,
+                DocumentScope::Workspace
+            )
             .await
             .is_err());
         assert_eq!(controller.state().await, DocumentState::Closed);
@@ -1825,6 +2053,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1862,6 +2091,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1896,6 +2126,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();
@@ -1939,6 +2170,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1959,6 +2191,7 @@ mod tests {
                         conflicted: false,
                         writer: true,
                         disk_base_digest: "digest".into(),
+                        scope: DocumentScope::Workspace,
                     },
                     writer_lease: Some("lease-1".into()),
                     lsp_degraded: false,
@@ -1978,6 +2211,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .unwrap();

@@ -806,6 +806,10 @@ impl App {
             .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
             .unwrap_or("")
             .to_string();
+        let command_active = presentation.command_active;
+        let command_line = presentation.command_line.clone();
+        let command_selection = presentation.command_selection;
+        let scope = self.editor_state.scope;
         let path = self
             .editor_state
             .path
@@ -828,6 +832,10 @@ impl App {
                 mode,
                 focus,
                 pending_command: &pending,
+                command_active,
+                command_line: &command_line,
+                command_selection,
+                scope,
                 cursor_byte: cursor,
                 writable,
                 busy,

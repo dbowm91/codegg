@@ -13,6 +13,8 @@
 //! is a legitimate document path and opens like any other.
 
 use std::collections::BTreeSet;
+
+use codegg_protocol::document::DocumentScope;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -66,6 +68,7 @@ fn snapshot(text: &str, revision: u64, dirty: bool, writer: bool) -> CoreRespons
             conflicted: false,
             writer,
             disk_base_digest: "digest".into(),
+            scope: DocumentScope::Workspace,
         },
         writer_lease: writer.then(|| "lease-1".into()),
         lsp_degraded: false,
@@ -144,6 +147,7 @@ async fn a_file_discovered_by_the_tree_opens_like_any_typed_path() {
             "workspace-1".into(),
             row.path.clone(),
             true,
+            DocumentScope::Workspace,
         )
         .await
         .expect("the tree-derived path should open");
@@ -176,6 +180,7 @@ async fn a_tree_derived_path_the_workspace_does_not_contain_fails_closed() {
             "workspace-1".into(),
             "src/does-not-exist.rs".to_string(),
             true,
+            DocumentScope::Workspace,
         )
         .await;
     assert!(result.is_err(), "an absent document must not open");

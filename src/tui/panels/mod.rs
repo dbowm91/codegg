@@ -46,6 +46,7 @@
 //! panel with a text buffer must consume everything, or falling text would be
 //! edited in one buffer while rendered in another.
 
+pub mod agents;
 pub mod chat;
 pub mod help;
 pub mod hosted;
@@ -733,6 +734,7 @@ pub struct SidePanelHost {
     active: SidePanelId,
     focused: bool,
     session: session::SessionPanel,
+    agents: agents::AgentsPanel,
     chat: chat::ChatPanel,
     terminal: terminal::TerminalPanel,
     help: help::HelpPanel,
@@ -761,6 +763,7 @@ impl SidePanelHost {
             active: SidePanelId::Session,
             focused: false,
             session: session::SessionPanel,
+            agents: agents::AgentsPanel::default(),
             chat: chat::ChatPanel::default(),
             terminal: terminal::TerminalPanel::default(),
             help: help::HelpPanel::default(),
@@ -901,6 +904,22 @@ impl SidePanelHost {
         &mut self.chat
     }
 
+    /// The agents panel, so the command layer can load the registry rows it
+    /// is not allowed to resolve itself.
+    pub fn agents_panel_mut(&mut self) -> &mut agents::AgentsPanel {
+        &mut self.agents
+    }
+
+    /// Replace the agents panel's rows from the resolved registry.
+    ///
+    /// Goes through the panel's reload rather than `set_rows` so an armed
+    /// delete is dropped: the row the user armed against may not survive a
+    /// reload, and a confirm against a different row would delete something
+    /// they never selected.
+    pub fn set_agents_rows(&mut self, rows: Vec<agents::AgentRow>) {
+        self.agents.reload_from(rows);
+    }
+
     /// Drop the chat panel's per-view state.
     ///
     /// Called when the chat projection is cleared (revocation, project
@@ -954,6 +973,11 @@ impl SidePanelHost {
             SidePanelId::Terminal => self.terminal.is_empty(),
             // Help always has rows, so it can always take focus.
             SidePanelId::Help => false,
+            // The agents panel is never "empty": even with no agents loaded
+            // it can create one, and `n` is the action that fills it. The
+            // Terminal precedent applies — a surface that can act must be
+            // reachable, or the key that would fix it never arrives.
+            SidePanelId::Agents => false,
             // A hosted panel with nothing adopted into it is empty, and
             // refusing focus is what leaves the keyboard in the composer —
             // where the user can immediately type the `/` command that fills
@@ -970,6 +994,7 @@ impl SidePanelHost {
     fn panel(&mut self) -> &mut dyn SidePanel {
         match self.active {
             SidePanelId::Session => &mut self.session,
+            SidePanelId::Agents => &mut self.agents,
             SidePanelId::Chat => &mut self.chat,
             SidePanelId::Terminal => &mut self.terminal,
             SidePanelId::Help => &mut self.help,

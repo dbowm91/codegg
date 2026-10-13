@@ -783,6 +783,44 @@ normal path.
   `merge` keys only work in TOML format, not markdown.
 - **`disable = true`** removes an agent from resolution (Info diagnostic).
 
+### Editing agents from the TUI (M006-F)
+
+The `/agents` panel writes agent config through the same registry and the
+same `document.v1` surface every other file uses — there is no second write
+path, and the loader above is unchanged.
+
+- **Two authorities, not two paths into one.** A **project** agent
+  (`.codegg/agents/<name>.toml`) is inside the workspace and is edited under
+  `DocumentScope::Workspace`. A **global** agent
+  (`~/.config/codegg/agents/<name>.toml`) is outside every workspace, so it is
+  edited under `DocumentScope::GlobalAgent` — a second daemon authority
+  (`src/core/global_agent_authority.rs`) with its own root and write gate, not
+  a relaxed workspace. Its allowed shape is **narrower**: a bare
+  `<name>.toml`, one level, `[A-Za-z0-9_-]{1,64}`, with no LSP managed
+  document. See `architecture/tui.md` § *Scope: two authorities*.
+- **The global root is shared state.** `:wq` on a global agent changes what
+  every project on the machine does, which is why the scope is on screen
+  (editor badge, `/agents` row badge, template header) rather than inferred
+  from a path that reads the same at either scope.
+- **Precedence is the registry's, unchanged.** The loader layers
+  builtin → global → project, so a default carrying overrides at both scopes
+  is defined by the project one. `/agents` presents the effective file.
+- **Authorization is not yet tiered.** One daemon serves one OS user today, so
+  an admin capability would be untestable theatre. The seam is recorded: when
+  one daemon serves many agents, an admin capability must gate the global root
+  resolution, and `DocumentScope` (already on the wire) is the discriminator.
+- **Built-ins have no file.** `build`/`explore` are compiled into
+  `generated.rs`. "Editing" one writes a project overlay; "restoring" drops
+  that overlay and falls back to the compiled definition, which is exact
+  because there is no saved copy to go stale. They cannot be deleted —
+  deleting would only remove the overlay and leave the agent present.
+- **A save is the only thing that publishes.** `:wq` on an agent config
+  triggers the daemon `AssetRefresh`, so a new agent appears in `/agents`
+  without a second command. Nothing appears until the file is written.
+- **Name validity is enforced at creation.** A name becomes a path segment,
+  so `is_valid_agent_name` refuses anything outside `[A-Za-z0-9_-]` up to 64
+  characters before the path is built.
+
 ## Testing
 
 ### Convergence coordinator (`src/agent/convergence.rs`)

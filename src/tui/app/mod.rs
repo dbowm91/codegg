@@ -3436,24 +3436,40 @@ impl App {
             // open box when there is one, and selects a pane when there is
             // not. Resolved here rather than in the binding table because the
             // meaning depends on what is on screen, which the table cannot see.
-            Some(InputAction::DirectionLeft) => crate::tui::commands::panels::move_directionally(
-                self,
-                crate::tui::panels::PanelDirection::Left,
-            ),
-            Some(InputAction::DirectionRight) => crate::tui::commands::panels::move_directionally(
-                self,
-                crate::tui::panels::PanelDirection::Right,
-            ),
-            Some(InputAction::DirectionUp) => crate::tui::commands::panels::move_directionally(
-                self,
-                crate::tui::panels::PanelDirection::Up,
-            ),
-            Some(InputAction::DirectionDown) => crate::tui::commands::panels::move_directionally(
-                self,
-                crate::tui::panels::PanelDirection::Down,
-            ),
+            //
+            // The five arms below are thin: each names its gesture and hands
+            // it to `handle_normal_only_action`, the same entry point the
+            // editor buffer uses, so `Shift+L` means the same thing whether
+            // the keyboard is in the composer or in the buffer.
+            Some(InputAction::DirectionLeft) => {
+                crate::tui::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionLeft,
+                );
+            }
+            Some(InputAction::DirectionRight) => {
+                crate::tui::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionRight,
+                );
+            }
+            Some(InputAction::DirectionUp) => {
+                crate::tui::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionUp,
+                );
+            }
+            Some(InputAction::DirectionDown) => {
+                crate::tui::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::DirectionDown,
+                );
+            }
             Some(InputAction::OpenPanelManager) => {
-                crate::tui::commands::panels::toggle_panel_selector(self);
+                crate::tui::commands::panels::handle_normal_only_action(
+                    self,
+                    InputAction::OpenPanelManager,
+                );
             }
             Some(InputAction::ToggleTodoList) => {
                 self.toggle_todo_list();
@@ -3511,7 +3527,24 @@ impl App {
             Some(InputAction::Quit) => self.process_msg(TuiMsg::Quit),
             Some(InputAction::ForceQuit) => self.force_quit(),
             Some(InputAction::ExternalEditor) => self.process_msg(TuiMsg::ExternalEditor),
-            Some(InputAction::Char(c)) => self.process_msg(TuiMsg::CharInput(c)),
+            Some(InputAction::Char(c)) => {
+                // M006-F: with the editor open it has taken the place of the
+                // main buffer, so the composer only accepts text armed with
+                // `:`. Gated at the one arm where a character enters the
+                // prompt, so every path that would type a character is
+                // covered by one rule rather than by the keymap alone.
+                if self.composer_refuses_bare_text() && !self.ui_state.command_mode {
+                    self.ui_state.command_mode = true;
+                    self.prompt_state.prompt.insert_char(':');
+                    self.prompt_state.prompt.insert_char(c);
+                    self.prompt_state.prompt.set_cursor(2);
+                    self.dialog_state
+                        .command_palette
+                        .set_query(&format!(":{c}"));
+                    return;
+                }
+                self.process_msg(TuiMsg::CharInput(c))
+            }
             Some(InputAction::Backspace) => self.process_msg(TuiMsg::Backspace),
             Some(InputAction::Delete) => self.process_msg(TuiMsg::Delete),
             Some(InputAction::Left) => self.process_msg(TuiMsg::CursorLeft),
@@ -4809,15 +4842,13 @@ impl App {
                     .to_string();
 
                 if args.is_empty() {
-                    // Bare `/agents`: list visible agents
-                    let lines = crate::tui::commands::agents::format_agents_list_for_root(
-                        &self.agent_state,
-                        false,
-                        &workspace_root,
-                    );
-                    self.show_short_or_info(
-                        crate::tui::components::dialogs::info::InfoType::Agents,
-                        lines,
+                    // Bare `/agents`: open the management panel, which is the
+                    // interactive surface. The *text* listing stays on
+                    // `/agents show` and `/agents --all` below, so nothing
+                    // that was reachable before becomes unreachable.
+                    crate::tui::commands::panels::open_panel_box(
+                        self,
+                        crate::tui::panels::SidePanelId::Agents,
                     );
                     return;
                 }
@@ -11380,6 +11411,20 @@ impl App {
     /// pre-filled `@name ` into an agent prompt. The badge shows `[CHAT]`
     /// for exactly as long as the seed is armed, so what the composer will
     /// do stays visible, and cancelling restores focus-derived targeting.
+    /// Whether the composer should refuse an un-prefixed character.
+    ///
+    /// True only while the editor owns the main buffer: the editor has taken
+    /// the place of the LLM transcript, so a bare character means "start a
+    /// command", not "send this to the model". Scoped narrowly on purpose —
+    /// a focused side panel is a *different* destination with its own
+    /// composer, and chat is a conversation, so both stay freely typeable.
+    pub(crate) fn composer_refuses_bare_text(&self) -> bool {
+        matches!(
+            self.ui_state.routes.current(),
+            crate::tui::route::Route::Editor
+        ) && !self.editor_state.buffer_focused()
+    }
+
     pub fn input_target(&self) -> crate::tui::panels::InputTarget {
         if self.prompt_state.chat_seed.is_some() {
             return crate::tui::panels::InputTarget::Chat;

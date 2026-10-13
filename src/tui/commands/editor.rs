@@ -27,6 +27,7 @@ use std::sync::Arc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
+use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
     LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspReadOperation, LspReadRequestDto,
     LspReadResultDto, LspReadStatus,
@@ -34,10 +35,10 @@ use codegg_protocol::lsp::{
 
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
 use crate::tui::app::{App, TuiCommand};
-use crate::tui::async_cmd::spawn_scoped_registered_tui_task;
+use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
 use crate::tui::document_session::TuiDocumentSession;
 use crate::tui::editor::{
-    self, EditorCommand, EditorFocus, EditorMode, MAX_EDITOR_PENDING_COMMAND,
+    self, EditorCommand, EditorCommandName, EditorFocus, EditorMode, MAX_EDITOR_PENDING_COMMAND,
 };
 use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -114,11 +115,20 @@ pub fn normalize_relative_path(input: &str) -> Result<String, String> {
 // ── Open / close ─────────────────────────────────────────────────────────────
 
 /// Open one workspace-relative document in the editor primary view.
+pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
+    open_editor_in(app, raw_path, DocumentScope::Workspace);
+}
+
+/// Open one document confined to `scope`.
 ///
 /// Navigates to `Route::Editor` and issues exactly one `DocumentOpen`. A
 /// partial failure holds no attachment and shows no buffer: the session is
 /// only kept when the daemon accepted the document.
-pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
+///
+/// `scope` selects the daemon's authority root. The TUI never resolves a root
+/// itself — it names the scope and the daemon decides — so the containment
+/// rule for a global agent lives in exactly one place.
+pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope) {
     let path = match normalize_relative_path(raw_path) {
         Ok(path) => path,
         Err(error) => {
@@ -131,7 +141,10 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
     // A second open of the same document is rejected by the daemon with
     // `AlreadyOpen`; a switch closes the previous attachment first so one
     // controller never owns two.
-    if app.editor_state.is_open() && app.editor_state.path.as_deref() == Some(path.as_str()) {
+    if app.editor_state.is_open()
+        && app.editor_state.path.as_deref() == Some(path.as_str())
+        && app.editor_state.scope == scope
+    {
         app.messages_state
             .toasts
             .info("Document is already open in the editor");
@@ -174,6 +187,7 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
     app.editor_state.status = EditorStatus::Opening;
     app.editor_state.clear_notice();
     app.editor_state.path = Some(path.clone());
+    app.editor_state.scope = scope;
 
     let wants_writer = true;
     app.editor_state.wants_writer = wants_writer;
@@ -207,7 +221,7 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
         None,
         async move {
             let result = controller
-                .open(project_id, workspace_id, path, wants_writer)
+                .open(project_id, workspace_id, path, wants_writer, scope)
                 .await;
             Some(TuiCommand::EditorOpened {
                 request_id,
@@ -231,6 +245,193 @@ pub(crate) fn open_editor(app: &mut App, raw_path: &str) {
         app.messages_state
             .toasts
             .warning("Cannot open document: TUI command channel unavailable");
+    }
+}
+
+/// Delete one file confined to `scope`.
+///
+/// The daemon owns both the unlink and its containment; the TUI names a scope
+/// and never resolves a root. A missing file is reported as success — the
+/// caller's intent ("this should not exist") already holds.
+pub(crate) fn delete_file_in(app: &mut App, raw_path: &str, scope: DocumentScope) {
+    let path = match normalize_relative_path(raw_path) {
+        Ok(path) => path,
+        Err(error) => {
+            app.messages_state
+                .toasts
+                .warning(&format!("Cannot delete document: {error}"));
+            return;
+        }
+    };
+    let context = match app.project_execution_context() {
+        Ok(context) => context,
+        Err(error) => {
+            app.messages_state.toasts.warning(&format!(
+                "Cannot delete document: {error}. Select a project tab first."
+            ));
+            return;
+        }
+    };
+    let (Some(project_id), Some(workspace_id)) = (context.project_id, context.workspace_id) else {
+        app.messages_state
+            .toasts
+            .warning("Cannot delete document: the active tab has no bound project/workspace.");
+        return;
+    };
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("Cannot delete document: daemon unavailable — check /doctor");
+        return;
+    };
+    let tx = app.tui_cmd_tx.clone();
+    let reported_path = path.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_document_delete",
+        async move {
+            let result = crate::tui::document_session::TuiDocumentSession::delete_file(
+                core_client,
+                project_id,
+                workspace_id,
+                path,
+                scope,
+            )
+            .await;
+            Some(TuiCommand::DocumentDeleted {
+                path: reported_path,
+                scope,
+                error: match result {
+                    Ok(_) => None,
+                    Err(error) => Some(describe_error(&error)),
+                },
+            })
+        },
+    );
+}
+
+/// Create a new agent config from the template at `scope`, prompting is not
+/// needed because the panel supplies the name it is creating under.
+pub(crate) fn open_agent_template(app: &mut App, name: &str, scope: DocumentScope) {
+    let name = name.trim();
+    crate::tui::commands::agent_editor::create_agent_draft(app, name, scope);
+}
+
+/// Create one new file under `scope` from `template` and open it.
+///
+/// The daemon writes the file (`DocumentCreate`) and attaches it in the same
+/// round trip, so this is the only path that produces a file the user has
+/// not typed yet. It refuses rather than overwriting when the target already
+/// exists, which makes the "create" action safe to retry.
+pub(crate) fn open_editor_template_in(
+    app: &mut App,
+    raw_path: &str,
+    template: &str,
+    scope: DocumentScope,
+) {
+    let path = match normalize_relative_path(raw_path) {
+        Ok(path) => path,
+        Err(error) => {
+            app.messages_state
+                .toasts
+                .warning(&format!("Cannot create document: {error}"));
+            return;
+        }
+    };
+    let context = match app.project_execution_context() {
+        Ok(context) => context,
+        Err(error) => {
+            app.messages_state.toasts.warning(&format!(
+                "Cannot create document: {error}. Select a project tab first."
+            ));
+            return;
+        }
+    };
+    let (Some(project_id), Some(workspace_id)) = (context.project_id, context.workspace_id) else {
+        app.messages_state
+            .toasts
+            .warning("Cannot create document: the active tab has no bound project/workspace.");
+        return;
+    };
+    let Some(core_client) = app.core_client.clone() else {
+        app.messages_state
+            .toasts
+            .warning("Cannot create document: daemon unavailable — check /doctor");
+        return;
+    };
+
+    if app.editor_state.is_open() {
+        app.editor_state.detach();
+    }
+    app.editor_state.generation = app.editor_state.generation.wrapping_add(1);
+    let generation = app.editor_state.generation;
+    let request_id = app.editor_state.request.begin();
+    app.editor_state.operation = Some(EditorOperation::Open);
+    app.editor_state.status = EditorStatus::Opening;
+    app.editor_state.clear_notice();
+    app.editor_state.path = Some(path.clone());
+    app.editor_state.scope = scope;
+    app.editor_state.wants_writer = true;
+
+    let session = TuiDocumentSession::new(core_client);
+    app.editor_state.session = Some(session);
+    if !matches!(
+        app.ui_state.routes.current(),
+        crate::tui::route::Route::Editor
+    ) {
+        app.ui_state
+            .routes
+            .navigate_to(crate::tui::route::Route::Editor);
+    }
+    // Focus the buffer immediately: the user asked for a new file to edit,
+    // and landing in the composer would make the template look unfocused.
+    focus_editor_buffer(&mut app.editor_state);
+
+    let controller = app
+        .editor_state
+        .session
+        .as_ref()
+        .expect("session was just installed")
+        .controller();
+    let template = template.to_string();
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_document_create",
+        tab_id,
+        None,
+        None,
+        async move {
+            let result = controller
+                .create(project_id, workspace_id, path, template, scope)
+                .await;
+            Some(TuiCommand::EditorOpened {
+                request_id,
+                generation,
+                result: match result {
+                    Ok(()) => None,
+                    Err(error) => Some(describe_error(&error)),
+                },
+                state: controller.state().await,
+            })
+        },
+    );
+    if task_id.is_none() {
+        let _ = app
+            .editor_state
+            .request
+            .fail(request_id, "TUI command channel unavailable".to_string());
+        app.editor_state.operation = None;
+        app.editor_state.status = EditorStatus::Closed;
+        app.editor_state.detach();
+        app.messages_state
+            .toasts
+            .warning("Cannot create document: TUI command channel unavailable");
     }
 }
 
@@ -779,6 +980,55 @@ pub(crate) fn apply_editor_operation_finished(
     } else if operation == EditorOperation::Save {
         refresh_editor_diagnostics(app);
         start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+        // A saved agent config must become visible in `/agents` without a
+        // second command, or `:wq` would not do what the user asked. This is
+        // the daemon-owned refresh every `/reload` already uses.
+        if let Some(path) = app.editor_state.path.clone() {
+            // Scope-qualified: `build.toml` is a global agent config, while
+            // `build.toml` at a workspace path is not. A save that refreshed
+            // the registry for the wrong root would be a lie about state.
+            if crate::tui::commands::agent_editor::is_agent_config_path(
+                &path,
+                app.editor_state.scope,
+            ) {
+                super::agents::refresh_assets_for_session(app, false);
+            }
+        }
+        // `:wq` closes *after* the write succeeds, never before: closing
+        // first would discard the very draft the user asked to keep.
+        if app.editor_state.close_after_save {
+            app.editor_state.close_after_save = false;
+            close_editor(app);
+        }
+    }
+}
+
+/// Apply a completed workspace-file delete.
+///
+/// A deleted agent config has to disappear from `/agents`, so the daemon
+/// refreshes its registry here for the same reason a save does — the user
+/// asked for the agent to be gone, and a panel that still lists it is
+/// reporting a state that no longer exists.
+pub(crate) fn apply_document_deleted(
+    app: &mut App,
+    path: String,
+    scope: DocumentScope,
+    error: Option<String>,
+) {
+    if let Some(message) = error {
+        app.messages_state.toasts.error(&message);
+        return;
+    }
+    if crate::tui::commands::agent_editor::is_agent_config_path(&path, scope) {
+        super::agents::refresh_assets_for_session(app, false);
+        app.messages_state.toasts.info(
+            format!(
+                "Deleted {} ({})",
+                path,
+                crate::tui::commands::agent_editor::scope_label(scope)
+            )
+            .as_str(),
+        );
     }
 }
 
@@ -1123,6 +1373,25 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         }
         return false;
     }
+    // M006-F: with the buffer focused the editor has taken the place of the
+    // main buffer, so the directional pane gestures stay available here —
+    // `Shift+L` into the column, `Shift+H` back — and they are answered
+    // *before* the buffer keymap, which would otherwise read `L`/`H` as an
+    // unknown normal-mode verb. Normal mode only: in Insert those letters
+    // are document text.
+    if app.ui_state.input_mode == crate::tui::input::InputMode::Normal {
+        if let Some(action) = crate::tui::input::handle_key_with_bindings(
+            key,
+            Some(&app.ui_state.bindings),
+            crate::tui::input::InputMode::Normal,
+        ) {
+            if super::panels::is_normal_only(&action)
+                && super::panels::handle_normal_only_action(app, action)
+            {
+                return true;
+            }
+        }
+    }
     if handle_lsp_panel_key(app, key) {
         return true;
     }
@@ -1179,7 +1448,85 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             leave_editor_buffer(&mut app.editor_state);
             true
         }
+        BufferKey::RunCommand(command, argument) => {
+            run_editor_command(app, command, argument);
+            true
+        }
     }
+}
+
+/// Execute one parsed `:` command.
+///
+/// The App layer owns every lifecycle round trip and route change, so the
+/// buffer handler reports the command and this is the single place a `:` can
+/// turn into an effect. `:w`/`:wq` share the save path, which is what makes
+/// "save and the new agent appears" a single operation rather than two.
+fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Option<String>) {
+    match command {
+        EditorCommandName::Write | EditorCommandName::WriteAll => save_editor(app),
+        EditorCommandName::Quit => {
+            // The refusal must actually *prevent* the close; warning and
+            // closing anyway would discard the draft the warning exists to
+            // protect, which is the worst of both.
+            if !refuse_quit_with_unsaved_draft(app) {
+                close_editor(app);
+            }
+        }
+        EditorCommandName::WriteQuit => {
+            // Defer the close to the save completion: closing here would
+            // detach the controller and discard the unsaved draft.
+            app.editor_state.close_after_save = true;
+            save_editor(app);
+        }
+        EditorCommandName::ForceQuit => close_editor(app),
+        EditorCommandName::Reload => reload_editor(app),
+        EditorCommandName::New => {
+            // `:new` creates an *agent* config, which is the file shape the
+            // editor is currently useful for; a bare unnamed document would
+            // need a separate template path.
+            //
+            // The scope comes from the argument (`global foo` / `project
+            // foo`); `resolve_new_agent` owns the split so the same rule
+            // applies to the panel and to this command.
+            crate::tui::commands::agent_editor::create_agent_draft(
+                app,
+                argument.unwrap_or_default().as_str(),
+                DocumentScope::Workspace,
+            );
+        }
+        EditorCommandName::Open => {
+            let Some(path) = argument else {
+                app.messages_state
+                    .toasts
+                    .warning("`:open` needs a workspace-relative path");
+                return;
+            };
+            open_editor(app, &path);
+        }
+    }
+}
+
+/// Warn before a plain `:q` discards an unflushed local draft.
+///
+/// Returns `true` when the quit was refused and the caller must **not**
+/// close. `:q!` is the documented escape hatch, and it is only reachable
+/// because this exists — an explicit, named way to lose work beats a quiet
+/// one.
+fn refuse_quit_with_unsaved_draft(app: &mut App) -> bool {
+    if app.editor_state.status.blocks_edits() {
+        return false;
+    }
+    if matches!(
+        app.editor_state.status,
+        crate::tui::app::state::editor::EditorStatus::DirtyLocal
+            | crate::tui::app::state::editor::EditorStatus::Flushing
+    ) {
+        app.messages_state
+            .toasts
+            .warning("Unsaved changes — use `:w` to write first, or `:q!` to discard them");
+        return true;
+    }
+    false
 }
 
 fn handle_lsp_panel_key(app: &mut App, key: KeyEvent) -> bool {
@@ -1338,6 +1685,7 @@ fn leave_editor_buffer(state: &mut EditorState) {
 }
 
 /// Outcome of one key while the editor buffer owns input.
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BufferKey {
     /// The editor handled the key; nothing else should see it.
     Consumed,
@@ -1353,6 +1701,72 @@ enum BufferKey {
     /// state the App layer owns: insert mode becomes normal mode, and
     /// normal mode returns focus to the composer.
     RequestLeaveBuffer,
+    /// The user ran a `:` command. The App layer owns every round trip and
+    /// every route change, so the buffer reports the parsed command rather
+    /// than performing it.
+    RunCommand(EditorCommandName, Option<String>),
+}
+
+/// Handle one key while the `:` command line is open.
+///
+/// The command line is a modal line: it owns every key while open, because a
+/// leaked printable would insert into the document behind a line the user
+/// believes is capturing it. `Esc` closes it without running anything, which
+/// is the only way out that never has side effects.
+fn handle_command_line_key(state: &mut EditorState, key: KeyEvent) -> BufferKey {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().close_command_line();
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Enter => {
+            let Some(session) = state.session.as_mut() else {
+                return BufferKey::Consumed;
+            };
+            let line = session.presentation().command_line.clone();
+            // Close first: a command that opens another document must not
+            // inherit the finished line, and an unknown command should not
+            // leave the user stuck retyping it.
+            session.presentation_mut().close_command_line();
+            match editor::parse_editor_command(&line) {
+                Some((command, argument)) => BufferKey::RunCommand(command, argument),
+                None => {
+                    state.set_notice(EditorNotice::Rejected(format!(
+                        "unknown command `:{}` — try :w, :q, or :wq",
+                        line.trim()
+                    )));
+                    BufferKey::Consumed
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().pop_command_char();
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().move_command_selection(1);
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Up | KeyCode::BackTab => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().move_command_selection(-1);
+            }
+            BufferKey::Consumed
+        }
+        KeyCode::Char(ch) if key.modifiers.is_empty() => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().push_command_char(ch);
+            }
+            BufferKey::Consumed
+        }
+        _ => BufferKey::Consumed,
+    }
 }
 
 /// Handle one key while the editor buffer owns input.
@@ -1360,6 +1774,16 @@ enum BufferKey {
 /// Pure presentation state, plus an explicit request for the two lifecycle
 /// round trips that belong to the App layer.
 fn editor_buffer_key(state: &mut EditorState, key: KeyEvent) -> BufferKey {
+    // Command mode is modal and outranks everything below it, including the
+    // mode-independent Ctrl chords: a half-typed `:q` must not be rewritten
+    // by `Ctrl+S` silently writing the file the user was about to close.
+    if state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().command_active)
+    {
+        return handle_command_line_key(state, key);
+    }
     // Save and resync are mode-independent and always available.
     if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
         return BufferKey::RequestSave;
@@ -1565,6 +1989,15 @@ fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
             editor_undo(state);
             true
         }
+        // `:` opens the command line. Normal mode only: in Insert the colon
+        // is document text, and silently swallowing it would make it
+        // impossible to type a URL into a file.
+        KeyCode::Char(':') if key.modifiers == KeyModifiers::NONE => {
+            if let Some(session) = state.session.as_mut() {
+                session.presentation_mut().open_command_line("");
+            }
+            true
+        }
         KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
             editor_redo(state);
             true
@@ -1764,6 +2197,7 @@ mod tests {
                     conflicted: false,
                     writer: self.writer,
                     disk_base_digest: "digest".into(),
+                    scope: DocumentScope::Workspace,
                 },
                 writer_lease: self.writer.then(|| "lease-1".to_string()),
                 lsp_degraded: false,
@@ -1880,6 +2314,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 writer,
+                DocumentScope::Workspace,
             )
             .await
             .expect("open succeeds");
@@ -2005,6 +2440,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .expect("reopen");
@@ -2221,6 +2657,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .is_err());
@@ -2244,6 +2681,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .expect_err("unexpected response");
@@ -2261,6 +2699,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await
             .expect("first open");
@@ -2271,6 +2710,7 @@ mod tests {
                 "workspace-1".into(),
                 "src/lib.rs".into(),
                 true,
+                DocumentScope::Workspace,
             )
             .await;
         // The scripted daemon allows both, so the first attachment must
@@ -2544,5 +2984,220 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn normal_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[tokio::test]
+    async fn a_colon_in_normal_mode_opens_the_command_line() {
+        let (state, _daemon) = opened_writer("hello").await;
+        let mut state = state;
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+        assert!(
+            editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char(':')))
+                == BufferKey::Consumed
+        );
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+    }
+
+    #[tokio::test]
+    async fn a_colon_in_insert_mode_is_document_text() {
+        let (state, _daemon) = opened_writer("").await;
+        let mut state = state;
+        state.session.as_mut().unwrap().presentation_mut().mode = EditorMode::Insert;
+        assert!(
+            editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char(':')))
+                == BufferKey::Consumed
+        );
+        // A URL must remain typeable; swallowing the colon would make one
+        // impossible to write into a file.
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+        assert_eq!(editor_text(&state), ":");
+    }
+
+    #[tokio::test]
+    async fn command_mode_captures_every_key_including_the_save_chord() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("");
+        // `Ctrl+S` is mode-independent and normally saves. While the command
+        // line is open it must not reach the save path, or a half-typed `:q`
+        // would silently write the file the user is about to close. It is
+        // *swallowed* rather than typed: a literal `s` would name a different
+        // command than the one the user is building.
+        let ctrl_s = crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert!(
+            editor_buffer_key(&mut state, ctrl_s) != BufferKey::RequestSave,
+            "the save chord must not escape the command line"
+        );
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_line
+                .is_empty(),
+            "a modified chord must not be typed into the line"
+        );
+        assert!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active,
+            "the command line stays open"
+        );
+    }
+
+    #[tokio::test]
+    async fn esc_closes_the_command_line_without_running_anything() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("wq");
+        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Esc));
+        // Leave-buffer, never RunCommand: `Esc` must be the side-effect-free
+        // exit.
+        assert!(result != BufferKey::RunCommand(EditorCommandName::WriteQuit, None));
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_parses_the_line_into_a_command() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("wq");
+        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Enter));
+        assert!(result == BufferKey::RunCommand(EditorCommandName::WriteQuit, None));
+        // The line closes on Enter, so an unknown command cannot leave the
+        // user stuck retyping it.
+        assert!(
+            !state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_active
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_command_is_refused_with_a_notice_not_a_silent_no_op() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("wqq");
+        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Enter));
+        assert!(result == BufferKey::Consumed);
+        assert!(
+            state.notice.is_some(),
+            "an unknown command must explain itself"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_palette_narrows_as_the_line_is_typed() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("");
+        assert_eq!(
+            state
+                .session
+                .as_ref()
+                .unwrap()
+                .presentation()
+                .command_matches()
+                .len(),
+            crate::tui::editor::EditorCommandName::ALL.len()
+        );
+        editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char('q')));
+        let matches = state
+            .session
+            .as_ref()
+            .unwrap()
+            .presentation()
+            .command_matches();
+        assert!(matches.iter().any(|m| m.command == EditorCommandName::Quit));
+    }
+
+    #[tokio::test]
+    async fn backspace_edits_the_line_and_cannot_underflow() {
+        let (state, _daemon) = opened_writer("x").await;
+        let mut state = state;
+        state
+            .session
+            .as_mut()
+            .unwrap()
+            .presentation_mut()
+            .open_command_line("");
+        let backspace = normal_key(crossterm::event::KeyCode::Backspace);
+        for _ in 0..5 {
+            assert!(editor_buffer_key(&mut state, backspace) == BufferKey::Consumed);
+        }
+        assert!(state
+            .session
+            .as_ref()
+            .unwrap()
+            .presentation()
+            .command_line
+            .is_empty());
     }
 }

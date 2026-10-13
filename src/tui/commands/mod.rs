@@ -1,3 +1,4 @@
+pub(super) mod agent_editor;
 pub(super) mod agents;
 pub(super) mod change_review;
 pub(super) mod chat;

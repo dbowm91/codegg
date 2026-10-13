@@ -590,6 +590,12 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     // Editor document changes/save/reload share the existing file-mutation
     // structural action; document bodies and text edits are never metadata.
     ("document_modify", "file_mutate"),
+    // M006-F: creating and deleting a workspace file are file mutations for
+    // the same reason save is one. Create never overwrites and delete never
+    // removes a live attachment, but both materialize or remove bytes inside
+    // the workspace, so both carry the same structural action.
+    ("document_create", "file_mutate"),
+    ("document_delete", "file_mutate"),
     ("project_init_publish", "file_mutate"),
     ("managed_worktree_cleanup", "worktree_lifecycle"),
     ("managed_worktree_archive", "worktree_lifecycle"),
