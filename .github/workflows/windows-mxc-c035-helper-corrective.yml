@@ -57,11 +57,11 @@ jobs:
           cl.exe /nologo /O2 /W4 /DUNICODE /D_UNICODE /Fe:$helper $source advapi32.lib
           if ($LASTEXITCODE -ne 0) { throw "cl.exe failed: $LASTEXITCODE" }
           $machine = (& dumpbin.exe /headers $helper | Select-String 'machine \(' | Select-Object -First 1).ToString().Trim()
-          $imports = @(& dumpbin.exe /imports $helper | Select-String 'DLL Name:' | ForEach-Object { $_.ToString().Trim() })
+          $imports = (& dumpbin.exe /imports $helper | Out-String).Trim()
           $hash = (Get-FileHash -Algorithm SHA256 $helper).Hash
           $object = Join-Path $env:RUNNER_TEMP 'c035-version.obj'
-          $compiler = @(& cl.exe /Bv /nologo /c $source "/Fo:$object" 2>&1 | Select-String 'Compiler Version' | ForEach-Object { $_.ToString().Trim() })
-          if ($machine -notmatch 'ARM64' -or $imports.Count -eq 0 -or $compiler.Count -eq 0) { throw 'ARM64 PE machine, import table, or compiler version evidence is missing.' }
+          $compiler = (& cl.exe /Bv /nologo /c $source "/Fo:$object" 2>&1 | Out-String).Trim()
+          if ($machine -notmatch 'ARM64' -or [string]::IsNullOrWhiteSpace($imports) -or [string]::IsNullOrWhiteSpace($compiler)) { throw 'ARM64 PE machine, import table, or compiler version evidence is missing.' }
           $evidence = [ordered]@{ helper_sha256=$hash; machine=$machine; imports=$imports; compiler=$compiler }
           $json = $evidence | ConvertTo-Json -Compress
           "C035_HELPER=$json"
