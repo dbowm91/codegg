@@ -1615,28 +1615,20 @@ impl AgentLoop {
                     if registry.get(&tc_inner.name).is_none() {
                         Err(ToolError::NotFound(tc_inner.name.to_string()))
                     } else {
-                        let mut last_result: Result<String, ToolError> =
-                            Err(ToolError::NotFound("no attempts made".into()));
-                        for attempt in 0..2 {
-                            if attempt > 0 {
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                tracing::info!(
-                                    "Retrying tool '{}' (attempt {})",
-                                    tc_inner.name,
-                                    attempt + 1
-                                );
-                            }
-                            let exec_ctx = exec_ctx.clone();
-                            let exec_args = effective_args.clone();
-                            let tool_name_clone = tc_inner.name.clone();
-                            let broker_for_exec = Arc::clone(&tool_broker);
-                            let authority_ref = authority_ref.clone();
-                            let agent_workspace_id = agent_workspace_id.clone();
-                            let agent_id = agent_id.clone();
-                            // M003: fresh clone per attempt — the ceiling
-                            // list is moved into `exec_fut` below.
-                            let child_allowed_tools = child_allowed_tools.clone();
-                            let exec_fut = async move {
+                        // A model tool call is one logical dispatch. Retry
+                        // admission belongs to ToolBroker, which can inspect
+                        // the frozen contract and shared retry context. This
+                        // batch layer has no qualified retry chain, so it must
+                        // never replay a call based only on ToolError's class.
+                        let exec_ctx = exec_ctx.clone();
+                        let exec_args = effective_args.clone();
+                        let tool_name_clone = tc_inner.name.clone();
+                        let broker_for_exec = Arc::clone(&tool_broker);
+                        let authority_ref = authority_ref.clone();
+                        let agent_workspace_id = agent_workspace_id.clone();
+                        let agent_id = agent_id.clone();
+                        let child_allowed_tools = child_allowed_tools.clone();
+                        let exec_fut = async move {
                                 // M014-A2: Build manifest digest from the tool name.
                                 // For AgentLoop direct calls, the manifest is the
                                 // single tool being invoked.
@@ -1861,7 +1853,7 @@ impl AgentLoop {
                                         Err(ToolError::Execution(broker_result.value.display))
                                     }
                                 }
-                            };
+                        };
                             // The tool enforces its own deadline and returns a result carrying the
                             // output it collected before being killed, so this wrapper must
                             // not fire first and discard it. Two grace layers sit above the
@@ -1877,35 +1869,22 @@ impl AgentLoop {
                             // partial output. This wrapper therefore has to clear the broker
                             // layer too, or it would reintroduce the same inversion one
                             // level out.
-                            match tokio::time::timeout(
+                        match tokio::time::timeout(
                                 timeout + TOOL_TIMEOUT_GRACE + TOOL_TIMEOUT_GRACE,
                                 exec_fut,
                             )
                             .await
                             {
-                                Ok(r) => match &r {
-                                    Ok(_) => {
-                                        last_result = r;
-                                        break;
-                                    }
-                                    Err(e) if e.is_retryable() => {
+                                Ok(result) => {
+                                    if let Err(error) = &result {
                                         tracing::warn!(
-                                            "Tool '{}' retryable error: {}",
+                                            "Tool '{}' failed: {}",
                                             tc_inner.name,
-                                            e
+                                            error
                                         );
-                                        last_result = r;
                                     }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Tool '{}' non-retryable error: {}",
-                                            tc_inner.name,
-                                            e
-                                        );
-                                        last_result = r;
-                                        break;
-                                    }
-                                },
+                                    result
+                                }
                                 Err(_) => {
                                     // Tell the model what happened and
                                     // what to do about it. A bare
@@ -1913,16 +1892,13 @@ impl AgentLoop {
                                     // between retrying a hung
                                     // command and re-issuing a long
                                     // one with the same budget.
-                                    last_result = Err(ToolError::Timeout(timeout_notice(
+                                    Err(ToolError::Timeout(timeout_notice(
                                         &tc_inner.name,
                                         timeout,
                                         resolved,
-                                    )));
-                                    break;
+                                    )))
                                 }
                             }
-                        }
-                        last_result
                     }
                 };
 

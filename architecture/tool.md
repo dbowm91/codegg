@@ -695,7 +695,11 @@ Key invariants:
 All production tool calls route through `ToolBroker` (`src/tool/broker.rs`),
 which enforces a 10-step policy pipeline. Each tool has a `ToolContract`
 describing caller policy, effect class, idempotency, retry/cache, and
-projection policy. See [tool_broker.md](tool_broker.md).
+projection policy. `ToolBatchExecutor` dispatches an accepted model call
+once; it cannot replay from a generic timeout/network error. Retry requires
+the broker's explicit contract-aware `execute_with_retry` path and a bounded
+shared retry context. See [tool_broker.md](tool_broker.md) and
+[retry.md](retry.md).
 
 ## Security Considerations
 

@@ -37,9 +37,16 @@ pub enum UnifiedRetryDisposition { Never, Transient, RateLimited, AuthRefreshabl
   deadline expiry stops with the last typed error.
 - M001 visible-output gate unchanged: replay after visible output is still
   supersession, not retry. Chain ID appears in tracing alongside attempt ID.
-- `AgentLoop` (`loop.rs`, `follow_up.rs`) creates one `for_operation()`
-  chain per turn and passes it to the provider; tool execution derives
-  narrower children from the same chain.
+- `AgentLoop` (`loop.rs`, `follow_up.rs`) currently passes its
+  `for_operation()` chain to the provider turn. The subsequent model tool
+  batch does not receive that remaining chain and calls `ToolBroker::execute`
+  with no retry context, so each accepted tool call is one broker attempt.
+  This is deliberate: the batch must not infer replay safety from
+  `ToolError::is_retryable()`. A future shared provider/tool chain must thread
+  the actual remaining `RetryContext` through the logical turn boundary; it
+  must not create a fresh per-tool budget. Explicit retry-capable broker
+  callers continue to use `execute_with_retry` with their existing bounded
+  chain and frozen contract.
 
 ## Tools (`src/tool/retry.rs`, `broker.rs`, `contract.rs`)
 

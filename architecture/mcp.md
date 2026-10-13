@@ -64,7 +64,11 @@ It lives in `crates/codegg-core/src/error.rs`.
    agent-tool-runtime-reconciliation). `McpService::call_tool()` remains
    for non-model compatibility consumers (native eggsearch wrappers) and
    must never be reintroduced as a model bypass (guard:
-   `scripts/check_mcp_broker_adapter.py`).
+   `scripts/check_mcp_broker_adapter.py`). The adapter contract is
+   non-idempotent and disables retry. The agent batch issues one broker
+   dispatch per accepted model call, so a timeout after transport dispatch
+   cannot trigger another `tools/call`; the result remains typed as timed out
+   or uncertain according to the broker acknowledgement path.
 
 4. **Shutdown**: `McpService::shutdown_all()` disconnects every server
    in order. Local clients kill the child process; remote clients send

@@ -15,6 +15,7 @@ use codegg::tool::task::TaskTool;
 use codegg::tool::{Tool, ToolRegistry};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 
@@ -357,6 +358,44 @@ impl Tool for EchoArgsTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
         Ok(input.to_string())
+    }
+}
+
+struct AmbiguousEffectTool {
+    dispatches: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for AmbiguousEffectTool {
+    fn name(&self) -> &str {
+        "ambiguous_effect"
+    }
+
+    fn description(&self) -> &str {
+        "Records a side effect, then loses its acknowledgement"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    fn contract(
+        &self,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> codegg::tool::contract::ToolContract {
+        use codegg::tool::contract::{ToolEffectClass, ToolRetryPolicy};
+        let mut contract = codegg::tool::contract::ToolContract::legacy(tool_name, input_schema);
+        contract.effect_class = ToolEffectClass::NonIdempotent;
+        contract.retry_policy = ToolRetryPolicy::none();
+        contract
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        self.dispatches.fetch_add(1, Ordering::SeqCst);
+        Err(codegg::error::ToolError::Timeout(
+            "response lost after remote effect".into(),
+        ))
     }
 }
 
@@ -1021,6 +1060,187 @@ async fn test_agent_loop_harness_smoke_test() {
         agent_finished.is_some(),
         "AgentFinished event should be present"
     );
+}
+
+#[tokio::test]
+async fn ambiguous_non_idempotent_tool_failure_is_dispatched_once() {
+    let provider = Box::new(ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "call_ambiguous".to_string().into(),
+                name: "ambiguous_effect".to_string().into(),
+                arguments: serde_json::json!({}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        }],
+    ]));
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let mut registry = ToolRegistry::new();
+    registry.register(AmbiguousEffectTool {
+        dispatches: Arc::clone(&dispatches),
+    });
+    let mut agent_loop = build_test_agent_loop(provider, registry);
+    agent_loop.set_session_id("ambiguous-effect-single-dispatch");
+
+    let request = ChatRequest {
+        messages: vec![Message::User {
+            content: vec![codegg::provider::ContentPart::Text {
+                text: "run the effect once".to_string().into(),
+            }],
+        }],
+        model: "test/model".to_string(),
+        tools: None,
+        system: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        context: Default::default(),
+    };
+
+    let result = agent_loop.run(request).await;
+    assert!(result.is_ok(), "agent loop failed: {result:?}");
+    assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ambiguous_mcp_timeout_does_not_repeat_transport_dispatch() {
+    let scripted_provider = ScriptedProvider::new(vec![
+        vec![
+            ChatEvent::ToolCall(ToolCall {
+                id: "call_mcp_write".to_string().into(),
+                name: "mcp__retryprobe__write".to_string().into(),
+                arguments: serde_json::json!({"timeout": 1}),
+            }),
+            ChatEvent::ToolCall(ToolCall {
+                id: "call_parallel_read".to_string().into(),
+                name: "echo_args".to_string().into(),
+                arguments: serde_json::json!({"value": "parallel"}),
+            }),
+            ChatEvent::Finish {
+                stop_reason: "tool_calls".to_string().into(),
+                usage: TokenUsage::default(),
+            },
+        ],
+        vec![ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        }],
+    ]);
+    let provider = Box::new(scripted_provider.clone());
+    let dispatches = Arc::new(AtomicUsize::new(0));
+    let dispatches_for_server = Arc::clone(&dispatches);
+    let mut mcp = codegg::mcp::McpService::new();
+    mcp.register_mock_server(
+        "retryprobe",
+        vec![codegg::mcp::McpTool {
+            name: "write".to_string(),
+            description: "A write whose acknowledgement is delayed".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {"timeout": {"type": "number"}}
+            }),
+            server: "retryprobe".to_string(),
+            ..Default::default()
+        }],
+        Box::new(move |_tool, _args| {
+            dispatches_for_server.fetch_add(1, Ordering::SeqCst);
+            // Model a remote side effect that commits before the response
+            // stalls beyond the per-tool timeout.
+            std::thread::sleep(Duration::from_secs(7));
+            Err(codegg::error::McpError::Timeout(
+                "simulated lost response after dispatch".to_string(),
+            ))
+        }),
+    );
+    let mcp = Arc::new(tokio::sync::RwLock::new(mcp));
+    let agents = vec![Agent {
+        name: "build".to_string(),
+        role: None,
+        description: "Test agent".to_string(),
+        mode: codegg::agent::AgentMode::Primary,
+        mode_name: None,
+        model: None,
+        variant: None,
+        temperature: None,
+        top_p: None,
+        color: None,
+        steps: None,
+        system_prompt: None,
+        permissions: std::collections::HashMap::new(),
+        hidden: false,
+        thinking_budget: None,
+        reasoning_effort: None,
+        fallback_model: None,
+        runtime_kind: None,
+    }];
+    let permission_checker =
+        PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+            default: PermissionLevel::Allow,
+            tool_rules: vec![],
+            path_rules: vec![],
+        });
+    let mut config = Config::default();
+    config.search = Some(codegg::config::schema::SearchConfig {
+        expose_raw_mcp_tools: Some(true),
+        ..Default::default()
+    });
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoArgsTool::new());
+    let mut agent_loop = AgentLoop::new(
+        agents,
+        provider,
+        permission_checker,
+        registry,
+        config,
+        Some(mcp),
+        None,
+        Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "ambiguous-mcp-single-dispatch".to_string(),
+    );
+    agent_loop.set_session_id("ambiguous-mcp-single-dispatch");
+
+    let request = ChatRequest {
+        messages: vec![Message::User {
+            content: vec![codegg::provider::ContentPart::Text {
+                text: "write once".to_string().into(),
+            }],
+        }],
+        model: "test/model".to_string(),
+        tools: None,
+        system: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: None,
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        context: Default::default(),
+    };
+
+    let result = agent_loop.run(request).await;
+    assert!(result.is_ok(), "agent loop failed: {result:?}");
+    assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+    let requests = scripted_provider.get_requests().await;
+    let tool_result_ids: Vec<&str> = requests[1]
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            Message::Tool { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_result_ids, ["call_mcp_write", "call_parallel_read"]);
 }
 
 #[tokio::test]

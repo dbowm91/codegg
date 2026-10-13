@@ -150,6 +150,15 @@ This ensures existing tools work without modification.
    `structuredContent` and `isError`-as-`Error`, enforce pinned-schema
    staleness before transport, and keep `DirectOnly`/`NonIdempotent`/
    no-retry conservatism. Guard: `scripts/check_mcp_broker_adapter.py`.
+   `ToolBatchExecutor` issues exactly one broker dispatch per accepted model
+   tool call. It does not retry based on `ToolError::is_retryable()` because
+   that error class cannot distinguish a pre-dispatch failure from an
+   ambiguous post-dispatch timeout. Automatic replay is available only through
+   `execute_with_retry` when its caller supplies a bounded `RetryContext` and
+   the frozen contract admits the effect/acknowledgement combination. With no
+   qualified chain, `execute()` remains single-attempt. A timeout from a
+   non-idempotent MCP call therefore cannot cause another `tools/call` from
+   the batch layer.
 6. **Trusted audit preservation (M001)**: `BrokerInvocationContext`
    carries `execution_audit: Option<TrustedExecutionAuditContext>`
    threaded only from daemon-owned admission. `execute_with_retry`

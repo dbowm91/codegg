@@ -1,6 +1,6 @@
 # Agent Tool Runtime Post-Closure Corrective C001 — Contract-Safe Tool Retry Admission
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` on `planning/agent-tool-runtime-reconciliation`. Rebaseline before implementation against latest branch head; do not overwrite subsequent changes.
 
