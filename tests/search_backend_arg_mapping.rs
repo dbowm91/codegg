@@ -188,23 +188,59 @@ async fn provider_pinned_to_specific_backend() {
 }
 
 #[tokio::test]
-async fn provider_unknown_does_not_emit_providers_field() {
+async fn provider_unknown_is_rejected_before_mcp_dispatch() {
     let (ctx, calls) = mock_context();
-    let _ = ctx
+    let result = ctx
         .dispatch_web_search(&serde_json::json!({
             "query": "x",
             "provider": "unknown_backend",
         }))
+        .await;
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported provider"));
+    assert!(calls.lock().expect("calls poisoned").is_empty());
+}
+
+#[tokio::test]
+async fn auto_provider_intentionally_omits_provider_selection() {
+    let (ctx, calls) = mock_context();
+    ctx.dispatch_web_search(&serde_json::json!({"query": "x", "provider": "auto"}))
         .await
         .unwrap();
-    let rec = calls.lock().expect("calls poisoned");
-    let (_, args) = rec.last().unwrap();
-    if let Some(providers) = args.get("providers") {
-        let arr = providers.as_array().expect("providers array");
-        for p in arr {
-            assert_ne!(p, "unknown_backend");
-        }
+    let calls = calls.lock().expect("calls poisoned");
+    assert!(calls.last().unwrap().1.get("providers").is_none());
+}
+
+#[tokio::test]
+async fn retired_google_news_is_rejected_with_migration_guidance() {
+    let (ctx, calls) = mock_context();
+    let error = ctx
+        .dispatch_web_search(&serde_json::json!({"query": "x", "provider": "google_news"}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("retired"));
+    assert!(error.contains("intent='news'"));
+    assert!(calls.lock().expect("calls poisoned").is_empty());
+}
+
+#[tokio::test]
+async fn explicit_research_provider_lists_never_auto_route_on_invalid_values() {
+    let (ctx, calls) = mock_context();
+    for providers in [
+        serde_json::json!([]),
+        serde_json::json!(["auto"]),
+        serde_json::json!(["google_news"]),
+        serde_json::json!(["unknown"]),
+    ] {
+        assert!(ctx
+            .dispatch_research_search(&serde_json::json!({"query": "x", "providers": providers}))
+            .await
+            .is_err());
     }
+    assert!(calls.lock().expect("calls poisoned").is_empty());
 }
 
 #[tokio::test]
@@ -319,6 +355,11 @@ async fn new_fetch_controls_reject_out_of_contract_values_before_mcp() {
 #[test]
 fn native_schemas_expose_only_the_selected_provider_neutral_controls() {
     let search = WebSearchTool::default().parameters();
+    let providers = search["properties"]["provider"]["enum"]
+        .as_array()
+        .expect("provider enum");
+    assert!(!providers.iter().any(|provider| provider == "google_news"));
+    assert!(providers.iter().any(|provider| provider == "brave_api"));
     assert_eq!(search["properties"]["excerpt_count"]["minimum"], 0);
     assert_eq!(search["properties"]["excerpt_count"]["maximum"], 3);
     assert!(search["properties"].get("response_detail").is_none());

@@ -245,7 +245,7 @@ See `architecture/scheduler.md`, `architecture/jobs.md`, and
 
 CodeGG's web, repository, security, research, batch-fetch, and evidence-bundle
 tools are **wrappers** around the external `eggsearch` MCP server. Prebuilt
-installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.3.9;
+installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.1;
 a source install must provide it separately.
 
 ```bash
@@ -256,6 +256,11 @@ The raw `mcp__eggsearch__*` tools are **hidden from the model by default**
 (`Raw MCP tools exposed to model: no`). The wrappers exist to bound and
 trust-frame the output instead of passing an unbounded third-party response
 straight into context.
+
+Provider hints must match the wrapper's supported list. Unknown selectors fail
+before dispatch; `google_news` is retired with guidance to use `intent: "news"`
+and optionally `brave_api` or `tavily` for source selection. Use `auto` or omit
+the provider field for automatic routing.
 
 Output is capped per tool family, so no single lookup can dominate the context
 window:

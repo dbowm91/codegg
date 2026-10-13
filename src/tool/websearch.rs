@@ -60,11 +60,11 @@ impl Tool for WebSearchTool {
                 },
                 "provider": {
                     "type": "string",
-                    "description": "Provider hint. Unknown values fall back to eggsearch's automatic provider selection.",
+                    "description": "Optional provider hint. Unsupported or retired explicit values fail with migration guidance; use auto or omit for automatic routing.",
                     "enum": [
                         "auto", "duckduckgo", "mojeek", "wikipedia", "arxiv",
-                        "openalex", "pubmed", "hn_algolia", "google_news", "github",
-                        "exa", "tavily", "brave", "kagi", "serpapi"
+                        "openalex", "pubmed", "hn_algolia", "github",
+                        "exa", "tavily", "brave", "brave_api", "kagi", "serpapi"
                     ]
                 },
                 "intent": {

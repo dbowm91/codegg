@@ -343,9 +343,15 @@ source-build compatibility, never required for a prebuilt install.
   availability check returns `Ok(())` via the `try_read` WouldBlock
   path. The actual call will surface the real error if the tool is
   missing.
-- **Provider hint translation is permissive** — unknown historical
-  provider hints map to an empty list (auto-pick) so the search
-  still succeeds with a sensible default.
+- **Provider hints fail closed** — absent/`auto` omits the provider selector;
+  each other exposed value maps to a provider ID in eggsearch v0.4.1 or fails
+  before MCP dispatch. `github` maps to `github_repositories`; `brave` maps
+  to the distinct `brave` provider; retired `google_news` gives guidance to
+  use `intent="news"` with `brave_api` or `tavily` when source control matters.
+- **Provider health is separate from contract compatibility** — `doctor
+  search` reports an eggsearch version mismatch or missing wrapper provider ID
+  as compatibility defects, and reports disabled, missing-credential, and
+  cooldown/degraded providers as operational state.
 - **Repository locator disambiguation** — `repo = "a/b"` splits to
   `owner=a, repo=b`. `repo = "a/b/c"` is ambiguous and rejected.
   Providing both `owner` and a `/`-containing `repo` is an error.
@@ -368,9 +374,35 @@ MCP connection status, advertised tools, tool coverage classification
 surface, required/recommended coverage, default timeout, provider status,
 installation hint (bundle reinstall, never bare "install eggsearch"),
 `expose_raw_mcp_tools`, `fallback_to_builtin`, and all per-domain output
-caps. `doctor installation` prints `InstallationReport` (executable,
+caps. The search doctor checks exact eggsearch pin `0.4.1`, its ten-tool
+surface, and every provider ID retained by the native wrapper. `doctor
+installation` prints `InstallationReport` (executable,
 directory, sibling states, helper/kernel probe, in-process eggsact line)
 and points to `doctor search` for tool coverage.
+
+### Development paired compatibility gate
+
+Run the development-only offline pair gate against an explicitly selected
+binary:
+
+```bash
+CODEGG_EGGSEARCH_BIN=/absolute/path/to/eggsearch \
+  scripts/test-eggsearch-pair.sh
+```
+
+Or build from the exact immutable source tag into a temporary target directory:
+
+```bash
+CODEGG_EGGSEARCH_SOURCE=/path/to/eggsearch \
+  scripts/test-eggsearch-pair.sh
+```
+
+The harness checks the exact version and SHA-256 identity, MCP initialize,
+the ten-tool inventory, `provider_status(probe=false)`, retained provider IDs,
+fake-MCP structured evidence, wrapper argument mapping, negative selector
+validation, and child shutdown in one command. It does not run provider
+requests or CodeGG release tooling. The subprocess runs with credentials
+cleared, using a temporary HOME/config/workspace.
 
 ## Where to Add New Providers
 
