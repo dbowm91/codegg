@@ -148,6 +148,10 @@ current effective Deny cannot be hidden by `default = "allow"`, an `ask`
 fallback, `allow_all_bash`, or a saved Allow. This resolves one invocation
 string only: glob patterns are preferences and do not prevent an equivalent
 effect through a script, wrapper, or another tool.
+Operator-selected `bash_deny_patterns` are best-effort invocation filters; they
+are not kernel enforcement. Built-in command risk classification may request
+review, but ordinary wrappers, quotes, expansions, and pipelines do not prompt
+solely because of their syntax.
 
 Remembered shell approvals use `cmd:<executable>` only when the existing
 `command_intent::shell_shape` parser classifies the request as one simple

@@ -290,13 +290,17 @@ pub struct SecurityDecisionHint {
 1. Disabled/off → `Observe`
 2. Explicit deny list match → `Deny`
 3. Review mode: Critical/High risk → `Ask` (never Deny); else `Observe`
-4. Critical + `deny_critical_commands` → `Deny`
+4. Critical + explicitly configured `deny_critical_commands = true` → best-effort `Deny`; omitted defaults to advisory behavior
 5. Critical + `ask_on_high_risk_command` → `Ask`
 6. Network exfiltration category → `Ask`
 7. Secret exposure category → `Ask`
 8. High risk + `ask_on_high_risk_command` → `Ask`
 9. Strict mode + Medium risk → `Ask`
 10. Otherwise → `Observe`
+
+`denied_commands` and an explicitly enabled `deny_critical_commands` are
+operator-selected invocation-text filters. They deny matching text but cannot
+guarantee that equivalent behavior is absent or provide OS containment.
 
 `action_for_findings` uses the worst-severity finding with similar
 logic. Review mode always observes (reports findings but never denies).
@@ -460,7 +464,7 @@ max_findings_in_prompt = 5
 denied_commands = []       # explicit deny list
 
 [security.gates]
-deny_critical_commands = true
+deny_critical_commands = true # explicit opt-in best-effort text denial; omitted defaults to advisory
 ask_on_high_risk_command = true
 ask_on_network_exfiltration = true
 ask_on_secret_exposure = true
@@ -468,9 +472,9 @@ ask_on_secret_exposure = true
 
 **Security modes:**
 - `Off` — all checks return Observe
-- `Ambient` — the default. High-risk commands Ask; Critical commands are
-  **denied** because `gates.deny_critical_commands` defaults to `true`. Set that
-  gate to `false` to make Ambient observation-only.
+- `Ambient` — the default. High-risk and Critical commands Ask when the ask
+  gate is enabled. Set `gates.deny_critical_commands = true` to explicitly opt
+  into best-effort text denial.
 - `Strict` — Medium-risk commands also Ask
 - `Review` — Critical/High Ask (never Deny); everything else Observe
 

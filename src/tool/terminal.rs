@@ -420,13 +420,13 @@ mod tests {
             ),
             ("sleep", vec!["5".to_string(), "&".to_string()], false),
             ("bash", vec!["-c".to_string(), "echo ok".to_string()], false),
-            // Hard denies stay hard in every approval mode.
+            // Built-in risk patterns are advisory in agent execution.
             (
                 "env",
                 vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
-                true,
+                false,
             ),
-            ("reboot", vec![], true),
+            ("reboot", vec![], false),
         ];
 
         for (command, args, should_block) in cases {
@@ -466,9 +466,8 @@ mod tests {
         assert!(allowlisted
             .check_command_security_for_args("echo", &["ok".to_string()])
             .is_err());
-        // An allowlist must not bypass a *canonical hard deny*. Command
-        // substitution is an escalation signal, not a hard deny, so it is
-        // no longer rejected here — the permission layer reviews it.
+        // Built-in patterns are advisory; explicit adapter restrictions and
+        // allowlists remain best-effort text filters.
         assert!(allowlisted
             .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
             .is_ok());
@@ -477,7 +476,7 @@ mod tests {
                 "env",
                 &["rm".to_string(), "-rf".to_string(), "/".to_string()]
             )
-            .is_err());
+            .is_ok());
 
         let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
         assert!(shell_allowlisted
@@ -501,11 +500,13 @@ mod tests {
             }))
             .await;
 
-        assert!(result.is_ok(), "an escalation signal must not be rejected");
+        assert!(
+            result.is_ok(),
+            "shell syntax must not be rejected by text heuristics"
+        );
         assert!(
             marker.exists(),
-            "the escalation signal must reach the permission layer, which is the \
-             only remaining gate before this runs"
+            "the harmless fixture should execute in this direct-tool test"
         );
     }
 }

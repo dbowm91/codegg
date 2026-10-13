@@ -523,6 +523,15 @@ impl AgentLoop {
                 .security_service
                 .classify_tool_call(&tc.name, &tc.arguments)
         };
+        let command_preflight = if let (Some(command), Some(preflight)) = (
+            bash_command.as_deref(),
+            self.services.command_preflight.as_ref(),
+        ) {
+            let decision = preflight.check_command(command).await;
+            (!decision.findings().is_empty()).then(|| decision.summary())
+        } else {
+            None
+        };
         if let Some(ref finding) = security_hint.finding {
             self.recent_findings.push(finding.clone());
         }
@@ -560,11 +569,21 @@ impl AgentLoop {
                         .reason
                         .clone()
                         .unwrap_or_else(|| "sensitive path".to_string());
+                    let mut reasons = vec![format!("sensitive path: {reason}")];
+                    if let Some(preflight_reason) = command_preflight.as_ref() {
+                        reasons.push(format!("command preflight advisory: {preflight_reason}"));
+                    }
+                    if matches!(
+                        security_hint.action,
+                        crate::security::policy::SecurityAction::Ask
+                    ) {
+                        reasons.push(format!("security escalation: {}", security_hint.reason));
+                    }
                     let request = ApprovalRequest::new(
                         tc.name.to_string(),
                         path.clone(),
                         bash_command.clone().map(|c| truncate_for_audit(&c)),
-                        vec![format!("sensitive path: {reason}")],
+                        reasons,
                         Some(format!(
                             "review_level:{}",
                             sensitive.review_level.as_deref().unwrap_or("standard")
@@ -574,15 +593,27 @@ impl AgentLoop {
                         self.turn_id.clone(),
                     );
                     DeterministicVerdict::Escalate { request }
-                } else if matches!(
-                    security_hint.action,
-                    crate::security::policy::SecurityAction::Ask
-                ) {
+                } else if command_preflight.is_some()
+                    || matches!(
+                        security_hint.action,
+                        crate::security::policy::SecurityAction::Ask
+                    )
+                {
+                    let mut reasons = Vec::new();
+                    if let Some(reason) = command_preflight.as_ref() {
+                        reasons.push(format!("command preflight advisory: {reason}"));
+                    }
+                    if matches!(
+                        security_hint.action,
+                        crate::security::policy::SecurityAction::Ask
+                    ) {
+                        reasons.push(format!("security escalation: {}", security_hint.reason));
+                    }
                     let request = ApprovalRequest::new(
                         tc.name.to_string(),
                         path.clone(),
                         bash_command.clone().map(|c| truncate_for_audit(&c)),
-                        vec![format!("security escalation: {}", security_hint.reason)],
+                        reasons,
                         security_hint
                             .finding
                             .as_ref()

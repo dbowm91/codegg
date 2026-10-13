@@ -14,7 +14,7 @@
 //!
 //! Responsibility owners:
 //!
-//! - policy/classification glue: [`policy`] (blocked patterns, allowlist,
+//! - policy/classification glue: [`policy`] (advisory risk patterns, allowlist,
 //!   child-workspace ceiling, kill switches, intent-family adapters).
 //! - supervised execution: [`process`] (raw-shell spawn, native/managed
 //!   dispatch, scheduler submission, [`process::DispatchOutcome`]).
@@ -1265,24 +1265,13 @@ mod tests {
     }
 
     #[test]
-    fn pre_spawn_order_rejects_hard_denied_command_before_any_dispatch() {
-        // Regression guard for the extraction: policy checks must precede
-        // any process construction. A hard-denied command fails in the
-        // policy layer even when scheduler submission is configured.
-        //
-        // `rm -rf /` is now caught by the hard-deny *pattern* tier, which is
-        // checked before the literal blocked-command list, so the message is
-        // "blocked pattern" rather than "blocked list".
+    fn built_in_risk_pattern_does_not_terminally_reject() {
+        // Built-in risk classifiers inform review but do not reject in the
+        // tool-side text policy.
         let tool = BashTool::new();
         let parts: Vec<&str> = "rm -rf /".split_whitespace().collect();
-        let err = tool
-            .check_command_security("rm -rf /", &parts)
-            .expect_err("hard-denied command must not reach spawn");
-        let message = err.to_string();
-        assert!(
-            message.contains("blocked pattern") || message.contains("blocked list"),
-            "expected a policy rejection, got: {message}"
-        );
+        assert!(tool.check_command_security("rm -rf /", &parts).is_ok());
+        assert!(policy::find_ask_pattern("rm -rf /").is_some());
     }
 
     #[test]
