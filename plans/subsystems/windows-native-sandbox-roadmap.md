@@ -165,6 +165,17 @@ Evidence basis `research/windows-native-sandbox/c023-c026-corrective-assessment.
 
 C024, C025, and C026 closure records remain immutable. C027 closed negative before its restricted-child gate; no downstream plan became eligible. Any new lifecycle, review, or production architecture requires separate planning. C011/M004–M006 and C015–C018 remain blocked; constrained Windows production `SandboxRequest::Required` stays unavailable; no filesystem/network `Enforced` or original user ACL changes. See `plans/closure/windows-native-sandbox/027-status.md` and `research/windows-native-sandbox/c023-c026-corrective-assessment.md`.
 
+## ADR-0021 launch authority decision gate
+
+Proposal `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` is **not accepted** and does not authorize a production mechanism. Research `research/windows-native-sandbox/adr-0021-authority-options.md`. C027 closed negative (`plans/closure/windows-native-sandbox/027-status.md`): corrected Unicode token API, normal-account controls passed; `CreateProcessAsUserW` returned 1314, `CreateProcessWithTokenW` created a suspended Job-owned child which timed out without a child report, no restricted-token read proof.
+
+- **C028 ready:** `plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md` — bounded native process initialization timeline (previous `ResumeThread` count, first instruction/loader, profile/HKU, caller session, desktop, environment and output channel). Elevated `CreateProcessAsUserW` tests only in separate consented disposable Windows VM.
+- **C029 blocked:** `plans/implementation/windows-native-sandbox/029-broker-vs-guest-architecture-decision.md` — C028 evidence and maintainer ADR review. Compare safe narrow broker versus guest/Windows Sandbox with edition/single-instance/host data bridges; select **one test-only candidate or no-admission**.
+- **C030 blocked/conditional:** `plans/implementation/windows-native-sandbox/030-consented-privileged-broker-feasibility.md` — only if accepted ADR selects it: a test-only privileged broker with strict named-pipe DACL/authenticated connected client, fixed launcher manifest, Job-owned **unprivileged** restricting-SID child, actual host read-denial. No arbitrary elevated agent shell.
+- **C031 blocked/conditional:** `plans/implementation/windows-native-sandbox/031-windows-guest-feasibility.md` — only if accepted ADR selects it: native Windows Sandbox/Hyper-V guest with copied inputs, no host mapped secrets, clipboard/network/device bridges disabled by default, reviewed output promotion, real Windows Git/shell and cleanup.
+
+**Dependency classes:** C027 negative historical evidence is not a successful launcher; C028 native phase evidence hard for C029, isolated VM operational for privileged assertion; accepted ADR-0021 hard authority for one of C030/C031. These paths are **mutually exclusive**, not simultaneous required work. No automatic C025/C026 reopening or C011/M004–M006/C015–C018 unblocking, no Windows production `Required` or filesystem/network `Enforced`.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -233,6 +244,10 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C025 | closed without execution | `plans/implementation/windows-native-sandbox/025-dedicated-principal-lifecycle-recovery.md` | `plans/closure/windows-native-sandbox/025-status.md` | C024 strict-positive gate failed; lifecycle/reboot/concurrency work was abandoned under the plan's stop condition. |
 | C026 | closed — no admission | `plans/implementation/windows-native-sandbox/026-independent-review-and-admission-decision.md` | `plans/closure/windows-native-sandbox/026-status.md` | No candidate qualified; no positive proposal or independent positive review claim. |
 | C027 | closed (negative bounded feasibility) | `plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md` | `plans/closure/windows-native-sandbox/027-status.md` | Corrected Unicode interop; no unrestricted token-taking child control; no restricted-token read result; Windows production admission unavailable |
+| C028 | ready (privileged VM coverage conditional) | `plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md` | — | C027 negative; trace process phases and separately bound privilege limits |
+| C029 | blocked | `plans/implementation/windows-native-sandbox/029-broker-vs-guest-architecture-decision.md` | — | C028 disposition and maintainer ADR-0021 review |
+| C030 | blocked (conditional broker) | `plans/implementation/windows-native-sandbox/030-consented-privileged-broker-feasibility.md` | — | C029 selects broker; consented isolated VM |
+| C031 | blocked (conditional guest) | `plans/implementation/windows-native-sandbox/031-windows-guest-feasibility.md` | — | C029 selects guest; supported Windows virtualization host |
 | C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 closed negative; requires an accepted successor architecture decision and a newly qualified strict-positive feasibility gate |
 | C016 | blocked | `plans/implementation/windows-native-sandbox/016-appcontainer-projection-launch-and-toolchain-qualification.md` | — | C015 strict positive bounded snapshot closure |
 | C017 | blocked | `plans/implementation/windows-native-sandbox/017-authorized-projection-output-reconciliation.md` | — | C016 strict positive restricted projection execution |
