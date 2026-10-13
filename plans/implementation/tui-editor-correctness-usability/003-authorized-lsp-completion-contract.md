@@ -1,6 +1,9 @@
 # TUI Editor Correctness/Usability M003 — Authorized LSP Completion Contract
 
-Status: active (ADR-0021 accepted Option B 2026-10-13; implementation in progress).
+Status: implemented; closed
+
+Implementation: `44671d690`
+Closure: `plans/closure/tui-editor-correctness-usability/003-status.md`
 
 Prior status was `blocked pending acceptance of proposed ADR-0021`. The readiness
 investigation confirmed no LSP synced-version witness exists yet and that a
