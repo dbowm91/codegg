@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries M001 — Syntax Blocker Inventory and Advisory Conversion
 
-Status: closing
+Status: closed
 Primary class: invariant
 Hard dependencies: accepted ADR-0024 only.
 Target closure: `plans/closure/command-authorization-and-execution-boundaries/001-status.md`.
