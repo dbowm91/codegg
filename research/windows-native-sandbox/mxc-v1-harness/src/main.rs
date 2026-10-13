@@ -3,6 +3,8 @@ use mxc_sdk::v1::{self, ContainerRequest, Containment, WaitResult};
 use serde_json::json;
 use std::fs;
 use std::io;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
@@ -13,6 +15,42 @@ use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::runtime::Runtime;
 #[cfg(windows)]
 use tokio::task::JoinHandle;
+
+#[cfg(windows)]
+fn raw_handle_number(file: &fs::File) -> usize {
+    file.as_raw_handle() as usize
+}
+
+#[cfg(not(windows))]
+fn raw_handle_number(_file: &fs::File) -> usize {
+    0
+}
+
+#[cfg(windows)]
+fn mark_file_handle_inheritable(file: &fs::File) -> io::Result<()> {
+    use windows::Win32::Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT};
+    let handle = HANDLE(file.as_raw_handle() as *mut std::ffi::c_void);
+    unsafe { SetHandleInformation(handle, 1, HANDLE_FLAG_INHERIT) }.map_err(io::Error::other)
+}
+
+fn descendant_is_running(pid: u32) -> io::Result<bool> {
+    let output = Command::new("tasklist.exe")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "tasklist exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let listing = String::from_utf8_lossy(&output.stdout);
+    Ok(listing.lines().any(|line| {
+        line.split(',')
+            .nth(1)
+            .is_some_and(|field| field.trim_matches('"').trim() == pid.to_string())
+    }))
+}
 
 fn run_command(executable: &str, args: &[&str]) -> io::Result<String> {
     let output = Command::new(executable).args(args).output()?;
@@ -124,6 +162,9 @@ fn main() {
     let sibling = run_root.join("original-sibling");
     let outside = run_root.join("outside-stage-write.txt");
     let script_path = stage.join("probe.cmd");
+    let handle_script = stage.join("inherited-handle.ps1");
+    let descendant_script = stage.join("descendant.ps1");
+    let descendant_pid_file = stage.join("descendant.pid");
     let secret = host.join("synthetic-c020-secret.txt");
     let sibling_secret = sibling.join("synthetic-c020-sibling.txt");
     let junction = run_root.join("host-junction");
@@ -167,6 +208,66 @@ fn main() {
     let git = find_tool("git.exe");
     let python = find_tool("python.exe");
     let cargo = find_tool("cargo.exe");
+    let secret_handle = match fs::File::open(&secret) {
+        Ok(file) => {
+            #[cfg(windows)]
+            if let Err(error) = mark_file_handle_inheritable(&file) {
+                root_report(
+                    &format!("mark host secret handle inheritable: {error}"),
+                    &backends,
+                );
+                let _ = fs::remove_dir_all(&run_root);
+                return;
+            }
+            Some(file)
+        }
+        Err(error) => {
+            root_report(
+                &format!("open synthetic secret for handle probe: {error}"),
+                &backends,
+            );
+            let _ = fs::remove_dir_all(&run_root);
+            return;
+        }
+    };
+    let handle_probe_source = r#"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class C020ChildHandleProbe {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetFileType(IntPtr handle);
+}
+'@
+try {
+    $candidate = [IntPtr]::new([Int64]::Parse($env:C020_SECRET_HANDLE))
+    if ([C020ChildHandleProbe]::GetFileType($candidate) -eq 1) {
+        $safe = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($candidate, $false)
+        $stream = [IO.FileStream]::new($safe, [IO.FileAccess]::Read)
+        $reader = [IO.StreamReader]::new($stream)
+        if ($reader.ReadToEnd() -eq 'synthetic-c020-secret') { 'inherited_handle=leaked' }
+        else { 'inherited_handle=not_transferred' }
+        $reader.Dispose()
+    } else { 'inherited_handle=not_transferred' }
+} catch { 'inherited_handle=not_transferred' }
+"#;
+    let descendant_probe_source = r#"
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$child = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120') -PassThru
+Set-Content -NoNewline -LiteralPath $env:C020_DESCENDANT_PID_FILE -Value $child.Id
+"#;
+    if let Err(error) = fs::write(&handle_script, handle_probe_source) {
+        root_report(&format!("write inherited handle probe: {error}"), &backends);
+        let _ = fs::remove_dir_all(&run_root);
+        return;
+    }
+    if let Err(error) = fs::write(&descendant_script, descendant_probe_source) {
+        root_report(&format!("write descendant probe: {error}"), &backends);
+        let _ = fs::remove_dir_all(&run_root);
+        return;
+    }
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let system32 = PathBuf::from(&system_root).join("System32");
     let mut lines = vec![
         "@echo off".to_owned(),
         format!("echo stage-ok>{}", batch_quote(&stage.join("stage-write.txt"))),
@@ -179,6 +280,8 @@ fn main() {
         format!("type {} >nul 2>&1 && echo sibling_read=leaked || echo sibling_read=denied", batch_quote(&sibling_secret)),
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
+        format!("{} -NoProfile -NonInteractive -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&handle_script)),
+        format!("{} -NoProfile -NonInteractive -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&descendant_script)),
     ];
     if let Some(git) = &git {
         let repo = stage.join("git-init");
@@ -219,8 +322,6 @@ fn main() {
     let secret_acl_before =
         icacls_snapshot(&secret).unwrap_or_else(|error| format!("snapshot failed: {error}"));
     let secret_before = fs::read(&secret).unwrap_or_default();
-    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let system32 = PathBuf::from(&system_root).join("System32");
     let mut readonly_paths = vec![system32.to_string_lossy().into_owned()];
     for tool in [&git, &python, &cargo].into_iter().flatten() {
         if let Some(parent) = tool.parent() {
@@ -256,9 +357,26 @@ fn main() {
             ),
             ("SystemRoot".into(), system_root.clone()),
             ("WINDIR".into(), system_root.clone()),
-            ("USERPROFILE".into(), stage.join("profile").to_string_lossy().into_owned()),
-            ("LOCALAPPDATA".into(), stage.join("localappdata").to_string_lossy().into_owned()),
-            ("APPDATA".into(), stage.join("appdata").to_string_lossy().into_owned()),
+            (
+                "USERPROFILE".into(),
+                stage.join("profile").to_string_lossy().into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".into(),
+                stage.join("localappdata").to_string_lossy().into_owned(),
+            ),
+            (
+                "APPDATA".into(),
+                stage.join("appdata").to_string_lossy().into_owned(),
+            ),
+            (
+                "C020_SECRET_HANDLE".into(),
+                raw_handle_number(secret_handle.as_ref().expect("handle fixture")).to_string(),
+            ),
+            (
+                "C020_DESCENDANT_PID_FILE".into(),
+                descendant_pid_file.to_string_lossy().into_owned(),
+            ),
             ("TEMP".into(), stage.to_string_lossy().into_owned()),
             ("TMP".into(), stage.to_string_lossy().into_owned()),
             ("PATH".into(), path_value),
@@ -271,6 +389,26 @@ fn main() {
     #[cfg(not(windows))]
     println!("C020_MXC_PROBE=Windows-only probe; not run on this target");
     let execution = v1::run(request, Default::default());
+    let descendant_pid = fs::read_to_string(&descendant_pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<u32>().ok());
+    let descendant_alive_at_return = descendant_pid
+        .and_then(|pid| descendant_is_running(pid).ok())
+        .unwrap_or(false);
+    let descendant_cleanup_terminated = if descendant_alive_at_return {
+        descendant_pid.is_some_and(|pid| {
+            Command::new("taskkill.exe")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    } else {
+        false
+    };
+    let descendant_gone_after_cleanup = descendant_pid
+        .and_then(|pid| descendant_is_running(pid).ok())
+        .is_some_and(|is_running| !is_running);
+    drop(secret_handle);
     #[cfg(windows)]
     pipe_task.abort();
     #[cfg(windows)]
@@ -287,6 +425,10 @@ fn main() {
         Ok(result) => {
             let stdout = String::from_utf8_lossy(&result.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+            let inherited_handle = stdout
+                .lines()
+                .find(|line| line.starts_with("inherited_handle="))
+                .unwrap_or("inherited_handle=missing");
             let report = json!({
                 "contract": "codegg.mxc_v1_native_feasibility.v1",
                 "runner_temp": run_root.display().to_string(),
@@ -306,10 +448,22 @@ fn main() {
                 "secret_acl_after": secret_acl_after,
                 "secret_acl_unchanged": secret_acl_unchanged,
                 "secret_unchanged": secret_unchanged,
-                "unsupported": ["UNC fixture", "hostile inherited handle transfer", "independent descendant/cancellation trace"],
+                "inherited_handle": inherited_handle,
+                "descendant_pid": descendant_pid,
+                "descendant_probe_spawned": descendant_pid.is_some(),
+                "descendant_alive_at_return": descendant_alive_at_return,
+                "descendant_cleanup_terminated": descendant_cleanup_terminated,
+                "descendant_gone_after_cleanup": descendant_gone_after_cleanup,
+                "unsupported": ["UNC fixture", "independent timeout/cancellation trace"],
                 "network": "not configured and not claimed"
             });
             println!("C020_REPORT={report}");
+            if inherited_handle != "inherited_handle=not_transferred"
+                || descendant_pid.is_none()
+                || descendant_alive_at_return
+            {
+                eprintln!("C020 strict lifecycle gate failed: inherited_handle={inherited_handle}, descendant_alive_at_return={descendant_alive_at_return}");
+            }
             if !matches!(result.outcome, WaitResult::Exited(0)) {
                 eprintln!("C020 MXC child did not exit successfully; preserve report as negative/blocked evidence.");
             }
