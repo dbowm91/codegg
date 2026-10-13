@@ -9,6 +9,8 @@
 #pragma comment(lib, "Advapi32.lib")
 #endif
 
+#define ARRAY_COUNT(array) (sizeof(array) / sizeof((array)[0]))
+
 static BOOL token_user_sid(HANDLE token, LPWSTR output, DWORD output_chars) {
     DWORD required = 0;
     GetTokenInformation(token, TokenUser, NULL, 0, &required);
@@ -107,7 +109,7 @@ static DWORD run_command(LPCWSTR application, LPCWSTR command_line, DWORD *exit_
     startup.dwFlags = STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;
     WCHAR mutable_command[32768];
-    if (wcsncpy_s(mutable_command, _countof(mutable_command), command_line, _TRUNCATE) != 0)
+    if (wcsncpy_s(mutable_command, ARRAY_COUNT(mutable_command), command_line, _TRUNCATE) != 0)
         return ERROR_INSUFFICIENT_BUFFER;
     if (!CreateProcessW(application, mutable_command, NULL, NULL, FALSE, CREATE_NO_WINDOW,
                         NULL, NULL, &startup, &process)) return GetLastError();
@@ -167,7 +169,7 @@ int wmain(int argc, wchar_t **argv) {
     BOOL token_ok = GetTokenInformation(token, TokenType, &token_type, sizeof(token_type),
                                         &returned) && token_type == TokenPrimary;
     WCHAR user_sid[184] = {0};
-    BOOL sid_ok = token_user_sid(token, user_sid, _countof(user_sid));
+    BOOL sid_ok = token_user_sid(token, user_sid, (DWORD)ARRAY_COUNT(user_sid));
     BOOL restricting_sid_seen = has_restricting_sid(token, limiting_sid);
     CloseHandle(token);
     if (!token_ok || !sid_ok) return 66;
@@ -181,16 +183,16 @@ int wmain(int argc, wchar_t **argv) {
     if (restricting_sid_seen && broad_error == ERROR_ACCESS_DENIED &&
         stage_error == ERROR_SUCCESS && stage_read_error == ERROR_SUCCESS) {
         WCHAR system_root[MAX_PATH] = {0};
-        DWORD root_length = GetEnvironmentVariableW(L"SystemRoot", system_root, _countof(system_root));
-        if (root_length > 0 && root_length < _countof(system_root)) {
+        DWORD root_length = GetEnvironmentVariableW(L"SystemRoot", system_root, (DWORD)ARRAY_COUNT(system_root));
+        if (root_length > 0 && root_length < (DWORD)ARRAY_COUNT(system_root)) {
             WCHAR command_exe[MAX_PATH] = {0};
-            swprintf_s(command_exe, _countof(command_exe), L"%ls\\System32\\cmd.exe", system_root);
+            swprintf_s(command_exe, ARRAY_COUNT(command_exe), L"%ls\\System32\\cmd.exe", system_root);
             WCHAR shell_command[32768] = {0};
-            swprintf_s(shell_command, _countof(shell_command), L"\"%ls\" /d /c ver", command_exe);
+            swprintf_s(shell_command, ARRAY_COUNT(shell_command), L"\"%ls\" /d /c ver", command_exe);
             shell_error = run_command(command_exe, shell_command, &shell_exit);
         } else shell_error = ERROR_ENVVAR_NOT_FOUND;
         WCHAR git_command[32768] = {0};
-        swprintf_s(git_command, _countof(git_command), L"\"%ls\" --version", git_exe);
+        swprintf_s(git_command, ARRAY_COUNT(git_command), L"\"%ls\" --version", git_exe);
         git_error = run_command(git_exe, git_command, &git_exit);
     }
     if (!write_result(result_path, user_sid, restricting_sid_seen, broad_error,
