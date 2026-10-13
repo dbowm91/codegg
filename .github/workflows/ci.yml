@@ -102,6 +102,9 @@ jobs:
       - name: Sandbox contract guard
         run: python3 scripts/check_sandbox_contract.py
 
+      - name: ADR identity and link guard
+        run: python3 scripts/check_adr_integrity.py
+
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 

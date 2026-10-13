@@ -56,3 +56,9 @@ is authorized.
 
 No CodeGG production dependency, backend registration, or default behavior was
 changed for this research.
+
+## Successor investigation, without altering M007's historical disposition (2026-10-12)
+
+The above M007 closure is preserved for its pinned early-preview SDK and missing Windows 11 evidence. ADR-0020 now accepts only **test-only** comparison and registers C019–C022, including C020's **new** MXC SDK v1.0.0 feasibility assessment. The 2026-10-07 stable SDK v1 public API and serviced Windows 11 process-isolation capability matrix differ materially from the pinned M007 experiment; `v1.0.0` resolves to upstream commit `7bf210247986cb73b1b314df60c2f1109c479c0b`. The upstream Rust toolchain remains 1.93 (Codegg MSRV 1.89). Windows Server 2025 base build 26100 is not proof of Windows 11 native Process Isolation. Query actual supported host, KB/UBR and selected tier before experiments; never assume an AppContainer+DACL fallback qualifies.
+
+C020 must produce direct running-child observations against C019's denied-read/write aliases, IPC, handles and executable compatibility, plus original-host descriptor preservation. No production MXC integration or new filesystem/network enforcement claim is approved by this append-only successor note. Sources: https://github.com/microsoft/mxc/releases/tag/v1.0.0 ; https://github.com/microsoft/mxc/blob/v1.0.0/docs/backends/process-container/os-version-support.md ; https://code.visualstudio.com/docs/agents/run/agent-sandboxing .

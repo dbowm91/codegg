@@ -1,0 +1,49 @@
+name: Windows MXC C033 denial and toolchain requalification (test only)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows-mxc-c033-requalification.yml'
+      - 'research/windows-native-sandbox/mxc-c033-harness/**'
+      - 'plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md'
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-requalification:
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record serviced Windows 11 host inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance Win32_OperatingSystem
+          $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          $evidence = [ordered]@{
+            edition = $os.Caption
+            version = $os.Version
+            build = [int]$current.CurrentBuild
+            ubr = [int]$current.UBR
+            display_version = $current.DisplayVersion
+            architecture = $arch
+            processmodel_dll = Test-Path (Join-Path $env:SystemRoot 'System32\processmodel.dll')
+            mxc_sdk = '1.0.0 (Cargo.toml and Cargo.lock pinned)'
+            capture_mode = 'block (deny-and-record)'
+            qualification = 'Test-only synthetic fixture; no production admission claim.'
+          }
+          $json = $evidence | ConvertTo-Json -Compress
+          "C033_HOST=$json"
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - name: Install isolated MXC Rust toolchain
+        uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Run pinned MXC v1.0.0 C033 synthetic denial and toolchain matrix
+        shell: pwsh
+        run: cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c033-harness/Cargo.toml

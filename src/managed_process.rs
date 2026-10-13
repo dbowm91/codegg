@@ -835,7 +835,29 @@ async fn run_windows_test_restricted(
     request: ManagedProcessRequest,
     output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    run_windows_test_restricted_inner(request, output_tx, false).await
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+#[cfg(test)]
+async fn run_windows_test_restricted_forensic(
+    request: ManagedProcessRequest,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
+    run_windows_test_restricted_inner(request, None, true).await
+}
+
+#[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+async fn run_windows_test_restricted_inner(
+    request: ManagedProcessRequest,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
+    forensic_populated_deny_roots: bool,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
     use std::os::windows::ffi::OsStrExt;
+
+    // The AppContainer cannot reach runner-user TEMP without changing the
+    // user's profile ACLs. C014 uses this reserved test-only path to request
+    // a fresh projection under the package profile's own local TEMP instead.
+    let profile_temp_projection = Path::new(r"C:\__codegg_test_profile_temp__");
 
     let ManagedProcessRequest {
         executable,
@@ -911,15 +933,18 @@ async fn run_windows_test_restricted(
                 .map(|path| (path.clone(), windows_acl_lease::LeaseAccess::Deny)),
         )
     {
+        if path == profile_temp_projection {
+            continue;
+        }
         windows_acl_lease::validate_input_directory(&path).map_err(|error| {
             ManagedProcessError::SandboxFailed(format!(
                 "ACL lease root is unavailable or unsupported: {error}"
             ))
         })?;
-        if access == windows_acl_lease::LeaseAccess::Deny {
-            windows_acl_lease::validate_empty_deny_directory(&path).map_err(|error| {
+        if !forensic_populated_deny_roots {
+            windows_acl_lease::validate_empty_lease_root(&path).map_err(|error| {
                 ManagedProcessError::SandboxFailed(format!(
-                    "ACL deny root is unavailable or unsupported: {error}"
+                    "ACL lease root is unavailable or populated: {error}"
                 ))
             })?;
         }
@@ -940,20 +965,72 @@ async fn run_windows_test_restricted(
             .or_insert((canonical, access));
     }
     let daemon_paths = codegg_client::LocalDaemonPaths::resolve();
-    daemon_paths
-        .ensure_root()
-        .map_err(ManagedProcessError::Spawn)?;
+    daemon_paths.ensure_root().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("prepare daemon-owned ACL journal root: {error}"),
+        ))
+    })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: daemon journal root ready");
+    }
     let journal_root = daemon_paths.root.join("sandbox").join("acl-leases");
-    let conflicts =
-        windows_acl_lease::recover_all(&journal_root).map_err(ManagedProcessError::Spawn)?;
+    let conflicts = windows_acl_lease::recover_all(&journal_root).map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("recover Windows ACL lease journal: {error}"),
+        ))
+    })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: existing ACL journals recovered");
+    }
     if !conflicts.is_empty() {
         return Err(ManagedProcessError::SandboxFailed(format!(
             "{} stale Windows ACL lease journal(s) need operator inspection",
             conflicts.len()
         )));
     }
-    let profile =
-        windows::WindowsAppContainerProfile::create().map_err(ManagedProcessError::Spawn)?;
+    let profile = windows::WindowsAppContainerProfile::create().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("create restricted AppContainer profile: {error}"),
+        ))
+    })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: AppContainer profile created");
+    }
+    let local_app_data = profile.local_app_data_path().map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("resolve AppContainer local application data: {error}"),
+        ))
+    })?;
+    let temporary_directory = local_app_data.join("Temp");
+    std::fs::create_dir_all(&temporary_directory).map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("create AppContainer temporary directory: {error}"),
+        ))
+    })?;
+    if cwd == profile_temp_projection {
+        windows_acl_lease::validate_empty_lease_root(&temporary_directory).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "AppContainer profile projection root is unavailable or populated: {error}"
+            ))
+        })?;
+        let canonical = std::fs::canonicalize(&temporary_directory).map_err(|error| {
+            ManagedProcessError::SandboxFailed(format!(
+                "canonicalize AppContainer profile projection root: {error}"
+            ))
+        })?;
+        roots.insert(
+            canonical.to_string_lossy().to_lowercase(),
+            (canonical, windows_acl_lease::LeaseAccess::ReadWrite),
+        );
+    }
     let lease_run_id = format!("{}:{}", provenance.job_id, provenance.attempt_id);
     for (path, access) in roots.into_values() {
         acl_leases.push(
@@ -964,27 +1041,99 @@ async fn run_windows_test_restricted(
                 profile.sid(),
                 access,
             )
-            .map_err(ManagedProcessError::Spawn)?,
+            .map_err(|error| {
+                ManagedProcessError::Spawn(std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "acquire {access:?} Windows ACL lease for {}: {error}",
+                        path.display()
+                    ),
+                ))
+            })?,
         );
+        #[cfg(test)]
+        if forensic_populated_deny_roots {
+            eprintln!(
+                "C013 stage: {:?} ACL lease applied to {}",
+                access,
+                path.display()
+            );
+        }
     }
-    let local_app_data = profile
-        .local_app_data_path()
-        .map_err(ManagedProcessError::Spawn)?;
-    let temporary_directory = local_app_data.join("Temp");
-    std::fs::create_dir_all(&temporary_directory).map_err(ManagedProcessError::Spawn)?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        for path in spec
+            .write_paths
+            .iter()
+            .chain(spec.deny_paths.iter())
+            .take(8)
+        {
+            if spec.deny_paths.contains(path) {
+                let child_created_after_lease = path.join("created-after-lease.txt");
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&child_created_after_lease)
+                    .and_then(|mut file| {
+                        use std::io::Write;
+                        file.write_all(b"synthetic-c013-created-after-lease")
+                    })
+                    .map_err(ManagedProcessError::Spawn)?;
+            }
+            windows_acl_lease::forensic_tree_snapshots(path, 64)
+                .map_err(ManagedProcessError::Spawn)?
+                .into_iter()
+                .for_each(|snapshot| eprintln!("C013 post-lease object: {snapshot}"));
+        }
+        eprintln!("C013 stage: post-lease object snapshots complete");
+    }
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: AppContainer temp directory ready");
+    }
     let mut environment = environment_policy.entries();
     provenance.apply_environment(&mut environment);
-    let mut environment_block =
-        windows_environment_block(environment, &cwd, &local_app_data, &temporary_directory)?;
+    if cwd == profile_temp_projection {
+        environment.insert(
+            "CODEGG_C014_PROJECTION".into(),
+            temporary_directory.as_os_str().to_owned(),
+        );
+    }
+    let launch_cwd = if cwd == profile_temp_projection {
+        // Keep the shell's startup directory on the already-readable OS
+        // runtime. C014 addresses the granted projection by its explicit
+        // path; C016 separately qualifies a staged projection as cwd.
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32")
+    } else {
+        cwd.clone()
+    };
+    let mut environment_block = windows_environment_block(
+        environment,
+        &launch_cwd,
+        &local_app_data,
+        &temporary_directory,
+    )?;
     let mut child = windows::WindowsTestRestrictedProcess::launch(
         &spec.target,
         &requested_args,
         &profile,
-        &cwd,
+        &launch_cwd,
         &mut environment_block,
         &cancellation,
     )
-    .map_err(ManagedProcessError::Spawn)?;
+    .map_err(|error| {
+        ManagedProcessError::Spawn(std::io::Error::new(
+            error.kind(),
+            format!("launch restricted AppContainer child: {error}"),
+        ))
+    })?;
+    #[cfg(test)]
+    if forensic_populated_deny_roots {
+        eprintln!("C013 stage: restricted child created");
+    }
     let job_verified = child.job_established();
     if !job_verified {
         let _ = child.terminate(1);
@@ -2114,5 +2263,234 @@ mod tests {
             run(request).await,
             Err(ManagedProcessError::EmptyArgv)
         ));
+    }
+
+    #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn c013_forensic_existing_object_acl_and_alias_probe() {
+        let fixture = tempfile::tempdir().expect("C013 disposable fixture");
+        let workspace = fixture.path().join("workspace");
+        let credentials = fixture.path().join("credentials");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&credentials).unwrap();
+        let allowed_file = workspace.join("allowed-workspace-file.txt");
+        std::fs::write(&allowed_file, "synthetic-workspace-file").unwrap();
+        let credential = credentials.join("synthetic-secret.txt");
+        let protected = credentials.join("protected-secret.txt");
+        std::fs::write(&credential, "synthetic-c013-secret").unwrap();
+        std::fs::write(&protected, "synthetic-protected-secret").unwrap();
+
+        let protect = std::process::Command::new("icacls.exe")
+            .arg(&protected)
+            .arg("/inheritance:d")
+            .output()
+            .expect("icacls is available on the native Windows runner");
+        assert!(
+            protect.status.success(),
+            "failed to make the synthetic child DACL protected: {}",
+            String::from_utf8_lossy(&protect.stderr)
+        );
+
+        let hardlink = workspace.join("hardlink-secret.txt");
+        std::fs::hard_link(&credential, &hardlink).expect("NTFS hardlink fixture");
+        let alternate_stream = PathBuf::from(format!("{}:c013", credential.display()));
+        std::fs::write(&alternate_stream, "synthetic-c013-ads").expect("NTFS ADS fixture");
+        let junction = workspace.join("credential-junction");
+        let junction_result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&credentials)
+            .output()
+            .expect("cmd.exe is present on the native Windows runner");
+        assert!(
+            junction_result.status.success(),
+            "failed to create disposable junction: {}",
+            String::from_utf8_lossy(&junction_result.stderr)
+        );
+
+        let executable = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32")
+            .join("cmd.exe");
+        let script = [
+            r#"if defined C013_START_MARKER echo started>"%C013_START_MARKER%""#,
+            r#"type "%C013_ALLOWED%" >nul 2>nul && echo allowed=readable || echo allowed=denied"#,
+            r#"type "%C013_DIRECT%" >nul 2>nul && echo direct=leaked || echo direct=denied"#,
+            r#"type "%C013_JUNCTION%" >nul 2>nul && echo junction=leaked || echo junction=denied"#,
+            r#"type "%C013_HARDLINK%" >nul 2>nul && echo hardlink=leaked || echo hardlink=denied"#,
+            r#"type "%C013_PROTECTED%" >nul 2>nul && echo protected=leaked || echo protected=denied"#,
+            r#"type "%C013_ADS%" >nul 2>nul && echo ads=leaked || echo ads=denied"#,
+            r#"type "%C013_DENY_ROOT%\created-after-lease.txt" >nul 2>nul && echo postLease=leaked || echo postLease=denied"#,
+            r#"type nul > "%C013_DENY_ROOT%\created-after-launch.txt" 2>nul && echo new=created || echo new=creation-denied"#,
+        ]
+        .join("\r\n");
+        let probe_script = workspace.join("c013-probe.cmd");
+        std::fs::write(&probe_script, script).expect("write disposable C013 probe script");
+        let observed_objects = [
+            &credentials,
+            &credential,
+            &protected,
+            &hardlink,
+            &junction,
+            &allowed_file,
+            &probe_script,
+        ];
+        let before = observed_objects
+            .iter()
+            .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())
+            .collect::<Vec<_>>();
+        for snapshot in &before {
+            eprintln!("C013 pre-lease object: {snapshot}");
+        }
+        let args = vec![
+            OsString::from("/d"),
+            OsString::from("/c"),
+            probe_script.as_os_str().to_owned(),
+        ];
+        let request_for = |include_deny_root: bool| {
+            let mut request = ManagedProcessRequest::new(
+                std::iter::once(executable.clone().into_os_string())
+                    .chain(args.iter().cloned())
+                    .collect(),
+                std::env::var_os("SystemRoot")
+                    .map(PathBuf::from)
+                    .expect("SystemRoot is set")
+                    .join("System32"),
+                ProcessProvenance::new("windows-c013-forensic", "existing-object-access"),
+            );
+            request.timeout = Some(Duration::from_secs(15));
+            request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+                target: executable.clone(),
+                args: args
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect(),
+                read_paths: Vec::new(),
+                write_paths: vec![workspace.clone()],
+                deny_paths: include_deny_root
+                    .then(|| credentials.clone())
+                    .into_iter()
+                    .collect(),
+            });
+            request.environment_policy = EnvironmentPolicy::sanitized()
+                .with_var("C013_ALLOWED", allowed_file.as_os_str())
+                .with_var("C013_DIRECT", credential.as_os_str())
+                .with_var(
+                    "C013_JUNCTION",
+                    junction.join("synthetic-secret.txt").as_os_str(),
+                )
+                .with_var("C013_HARDLINK", hardlink.as_os_str())
+                .with_var("C013_PROTECTED", protected.as_os_str())
+                .with_var("C013_ADS", alternate_stream.as_os_str())
+                .with_var("C013_DENY_ROOT", credentials.as_os_str());
+            request
+        };
+
+        let start_marker = fixture.path().join("unexpected-child-start.txt");
+        let mut populated_workspace_request = request_for(false);
+        populated_workspace_request.environment_policy = populated_workspace_request
+            .environment_policy
+            .clone()
+            .with_var("C013_START_MARKER", start_marker.as_os_str());
+        let error = run_windows_test_restricted(populated_workspace_request, None)
+            .await
+            .expect_err("populated workspace lease root must fail closed before spawn");
+        assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(
+            !start_marker.exists(),
+            "populated workspace child did not start"
+        );
+        let after_rejection = observed_objects
+            .iter()
+            .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            after_rejection, before,
+            "rejected populated root must not mutate ACLs"
+        );
+
+        let grant_only_result = run_windows_test_restricted_forensic(request_for(false))
+            .await
+            .expect("grant-only C013 fixture completes");
+        assert!(
+            grant_only_result.exit_status.success(),
+            "C013 grant-only child exited {:?}; stdout={:?}; stderr={:?}",
+            grant_only_result.exit_status,
+            grant_only_result.stdout.to_string_lossy(),
+            grant_only_result.stderr.to_string_lossy()
+        );
+        let grant_only = grant_only_result.stdout.to_string_lossy();
+        eprintln!("C013 grant-only candidate results: {grant_only}");
+        assert!(grant_only.contains("allowed=readable") || grant_only.contains("allowed=denied"));
+        for label in ["direct", "junction", "hardlink", "protected", "ads"] {
+            assert!(
+                grant_only.contains(&format!("{label}=denied")),
+                "grant-only C013 read leaked through {label}: {grant_only}"
+            );
+        }
+        assert!(matches!(
+            grant_only_result.sandbox,
+            SandboxExecutionOutcome::TestOnlyAppContainer {
+                token_verified: true,
+                job_verified: true,
+                ..
+            }
+        ));
+
+        let result = run_windows_test_restricted_forensic(request_for(true))
+            .await
+            .expect("isolated C013 forensic child completes");
+        assert!(
+            result.exit_status.success(),
+            "C013 deny-lease child exited {:?}; stdout={:?}; stderr={:?}",
+            result.exit_status,
+            result.stdout.to_string_lossy(),
+            result.stderr.to_string_lossy()
+        );
+        let observations = result.stdout.to_string_lossy();
+        eprintln!("C013 restricted-child access results: {observations}");
+        assert!(
+            observations.contains("allowed=readable") || observations.contains("allowed=denied")
+        );
+        for label in [
+            "direct",
+            "junction",
+            "hardlink",
+            "protected",
+            "ads",
+            "postLease",
+        ] {
+            assert!(
+                observations.contains(&format!("{label}=denied")),
+                "deny-lease C013 read leaked through {label}: {observations}"
+            );
+        }
+        assert!(observations.contains("new=creation-denied"));
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::TestOnlyAppContainer {
+                token_verified: true,
+                job_verified: true,
+                ..
+            }
+        ));
+
+        let after = observed_objects
+            .iter()
+            .map(|path| windows_acl_lease::forensic_object_snapshot(path).unwrap())
+            .collect::<Vec<_>>();
+        for snapshot in &after {
+            eprintln!("C013 post-restore object: {snapshot}");
+        }
+        if after != before {
+            eprintln!(
+                "C013 finding: root-level DACL restoration left descendant descriptor/control drift"
+            );
+        }
+        assert_ne!(
+            after, before,
+            "C013 diagnostic expects to reproduce the current root-only restoration limitation"
+        );
     }
 }

@@ -127,6 +127,21 @@ Raw Windows shell dispatch also supplies one unique TEMP/TMP directory per
 invocation and removes it after the managed child finishes; M004 must restrict
 write access to that exact directory before treating it as containment.
 
+Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
+while Windows defaults to the inbox Windows PowerShell executable and can opt
+into `cmd.exe`, Git Bash, or WSL with `shell.windows_shell`. PowerShell, cmd,
+and WSL resolve from the absolute Windows system directory; Git Bash resolves
+from `ProgramFiles`. None is searched through `PATH`; command text is passed as
+one argument to PowerShell, Git Bash, or WSL. Windows `cmd.exe` has its own
+command-line grammar, so `ManagedProcessRequest::raw_command` appends the
+explicitly selected shell text with Windows `raw_arg` handling; that field is
+accepted only for an absolute `cmd.exe` executable. Structured `NativeCommand`
+and managed argv dispatch never enter shell parsing. This selects command
+syntax, not a Windows sandbox backend.
+Raw Windows shell dispatch also supplies one unique TEMP/TMP directory per
+invocation and removes it after the managed child finishes; M004 must restrict
+write access to that exact directory before treating it as containment.
+
 Protocol children remain direct owners only where framing, persistence, or
 crate dependency direction makes finite-process capture the wrong abstraction.
 Their ownership is explicit rather than hidden behind a generic shell helper.

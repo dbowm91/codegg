@@ -90,21 +90,14 @@ async fn assert_reparse_root_rejected(root: PathBuf, marker: PathBuf) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn windows_acl_lease_allows_owned_roots_and_denies_empty_sibling_then_restores_acl() {
+async fn windows_acl_lease_allows_empty_write_root_and_denies_empty_sibling_then_restores_acl() {
     let fixture = tempfile::tempdir().unwrap();
     let allowed = fixture.path().join("allowed");
-    let readonly = fixture.path().join("readonly");
     let outside = fixture.path().join("outside");
     std::fs::create_dir(&allowed).unwrap();
-    std::fs::create_dir(&readonly).unwrap();
     std::fs::create_dir(&outside).unwrap();
-    std::fs::write(readonly.join("seed.txt"), "readonly-content").unwrap();
-    // Deny leases currently accept only empty roots; C012 rejects nonempty trees
-    // before child creation because descendants can carry independent ACLs.
     let allowed_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&allowed).unwrap();
-    let readonly_before =
-        codegg::managed_process::windows_acl_lease_dacl_snapshot(&readonly).unwrap();
     let outside_before =
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap();
     let journal_root = codegg_client::LocalDaemonPaths::resolve()
@@ -116,12 +109,6 @@ async fn windows_acl_lease_allows_owned_roots_and_denies_empty_sibling_then_rest
 $write = [IO.Path]::Combine($env:CODEGG_LEASE_ALLOWED, 'created.txt')
 [IO.File]::WriteAllText($write, 'allowed-write')
 $read = [IO.File]::ReadAllText($write)
-$readonlyContent = [IO.File]::ReadAllText([IO.Path]::Combine($env:CODEGG_LEASE_READONLY, 'seed.txt'))
-$readonly = if ($readonlyContent.Trim() -eq 'readonly-content') { 'readonly-listed' } else { 'readonly-read-failed' }
-try {
-    [IO.File]::WriteAllText([IO.Path]::Combine($env:CODEGG_LEASE_READONLY, 'forbidden.txt'), 'forbidden')
-    $readonlyWrite = 'unexpected-write'
-} catch { $readonlyWrite = 'readonly-write-denied' }
 try {
     $null = [IO.Directory]::GetFiles($env:CODEGG_LEASE_OUTSIDE)
     $outsideRead = 'unexpected-read'
@@ -130,7 +117,7 @@ try {
     [IO.File]::WriteAllText([IO.Path]::Combine($env:CODEGG_LEASE_OUTSIDE, 'created.txt'), 'forbidden')
     $outsideWrite = 'unexpected-write'
 } catch { $outsideWrite = 'write-denied' }
-[Console]::Out.Write(($read.Trim() + '|' + $readonly + '|' + $readonlyWrite + '|' + $outsideRead + '|' + $outsideWrite))
+[Console]::Out.Write(($read.Trim() + '|' + $outsideRead + '|' + $outsideWrite))
 "#;
     let args = vec![
         OsString::from("-NoLogo"),
@@ -155,13 +142,12 @@ try {
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect(),
-        read_paths: vec![readonly.clone()],
+        read_paths: Vec::new(),
         write_paths: vec![allowed.clone()],
         deny_paths: vec![outside.clone()],
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_LEASE_ALLOWED", allowed.as_os_str())
-        .with_var("CODEGG_LEASE_READONLY", readonly.as_os_str())
         .with_var("CODEGG_LEASE_OUTSIDE", outside.as_os_str());
 
     let result = ManagedProcessService::run(request)
@@ -174,7 +160,7 @@ try {
     );
     assert_eq!(
         result.stdout.to_string_lossy(),
-        "allowed-write|readonly-listed|readonly-write-denied|read-denied|write-denied"
+        "allowed-write|read-denied|write-denied"
     );
     assert!(matches!(
         result.sandbox,
@@ -194,10 +180,6 @@ try {
     assert_eq!(
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&allowed).unwrap(),
         allowed_before
-    );
-    assert_eq!(
-        codegg::managed_process::windows_acl_lease_dacl_snapshot(&readonly).unwrap(),
-        readonly_before
     );
     assert_eq!(
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&outside).unwrap(),
