@@ -1,7 +1,7 @@
 # Async Background Jobs M002 — Background Bash, Build, Lint and Format
 
-Status: blocked — M001 must close
-Baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (revalidate before implementation)
+Status: ready for handoff (unblocked by M001 closure `e828bebf`; see `plans/closure/async-background-jobs/001-status.md`)
+Baseline: `e828bebf940306992eec74aace0f41e114feced3` (revalidate implementation branch before editing)
 Roadmap: `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md#m002--background-bash-and-routed-buildlintformat`
 Class: capability. Hard dependency: M001 notification/JobHandle/control contract. Soft dependency: M003 safe idle continuation (does not gate execution).
 

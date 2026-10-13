@@ -1,7 +1,7 @@
 # Async Background Jobs M003 — Safe Continuation, Notification Inbox and Frontend Visibility
 
-Status: blocked — M001 must close
-Baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (revalidate before implementation)
+Status: ready for handoff (unblocked by M001 closure `e828bebf`; see `plans/closure/async-background-jobs/001-status.md`; M002 soft only)
+Baseline: `e828bebf940306992eec74aace0f41e114feced3` (revalidate implementation branch before editing)
 Roadmap: `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md#m003--safe-agent-continuation-attention-delivery-and-frontend-controls`
 Class: capability + invariant. Hard dependency: M001. Soft dependency: M002 for Bash user experience; work may proceed against M001 test jobs.
 

@@ -1,6 +1,6 @@
 # Asynchronous Background Jobs and External Completion Watching
 
-Status: active — M001 ready; M002–M004 blocked on explicit milestone gates
+Status: active — M001 closed; M002–M003 ready; M004 blocked on M003
 
 Planning baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (default-branch source inspected 2026-10-13). Revalidate the actual implementation head before any code change.
 
@@ -68,15 +68,15 @@ M002 and M003 may proceed independently once M001 closes; M004 has a soft depend
 ## Milestones and bounded exit conditions
 
 ### M001 — Generic job completion contract and background test vertical slice
-Status: ready. Plan: `plans/implementation/async-background-jobs/001-job-notification-contract-and-background-test.md`.
+Status: closed at `e828bebf` (closure `plans/closure/async-background-jobs/001-status.md`).
 Produce durable `JobId` notification/replay identity and one fully usable model-facing `test.execution_mode=background` path. One submitted test may finish before or after its parent checks for work; model-visible completion is one event, not repeated `test` or `status` calls. No generic idle auto-resume.
 
 ### M002 — Background Bash and routed build/lint/format
-Status: blocked on M001 closure. Plan: `plans/implementation/async-background-jobs/002-background-bash-and-build-routes.md`.
+Status: ready (unblocked by M001 closure `e828bebf`). Plan: `plans/implementation/async-background-jobs/002-background-bash-and-build-routes.md`.
 Support an explicit background option for long-running shell/build/test/lint/format commands via the canonical scheduler, without raw-shell bypass or loss of existing foreground output/audit. No implicit `auto` mode in this milestone.
 
 ### M003 — Safe agent continuation, attention delivery, and frontend controls
-Status: blocked on M001 closure. Plan: `plans/implementation/async-background-jobs/003-safe-continuation-and-job-visibility.md`.
+Status: ready (unblocked by M001 closure `e828bebf`; M002 soft only). Plan: `plans/implementation/async-background-jobs/003-safe-continuation-and-job-visibility.md`.
 Durable notification displayed for ended turns; opt-in, bounded, authorized wake/continuation only where the owning task has asked to resume. Active-turn safe-boundary wake, restart, cancel and TUI state are deterministic. Never silently reopen a completed interaction.
 
 ### M004 — GitHub Actions remote CI terminal watcher

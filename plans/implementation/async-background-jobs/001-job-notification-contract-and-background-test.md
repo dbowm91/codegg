@@ -1,7 +1,7 @@
 # Async Background Jobs M001 — Job Notifications and Background Test Vertical Slice
 
-Status: ready for handoff
-Baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (revalidate implementation branch before editing)
+Status: implemented (closed by `plans/closure/async-background-jobs/001-status.md` at `e828bebf`)
+Baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (revalidated at implementation head `e828bebf` before editing)
 Roadmap: `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md#m001--generic-job-completion-contract-and-background-test-vertical-slice`
 Class: capability + invariant. Hard dependencies: existing scheduler, Tool Program M017/M020 and AgentRun M009 closures, satisfied. Interface dependency: current `CoreRequest` job/projection/authorization contracts (inspect live code first).
 
