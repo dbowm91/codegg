@@ -321,10 +321,6 @@ print(f"descendant_probe_pid={child.pid}")
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
     ];
-    lines.push(batch_quote(&handle_probe_executable));
-    lines.push(
-        "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)".into(),
-    );
     if let Some(python) = &python {
         lines.push(format!(
             "{} {}",
@@ -450,7 +446,15 @@ print(f"descendant_probe_pid={child.pid}")
     println!("C020_MXC_PROBE={:#?}", v1::probe(Some(&request)));
     #[cfg(not(windows))]
     println!("C020_MXC_PROBE=Windows-only probe; not run on this target");
-    let execution = v1::run(request, Default::default());
+    let execution = v1::run(request.clone(), Default::default());
+    let mut handle_request = request;
+    handle_request.command = batch_quote(&handle_probe_executable);
+    handle_request.timeout_ms = Some(10_000);
+    let handle_probe_execution = v1::run(handle_request, Default::default());
+    let handle_probe_execution_result = match &handle_probe_execution {
+        Ok(result) => format!("{:?}", result.outcome),
+        Err(error) => format!("error: {error}"),
+    };
     let descendant_pid = fs::read_to_string(&descendant_pid_file)
         .ok()
         .and_then(|pid| pid.trim().parse::<u32>().ok());
@@ -509,6 +513,7 @@ print(f"descendant_probe_pid={child.pid}")
                 "secret_acl_unchanged": secret_acl_unchanged,
                 "secret_unchanged": secret_unchanged,
                 "inherited_handle": inherited_handle,
+                "inherited_handle_probe_execution": handle_probe_execution_result,
                 "descendant_pid": descendant_pid,
                 "descendant_probe_spawned": descendant_pid.is_some(),
                 "descendant_alive_at_return": descendant_alive_at_return,
@@ -544,6 +549,9 @@ print(f"descendant_probe_pid={child.pid}")
                     "secret_acl_after": secret_acl_after,
                     "secret_acl_unchanged": secret_acl_unchanged,
                     "secret_unchanged": secret_unchanged,
+                    "inherited_handle": fs::read_to_string(&handle_probe_result)
+                        .unwrap_or_else(|_| "inherited_handle=unavailable".into()),
+                    "inherited_handle_probe_execution": handle_probe_execution_result,
                     "network": "not configured and not claimed"
                 })
             );
