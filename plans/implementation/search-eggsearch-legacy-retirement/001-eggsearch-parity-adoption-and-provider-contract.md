@@ -260,6 +260,29 @@ The harness must:
 - work for Linux/macOS source checkouts and keep the Rust test usable
   cross-platform; no hosted network CI lane or release publishing.
 
+Proposed canonical development invocation **after the harness is implemented**:
+
+```bash
+CODEGG_EGGSEARCH_BIN=/absolute/path/to/eggsearch \
+  scripts/test-eggsearch-pair.sh
+```
+
+The script must run the real paired-process check and its deterministic
+fake-MCP/structured fixture checks together. `CODEGG_EGGSEARCH_BIN` is
+required unless a caller explicitly passes a checked-out immutable v0.4.1
+source root. Compilation may need pre-fetched Cargo dependencies, but the
+**compatibility test phase itself must not require external network**. If
+running in Windows where the shell script is unavailable, the Cargo
+integration-test entrypoint must run the equivalent checks.
+
+The real subprocess is needed for MCP handshake/tool inventory,
+`provider_status(probe=false)`, exact binary version and shutdown.
+**Provider-level search success cannot be asserted in offline mode**, and
+eggsearch may reject an offline search *before* provider routing. Test
+explicit CodeGG provider validation/argument translation offline at the
+wrapper seam, not by interpreting a general offline-policy error as proof
+that upstream processed the provider hint.
+
 The existing `tests/eggsearch_real_compat.rs` performs live provider calls
 and allows most non-schema errors. It can remain an **optional --live**
 profile but does not replace the required offline paired-binary gate.
