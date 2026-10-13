@@ -232,6 +232,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C021StartupInfo])
     $processInfo = [C021ProcessInformation]::new()
     $createFlags = 0x00000004
+    "C021_LAUNCH_DIAG=$([ordered]@{ startup_size = $startup.cb; application_exists = (Test-Path -LiteralPath $windowsPowerShell); current_directory_exists = (Test-Path -LiteralPath $stage); command_line_chars = $commandLine.Length; create_flags = $createFlags; environment_pointer_is_null = $true } | ConvertTo-Json -Compress)"
 
     $passwordBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
     try {
@@ -243,7 +244,10 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         if ($passwordBstr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBstr) }
         $plainPassword = $null
     }
-    if (-not $created) { throw "CreateProcessWithLogonW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    if (-not $created) {
+        $launchError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "CreateProcessWithLogonW failed: $launchError (0x$([Convert]::ToString($launchError, 16)))"
+    }
 
     $job = [C021Native]::CreateJobObjectW([IntPtr]::Zero, $null)
     if ($job -eq [IntPtr]::Zero) { throw "CreateJobObjectW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
