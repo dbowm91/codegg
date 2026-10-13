@@ -1,6 +1,6 @@
 # Agent Tool Runtime Post-Closure Corrective C002 — Descendant Effect Enforcement and Functional Nested Delegation
 
-Status: active
+Status: closed — accepted in `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md` at implementation commits `d213150c` and `7ced77b0`.
 
 Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` on `planning/agent-tool-runtime-reconciliation`; rebaseline before editing.
 

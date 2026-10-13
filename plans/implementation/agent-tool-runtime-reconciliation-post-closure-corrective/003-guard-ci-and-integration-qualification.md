@@ -1,6 +1,6 @@
 # Agent Tool Runtime Post-Closure Corrective C003 — Guard, CI and Integration Qualification
 
-Status: blocked — hard dependencies C001 and C002 accepted closures; documentation prepared for handoff
+Status: active — hard dependencies C001 and C002 have accepted closures; current-main reconciliation and hosted execution remain to be qualified
 
 Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` implementation audit; current `main` at audit `b9ba494c1b21638c2e2f660301ba207ce8859682`. Rebaseline both at handoff; preserve later branch commits.
 

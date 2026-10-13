@@ -1,6 +1,6 @@
 # Agent Tool Runtime Reconciliation — Post-Closure Corrective Addendum
 
-Status: active — C001 closed; C002 active; C003 blocked on C002
+Status: active — C001 and C002 closed; C003 active
 
 Audit baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` on `planning/agent-tool-runtime-reconciliation` (2026-10-13).
 Integration base at audit: `b9ba494c1b21638c2e2f660301ba207ce8859682` (`main`); refs have diverged.
@@ -84,14 +84,14 @@ Class: invariant. Enforce host-attested descendant effect/name scope at broker e
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/002-descendant-effect-and-nested-task-corrective.md`.
 
-Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is now closed. **Active**.
+Dependencies: M003 descendant boundary closed, existing scheduler/task/permission APIs; C001 retry contract is closed. **Closed** at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md` (`d213150c`, `7ced77b0`).
 
 ### C003 — Enforced guards, current-main integration and hosted qualification
 Class: infrastructure. Wire the four predecessor guards plus new corrective coverage into quick+CI; verify independent guard self-tests/negative fixtures; integrate against current main with no unrelated code loss; hosted CI/desktop verification; issue new corrective closure records and accurate implementation SHA ledger.
 
 Plan: `plans/implementation/agent-tool-runtime-reconciliation-post-closure-corrective/003-guard-ci-and-integration-qualification.md`.
 
-Dependencies: C001 **hard (satisfied)**, C002 **hard (open)**; CI access and main reconciliation **operational**. **Blocked** until C002's accepted closure.
+Dependencies: C001 **hard (satisfied)**, C002 **hard (satisfied)**; CI access and main reconciliation **operational**. **Active**; no other plans were newly unblocked by C002.
 
 ## 5. Cross-cutting requirements
 
