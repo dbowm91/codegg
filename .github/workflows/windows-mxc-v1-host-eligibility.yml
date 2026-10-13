@@ -1,0 +1,80 @@
+name: Windows MXC v1 host eligibility
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-mxc-v1-host-eligibility.yml'
+      - 'plans/implementation/windows-native-sandbox/020-mxc-v1-native-process-isolation-feasibility.md'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-mxc-v1-host-eligibility.yml'
+      - 'plans/implementation/windows-native-sandbox/020-mxc-v1-native-process-isolation-feasibility.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-eligibility:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - name: Record serviced Windows 11 native process-isolation prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance Win32_OperatingSystem
+          $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          $dllPath = Join-Path $env:SystemRoot 'System32\processmodel.dll'
+          $dllExists = Test-Path -LiteralPath $dllPath
+          $moduleLoaded = $false
+          $psecExport = $false
+          if ($dllExists) {
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class C020NativeProbe {
+              [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+              public static extern IntPtr LoadLibrary(string name);
+              [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+              public static extern IntPtr GetProcAddress(IntPtr module, string name);
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool FreeLibrary(IntPtr module);
+          }
+          '@
+            $module = [C020NativeProbe]::LoadLibrary($dllPath)
+            $moduleLoaded = $module -ne [IntPtr]::Zero
+            if ($moduleLoaded) {
+              $psecExport = [C020NativeProbe]::GetProcAddress($module, 'CreateProcessSecurityEnvironment') -ne [IntPtr]::Zero
+              [void][C020NativeProbe]::FreeLibrary($module)
+            }
+          }
+          $hotfixes = @(Get-HotFix | Sort-Object InstalledOn | Select-Object -Last 12 | ForEach-Object { "$($_.HotFixID):$($_.InstalledOn.ToString('yyyy-MM-dd'))" })
+          $nativeEligible = $os.Caption -match '^Microsoft Windows 11' -and
+            [int]$current.CurrentBuild -ge 26200 -and [int]$current.UBR -ge 9278 -and
+            $dllExists -and $moduleLoaded -and $psecExport
+          $evidence = [ordered]@{
+            host_edition = $os.Caption
+            version = $os.Version
+            build = [int]$current.CurrentBuild
+            ubr = [int]$current.UBR
+            display_version = $current.DisplayVersion
+            architecture = $arch
+            hotfixes = $hotfixes
+            processmodel_dll = $dllPath
+            processmodel_dll_exists = $dllExists
+            processmodel_dll_loads = $moduleLoaded
+            psec_export_present = $psecExport
+            native_candidate_host_eligible = $nativeEligible
+            mxc_release = 'Microsoft MXC v1.0.0; pinned release binary SHA256 0bb483b3592d0f663f2c5a7a2ae17db89cc04b82238684b0a1a9384b0fe828ed'
+            qualification = 'Host prerequisite inventory only; no MXC policy or containment claim is made by this probe.'
+          }
+          $json = $evidence | ConvertTo-Json -Depth 5 -Compress
+          "C020_HOST=$json"
+          "C020 host evidence: $json" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if (-not $nativeEligible) {
+            Write-Output 'C020 disposition: blocked; GitHub hosted Windows 11 ARM runner does not expose the pinned serviced Windows 11 PSEC prerequisite set.'
+          } else {
+            Write-Output 'C020 disposition: host prerequisite set present; native MXC policy qualification remains mandatory.'
+          }

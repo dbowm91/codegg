@@ -1,0 +1,28 @@
+name: Windows dedicated principal feasibility
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-dedicated-user-feasibility.yml'
+      - 'scripts/windows_dedicated_user_feasibility.ps1'
+      - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-dedicated-user-feasibility.yml'
+      - 'scripts/windows_dedicated_user_feasibility.ps1'
+      - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dedicated-principal:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and exercise one disposable standard principal
+        shell: pwsh
+        run: ./scripts/windows_dedicated_user_feasibility.ps1
