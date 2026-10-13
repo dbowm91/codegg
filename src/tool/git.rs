@@ -509,6 +509,10 @@ impl GitTool {
                 .with_audit_emitter(emitter.clone()),
             None => exec,
         };
+        let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
+            Some(authorization) => exec.with_execution_authorization(authorization),
+            None => exec,
+        };
         let paths = || -> Vec<String> {
             input["paths"]
                 .as_array()
@@ -910,6 +914,10 @@ impl GitTool {
             Some((audit, emitter)) => exec
                 .with_execution_audit(audit.clone())
                 .with_audit_emitter(emitter.clone()),
+            None => exec,
+        };
+        let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
+            Some(authorization) => exec.with_execution_authorization(authorization),
             None => exec,
         };
         let result = match parsed_action {

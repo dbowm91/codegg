@@ -69,6 +69,7 @@ pub struct BashTool {
     pub(crate) deny_all: bool,
     pub(crate) allowlist: Option<HashSet<&'static str>>,
     pub(crate) landlock_sandbox: Option<SandboxConfig>,
+    configured_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     pub(crate) preflight: Option<Arc<PreflightService>>,
     pub(crate) command_intent_config: Option<CommandIntentConfig>,
     pub(crate) run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
@@ -91,6 +92,7 @@ impl BashTool {
             deny_all: false,
             allowlist: None,
             landlock_sandbox: None,
+            configured_sandbox_profile: None,
             preflight: None,
             command_intent_config: None,
             run_store: None,
@@ -177,6 +179,14 @@ impl BashTool {
         self
     }
 
+    pub(crate) fn with_configured_sandbox_profile(
+        mut self,
+        profile: codegg_core::approval::SandboxProfile,
+    ) -> Self {
+        self.configured_sandbox_profile = Some(profile);
+        self
+    }
+
     pub fn with_preflight(mut self, service: PreflightService) -> Self {
         self.preflight = Some(Arc::new(service));
         self
@@ -226,6 +236,7 @@ impl BashTool {
                 self.landlock_sandbox = None;
             }
         }
+        self.configured_sandbox_profile = Some(profile);
         self
     }
 
@@ -384,10 +395,40 @@ impl BashTool {
             )));
         }
 
+        if let Some(authorization) = audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref())
+        {
+            let requested = authorization.snapshot.sandbox_profile();
+            if self.configured_sandbox_profile != Some(requested) {
+                return Err(ToolError::Permission(format!(
+                    "sandbox policy changed before execution: accepted {}, executor configured {:?}",
+                    requested.as_str(),
+                    self.configured_sandbox_profile.map(|profile| profile.as_str())
+                )));
+            }
+            if requested.requires_filesystem_containment()
+                && !self.sandbox_enforcement(requested).filesystem.is_enforced()
+            {
+                return Err(ToolError::Permission(format!(
+                    "required filesystem sandbox for {} is unavailable; command was not launched",
+                    requested.as_str()
+                )));
+            }
+        }
+
         let parts: Vec<&str> = command.split_whitespace().collect();
         self.check_command_security(command, &parts)?;
 
-        let preflight_warning = if let Some(ref svc) = self.preflight {
+        let preflight_warning = if let Some(authorization) =
+            audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref())
+        {
+            // The agent boundary already evaluated command preflight before
+            // approval. Reuse its bounded result; never run a second scan
+            // that could produce a contradictory decision after approval.
+            authorization
+                .command_preflight
+                .as_ref()
+                .and_then(|result| result.summary.clone())
+        } else if let Some(ref svc) = self.preflight {
             match svc.check_command(command).await {
                 PreflightDecision::Block { findings } => {
                     return Err(ToolError::Execution(format!(
@@ -631,7 +672,12 @@ impl BashTool {
             // OBSERVE MODE: run via raw shell (existing behavior)
             let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
             let (result, output) = match self
-                .execute_via_raw_shell(command, canonical_workdir.as_deref(), execution_timeout)
+                .execute_via_raw_shell_with_authorization(
+                    command,
+                    canonical_workdir.as_deref(),
+                    execution_timeout,
+                    audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()),
+                )
                 .await
             {
                 Ok(pair) => pair,
@@ -733,6 +779,43 @@ mod tests {
         assert!(tool.submission.is_none());
         assert_eq!(tool.name(), "bash");
         assert_eq!(tool.category(), ToolCategory::ShellExec);
+    }
+
+    #[tokio::test]
+    async fn accepted_constrained_profile_refuses_full_host_bash_configuration() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let marker = root.path().join("must-not-exist");
+        let tool = BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, root.path());
+        let mut context =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    None,
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "yolo",
+                    Some("policy".into()),
+                ),
+                command_preflight: None,
+            });
+
+        let result = tool
+            .execute_inner(
+                serde_json::json!({"command": format!("touch {}", marker.display())}),
+                Some(&context),
+            )
+            .await;
+
+        assert!(matches!(result, Err(ToolError::Permission(_))));
+        assert!(!marker.exists());
     }
 
     #[test]

@@ -490,6 +490,9 @@ pub struct GitMutationExecutor {
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
     /// Shared bounded audit emitter injected by the daemon boundary.
     pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
+    /// Accepted authorization context from the agent/broker route, when
+    /// available. Typed Git authority remains enforced by the Git policy.
+    pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
 }
 
 // Manual Debug impl because `GitExecutionService` does not derive Debug.
@@ -516,6 +519,7 @@ impl GitMutationExecutor {
             timeout: Duration::from_secs(30),
             execution_audit: None,
             audit_emitter: None,
+            execution_authorization: None,
         }
     }
 
@@ -547,6 +551,14 @@ impl GitMutationExecutor {
         emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
     ) -> Self {
         self.audit_emitter = Some(emitter);
+        self
+    }
+
+    pub fn with_execution_authorization(
+        mut self,
+        authorization: crate::tool::authorization::ExecutionAuthorizationContext,
+    ) -> Self {
+        self.execution_authorization = Some(authorization);
         self
     }
 

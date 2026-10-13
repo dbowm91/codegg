@@ -318,6 +318,7 @@ impl AgentLoop {
         timeout_ms: Option<u64>,
         receipt: &PermissionDecisionReceipt,
         snapshot: &ExecutionPolicySnapshot,
+        command_preflight: Option<crate::tool::authorization::CommandPreflightResult>,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
         let agent_id = self.state.current_agent.clone();
@@ -341,6 +342,13 @@ impl AgentLoop {
             // M005: parent sandbox ceiling for subagent construction.
             // Approval mode never mutates this value.
             sandbox_profile: Some(snapshot.sandbox_profile().as_str().to_owned()),
+            execution_authorization: Some(
+                crate::tool::authorization::ExecutionAuthorizationContext {
+                    snapshot: snapshot.clone(),
+                    receipt: receipt.clone(),
+                    command_preflight,
+                },
+            ),
             timeout_ms,
             invocation_key: Some(invocation_key),
             turn_id: self.turn_id.clone(),
@@ -528,7 +536,9 @@ impl AgentLoop {
             self.services.command_preflight.as_ref(),
         ) {
             let decision = preflight.check_command(command).await;
-            (!decision.findings().is_empty()).then(|| decision.summary())
+            Some(crate::tool::authorization::CommandPreflightResult {
+                summary: (!decision.findings().is_empty()).then(|| decision.summary()),
+            })
         } else {
             None
         };
@@ -570,7 +580,10 @@ impl AgentLoop {
                         .clone()
                         .unwrap_or_else(|| "sensitive path".to_string());
                     let mut reasons = vec![format!("sensitive path: {reason}")];
-                    if let Some(preflight_reason) = command_preflight.as_ref() {
+                    if let Some(Some(preflight_reason)) = command_preflight
+                        .as_ref()
+                        .map(|result| result.summary.as_ref())
+                    {
                         reasons.push(format!("command preflight advisory: {preflight_reason}"));
                     }
                     if matches!(
@@ -600,7 +613,10 @@ impl AgentLoop {
                     )
                 {
                     let mut reasons = Vec::new();
-                    if let Some(reason) = command_preflight.as_ref() {
+                    if let Some(Some(reason)) = command_preflight
+                        .as_ref()
+                        .map(|result| result.summary.as_ref())
+                    {
                         reasons.push(format!("command preflight advisory: {reason}"));
                     }
                     if matches!(
@@ -639,6 +655,7 @@ impl AgentLoop {
                             receipt: self.accepted_permission_receipt(
                                 approval_source::WORKSPACE_FILE_MUTATION,
                             ),
+                            command_preflight: command_preflight.clone(),
                         };
                     }
                     let dialog_args = req.args.clone();
@@ -658,12 +675,14 @@ impl AgentLoop {
                     // human dialog below uses the original args.
                     return self
                         .resolve_general_ask_via_human(tc, &request, dialog_args, &router, snapshot)
-                        .await;
+                        .await
+                        .with_command_preflight(command_preflight.clone());
                 } else {
                     return ToolPermissionOutcome::Allowed {
                         tool_call: tc.clone(),
                         receipt: self
                             .accepted_permission_receipt(approval_source::PERMISSION_EVALUATION),
+                        command_preflight: command_preflight.clone(),
                     };
                 }
             }
@@ -674,6 +693,7 @@ impl AgentLoop {
             DeterministicVerdict::Allow => ToolPermissionOutcome::Allowed {
                 tool_call: tc.clone(),
                 receipt: self.accepted_permission_receipt(approval_source::PERMISSION_EVALUATION),
+                command_preflight: command_preflight.clone(),
             },
             DeterministicVerdict::Deny { reason, .. } => ToolPermissionOutcome::Denied {
                 tool_id: tc.id.to_string(),
@@ -687,6 +707,7 @@ impl AgentLoop {
                         ToolPermissionOutcome::Allowed {
                             tool_call: tc.clone(),
                             receipt: self.accepted_permission_receipt(approval_source::YOLO),
+                            command_preflight: command_preflight.clone(),
                         }
                     }
                     ApprovalMode::Automatic => {
@@ -709,6 +730,7 @@ impl AgentLoop {
                 }
             }
         }
+        .with_command_preflight(command_preflight)
     }
 
     /// Single human-wait path for Interactive and Automatic-fallback
@@ -753,6 +775,7 @@ impl AgentLoop {
                 return ToolPermissionOutcome::Allowed {
                     tool_call: tc.clone(),
                     receipt: self.accepted_permission_receipt(approval_source::YOLO),
+                    command_preflight: None,
                 };
             }
             ApprovalMode::Automatic => {
@@ -821,6 +844,7 @@ impl AgentLoop {
             ApprovalDecision::Allow { .. } => ToolPermissionOutcome::Allowed {
                 tool_call: tc.clone(),
                 receipt: self.accepted_permission_receipt(receipt_source.as_str()),
+                command_preflight: None,
             },
             ApprovalDecision::Deny { reason, source } => {
                 // Human timeout vs explicit deny vs abandoned request are
@@ -1033,6 +1057,7 @@ impl AgentLoop {
             return ToolPermissionOutcome::Allowed {
                 tool_call: tc.clone(),
                 receipt: self.accepted_permission_receipt(approval_source::REVIEWER_ALLOW),
+                command_preflight: None,
             };
         }
 
@@ -1158,8 +1183,12 @@ impl AgentLoop {
                         ToolExecutionOutcome::success("__QUESTION_PENDING__"),
                     ));
                 }
-                ToolPermissionOutcome::Allowed { tool_call, receipt } => {
-                    allowed_tools.push((idx, tool_call, receipt));
+                ToolPermissionOutcome::Allowed {
+                    tool_call,
+                    receipt,
+                    command_preflight,
+                } => {
+                    allowed_tools.push((idx, tool_call, receipt, command_preflight));
                 }
                 ToolPermissionOutcome::Denied { tool_id, message } => {
                     let outcome = if message.starts_with("Error: invalid tool call") {
@@ -1186,9 +1215,9 @@ impl AgentLoop {
         let mut checkpoint_serialize = false;
         let has_restorable = allowed_tools
             .iter()
-            .any(|(_, tc, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name));
+            .any(|(_, tc, _, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name));
         let checkpoint_batch_is_eligible = has_restorable
-            && allowed_tools.iter().all(|(_, tc, _)| {
+            && allowed_tools.iter().all(|(_, tc, _, _)| {
                 crate::snapshot::affected_paths::is_restorable_tool(&tc.name)
                     || is_affirmatively_read_only_tool(tc)
             });
@@ -1201,7 +1230,7 @@ impl AgentLoop {
             {
                 let batch_calls: Vec<(String, serde_json::Value)> = allowed_tools
                     .iter()
-                    .map(|(_, tc, _)| (tc.name.to_string(), tc.arguments.clone()))
+                    .map(|(_, tc, _, _)| (tc.name.to_string(), tc.arguments.clone()))
                     .collect();
                 match crate::snapshot::affected_paths::extract_batch_affected_paths_with_read_only(
                     &batch_calls,
@@ -1337,7 +1366,7 @@ impl AgentLoop {
         let mut mcp_tool_calls = Vec::with_capacity(4);
         let regular_tools: Vec<_> = allowed_tools
             .into_iter()
-            .filter(|(idx, tc, _)| {
+            .filter(|(idx, tc, _, _)| {
                 if tc.name.starts_with("mcp__") {
                     mcp_tool_calls.push((*idx, tc.clone()));
                     false
@@ -1468,7 +1497,7 @@ impl AgentLoop {
         };
         let agent_id = self.state.current_agent.clone();
         let batch_snapshot_for_ctx = batch_snapshot.clone();
-        for (orig_idx, tc, receipt) in regular_tools {
+        for (orig_idx, tc, receipt, command_preflight) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
             // `&self`, can read live state without forcing the
@@ -1490,6 +1519,7 @@ impl AgentLoop {
                 Some(timeout.as_millis() as u64),
                 &receipt,
                 &batch_snapshot_for_ctx,
+                command_preflight,
             );
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
@@ -1821,6 +1851,9 @@ impl AgentLoop {
                                     // context so canonical tool owners
                                     // can emit structural events.
                                     audit_emitter: exec_ctx.audit_emitter.clone(),
+                                    execution_authorization: exec_ctx
+                                        .execution_authorization
+                                        .clone(),
                                 };
                                 let broker_result = broker_for_exec
                                     .execute(registry, &tool_name_clone, exec_args, broker_ctx)

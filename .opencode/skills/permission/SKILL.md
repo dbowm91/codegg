@@ -46,6 +46,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   process runs under. Never derive one from the other.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
+- **Carry the accepted decision through execution.** Agent tool calls pass an
+  immutable `ExecutionAuthorizationContext` (snapshot, receipt, bounded
+  command-preflight result) through the broker and retries. Bash must consume
+  that preflight result once and refuse a profile mismatch or unavailable
+  required filesystem enforcement before dispatch.
 - **Sandbox backend names do not imply parity.** Linux Landlock is a filesystem
   allowlist with `no_new_privs`; macOS Seatbelt confines writes but allows broad
   reads, network access, inherited descriptors, and Apple Events / Launch

@@ -387,6 +387,10 @@ pub struct ManagedProcessRequest {
     pub output_policy: OutputPolicy,
     pub sandbox: SandboxRequest,
     pub provenance: ProcessProvenance,
+    /// Accepted authorization provenance for the invocation, when the
+    /// process is launched from an agent tool call. This remains local
+    /// plumbing and is not projected into child environment variables.
+    pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
 }
 
 impl ManagedProcessRequest {
@@ -405,7 +409,16 @@ impl ManagedProcessRequest {
             output_policy: OutputPolicy::default(),
             sandbox: SandboxRequest::Disabled,
             provenance,
+            execution_authorization: None,
         }
+    }
+
+    pub fn with_execution_authorization(
+        mut self,
+        authorization: crate::tool::authorization::ExecutionAuthorizationContext,
+    ) -> Self {
+        self.execution_authorization = Some(authorization);
+        self
     }
 
     /// Append raw command text to a Windows cmd invocation without applying
@@ -579,6 +592,22 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    if request
+        .execution_authorization
+        .as_ref()
+        .is_some_and(|authorization| {
+            authorization
+                .snapshot
+                .sandbox_profile()
+                .requires_filesystem_containment()
+                && matches!(&request.sandbox, SandboxRequest::Disabled)
+        })
+    {
+        return Err(ManagedProcessError::SandboxFailed(
+            "accepted execution policy requires filesystem containment, but the launch request disabled it".into(),
+        ));
+    }
+
     #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
     if matches!(&request.sandbox, SandboxRequest::Required(_)) {
         return run_windows_test_restricted(request, output_tx).await;
@@ -596,6 +625,7 @@ async fn run_inner(
         output_policy,
         sandbox,
         provenance,
+        execution_authorization: _execution_authorization,
     } = request;
 
     if executable.is_empty() {
@@ -849,6 +879,7 @@ async fn run_windows_test_restricted(
         output_policy,
         sandbox,
         provenance,
+        execution_authorization: _execution_authorization,
     } = request;
     if executable.is_empty() {
         return Err(ManagedProcessError::EmptyArgv);
@@ -1700,6 +1731,37 @@ mod tests {
             std::env::current_dir().expect("test cwd"),
             ProcessProvenance::new("job-test", "attempt-test"),
         )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepted_constrained_context_refuses_disabled_process_sandbox_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    None,
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "yolo",
+                    Some("policy".into()),
+                ),
+                command_preflight: None,
+            });
+
+        let error = run(process)
+            .await
+            .expect_err("constrained authorization cannot use a disabled sandbox");
+        assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(!marker.exists());
     }
 
     #[tokio::test(flavor = "multi_thread")]

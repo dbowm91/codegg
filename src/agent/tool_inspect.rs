@@ -239,11 +239,27 @@ pub(super) enum ToolPermissionOutcome {
     Allowed {
         tool_call: ToolCall,
         receipt: PermissionDecisionReceipt,
+        command_preflight: Option<crate::tool::authorization::CommandPreflightResult>,
     },
     Denied {
         tool_id: String,
         message: String,
     },
+}
+
+impl ToolPermissionOutcome {
+    pub(super) fn with_command_preflight(
+        mut self,
+        preflight: Option<crate::tool::authorization::CommandPreflightResult>,
+    ) -> Self {
+        if let Self::Allowed {
+            command_preflight, ..
+        } = &mut self
+        {
+            *command_preflight = preflight;
+        }
+        self
+    }
 }
 
 /// Filters tools based on model capabilities and plan mode.

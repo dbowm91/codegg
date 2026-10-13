@@ -562,6 +562,21 @@ validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
 `tests/sandbox_policy_wiring.rs`.
 
+**M002 accepted execution context:** the agent loop carries the accepted
+`ExecutionPolicySnapshot`, permission receipt, and bounded command-preflight
+summary through `ToolExecutionContext` and the broker invocation. Every broker
+retry derives its attempt context from that same immutable value. Bash skips
+its local preflight scan when this production context is present, avoiding a
+second decision after approval. It verifies that the registered profile still
+matches the accepted snapshot and refuses constrained execution when the
+filesystem backend is unavailable. Raw Bash passes the context to
+`ManagedProcessRequest`, which refuses a disabled sandbox when the accepted
+snapshot requires filesystem containment. Typed Git mutation paths carry the
+context into `GitMutationExecutor`; the typed Git policy remains responsible
+for executable Git capabilities. Direct legacy tool calls without an accepted
+context retain tool-local preflight behavior. This check does not establish
+network or IPC confinement.
+
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`
 and passed through from `with_config()`, `with_session_config_defaults()`,

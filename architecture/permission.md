@@ -539,6 +539,19 @@ allow_all_bash = false
    return a bounded `SandboxEscalationRequest`, never a silent turn-wide
    `FullHost` switch. Protocol exposes `SandboxEnforcementDto` on the
    snapshot (additive `sandbox_enforcement`).
+**M002 accepted execution context.** An accepted agent tool call carries
+`ExecutionAuthorizationContext`: the immutable batch snapshot, permission
+receipt, and bounded command-preflight advisory. The value travels through
+`ToolExecutionContext` and `BrokerInvocationContext`; broker retries reuse
+it unchanged. Bash consumes the preflight result already evaluated before
+approval and does not run a second scan afterward. It refuses production
+calls when the registered sandbox profile differs from the accepted
+snapshot or required filesystem enforcement is unavailable. Raw Bash passes
+the context to `ManagedProcessRequest`, which refuses a disabled sandbox for
+a constrained snapshot. Typed Git mutation executors also retain the accepted
+context while their own Git policy remains the capability authority. The
+context records authorization inputs; it does not claim every downstream
+effect was observed or contained.
 9. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
    through the dedicated bounded reviewer (`src/permission/reviewer.rs`,
    see `approval_reviewer.md`) when a reviewer model is configured and

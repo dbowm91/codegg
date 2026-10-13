@@ -16,6 +16,13 @@ Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.
 
+The broker derives every retry's `ToolExecutionContext` from the same
+`BrokerInvocationContext`. When an agent call includes
+`ExecutionAuthorizationContext`, preserve its immutable snapshot, receipt, and
+preflight summary through the canonical executor. Do not repeat command
+preflight after approval or let an executor use a broader sandbox profile than
+the accepted snapshot; unavailable required containment is a typed refusal.
+
 `ManagedProcessService` remains the sole finite-process owner on every host.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
