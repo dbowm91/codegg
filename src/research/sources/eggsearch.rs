@@ -249,7 +249,11 @@ impl EggsearchSource {
             }
         }
         if let Some(snippet) = snippet {
-            notes.push(snippet);
+            // Tagged with an explicit key so the coordinator can recover the
+            // retrieved text for extraction. This is the only content a
+            // search adapter returns; storing it bare (as a note with no
+            // `key=`) made it indistinguishable from the provenance notes.
+            notes.push(format!("snippet={snippet}"));
         }
 
         Some(SourceRecord {

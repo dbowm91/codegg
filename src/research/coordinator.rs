@@ -89,6 +89,40 @@ impl ResearchCoordinator {
         &mut self.store
     }
 
+    /// Record a terminal failure for a run.
+    ///
+    /// Every error return from [`Self::run`] must pass through here so a
+    /// failed run can never be persisted in an in-flight status (the
+    /// `Verifying` trap this replaced).
+    ///
+    /// Best effort by design: if the run record cannot be loaded or
+    /// written, the underlying verification failure must still reach the
+    /// caller. Returning that bookkeeping error instead would hide the
+    /// real reason the run failed, so it is logged and swallowed here.
+    async fn fail_run(&self, run_id: &str, error: &str) {
+        match self.store.load_run_status(run_id).await {
+            Ok(mut status) => {
+                status.status = RunStatus::Failed;
+                status.error = Some(error.to_string());
+                status.finished_at = Some(Utc::now());
+                if let Err(e) = self.store.update_run_status(run_id, status).await {
+                    tracing::error!(
+                        run_id,
+                        error = %e,
+                        "failed to persist terminal Failed status for research run"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    run_id,
+                    error = %e,
+                    "could not load research run status to record failure"
+                );
+            }
+        }
+    }
+
     pub async fn run(&self, request: ResearchRequest) -> Result<ResearchRunResult> {
         let run_id = request.id.clone();
         let provider_context = crate::research::llm::provider_context_for_run(&run_id);
@@ -196,6 +230,17 @@ impl ResearchCoordinator {
         let verification =
             verify::verify_structural(&request, &sources, &evidence, &claims, &contradictions);
 
+        // Enter the verifying state up front so a failure anywhere in this
+        // phase has a terminal state to fall through to. Previously the
+        // run was only ever set to `Verifying` on the semantic-failure
+        // path, immediately before returning an error — which left every
+        // semantic failure permanently recorded as `Verifying`.
+        {
+            let mut status = self.store.load_run_status(&run_id).await?;
+            status.status = RunStatus::Verifying;
+            self.store.update_run_status(&run_id, status).await?;
+        }
+
         // Phase 7b: Semantic verification when model available
         if let (Some(provider), Some(model)) = (&self.provider, &self.model) {
             let semantic_results = verify::verify_semantic(
@@ -212,14 +257,12 @@ impl ResearchCoordinator {
             // Add semantic warnings for unsupported claims
             for result in &semantic_results {
                 if result.support_status == "unsupported" {
-                    let mut status = self.store.load_run_status(&run_id).await?;
-                    status.status = RunStatus::Verifying;
-                    self.store.update_run_status(&run_id, status).await?;
-
-                    return Err(ResearchError::VerificationFailed(format!(
+                    let err_msg = format!(
                         "Claim {} is unsupported by cited evidence: {}",
                         result.claim_id, result.explanation
-                    )));
+                    );
+                    self.fail_run(&run_id, &err_msg).await;
+                    return Err(ResearchError::VerificationFailed(err_msg));
                 }
                 if result.support_status == "partially_supported" {
                     // Write as warning (non-blocking)
@@ -237,10 +280,7 @@ impl ResearchCoordinator {
 
         if !verification.passed {
             let err_msg = verification.errors.join("; ");
-            let mut status = self.store.load_run_status(&run_id).await?;
-            status.status = RunStatus::Failed;
-            status.error = Some(err_msg.clone());
-            self.store.update_run_status(&run_id, status).await?;
+            self.fail_run(&run_id, &err_msg).await;
             return Err(ResearchError::VerificationFailed(err_msg));
         }
 
@@ -389,7 +429,14 @@ impl ResearchCoordinator {
             match adapter.collect(request, plan).await {
                 Ok(sources) => all_sources.extend(sources),
                 Err(ResearchError::NetworkNotAllowed) => {
-                    // Skip network adapters when network not allowed
+                    // Expected whenever the run's budget disallows network
+                    // collection. Logged rather than dropped silently: a
+                    // run that silently collected zero web sources looks
+                    // identical to a run that genuinely found nothing.
+                    tracing::debug!(
+                        source = adapter.name(),
+                        "source adapter skipped: network not allowed for this run"
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -406,6 +453,17 @@ impl ResearchCoordinator {
         // Apply budget
         let max = request.budget.max_sources.min(all_sources.len());
         all_sources.truncate(max);
+
+        if request.budget.allow_network && all_sources.is_empty() {
+            // With network explicitly permitted, collecting nothing means
+            // every network adapter failed or was skipped. Say so, rather
+            // than letting the run proceed to an empty answer.
+            tracing::warn!(
+                "network collection was permitted but produced no sources; \
+                 the answer will rest on local evidence only"
+            );
+        }
+
         Ok(all_sources)
     }
 
@@ -427,11 +485,25 @@ impl ResearchCoordinator {
                     }
                 }
                 SourceType::Url | SourceType::HtmlPage | SourceType::MarkdownPage => {
-                    // For URL sources, we already fetched the content during collection.
-                    // Re-fetch would be wasteful; store content in notes or skip.
-                    // For MVP, skip re-fetching URLs.
-                    tracing::warn!(uri = %source.uri, "URL source content not available for extraction (MVP limitation)");
-                    continue;
+                    // Adapters already retrieved text during collection and
+                    // stored it on the record (`snippet=`, or the title as a
+                    // fallback). Re-fetching here would repeat the network
+                    // round trip for content we already hold.
+                    //
+                    // These used to be dropped outright as an "MVP
+                    // limitation", which meant a run that successfully
+                    // collected web sources still produced zero evidence
+                    // and an empty answer.
+                    match source.retrieved_text() {
+                        Some(text) if !text.trim().is_empty() => text,
+                        _ => {
+                            tracing::warn!(
+                                uri = %source.uri,
+                                "network source carried no retrieved text; skipping extraction"
+                            );
+                            continue;
+                        }
+                    }
                 }
                 _ => continue,
             };
@@ -651,6 +723,133 @@ fn compute_claim_diff(old_claims: &[ClaimRecord], new_claims: &[ClaimRecord]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn url_source(id: &str, uri: &str, notes: Vec<String>) -> SourceRecord {
+        SourceRecord {
+            id: id.to_string(),
+            run_id: String::new(),
+            uri: uri.to_string(),
+            title: Some("A web page".to_string()),
+            source_type: SourceType::Url,
+            source_quality: SourceQuality::Secondary,
+            retrieved_at: Utc::now(),
+            published_at: None,
+            content_hash: None,
+            locator: SourceLocator::Url {
+                url: uri.to_string(),
+                heading: None,
+            },
+            notes,
+        }
+    }
+
+    #[tokio::test]
+    async fn network_source_content_is_extracted_instead_of_dropped() {
+        // Regression: URL sources were skipped outright ("MVP limitation"),
+        // so a run that collected web sources still produced zero evidence
+        // and therefore an empty answer.
+        let tmp = tempfile::tempdir().unwrap();
+        let coordinator =
+            ResearchCoordinator::new(tmp.path().to_path_buf(), tmp.path().join("artifacts"));
+        let sources = vec![
+            url_source(
+                "s1",
+                "https://example.com/1",
+                vec![
+                    "source=eggsearch".to_string(),
+                    "snippet=The retrieved body".to_string(),
+                ],
+            ),
+            url_source(
+                "s2",
+                "https://example.com/2",
+                vec!["source=eggsearch".to_string()],
+            ),
+        ];
+
+        let contents = coordinator.read_source_contents(&sources).await.unwrap();
+
+        assert_eq!(contents.len(), 2, "both URL sources must yield content");
+        assert_eq!(contents[0].0, "s1");
+        assert_eq!(contents[0].1, "The retrieved body");
+        // No snippet: falls back to the title rather than dropping the source.
+        assert_eq!(contents[1].1, "A web page");
+    }
+
+    #[tokio::test]
+    async fn url_source_content_flows_all_the_way_into_evidence() {
+        // End-to-end shape of the fix: a collected network source must
+        // produce an evidence span, which is what ultimately gives the
+        // agent an answer with citations.
+        let tmp = tempfile::tempdir().unwrap();
+        let coordinator =
+            ResearchCoordinator::new(tmp.path().to_path_buf(), tmp.path().join("artifacts"));
+        let sources = vec![url_source(
+            "s1",
+            "https://example.com/1",
+            vec!["snippet=Rust ownership rules".to_string()],
+        )];
+        let contents = coordinator.read_source_contents(&sources).await.unwrap();
+
+        let budget = ResearchBudget {
+            max_sources: 10,
+            max_chunks_per_source: 20,
+            max_evidence_spans: 200,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network: true,
+        };
+        let evidence =
+            crate::research::extract::extract_evidence("run-1", &sources, &contents, &budget);
+
+        assert!(
+            !evidence.is_empty(),
+            "a network source with retrieved text must yield evidence"
+        );
+        assert_eq!(evidence[0].source_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn fail_run_records_a_terminal_failed_state() {
+        // Regression: a verification failure used to persist the run as
+        // `Verifying`, so failed runs were indistinguishable from
+        // in-flight ones in `list_runs`.
+        let tmp = tempfile::tempdir().unwrap();
+        let artifact_root = tmp.path().join("artifacts");
+        let coordinator = ResearchCoordinator::new(tmp.path().to_path_buf(), artifact_root.clone());
+
+        let request = ResearchRequest {
+            id: "run-fail".to_string(),
+            question: "q".to_string(),
+            mode: ResearchMode::NarrowAnswer,
+            audience: ResearchAudience::Human,
+            depth: ResearchDepth::Low,
+            output_profiles: vec![],
+            constraints: vec![],
+            sources: vec![],
+            existing_context_refs: vec![],
+            budget: ResearchBudget {
+                max_sources: 1,
+                max_chunks_per_source: 1,
+                max_evidence_spans: 1,
+                max_model_calls: 0,
+                max_output_tokens: None,
+                allow_network: false,
+            },
+            created_at: Utc::now(),
+        };
+        coordinator.store.create_run(&request).await.unwrap();
+
+        coordinator.fail_run("run-fail", "boom").await;
+
+        let status = coordinator.store.load_run_status("run-fail").await.unwrap();
+        assert_eq!(status.status, RunStatus::Failed);
+        assert_eq!(status.error.as_deref(), Some("boom"));
+        assert!(
+            status.finished_at.is_some(),
+            "a failed run must record a finish time"
+        );
+    }
 
     #[test]
     fn truncate_short_ascii_within_limit() {

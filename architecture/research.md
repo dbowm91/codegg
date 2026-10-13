@@ -91,7 +91,65 @@ in the coordinator. It fetches crate version metadata from crates.io to
 detect yanked versions.
 
 Network-only adapters return `ResearchError::NetworkNotAllowed` when
-`budget.allow_network` is false.
+`budget.allow_network` is false. The coordinator logs that skip at
+`debug` level rather than dropping it silently, and warns when a run
+that *was* permitted network collection produced zero sources.
+
+### Network Authorization
+
+`ResearchBudget.allow_network` is **not** hardcoded. `ResearchService`
+carries an `allow_network` policy (`service.rs`):
+
+- Defaults to `false`. A service built with `new()` /
+  `with_artifact_root()` never reaches the network.
+- `with_search_runtime(...)` derives the flag from the context's resolved
+  `SearchConfig`: `allow_network = backend != Disabled`.
+- `with_network(bool)` overrides it for callers that made their own
+  authorization decision.
+
+Deriving from `[search].backend` means research obeys the **same**
+kill-switch as the `websearch` tool (`src/search_backend/mod.rs`):
+setting `[search].backend = "disabled"` disables web search *and*
+research collection together. There is no second, research-only network
+authority.
+
+This matters because `CratesIoSource`, `GitHubSource` and `DocsRsSource`
+issue their own HTTP requests via `reqwest` rather than routing through
+`search_backend`; only `EggsearchSource` inherits the backend gate
+directly. A hardcoded `true` would therefore have let those three bypass
+a disabled search backend.
+
+### Adapter Collection Shape
+
+Adapters split into two kinds, which determines whether flipping
+`allow_network` makes them do anything:
+
+| Adapter | Trigger | Effect when network allowed |
+|---------|---------|-----------------------------|
+| `LocalRepoSource` | `SourceSpecType::Local` spec | Unaffected — no network gate |
+| `UrlSource` | `SourceSpecType::Url` specs only | Returns `Ok([])` when no URL specs |
+| `CratesIoSource` | crate name parsed from question | Fetches crates.io metadata |
+| `GitHubSource` | GitHub refs parsed from question | Fetches issues/files |
+| `DocsRsSource` | `docs.rs` URL specs, else question | Fetches docs pages |
+| `EggsearchSource` | question + mode | Dispatches external search |
+
+`ResearchService::build_request` emits only a `Local` spec, so
+`UrlSource` stays inert by design; discovery is `EggsearchSource`'s job.
+
+### Retrieved Text for Network Sources
+
+`EggsearchSource` stores the retrieved text on each `SourceRecord` as a
+`snippet=` note (alongside provenance notes such as `provider=` and
+`trust=external_untrusted`). `SourceRecord::note_value(key)` reads it
+back with exact-key matching, and `retrieved_text()` prefers the
+snippet and falls back to the title.
+
+`ResearchCoordinator::read_source_contents` uses `retrieved_text()` for
+`Url`/`HtmlPage`/`MarkdownPage` sources. These were previously skipped
+outright as an "MVP limitation", which meant a run could collect web
+sources successfully and still emit **zero** evidence and an empty
+answer. Text already captured during collection is reused rather than
+re-fetched.
 
 ### Eggsearch Integration
 
@@ -156,6 +214,17 @@ Deterministic pass that:
 - Unsupported claims cause the run to fail with
   `ResearchError::VerificationFailed`.
 
+### Run Status Transitions
+
+The run enters `Verifying` at the **start** of phase 7, not on the
+failure path. Every error return from `ResearchCoordinator::run`
+routes through `fail_run()`, which persists `RunStatus::Failed`, the
+error message, and `finished_at`.
+
+Previously the semantic-failure path set `Verifying` and then returned
+the error without ever transitioning to `Failed`, so a failed run was
+indistinguishable from an in-flight one in `list_runs()`.
+
 ### Synthesis (`synthesis.rs`)
 
 Renders output profiles from the claim graph:
@@ -180,6 +249,11 @@ All defined in `src/research/types.rs`:
 | `ResearchDepth` | 48 | `Low`, `Medium`, `High` |
 | `ResearchOutputProfile` | 56 | `HumanFullReport`, `HumanBrief`, `AgentAnswer`, `AgentHandoff`, `EvidenceBundle` |
 | `ResearchBudget` | 66 | `max_sources`, `max_chunks_per_source`, `max_evidence_spans`, `max_model_calls`, `max_output_tokens`, `allow_network` |
+
+`max_model_calls` is currently **advisory only** — no phase meters model
+calls against it, so it bounds nothing today. It is still recorded per
+run so the persisted request states the intended ceiling rather than
+implying "no model use".
 | `ResearchSourceSpec` | 77 | Source specification with `SourceSpecType` and value |
 | `SourceRecord` | 95 | Collected source with URI, type, quality, locator, content hash |
 | `EvidenceSpan` | 162 | Extracted text span with source reference and locator |

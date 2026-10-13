@@ -106,6 +106,32 @@ pub struct SourceRecord {
     pub notes: Vec<String>,
 }
 
+impl SourceRecord {
+    /// Look up a `key=value` note, returning the value portion.
+    ///
+    /// Adapters carry provenance and, for search results, the retrieved
+    /// text in `notes`. Returns the first note whose key matches exactly
+    /// (i.e. `note == key` or `note` starts with `key=`) so a note such as
+    /// `stable_id=x` is not matched by a lookup for `stable`.
+    pub fn note_value<'a>(&'a self, key: &str) -> Option<&'a str> {
+        let prefix = format!("{key}=");
+        self.notes
+            .iter()
+            .find_map(|note| note.strip_prefix(prefix.as_str()))
+    }
+
+    /// Best-effort retrievable text for a source that has no readable
+    /// body on disk (network results).
+    ///
+    /// Prefers the adapter-captured `snippet`, then falls back to the
+    /// title so a result is never reduced to an empty string.
+    pub fn retrieved_text(&self) -> Option<String> {
+        self.note_value("snippet")
+            .map(str::to_owned)
+            .or_else(|| self.title.clone())
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceType {
@@ -497,5 +523,72 @@ mod tests {
         assert_eq!(Confidence::Low.as_str(), "low");
         assert_eq!(Confidence::Medium.as_str(), "medium");
         assert_eq!(Confidence::High.as_str(), "high");
+    }
+
+    fn note_source(notes: Vec<String>, title: Option<String>) -> SourceRecord {
+        SourceRecord {
+            id: "src-1".to_string(),
+            run_id: "run-1".to_string(),
+            uri: "https://example.com/a".to_string(),
+            title,
+            source_type: SourceType::Url,
+            source_quality: SourceQuality::Secondary,
+            retrieved_at: Utc::now(),
+            published_at: None,
+            content_hash: None,
+            locator: SourceLocator::Url {
+                url: "https://example.com/a".to_string(),
+                heading: None,
+            },
+            notes,
+        }
+    }
+
+    #[test]
+    fn note_value_matches_exact_key_only() {
+        let source = note_source(
+            vec![
+                "stable_id=paper-1".to_string(),
+                "snippet=A useful summary".to_string(),
+            ],
+            None,
+        );
+        assert_eq!(source.note_value("snippet"), Some("A useful summary"));
+        assert_eq!(source.note_value("stable_id"), Some("paper-1"));
+        // `stable` must not match `stable_id=...`.
+        assert_eq!(source.note_value("stable"), None);
+        assert_eq!(source.note_value("absent"), None);
+    }
+
+    #[test]
+    fn retrieved_text_prefers_snippet_then_falls_back_to_title() {
+        let with_snippet = note_source(
+            vec![
+                "source=eggsearch".to_string(),
+                "snippet=Retrieved body text".to_string(),
+            ],
+            Some("A Title".to_string()),
+        );
+        assert_eq!(
+            with_snippet.retrieved_text().as_deref(),
+            Some("Retrieved body text")
+        );
+
+        let title_only = note_source(
+            vec!["source=eggsearch".to_string()],
+            Some("A Title".to_string()),
+        );
+        assert_eq!(title_only.retrieved_text().as_deref(), Some("A Title"));
+
+        let neither = note_source(vec![], None);
+        assert_eq!(neither.retrieved_text(), None);
+    }
+
+    #[test]
+    fn snippet_may_contain_equals_signs() {
+        // Search snippets regularly contain '=' (queries, code, URLs); the
+        // value must be recovered intact rather than truncated at the first.
+        let source = note_source(vec!["snippet=x=1 AND y=2".to_string()], None);
+        assert_eq!(source.note_value("snippet"), Some("x=1 AND y=2"));
     }
 }

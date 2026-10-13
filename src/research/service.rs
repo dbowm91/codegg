@@ -35,6 +35,15 @@ pub struct RerunResult {
 pub struct ResearchService {
     coordinator: ResearchCoordinator,
     artifact_root: PathBuf,
+    /// Whether network source adapters may run for this service.
+    ///
+    /// Defaults to `false` so an unconfigured service never reaches the
+    /// network. Production paths that attach a
+    /// [`SearchRuntimeContext`](crate::search_backend::SearchRuntimeContext)
+    /// derive this from `[search].backend` (see
+    /// [`ResearchService::with_search_runtime`]), which keeps research
+    /// behind the same kill-switch that already governs `websearch`.
+    allow_network: bool,
 }
 
 impl ResearchService {
@@ -47,6 +56,7 @@ impl ResearchService {
         Self {
             coordinator,
             artifact_root,
+            allow_network: false,
         }
     }
 
@@ -56,6 +66,7 @@ impl ResearchService {
         Self {
             coordinator,
             artifact_root,
+            allow_network: false,
         }
     }
 
@@ -71,6 +82,7 @@ impl ResearchService {
         Self {
             coordinator,
             artifact_root,
+            allow_network: false,
         }
     }
 
@@ -79,11 +91,39 @@ impl ResearchService {
     /// `ResearchTool::with_search_runtime` uses this on its uniquely
     /// owned service so production research runs never consult the
     /// deprecated process-global slots.
-    pub fn with_search_runtime(self, runtime: crate::search_backend::SearchRuntimeContext) -> Self {
+    ///
+    /// This is also where the network budget is decided: the service's
+    /// owned `SearchConfig` snapshot is the same authority the
+    /// `websearch` tool obeys, so research cannot outlive
+    /// `[search].backend = "disabled"`. Deriving the flag here — rather
+    /// than hardcoding it — keeps a single network authority instead of
+    /// a second, research-only one.
+    pub fn with_search_runtime(
+        mut self,
+        runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        self.allow_network =
+            runtime.config().backend() != crate::config::schema::SearchBackendConfig::Disabled;
         Self {
             coordinator: self.coordinator.with_search_runtime(runtime),
             artifact_root: self.artifact_root,
+            allow_network: self.allow_network,
         }
+    }
+
+    /// Explicitly enable or disable network source collection.
+    ///
+    /// Overrides the value derived by [`Self::with_search_runtime`]. Used
+    /// by callers that already made their own authorization decision
+    /// (e.g. an explicit user approval); the default remains `false`.
+    pub fn with_network(mut self, allow: bool) -> Self {
+        self.allow_network = allow;
+        self
+    }
+
+    /// Whether this service will let network source adapters run.
+    pub fn allow_network(&self) -> bool {
+        self.allow_network
     }
 
     /// Create a service with explicit artifact root and LLM provider.
@@ -98,6 +138,7 @@ impl ResearchService {
         Self {
             coordinator,
             artifact_root,
+            allow_network: false,
         }
     }
 
@@ -259,9 +300,13 @@ impl ResearchService {
                 max_sources,
                 max_chunks_per_source: 20,
                 max_evidence_spans: 200,
-                max_model_calls: 0,
+                // Advisory only: no phase currently meters model calls
+                // against this value, so it bounds nothing today. It is
+                // recorded per run so artifacts state the intended
+                // ceiling rather than implying "no model use".
+                max_model_calls: 8,
                 max_output_tokens: None,
-                allow_network: false,
+                allow_network: self.allow_network,
             },
             created_at: chrono::Utc::now(),
         }
@@ -383,6 +428,78 @@ mod tests {
             .sources
             .iter()
             .any(|s| s.spec_type == SourceSpecType::Local));
+    }
+
+    #[test]
+    fn default_service_does_not_allow_network() {
+        // A service constructed without an explicit authorization decision
+        // must not reach the network.
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf());
+        assert!(!service.allow_network());
+        let request = service.build_request(
+            "q",
+            ResearchMode::NarrowAnswer,
+            ResearchDepth::Low,
+            vec![ResearchOutputProfile::AgentAnswer],
+        );
+        assert!(!request.budget.allow_network);
+    }
+
+    #[test]
+    fn network_policy_reaches_the_built_request() {
+        // Regression: build_request used to hardcode `allow_network: false`,
+        // so every web adapter returned NetworkNotAllowed and was dropped,
+        // making research silently local-only regardless of configuration.
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf()).with_network(true);
+        assert!(service.allow_network());
+        let request = service.build_request(
+            "q",
+            ResearchMode::NarrowAnswer,
+            ResearchDepth::Low,
+            vec![ResearchOutputProfile::AgentAnswer],
+        );
+        assert!(request.budget.allow_network);
+    }
+
+    #[test]
+    fn search_runtime_derives_network_from_the_backend_kill_switch() {
+        use crate::config::schema::{SearchBackendConfig, SearchConfig};
+
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Disabled backend -> research stays offline, same as websearch.
+        let disabled = ResearchService::new(tmp.path().to_path_buf()).with_search_runtime(
+            crate::search_backend::SearchRuntimeContext::new(SearchConfig {
+                backend: Some(SearchBackendConfig::Disabled),
+                ..Default::default()
+            }),
+        );
+        assert!(!disabled.allow_network());
+
+        // Enabled backend -> research may collect web sources.
+        let enabled = ResearchService::new(tmp.path().to_path_buf()).with_search_runtime(
+            crate::search_backend::SearchRuntimeContext::new(SearchConfig {
+                backend: Some(SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            }),
+        );
+        assert!(enabled.allow_network());
+
+        // The explicitly disabled context helper agrees.
+        let explicit = ResearchService::new(tmp.path().to_path_buf())
+            .with_search_runtime(crate::search_backend::SearchRuntimeContext::disabled());
+        assert!(!explicit.allow_network());
+    }
+
+    #[test]
+    fn with_network_overrides_the_derived_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = ResearchService::new(tmp.path().to_path_buf())
+            .with_search_runtime(crate::search_backend::SearchRuntimeContext::disabled())
+            .with_network(true);
+        assert!(service.allow_network());
     }
 
     #[test]
