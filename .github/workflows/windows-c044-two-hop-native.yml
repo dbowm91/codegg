@@ -91,7 +91,9 @@ jobs:
         run: |
           $console = Join-Path $env:RUNNER_TEMP 'codegg-c044-console.txt'
           ./scripts/windows_c044_two_hop_native.ps1 2>&1 | Tee-Object -FilePath $console
-          if ($LASTEXITCODE -ne 0) { throw "C044 diagnostic script failed: $LASTEXITCODE" }
+          # NOTE: no $LASTEXITCODE guard here — in a fresh step shell it is
+          # $null (which wrongly compares -ne 0); a script terminating error
+          # already fails the step, and a missing report throws below.
           $line = Get-Content $console | Where-Object { $_ -like 'C044_REPORT=*' } | Select-Object -Last 1
           if (-not $line) { throw 'C044 produced no machine-readable report.' }
           $report = $line.Substring('C044_REPORT='.Length) | ConvertFrom-Json

@@ -318,7 +318,9 @@ $innerSuspendCount = 0
 $innerJobVerified = $false
 $innerResumeSucceeded = $false
 $entrySeen = $false
+$childGone = $false
 $childExit = -1
+$childExitHex = ''
 $proof = $null
 $shellResult = 'not_run'
 $shellError = ''
@@ -350,16 +352,29 @@ try {
     $innerSuspendCount = [C044Native]::ResumeThread($child.hThread)
     if ($innerSuspendCount -ne 1) { throw "Native child suspend count was unexpected: $innerSuspendCount" }
     $innerResumeSucceeded = $true
+    # Bounded entry poll that also watches for early child death: a
+    # loader/privilege failure kills the child in milliseconds with a
+    # Win32 exit code, which is stronger evidence than a bare timeout.
+    # Total bound stays 30 s (60 x 500 ms).
     for ($i = 0; $i -lt 60; $i++) {
         if (Test-Path -LiteralPath $EntryPath) { $entrySeen = $true; break }
-        Start-Sleep -Milliseconds 500
+        if ([C044Native]::WaitForSingleObject($child.hProcess, 500) -eq 0) { $childGone = $true; break }
     }
-    if (-not $entrySeen) { throw 'Restricted native child timed out waiting for entry marker (30 s).' }
-    $wait = [C044Native]::WaitForSingleObject($child.hProcess, 30000)
-    if ($wait -ne 0) { throw "Restricted native child did not exit (wait=$wait)." }
-    $exitCode = 0
+    $exitCode = [uint32]0
     [void][C044Native]::GetExitCodeProcess($child.hProcess, [ref]$exitCode)
     $childExit = [int]$exitCode
+    $childExitHex = ('0x{0:X8}' -f $exitCode)
+    if ($entrySeen) {
+        $wait = [C044Native]::WaitForSingleObject($child.hProcess, 30000)
+        if ($wait -ne 0) { throw "Restricted native child did not exit after entry (wait=$wait)." }
+        [void][C044Native]::GetExitCodeProcess($child.hProcess, [ref]$exitCode)
+        $childExit = [int]$exitCode
+        $childExitHex = ('0x{0:X8}' -f $exitCode)
+    } elseif ($childGone) {
+        throw "Restricted native child exited before entry (exit=$childExitHex)."
+    } else {
+        throw 'Restricted native child timed out waiting for entry marker (30 s).'
+    }
     $entry = [IO.File]::ReadAllText($EntryPath, [Text.Encoding]::Unicode) | ConvertFrom-Json
     $proof = [IO.File]::ReadAllText($ProofPath, [Text.Encoding]::Unicode) | ConvertFrom-Json
     if ($entry.nonce -ne $Nonce -or $proof.nonce -ne $Nonce) { throw 'Probe evidence nonce mismatch.' }
@@ -389,6 +404,7 @@ try {
         normal_account_same_file_read = $normalRead; runner_sid = $identity.User.Value
         restricting_sid = $RestrictingSid; outcome = $outcome
         child_reached_entry = $entrySeen; child_pid = [int]$entry.pid; child_exit_code = $childExit
+        child_exit_code_hex = $childExitHex; child_died_before_entry = $false
         child_user_sid = [string]$proof.user; restricting_groups_observed = [int]$proof.restricting_groups
         broad_read = $(if ($broadDenied) { 'denied' } else { 'allowed' }); broad_read_error = [int]$proof.broad_read_error
         host_write = $(if ($hostDenied) { 'denied' } else { 'allowed' }); host_write_error = [int]$proof.host_write_error
@@ -410,6 +426,7 @@ try {
         inner_child_owned_job_verified_before_resume = $innerJobVerified
         inner_child_resume_succeeded = $innerResumeSucceeded
         child_reached_entry = $entrySeen; child_exit_code = $childExit
+        child_exit_code_hex = $childExitHex; child_died_before_entry = $childGone
         native_shell = $shellResult; shell_error = $shellError; git = $gitResult; git_error = $gitError
         network = 'not_tested'; production_admission = 'not_authorized'
     } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Report -Encoding utf8
