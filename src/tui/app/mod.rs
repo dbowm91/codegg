@@ -9891,8 +9891,8 @@ impl App {
                 vec!["git".into(), "show".into(), format!("HEAD:{}", file_path)];
             let old_content = crate::git_mutations::GitEnvPolicy::default()
                 .apply_sync(&show_argv, &git_root)
-                .output()
                 .ok()
+                .and_then(|mut command| command.output().ok())
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
@@ -9914,7 +9914,8 @@ impl App {
             let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
             let output = crate::git_mutations::GitEnvPolicy::default()
                 .apply_sync(&diff_argv, &git_root)
-                .output();
+                .map_err(|outcome| std::io::Error::other(outcome.to_string()))
+                .and_then(|mut command| command.output());
 
             match output {
                 Ok(o) if o.status.success() => {
@@ -10037,7 +10038,8 @@ impl App {
         ];
         let output = crate::git_mutations::GitEnvPolicy::default()
             .apply_sync(&checkout_argv, &git_root)
-            .output();
+            .map_err(|outcome| std::io::Error::other(outcome.to_string()))
+            .and_then(|mut command| command.output());
 
         match output {
             Ok(o) if o.status.success() => {

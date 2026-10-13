@@ -343,7 +343,7 @@ def check_direct_git_process_construction() -> List[Finding]:
 
 
 def check_trusted_git_execution_policy() -> List[Finding]:
-    """Keep repository-controlled Git execution controls at the sole owner."""
+    """Keep typed Git capability classification at the sole process owner."""
     findings: List[Finding] = []
     path = CRATES / "egggit" / "src" / "process.rs"
     if not path.exists():
@@ -357,10 +357,12 @@ def check_trusted_git_execution_policy() -> List[Finding]:
         ]
     text = path.read_text()
     required = [
-        "trusted_git_request_denied(argv)",
+        "classify_git_request(argv)",
+        "GitExecutionPolicyOutcome",
+        "RequiresContainedExecution",
         "add_trusted_git_overrides(&mut cmd, argv)",
-        "REPOSITORY_EXECUTABLE_OPERATIONS",
-        "TRUSTED_GIT_BUILTINS",
+        "pub fn apply(",
+        "pub fn apply_sync(",
         '"core.fsmonitor"',
         '"core.hooksPath"',
         '"diff.external"',
@@ -375,6 +377,22 @@ def check_trusted_git_execution_policy() -> List[Finding]:
                 file=str(path.relative_to(ROOT)),
                 line=1,
                 message=f"canonical trusted Git policy is missing controls: {', '.join(missing)}",
+            )
+        )
+    forbidden = [
+        "DENIED_GIT_EXECUTABLE",
+        "trusted_git_request_denied",
+        "REPOSITORY_EXECUTABLE_OPERATIONS",
+        "TRUSTED_GIT_BUILTINS",
+    ]
+    present = [token for token in forbidden if token in text]
+    if present:
+        findings.append(
+            Finding(
+                rule="fabricated-or-name-banned-git-policy",
+                file=str(path.relative_to(ROOT)),
+                line=1,
+                message=f"Git policy must use typed capability outcomes, not: {', '.join(present)}",
             )
         )
     return findings

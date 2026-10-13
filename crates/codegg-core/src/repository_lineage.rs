@@ -96,6 +96,8 @@ impl RepositoryLineageEvidence {
 /// Errors starting or collecting the local Git probe.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryLineageError {
+    #[error("Git execution policy outcome: {0}")]
+    Policy(egggit::GitExecutionPolicyOutcome),
     #[error("failed to start local git probe: {0}")]
     Spawn(#[source] io::Error),
     #[error("local git probe output exceeded {MAX_CONFIG_OUTPUT_BYTES} bytes")]
@@ -374,6 +376,7 @@ fn run_git(path: &Path, args: &[&str]) -> Result<Output, RepositoryLineageError>
     argv.extend(args.iter().map(|arg| (*arg).to_owned()));
     let mut child = egggit::process::GitEnvPolicy::default()
         .apply_sync(&argv, path)
+        .map_err(RepositoryLineageError::Policy)?
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")

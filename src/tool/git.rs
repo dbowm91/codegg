@@ -408,12 +408,16 @@ impl GitTool {
             v
         };
 
-        let output = match tokio::time::timeout(timeout, async {
-            let mut cmd = env_policy.apply(&argv_for_run, &workdir);
-            cmd.output().await
-        })
-        .await
-        {
+        let mut cmd = match env_policy.apply(&argv_for_run, &workdir) {
+            Ok(command) => command,
+            Err(outcome) => {
+                if !Self::is_read_only(subcommand) {
+                    emit_raw_git_audit(audit_ctx, subcommand, "policy_blocked").await;
+                }
+                return Err(ToolError::Execution(outcome.to_string()));
+            }
+        };
+        let output = match tokio::time::timeout(timeout, cmd.output()).await {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => return Err(ToolError::Execution(e.to_string())),
             Err(_) => {
@@ -1003,6 +1007,7 @@ fn scope_unwrap_local(scope: Option<&str>) -> Result<bool, ToolError> {
 
 fn map_mutation_err(e: GitMutationError) -> ToolError {
     match e {
+        GitMutationError::Policy(outcome) => ToolError::Execution(outcome.to_string()),
         GitMutationError::Precondition(s) => ToolError::Execution(format!("precondition: {s}")),
         GitMutationError::Path(s) => ToolError::Execution(format!("path: {s}")),
         GitMutationError::Ref(s) => ToolError::Execution(format!("ref: {s}")),

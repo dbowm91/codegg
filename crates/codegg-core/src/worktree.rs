@@ -68,6 +68,7 @@ pub fn create_worktree_at(
     }
 
     let output = hardened_git_command(&args, git_root)
+        .map_err(|outcome| AppError::Worktree(outcome.to_string()))?
         .output()
         .map_err(|e| AppError::Worktree(format!("failed to create worktree: {e}")))?;
 
@@ -87,6 +88,7 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
         args.push("--force");
     }
     let output = hardened_git_command(&args, git_root)
+        .map_err(|outcome| AppError::Worktree(outcome.to_string()))?
         .output()
         .map_err(|e| AppError::Worktree(format!("failed to remove worktree: {e}")))?;
 
@@ -110,7 +112,10 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
 /// helper exists because `codegg-core` builds synchronous
 /// `std::process::Command` values (no tokio) and uses a single
 /// caller pattern for `worktree add` / `worktree remove`.
-fn hardened_git_command(args: &[&str], git_root: &Path) -> std::process::Command {
+fn hardened_git_command(
+    args: &[&str],
+    git_root: &Path,
+) -> Result<std::process::Command, egggit::GitExecutionPolicyOutcome> {
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push("git".to_owned());
     argv.extend(args.iter().map(|arg| (*arg).to_owned()));

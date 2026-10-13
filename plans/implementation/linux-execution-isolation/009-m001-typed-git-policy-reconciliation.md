@@ -1,6 +1,6 @@
 # Linux Execution Isolation M001 Corrective C001 — Typed Git Policy and Execution-Class Reconciliation
 
-Status: ready for handoff (cross-workstream interface dependency: ADR-0024, command-policy M001 written contract; M001 command-policy implementation may proceed concurrently)
+Status: active (cross-workstream interface dependency: ADR-0024, command-policy M001 written contract; M001 command-policy implementation may proceed concurrently)
 Primary class: invariant
 Target closure: `plans/closure/linux-execution-isolation/009-status.md`
 Repository baseline: Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8` (M001 partial implementation), as compared with `main` on 2026-10-13. Source: `plans/subsystems/linux-execution-isolation-roadmap.md` and accepted ADR-0024; Linux mechanism ADR-0023 remains proposed. Corrects M001 `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` and historical blocked `plans/closure/linux-execution-isolation/001-status.md` without revising its evidence. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. New corrective closure must be independent and preserve original historical M001 findings.

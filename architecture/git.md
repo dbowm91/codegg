@@ -75,15 +75,17 @@ kill_on_drop). stdout/stderr pass through
 The trusted process policy also pins repository-controlled execution settings
 with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
 SSH command overrides, signing programs and pagers are disabled; diff/show/log
-also receive `--no-ext-diff --no-textconv`. Global config and repository
-identity overrides supplied in argv are refused before spawn, and unknown Git
-subcommands are refused so repository aliases cannot become commands. Trusted
-operations that can run clean/smudge filters or merge drivers (including
-add/checkout/restore/merge/rebase/stash mutation, clone, fetch, push, and hard
-reset) are refused until separately authorized contained or mediated routes
-exist. `stash list` and `worktree list` remain available. This boundary does
-not protect writable `.git` metadata, nor does it claim network isolation;
-those are separate Linux execution-isolation milestones.
+also receive `--no-ext-diff --no-textconv`. `classify_git_request` returns a
+typed `GitExecutionPolicyOutcome` before command construction. It distinguishes
+trusted non-executable requests, requests requiring contained execution or
+additional authorization, explicit authority changes, and malformed requests.
+The command builder returns this outcome instead of spawning a fabricated
+missing executable. Operations requiring filters, merge drivers, or remote
+transport remain unavailable until their containment/mediation plan lands;
+their subcommand names alone are not treated as the security boundary.
+`stash list`, `worktree list`, and the verified non-executable local flows
+remain available. This policy does not protect writable `.git` metadata or
+claim network isolation; those are separate Linux execution-isolation gates.
 
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
@@ -277,9 +279,10 @@ action regardless of routing mode.
    vars), pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`,
    `GIT_SEQUENCE_EDITOR=true`, strips `EDITOR`/`VISUAL`, sets
    `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`; adds fixed Git config
-   overrides for executable repository settings; denies caller-supplied
-   global config/repository redirects, unknown aliases, and unsafe filter or
-   merge-driver operations before spawn.
+   overrides for executable repository settings; returns typed outcomes for
+   caller-supplied global config/repository redirects and capability needs
+   before spawn. An unknown Git subcommand is classified as a contained
+   repository-alias capability rather than sent to Git.
 2. `NetworkEnvPolicy::apply_to_command()`: same as base, plus restores
    `NETWORK_ALLOWED_ENV_VARS` (21 vars: `GIT_ASKPASS`, `GIT_SSH_COMMAND`,
    `GIT_SSH_VARIANT`, `GIT_CONFIG_COUNT/GLOBAL/SYSTEM`, `GIT_AUTHOR_*`,
