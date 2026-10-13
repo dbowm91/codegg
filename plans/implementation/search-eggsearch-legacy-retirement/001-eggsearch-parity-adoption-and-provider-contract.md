@@ -8,7 +8,7 @@ Source roadmap:
 
 Milestone: M001 eggsearch parity release adoption and provider-contract reconciliation
 
-Primary class: compatibility + dependency adoption
+Primary class: development dependency integration + compatibility
 
 Planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -37,13 +37,26 @@ Relevant predecessor evidence:
 
 ## 1. Objective
 
-Adopt the qualifying upstream eggsearch release and make CodeGG's stable
-`websearch` provider contract match the actual upstream provider inventory
-before deleting the legacy builtin backend.
+**Pre-release/development integration, not a CodeGG release.** CodeGG is not
+operationally ready for public release and this milestone MUST NOT require,
+trigger, simulate or imply CodeGG release publication. Adopt a **qualified,
+immutable eggsearch source/binary contract** into CodeGG's development tree
+to prepare for a much later release. Update the stable native `websearch`
+provider contract to reflect the upstream inventory. Keep the managed
+sidecar identity/pin coherent for future packaging, but treat release scripts
+and docs as static compatibility configuration, not a release operation.
 
-This plan deliberately leaves the builtin backend in place. It isolates
-version/provider-contract migration from the larger deletion in M002 so a
-failed provider mapping cannot be masked by simultaneous backend removal.
+The milestone's primary acceptance evidence is a repeatable **paired
+CodeGG+eggsearch test** from the development checkout, not a successful
+CodeGG release package. Tests must exercise a real Rust CodeGG search runtime
+and native wrappers against a **real pinned eggsearch subprocess**, in one
+isolated command without working LLM inference, a user session, provider
+credentials, live network or a deployable CodeGG binary.
+
+The builtin backend remains until the separate M002 deletion. This isolates
+version/provider contract migration from removal and allows faults to be
+diagnosed independently. A successful compatibility test is **not** proof
+that the entire CodeGG coding agent is operable or release-ready.
 
 ## 2. Upstream evidence required before implementation
 
@@ -205,7 +218,48 @@ historical provider has no accepted upstream implementation. This is a
 correctness change: explicit unsupported sources fail instead of pretending to
 work.
 
-## 10. Verification
+## 10. Development paired-system compatibility gate
+
+### 10.1 Required single-command harness
+
+Add a repository-owned entrypoint, e.g. `scripts/test-eggsearch-pair.sh`
+or equivalent Cargo alias, which qualifies the **CodeGG runtime + actual
+eggsearch stdio subprocess** as a unit. It accepts an explicitly chosen
+`CODEGG_EGGSEARCH_BIN` or an immutable v0.4.1 source checkout; it may
+build the upstream binary with `cargo build --locked` into a temporary
+target directory. It MUST NOT silently download a moving branch or run
+CodeGG release scripts.
+
+The harness must:
+- reject missing/wrong-version binaries via an **exact** release-version
+  check; record CodeGG revision, upstream tag and binary digest if known;
+- use a private temporary HOME/config/workspace and clean up on exit;
+  require no login, API keys, network, daemon/TUI operability or privilege;
+- launch the real eggsearch process over MCP stdio using CodeGG's existing
+  `bootstrap_search_runtime` and `SearchRuntimeContext`, verifying one
+  shared session, bounded timeouts and process shutdown;
+- assert successful MCP initialize, full ten-tool advertisement and
+  `provider_status(probe=false)`, including release-expected provider IDs,
+  without requiring optional provider credentials;
+- test native wrapper→upstream mapping and negative cases without external
+  fetching. Unsupported/retired explicit providers must fail *before* any
+  network call and never silently auto-route. Where an actual provider
+  request cannot run offline, use exact schema/protocol checks and record
+  the limitation instead of accepting any error as success;
+- pair this process test with existing deterministic fake-MCP contract and
+  tagged retrieval-dimension/structured evidence fixtures, **invoked by
+  the same command**; treat tests as one compatibility suite;
+- classify version/protocol, argument/schema, structured receipt, policy,
+  environment/credential, and optional network/provider failures distinctly;
+  return nonzero for every compatibility failure;
+- work for Linux/macOS source checkouts and keep the Rust test usable
+  cross-platform; no hosted network CI lane or release publishing.
+
+The existing `tests/eggsearch_real_compat.rs` performs live provider calls
+and allows most non-schema errors. It can remain an **optional --live**
+profile but does not replace the required offline paired-binary gate.
+
+### 10.2 Focused tests
 
 Focused:
 
@@ -216,18 +270,22 @@ cargo test --test fake_eggsearch_mcp -- --test-threads=1
 cargo test --test eggsearch_real_compat -- --ignored --nocapture
 ```
 
-Use the exact newly pinned `codegg-eggsearch` binary for the real compatibility
-smoke.
+Use the exact adopted **eggsearch v0.4.1 executable** (source-built or a
+verified release artifact), NOT a public CodeGG bundle, for the paired test.
+The CodeGG search runtime is compiled from the active development checkout.
 
-Run release/install pin tests applicable to the touched ownership points, then:
+Run applicable offline version-identity and static packaging contract
+tests for pin ownership, then:
 
 ```bash
 cargo fmt --all -- --check
 scripts/verify.sh quick
 ```
 
-If the version bump affects release packaging semantics, also run the existing
-release packaging verification; do not invent a new CI lane.
+If the pin changes static release packaging metadata, run only the
+existing **offline** release-tool tests; do not publish a CodeGG release,
+build release archives as an operational gate, or require a release candidate.
+Real installer/release qualification is deferred until CodeGG is operable.
 
 Required negative cases:
 
@@ -249,7 +307,7 @@ M001 closes only when:
 - every retained explicit provider reaches a real upstream ID;
 - unknown/retired explicit provider values do not silently auto-route;
 - Google News and Kagi dispositions match upstream closure;
-- real-binary compatibility passes against the pinned release;
+- a **single-command offline paired CodeGG-runtime/real-eggsearch-process** suite passes (version, MCP handshake, ten tools, provider inventory, native wrapper schema, structured evidence, error handling and teardown);
 - doctor/bootstrap diagnostics remain actionable;
 - builtin backend behavior is otherwise unchanged and reserved for M002;
 - `scripts/verify.sh quick` passes.
@@ -275,8 +333,8 @@ Create
 - old/new pin matrix;
 - final provider mapping/disposition table;
 - explicit-provider negative-path evidence;
-- real-binary version/tool/provider inventory output;
-- installer/release/doctor verification;
+- paired-process command, CodeGG and eggsearch identities, offline MCP/schema/provider inventory results, isolation/teardown and optional live results separately;
+- static installer/pin contract checks and development search diagnostics pass; no CodeGG release execution is required;
 - focused/broad test outcomes;
 - unresolved findings by severity;
 - recommendation for M002 readiness.
