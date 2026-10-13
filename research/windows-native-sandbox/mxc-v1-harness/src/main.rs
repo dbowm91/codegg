@@ -162,8 +162,8 @@ fn main() {
     let sibling = run_root.join("original-sibling");
     let outside = run_root.join("outside-stage-write.txt");
     let script_path = stage.join("probe.cmd");
-    let handle_script = stage.join("inherited-handle.ps1");
-    let descendant_script = stage.join("descendant.ps1");
+    let handle_script = stage.join("inherited-handle.py");
+    let descendant_script = stage.join("descendant.py");
     let descendant_pid_file = stage.join("descendant.pid");
     let secret = host.join("synthetic-c020-secret.txt");
     let sibling_secret = sibling.join("synthetic-c020-sibling.txt");
@@ -231,30 +231,38 @@ fn main() {
         }
     };
     let handle_probe_source = r#"
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class C020ChildHandleProbe {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern uint GetFileType(IntPtr handle);
-}
-'@
-try {
-    $candidate = [IntPtr]::new([Int64]::Parse($env:C020_SECRET_HANDLE))
-    if ([C020ChildHandleProbe]::GetFileType($candidate) -eq 1) {
-        $safe = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new($candidate, $false)
-        $stream = [IO.FileStream]::new($safe, [IO.FileAccess]::Read)
-        $reader = [IO.StreamReader]::new($stream)
-        if ($reader.ReadToEnd() -eq 'synthetic-c020-secret') { 'inherited_handle=leaked' }
-        else { 'inherited_handle=not_transferred' }
-        $reader.Dispose()
-    } else { 'inherited_handle=not_transferred' }
-} catch { 'inherited_handle=not_transferred' }
+import ctypes
+import msvcrt
+import os
+
+handle = int(os.environ["C020_SECRET_HANDLE"])
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetFileType.argtypes = [ctypes.c_void_p]
+kernel32.GetFileType.restype = ctypes.c_uint
+if kernel32.GetFileType(ctypes.c_void_p(handle)) != 1:
+    print("inherited_handle=not_transferred")
+else:
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        try:
+            print("inherited_handle=leaked" if os.read(fd, 128) == b"synthetic-c020-secret" else "inherited_handle=not_transferred")
+        finally:
+            os.close(fd)
+    except OSError:
+        print("inherited_handle=not_transferred")
 "#;
     let descendant_probe_source = r#"
-$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$child = Start-Process -FilePath $powershell -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120') -PassThru
-Set-Content -NoNewline -LiteralPath $env:C020_DESCENDANT_PID_FILE -Value $child.Id
+import os
+import subprocess
+
+command = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
+child = subprocess.Popen(
+    [command, "/d", "/c", "ping -n 120 127.0.0.1 >nul"],
+    creationflags=subprocess.CREATE_NO_WINDOW,
+)
+with open(os.environ["C020_DESCENDANT_PID_FILE"], "w", encoding="ascii") as pid_file:
+    pid_file.write(str(child.pid))
+print(f"descendant_probe_pid={child.pid}")
 "#;
     if let Err(error) = fs::write(&handle_script, handle_probe_source) {
         root_report(&format!("write inherited handle probe: {error}"), &backends);
@@ -280,11 +288,27 @@ Set-Content -NoNewline -LiteralPath $env:C020_DESCENDANT_PID_FILE -Value $child.
         format!("type {} >nul 2>&1 && echo sibling_read=leaked || echo sibling_read=denied", batch_quote(&sibling_secret)),
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
-        format!("{} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&handle_script)),
-        "echo handle_probe_exit=%errorlevel%".into(),
-        format!("{} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&descendant_script)),
-        "echo descendant_probe_exit=%errorlevel%".into(),
     ];
+    if let Some(python) = &python {
+        lines.push(format!(
+            "{} {}",
+            batch_quote(python),
+            batch_quote(&handle_script)
+        ));
+        lines.push(
+            "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)"
+                .into(),
+        );
+        lines.push(format!(
+            "{} {}",
+            batch_quote(python),
+            batch_quote(&descendant_script)
+        ));
+        lines.push("if errorlevel 1 (echo descendant_probe_exit=failed) else (echo descendant_probe_exit=0)".into());
+    } else {
+        lines.push("echo handle_probe_exit=python-unavailable".into());
+        lines.push("echo descendant_probe_exit=python-unavailable".into());
+    }
     if let Some(git) = &git {
         let repo = stage.join("git-init");
         lines.push(format!(
