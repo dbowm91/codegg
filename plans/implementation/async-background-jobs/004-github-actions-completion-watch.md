@@ -1,7 +1,7 @@
 # Async Background Jobs M004 — GitHub Actions CI Completion Watching
 
-Status: blocked — M003 must close
-Baseline: `e6a5e85de632ea5057d59aee585942d10f9d950b` (revalidate before implementation)
+Status: ready for handoff (unblocked by M003 closure `52d630fc`; see `plans/closure/async-background-jobs/003-status.md`; soft M002 closed)
+Baseline: `52d630fc9aae8460e8a4337ad76f622580b7568a` (revalidate implementation branch before editing)
 Roadmap: `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md#m004--github-actions-remote-ci-terminal-watcher`
 Class: capability. Hard dependency: M003 durable event/continuation policy; interface dependency: existing project GitHub/credential/client HTTP and authorization contracts. Soft dependency: M002 shell UX; not required for GitHub polling.
 
