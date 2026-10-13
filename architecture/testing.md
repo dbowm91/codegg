@@ -216,10 +216,14 @@ filesystem requests. Run it on Windows with:
 cargo test --locked -p codegg --test windows_process_launcher -- --nocapture
 ```
 
-`.github/workflows/windows-process-launcher.yml` runs the same test target on
-`windows-latest` for the native-sandbox work branch and supports manual
-dispatch. These tests qualify process ownership only; they do not qualify
-filesystem ACL or network enforcement.
+`.github/workflows/windows-process-launcher.yml` runs the launcher and its
+qualified positive regression suites on `windows-latest` for the
+native-sandbox work branch and supports manual dispatch. The historically
+negative C014 AppContainer/Git experiment remains runnable as an opt-in job
+when manually dispatching that workflow with `run_c014_research: true`; its
+expected failure is research evidence, never a passing launcher gate.
+Launcher tests qualify process ownership only; they do not qualify filesystem
+ACL or network enforcement.
 
 The same Windows workflow also builds the restricted service path with the
 release-disabled `windows-sandbox-test-support` feature and runs
