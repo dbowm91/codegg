@@ -96,7 +96,7 @@ jobs:
           $reportPath = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-report.json'
           $env:C035_NATIVE_HELPER = $env:C035_NATIVE_HELPER
           $env:C035_REPORT_JSON = $reportPath
-          cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-console.txt')
+          cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin codegg-mxc-c035-corrective 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c035-console.txt')
           if ($LASTEXITCODE -ne 0) { throw "C035 evidence runner failed: $LASTEXITCODE" }
           if (Test-Path $reportPath) {
             $report = Get-Content -Raw $reportPath | ConvertFrom-Json
