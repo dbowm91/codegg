@@ -1,6 +1,6 @@
 # Search / Eggsearch Development Integration and Legacy Backend Retirement
 
-Status: active (M001 ready; M002 blocked on M001)
+Status: active (M001 closed; M002 ready)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -73,9 +73,10 @@ The former upstream release blocker is **satisfied** as of 2026-10-13:
 `eggstack/eggsearch/plans/closure/codegg-legacy-search-parity/005-status.md`
 records strict closure of the upstream parity work and immutable published
 `v0.4.1` tag at `32769d684417567dfb30fc5adea1475cee7f0ed0`.
-CodeGG M001 is **ready** to integrate and qualify that **upstream**
-published source/binary contract (`>=0.4.1`) in its development checkout;
-M002 remains blocked on CodeGG M001 closure. Upstream's immutable tag
+CodeGG M001 is **closed** at
+`plans/closure/search-eggsearch-legacy-retirement/001-status.md`: it adopted
+and qualified that **upstream** published source/binary contract (`v0.4.1`)
+in its development checkout. M002 is now ready. Upstream's immutable tag
 is the dependency source; it does **not** imply CodeGG itself must publish a
 release. M001 MUST use the pinned upstream artifact/source, never a moving
 branch or `latest`.
@@ -181,7 +182,7 @@ The upstream M003 closure record is authoritative if the final matrix differs.
 
 ### M001 — Pinned eggsearch development adoption and provider-contract reconciliation
 
-Status: ready (upstream release gate satisfied; CodeGG pinned-binary acceptance is M001 work).
+Status: closed (CodeGG pinned-binary acceptance recorded in M001 closure).
 
 Plan:
 
@@ -192,7 +193,7 @@ Satisfied upstream release prerequisites:
 - parity M003-M005 accepted and qualified in the v0.4.1 closure;
 - immutable published `v0.4.1` release carries that accepted surface.
 
-Remaining downstream gates are M001 acceptance evidence, not prerequisites.
+Closure evidence: `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
 
 Outcome:
 
@@ -211,7 +212,7 @@ Outcome:
 
 ### M002 — Builtin external-search backend retirement
 
-Status: blocked on M001.
+Status: ready (M001 strictly closed).
 
 Plan:
 
@@ -302,5 +303,5 @@ The workstream closes when:
 
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
-| M001 pinned development adoption + paired contract | ready | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | None; upstream v0.4.1 is qualified/published (upstream closure M005) |
-| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | CodeGG M001 |
+| M001 pinned development adoption + paired contract | closed | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`; closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md` | Implementation `9dd8a1c8`; exact v0.4.1 paired process and quick verification passed |
+| M002 builtin backend retirement | ready | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | M001 closure satisfied |

@@ -1,6 +1,6 @@
 # Plan 002 — Builtin Search Backend Retirement
 
-Status: blocked
+Status: ready
 
 Source roadmap:
 
@@ -15,7 +15,8 @@ Planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 Hard dependency:
 
 - CodeGG M001 **pre-release pinned integration + paired-process qualification**
-  strictly closed. This is a development compatibility gate, not a CodeGG
+  strictly closed at `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
+  This is a development compatibility gate, not a CodeGG
   public release/packaging or end-to-end operability gate.
 
 Relevant predecessor evidence:

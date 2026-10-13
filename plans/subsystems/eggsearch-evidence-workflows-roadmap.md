@@ -1,8 +1,8 @@
 # Eggsearch Evidence Fidelity and Agent Workflow Roadmap
 
-Status: active (M001 historical closure; C001 corrective closed; M002-M005 dependency-blocked)
+Status: active (M001 historical closure; strict C001 corrective closed; M002-M004 ready; M005 blocked)
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13)
-Upstream evidence: eggsearch `v0.4.1` published/qualified; upstream main declares `0.4.2`. CodeGG's managed pin remains `0.3.9` until the independently registered legacy-retirement M001 lands.
+Upstream evidence: eggsearch `v0.4.1` published/qualified; upstream main declares `0.4.2`. CodeGG adopted v0.4.1 through the independently registered legacy-retirement M001 closure.
 
 Authoritative references:
 - `plans/000-long-term-specification.md` (explicit ownership; progressive disclosure)
@@ -49,22 +49,22 @@ Evidence M001 (historically closed) ---> Post-closure C001 (READY)
                                                       |
                                                       | hard
                                                       v
-Existing legacy-retirement M001 (READY) ----------> M004 projection (blocked)
+Existing legacy-retirement M001 (CLOSED) ---------> M004 projection (ready)
                     |                                     |
              +------+-------+                             |
              |              |                             |
              v              v                             |
         M002 repo        M003 web                         |
-        goals (blocked)  constraints (blocked)            |
+        goals (ready)    constraints (ready)               |
              |                                            |
              +------------------------> M005 hydration <--+
                                        (blocked)
 ```
 
 - New evidence M001 is **historically closed** at `plans/closure/eggsearch-evidence-workflows/001-status.md`; its typed receipt transport is implemented, but the tagged upstream dimensional status contract escaped original verification.
-- Post-closure corrective C001 is **closed** at `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`. M004's C001 dependency is satisfied. C001 is independent of the runtime-pin migration and must be requalified after that separate pin changes.
-- M002 and M003 are **blocked** on the separate legacy-retirement M001 adopting and qualifying the pinned upstream eggsearch version via the *offline paired-development test*, not a CodeGG public release.
-- M004 remains **blocked** on legacy-retirement M001; its strict post-closure C001 dependency is satisfied. Do not render unverified completeness status before the pin adoption closes.
+- Post-closure corrective C001 is **closed** at `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`. M004's C001 dependency is satisfied, and M001's paired compatibility suite reran the tagged structured evidence fixtures against the adopted v0.4.1 pin.
+- M002 and M003 are **ready**: legacy-retirement M001 adopted and qualified the pinned upstream eggsearch version via the *offline paired-development test* at `plans/closure/search-eggsearch-legacy-retirement/001-status.md`; no CodeGG public release is implied.
+- M004 is **ready**: both legacy-retirement M001 and strict post-closure C001 dependencies are satisfied. Preserve bounded projection and uncertainty semantics from its plan.
 - M005 is **blocked** on M002 and M004. Tool execution authority remains CodeGG-owned.
 - Legacy-retirement M002 deletion is not a hard dependency of these new milestones; coordinate touched files and avoid parallel edits on one branch.
 
@@ -73,9 +73,9 @@ Existing legacy-retirement M001 (READY) ----------> M004 projection (blocked)
 | Milestone | Class | Status | Implementation plan | User-visible exit |
 |---|---|---|---|---|
 | M001 Evidence identity, metadata, failure-state fidelity | correctness/infrastructure | historically closed; strict retrieval contract subject to C001 | `plans/implementation/eggsearch-evidence-workflows/001-evidence-fidelity-and-retrieval-state.md` | Historical closure `plans/closure/eggsearch-evidence-workflows/001-status.md`; C001 owns tagged-dimension follow-up |
-| M002 Repository and specialist-search semantic controls | capability | blocked (legacy M001) | `plans/implementation/eggsearch-evidence-workflows/002-repository-and-specialist-search-goals.md` | Coding/research/security agents express task goals via current provider-neutral fields |
-| M003 Constrained web discovery and fetch compatibility | capability | blocked (legacy M001) | `plans/implementation/eggsearch-evidence-workflows/003-web-search-constraints.md` | Exact dates/domains/locales are carried and enforcement limitations disclosed |
-| M004 Budgeted semantic model projection | correctness/performance | blocked (legacy M001) | `plans/implementation/eggsearch-evidence-workflows/004-structured-context-projection.md` | Strict C001 tagged retrieval normalization is closed; legacy-retirement M001 closure remains required |
+| M002 Repository and specialist-search semantic controls | capability | ready | `plans/implementation/eggsearch-evidence-workflows/002-repository-and-specialist-search-goals.md` | Coding/research/security agents express task goals via current provider-neutral fields |
+| M003 Constrained web discovery and fetch compatibility | capability | ready | `plans/implementation/eggsearch-evidence-workflows/003-web-search-constraints.md` | Exact dates/domains/locales are carried and enforcement limitations disclosed |
+| M004 Budgeted semantic model projection | correctness/performance | ready | `plans/implementation/eggsearch-evidence-workflows/004-structured-context-projection.md` | Strict C001 tagged retrieval normalization and legacy-retirement M001 dependencies are closed |
 | M005 Policy-gated next-action tool hydration | capability/integration | blocked (M002 + M004) | `plans/implementation/eggsearch-evidence-workflows/005-next-action-disclosure-handoff.md` | Valid suggested follow-ups become discoverable without an extra tool-search hop, never auto-executed |
 
 Strict corrective closure: **C001 closed** at `plans/closure/eggsearch-evidence-workflows-corrective/001-status.md`. Existing M001 closure remains immutable and is not evidence of tagged v0.4.1 per-dimension status qualification.

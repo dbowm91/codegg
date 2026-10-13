@@ -1,6 +1,6 @@
 # Plan 001 — Pinned Eggsearch Development Integration and Paired Compatibility
 
-Status: active
+Status: implemented
 
 Source roadmap:
 

@@ -1,6 +1,6 @@
 # Eggsearch Evidence Workflows M004 — Structured Context Projection
 
-Status: blocked (legacy-retirement M001 + retrieval-contract C001)
+Status: ready
 Class: correctness / performance
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 Source roadmap: `plans/subsystems/eggsearch-evidence-workflows-roadmap.md`
