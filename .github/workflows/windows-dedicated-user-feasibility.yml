@@ -1,0 +1,90 @@
+name: Windows dedicated principal feasibility
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-dedicated-user-feasibility.yml'
+      - 'scripts/windows_dedicated_user_feasibility.ps1'
+      - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+      - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'scripts/windows_restricted_primary_token_feasibility.ps1'
+      - 'scripts/windows_restricted_primary_token_probe.c'
+      - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
+      - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
+      - 'scripts/windows_token_initialization_trace.ps1'
+      - 'scripts/windows_token_initialization_marker.c'
+      - 'plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-dedicated-user-feasibility.yml'
+      - 'scripts/windows_dedicated_user_feasibility.ps1'
+      - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
+      - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'scripts/windows_restricted_primary_token_feasibility.ps1'
+      - 'scripts/windows_restricted_primary_token_probe.c'
+      - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
+      - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
+      - 'scripts/windows_token_initialization_trace.ps1'
+      - 'scripts/windows_token_initialization_marker.c'
+      - 'plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md'
+  workflow_dispatch:
+    inputs:
+      run_read_boundary:
+        description: Run the C027 primary-token interop and same-file read-boundary probe
+        type: boolean
+        required: false
+        default: false
+      run_token_trace:
+        description: Run the bounded C028 token initialization phase trace
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  dedicated-principal:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create and exercise one disposable standard principal
+        shell: pwsh
+        run: ./scripts/windows_dedicated_user_feasibility.ps1
+
+  read-boundary:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_read_boundary
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record C027 test runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+          "Runner identity: $($identity.Name)"
+          "Administrator role: $($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          whoami /priv
+
+      - name: Run bounded C027 primary-token interop and read comparison
+        shell: pwsh
+        run: ./scripts/windows_restricted_primary_token_feasibility.ps1
+
+  token-initialization-trace:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_token_trace
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bounded C028 token initialization phase trace
+        shell: pwsh
+        run: ./scripts/windows_token_initialization_trace.ps1

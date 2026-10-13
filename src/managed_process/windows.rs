@@ -466,6 +466,12 @@ impl WindowsSuspendedAppContainerProcess {
                 "AppContainer executable cannot contain NULs",
             ));
         }
+        if application.as_os_str().encode_wide().any(|unit| unit == 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AppContainer executable cannot contain NULs",
+            ));
+        }
         if command_line.len() < 2
             || command_line.last() != Some(&0)
             || command_line[..command_line.len() - 1].contains(&0)

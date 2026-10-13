@@ -21,10 +21,17 @@ on:
       - 'crates/egggit/src/**'
       - 'tests/windows_process_launcher.rs'
       - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_projection_feasibility.rs'
       - 'tests/windows_acl_lease.rs'
       - 'tests/windows_sandbox_adversarial.rs'
       - 'research/windows-native-sandbox/**'
   workflow_dispatch:
+    inputs:
+      run_c014_research:
+        description: Run the historically negative C014 projection experiment
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -46,9 +53,11 @@ jobs:
         shell: pwsh
         run: |
           $os = Get-CimInstance Win32_OperatingSystem
+          $version = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
           "OS: $($os.Caption)"
           "Version: $($os.Version)"
           "Build: $($os.BuildNumber)"
+          "UBR: $($version.UBR)"
           rustc --version --verbose
 
       - name: Record disposable runner privilege evidence
@@ -150,4 +159,32 @@ jobs:
           cargo test --locked -p codegg --lib configured_cmd_shell_executes_raw_text -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib configured_git_bash_executes_raw_text -- --nocapture
+
+  c014-negative-reproduction:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_c014_research
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Record research runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          rustc --version --verbose
+          "C014 is a historically negative research reproduction; failure is expected and is not launcher CI success."
+
+      - name: Reproduce closed-negative C014 projection experiment
+        env:
+          CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c014-daemon
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_projection_feasibility -- --nocapture --test-threads=1
 

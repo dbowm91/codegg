@@ -99,6 +99,18 @@ the earlier successful fixture. This inherits the parent process directory;
 it does not yet establish an approved workspace directory or production ACL
 lease, and requires another hosted run for confirmation.
 
+Code inspection also confirms that the current process-service seam is not
+yet an AppContainer launch path: `prepare_launch_argv` rejects every required
+sandbox request on non-Unix, and `ManagedProcessService` still launches through
+`tokio::process::Command`. `src/managed_process/windows.rs` now owns reusable
+AppContainer profile, `STARTUPINFOEXW` attribute-list, and suspended
+`CreateProcessW` helpers; the Rust token/Job proof exercises those helpers.
+This is launch groundwork only. Production work must connect the helpers to the
+process-service path, preserve inherited output handling, and establish ACLs
+before resume while verifying token and Job facts. Because approved roots may
+be existing directories, ACE cleanup also needs a crash-recoverable ownership
+record; an in-memory guard alone cannot satisfy WP-C after daemon/helper loss.
+
 ## 4. Invariants that must not regress
 
 - No backend registered available until read AND write requirements can be demonstrated on target Windows version.

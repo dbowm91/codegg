@@ -12,6 +12,16 @@ ADR-NNNN-short-title.md
 
 Numbers are monotonically increasing and never reused.
 
+## Cross-branch identity migration
+
+The 2026-10-13 Windows/TUI branch collision was resolved before PR #111
+integration. Mainline TUI ADR-0021 and ADR-0022 retain their original identities.
+The Windows decision records now use ADR-0023 through ADR-0026; the exact former
+records remain under `plans/archive/windows-adr-id-aliases/`, with the source
+SHA, content fingerprints, and disposition recorded in
+`plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
+not active ADR allocations.
+
 ## Status lifecycle
 
 ```text
