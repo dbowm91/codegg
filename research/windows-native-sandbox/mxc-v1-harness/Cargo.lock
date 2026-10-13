@@ -102,6 +102,7 @@ dependencies = [
  "mxc-sdk",
  "serde_json",
  "tokio",
+ "windows",
 ]
 
 [[package]]
