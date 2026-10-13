@@ -144,7 +144,17 @@ impl TerminalTool {
             outcome,
         );
         crate::live_execution_audit::emit_command_execute(
-            emitter, audit, digest_hex, "process", outcome, &scope,
+            emitter,
+            audit,
+            digest_hex,
+            "process",
+            outcome,
+            &scope,
+            None,
+            Some("terminal"),
+            None,
+            None,
+            None,
         )
         .await;
     }

@@ -86,6 +86,16 @@ pub fn invocation_scope(invocation_key: Option<&str>, digest_hex: &str, outcome:
     format!("{key}:{outcome}")
 }
 
+/// Bounded terminal facts retained for one completed managed shell process.
+/// Values are structural labels and never include command/output content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandExecutionResultMetadata {
+    pub exit_code: Option<i32>,
+    pub output_truncated: bool,
+    pub cleanup: &'static str,
+    pub helper: &'static str,
+}
+
 /// Emit one live `command_execute` structural event.
 ///
 /// `scope` must come from [`invocation_scope`]. Best-effort through
@@ -98,6 +108,43 @@ pub async fn emit_command_execute(
     family: &str,
     outcome: &str,
     scope: &str,
+    authorization: Option<&crate::tool::authorization::ExecutionAuthorizationContext>,
+    route: Option<&str>,
+    filesystem_enforcement: Option<&str>,
+    network_enforcement: Option<&str>,
+    risk_level: Option<&str>,
+) {
+    emit_command_execute_with_result(
+        emitter,
+        audit,
+        digest_hex,
+        family,
+        outcome,
+        scope,
+        authorization,
+        route,
+        filesystem_enforcement,
+        network_enforcement,
+        risk_level,
+        None,
+    )
+    .await;
+}
+
+/// Emit a command event with facts only available after managed execution.
+pub async fn emit_command_execute_with_result(
+    emitter: &ExecutionAuditEmitter,
+    audit: &TrustedExecutionAuditContext,
+    digest_hex: &str,
+    family: &str,
+    outcome: &str,
+    scope: &str,
+    authorization: Option<&crate::tool::authorization::ExecutionAuthorizationContext>,
+    route: Option<&str>,
+    filesystem_enforcement: Option<&str>,
+    network_enforcement: Option<&str>,
+    risk_level: Option<&str>,
+    result_metadata: Option<CommandExecutionResultMetadata>,
 ) {
     let correlation = audit
         .chain()
@@ -113,8 +160,58 @@ pub async fn emit_command_execute(
     );
     emitter
         .emit_with(audit, |principal, provenance, chain| {
-            command_execute_event(principal, provenance, chain, digest_hex, family, outcome)
-                .with_event_id(event_id.clone())
+            let mut event =
+                command_execute_event(principal, provenance, chain, digest_hex, family, outcome)
+                    .with_event_id(event_id.clone());
+            if let Some(authorization) = authorization {
+                event = event
+                    .with_metadata("permission.receipt_id", &authorization.receipt.decision_id)
+                    .with_metadata("permission.source", &authorization.receipt.source)
+                    .with_metadata(
+                        "permission.policy_revision",
+                        authorization
+                            .receipt
+                            .policy_revision
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                    )
+                    .with_metadata(
+                        "sandbox.requested_profile",
+                        authorization.snapshot.sandbox_profile().as_str(),
+                    );
+            }
+            if let Some(route) = route {
+                event = event.with_metadata("execution.route", route);
+            }
+            if let Some(filesystem) = filesystem_enforcement {
+                event = event.with_metadata("execution.filesystem", filesystem);
+            }
+            if let Some(network) = network_enforcement {
+                event = event.with_metadata("execution.network", network);
+            }
+            if let Some(risk_level) = risk_level {
+                event = event.with_metadata("execution.risk_level", risk_level);
+            }
+            if let Some(result) = result_metadata {
+                event = event
+                    .with_metadata(
+                        "execution.exit_code",
+                        result
+                            .exit_code
+                            .map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
+                    )
+                    .with_metadata(
+                        "execution.output_truncated",
+                        if result.output_truncated {
+                            "true"
+                        } else {
+                            "false"
+                        },
+                    )
+                    .with_metadata("execution.cleanup", result.cleanup)
+                    .with_metadata("execution.helper", result.helper);
+            }
+            event
         })
         .await;
 }
@@ -139,6 +236,20 @@ pub fn audit_shape_for_executor(executor: &ActualExecutor) -> Option<(&'static s
                 .unwrap_or_else(|| command_digest_str("")),
         )),
         ActualExecutor::Git { .. } | ActualExecutor::Rejected { .. } => None,
+    }
+}
+
+/// Bounded route label for operator-facing audit metadata. Never formats
+/// command text, script bodies, argv, or paths.
+pub fn route_label_for_executor(executor: &ActualExecutor) -> &'static str {
+    match executor {
+        ActualExecutor::RawShell { .. } => "raw_shell",
+        ActualExecutor::ManagedArgv { .. } => "managed_argv",
+        ActualExecutor::NativeTool { .. } => "native_tool",
+        ActualExecutor::TestRunner { .. } => "test_runner",
+        ActualExecutor::PythonScript { .. } => "python_script",
+        ActualExecutor::Git { .. } => "typed_git",
+        ActualExecutor::Rejected { .. } => "rejected",
     }
 }
 

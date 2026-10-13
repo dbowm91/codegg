@@ -435,6 +435,26 @@ fn landlock_denies_equivalent_outside_write_from_shell_python_and_native_binary(
     ];
     let shell_run = run_helper(&shell);
 
+    let wrapped_marker = outside.join("wrapped-shell-marker");
+    let mut wrapped_shell = spec_for(&workspace, SandboxMode::WorkspaceWrite, &[]);
+    let wrapped_command = format!("printf blocked > {}", sh_quote(&wrapped_marker));
+    wrapped_shell.args = vec![
+        "-c".to_string(),
+        format!("sh -c {}", sh_quote(Path::new(&wrapped_command))),
+    ];
+    let wrapped_shell_run = run_helper(&wrapped_shell);
+
+    let script_marker = outside.join("script-marker");
+    let script = workspace.join("attempt-outside-write.sh");
+    std::fs::write(
+        &script,
+        format!("printf blocked > {}\n", sh_quote(&script_marker)),
+    )
+    .expect("generated shell script");
+    let mut generated_script = spec_for(&workspace, SandboxMode::WorkspaceWrite, &[]);
+    generated_script.args = vec![script.to_string_lossy().into_owned()];
+    let generated_script_run = run_helper(&generated_script);
+
     let python_marker = outside.join("python-marker");
     let mut python = spec_for(&workspace, SandboxMode::WorkspaceWrite, &[]);
     python.target = PathBuf::from("/usr/bin/python3");
@@ -469,10 +489,57 @@ fn landlock_denies_equivalent_outside_write_from_shell_python_and_native_binary(
     native.args = vec![native_marker.to_string_lossy().into_owned()];
     let native_run = run_helper(&native);
 
+    // A planted local hook is an alternate executable route through Git.
+    // Prepare a repository before confinement, then let the hook attempt the
+    // same outside-root write under the exact same WorkspaceWrite spec.
+    let git_workspace = workspace.join("git-repo");
+    std::fs::create_dir_all(git_workspace.join(".git/hooks")).expect("git hooks directory");
+    let git_setup = |args: &[&str]| {
+        let result = Command::new("git")
+            .arg("-C")
+            .arg(&git_workspace)
+            .args(args)
+            .output()
+            .expect("git fixture setup");
+        assert!(
+            result.status.success(),
+            "git fixture setup failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    git_setup(&["init", "-q"]);
+    git_setup(&["config", "user.name", "Sandbox Fixture"]);
+    git_setup(&["config", "user.email", "sandbox@example.invalid"]);
+    std::fs::write(git_workspace.join("tracked.txt"), "fixture\n").expect("git file");
+    git_setup(&["add", "tracked.txt"]);
+    let git_marker = outside.join("git-hook-marker");
+    let hook = git_workspace.join(".git/hooks/pre-commit");
+    std::fs::write(
+        &hook,
+        format!("#!/bin/sh\nprintf blocked > {}\n", sh_quote(&git_marker)),
+    )
+    .expect("git pre-commit hook");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o700))
+        .expect("executable hook");
+    let mut git_commit = spec_for(&workspace, SandboxMode::WorkspaceWrite, &[]);
+    git_commit.target = PathBuf::from("git");
+    git_commit.args = vec![
+        "-C".into(),
+        git_workspace.to_string_lossy().into_owned(),
+        "commit".into(),
+        "-m".into(),
+        "fixture".into(),
+    ];
+    let git_run = run_helper(&git_commit);
+
     for (surface, run) in [
         ("shell", &shell_run),
+        ("wrapped shell", &wrapped_shell_run),
+        ("generated script", &generated_script_run),
         ("python", &python_run),
         ("native", &native_run),
+        ("Git hook", &git_run),
     ] {
         let outcome = run
             .outcome()
@@ -491,11 +558,20 @@ fn landlock_denies_equivalent_outside_write_from_shell_python_and_native_binary(
         );
     }
     assert!(!shell_marker.exists(), "shell wrote an outside marker");
+    assert!(
+        !wrapped_marker.exists(),
+        "wrapped shell wrote an outside marker"
+    );
+    assert!(
+        !script_marker.exists(),
+        "generated script wrote an outside marker"
+    );
     assert!(!python_marker.exists(), "Python wrote an outside marker");
     assert!(
         !native_marker.exists(),
         "native executable wrote an outside marker"
     );
+    assert!(!git_marker.exists(), "Git hook wrote an outside marker");
 }
 
 /// Landlock ABI 3 added `TRUNCATE`; ordinary write denial is not enough to

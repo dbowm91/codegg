@@ -51,6 +51,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   command-preflight result) through the broker and retries. Bash must consume
   that preflight result once and refuse a profile mismatch or unavailable
   required filesystem enforcement before dispatch.
+- **Keep audit claims tied to obtained facts.** Command events may carry the
+  accepted receipt/source/revision, requested profile, bounded route/risk
+  labels, and the actual filesystem/network outcome. Landlock-only network is
+  `unrestricted`; a timeout without a returned result is not an enforcement
+  claim. Record digests and bounded labels only, never command text or output.
 - **Sandbox backend names do not imply parity.** Linux Landlock is a filesystem
   allowlist with `no_new_privs`; macOS Seatbelt confines writes but allows broad
   reads, network access, inherited descriptors, and Apple Events / Launch
@@ -122,6 +127,8 @@ New `#[tokio::test]`s default to `current_thread`; use
 - `architecture/security.md` — sandbox profiles and containment, command
   classification, and the deterministic security-scanning signals that the
   permission tiering consumes
+- `architecture/audit.md` — structural command execution metadata and audit
+  evidence boundaries
 - `.opencode/skills/bus-projection/SKILL.md` — the registries' bus/event side
 - `docs/security-semantics.md` — user-facing escalation semantics
 

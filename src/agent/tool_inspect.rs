@@ -334,12 +334,11 @@ mod tests {
     use super::*;
 
     /// `terminal` is `ToolCategory::ShellExec` but carries its payload as
-    /// `command` + `args`. Without composing them here, the permission layer
-    /// receives no command and silently skips both the destructive check and
-    /// the shell escalation signals — a bypass introduced when escalation
-    /// signals moved out of the tool and into the permission layer.
+    /// `command` + `args`. Compose it before the permission layer evaluates
+    /// operator rules and bounded risk hints. Command-substitution syntax by
+    /// itself remains advisory and cannot create an escalation requirement.
     #[test]
-    fn terminal_payload_reaches_the_permission_check() {
+    fn terminal_payload_is_composed_without_syntax_only_escalation() {
         let tc = ToolCall {
             name: "terminal".to_string().into(),
             arguments: serde_json::json!({
@@ -353,8 +352,8 @@ mod tests {
             Some("printf $(touch marker)")
         );
         assert!(
-            crate::tool::bash::policy::find_ask_pattern("printf $(touch marker)").is_some(),
-            "the composed payload must still carry an escalation signal"
+            crate::tool::bash::policy::find_ask_pattern("printf $(touch marker)").is_none(),
+            "shell syntax alone must not force escalation"
         );
     }
 

@@ -56,6 +56,14 @@ use crate::error::ToolError;
 /// a runaway command's worth of output.
 const TIMEOUT_OUTPUT_BYTES: usize = 4000;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawShellResultMetadata {
+    pub exit_code: Option<i32>,
+    pub output_truncated: bool,
+    pub cleanup: &'static str,
+    pub helper: &'static str,
+}
+
 /// Tail `data` to [`TIMEOUT_OUTPUT_BYTES`], marking that it was truncated.
 ///
 /// The tail is kept rather than the head: on a timeout the most recent
@@ -334,8 +342,10 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
-        self.execute_via_raw_shell_with_authorization(command, canonical_workdir, timeout, None)
-            .await
+        let (result, output, _, _) = self
+            .execute_via_raw_shell_with_authorization(command, canonical_workdir, timeout, None)
+            .await?;
+        Ok((result, output))
     }
 
     pub(crate) async fn execute_via_raw_shell_with_authorization(
@@ -344,7 +354,15 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
-    ) -> Result<(String, std::process::Output), ToolError> {
+    ) -> Result<
+        (
+            String,
+            std::process::Output,
+            crate::managed_process::SandboxExecutionOutcome,
+            RawShellResultMetadata,
+        ),
+        ToolError,
+    > {
         let cwd_owned = canonical_workdir
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok());
@@ -466,22 +484,27 @@ impl BashTool {
             crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
             | crate::managed_process::SandboxExecutionOutcome::Disabled => {}
         }
+        let mut output_truncated = managed.stdout.is_truncated() || managed.stderr.is_truncated();
         if !stdout.is_empty() {
-            result.push_str(&super::output::truncate_output(
+            let bounded = super::output::truncate_output(
                 &stdout,
                 self.max_output_lines,
                 self.max_output_bytes,
-            ));
+            );
+            output_truncated |= bounded != stdout;
+            result.push_str(&bounded);
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n--- stderr ---\n");
             }
-            result.push_str(&super::output::truncate_output(
+            let bounded = super::output::truncate_output(
                 &stderr,
                 self.max_output_lines,
                 self.max_output_bytes,
-            ));
+            );
+            output_truncated |= bounded != stderr;
+            result.push_str(&bounded);
         }
         if managed.stdout.is_truncated() || managed.stderr.is_truncated() {
             result.push_str("\n[output truncated by managed process limits]");
@@ -496,7 +519,24 @@ impl BashTool {
             managed.stdout.as_bytes(),
             managed.stderr.as_bytes(),
         );
-        Ok((result, output))
+        let metadata = RawShellResultMetadata {
+            exit_code: managed.exit_status.code(),
+            output_truncated,
+            cleanup: if managed.cleanup.errors.is_empty() {
+                "complete"
+            } else {
+                "errors"
+            },
+            helper: if matches!(
+                managed.sandbox,
+                crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
+            ) {
+                "codegg-sandbox-helper"
+            } else {
+                "none"
+            },
+        };
+        Ok((result, output, managed.sandbox, metadata))
     }
 
     /// Submit a planner-validated test argv to the daemon scheduler. The

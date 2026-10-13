@@ -151,6 +151,19 @@ operator policy and concrete risk signals remain on the normal approval path;
 neither risk review nor approval mode changes the filesystem/network guarantees
 actually obtained from the backend.
 
+Command audit events retain the accepted permission receipt/source and policy
+revision, requested sandbox profile, safe execution-route label, advisory risk
+level, and the obtained filesystem/network result. For raw shell, the filesystem
+value comes from the completed managed-process result (for example,
+`enforced:landlock:abi=4`); a timeout is marked as unavailable rather than
+reported as an enforcement result. Network remains explicitly `unrestricted`
+for Landlock-only launches. The event records the dispatched command digest and
+bounded labels, not command text, arguments, output, or generated script
+contents. Completed raw-shell events also record exit code, output-truncation
+status, cleanup status, and the fixed helper identity when the helper ran.
+Route provenance does not claim a complete trace of nested syscalls.
+See `architecture/audit.md` and the M003 validation record.
+
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
 

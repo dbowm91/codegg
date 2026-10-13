@@ -552,6 +552,17 @@ a constrained snapshot. Typed Git mutation executors also retain the accepted
 context while their own Git policy remains the capability authority. The
 context records authorization inputs; it does not claim every downstream
 effect was observed or contained.
+**M003 command outcome observability.** The command execution event correlates
+the permission receipt and decision source with the requested profile, safe
+route label, advisory risk level, and actual obtained filesystem/network
+outcome. Raw shell reports the completed managed-process enforcement result;
+timeouts are explicitly unavailable, and Landlock-only networking remains
+unrestricted. Completed raw-shell events also carry exit code,
+output-truncation status, cleanup status, and helper identity. The event stores
+structural digests and bounded labels, never command text, arguments, output,
+or generated script content. This is launch and route provenance, not a trace
+of every nested syscall; see
+`architecture/audit.md` and the M003 validation record.
 9. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
    through the dedicated bounded reviewer (`src/permission/reviewer.rs`,
    see `approval_reviewer.md`) when a reviewer model is configured and

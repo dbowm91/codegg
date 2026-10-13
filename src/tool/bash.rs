@@ -285,6 +285,10 @@ impl BashTool {
         family: &str,
         digest_hex: &str,
         outcome: &str,
+        route: Option<&str>,
+        filesystem_enforcement: Option<&str>,
+        risk_level: Option<&str>,
+        result_metadata: Option<crate::live_execution_audit::CommandExecutionResultMetadata>,
     ) {
         let Some(ctx) = audit_ctx else { return };
         let Some((audit, emitter)) = ctx.live_audit_hook() else {
@@ -295,11 +299,59 @@ impl BashTool {
             digest_hex,
             outcome,
         );
-        crate::live_execution_audit::emit_command_execute(
-            emitter, audit, digest_hex, family, outcome, &scope,
+        crate::live_execution_audit::emit_command_execute_with_result(
+            emitter,
+            audit,
+            digest_hex,
+            family,
+            outcome,
+            &scope,
+            ctx.execution_authorization.as_ref(),
+            route,
+            filesystem_enforcement,
+            ctx.execution_authorization.as_ref().map(|_| "unrestricted"),
+            risk_level,
+            result_metadata,
         )
         .await;
     }
+}
+
+fn sandbox_outcome_label(
+    outcome: &crate::managed_process::SandboxExecutionOutcome,
+    authorization: Option<&crate::tool::authorization::ExecutionAuthorizationContext>,
+) -> String {
+    match outcome {
+        crate::managed_process::SandboxExecutionOutcome::Disabled
+            if authorization.is_some_and(|auth| auth.snapshot.sandbox_profile().is_full_host()) =>
+        {
+            "full_host".into()
+        }
+        crate::managed_process::SandboxExecutionOutcome::Disabled => "disabled".into(),
+        crate::managed_process::SandboxExecutionOutcome::Enforced { backend, abi, .. } => {
+            format!(
+                "enforced:{backend}:abi={}",
+                abi.map_or_else(|| "none".into(), |v| v.to_string())
+            )
+        }
+        #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+        crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
+            "test_only_appcontainer_no_filesystem_claim".into()
+        }
+    }
+}
+
+fn intent_risk_label(
+    intent: Option<&crate::command_intent::CommandIntent>,
+) -> Option<&'static str> {
+    use crate::command_intent::RiskLevel;
+    Some(match intent?.risk.level {
+        RiskLevel::Safe => "safe",
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+        RiskLevel::Critical => "critical",
+    })
 }
 
 impl Default for BashTool {
@@ -536,7 +588,10 @@ impl BashTool {
             )
         };
 
-        tracing::info!("Running: {command}");
+        tracing::info!(
+            command_digest = %crate::live_execution_audit::command_digest_str(command),
+            "dispatching command"
+        );
         let start = std::time::Instant::now();
 
         // 3. route to scheduler or local supervised process.
@@ -623,8 +678,21 @@ impl BashTool {
                     if let Some((family, digest)) =
                         crate::live_execution_audit::audit_shape_for_executor(&outcome.executor)
                     {
-                        self.emit_command_audit(audit_ctx, family, &digest, terminal)
-                            .await;
+                        self.emit_command_audit(
+                            audit_ctx,
+                            family,
+                            &digest,
+                            terminal,
+                            Some(crate::live_execution_audit::route_label_for_executor(
+                                &outcome.executor,
+                            )),
+                            audit_ctx
+                                .and_then(|ctx| ctx.execution_authorization.as_ref())
+                                .map(|_| "full_host"),
+                            intent_risk_label(intent.as_ref()),
+                            None,
+                        )
+                        .await;
                     }
                     let exec_outcome =
                         ExecutionOutcome::identity(planned_backend, outcome.executor.clone());
@@ -661,6 +729,10 @@ impl BashTool {
                                 family,
                                 &digest,
                                 crate::live_execution_audit::OUTCOME_TIMEOUT,
+                                Some("active_route"),
+                                Some("full_host"),
+                                intent_risk_label(intent.as_ref()),
+                                None,
                             )
                             .await;
                         }
@@ -671,7 +743,7 @@ impl BashTool {
         } else {
             // OBSERVE MODE: run via raw shell (existing behavior)
             let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-            let (result, output) = match self
+            let (result, output, sandbox_outcome, result_metadata) = match self
                 .execute_via_raw_shell_with_authorization(
                     command,
                     canonical_workdir.as_deref(),
@@ -689,6 +761,10 @@ impl BashTool {
                         "shell",
                         &crate::live_execution_audit::command_digest_str(command),
                         crate::live_execution_audit::OUTCOME_TIMEOUT,
+                        Some("raw_shell"),
+                        Some("timeout_outcome_not_reported"),
+                        intent_risk_label(intent.as_ref()),
+                        None,
                     )
                     .await;
                     return Err(ToolError::Timeout(message));
@@ -707,6 +783,20 @@ impl BashTool {
                 "shell",
                 &crate::live_execution_audit::command_digest_str(command),
                 terminal,
+                Some("raw_shell"),
+                Some(&sandbox_outcome_label(
+                    &sandbox_outcome,
+                    audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
+                )),
+                intent_risk_label(intent.as_ref()),
+                Some(
+                    crate::live_execution_audit::CommandExecutionResultMetadata {
+                        exit_code: result_metadata.exit_code,
+                        output_truncated: result_metadata.output_truncated,
+                        cleanup: result_metadata.cleanup,
+                        helper: result_metadata.helper,
+                    },
+                ),
             )
             .await;
             let planned = plan_to_planned_backend(plan.as_ref().map(|p| &p.backend));

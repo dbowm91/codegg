@@ -159,8 +159,26 @@ fn audited_executor(
 #[tokio::test(flavor = "current_thread")]
 async fn bash_shell_success_emits_one_structural_event() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
-    let ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    let mut ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                Some("session-corr-bash-ok".into()),
+                Some("agent".into()),
+                Some("policy-r9".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "reviewer_allow",
+                Some("policy-r9".into()),
+            ),
+            command_preflight: None,
+        });
+    let tool = codegg::tool::bash::BashTool::new()
+        .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, &ctx.cwd);
     let out = tool
         .execute_structured(serde_json::json!({"command": "echo m002-ok"}), Some(ctx))
         .await
@@ -187,6 +205,63 @@ async fn bash_shell_success_emits_one_structural_event() {
         event.metadata.get("command.digest").map(String::as_str),
         Some(expected_digest.as_str())
     );
+    assert_eq!(
+        event.metadata.get("permission.source").map(String::as_str),
+        Some("reviewer_allow")
+    );
+    assert!(event.metadata.contains_key("permission.receipt_id"));
+    assert_eq!(
+        event
+            .metadata
+            .get("permission.policy_revision")
+            .map(String::as_str),
+        Some("policy-r9")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("sandbox.requested_profile")
+            .map(String::as_str),
+        Some("full_host")
+    );
+    assert_eq!(
+        event.metadata.get("execution.route").map(String::as_str),
+        Some("raw_shell")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.filesystem")
+            .map(String::as_str),
+        Some("full_host")
+    );
+    assert_eq!(
+        event.metadata.get("execution.network").map(String::as_str),
+        Some("unrestricted")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.exit_code")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.output_truncated")
+            .map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        event.metadata.get("execution.cleanup").map(String::as_str),
+        Some("complete")
+    );
+    assert_eq!(
+        event.metadata.get("execution.helper").map(String::as_str),
+        Some("none")
+    );
+    assert!(event.metadata.contains_key("execution.risk_level"));
     // Chain causation preserved from the trusted context.
     assert_eq!(event.session_id.as_deref(), Some("session-corr-bash-ok"));
     assert_eq!(event.turn_id.as_deref(), Some("turn-corr-bash-ok"));
@@ -195,6 +270,90 @@ async fn bash_shell_success_emits_one_structural_event() {
     let blob = metadata_blob(event);
     assert!(!blob.contains("m002-ok"), "command text leaked: {blob}");
     assert!(!blob.contains("echo"), "command text leaked: {blob}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_network() {
+    let pool = test_pool().await;
+    let root = tempfile::tempdir().expect("workspace tempdir");
+    let mut ctx = tool_ctx(&pool, "corr-bash-landlock", "inv-bash-landlock");
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                None,
+                Some("session-corr-bash-landlock".into()),
+                Some("agent".into()),
+                Some("policy-r10".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "operator_rule",
+                Some("policy-r10".into()),
+            ),
+            command_preflight: None,
+        });
+    let tool = codegg::tool::bash::BashTool::new().with_sandbox_profile(
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        root.path(),
+    );
+    let out = tool
+        .execute_structured(
+            serde_json::json!({"command": "printf landlock-ok", "workdir": root.path()}),
+            Some(ctx),
+        )
+        .await
+        .expect("confined bash succeeds");
+    assert!(out.output.contains("landlock-ok"), "{}", out.output);
+
+    let rows = events_for(
+        &pool,
+        AuditAction::CommandExecute.as_str(),
+        "corr-bash-landlock",
+    )
+    .await;
+    assert_eq!(rows.len(), 1, "one dispatch → one event");
+    let event = &rows[0];
+    assert_eq!(
+        event.metadata.get("permission.source").map(String::as_str),
+        Some("operator_rule")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("sandbox.requested_profile")
+            .map(String::as_str),
+        Some("workspace_write")
+    );
+    let filesystem = event
+        .metadata
+        .get("execution.filesystem")
+        .expect("actual filesystem outcome recorded");
+    assert!(
+        filesystem.starts_with("enforced:landlock:abi="),
+        "obtained filesystem outcome was {filesystem}"
+    );
+    assert_eq!(
+        event.metadata.get("execution.network").map(String::as_str),
+        Some("unrestricted")
+    );
+    assert_eq!(
+        event.metadata.get("execution.route").map(String::as_str),
+        Some("raw_shell")
+    );
+    assert_eq!(
+        event.metadata.get("execution.helper").map(String::as_str),
+        Some("codegg-sandbox-helper")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.exit_code")
+            .map(String::as_str),
+        Some("0")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -250,13 +409,15 @@ async fn bash_failure_timeout_and_denial_matrix() {
         Some("timeout")
     );
 
-    // Denied: blocked before any spawn → no execution event. The
-    // denial itself is an authorization surface, not a command event.
+    // Disabled tool: rejected before any spawn → no execution event.
+    // Do not use a dangerous-looking spelling as a synthetic deny rule;
+    // command syntax alone is advisory in the current policy.
     let ctx = tool_ctx(&pool, "corr-bash-denied", "inv-bash-denied");
-    let err = tool
-        .execute_structured(serde_json::json!({"command": "rm -rf /"}), Some(ctx))
+    let err = codegg::tool::bash::BashTool::new()
+        .with_deny_all()
+        .execute_structured(serde_json::json!({"command": "echo denied"}), Some(ctx))
         .await
-        .expect_err("blocked command must fail");
+        .expect_err("disabled tool must fail");
     assert!(!err.to_string().is_empty());
     let rows = events_for(
         &pool,
