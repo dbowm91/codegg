@@ -16,6 +16,7 @@ Related ADRs:
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md`
 - `plans/adrs/ADR-0016-cross-platform-sandbox-launch-authority.md`
 - `plans/adrs/ADR-0019-windows-sandbox-staged-workspace-projection.md` (accepted: bounded feasibility direction only; production not approved)
+- `plans/adrs/ADR-0023-windows-mxc-helper-diagnostic-corrective.md` (accepted: test-only C035 native helper, inherited handle, stage/identity and deny-event evidence recovery; no admission)
 - `plans/adrs/ADR-0022-windows-two-stage-native-launch-and-mxc-requalification.md` (accepted: test-only parallel C032/C033 successor feasibility and C034 comparison; no backend admission)
 - `plans/adrs/ADR-0020-windows-native-sandbox-after-appcontainer-feasibility.md` (accepted: bounded C019–C022 candidate comparison only; no production backend)
 
@@ -189,6 +190,12 @@ Decision `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` i
 
 **Current production truth:** Windows `SandboxRequest::Required` remains unavailable; no filesystem/network `Enforced`, no FullHost fallback, no original-host ACL mutation or unqualified automatic production sandbox. A green test-only workflow is not proof of security admission.
 
+## ADR-0023 MXC helper diagnostic corrective
+
+**C035 — ready, test-only evidence recovery:** `plans/implementation/windows-native-sandbox/035-mxc-native-helper-and-handle-boundary-corrective.md`; authority `plans/adrs/ADR-0023-windows-mxc-helper-diagnostic-corrective.md`. C033 closed negative: the copied Rust helper exited with `STATUS_DLL_INIT_FAILED`; no inherited-handle read ran, stage write was not independently checked, child token groups were missing, and the main/helper shared a denial capture output location. C035 confines follow-up to a minimal native ARM64 first-entry control, *working unsandboxed inherited-handle positive control* versus real MXC child observation, independent stage-write/child token evidence, and per-invocation block-mode denial telemetry. Windows 11 ARM64 native host is an operational gate; no loader fix is assumed.
+
+**Dependency and stop:** C033/C034 are closed historical evidence; ADR-0023 explicitly authorizes this **one diagnostic corrective**, not selection of MXC or reversal of C034 no-admission. C035 may close strict-positive test-only, negative, or blocked; it cannot by itself unblock C011/M004–M006 or C015–C018. Even a positive result requires a later independent security review and separate accepted *production* ADR, lifecycle/host-version/cancellation/concurrency and network qualification. Windows `SandboxRequest::Required` remains unavailable/fail-closed with no filesystem/network `Enforced`. Do not mutate original host ACLs or admit privileged broker/guest C030/C031.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
@@ -262,6 +269,7 @@ Codegg on a documented Windows version supports constrained local tool execution
 | C032 | closed (negative bounded feasibility) | `plans/implementation/windows-native-sandbox/032-two-stage-dedicated-principal-read-confinement-feasibility.md` | `plans/closure/windows-native-sandbox/032-status.md` | Run `38405423203`, SHA `cd4bc1e2`: inner child timed out before entry; no read-denial result. |
 | C033 | closed (negative bounded feasibility) | `plans/implementation/windows-native-sandbox/033-mxc-denial-telemetry-and-toolchain-requalification.md` | `plans/closure/windows-native-sandbox/033-status.md` | Run `38404451372`, SHA `ff0443ca`: 13 block-mode denial events; native helper/handle requirement failed. |
 | C034 | closed — no admission | `plans/implementation/windows-native-sandbox/034-independent-successor-comparison-and-capability-decision.md` | `plans/closure/windows-native-sandbox/034-status.md` | C032/C033 comparison selected no production candidate; Windows constrained execution stays unavailable. |
+| C035 | ready (test-only corrective; Windows 11 ARM64 host operational gate) | `plans/implementation/windows-native-sandbox/035-mxc-native-helper-and-handle-boundary-corrective.md` | — | ADR-0023 accepted for bounded evidence recovery only; C033 helper exited 0xC0000142, inherited handle unmeasured, stage/identity partial, capture attribution ambiguous; no production admission |
 | C030 | blocked (terminal — broker unselected) | `plans/implementation/windows-native-sandbox/030-consented-privileged-broker-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and consented isolated Windows VM |
 | C031 | blocked (terminal — guest unselected) | `plans/implementation/windows-native-sandbox/031-windows-guest-feasibility.md` | — | Requires new explicit architecture decision, fresh qualified evidence, and supported isolated virtualization host |
 | C015 | blocked | `plans/implementation/windows-native-sandbox/015-bounded-snapshot-materialization-and-input-manifest.md` | — | C014 closed negative; requires an accepted successor architecture decision and a newly qualified strict-positive feasibility gate |
