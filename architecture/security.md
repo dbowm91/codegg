@@ -89,8 +89,8 @@ Linux enforcement uses the maintained `landlock` crate.
   running binary (inherited env/PATH/cwd cannot select it)
 - Parent serializes a bounded `SandboxLaunchSpec` to an owner-only
   ephemeral file in the system temp directory
-- Helper adds every Landlock rule, requires `FullyEnforced` +
-  `no_new_privs`, writes a versioned typed status frame to a private
+- Helper adds every Landlock rule, requires ABI 3+ and `no_new_privs`, writes
+  a versioned typed status frame to a private
   pipe
 - Helper marks the status writer close-on-exec before exec'ing the
   target
@@ -181,25 +181,22 @@ uses the requested cwd for its drive entry, and supplies `LOCALAPPDATA`, `TEMP`,
 and `TMP` from the AppContainer package-local profile instead of the host user's
 profile paths. Its disposable-root fixture can add an AppContainer ACE after
 journaling the exact original and expected descriptors, then restore only when
-path identity and the expected descriptor still match. It returns a distinct
-`TestOnlyAppContainer` result and never `Enforced`; release builds fail
-compilation if this feature is enabled. The fixture does not establish
-production journal protection, existing-workspace authority, adversarial path
-safety, or backend availability. The test-only lease rejects a deny root that
-already contains an entry before child creation: root-only DACL leasing allowed
-a child to read a synthetic denied file through its direct path, a junction, and
-a hardlink in hosted run `38220136385`. The populated-root preflight and
-separate empty-root fixtures passed exact-SHA Windows workflow `38223080719`,
-but the path-based check is not qualified against replacement races. This
-fail-closed restriction is not a production capability or complete existing-tree
-policy. See
+path identity and the expected descriptor still match. The fixture does not
+establish production journal protection, existing-workspace authority,
+adversarial path safety, or backend availability. The test-only lease rejects a
+deny root that already contains an entry before child creation: root-only DACL
+leasing allowed a child to read a synthetic denied file through its direct
+path, a junction, and a hardlink in hosted run `38220136385`. The
+populated-root preflight and separate empty-root fixtures passed exact-SHA
+Windows workflow `38223080719`, but the path-based check is not qualified
+against replacement races. This fail-closed restriction is not a production
+capability or complete existing-tree policy. See
 `tests/windows_restricted_managed_process.rs`, `tests/windows_acl_lease.rs`, and
 `docs/windows-acl-leases.md`.
-- Any host with no registered backend: constrained Bash requests report
-  `FilesystemEnforcement::Unavailable` and fail before process creation
-  (never `FullHost` or an uncontained fallback). Python's separately
-  declared `Preferred` capability profile may still use its policy-based
-  portable mode; it does not claim OS filesystem enforcement.
+- Any host with no registered backend: constrained requests report
+  `FilesystemEnforcement::Unavailable` and are refused before launching
+  constrained Bash or Python (never `FullHost`). Portable post-execution
+  snapshots are defense in depth, not a substitute for OS containment.
 
 `SandboxLaunchOutcome::Enforced` carries `guarantees` and `limits` alongside
 the backend id. Those lists are the honest boundary of each mechanism and
@@ -208,7 +205,7 @@ read as stronger than it is:
 
 | Backend | Guarantees | Limits |
 |---|---|---|
-| landlock | deny-first allowlist, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
+| landlock | deny-first allowlist, ABI 3+ write and truncate rights, ABI 2+ refer rights, `no_new_privs` privilege drop, inherited across `exec` | no network isolation; pre-open fds remain usable; filesystem permissions still apply |
 | seatbelt | writes confined to workspace + scratch, credential paths denied, inherited across `exec` | no network isolation; **no `no_new_privs` equivalent**, so a setuid binary in an allowed read root may regain privilege; pre-open fds remain usable; Apple Events / Launch Services are a cross-process channel; reads are broadly allowed — containment is write-confined, not read-allowlisted |
 
 **Seatbelt (`src/security/sandbox/seatbelt.rs`).** `sandbox_init` accepts an
@@ -227,19 +224,23 @@ The `sandbox_init` FFI is `unsafe` and the root library denies
 `seatbelt::install_apply_hook` at startup. An uninstalled hook is a hard
 error, never a fallback to an uncontained exec.
 
-**Tool compatibility is a deliberate trade-off, not an oversight.** A
-deny-first allowlist exposing only the workspace plus a few library
-directories is nominally stronger and practically useless: `git` cannot read
-`/etc/gitconfig`, `cargo` cannot read `~/.cargo`, `gh` cannot read
-`~/.config/gh`, and nothing can resolve a hostname without `/etc/resolv.conf`.
-So `policy.rs` grants read to the system and tool-cache locations real
-tooling needs and confines **writes** — the operation that damages a host —
-to the workspace plus scratch space, while denying credential material
-(including CodeGG's own store) on every backend.
+`policy.rs` grants read access to system runtimes and selected read-only Rust
+toolchain inputs. It does not allow broad `~/.config`, cache, Cargo, or
+Rustup ancestors. Landlock grants are split around denied descendants, so a
+workspace or tool-root allowance cannot re-grant a nested credential. A
+missing denied child is preserved relative to its nearest existing parent.
+On Seatbelt, credential read/write denials are emitted after workspace write
+re-allow rules because SBPL evaluation is order-sensitive.
 
-Every path is canonicalized before it reaches a policy: Seatbelt matches
-`subpath` against the *resolved* path, so an allowance naming `/tmp` does not
-cover `/private/tmp` on macOS.
+Persistent writes are restricted to approved workspace roots and stateless
+device nodes. Each constrained managed process receives a collision-resistant
+0700 `TMPDIR`, added as its own read/write root and removed after the process
+tree is reaped. Python's temporary script is held in its own private run
+directory. Shared `/tmp` and global HOME caches are not writable grants.
+Existing denied regular files with hardlink aliases cause the required launch
+to fail because path-based backends cannot distinguish the aliases. As before,
+paths are canonicalized so Seatbelt matches resolved paths such as
+`/private/tmp` correctly.
 
 **CANONICAL_PATHS_CACHE:** Static cache with 300s TTL and 100-entry
 cap (`sandbox.rs:568`-`:573`: `CACHE_TTL = 300s`, `MAX_CACHE_ENTRIES = 100`).
@@ -497,8 +498,11 @@ fallback_to_native = true  # only for mcp backend
    Enforced` carries the backend id plus `guarantees`/`limits`. Seatbelt
    cannot claim Landlock's `no_new_privs` drop, and does not. A backend with
    an empty `limits` list fails `tests/sandbox_containment.rs`.
-8. **Landlock ABI V1 minimum.** The helper requires `FullyEnforced` +
-   `no_new_privs`; partial enforcement is rejected.
+8. **Landlock ABI V3 minimum.** The helper hard-requires write/truncate
+   rights from ABI 3 and refer rights from ABI 2, then requests newer rights
+   best-effort. A partial status is accepted only when the effective ABI is
+   at least 3 and `no_new_privs` is set; older kernels fail before target
+   execution.
 9. **Local daemon endpoints are not principals.** Unix socket permissions and
    the Windows pipe DACL restrict transport admission; endpoint names do not
    authorize CoreFrame requests. The Windows pipe uses an explicit protected

@@ -375,7 +375,7 @@ fn capability_reports_a_reason_on_every_host() {
 }
 
 #[test]
-fn unsupported_host_takes_explicit_unavailable_path() {
+fn unsupported_host_takes_an_explicit_unavailable_path() {
     use codegg::tool::bash::BashTool;
 
     let dir = tempfile::tempdir().unwrap();
@@ -398,24 +398,22 @@ fn unsupported_host_takes_explicit_unavailable_path() {
             );
         }
         SandboxCapability::Unavailable { reason } => {
-            // The unavailable path must be explicit and self-reporting...
+            // The unavailable path must be explicit and fail-closed...
             assert_eq!(
                 path,
-                SandboxExecutionPath::DegradedUncontained {
+                SandboxExecutionPath::Unavailable {
                     reason: reason.clone()
                 }
             );
-            assert!(path.describe().contains("UNCONTAINED"));
+            assert!(path.describe().contains("unavailable"));
             assert!(path.describe().contains(&reason));
             // ...but it must never claim to be the explicit FullHost path.
             assert_ne!(path, SandboxExecutionPath::Unconstrained);
             assert!(!path.describe().contains("explicit FullHost"));
 
-            // The enforcement descriptor stays constrained-unavailable and
-            // never launders the request into FullHost.
-            let enforcement = codegg::security::sandbox::resolve_sandbox_enforcement(
-                SandboxProfile::WorkspaceWrite,
-            );
+            // The enforcement descriptor does not launder a constrained
+            // request into FullHost.
+            let enforcement = tool.sandbox_enforcement(SandboxProfile::WorkspaceWrite);
             assert!(!enforcement.is_full_host());
             assert!(!enforcement.is_enforced());
             assert!(matches!(
