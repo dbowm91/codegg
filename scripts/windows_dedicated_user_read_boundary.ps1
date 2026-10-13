@@ -246,7 +246,7 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
     $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`""
     $commandLine = "`"$powerShell`" $arguments"
     $normal = Start-TestChild -Mode normal -User $account -Password $password -Token ([IntPtr]::Zero) `
-        -Exe $powerShell -Command $commandLine -Directory $systemRoot
+        -Exe $powerShell -Command $commandLine -Directory $stage
     if (-not $normal.created) { throw "Normal dedicated-account baseline could not launch: Win32 $($normal.win32_error)" }
     if (-not $normal.result -or $normal.result.token_user -ne $accountSid -or
         $normal.result.broad_direct -ne 'allowed' -or $normal.result.private_control -notlike 'denied:*') {
@@ -280,9 +280,9 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         if ($sidPointer -ne [IntPtr]::Zero) { [void][C024Native]::LocalFree($sidPointer) }
     }
     $writeRestricted = Start-TestChild -Mode write-restricted -User $account -Password $null -Token $writeRestrictedToken `
-        -Exe $powerShell -Command $commandLine -Directory $systemRoot
+        -Exe $powerShell -Command $commandLine -Directory $stage
     $restricted = Start-TestChild -Mode restricted -User $account -Password $null -Token $restrictedToken `
-        -Exe $powerShell -Command $commandLine -Directory $systemRoot
+        -Exe $powerShell -Command $commandLine -Directory $stage
     $broadAfter = Get-SddlFingerprint $broadRoot
     $privateAfter = Get-SddlFingerprint $privateRoot
     $secretHashAfter = (Get-FileHash -LiteralPath $broadSecret -Algorithm SHA256).Hash
