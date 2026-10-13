@@ -1,6 +1,8 @@
 # Agent Tool Runtime Reconciliation Roadmap
 
-Status: active — M001–M004 closed
+Status: historically M001–M004 closed; post-closure corrective C001–C003 open
+
+Current successor authority: `plans/subsystems/agent-tool-runtime-reconciliation-post-closure-corrective-addendum.md`. The original M001–M004 implementation and closure records remain historical evidence, **not** strict integration acceptance. The 2026-10-13 post-closure audit found an outer batch retry hazard for non-idempotent MCP calls, nested delegation registration after resolved surface construction, and a missing inherited effect-envelope check at broker admission. The successor C001/C002/C003 campaign owns the fixes, executable proofs, CI guards and main-branch qualification; do not mark this line merge-ready merely because the historical milestones are closed.
 
 Research baseline: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (main, 2026-10-13)
 
