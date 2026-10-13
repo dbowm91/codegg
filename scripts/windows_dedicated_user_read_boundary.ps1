@@ -78,7 +78,7 @@ public static class C024Native {
     [DllImport("advapi32.dll", SetLastError = true)]
     public static extern bool CreateProcessAsUserW(IntPtr token, string application,
         StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes,
-        bool inheritHandles, uint creationFlags, IntPtr environment, string currentDirectory,
+        bool inheritHandles, uint creationFlags, IntPtr environment, IntPtr currentDirectory,
         ref C024StartupInfo startup, out C024ProcessInformation processInformation);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
@@ -152,8 +152,8 @@ function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [In
             $line, 0x00000004, [IntPtr]::Zero, $Directory, [ref]$startup, [ref]$pi)
     } else {
         $created = [C024Native]::CreateProcessAsUserW($Token, $Exe, $line, [IntPtr]::Zero,
-            [IntPtr]::Zero, $false, 0x00000004 -bor 0x00000400, [IntPtr]::Zero,
-            $Directory, [ref]$startup, [ref]$pi)
+            [IntPtr]::Zero, $false, 0x00000004, [IntPtr]::Zero,
+            [IntPtr]::Zero, [ref]$startup, [ref]$pi)
     }
     if (-not $created) {
         return [ordered]@{ created = $false; win32_error = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); exit_code = $null; result = $null }
