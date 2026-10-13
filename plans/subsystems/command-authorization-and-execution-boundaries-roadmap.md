@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active (planning; ADR-0024 accepted; M001 C001/C002 closed, C003 active; M002/M003 dependency-blocked)
+Status: active (planning; ADR-0024 accepted; M001 C001–C003 closed, parent M001 closing; M002/M003 dependency-blocked)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -50,8 +50,8 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 - **M001 C001** `plans/implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md`: **closed** at `plans/closure/command-authorization-and-execution-boundaries/004-status.md`. Specific configured rules beat fallbacks; current Deny is evaluated before saved Allow; complex shell and wrapper/interpreter scopes cannot reuse a first-token family grant.
 - **M001 C002** `plans/implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md`: **closed** at `plans/closure/command-authorization-and-execution-boundaries/005-status.md`. Built-in syntax and risk preflight are advisory; explicit operator Deny, deterministic invalidity and human-shell behavior remain intact.
-- **M001 C003** `plans/implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md`: **active**. Qualify everyday developer workflow behavior with an exact-revision corpus, prompt counts, routing, obtained filesystem isolation, explicit Deny/Ask preservation and honest network limitations. Ordinary Bash syntax alone is not an escalation signal.
-- The parent M001 must not close until all three C001–C003 evidence records and the original inventory criteria pass. This sub-slicing **does not** promote C001–C003 into new Linux execution milestones or re-open historical Linux Git C001 closure. M002 cross-tool routing still depends on parent M001, not on Linux backend promotion.
+- **M001 C003** `plans/implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md`: **closed** at `plans/closure/command-authorization-and-execution-boundaries/006-status.md`. The 62-command authorized-policy corpus has zero Ask/Deny outcomes; baseline classifier signals, Landlock ABI 4 filesystem evidence, one-request routing, and unrestricted network/IPC limitations are recorded.
+- The parent M001 is in aggregate closure review: all three C001–C003 evidence records are closed; the full blocker inventory and original acceptance must still be checked before parent closure. This sub-slicing **does not** promote C001–C003 into new Linux execution milestones or re-open historical Linux Git C001 closure. M002 cross-tool routing still depends on parent M001, not on Linux backend promotion.
 
 ### Existing workstream dependencies
 
@@ -69,7 +69,7 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 | M001 | invariant | `implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md` | ready, sliced C001–C003 | Permission matching and narrow grants correct, built-in syntax signals advisory, routine developer work low-friction; explicit rules and FullHost warnings truthful |
 | M001 C001 | invariant | `implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md` | **closed** | Specific configured rules not shadowed; current Deny remains terminal; saved family grants do not cover compound shell |
 | M001 C002 | invariant | `implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md` | **closed** | No built-in syntax-only hard denial; risk classifier and command preflight advisory, explicit user policy intact |
-| M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | **active** | Everyday coding commands low-friction with zero unnecessary **syntax-caused** prompts inside authorized sandbox; exact native limitations recorded |
+| M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | **closed** | 62-command authorized-policy corpus has zero Ask/Deny; real Landlock ABI 4 filesystem evidence and network/IPC limitations recorded |
 | M002 | infrastructure | `implementation/command-authorization-and-execution-boundaries/002-approval-preflight-and-routing-convergence.md` | blocked: M001 | one approval precedence and execution ceiling across shell/typed tools; denied capability cannot be laundered |
 | M003 | invariant | `implementation/command-authorization-and-execution-boundaries/003-equivalent-effects-and-execution-observability.md` | blocked: M002 | equivalent forbidden effects cannot bypass actual enforcement by changing invocation surface; transparent unknown/unsupported |
 
@@ -106,4 +106,4 @@ No normative security claim relies on command-name/text patterns. Explicit Deny 
 
 ## 12. Status
 
-M001 remains incomplete; C001 and C002 are closed, and C003 is active. M002 is blocked on parent M001; M003 is blocked on M002. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim.
+M001 C001–C003 are closed and parent M001 is in aggregate closure review. M002 remains blocked on parent M001; M003 is blocked on M002. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim.
