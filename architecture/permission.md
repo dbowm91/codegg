@@ -148,6 +148,15 @@ current effective Deny cannot be hidden by `default = "allow"`, an `ask`
 fallback, `allow_all_bash`, or a saved Allow. This resolves one invocation
 string only: glob patterns are preferences and do not prevent an equivalent
 effect through a script, wrapper, or another tool.
+
+When a workspace and action are already authorized, routine development
+commands do not receive an additional Ask solely for quotes, shell wrappers,
+interpreter flags, environment assignments, pipes, or substitutions. Explicit
+`ask`/`deny` rules, meaningful risk signals, and a missing required sandbox
+still follow their normal review or denial paths. Interactive, Automatic, and
+Yolo change how an Ask is resolved; they do not widen the captured execution
+scope. A FullHost request has host authority and must not be described as
+protected by command-pattern review.
 Operator-selected `bash_deny_patterns` are best-effort invocation filters; they
 are not kernel enforcement. Built-in command risk classification may request
 review, but ordinary wrappers, quotes, expansions, and pipelines do not prompt

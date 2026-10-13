@@ -145,6 +145,13 @@ src/tool/
 └── ...
 ```
 
+For commands issued inside an already-authorized workspace/action, ordinary
+shell grammar and language-runner syntax do not create a second approval by
+themselves. Explicit operator rules and concrete risk findings still feed the
+existing authorization route. A requested sandbox is reported according to the
+backend actually obtained; Landlock-only Linux runs do not restrict network or
+Unix IPC. The human-owned `!` shell keeps its separate confirmation policy.
+
 ## Mutation Surface and Edit Checkpoints
 
 The durable restorable edit surface is the native file-mutating tool

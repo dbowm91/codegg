@@ -144,6 +144,13 @@ limits remain unavailable until their ADR and native evidence gates close.
 The existing Landlock-only default and unrestricted network behavior are
 unchanged.
 
+Ordinary command syntax is not an additional authority boundary: once the
+workspace and requested action are authorized, quotes, wrappers, environment
+assignments, pipes, and substitutions alone do not trigger review. Explicit
+operator policy and concrete risk signals remain on the normal approval path;
+neither risk review nor approval mode changes the filesystem/network guarantees
+actually obtained from the backend.
+
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
 

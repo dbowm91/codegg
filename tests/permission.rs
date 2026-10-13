@@ -216,6 +216,144 @@ async fn explicit_configured_deny_cannot_be_bypassed_by_saved_broad_allow() {
 }
 
 #[tokio::test]
+async fn authorized_workspace_development_corpus_has_no_syntax_only_asks() {
+    // This is a policy fixture, not an execution test. The explicit Bash
+    // Allow represents an already-authorized workspace/action; each command
+    // is checked through the same permission classifier without spawning it.
+    let config = Config {
+        permission: Some(PermissionConfig {
+            bash: Some(PermissionRule::Action("allow".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None);
+    let commands = [
+        // Rust discovery, format, build, test, and lint.
+        "cargo metadata --no-deps",
+        "cargo fmt --all -- --check",
+        "cargo check",
+        "cargo check --workspace --all-targets",
+        "cargo build",
+        "cargo build --release",
+        "cargo test",
+        "cargo test -p codegg-core",
+        "cargo test --workspace",
+        "cargo clippy --workspace -- -D warnings",
+        "rustc --version",
+        // Python and common Python runners.
+        "python --version",
+        "python3 --version",
+        "python -m pytest",
+        "python3 -m pytest tests/",
+        "uv run pytest",
+        "uv run pytest -q",
+        "ruff check .",
+        "ruff format --check .",
+        "mypy src",
+        "python -c 'print(1)'",
+        // JavaScript, TypeScript, Go, and generic task runners.
+        "npm test",
+        "npm run lint",
+        "pnpm test",
+        "pnpm lint",
+        "yarn test",
+        "yarn lint",
+        "go test ./...",
+        "go test -race ./...",
+        "make test",
+        "just test",
+        "cmake --build build",
+        // Workspace inspection and ordinary local maintenance.
+        "pwd",
+        "ls -la",
+        "rg -n 'TODO' src",
+        "find . -name '*.rs'",
+        "cat README.md",
+        "head -n 20 Cargo.toml",
+        "mkdir -p target/tmp",
+        "rm -rf target/tmp",
+        "touch src/example.rs",
+        "sed -n '1,20p' src/lib.rs",
+        "git diff --check",
+        // Routine local Git and shell composition.
+        "git status --short",
+        "git diff",
+        "git log --oneline -5",
+        "git add src/example.rs",
+        "git commit -m 'local change'",
+        "git switch feature/local-work",
+        "git stash push -m local",
+        "git merge feature/local-work",
+        "env RUSTFLAGS=-Dwarnings cargo test -p codegg-core",
+        "bash -c 'cargo check'",
+        "sh -c 'python -m pytest'",
+        "echo \"$(pwd)\"",
+        "cargo test 2>&1 | tee target/test.log",
+        "printf '%s\\n' 'check' && cargo check",
+        "git status && git diff --check",
+        "python -c 'print(1)' && cargo check",
+        "cargo test; cargo fmt --all -- --check",
+        "npm test && git status --short",
+        "go test ./... 2>&1 | tee target/go-test.log",
+    ];
+
+    assert!(
+        commands.len() >= 50,
+        "the qualification corpus must stay broad"
+    );
+    let mut allow_count = 0usize;
+    for command in commands {
+        let outcome = checker
+            .check_with_args("bash", None, Some(command), None)
+            .await;
+        match outcome {
+            PermissionResult::Allow => allow_count += 1,
+            PermissionResult::Ask(request) => {
+                panic!("routine command caused a policy Ask: {command}: {request:?}");
+            }
+            PermissionResult::Deny => {
+                panic!("routine command was denied: {command}");
+            }
+        }
+    }
+    assert_eq!(allow_count, commands.len());
+}
+
+#[tokio::test]
+async fn low_friction_corpus_keeps_risk_review_and_explicit_deny() {
+    let checker = PermissionChecker::new(None, None);
+
+    // A concrete destructive target and authority escalation still produce
+    // review; this only checks the decision and never executes either command.
+    for command in ["rm -rf /", "sudo apt-get install package"] {
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some(command), None)
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    // An operator-selected text restriction remains a terminal invocation Deny.
+    let config = Config {
+        permission: Some(PermissionConfig {
+            default: Some("allow".to_string()),
+            bash_deny_patterns: Some(vec!["git push*".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None);
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git push origin main"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
 async fn current_tool_deny_cannot_be_bypassed_by_saved_allow() {
     let config = Config {
         permission: Some(PermissionConfig {
