@@ -84,69 +84,126 @@ pub async fn coordinate_research(
         });
     };
 
-    let mut reports = Vec::new();
-    for task in plan.tasks.iter().take(runtime::MAX_CHILD_TASKS) {
-        let task_id = pool
-            .task_store()
-            .lock()
-            .await
-            .create_task(
-                format!("research evidence: {}", task.id),
-                child_prompt(task),
-                "general".into(),
-                Some(session_id.into()),
-                vec![
-                    "apply_patch".into(),
-                    "write_file".into(),
-                    "edit".into(),
-                    "task".into(),
-                ],
-                vec![workspace.to_string_lossy().into_owned()],
-            )
-            .await;
-        let request = SubAgentRequest {
-            task_id,
-            run_id: None,
-            prompt: child_prompt(task),
-            agent: "general".into(),
-            parent_id: Some(session_id.into()),
-            parent_run_id: None,
-            denied_tools: vec![
+    // Evidence children are independent read-only gathers over disjoint
+    // scopes, so they are fanned out concurrently instead of run one after the
+    // other. Running them sequentially made coordination cost the *sum* of the
+    // children: with `MAX_CHILD_TASKS` children each allowed the full
+    // `MAX_CHILD_TIMEOUT`, a turn could sit silent for three times that before
+    // the agent loop even started, which read as "research is broken" rather
+    // than "research is working". Fanned out, coordination costs the *slowest*
+    // child instead, and all children are visible at once because the worker
+    // publishes `SubagentStarted`/`SubagentProgress` for each.
+    //
+    // Each child keeps its own `MAX_CHILD_TIMEOUT` budget and still contributes
+    // exactly one report, so a hung or failing child degrades to a failed
+    // report instead of stalling the others. Results come back in plan order,
+    // so ledger aggregation stays deterministic and identical to the previous
+    // sequential behavior.
+    let pool = Arc::clone(pool);
+    let children: Vec<_> = plan
+        .tasks
+        .iter()
+        .take(runtime::MAX_CHILD_TASKS)
+        .map(|task| {
+            let pool = Arc::clone(&pool);
+            let session_id = session_id.to_string();
+            let workspace = workspace.to_path_buf();
+            let parent_model = parent_model.to_string();
+            let child = async move {
+                run_research_child(&pool, task, &session_id, &workspace, &parent_model).await
+            };
+            move || child
+        })
+        .collect();
+    let reports = fan_out_children(children).await;
+    Ok(aggregate_research(plan, reports))
+}
+
+/// Run bounded, independent child jobs concurrently and collect one result per
+/// job in submission order.
+///
+/// This is the seam that keeps coordination cost at the *slowest* child rather
+/// than the sum of all of them. It deliberately does not sequence the jobs and
+/// does not apply a shared deadline: each child owns its own timeout, so a hung
+/// child degrades to a failed report instead of stalling its siblings, and the
+/// returned vector stays dense and ordered for deterministic aggregation.
+async fn fan_out_children<T, F, Fut>(jobs: Vec<F>) -> Vec<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    futures_util::future::join_all(jobs.into_iter().map(|job| job())).await
+}
+
+/// Dispatch one bounded evidence child and convert any outcome — success,
+/// malformed report, dispatch error, or timeout — into exactly one report so
+/// the caller can fan out siblings without one child stalling the others.
+async fn run_research_child(
+    pool: &SubAgentPool,
+    task: &runtime::ResearchTask,
+    session_id: &str,
+    workspace: &std::path::Path,
+    parent_model: &str,
+) -> ResearchEvidenceReport {
+    let task_id = pool
+        .task_store()
+        .lock()
+        .await
+        .create_task(
+            format!("research evidence: {}", task.id),
+            child_prompt(task),
+            "general".into(),
+            Some(session_id.into()),
+            vec![
                 "apply_patch".into(),
                 "write_file".into(),
                 "edit".into(),
                 "task".into(),
             ],
-            allowed_paths: vec![workspace.to_string_lossy().into_owned()],
-            description: format!("research evidence: {}", task.id),
-            depth: 1,
-            max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
-            parent_model: Some(parent_model.into()),
-            workspace_root: Some(workspace.to_path_buf()),
-            workspace_locks: None,
-            // M005: research children inherit the parent WorkspaceWrite
-            // ceiling by default; read-only evidence work narrows further
-            // in the worker.
-            parent_sandbox_profile: None,
-            sandbox_profile: None,
-        };
-        let result =
-            tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;
-        match result {
-            Ok(Ok(SubAgentResult {
-                success: true,
-                result,
-                ..
-            })) => match parse_evidence_report(&result, &task.id) {
-                Ok(report) => reports.push(report),
-                Err(error) => reports.push(failed_report(&task.id, error)),
-            },
-            Ok(Ok(SubAgentResult { result, .. })) => reports.push(failed_report(&task.id, result)),
-            Ok(Err(error)) => reports.push(failed_report(&task.id, error)),
-            Err(_) => reports.push(failed_report(&task.id, "child timeout".into())),
-        }
+            vec![workspace.to_string_lossy().into_owned()],
+        )
+        .await;
+    let request = SubAgentRequest {
+        task_id,
+        run_id: None,
+        prompt: child_prompt(task),
+        agent: "general".into(),
+        parent_id: Some(session_id.into()),
+        parent_run_id: None,
+        denied_tools: vec![
+            "apply_patch".into(),
+            "write_file".into(),
+            "edit".into(),
+            "task".into(),
+        ],
+        allowed_paths: vec![workspace.to_string_lossy().into_owned()],
+        description: format!("research evidence: {}", task.id),
+        depth: 1,
+        max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
+        parent_model: Some(parent_model.into()),
+        workspace_root: Some(workspace.to_path_buf()),
+        workspace_locks: None,
+        // M005: research children inherit the parent WorkspaceWrite
+        // ceiling by default; read-only evidence work narrows further
+        // in the worker.
+        parent_sandbox_profile: None,
+        sandbox_profile: None,
+    };
+    let result =
+        tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;
+    match result {
+        Ok(Ok(SubAgentResult {
+            success: true,
+            result,
+            ..
+        })) => match parse_evidence_report(&result, &task.id) {
+            Ok(report) => report,
+            Err(error) => failed_report(&task.id, error),
+        },
+        Ok(Ok(SubAgentResult { result, .. })) => failed_report(&task.id, result),
+        Ok(Err(error)) => failed_report(&task.id, error),
+        Err(_) => failed_report(&task.id, "child timeout".into()),
     }
-    Ok(aggregate_research(plan, reports))
 }
 
 fn child_prompt(task: &runtime::ResearchTask) -> String {
@@ -393,5 +450,110 @@ mod tests {
             "conflicts": [], "unresolved_questions": [], "limitations": []
         });
         assert!(finalize(&prepared, &terminal(&report.to_string())).is_err());
+    }
+
+    // --- research child fan-out ------------------------------------------------
+    //
+    // The stall this guards against: children used to be dispatched in a
+    // sequential `for` loop that blocked on `send_and_wait` before starting the
+    // next, so `MAX_CHILD_TASKS` children each allowed the full
+    // `MAX_CHILD_TIMEOUT` stalled the turn for the *sum* of them before the
+    // agent loop could begin. These tests pin the fan-out contract that
+    // replaced it.
+
+    #[tokio::test]
+    async fn fan_out_children_is_bounded_by_the_slowest_child_not_their_sum() {
+        let each = Duration::from_millis(150);
+        let jobs: Vec<_> = (0..runtime::MAX_CHILD_TASKS)
+            .map(|i| {
+                move || async move {
+                    tokio::time::sleep(each).await;
+                    i
+                }
+            })
+            .collect();
+
+        let started = std::time::Instant::now();
+        let results = fan_out_children(jobs).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(results.len(), runtime::MAX_CHILD_TASKS);
+        // Concurrent: bounded by `each`. Sequential would be `each * n`
+        // (450ms for the default 3 children), so the 300ms ceiling separates
+        // the two implementations with room for scheduler jitter.
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "fan-out took {elapsed:?}; children appear to have run sequentially \
+             (expected under 300ms for {} concurrent children)",
+            runtime::MAX_CHILD_TASKS
+        );
+    }
+
+    #[tokio::test]
+    async fn fan_out_children_preserves_plan_order_despite_reversed_completion() {
+        // Descending delays make the *last* child finish first, so a result
+        // vector ordered by completion would come back reversed.
+        let delays = [
+            Duration::from_millis(150),
+            Duration::from_millis(60),
+            Duration::from_millis(10),
+        ];
+        let jobs: Vec<_> = delays
+            .iter()
+            .enumerate()
+            .map(|(i, delay)| {
+                let delay = *delay;
+                move || async move {
+                    tokio::time::sleep(delay).await;
+                    i
+                }
+            })
+            .collect();
+
+        assert_eq!(fan_out_children(jobs).await, vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_hung_child_does_not_stall_or_hide_its_siblings() {
+        // Mirrors the per-child `MAX_CHILD_TIMEOUT` contract: one child that
+        // outlives its own budget degrades to a failed report, while the
+        // siblings still return and still occupy their ordered slots.
+        let budget = Duration::from_millis(200);
+        let jobs: Vec<_> = [
+            (0u8, Duration::from_millis(10)),
+            (1u8, Duration::from_secs(30)),
+            (2u8, Duration::from_millis(10)),
+        ]
+        .into_iter()
+        .map(|(id, delay)| {
+            move || async move {
+                match tokio::time::timeout(budget, async move {
+                    tokio::time::sleep(delay).await;
+                    Ok(id)
+                })
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err("child timeout"),
+                }
+            }
+        })
+        .collect();
+
+        let started = std::time::Instant::now();
+        let results = fan_out_children(jobs).await;
+
+        assert_eq!(
+            results,
+            vec![Ok(0), Err("child timeout"), Ok(2)],
+            "a timed-out child must yield its own slot and leave siblings intact"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the hung child must not extend the fan-out beyond its own budget \
+             (took {:?}, budget {:?}, child sleep 30s)",
+            started.elapsed(),
+            budget
+        );
     }
 }

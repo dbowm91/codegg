@@ -226,6 +226,29 @@ or `MultiSource` (comparative/broad).
 `validate_report()` (line 199) enforces citation integrity and bounds
 before the parent accepts a child's output.
 
+### Child fan-out (`specialized_runtime.rs`)
+
+`coordinate_research()` dispatches the planned children to the sub-agent pool
+through the module's `fan_out_children()` helper, which runs them concurrently and
+collects results in plan order. Children are independent read-only gathers over
+disjoint scopes, so coordination cost is the *slowest* child rather than the sum
+of all of them. Each child keeps its own `MAX_CHILD_TIMEOUT` (120s) budget and
+yields exactly one `ResearchEvidenceReport`, so a hung or failing child degrades
+to a failed report instead of stalling its siblings or shortening the ledger.
+
+This matters because `coordinate_research()` is awaited inline while the turn is
+being prepared — before the agent loop spawns. Running children sequentially made
+a research turn able to sit silent for up to `MAX_CHILD_TASKS * MAX_CHILD_TIMEOUT`
+(6 minutes) with no agent output at all, which presented to the user as "research
+is broken" rather than "research is working". Concurrent fan-out bounds the same
+worst case at one `MAX_CHILD_TIMEOUT`, and the worker publishes
+`SubagentStarted`/`SubagentProgress` per child, so the TUI shows all children
+running at once.
+
+Determinism is preserved: results are returned in plan order, so ledger
+aggregation through `aggregate_research()` is identical to the previous
+sequential behavior.
+
 ## Trigger Heuristics (`triggers.rs`)
 
 `analyze_trigger()` (line 92) examines task descriptions for keywords to
