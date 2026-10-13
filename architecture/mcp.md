@@ -218,7 +218,13 @@ is not a user-facing option, and next actions are data only—CodeGG never
 auto-executes them. Retained provider hints map to the exact v0.4.1 inventory;
 unknown and retired explicit values fail before dispatch. The development
 pair gate is `scripts/test-eggsearch-pair.sh`; it launches the real pinned MCP
-process with credentials cleared and makes no provider search requests.
+process with an explicit private `search.mode = "off"` config and cleared
+credentials. Its native web and security wrapper calls assert tagged policy
+errors without issuing provider searches. It does not enforce OS-level network
+containment. Do not use eggsearch v0.4.1 `repo_search(include_local=true)` as
+an offline fixture: a C001 qualification attempt observed remote provider
+dispatch despite the reported local-only routing decision; that upstream
+behavior remains a release blocker until corrected and requalified.
 
 ### IDE Server (`ide_server.rs`)
 

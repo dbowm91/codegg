@@ -1,18 +1,24 @@
-//! Offline CodeGG-runtime + pinned eggsearch subprocess compatibility gate.
+//! Offline CodeGG native-wrapper + pinned eggsearch subprocess compatibility gate.
 //!
-//! Run through `scripts/test-eggsearch-pair.sh`; the ignored test is kept
-//! separate from routine workspace suites because it launches a real child.
+//! Run through `scripts/test-eggsearch-pair.sh`; the ignored test launches the
+//! immutable eggsearch child with a private config and workspace.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 use codegg::config::schema::{Config, EggsearchConfig, SearchBackendConfig, SearchConfig};
+use codegg::mcp::McpExposurePolicy;
 use codegg::search_backend::bootstrap::{
     bootstrap_search_runtime, EGGSEARCH_BUNDLED_COMPLETE_SURFACE, EGGSEARCH_WEBSEARCH_PROVIDER_IDS,
 };
 use codegg::search_backend::state;
-use serde_json::Value;
+use codegg::tool::security_search::SecuritySearchTool;
+use codegg::tool::websearch::WebSearchTool;
+use codegg::tool::Tool;
+use serde_json::{json, Value};
 
 const EXPECTED_VERSION: &str = "0.4.1";
 
@@ -26,23 +32,146 @@ fn exact_version_line(output: &str) -> Option<&str> {
     })
 }
 
-fn smoke_config(binary: String) -> Config {
+fn smoke_config(binary: String, private: &Path, observation: &Path, child_stderr: &Path) -> Config {
+    let config_path = private.join("config").join("eggsearch").join("config.toml");
+    let mut env = HashMap::new();
+    env.insert(
+        "HOME".to_string(),
+        private.join("home").to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_CONFIG_HOME".to_string(),
+        private.join("config").to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_DATA_HOME".to_string(),
+        private.join("data").to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "XDG_CACHE_HOME".to_string(),
+        private.join("cache").to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CODEGG_PAIR_CHILD_SENTINEL".to_string(),
+        "injected-by-codegg".to_string(),
+    );
+    env.insert(
+        "CODEGG_PAIR_ECHO_FILE".to_string(),
+        observation.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CODEGG_PAIR_STDERR_FILE".to_string(),
+        child_stderr.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CODEGG_EGGSEARCH_REAL_BIN".to_string(),
+        std::env::var("CODEGG_EGGSEARCH_REAL_BIN").expect("pair harness sets real binary"),
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        env.insert(
+            "APPDATA".to_string(),
+            private.join("appdata").to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "USERPROFILE".to_string(),
+            private.join("profile").to_string_lossy().into_owned(),
+        );
+    }
+
     Config {
         search: Some(SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
             fallback_to_builtin: Some(false),
             eggsearch: Some(EggsearchConfig {
                 command: Some(binary),
-                args: Some(vec!["mcp".to_string(), "stdio".to_string()]),
+                args: Some(vec![
+                    "--config".to_string(),
+                    config_path.to_string_lossy().into_owned(),
+                    "mcp".to_string(),
+                    "stdio".to_string(),
+                ]),
                 timeout_ms: Some(30_000),
                 provider_status_timeout_ms: Some(15_000),
-                env: Some(HashMap::new()),
+                env: Some(env),
                 ..Default::default()
             }),
             ..Default::default()
         }),
         ..Default::default()
     }
+}
+
+fn write_offline_config(path: &Path) {
+    let contents = "[search]\nmode = \"off\"\ndefault_max_results = 1\nmax_results_cap = 5\nmax_query_chars = 256\ntimeout_ms = 1000\ndefault_providers = [\"duckduckgo\"]\n\n[search.providers]\nduckduckgo = true\n\n[fetch]\nenabled = false\n";
+    std::fs::write(path, contents).expect("write private eggsearch offline config");
+}
+
+#[cfg(unix)]
+fn write_echo_launcher(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let contents = r##"#!/bin/sh
+case " $* " in
+  *" mcp stdio "*)
+    cd "$CODEGG_PAIR_WORKSPACE"
+    {
+      printf 'pid=%s\n' "$$"
+      printf 'cwd=%s\n' "$PWD"
+      printf 'home=%s\n' "${HOME-}"
+      printf 'xdg_config=%s\n' "${XDG_CONFIG_HOME-}"
+      printf 'xdg_data=%s\n' "${XDG_DATA_HOME-}"
+      printf 'xdg_cache=%s\n' "${XDG_CACHE_HOME-}"
+      printf 'child_sentinel=%s\n' "${CODEGG_PAIR_CHILD_SENTINEL-}"
+      printf 'parent_secret_present=%s\n' "${BRAVE_API_KEY+x}"
+      printf 'parent_proxy_present=%s\n' "${HTTP_PROXY+x}"
+      printf 'parent_sentinel_present=%s\n' "${CODEGG_PAIR_PARENT_SECRET_SENTINEL+x}"
+      printf 'config_arg=%s\n' "$2"
+    } > "$CODEGG_PAIR_ECHO_FILE"
+    ;;
+esac
+exec "$CODEGG_EGGSEARCH_REAL_BIN" "$@" 2>"$CODEGG_PAIR_STDERR_FILE"
+"##;
+    std::fs::write(path, contents).expect("write private eggsearch launcher");
+    let mut permissions = std::fs::metadata(path)
+        .expect("launcher metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(path, permissions).expect("make launcher executable");
+}
+
+/// Emergency process cleanup if an assertion unwinds before normal MCP shutdown.
+#[cfg(unix)]
+struct ChildKillGuard {
+    observation: PathBuf,
+    released: bool,
+}
+
+#[cfg(unix)]
+impl Drop for ChildKillGuard {
+    fn drop(&mut self) {
+        if self.released {
+            return;
+        }
+        if let Some(pid) = read_observation(&self.observation)
+            .get("pid")
+            .and_then(|pid| pid.parse::<u32>().ok())
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+    }
+}
+
+fn read_observation(path: &Path) -> HashMap<String, String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[tokio::test]
@@ -54,52 +183,120 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     );
     assert!(
         binary.is_absolute(),
-        "eggsearch binary path must be absolute"
+        "version_identity: binary path must be absolute"
     );
-    let binary = binary.canonicalize().expect("eggsearch binary must exist");
+    let binary = binary
+        .canonicalize()
+        .expect("version_identity: binary must exist");
     let version = Command::new(&binary)
         .arg("--version")
         .output()
-        .expect("exact pinned eggsearch binary must execute --version");
-    assert!(version.status.success(), "eggsearch --version failed");
+        .expect("version_identity: pinned eggsearch binary must execute --version");
+    assert!(
+        version.status.success(),
+        "version_identity: eggsearch --version failed"
+    );
     let version_stdout = String::from_utf8_lossy(&version.stdout);
-    let version_line = exact_version_line(&version_stdout)
-        .unwrap_or_else(|| panic!("expected eggsearch {EXPECTED_VERSION}, got {version_stdout:?}"));
+    let version_line = exact_version_line(&version_stdout).unwrap_or_else(|| {
+        panic!(
+            "version_identity: expected exact eggsearch {EXPECTED_VERSION}, got {version_stdout:?}"
+        )
+    });
 
-    let private = tempfile::tempdir().expect("private compatibility directory");
-    let home = private.path().join("home");
-    let config = home.join("config");
-    let workspace = home.join("workspace");
-    std::fs::create_dir_all(&config).expect("private config directory");
-    std::fs::create_dir_all(&workspace).expect("private workspace directory");
-    std::env::set_var("HOME", &home);
-    std::env::set_var("XDG_CONFIG_HOME", &config);
+    let private_temp =
+        tempfile::tempdir().expect("child_environment: private compatibility directory");
+    let keep_private = std::env::var_os("CODEGG_PAIR_KEEP_TEMP").is_some();
+    let private_path = if keep_private {
+        private_temp.keep()
+    } else {
+        private_temp.path().to_path_buf()
+    };
+    let home = private_path.join("home");
+    let config_root = private_path.join("config");
+    let eggsearch_config_dir = config_root.join("eggsearch");
+    let data = private_path.join("data");
+    let cache = private_path.join("cache");
+    let workspace = private_path.join("workspace");
+    let eggsearch_config = eggsearch_config_dir.join("config.toml");
+    let observation = private_path.join("child-environment.txt");
+    let child_stderr = private_path.join("child-stderr.txt");
+    for dir in [
+        &home,
+        &config_root,
+        &eggsearch_config_dir,
+        &data,
+        &cache,
+        &workspace,
+    ] {
+        std::fs::create_dir_all(dir).expect("child_environment: create private directory");
+    }
+    write_offline_config(&eggsearch_config);
+
+    #[cfg(unix)]
+    let command = {
+        let launcher = private_path.join("eggsearch-child-launcher.sh");
+        write_echo_launcher(&launcher);
+        launcher
+    };
+    #[cfg(not(unix))]
+    let command = binary.clone();
+
+    #[cfg(unix)]
+    let mut kill_guard = ChildKillGuard {
+        observation: observation.clone(),
+        released: false,
+    };
 
     let revision = std::env::var("CODEGG_REVISION").unwrap_or_else(|_| "unknown".to_string());
     let upstream_tag = std::env::var("CODEGG_EGGSEARCH_TAG")
         .unwrap_or_else(|_| "v0.4.1 (binary-supplied)".to_string());
     println!(
-        "pair_identity codegg_revision={revision} eggsearch_tag={upstream_tag} binary={} version={}",
+        "version_identity codegg_revision={revision} eggsearch_tag={upstream_tag} binary={} version={version_line}",
         binary.display(),
-        version_line
-    );
-    println!(
-        "pair_isolation home={} config={} workspace={} credentials=cleared network_requests=none",
-        home.display(),
-        config.display(),
-        workspace.display()
     );
 
-    let (runtime, report) =
-        bootstrap_search_runtime(&smoke_config(binary.to_string_lossy().into_owned())).await;
+    let mut config = smoke_config(
+        command.to_string_lossy().into_owned(),
+        &private_path,
+        &observation,
+        &child_stderr,
+    );
+    if let Some(egg) = config
+        .search
+        .as_mut()
+        .and_then(|search| search.eggsearch.as_mut())
+    {
+        let env = egg
+            .env
+            .as_mut()
+            .expect("test config has explicit child env");
+        env.insert(
+            "CODEGG_PAIR_WORKSPACE".to_string(),
+            workspace.to_string_lossy().into_owned(),
+        );
+    }
+    let (runtime, report) = bootstrap_search_runtime(&config).await;
+    let stderr = std::fs::read_to_string(&child_stderr).unwrap_or_default();
     assert!(
         report.connected,
-        "MCP connection failed: {:?}",
+        "mcp_initialize: {:?}; child_stderr={stderr:?}",
         report.connection_error
     );
-    assert_eq!(report.server_version.as_deref(), Some(EXPECTED_VERSION));
-    assert_eq!(report.server_version_compatible, Some(true));
-    assert_eq!(report.bundled_surface_complete, Some(true));
+    assert_eq!(
+        report.server_version.as_deref(),
+        Some(EXPECTED_VERSION),
+        "tool_schema: version"
+    );
+    assert_eq!(
+        report.server_version_compatible,
+        Some(true),
+        "tool_schema: compatibility"
+    );
+    assert_eq!(
+        report.bundled_surface_complete,
+        Some(true),
+        "tool_schema: complete surface"
+    );
     let mut tools = report.tools.clone();
     let mut expected_tools = EGGSEARCH_BUNDLED_COMPLETE_SURFACE
         .iter()
@@ -109,29 +306,55 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     expected_tools.sort();
     assert_eq!(
         tools, expected_tools,
-        "pinned ten-tool MCP inventory differs"
+        "tool_schema: pinned ten-tool inventory differs"
     );
 
-    let handle = state::mcp_service().expect("bootstrap installs one shared MCP session");
-    let raw = handle
+    let handle = runtime
+        .mcp()
+        .expect("mcp_initialize: runtime has one shared MCP session");
+    assert!(
+        state::mcp_service().is_some_and(|global| Arc::ptr_eq(&global, &handle)),
+        "mcp_initialize: runtime did not retain the bootstrap-owned MCP session"
+    );
+    {
+        let service = handle.read().await;
+        assert!(
+            service
+                .list_filtered_tools(&McpExposurePolicy::hide_all())
+                .is_empty(),
+            "tool_schema: raw MCP tools became model-visible"
+        );
+    }
+
+    let raw_status = handle
         .read()
         .await
-        .call_tool(
-            "eggsearch",
-            "provider_status",
-            serde_json::json!({"probe": false}),
-        )
+        .call_tool_structured("eggsearch", "provider_status", json!({"probe": false}))
         .await
-        .expect("provider_status(probe=false) must succeed");
-    let status: Value = serde_json::from_str(&raw).expect("provider_status returns JSON");
+        .expect("provider_status: probe=false must succeed");
+    assert!(
+        !raw_status.is_error,
+        "provider_status: upstream returned isError"
+    );
+    let status: Value = raw_status
+        .structured
+        .or_else(|| serde_json::from_str(&raw_status.text).ok())
+        .expect("provider_status: response must retain JSON");
     assert_eq!(
-        status.pointer("/probe/requested").and_then(Value::as_bool),
+        status.get("mode").and_then(Value::as_str),
+        Some("off"),
+        "child_environment: explicit private config was not loaded"
+    );
+    assert_eq!(
+        status
+            .pointer("/server_capabilities/generic_search")
+            .and_then(Value::as_bool),
         Some(false)
     );
     let providers = status
         .get("providers")
         .and_then(Value::as_array)
-        .expect("provider_status providers descriptor array");
+        .expect("provider_status: providers descriptor array");
     let provider_ids = providers
         .iter()
         .filter_map(|provider| provider.get("id").and_then(Value::as_str))
@@ -139,18 +362,303 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     for expected in EGGSEARCH_WEBSEARCH_PROVIDER_IDS {
         assert!(
             provider_ids.contains(expected),
-            "upstream lacks mapped provider {expected}"
+            "provider_status: upstream lacks mapped provider {expected}"
         );
     }
-    assert_eq!(report.provider_inventory_compatible, Some(true));
+    assert_eq!(
+        report.provider_inventory_compatible,
+        Some(true),
+        "provider_status: inventory mismatch"
+    );
+    println!("provider_status probe=false mode=off generic_search=false providers={} provider_contract=pass", EGGSEARCH_WEBSEARCH_PROVIDER_IDS.len());
+
+    let poison_config = private_path.join("config").join("poisoned-config.toml");
+    let poison_contents = std::fs::read_to_string(&eggsearch_config)
+        .expect("child_environment: read private config for negative control")
+        .replacen("mode = \"off\"", "mode = \"live\"", 1);
+    std::fs::write(&poison_config, poison_contents)
+        .expect("child_environment: write live-mode negative-control config");
+    let mut negative_control = codegg::mcp::McpService::new();
+    let mut negative_env = HashMap::new();
+    for (name, value) in [
+        ("HOME", home.as_path()),
+        ("XDG_CONFIG_HOME", config_root.as_path()),
+        ("XDG_DATA_HOME", data.as_path()),
+        ("XDG_CACHE_HOME", cache.as_path()),
+    ] {
+        negative_env.insert(name.to_string(), value.to_string_lossy().into_owned());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        negative_env.insert(
+            "APPDATA".to_string(),
+            private_path.join("appdata").to_string_lossy().into_owned(),
+        );
+        negative_env.insert(
+            "USERPROFILE".to_string(),
+            private_path.join("profile").to_string_lossy().into_owned(),
+        );
+    }
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        negative_control.connect_stdio(
+            "eggsearch-negative-control",
+            &binary.to_string_lossy(),
+            &[
+                "--config".to_string(),
+                poison_config.to_string_lossy().into_owned(),
+                "mcp".to_string(),
+                "stdio".to_string(),
+            ],
+            negative_env,
+            10_000,
+        ),
+    )
+    .await
+    .expect("mcp_initialize: negative-control child handshake timed out")
+    .expect("mcp_initialize: negative-control child should initialize");
+    let negative_tool_count = negative_control
+        .server_tools()
+        .get("eggsearch-negative-control")
+        .map(|tools| tools.len())
+        .unwrap_or_default();
+    let negative_status = negative_control
+        .call_tool_structured(
+            "eggsearch-negative-control",
+            "provider_status",
+            json!({"probe": false}),
+        )
+        .await
+        .expect("provider_status: negative control is read-only");
+    let negative_mode = negative_status
+        .structured
+        .or_else(|| serde_json::from_str(&negative_status.text).ok())
+        .and_then(|value| value.get("mode").and_then(Value::as_str).map(str::to_owned));
+    negative_control.shutdown_all().await;
+    assert_eq!(
+        negative_tool_count, 10,
+        "negative_control: handshake/tool inventory must pass"
+    );
+    assert_eq!(
+        negative_mode.as_deref(),
+        Some("live"),
+        "negative_control: intentionally poisoned config was not observed"
+    );
     println!(
-        "pair_contract initialize=pass tools=10 provider_status_probe=false mapped_provider_ids={} provider_contract=pass",
-        EGGSEARCH_WEBSEARCH_PROVIDER_IDS.len()
+        "negative_control handshake=pass tools=10 config_gate=fails strengthened_gate=would_fail"
     );
 
-    // No search call is issued: provider requests cannot be accepted as an
-    // offline gate because eggsearch may reject them before provider routing.
+    #[cfg(unix)]
+    {
+        let observed = read_observation(&observation);
+        assert_eq!(
+            observed.get("cwd"),
+            Some(&workspace.to_string_lossy().into_owned()),
+            "child_environment: launcher cwd was not private"
+        );
+        assert_eq!(
+            observed.get("home"),
+            Some(&home.to_string_lossy().into_owned()),
+            "child_environment: HOME was not injected"
+        );
+        assert_eq!(
+            observed.get("xdg_config"),
+            Some(&config_root.to_string_lossy().into_owned()),
+            "child_environment: XDG_CONFIG_HOME was not injected"
+        );
+        assert_eq!(
+            observed.get("xdg_data"),
+            Some(&data.to_string_lossy().into_owned()),
+            "child_environment: XDG_DATA_HOME was not injected"
+        );
+        assert_eq!(
+            observed.get("xdg_cache"),
+            Some(&cache.to_string_lossy().into_owned()),
+            "child_environment: XDG_CACHE_HOME was not injected"
+        );
+        assert_eq!(
+            observed.get("child_sentinel").map(String::as_str),
+            Some("injected-by-codegg"),
+            "child_environment: configured sentinel missing"
+        );
+        assert!(
+            observed
+                .get("parent_secret_present")
+                .is_none_or(String::is_empty),
+            "child_environment: parent credential leaked"
+        );
+        assert!(
+            observed
+                .get("parent_proxy_present")
+                .is_none_or(String::is_empty),
+            "child_environment: parent proxy leaked"
+        );
+        assert!(
+            observed
+                .get("parent_sentinel_present")
+                .is_none_or(String::is_empty),
+            "child_environment: parent sentinel leaked"
+        );
+        assert_eq!(
+            observed.get("config_arg"),
+            Some(&eggsearch_config.to_string_lossy().into_owned()),
+            "child_environment: --config did not point to explicit private file"
+        );
+        println!("child_environment private_config=pass private_home=pass xdg_dirs=pass cwd=pass inherited_credentials=cleared inherited_proxy=cleared");
+    }
+
+    let web_input = json!({"query": "CodeGG eggsearch pair offline wrapper proof", "provider": "auto", "num_results": 1});
+    let web = WebSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(web_input.clone(), None)
+        .await
+        .expect("wrapper_request: native websearch should preserve upstream policy response");
+    assert!(
+        !web.success,
+        "structured_fidelity: Mode::Off policy denial must not be reported successful"
+    );
+    assert!(
+        web.output.contains("web_search") && web.output.contains("disabled by policy"),
+        "upstream_policy: expected tagged web_search denial, got {:?}",
+        web.output
+    );
+    let web_value = web
+        .value
+        .clone()
+        .expect("structured_fidelity: web policy error JSON retained");
+    let direct_web = handle
+        .read()
+        .await
+        .call_tool_structured(
+            "eggsearch",
+            "web_search",
+            json!({"query": "CodeGG eggsearch pair offline wrapper proof", "max_results": 1, "response_detail": "diagnostic"}),
+        )
+        .await
+        .expect("wrapper_request: direct paired web_search call reached same child");
+    assert!(
+        direct_web.is_error,
+        "upstream_policy: tagged web_search denial must carry isError"
+    );
+    let direct_web_value = direct_web
+        .structured
+        .or_else(|| serde_json::from_str(&direct_web.text).ok())
+        .expect("structured_fidelity: direct web denial retains JSON");
+    assert_eq!(
+        web_value, direct_web_value,
+        "structured_fidelity: wrapper changed the upstream structured policy error"
+    );
+    println!("wrapper_request native=websearch upstream=web_search outcome=tagged_policy_denial is_error=true structured=preserved");
+
+    let security_input = json!({"query": "CVE-2026-0000", "max_results": 1});
+    let security = SecuritySearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(security_input, None)
+        .await
+        .expect("wrapper_request: native security_search should preserve upstream policy response");
+    assert!(
+        !security.success,
+        "structured_fidelity: Mode::Off policy denial must not be reported successful"
+    );
+    assert!(
+        security.output.contains("security_search")
+            && security.output.contains("disabled by policy"),
+        "upstream_policy: expected tagged security_search denial, got {:?}",
+        security.output
+    );
+    let security_value = security
+        .value
+        .clone()
+        .expect("structured_fidelity: security policy error JSON retained");
+    let direct_security = handle
+        .read()
+        .await
+        .call_tool_structured(
+            "eggsearch",
+            "security_search",
+            json!({"query": "CVE-2026-0000", "max_results": 1, "response_detail": "diagnostic"}),
+        )
+        .await
+        .expect("wrapper_request: direct paired security_search call reached same child");
+    assert!(
+        direct_security.is_error,
+        "upstream_policy: tagged security_search denial must carry isError"
+    );
+    let direct_security_value = direct_security
+        .structured
+        .or_else(|| serde_json::from_str(&direct_security.text).ok())
+        .expect("structured_fidelity: direct security denial retains JSON");
+    assert_eq!(
+        security_value, direct_security_value,
+        "structured_fidelity: native security wrapper differs from the paired tagged upstream call"
+    );
+    assert_eq!(
+        runtime.mcp().as_ref().map(Arc::as_ptr),
+        Some(Arc::as_ptr(&handle)),
+        "mcp_initialize: wrappers switched MCP sessions"
+    );
+    println!("wrapper_request native=security_search upstream=security_search outcome=tagged_policy_denial is_error=true structured=preserved");
+
+    for (label, input, expected) in [
+        (
+            "retired_google_news",
+            json!({"query": "x", "provider": "google_news"}),
+            "retired",
+        ),
+        (
+            "unknown_provider",
+            json!({"query": "x", "provider": "missing_provider"}),
+            "unsupported provider",
+        ),
+        (
+            "non_string_provider",
+            json!({"query": "x", "provider": 7}),
+            "must be a string",
+        ),
+    ] {
+        let error = WebSearchTool::with_search_runtime(runtime.clone())
+            .execute_structured(input, None)
+            .await
+            .expect_err("wrapper_request: invalid provider must reject before MCP transport");
+        let message = error.to_string();
+        assert!(
+            message.contains(expected),
+            "wrapper_request: {label} error class/message changed: {message}"
+        );
+        println!("wrapper_request negative={label} outcome=local_validation_error mcp=not_invoked");
+    }
+    // The stable alias remains covered against the exact tagged inventory by
+    // search_backend_arg_mapping; the real child's provider inventory above
+    // proves its destination id is present.
+    println!("tool_schema native_websearch_tools=1 native_specialist_tools=1 tagged_tools=10 fake_mcp=covered separately");
+
     drop(runtime);
-    handle.write().await.shutdown_all().await;
-    println!("pair_teardown shared_stdio_process=shutdown");
+    tokio::time::timeout(Duration::from_secs(5), handle.write().await.shutdown_all())
+        .await
+        .expect("teardown: MCP process shutdown timed out");
+    #[cfg(unix)]
+    {
+        let pid = read_observation(&observation)
+            .get("pid")
+            .cloned()
+            .expect("teardown: child pid observation missing");
+        let still_running = Command::new("kill")
+            .args(["-0", &pid])
+            .output()
+            .is_ok_and(|output| output.status.success());
+        assert!(
+            !still_running,
+            "teardown: eggsearch child {pid} remained alive after shutdown"
+        );
+        kill_guard.released = true;
+        println!("teardown shared_stdio_process=shutdown child_pid={pid} alive=false");
+    }
+    println!("pair_coverage real_native_wrappers=2 tagged_tools=10 live_provider_calls=0 network_containment=not_claimed repo_search_mode_off_local_only=known_v041_issue");
+
+    if !keep_private {
+        std::fs::remove_dir_all(&private_path)
+            .expect("teardown: remove private home/config/workspace");
+        assert!(
+            !private_path.exists(),
+            "teardown: temporary config or workspace persisted"
+        );
+    }
 }
