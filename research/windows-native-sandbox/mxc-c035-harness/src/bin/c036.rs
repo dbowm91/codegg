@@ -393,7 +393,7 @@ fn run() {
         }
     }
     let secret = host.join("synthetic-c036-secret.txt");
-    if let Err(error) = fs::write(&secret, b"synthetic-c036-secret") {
+    if let Err(error) = fs::write(&secret, b"synthetic-c035-secret") {
         emit(
             json!({"schema":"codegg.mxc_c036.v1","qualified_test_only":false,"disposition":"blocked","failed_gates":["fixture-setup"],"reason":error.to_string()}),
         );

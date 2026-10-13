@@ -166,7 +166,7 @@ static int child(int argc, wchar_t **argv) {
     if (user) HeapFree(GetProcessHeap(), 0, user);
     if (groups) HeapFree(GetProcessHeap(), 0, groups);
     if (integrity) HeapFree(GetProcessHeap(), 0, integrity);
-    return proof_error ? 42 : 0;
+    return proof_error ? proof_error : 0;
 }
 
 static int control(int argc, wchar_t **argv, BOOL inherit) {
