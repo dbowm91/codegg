@@ -4039,8 +4039,7 @@ mod tests {
         // blank space, which is what an over-counted row index caused.
         widget.scroll_to_bottom();
         let scroll = widget.scroll_position();
-        let drawn =
-            widget.with_layout_cache(|cache| cache.rows_from(scroll, scroll + 12).len().max(0));
+        let drawn = widget.with_layout_cache(|cache| cache.rows_from(scroll, scroll + 12).len());
         assert_eq!(
             drawn, 12,
             "the viewport must be full at the bottom of an expanded tool output"
