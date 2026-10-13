@@ -1,6 +1,6 @@
 # Search / Eggsearch Pair Compatibility C001 — Real Wrapper Dispatch and Private Child Qualification
 
-Status: ready
+Status: implemented
 Class: post-closure verification corrective / pre-release development infrastructure
 Planning baseline: CodeGG branch `agent/eggsearch-evidence-workflow-20261013`; M001 implementation `9dd8a1c89253630b1c4ca556f276042325f19836`; M001 closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
 Source roadmap: `plans/subsystems/search-eggsearch-pair-compatibility-post-closure-corrective-addendum.md`.
@@ -133,3 +133,5 @@ Close to `plans/closure/search-eggsearch-pair-compatibility-corrective/001-statu
 - strict/conditional/not-closed disposition and **explicit recommendation whether legacy M002 may begin**.
 
 Historical M001 closure remains unchanged. Do not claim this corrective implemented merely because its handoff plan is registered.
+
+Implementation and disposition: implementation landed at CodeGG commit `b1427c2`; see `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md`. The wrapper and child-isolation qualification is implemented, but a separate exploratory `repo_search(include_local=true)` attempt exposed a v0.4.1 upstream remote-dispatch defect under Mode Off. C001 is conditionally closed and legacy retirement M002 remains blocked pending C002 and requalification.

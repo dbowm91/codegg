@@ -1,6 +1,6 @@
 # Search / Eggsearch Paired Compatibility — M001 Post-Closure Corrective
 
-Status: active (C001 ready)
+Status: active (C001 conditionally closed; C002 blocked)
 Primary class: development integration verification / test isolation
 Planning baseline: CodeGG `agent/eggsearch-evidence-workflow-20261013` after M001 implementation `9dd8a1c89253630b1c4ca556f276042325f19836`.
 
@@ -38,18 +38,19 @@ These are **test-qualification gaps**, not evidence of a production CodeGG/eggse
 
 | ID | Milestone | Status | Plan | Dependencies |
 |---|---|---|---|---|
-| C001 | Real native-wrapper MCP dispatch and private-child isolation proof | **ready** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md` | Original M001 implementation and closure (satisfied), upstream pinned v0.4.1 source (satisfied) |
+| C001 | Real native-wrapper MCP dispatch and private-child isolation proof | **conditionally closed** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md`; closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` | Two native wrappers cross the pinned process and child isolation is demonstrated. Strict closure is withheld because exploratory `repo_search(include_local=true)` under Mode Off initiated remote provider dispatch. |
+| C002 | Correct and requalify Mode-Off local repository search | **blocked** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` | Requires a new immutable eggsearch tag that proves local-only Mode-Off repository search never dispatches a remote provider, then rerun the paired gate. |
 
-C001 may execute without working CodeGG full agent inference or publishing any release. Preserve original ready status of evidence-workflows M002–M004; these add capabilities against the released eggsearch contract and may develop independently.
+C001 executed without working CodeGG full agent inference or publishing any release. Evidence-workflows M002–M004 retain their existing status; this pair-qualification stream does not change their dependencies.
 
-**Gate change:** Legacy-retirement M002 (delete duplicate CodeGG HTTP/provider backend) must **not begin its destructive removal** until this stricter C001 qualification passes. Its original release-adoption M001 dependency is satisfied, but this newly discovered compatibility-evidence dependency is open. The post-deletion milestone must rerun the strengthened same-unit test. If a developer is concurrently implementing evidence-workflow M002/M003/M004, coordinate changes to `src/search_backend/eggsearch.rs` and its integration tests to avoid overlapping worktrees/merge races. Evidence-workflow M005 retains its existing M002+M004 dependencies.
+**Gate:** Legacy-retirement M002 (delete duplicate CodeGG HTTP/provider backend) remains blocked. C001 proves two wrapper policy-denial trajectories and child isolation, but its exploratory local repository probe exposed a remote-dispatch defect in the pinned upstream. M002 must wait for C002's corrected immutable upstream tag and strict paired requalification. After retirement, rerun the same-unit test. Evidence-workflow M005 retains its existing M002+M004 dependencies.
 
 ## 5. Corrective completion definition
 
-- Real pinned eggsearch child receives at least two **native CodeGG wrapper** requests representing distinct tool families; one must be `websearch`, the other a repo/security/research wrapper. The test directly proves request mapping and interprets the real tagged upstream response, even if a deterministic `search.mode=off` policy rejection is the expected result.
-- A private explicit config, private HOME/cache/data paths and sanitized env are passed to eggsearch, with testable evidence that they govern the child, not just the parent. No inherited external provider credentials and no unintended external network access.
+- Real pinned eggsearch child receives at least two **native CodeGG wrapper** requests representing distinct tool families; one must be `websearch`, the other a repo/security/research wrapper. Current C001 covers `websearch` and `security_search` policy denials. `repo_search(include_local=true)` is prohibited as an offline fixture until C002 fixes and requalifies its remote dispatch behavior.
+- A private explicit config, private HOME/cache/data paths and sanitized env are passed to eggsearch, with testable evidence that they govern the child, not just the parent. Parent credentials and proxy variables are not visible to the child. Do not claim network containment: the exploratory repository probe initiated remote provider dispatch under the pinned release.
 - Version, ten-tool and provider inventory guarantees remain; subprocess teardown remains bounded and leak-free on success/failure/cancellation.
 - One offline script invokes real-process and fake-MCP controls; typed failures return nonzero with stage-specific diagnostics. The offline test suite can be rerun after retirement M002 without reintroducing legacy search.
 - Closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` supplies exact tested CodeGG revision, eggsearch binary provenance/digest, negative trajectories, command results, non-run evidence and a decision on unblocking legacy-retirement M002.
 
-No status in this document claims C001 has been implemented or its tests rerun.
+C001 implementation and local verification are recorded in its closure. C002 owns the outstanding upstream correctness fix and strict requalification; C001's conditional status does not unblock legacy-retirement M002.
