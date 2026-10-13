@@ -388,6 +388,7 @@ fn classify_domain(name: &str, category: CommandCategory) -> CommandDomain {
         "workspace",
         "workspaces",
         "tree",
+        "files",
         "editor",
         "open",
     ]
@@ -571,7 +572,9 @@ impl CommandRegistry {
                 .with_description("Manage MCP servers"),
             Command::new("/workspaces", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Workspaces))
                 .with_description("Manage workspaces"),
-            Command::new("/tree", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tree)).with_description("Show file tree"),
+            Command::new("/tree", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Tree)).with_description("Show session tree"),
+            Command::new("/files", CommandCategory::System, CommandAction::Dialog(Dialog::Files))
+                .with_description("Browse workspace files"),
             Command::new("/editor", CommandCategory::Agent, CommandAction::Builtin(BuiltinSlashAction::Editor)).with_description("Open editor"),
             Command::new(
                 "/open",
@@ -1156,12 +1159,12 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 160th is `/panels` (the side-panel manager, the spelling of `⇧S`
-        // that stays typeable mid-prompt); 159th and 158th are `/terminal`
-        // (bare interactive terminal box) and `/terminal-clear`; 157th was
-        // `/reasoning` (per-turn extended-thinking control). Keep
-        // `architecture/command.md` counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 160);
+        // 161st is `/files` (the workspace file manager); 160th is `/panels`
+        // (the side-panel manager, the spelling of `⇧S` that stays typeable
+        // mid-prompt); 159th and 158th are `/terminal` (bare interactive
+        // terminal box) and `/terminal-clear`. Keep `architecture/command.md`
+        // counts in sync when adding more.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 161);
     }
 
     #[test]

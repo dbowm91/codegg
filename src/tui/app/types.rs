@@ -6,6 +6,7 @@ pub enum Dialog {
     Session,
     Help,
     Tree,
+    Files,
     Theme,
     Question,
     Permission,
@@ -80,6 +81,7 @@ impl Dialog {
                 | Self::Session
                 | Self::Help
                 | Self::Tree
+                | Self::Files
                 | Self::Theme
                 | Self::Question
                 | Self::Permission
@@ -552,6 +554,23 @@ pub enum TuiMsg {
     /// Project Work Orders M004: expand/collapse the selected
     /// project's inline running-task detail (one bounded lazy fetch).
     WorkspaceDashboardToggleExpand,
+    /// `/files`: open a workspace-relative file in the editor.
+    ///
+    /// The `/files` box is a navigator and never holds a document itself, so
+    /// this intent is what turns a selected row into an attachment. The path
+    /// is workspace-relative and reaches `open_editor`, which owns the
+    /// lexical validation and the daemon-authorized attach — the box cannot
+    /// name a path the editor would not have accepted.
+    FilesOpenSelected {
+        path: String,
+    },
+    /// `/files`: re-walk the workspace root.
+    ///
+    /// An intent, not a walk. The command layer owns the async read and the
+    /// completion returns through the existing generation-guarded listing
+    /// path, so a refresh that lands after the user changed project is
+    /// dropped rather than painted over the new workspace.
+    FilesRefresh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

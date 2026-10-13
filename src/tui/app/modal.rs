@@ -328,6 +328,23 @@ impl App {
                 self.focus_manager
                     .push(Box::new(self.dialog_state.tree_dialog.clone()));
             }
+            Dialog::Files => {
+                use crate::tui::components::dialogs::files::FilesDialog;
+                // The box is seeded from the shared tree state rather than
+                // building its own listing, so `/files` opens where a
+                // previous browse left off and both surfaces agree about the
+                // current workspace. A walk is kicked only when nothing has
+                // been listed yet; reopening a populated box is instant and
+                // must not hit the filesystem.
+                if self.file_tree_state.nodes.is_empty() {
+                    crate::tui::commands::file_tree::rebuild(self);
+                }
+                let dialog = FilesDialog::new(
+                    Arc::clone(&self.ui_state.theme),
+                    self.file_tree_state.clone(),
+                );
+                self.focus_manager.push(Box::new(dialog));
+            }
             Dialog::Theme => {
                 if self.dialog_state.theme_picker.is_none() {
                     let picker = ThemePickerDialog::with_themes(

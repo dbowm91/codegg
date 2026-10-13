@@ -6,6 +6,7 @@ pub mod connect;
 pub mod connection_selection;
 pub mod device_secret;
 pub mod diff;
+pub mod files;
 pub mod goto;
 pub mod help;
 pub mod import;

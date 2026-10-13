@@ -91,6 +91,23 @@ pub fn apply_listing(
         .apply_listing(generation, request_id, root, listing)
     {
         app.file_tree_state.request.cancel();
+        return;
+    }
+    // Mirror the accepted walk into a mounted `/files` box. It holds its own
+    // copy of the state (a widget cannot reach `App` from `render`), so
+    // without this a refresh would repaint the Ctrl+T pane and leave the box
+    // showing the previous listing. Cloned only when a box is actually open —
+    // the walk that produced this state is far more expensive than the copy.
+    if app
+        .focus_manager
+        .has_dialog(crate::tui::components::component::DialogType::Files)
+    {
+        let snapshot = app.file_tree_state.clone();
+        app.focus_manager
+            .with_dialog_mut::<crate::tui::components::dialogs::files::FilesDialog, ()>(
+                crate::tui::components::component::DialogType::Files,
+                |dialog| dialog.state = snapshot,
+            );
     }
 }
 
@@ -99,9 +116,21 @@ pub fn move_selection(app: &mut App, delta: isize) {
     app.file_tree_state.move_selection(delta);
 }
 
-/// Expand or collapse the selected directory.
-pub fn toggle_selected(app: &mut App) {
-    app.file_tree_state.toggle_selected();
+/// Enter the selected directory: `l`/right arrow.
+///
+/// Expand it and step the cursor onto its first child. Distinct from
+/// [`toggle_selected`], which is what Enter uses — both expand the same
+/// directory, but only this one moves the cursor.
+pub fn enter_selected(app: &mut App) {
+    app.file_tree_state.enter_selected();
+}
+
+/// Go back one level: `h`/left arrow.
+///
+/// Collapse the selected directory in place, or step to the parent when the
+/// selection is not an open directory.
+pub fn leave_selected(app: &mut App) {
+    app.file_tree_state.leave_selected();
 }
 
 /// Open the selected file, or toggle the selected directory.

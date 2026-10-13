@@ -11471,6 +11471,7 @@ impl App {
             DialogType::Terminal => Some(P::Terminal),
             DialogType::Help => Some(P::Help),
             DialogType::Tree => Some(P::Tree),
+            DialogType::Files => Some(P::Files),
             DialogType::Session => Some(P::Sessions),
             DialogType::TaskList => Some(P::Tasks),
             DialogType::Plan => Some(P::Plan),

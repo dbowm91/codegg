@@ -812,6 +812,53 @@ loading transcripts or logs. Reconnect and resync replace the same projection
 state, so the TUI does not maintain a second run tree. Detailed worktree
 inspection and cleanup continue through the existing authorized commands.
 
+### Workspace file manager (`/files`, `src/tui/components/dialogs/files.rs`)
+
+`/files` opens a **navigator** box over the workspace root, and `Files` is a
+hosted panel so the same box docks into the side column with `Shift+L`. It is
+one implementation: the box, the hosted panel, and the editor-side Ctrl+T
+pane all run the *same* `FileTreeState` navigation, so a fix in one is a fix
+in all three.
+
+| Key | Meaning |
+|---|---|
+| `j` / `k`, `↓` / `↑` | move the cursor |
+| `Enter` on a directory | expand/collapse **in place** — the cursor does not move |
+| `l` / `→` | **enter** the directory: expand it and step onto its first child |
+| `h` / `←` | **back one level**: collapse an open directory in place, otherwise step to the parent |
+| `Enter` on a file | open it in the editor |
+| `r` | re-walk the workspace |
+| `Esc` | close |
+
+Enter and `l` both expand a directory, but they are deliberately different
+verbs: Enter reveals contents and leaves the cursor where the user put it,
+while `l` moves the cursor in. Collapsing them would mean one of the two
+intentions could not be expressed. `h` on an already-expanded directory
+collapses it rather than jumping to the parent — backing *out of* a directory
+means closing it, and only a closed one steps further out.
+
+Three rules keep this a navigator rather than a second document surface:
+
+1. **The box holds no file text and performs no reads.** The listing arrives
+   already walked; `r` emits `TuiMsg::FilesRefresh` and the command layer owns
+   the async read. Rendering never touches the filesystem.
+2. **Opening a row is an intent, not an attachment.** `Enter` on a file emits
+   `TuiMsg::FilesOpenSelected { path }`, handled in `App::process_msg` by
+   calling `open_editor` — the same seam `/open` and the Ctrl+T pane use, so
+   lexical validation and daemon authorization are not restated here. Only a
+   *file* emits an intent; a directory has no document to open.
+3. **A widget cannot reach `App` from `render`, so the box holds a copy of the
+   shared state**, seeded from `App::file_tree_state` at open time — which is
+   why `/files` resumes where a previous browse left off — and re-synced from
+   the generation-guarded completion in `commands::file_tree::apply_listing`.
+   The copy is made only when a box is actually mounted.
+
+Authority is unchanged from the Ctrl+T pane: the walk and the open both
+resolve the root through `App::project_execution_context()`, never
+`session_state.project_dir` or the process cwd. Files opened from `/files` are
+therefore `DocumentScope::Workspace`, and the editor's `[project]` badge is
+the honest reading.
+
 ### Swappable side panel (`src/tui/panels/`)
 
 The right-hand column is a **panel host**, not a widget chosen by an `if` in
@@ -828,15 +875,16 @@ need their own key model:
 | `Terminal` | `[TERMINAL]` | the live PTY view |
 | `Help` | `[HELP]` | the keybinding reference |
 
-The other **28** are **hosted**: each is a `/` command that brings up a box,
+The other **29** are **hosted**: each is a `/` command that brings up a box,
 and the panel holds that box's component rather than a lookalike. They are one
-implementation (`panels/hosted.rs`), not 28:
+implementation (`panels/hosted.rs`), not 29:
 
 | Group | Panels |
 |---|---|
 | Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
 | Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
 | Pickers | `Models` `Agents` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+| Browsers | `Files` |
 
 Which panel is loaded is chosen by the **panel manager box**
 (`Shift+S` in Normal mode, or `/panels`) — a dialog, not an overlay drawn
@@ -845,9 +893,13 @@ not be filtered and showed unlabelled buttons in 30 columns. It renders
 [`SidePanelId::ALL`] directly, so the list it shows *is* the registry.
 
 Adding a **hosted** panel is an enum variant, an entry in `SidePanelId::ALL`,
-and `label`/`title`/`hint`/`load_command`/`config_key` arms — the host
-constructs the backing `HostPanel` from `ALL`, so there is no host field, no
-`panel()` arm and no render-path branch. Adding a **bespoke** panel
+and `label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
+`commands::panels::open_panel_box`** — that match has no catch-all, so it is
+the one site outside this file that fails to compile if missed — and a
+`dock_target` arm in `App` so `L` knows where the box goes. `title` must be
+all-ASCII uppercase and `config_key` snake_case and unique; both are enforced.
+The host constructs the backing `HostPanel` from `ALL`, so there is no host
+field, no `panel()` arm and no render-path branch. Adding a **bespoke** panel
 additionally needs a `SidePanel` impl, a host field, and arms in `panel()`,
 `panel_is_empty()` and `composer_hints()`.
 
@@ -1420,7 +1472,7 @@ A single `Dialog::Plugin` variant handles all plugin dialogs.
 
 ```rust
 pub enum Dialog {
-    None, Model, Agent, Session, Help, Tree, Theme,
+    None, Model, Agent, Session, Help, Tree, Files, Theme,
     Question, Permission, PanelManager, Mcp, Keybind,
     Share, Import, Template, Connect, ConnectionSelection,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
@@ -1432,7 +1484,7 @@ pub enum Dialog {
 }
 ```
 
-48 variants.
+49 variants.
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
 `InfoDialog` with `InfoType::TerminalShow` driven by the live
@@ -1446,7 +1498,7 @@ and keyboard bytes reach the process only under explicit focus
 
 ```rust
 pub enum DialogType {
-    Share, Model, Agent, Session, Help, Tree, Theme,
+    Share, Model, Agent, Session, Help, Tree, Files, Theme,
     Permission, PanelManager, Mcp, Question, Diff, Import, Template,
     Connect, ConnectionSelection, Keybind,
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
@@ -1458,7 +1510,7 @@ pub enum DialogType {
 }
 ```
 
-46 variants, matching `Dialog` 1:1 through the exhaustive compatibility
+47 variants, matching `Dialog` 1:1 through the exhaustive compatibility
 conversions.
 
 `TaskSchedule` is the WorkOrder scheduling sheet
@@ -2501,8 +2553,8 @@ action.
   names the one remaining step (`L` to dock). Panels with genuinely nothing
   to show (Plan with no pending confirmation, Security with no receipt,
   Workspace, which is a primary view) keep the placeholder and toast why.
-  `Shift+↑/↓` walking deliberately does not materialize: cycling all 32
-  entries would fire 28 loads for panels the user only glanced at.
+  `Shift+↑/↓` walking deliberately does not materialize: cycling all 33
+  entries would fire 29 loads for panels the user only glanced at.
 - **`render_hosted` is a bridge, not the destination.**
   `SidePanel::render` receives a `&mut Buffer` while every `Component::render`
   takes a `&mut Frame`, and ratatui's `Frame` has no public constructor. The

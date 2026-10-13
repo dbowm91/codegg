@@ -390,6 +390,7 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
         P::TaskView => crate::tui::commands::work_orders::open_task_view(app),
         P::Diff => app.handle_diff_command(None),
         P::Review => app.open_dialog(Dialog::Review),
+        P::Files => app.open_dialog(Dialog::Files),
     }
 }
 

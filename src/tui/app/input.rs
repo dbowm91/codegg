@@ -780,6 +780,18 @@ impl App {
             TuiMsg::WorkspaceDashboardToggleExpand => {
                 crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
             }
+            TuiMsg::FilesOpenSelected { path } => {
+                // The `/files` box is a navigator: it names a workspace-relative
+                // row and `open_editor` owns everything that must be true
+                // before it becomes an attachment (lexical validation, the
+                // already-open short-circuit, the daemon-authorized open).
+                // Routing it here rather than opening from the widget is what
+                // keeps the box from inventing a second path into a document.
+                crate::tui::commands::editor::open_editor(self, &path);
+            }
+            TuiMsg::FilesRefresh => {
+                crate::tui::commands::file_tree::rebuild(self);
+            }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {

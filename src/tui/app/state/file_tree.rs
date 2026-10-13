@@ -146,6 +146,78 @@ impl FileTreeState {
         Some(row.path)
     }
 
+    /// Enter the selected directory: expand it and step onto its first child.
+    ///
+    /// This is the `l`/right-arrow verb. It is deliberately distinct from
+    /// [`Self::toggle_selected`], which is what Enter uses: both end up
+    /// expanding the same directory, but only this one also *moves* the
+    /// cursor, because "go into this directory" and "reveal what is in it"
+    /// are different intentions and should leave the cursor somewhere
+    /// different.
+    ///
+    /// A file selection is a no-op — there is no directory to enter — and an
+    /// empty directory keeps its selection on itself rather than dropping it,
+    /// so the cursor is never left somewhere unreachable.
+    pub fn enter_selected(&mut self) -> Option<String> {
+        let rows = self.rows();
+        let index = self.selected_index()?;
+        let row = rows.get(index)?;
+        if row.kind != TreeNodeKind::Directory {
+            return None;
+        }
+        let path = row.path.clone();
+        // Already open: there is nowhere deeper to go from here.
+        if !row.expanded {
+            self.expanded.insert(path.clone());
+        }
+        // Re-flatten: expanding can append rows after this one.
+        let rows = self.rows();
+        // A directory with no children still stays selected, so an empty
+        // directory is visibly opened rather than appearing inert.
+        let next = rows
+            .get(index + 1)
+            .filter(|child| child.depth > row.depth)
+            .map(|child| child.path.clone())
+            .unwrap_or_else(|| path.clone());
+        self.selected = Some(next.clone());
+        self.reveal_selected(
+            rows.iter()
+                .position(|row| row.path == next)
+                .unwrap_or(index),
+            rows.len(),
+        );
+        Some(path)
+    }
+
+    /// Go back one level.
+    ///
+    /// This is the `h`/left-arrow verb. Two cases, in order:
+    ///
+    /// 1. The cursor is on an expanded directory — collapse it and stay put.
+    /// 2. Otherwise step the cursor to the nearest preceding shallower row,
+    ///    which is the parent directory of whatever is selected.
+    ///
+    /// A top-level entry has no parent, so case 2 is a no-op there rather
+    /// than an error: backing out of the workspace root means nowhere to go,
+    /// and silently clamping is the honest answer.
+    pub fn leave_selected(&mut self) -> Option<String> {
+        let rows = self.rows();
+        let index = self.selected_index()?;
+        let row = rows.get(index)?;
+        if row.kind == TreeNodeKind::Directory && row.expanded {
+            self.expanded.remove(&row.path);
+            return Some(row.path.clone());
+        }
+        let parent = rows[..index]
+            .iter()
+            .rev()
+            .find(|candidate| candidate.depth < row.depth)?;
+        let path = parent.path.clone();
+        self.selected = Some(path.clone());
+        self.reveal_selected(index.saturating_sub(1), rows.len());
+        Some(path)
+    }
+
     /// Apply a completed walk, if it belongs to the current generation and
     /// root.
     ///
@@ -351,6 +423,118 @@ mod tests {
 
         state.selected = Some("file.txt".to_string());
         assert_eq!(state.toggle_selected(), None, "a file is not expandable");
+    }
+
+    #[test]
+    fn enter_steps_into_a_directory_and_onto_its_first_child() {
+        let root = temp();
+        write(root.path(), "dir/a.txt");
+        write(root.path(), "dir/b.txt");
+        write(root.path(), "top.txt");
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.selected.as_deref(), Some("dir"));
+
+        // `l` expands *and* moves the cursor, which is what distinguishes it
+        // from the Enter/toggle verb that leaves the cursor where it was.
+        assert_eq!(state.enter_selected().as_deref(), Some("dir"));
+        assert!(state.expanded.contains("dir"));
+        assert_eq!(state.selected.as_deref(), Some("dir/a.txt"));
+
+        // Expanding *without* moving (what Enter does) and then `l`: entering
+        // an already-open directory is idempotent, not a double-toggle that
+        // would collapse what the user just walked into.
+        state.expanded.insert("dir".to_string());
+        state.selected = Some("dir".to_string());
+        assert_eq!(state.enter_selected().as_deref(), Some("dir"));
+        assert!(
+            state.expanded.contains("dir"),
+            "`l` must not collapse a directory it just walked into"
+        );
+        assert_eq!(state.selected.as_deref(), Some("dir/a.txt"));
+
+        // A file has no directory to enter.
+        state.selected = Some("top.txt".to_string());
+        assert_eq!(state.enter_selected(), None);
+        assert_eq!(state.selected.as_deref(), Some("top.txt"));
+    }
+
+    #[test]
+    fn enter_on_an_empty_directory_keeps_the_cursor_rather_than_dropping_it() {
+        let root = temp();
+        std::fs::create_dir_all(root.path().join("empty")).expect("mkdir");
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.selected.as_deref(), Some("empty"));
+        assert_eq!(state.enter_selected().as_deref(), Some("empty"));
+        assert_eq!(
+            state.selected.as_deref(),
+            Some("empty"),
+            "an empty directory must stay selected so the cursor is never stranded"
+        );
+        assert!(state.expanded.contains("empty"));
+    }
+
+    #[test]
+    fn leave_collapses_an_open_directory_in_place() {
+        let root = temp();
+        write(root.path(), "dir/a.txt");
+
+        let mut state = state_with(root.path());
+        state.expanded.insert("dir".to_string());
+        assert_eq!(state.selected.as_deref(), Some("dir"));
+
+        // `h` on an expanded directory closes it and stays put.
+        assert_eq!(state.leave_selected().as_deref(), Some("dir"));
+        assert!(!state.expanded.contains("dir"));
+        assert_eq!(state.selected.as_deref(), Some("dir"));
+    }
+
+    #[test]
+    fn leave_steps_out_to_the_parent_directory() {
+        let root = temp();
+        write(root.path(), "dir/nested/deep.txt");
+
+        let mut state = state_with(root.path());
+        state.expanded.insert("dir".to_string());
+        state.expanded.insert("dir/nested".to_string());
+        assert_eq!(state.selected.as_deref(), Some("dir"));
+
+        state.enter_selected();
+        assert_eq!(state.selected.as_deref(), Some("dir/nested"));
+        state.enter_selected();
+        assert_eq!(state.selected.as_deref(), Some("dir/nested/deep.txt"));
+
+        // From a nested file, `h` walks out one level at a time.
+        assert_eq!(state.leave_selected().as_deref(), Some("dir/nested"));
+        assert_eq!(state.selected.as_deref(), Some("dir/nested"));
+
+        // `dir/nested` is still open, so the next `h` closes it in place
+        // rather than jumping again — backing out of an open directory means
+        // closing it, and only a *closed* one steps to the parent.
+        assert_eq!(state.leave_selected().as_deref(), Some("dir/nested"));
+        assert!(!state.expanded.contains("dir/nested"));
+        assert_eq!(state.selected.as_deref(), Some("dir/nested"));
+
+        assert_eq!(state.leave_selected().as_deref(), Some("dir"));
+        assert_eq!(state.selected.as_deref(), Some("dir"));
+    }
+
+    #[test]
+    fn leave_at_the_workspace_root_is_a_no_op_rather_than_an_error() {
+        let root = temp();
+        write(root.path(), "a/b.txt");
+        write(root.path(), "top.txt");
+
+        let mut state = state_with(root.path());
+        assert_eq!(state.selected.as_deref(), Some("a"));
+        // A top-level directory that is not expanded has no parent to go to.
+        assert_eq!(state.leave_selected(), None);
+        assert_eq!(state.selected.as_deref(), Some("a"), "selection survives");
+
+        state.selected = Some("top.txt".to_string());
+        assert_eq!(state.leave_selected(), None);
+        assert_eq!(state.selected.as_deref(), Some("top.txt"));
     }
 
     #[test]

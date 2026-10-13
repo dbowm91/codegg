@@ -652,6 +652,10 @@ async fn every_viewer_box_docks_from_the_one_shared_gesture() {
         (codegg::tui::Dialog::Theme, SidePanelId::Themes),
         (codegg::tui::Dialog::Mcp, SidePanelId::Mcp),
         (codegg::tui::Dialog::Keybind, SidePanelId::Keybinds),
+        // `/files` is here for the same reason as the rest: it reports
+        // `docks_as_viewer`, so `Shift+L` must move it into the column rather
+        // than reaching the widget as a stray `L`.
+        (codegg::tui::Dialog::Files, SidePanelId::Files),
     ];
 
     for (dialog, expected) in cases {

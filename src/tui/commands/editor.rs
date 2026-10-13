@@ -1319,9 +1319,15 @@ fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
             super::file_tree::move_selection(app, -1);
             true
         }
-        // `h`/`l` mirror vi: collapse or expand, on a directory.
+        // `l`/`h` walk in and out of a directory, matching the `/files` box.
+        // Left alone, `h` used to toggle the selection instead of leaving it,
+        // so backing out and collapsing were the same key.
+        KeyCode::Char('l') | KeyCode::Right => {
+            super::file_tree::enter_selected(app);
+            true
+        }
         KeyCode::Char('h') | KeyCode::Left => {
-            super::file_tree::toggle_selected(app);
+            super::file_tree::leave_selected(app);
             true
         }
         // Enter opens a file, or expands a directory, through the existing

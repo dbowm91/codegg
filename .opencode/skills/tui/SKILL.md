@@ -154,8 +154,8 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   list; `Char` is the explicit non-configurable input exception.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
-  owns which `SidePanelId` is active and whether it holds focus. 32 panels
-  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 28
+  owns which `SidePanelId` is active and whether it holds focus. 33 panels
+  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 29
   **hosted** — one per `/` command that brings up a box. Which one is loaded
   is chosen by the **panel manager box** (`Shift+S` in Normal mode, or
   `/panels` from anywhere), which renders `SidePanelId::ALL` directly — the list it shows
@@ -196,6 +196,23 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   completions → change review → **side panel (Normal only)** → Workspace →
   Editor → composer. Hotkeys come before the panel because a panel that
   swallowed the only key that leaves it would trap the keyboard.
+- **`/files` is a navigator, not a second document surface.** The box holds a
+  copy of the shared `FileTreeState` (a widget cannot reach `App` from
+  `render`), is seeded from it on open so a browse resumes where the last one
+  ended, and re-syncs from the generation-guarded completion. It holds no file
+  text and reads nothing: `r` emits `TuiMsg::FilesRefresh` and the command
+  layer owns the async walk. `Enter` on a file emits
+  `TuiMsg::FilesOpenSelected`, routed to `open_editor` — the same seam `/open`
+  and the Ctrl+T pane use. Only a *file* emits an open intent; a directory has
+  no document. `/files` is `DocumentScope::Workspace`, so the editor's
+  `[project]` badge is the honest reading.
+- **`Enter` and `l` both expand a directory, and that is deliberate.** `Enter`
+  reveals contents in place and leaves the cursor alone; `l` expands *and*
+  steps onto the first child. `h` collapses an open directory in place and
+  only steps to the parent when it is already closed — backing out of a
+  directory means closing it. All three verbs live on `FileTreeState`
+  (`toggle_selected` / `enter_selected` / `leave_selected`), so the box, the
+  hosted panel, and the Ctrl+T pane cannot drift.
 - **`:` is one registry, and it is modal.** The editor's command line opens
   from Normal mode only (in Insert a colon is document text) and owns *every*
   key while open, including the mode-independent `Ctrl+S` chords — a leaked

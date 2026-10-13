@@ -294,6 +294,8 @@ pub enum SidePanelId {
     Diff,
     /// `/review` — review changed files.
     Review,
+    /// `/files` — workspace file manager.
+    Files,
 }
 
 impl SidePanelId {
@@ -341,6 +343,7 @@ impl SidePanelId {
         SidePanelId::TaskView,
         SidePanelId::Diff,
         SidePanelId::Review,
+        SidePanelId::Files,
     ];
 
     /// Short label shown in the title bar and the manager.
@@ -351,6 +354,7 @@ impl SidePanelId {
             SidePanelId::Terminal => "Terminal",
             SidePanelId::Help => "Help",
             SidePanelId::Tree => "Tree",
+            SidePanelId::Files => "Files",
             SidePanelId::Sessions => "Sessions",
             SidePanelId::Tasks => "Tasks",
             SidePanelId::Plan => "Plan",
@@ -394,6 +398,7 @@ impl SidePanelId {
             SidePanelId::Terminal => "TERMINAL",
             SidePanelId::Help => "HELP",
             SidePanelId::Tree => "TREE",
+            SidePanelId::Files => "FILES",
             SidePanelId::Sessions => "SWITCHER",
             SidePanelId::Tasks => "TASKS",
             SidePanelId::Plan => "PLAN",
@@ -436,6 +441,7 @@ impl SidePanelId {
             SidePanelId::Terminal => "/terminal",
             SidePanelId::Help => "/help",
             SidePanelId::Tree => "/tree",
+            SidePanelId::Files => "/files",
             SidePanelId::Sessions => "/sessions",
             SidePanelId::Tasks => "/tasks",
             SidePanelId::Plan => "/plan",
@@ -484,6 +490,7 @@ impl SidePanelId {
             SidePanelId::Terminal => "terminal",
             SidePanelId::Help => "help",
             SidePanelId::Tree => "tree",
+            SidePanelId::Files => "files",
             SidePanelId::Sessions => "session_switcher",
             SidePanelId::Tasks => "tasks",
             SidePanelId::Plan => "plan",
@@ -541,7 +548,8 @@ impl SidePanelId {
             SidePanelId::Chat => "messages · channels",
             SidePanelId::Terminal => "shell · commands",
             SidePanelId::Help => "keys · filters",
-            SidePanelId::Tree => "files · folders",
+            SidePanelId::Tree => "session history",
+            SidePanelId::Files => "browse · open in editor",
             SidePanelId::Sessions => "switch · resume",
             SidePanelId::Tasks => "running · waiting",
             SidePanelId::Plan => "steps · blockers",
