@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries M003 — Effect-Equivalence and Observability Qualification
 
-Status: active (M002 closed; Linux host available for filesystem-only native evidence)
+Status: conditionally closed (Linux filesystem evidence complete; macOS cross-target compile awaits an Apple SDK/sysroot)
 Primary class: invariant
 Target closure: `plans/closure/command-authorization-and-execution-boundaries/003-status.md`.
 Status and acceptance are planning declarations, not execution evidence. Source roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Repository baseline: `main` 2026-10-13 and Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8`. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. Accepted: ADR-0001/0002/0004/0016/0024; Linux mechanism ADR-0023 proposed. Closure belongs under `plans/closure/command-authorization-and-execution-boundaries/`.
