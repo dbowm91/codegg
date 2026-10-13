@@ -10,7 +10,7 @@ Long-term references:
 - `plans/001-terminology-and-domain-model.md#8-scheduler-and-execution-terms`
 - `plans/002-long-term-roadmap.md`
 
-Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, **accepted ADR-0024** (syntax advisory, authority enforced), proposed ADR-0023 (Linux backend mechanisms). Related command-policy roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`.  Related but independent roadmap: `sandbox-containment-post-closure-corrective-roadmap.md` (C001–C003 closed; C004 conditionally closed); Windows sandbox stays separate.
+Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, **accepted ADR-0024** (syntax advisory, authority enforced), proposed ADR-0023 (Linux backend mechanisms). Related command-policy roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Related but independent roadmap: `sandbox-containment-post-closure-corrective-roadmap.md` (C001–C003 closed; C004 conditionally closed); Windows sandbox stays separate.
 
 ## 1. Purpose and ownership boundary
 
@@ -54,14 +54,14 @@ The M001 initial strict-Git implementation is **blocked** by legitimate command 
 | M001 Trusted Git execution boundary and hostile-metadata probes | invariant | `implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` | **blocked: C001–C003 corrective recovery** | Historical M001 closure preserves tested security improvement and 9/12 failing legitimate Git mutation cases; restore capability via actual typed/contained/transport authority, not string blockers |
 | M002 Composable Linux launch and obtained-capability contract | infrastructure | `implementation/linux-execution-isolation/002-composable-linux-launch-contract.md` | **ready: contract only** | Existing ADR-0016/ADR-0024 authorize typed interface/feature probes; ADR-0023 acceptance required before concrete new backend production promotion |
 | M003 Protected workspace mount view | capability | `implementation/linux-execution-isolation/003-protected-workspace-mounts.md` | blocked: M002, ADR-0023 | M001 C001 is interface only; mounted writable workspace with protected Git/secret descendants verified native |
-| M004 Process, IPC and seccomp containment | capability | `implementation/linux-execution-isolation/004-process-ipc-seccomp.md` | blocked: M002; M003 interface | Host processes, daemon sockets and host proc are inaccessible under an opted-in isolated tier |
+| M004 Process, IPC and seccomp containment | capability | `implementation/linux-execution-isolation/004-process-ipc-seccomp.md` | blocked: M002 + accepted ADR-0023; M003 interface | Host processes, daemon sockets and host proc are inaccessible under an opted-in isolated tier |
 | M005 Offline network isolation | capability | `implementation/linux-execution-isolation/005-offline-network-isolation.md` | blocked: M002/M004 | Opt-in offline-required denies TCP/UDP and named network escape channels without silent host fallback |
 | M006 Mediated allowlisted egress | capability | `implementation/linux-execution-isolation/006-mediated-egress.md` | blocked: M005 | Approved targets only through trusted proxy/DNS routing; no direct socket, local service or UDS bypass |
 | M007 Bounded Linux resource envelopes | capability | `implementation/linux-execution-isolation/007-resource-envelopes.md` | blocked: M002 | CPU/memory/pids limits, cleanup and truthful unavailable/degraded status where delegation is absent |
 | C001 M001 typed Git policy/results corrective | invariant | `implementation/linux-execution-isolation/009-m001-typed-git-policy-reconciliation.md` | **ready** | Remove fabricated executable/prefix name bans, typed capabilities/errors, trusted non-executable operations, no uncontained fallback |
 | C002 M001 contained local Git corrective | capability | `implementation/linux-execution-isolation/010-m001-contained-local-git-recovery.md` | blocked: C001, M002–M005 | Restore local Git/filters only through actual mounted, process/IPC/offline containment with Git metadata lease |
 | C003 M001 remote Git corrective | capability | `implementation/linux-execution-isolation/011-m001-authorized-remote-git-recovery.md` | blocked: C001, M005/M006 and transport policy | Independently mediate HTTPS/SSH protocols and credentials; no generic network or agent socket fallback |
-| M008 Qualification, compatibility and rollout gate | invariant | `implementation/linux-execution-isolation/008-qualification-and-rollout.md` | blocked: M001–M007 | Exact-revision native security evidence, documented tool compatibility, explicit adoption/rollback gate |
+| M008 Qualification, compatibility and rollout gate | invariant | `implementation/linux-execution-isolation/008-qualification-and-rollout.md` | blocked: M001/C001–C003, M002–M007, command-policy M003 | Exact-revision native security and syntax-equivalence evidence; documented tool compatibility and explicit adoption/rollback gate |
 
 ## 8. Cross-cutting requirements
 
