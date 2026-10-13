@@ -424,9 +424,16 @@ pub(crate) fn open_panel_box(app: &mut App, id: SidePanelId) {
                 );
                 app.panel_host.set_agents_rows(rows);
                 // `select_panel` is the one seam that both selects and
-                // focuses, so `/agents` and `Shift+L` land on the panel by
+                // loads, so `/agents` and `Shift+L` land on the panel by
                 // exactly the same path rather than by a private shortcut.
+                // It does not *focus*: the two halves are separate on purpose
+                // elsewhere (loading a box must not steal the keyboard from a
+                // focused panel), which left `/agents` loading the panel and
+                // then warning that it had not taken focus — true of the
+                // keyboard, false of the panel. Same order `dock_open_box`
+                // uses.
                 select_panel(app, SidePanelId::Agents);
+                focus_panel(app);
                 if !app.panel_host.is_focused() {
                     app.messages_state
                         .toasts
@@ -714,7 +721,7 @@ pub(crate) fn dock_open_box(app: &mut App, dir: PanelDirection) {
     // `close_dialog` hands back the component it unmounted. For a hosted
     // panel that component is the box itself — same filter, same cursor,
     // same scroll offset — so docking is a move rather than a re-open that
-    // happens to look similar. The four bespoke panels have their own dock
+    // happens to look similar. The bespoke panels have their own dock
     // paths and ignore the returned component.
     let unmounted = app.close_dialog();
     let from = app.panel_host.placement();

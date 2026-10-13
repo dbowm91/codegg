@@ -599,10 +599,20 @@ mod tests {
         assert_eq!(d.cursor(), 0, "must not wrap past the first panel");
     }
 
+    /// Filtering is an Insert-mode act. Opening in Normal is what makes the
+    /// box readable on arrival: `j`/`k` walk the highlight instead of silently
+    /// typing letters nobody can see.
+    #[test]
+    fn the_box_opens_in_normal_so_the_list_is_readable_first() {
+        let d = dialog();
+        assert_eq!(d.input_mode(), InputMode::Normal);
+    }
+
     #[test]
     fn typing_narrows_what_is_visible_without_moving_the_highlight() {
         let mut d = dialog();
         d.handle_key(key(KeyCode::Down, KeyModifiers::NONE)); // highlight Chat
+        d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE)); // to the filter
         for ch in "term".chars() {
             d.handle_key(key(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -611,6 +621,16 @@ mod tests {
         assert!(!d.matches(SidePanelId::Chat));
         assert!(d.matches(SidePanelId::Terminal));
         assert_eq!(d.cursor(), 1, "filtering must not renumber the cursor");
+    }
+
+    /// In Normal a printable is a verb, not text. Without this the box would
+    /// swallow every letter the user typed at it.
+    #[test]
+    fn a_printable_in_normal_is_not_a_filter_character() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        d.handle_key(key(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(d.query, "", "Normal-mode keys must not narrow the list");
     }
 
     #[test]
@@ -626,19 +646,98 @@ mod tests {
         );
     }
 
+    /// `Esc` walks out one step at a time — Insert → Normal → clear → close —
+    /// so one press never discards a query the user is midway through typing.
     #[test]
-    fn escape_clears_the_filter_before_it_closes() {
+    fn escape_leaves_insert_before_it_clears_or_closes() {
         let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
         d.handle_key(key(KeyCode::Char('c'), KeyModifiers::NONE));
+
         assert_eq!(
             d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
             None,
             "one Esc must not discard a query mid-typing"
         );
+        assert_eq!(d.input_mode(), InputMode::Normal);
+        assert_eq!(d.query, "c", "the query survives Esc");
+
         assert_eq!(
             d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
-            Some(TuiMsg::CloseDialog)
+            None,
+            "a second Esc clears rather than closing"
         );
+        assert_eq!(d.query, "", "the query is cleared");
+
+        assert_eq!(
+            d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(TuiMsg::CloseDialog),
+            "a third Esc, with nothing left to clear, closes"
+        );
+    }
+
+    /// The reason the box needs a mode of its own: in Normal the gesture is
+    /// free, so it means "put this panel over there" — the same gesture the
+    /// main buffer uses, not a manager-only verb with its own vocabulary.
+    #[test]
+    fn the_normal_directional_moves_the_highlighted_panel() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT)),
+            Some(TuiMsg::MovePanelTo {
+                panel: SidePanelId::Session,
+                placement: PanelPlacement::Left,
+            })
+        );
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT)),
+            Some(TuiMsg::MovePanelTo {
+                panel: SidePanelId::Session,
+                placement: PanelPlacement::Right,
+            })
+        );
+        // The arrow twin resolves identically, for terminals that disagree
+        // about how a shifted letter arrives.
+        assert_eq!(
+            d.handle_key(key(KeyCode::Left, KeyModifiers::SHIFT)),
+            Some(TuiMsg::MovePanelTo {
+                panel: SidePanelId::Session,
+                placement: PanelPlacement::Left,
+            })
+        );
+    }
+
+    /// `Shift+K` names no edge — there is no top — so it must do nothing at
+    /// all rather than inventing a destination.
+    #[test]
+    fn an_upward_directional_moves_nothing() {
+        let mut d = dialog();
+        assert_eq!(
+            d.handle_key(key(KeyCode::Char('K'), KeyModifiers::SHIFT)),
+            None
+        );
+    }
+
+    /// The guard that makes the split necessary: in Insert, `Shift+H` is the
+    /// letter `H` and has to reach the filter.
+    #[test]
+    fn the_directional_is_a_filter_character_in_insert() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+        d.handle_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+        assert_eq!(d.input_mode(), InputMode::Insert);
+        assert_eq!(d.query, "H", "the H reached the filter");
+    }
+
+    /// A bare arrow is not the gesture. In the manager it walks the highlight
+    /// in either mode, because it is never a letter.
+    #[test]
+    fn a_bare_arrow_walks_the_list_in_insert() {
+        let mut d = dialog();
+        d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
+        d.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(d.cursor(), 1);
+        assert_eq!(d.query, "", "and did not filter anything");
     }
 
     // --------------------------------------------------------------- layout

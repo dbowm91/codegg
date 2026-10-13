@@ -980,7 +980,7 @@ changing the frame to match a strip is not.
 
 #### Panels
 
-Four panels are **bespoke** — they own live projections or a controller and
+Five panels are **bespoke** — they own live projections or a controller and
 need their own key model:
 
 | Panel | Title badge | Holds |
@@ -989,16 +989,17 @@ need their own key model:
 | `Chat` | `[CHAT]` | interactive project chat |
 | `Terminal` | `[TERMINAL]` | the live PTY view |
 | `Help` | `[HELP]` | the keybinding reference |
+| `Agents` | `[AGENTS]` | the M006-F management rows |
 
-The other **29** are **hosted**: each is a `/` command that brings up a box,
+The other **28** are **hosted**: each is a `/` command that brings up a box,
 and the panel holds that box's component rather than a lookalike. They are one
-implementation (`panels/hosted.rs`), not 29:
+implementation (`panels/hosted.rs`), not 28:
 
 | Group | Panels |
 |---|---|
 | Lists | `Tree` `Sessions` `Tasks` `Plan` `Goal` `Collaborators` `Memory` `Research` |
 | Reports | `Logs` `Context` `Cost` `Usage` `Stats` `Doctor` `ShellShow` `Security` |
-| Pickers | `Models` `Agents` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
+| Pickers | `Models` `Mcp` `Keybinds` `Themes` `Plugins` `Team` `Control` `Workspace` `TaskView` `Diff` `Review` |
 | Browsers | `Files` |
 
 Which panel is loaded is chosen by the **panel manager box**
@@ -1013,10 +1014,22 @@ and `label`/`title`/`hint`/`load_command`/`config_key` arms, **plus an arm in
 the one site outside this file that fails to compile if missed — and a
 `dock_target` arm in `App` so `L` knows where the box goes. `title` must be
 all-ASCII uppercase and `config_key` snake_case and unique; both are enforced.
-The host constructs the backing `HostPanel` from `ALL`, so there is no host
-field, no `panel()` arm and no render-path branch. Adding a **bespoke** panel
-additionally needs a `SidePanel` impl, a host field, and arms in `panel()`,
-`panel_is_empty()` and `composer_hints()`.
+The host constructs the backing `HostPanel` from `ALL` filtered on
+`SidePanelId::is_bespoke()`, so there is no host field, no `panel()` arm and no
+render-path branch. Adding a **bespoke** panel means adding it to
+`is_bespoke()`, writing a `SidePanel` impl, adding a host field, and adding arms
+in `panel()`, `panel_is_empty()` and `composer_hints()`.
+
+That filter is **load-bearing, not bookkeeping**. `materialize_hosted_panel`
+proceeds only for a panel whose `hosted_panel_has_content` is `Some(false)` —
+a hosted panel with no box adopted — and its first move is `open_panel_box`,
+which returns through `select_panel` into `materialize_hosted_panel` again. A
+bespoke panel that keeps a hosted placeholder therefore answers `Some(false)`
+and loops: `/agents` overflowed the stack and aborted the process. `is_bespoke`
+is the single list both the constructor and the bespoke-or-hosted test read,
+because when they were two separate `matches!` literals they drifted the moment
+a fifth bespoke panel was added, and the test agreed with the bug by comparing
+against the same stale literal.
 
 **A box and its panel open in different modes.** `HelpDialog::new_with_mode`
 takes the starting mode from its caller, and the two callers disagree on
@@ -2691,7 +2704,7 @@ action.
   selecting it, through the same seams as its `/` command
   (`materialize_hosted_panel`/`open_panel_box`). A synchronous snapshot box
   is opened and adopted immediately, so `Shift+S` + `Enter` lands on live
-  content with focus — the behaviour the four bespoke panels always had. A
+  content with focus — the behaviour the bespoke panels always had. A
   live-loading box (Research, Task view) stays open as a modal instead:
   adopting its spinner would freeze it and cancel the load, so the toast
   names the one remaining step (`L` to dock). Panels with genuinely nothing

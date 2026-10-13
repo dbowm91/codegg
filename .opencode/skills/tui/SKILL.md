@@ -162,15 +162,20 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `ui.panel_placement`; the strip is deliberately **display-only** rather than
   rows in the navigable list, because "which edge" and "which panel" are
   different questions and merging them renumbers every panel row. 33 panels
-  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 29
+  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 28
   **hosted** — one per `/` command that brings up a box. Which one is loaded
   is chosen by the same manager, which renders `SidePanelId::ALL` directly —
   the list it shows *is* the registry. To add a **hosted** panel (the common case): an enum
   variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
   `load_command`/`config_key` arms. The host builds its `HostPanel` from
-  `ALL`, so there is no host field, no `panel()` arm and no render-path
-  branch. To add a **bespoke** panel also write a `SidePanel` impl and add
-  arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  `ALL` filtered on **`SidePanelId::is_bespoke()`**, so there is no host field,
+  no `panel()` arm and no render-path branch. To add a **bespoke** panel: add
+  it to `is_bespoke()`, write a `SidePanel` impl, and add arms in `panel()`,
+  `panel_is_empty()`, `composer_hints()`. That list is load-bearing, not
+  documentation — a bespoke panel left out of it keeps a hosted placeholder,
+  and `materialize_hosted_panel` reads that placeholder as "an unloaded box"
+  and calls `open_panel_box`, which calls `select_panel`, which calls it again.
+  That loop killed the process on `/agents`.
   Docking is a **move**: `App::close_dialog` returns the component it
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
   box's filter, cursor and scroll. Selecting an empty hosted panel loads it
