@@ -286,6 +286,26 @@ print(f"descendant_probe_pid={child.pid}")
         let _ = fs::remove_dir_all(&run_root);
         return;
     }
+    let handle_probe_executable = stage.join("handle-probe.exe");
+    let harness_executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            root_report(
+                &format!("resolve harness executable for handle probe: {error}"),
+                &backends,
+            );
+            let _ = fs::remove_dir_all(&run_root);
+            return;
+        }
+    };
+    if let Err(error) = fs::copy(&harness_executable, &handle_probe_executable) {
+        root_report(
+            &format!("stage native inherited-handle probe: {error}"),
+            &backends,
+        );
+        let _ = fs::remove_dir_all(&run_root);
+        return;
+    }
     let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let system32 = PathBuf::from(&system_root).join("System32");
     let mut lines = vec![
@@ -301,10 +321,9 @@ print(f"descendant_probe_pid={child.pid}")
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
     ];
-    let executable = std::env::current_exe().expect("harness executable path");
     lines.push(format!(
         "{} --c020-inherited-handle-probe",
-        batch_quote(&executable)
+        batch_quote(&handle_probe_executable)
     ));
     lines.push(
         "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)".into(),
