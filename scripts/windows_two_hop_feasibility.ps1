@@ -324,7 +324,9 @@ try {
     if ($sidPointer -ne [IntPtr]::Zero) { [void][C032Native]::LocalFree($sidPointer) }
 }
 '@
-    $script = "Add-Type -TypeDefinition @'`n$nativeSource`n'@`n" + $script
+    $bootstrap = "try { Add-Type -TypeDefinition @'`n$nativeSource`n'@ } catch { [ordered]@{ contract = 'codegg.windows_two_hop_feasibility.v1'; phase = 'native-bootstrap'; error = `$_.Exception.Message } | ConvertTo-Json -Compress | Set-Content -LiteralPath `$Report -Encoding utf8; exit 90 }`n"
+    $firstLineEnd = $script.IndexOf("`n")
+    $script = $script.Substring(0, $firstLineEnd + 1) + $bootstrap + $script.Substring($firstLineEnd + 1)
     [IO.File]::WriteAllText($runnerScript, $script, [Text.Encoding]::Unicode)
     $runnerAcl = Get-Acl -LiteralPath $runnerScript
     $runnerAcl.SetAccessRuleProtection($true, $false)
