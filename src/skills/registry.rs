@@ -772,9 +772,18 @@ mod tests {
             Some(home.path().to_path_buf()),
         );
         for (path, kind) in candidates {
-            assert!(roots.iter().any(|root| {
-                root.kind == kind && root.canonical_path == home.path().join(path)
-            }));
+            // `canonical_path` holds the canonicalized root, so compare
+            // against the canonical form of the expectation: `tempfile`
+            // hands back `/var/...` on macOS where the canonical root is
+            // `/private/var/...`.
+            let expected = home
+                .path()
+                .join(path)
+                .canonicalize()
+                .expect("canonical candidate root");
+            assert!(roots
+                .iter()
+                .any(|root| { root.kind == kind && root.canonical_path == expected }));
         }
     }
 

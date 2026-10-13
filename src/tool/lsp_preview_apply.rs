@@ -746,7 +746,7 @@ mod tests {
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
         );
 
-        let (preview_id, first_handle_identity) = {
+        let (preview_id, registry_a, handle_a) = {
             let registry_a = production_registry(
                 pool.clone(),
                 root.path(),
@@ -761,7 +761,7 @@ mod tests {
             let preview_id = register_formatting_preview(&handle_a, root.path(), &path);
             assert!(handle_a.lock().get(&preview_id).is_some());
             assert!(registry_a.get("lsp_preview_apply").is_some());
-            (preview_id, Arc::as_ptr(&handle_a) as usize)
+            (preview_id, registry_a, handle_a)
         };
 
         let registry_b = production_registry(
@@ -775,7 +775,12 @@ mod tests {
         let handle_b = registry_b
             .lsp_preview_registry()
             .expect("registry B preview handle");
-        assert_ne!(first_handle_identity, Arc::as_ptr(&handle_b) as usize);
+        // Identity is only decidable while both registries are alive: after A
+        // drops, the allocator may reuse its block for B, so comparing raw
+        // addresses can legitimately coincide.
+        assert!(!Arc::ptr_eq(&handle_a, &handle_b));
+        drop(handle_a);
+        drop(registry_a);
         assert!(handle_b.lock().get(&preview_id).is_none());
 
         let checkpoints_before: i64 =

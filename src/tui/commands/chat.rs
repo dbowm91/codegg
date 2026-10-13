@@ -1542,13 +1542,12 @@ pub(crate) fn start_chat_load_older(app: &mut App, project_id: String) {
                     messages,
                     has_older,
                     retention_floor_seq,
-                    // `older_cursor` is intentionally unused: the next
-                    // page is anchored from the window's own oldest
-                    // message, which stays authoritative once the merge
-                    // has applied the retention bound. Trusting a cursor
-                    // from a page that got trimmed would re-fetch rows the
-                    // window already holds.
-                    older_cursor: _,
+                    // `older_cursor` is deliberately not destructured: the
+                    // next page is anchored from the window's own oldest
+                    // message, which stays authoritative once the merge has
+                    // applied the retention bound. Trusting a cursor from a
+                    // page that got trimmed would re-fetch rows the window
+                    // already holds.
                     ..
                 }) => Some(TuiCommand::ChatHistoryOlderLoaded {
                     request_id,

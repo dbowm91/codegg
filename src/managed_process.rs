@@ -1437,6 +1437,18 @@ async fn wait_for_child(
         status = child.wait() => {
             status
                 .map(|status| {
+                    // The reader truncates on its first chunk and queues the
+                    // overflow notice, so an overflow and the child's exit
+                    // routinely become ready in the same poll. `select!` picks
+                    // randomly when that happens, and the loser branch is
+                    // dropped, so `terminate_on_overflow` could report the
+                    // exit instead of the overflow that policy says to act on.
+                    // Drain the notice here so the queued signal always wins
+                    // over the coincident exit.
+                    let overflow = match overflow_policy {
+                        OverflowPolicy::Terminate => overflow_rx.try_recv().ok(),
+                        OverflowPolicy::ContinueDrain => None,
+                    };
                     let cleanup = CleanupDiagnostics::default();
                     #[cfg(windows)]
                     let cleanup = {
@@ -1444,7 +1456,11 @@ async fn wait_for_child(
                         cleanup.job_object_established = process_job.is_some();
                         cleanup
                     };
-                    (status, TerminationReason::Exited, cleanup)
+                    let termination = match overflow {
+                        Some(stream) => TerminationReason::OutputLimitExceeded { stream },
+                        None => TerminationReason::Exited,
+                    };
+                    (status, termination, cleanup)
                 })
                 .map_err(ManagedProcessError::Wait)
         }
