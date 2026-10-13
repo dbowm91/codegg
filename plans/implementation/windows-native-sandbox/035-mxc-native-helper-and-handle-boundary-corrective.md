@@ -1,6 +1,6 @@
 # Windows Native Sandbox C035 — MXC Native-helper Startup and Inherited-handle Boundary Corrective
 
-Status: **ready for bounded test-only implementation**; native qualification is operationally gated on eligible Windows 11 ARM64 host
+Status: **implemented; conditionally closed as a bounded negative test-only candidate**
 Primary class: corrective / security-infrastructure
 Planning baseline: `80139df351e9a77f46f7b09f904a0d6e854939b4` on `work/windows-native-sandbox-foundation`; implementation agent MUST refresh head/evidence before edits.
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0023-mxc-helper-diagnostic-corrective`.
