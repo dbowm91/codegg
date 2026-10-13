@@ -3,25 +3,28 @@
 Status: blocked
 Source implementation plan: `plans/implementation/windows-native-sandbox/045-optional-identity-wfp-and-provisioning-lifecycle.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0027-capability-stratified-successor-handoff-post-pr-111-merge-2026-10-13`
-Repository baseline reviewed: `edde2bebe`
+Repository baseline reviewed: `76e9e9c9`
 Implementation commits: none (provisioning explicitly forbidden until candidate + separate ADR)
 
 ## 1. Executive finding
 
 C045 is blocked by design. The plan forbids implementing provisioning
 until a qualified principal backend exists plus a separately accepted
-operator/provisioning ADR with explicit consent. Neither exists: C044
-is blocked (harness landed, no host execution), no principal backend
-is qualified, no provisioning ADR was proposed or accepted, and no
-consented disposable Windows VM ran. No CLI onboarding, WFP rules,
-identity lifecycle, or network proof was built, and none is claimed.
+operator/provisioning ADR with explicit consent. Neither exists — and
+the backend gate has now failed closed rather than merely unrun: C044
+is closed negative this revision (run `38468468249`: static native
+child alive 30 s without entry, no strict-positive), C043 is closed
+negative (pinned MXC init/handle gaps reproduce), no provisioning ADR
+was proposed or accepted, and no consented disposable Windows VM ran
+beyond the CI fixtures above. No CLI onboarding, WFP rules, identity
+lifecycle, or network proof was built, and none is claimed.
 Filesystem-only containment needs no WFP, and no network claim is made.
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Qualified C044/approved principal backend | C044 blocked (this line) | blocked | Hard gate unsatisfied |
+| Qualified C044/approved principal backend | C044 closed negative + C043 closed negative (this revision) | blocked | Hard gate failed closed, not merely unrun |
 | C042 contract | C042 closed at `edde2bebe` | pass (predecessor) | Network-offline dimension ready when needed |
 | Explicit provisioning ADR + operator consent | no ADR, no consent | blocked | Plan forbids implementation without both |
 | Disposable Windows VM lifecycle proof | not run | blocked | No host |
@@ -78,9 +81,10 @@ then the C045 work packages A–D on a disposable host.
 
 ## 11. Roadmap disposition
 
-Milestone blocked (conditional). Unaffected by C041/C042/C044/C047
-closures beyond C042 readiness. Does not gate any other milestone;
-MXC filesystem-only qualification (C043) explicitly does not need it.
+Milestone blocked (conditional). The backend gate is now settled
+negative on both lines (C043/C044 closures, this revision), so no
+provisioning ADR has a qualifying backend to premise on. MXC
+filesystem-only qualification (C043) explicitly did not need it.
 
 ## 12. Registry updates
 

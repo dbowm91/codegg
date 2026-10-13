@@ -3,7 +3,7 @@
 Status: blocked
 Source implementation plan: `plans/implementation/windows-native-sandbox/046-optional-staged-workspace-transactional-promotion.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0027-capability-stratified-successor-handoff-post-pr-111-merge-2026-10-13`
-Repository baseline reviewed: `edde2bebe`
+Repository baseline reviewed: `76e9e9c9`
 Implementation commits: none (staging requires separate selection evidence + new ADR)
 
 ## 1. Executive finding
@@ -12,7 +12,8 @@ C046 is blocked. The plan offers a staged-workspace/promotion backend
 only if a selected native policy cannot safely execute against the
 real worktree, and only under a new accepted staging architecture
 decision. Neither condition holds: no candidate is selected (C043
-blocked, C044 blocked), no staging-need evidence exists, no staging
+and C044 closed negative this revision), no staging-need evidence
+exists, no staging
 ADR was proposed or accepted, and historic ADR-0019 C015–C018 stay
 blocked and are not reopened. No snapshot/manifest, materialization,
 promotion, journal, or rollback code was built.
@@ -21,7 +22,7 @@ promotion, journal, or rollback code was built.
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Candidate evidence that direct worktree cannot satisfy guarantees | none (no selected candidate) | blocked | C043/C044 both blocked |
+| Candidate evidence that direct worktree cannot satisfy guarantees | none (no selected candidate; C043/C044 closed negative this revision) | blocked | No staging problem to solve |
 | New accepted staging ADR | none | blocked | Hard gate; C015–C018 not reused |
 | C042 contract | C042 closed at `edde2bebe` | pass (predecessor) | Ready when staging is ever selected |
 | Genuine deny matrix + toolchain + identity + promotion + rollback proof | not run | blocked | No host, no backend |

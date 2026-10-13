@@ -3,17 +3,20 @@
 Status: blocked
 Source implementation plan: `plans/implementation/windows-native-sandbox/048-independent-windows-security-admission-and-release.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0027-capability-stratified-successor-handoff-post-pr-111-merge-2026-10-13`
-Repository baseline reviewed: `edde2bebe`
+Repository baseline reviewed: `76e9e9c9`
 Implementation commits: none (admission forbidden without strict-positive backend + review + ADR)
 
 ## 1. Executive finding
 
-C048 is blocked. The final admission gate requires C042+C047 (now
-closed), an independently strict-positive backend (none: C043
-blocked, C044 blocked, all predecessors no-admission/negative), a new
-accepted production-admission ADR (none), a supported host matrix with
-lifecycle proof (none), and independent security review (none
-requested, correctly — there is no candidate to review). No backend
+C048 is blocked. The final admission gate requires C042+C047 (both
+closed), an independently strict-positive backend (none, and both
+lines have now closed negative on hosted evidence: C043 pinned-MXC
+init/handle gaps reproduce in run `38459657632`; C044 static native
+child alive-without-entry in run `38468468249`; all predecessors
+no-admission/negative), a new accepted production-admission ADR
+(none), a supported host matrix with lifecycle proof (none), and
+independent security review (none requested, correctly — there is no
+candidate to review). No backend
 was registered, no installer/diagnostics/help updated, no release
 policy recorded. Windows `SandboxRequest::Required` stays unavailable/
 fail-closed; no filesystem/network `Enforced` is emitted. If no
@@ -25,7 +28,7 @@ no-admission rather than another unbounded corrective cycle.
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | C042 + C047 hard deps | C042 closed, C047 audit closed at `edde2bebe` | pass (predecessors) | Only satisfied gates |
-| Strict-positive real-child backend | none | blocked | C043/C044 blocked; C029/C034/C038 no-admission intact |
+| Strict-positive real-child backend | none — C043 + C044 closed negative this revision | blocked | Both candidate lines exhausted on hosted evidence; C029/C034/C038 no-admission intact |
 | New production-admission ADR | none | blocked | ADR-0027 is test-only by design; ADR-0028 proposed only |
 | Host matrix + lifecycle + network qualification | not run | blocked | No eligible host run |
 | Independent security review | not requested | blocked (correct) | No candidate warrants review |
@@ -83,7 +86,7 @@ independent review before any registration.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| high | No strict-positive backend exists | Nothing to admit | Qualify C043 or C044 strict-positive first |
+| high | No strict-positive backend exists | Nothing to admit | Both lines closed negative on hosted evidence; a future lane needs a new backend + new plan, not a C043/C044 loop |
 | high | No production-admission ADR or independent review | Admission forbidden | Accept ADR + review only after positive backend |
 | medium | No host-matrix/lifecycle evidence | Support claims impossible | Windows 11 eligible + alternate-arch runs per plan |
 
