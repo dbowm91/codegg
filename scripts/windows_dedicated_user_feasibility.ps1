@@ -254,7 +254,9 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
     $job = [C021Native]::CreateJobObjectW([IntPtr]::Zero, $null)
     if ($job -eq [IntPtr]::Zero) { throw "CreateJobObjectW failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
     $limits = [C021JobExtendedLimitInformation]::new()
-    $limits.BasicLimitInformation.LimitFlags = 0x00002000
+    $basicLimits = $limits.BasicLimitInformation
+    $basicLimits.LimitFlags = 0x00002000
+    $limits.BasicLimitInformation = $basicLimits
     $limitBytes = [uint32][Runtime.InteropServices.Marshal]::SizeOf([type][C021JobExtendedLimitInformation])
     if (-not [C021Native]::SetInformationJobObject($job, 9, [ref]$limits, $limitBytes)) {
         throw "SetInformationJobObject failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
