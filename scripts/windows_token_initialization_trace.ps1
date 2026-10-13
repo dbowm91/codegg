@@ -196,6 +196,11 @@ try {
         (Start-TraceChild 'no-crt-no-profile' $noCrt 0 $accountSid),
         (Start-TraceChild 'no-crt-with-profile' $noCrt 1 $accountSid)
     )
+    foreach ($case in $results) {
+        $case['failure_phase']=if(-not $case.created){'process-creation'}elseif($case.timed_out -and -not $case.entry_marker){'pre-user-entry'}elseif($case.timed_out -and $case.entry_marker -and -not $case.completed_marker){'after-entry-before-completion'}elseif($case.timed_out){'post-completion-before-exit'}elseif($case.exit_code -ne 0){'child-exit'}else{$null}
+    }
+    $allCompleted=@($results|Where-Object{$_.created -and $_.completed_marker -and -not $_.timed_out -and $_.exit_code -eq 0}).Count -eq 4
+    $allPreEntryTimedOut=@($results|Where-Object{$_.created -and $_.timed_out -and -not $_.entry_marker}).Count -eq 4
     $os=Get-CimInstance Win32_OperatingSystem
     $report=[ordered]@{
         contract='codegg.windows_token_initialization_trace.v1'; source_sha=(git rev-parse HEAD).Trim()
@@ -204,22 +209,25 @@ try {
         launch_api='CreateProcessWithTokenW'; executable_path='absolute'; command_line='quoted absolute path'; cwd='unique owned per-case directory'
         creation_flags='CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT'; handles_inherited=$false; environment='CreateEnvironmentBlock(target token)'; profile_flags=@{ absent=0; LOGON_WITH_PROFILE=1 }
         desktop='default inherited'; stdio='not redirected'; cases=$results
-        disposition=if(@($results|Where-Object{$_.created -and $_.completed_marker -and -not $_.timed_out -and $_.exit_code -eq 0}).Count -eq 4){'all-initialization-controls-completed'}else{'phase-isolated-or-unresolved'}
+        disposition=if($allCompleted){'all-initialization-controls-completed'}elseif($allPreEntryTimedOut){'negative-pre-user-entry-timeout'}else{'phase-isolated-or-unresolved'}
+        report_collection_complete=(@($results).Count -eq 4)
         production_admission=$false; restricted_read_claim=$false
     }
     $json=$report|ConvertTo-Json -Depth 10 -Compress
     "C028_REPORT=$json"
     if ($env:GITHUB_STEP_SUMMARY) { $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
-    if (@($results|Where-Object{-not $_.created -or -not $_.completed_marker -or $_.timed_out -or $_.exit_code -ne 0}).Count -gt 0) { throw 'C028 one or more bounded initialization cases did not complete; report records phase.' }
+    if (@($results).Count -ne 4) { throw 'C028 did not collect all four bounded case results.' }
 } catch {
     "C028_FAILURE=$($_.Exception.ToString())"; throw
 } finally {
     if ($baseToken -ne [IntPtr]::Zero) { [void][C028Native]::CloseHandle($baseToken) }
     if ($accountCreated) {
         Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
-        if (-not (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) { 'C028_CLEANUP principal_removed=true' }
+        if (Get-LocalUser -Name $account -ErrorAction SilentlyContinue) { throw 'C028 cleanup failed to remove the disposable principal.' }
+        'C028_CLEANUP principal_removed=true'
     }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $root) { throw 'C028 cleanup failed to remove its unique fixture root.' }
     if ($passwordSecure) { $passwordSecure.Dispose() }
     $password=$null
 }
