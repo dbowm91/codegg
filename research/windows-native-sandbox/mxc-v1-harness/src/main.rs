@@ -231,25 +231,20 @@ fn main() {
         }
     };
     let handle_probe_source = r#"
-import ctypes
 import msvcrt
 import os
 
 handle = int(os.environ["C020_SECRET_HANDLE"])
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-kernel32.GetFileType.argtypes = [ctypes.c_void_p]
-kernel32.GetFileType.restype = ctypes.c_uint
-if kernel32.GetFileType(ctypes.c_void_p(handle)) != 1:
-    print("inherited_handle=not_transferred")
-else:
+try:
+    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
     try:
-        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
-        try:
-            print("inherited_handle=leaked" if os.read(fd, 128) == b"synthetic-c020-secret" else "inherited_handle=not_transferred")
-        finally:
-            os.close(fd)
+        print("inherited_handle=leaked" if os.read(fd, 128) == b"synthetic-c020-secret" else "inherited_handle=not_transferred")
     except OSError:
         print("inherited_handle=not_transferred")
+    finally:
+        os.close(fd)
+except OSError:
+    print("inherited_handle=not_transferred")
 "#;
     let descendant_probe_source = r#"
 import os
