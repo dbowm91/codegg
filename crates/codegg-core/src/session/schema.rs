@@ -241,6 +241,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 73 {
         migrate_and_record(pool, 73).await?;
     }
+    if current_version < 74 {
+        migrate_and_record(pool, 74).await?;
+    }
 
     Ok(())
 }
@@ -326,6 +329,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             71 => migrate_v71(&mut tx).await?,
             72 => migrate_v72(&mut tx).await?,
             73 => migrate_v73(&mut tx).await?,
+            74 => migrate_v74(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2959,6 +2963,50 @@ async fn migrate_v73(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "#,
         "CREATE INDEX IF NOT EXISTS idx_job_notification_session ON job_notification(session_id, state, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_job_notification_job ON job_notification(job_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs M003: durable single-use continuation leases.
+///
+/// One row per terminal notice that opted into `resume_owner` at submit
+/// time (`lease_id = notice_id = job_id`). The lease binds immutable
+/// session/owner/principal/workspace/turn ancestry, the authorized
+/// continuation mode, expiry, and a single-wake budget. Delivery consumes
+/// the lease exactly once via CAS; expiry/cancel/revocation suppresses it.
+/// No inference is ever spent by the lease row itself — consumption only
+/// authorizes one bounded continuation at the next safe, user-authorized
+/// turn boundary. No historical row is backfilled: absent lease means
+/// `notify_only`, the conservative default.
+async fn migrate_v74(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS job_continuation_lease (
+            lease_id TEXT PRIMARY KEY,
+            notice_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            owner_principal TEXT,
+            workspace_id TEXT,
+            authorized_mode TEXT NOT NULL CHECK (authorized_mode IN ('resume_owner')),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'expired', 'suppressed')),
+            expiry_ms INTEGER NOT NULL,
+            max_wakes INTEGER NOT NULL CHECK (max_wakes >= 1 AND max_wakes <= 8),
+            wakes_used INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(notice_id, lease_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_session ON job_continuation_lease(session_id, status, expiry_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_job ON job_continuation_lease(job_id)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

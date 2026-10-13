@@ -718,6 +718,30 @@ Uses `BTreeMap` for deterministic iteration order.
 | `EMERGENCY_DEFAULT_MODEL` | Hardcoded fallback when no model configured |
 | `CODEGG_ROUTING_DISABLE=1` | Kill switch for command routing |
 
+## Background job continuation (M003)
+
+`src/agent/job_notification_recovery.rs` drives M001 generic job notices at
+safe turn boundaries through `follow_up.rs::inject_pending_notifications`
+(exact owning session only; no cross-turn injection; no stale sender for
+ended turns; no synthesized user utterance; completed turns are never
+reopened). Three dispositions: `notify_only` (default — durable attention
+event, next turn may inspect/consume, zero model tokens spent by delivery),
+`resume_owner` (explicit opt-in via `on_complete` — one single-use lease per
+logical terminal, consumed exactly once under duplicate terminals and
+concurrent frontends, within TTL and wake budget), `suppress`
+(cancelled/archived — audit/inspect only). The lease binds immutable
+session/turn/principal/workspace ancestry plus the authorized mode; user
+cancel, expiry, revocation, or owner mismatch suppresses it before any
+invocation. No recursive `AgentLoop::run()` from scheduler callbacks and no
+competing inference queue: consumption only authorizes one bounded
+continuation at the next user-authorized turn; the daemon never auto-spends
+inference on an idle turn. Delivery states
+`Pending → SessionEventCommitted → AvailableToOwner/ResumeQueued →
+Consumed/Expired/Suppressed` are queryable via
+`JobNotificationService::delivery_state`. Crash at persist/append/ack/claim
+boundaries reconstructs without duplicate inference (confirm-then-mark,
+mark-then-consume, consume-then-ack are separate durable steps).
+
 ## Invariants & Gotchas
 
 ### Session transcript persistence

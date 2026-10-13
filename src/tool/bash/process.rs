@@ -1367,10 +1367,17 @@ impl BashTool {
         let invocation_key = audit_ctx
             .and_then(|c| c.invocation_key.clone())
             .unwrap_or_else(|| format!("bash-bg:{}", uuid::Uuid::new_v4()));
+        let owner_principal = audit_ctx.and_then(|c| {
+            c.origin_principal
+                .clone()
+                .or_else(|| c.principal_identity.clone())
+        });
         Ok(BashBackgroundCtx {
             session_id,
             turn_id,
             invocation_key,
+            disposition: crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly,
+            owner_principal,
         })
     }
 
@@ -1436,12 +1443,16 @@ impl BashTool {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
         notifications
-            .subscribe(
+            .subscribe_with_options(
                 &submitted.job_id,
                 kind_str,
                 &bg.session_id,
                 bg.turn_id.as_deref(),
                 &bg.invocation_key,
+                bg.disposition,
+                bg.owner_principal.as_deref(),
+                Some(submitted.workspace_id.as_str()),
+                None,
             )
             .await
             .map_err(|e| ToolError::Execution(format!("background subscribe failed: {e}")))?;
@@ -1460,6 +1471,7 @@ impl BashTool {
             "submitted_at": handle.submitted_at,
             "inspect_ref": handle.inspect_ref,
             "cancel_ref": handle.cancel_ref,
+            "on_complete": bg.disposition.as_str(),
             "message": "background bash accepted; one terminal notification will arrive without polling",
         }))
     }
@@ -1633,6 +1645,8 @@ pub(crate) struct BashBackgroundCtx {
     pub session_id: String,
     pub turn_id: Option<String>,
     pub invocation_key: String,
+    pub disposition: crate::scheduler::job_notifications::JobCompletionDisposition,
+    pub owner_principal: Option<String>,
 }
 
 #[cfg(test)]

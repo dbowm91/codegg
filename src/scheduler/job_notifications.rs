@@ -174,6 +174,113 @@ pub struct JobBackgroundSubscription {
     pub invocation_key: String,
     pub kind: String,
     pub created_at: i64,
+    /// M003 delivery disposition requested at submit time. `notify_only`
+    /// is the conservative default; `resume_owner` opts one background
+    /// wait into a single bounded continuation. Old rows (pre-M003)
+    /// deserialize as `notify_only`.
+    #[serde(default)]
+    pub disposition: JobCompletionDisposition,
+}
+
+/// M003 typed completion dispositions.
+///
+/// - `notify_only` (default): persist a redacted attention event and let
+///   frontends show it; the next model turn may inspect and consume it.
+///   No model tokens are spent by delivery itself.
+/// - `resume_owner`: the owning task explicitly authorized one bounded
+///   continuation for this wait. Delivery consumes a single-use lease
+///   (exactly one continuation per logical terminal) at the next safe,
+///   user-authorized turn boundary. Never an autonomous wake.
+/// - `suppress`: cancelled/archived owner; audit/inspect only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum JobCompletionDisposition {
+    #[default]
+    NotifyOnly,
+    ResumeOwner,
+    Suppress,
+}
+
+impl JobCompletionDisposition {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "resume_owner" | "resume" => Self::ResumeOwner,
+            "suppress" => Self::Suppress,
+            _ => Self::NotifyOnly,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotifyOnly => "notify_only",
+            Self::ResumeOwner => "resume_owner",
+            Self::Suppress => "suppress",
+        }
+    }
+}
+
+/// M003 single-use continuation lease: exactly one accepted
+/// model-continuation per logical terminal notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobContinuationLease {
+    pub lease_id: String,
+    pub notice_id: String,
+    pub job_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub owner_principal: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    pub authorized_mode: String,
+    pub status: JobContinuationStatus,
+    pub expiry_ms: i64,
+    pub max_wakes: u32,
+    #[serde(default)]
+    pub wakes_used: u32,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobContinuationStatus {
+    Pending,
+    Consumed,
+    Expired,
+    Suppressed,
+}
+
+pub fn job_continuation_status_to_str(s: JobContinuationStatus) -> &'static str {
+    match s {
+        JobContinuationStatus::Pending => "pending",
+        JobContinuationStatus::Consumed => "consumed",
+        JobContinuationStatus::Expired => "expired",
+        JobContinuationStatus::Suppressed => "suppressed",
+    }
+}
+
+/// Delivery state diagram (M003 work package A):
+/// `Pending -> SessionEventCommitted -> AvailableToOwner / ResumeQueued
+/// -> Consumed / Expired / Suppressed`.
+///
+/// The durable `JobTerminalNotice.state` carries the first two legs
+/// (`Pending -> Claimed -> Delivered` mirrors commit + ack); the
+/// continuation lease carries the resume leg (`Pending -> Consumed /
+/// Expired / Suppressed`). A `Delivered` notice with no lease is
+/// `AvailableToOwner`; with a consumed lease it is `Consumed`; an
+/// expired/suppressed lease or notice is `Expired / Suppressed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobDeliveryState {
+    Pending,
+    SessionEventCommitted,
+    AvailableToOwner,
+    ResumeQueued,
+    Consumed,
+    Expired,
+    Suppressed,
 }
 
 /// Minimal terminal job view used for crash recovery without holding the
@@ -194,8 +301,32 @@ pub struct JobNotificationService {
     notices: RwLock<HashMap<String, JobTerminalNotice>>,
     session_index: RwLock<HashMap<String, Vec<String>>>,
     subscriptions: RwLock<HashMap<String, JobBackgroundSubscription>>,
+    leases: RwLock<HashMap<String, JobContinuationLease>>,
     pub policy: JobNotificationPolicy,
+    pub continuation_policy: JobContinuationPolicy,
     pool: Option<SqlitePool>,
+}
+
+/// Bounds for single-use continuation leases (M003).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobContinuationPolicy {
+    /// Default lease TTL in milliseconds when the caller supplies none.
+    pub default_ttl_ms: i64,
+    /// Maximum TTL a caller may request.
+    pub max_ttl_ms: i64,
+    /// Maximum wakes per lease (always 1 in M003: exactly one continuation
+    /// per logical terminal).
+    pub max_wakes: u32,
+}
+
+impl Default for JobContinuationPolicy {
+    fn default() -> Self {
+        Self {
+            default_ttl_ms: 30 * 60 * 1_000,
+            max_ttl_ms: 4 * 60 * 60 * 1_000,
+            max_wakes: 1,
+        }
+    }
 }
 
 impl JobNotificationService {
@@ -204,7 +335,9 @@ impl JobNotificationService {
             notices: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
+            leases: RwLock::new(HashMap::new()),
             policy: JobNotificationPolicy::default(),
+            continuation_policy: JobContinuationPolicy::default(),
             pool: None,
         }
     }
@@ -214,7 +347,9 @@ impl JobNotificationService {
             notices: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
+            leases: RwLock::new(HashMap::new()),
             policy,
+            continuation_policy: JobContinuationPolicy::default(),
             pool: None,
         }
     }
@@ -224,7 +359,9 @@ impl JobNotificationService {
             notices: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
             subscriptions: RwLock::new(HashMap::new()),
+            leases: RwLock::new(HashMap::new()),
             policy: JobNotificationPolicy::default(),
+            continuation_policy: JobContinuationPolicy::default(),
             pool: Some(pool),
         }
     }
@@ -243,6 +380,42 @@ impl JobNotificationService {
         session_id: &str,
         turn_id: Option<&str>,
         invocation_key: &str,
+    ) -> Result<JobBackgroundSubscription, JobNotificationError> {
+        self.subscribe_with_options(
+            job_id,
+            kind,
+            session_id,
+            turn_id,
+            invocation_key,
+            JobCompletionDisposition::NotifyOnly,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// M003 subscription with an explicit delivery disposition.
+    ///
+    /// `resume_owner` additionally creates a single-use continuation lease
+    /// bound to the host-resolved session/turn/principal/workspace ancestry.
+    /// A model cannot create a more privileged resume authorization than the
+    /// session's originating user/task contract: the principal and workspace
+    /// come from the daemon boundary (`ToolExecutionContext`), never from
+    /// model input. Expired/revoked/archived owners are refused at consume
+    /// time, and user cancellation suppresses the lease.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn subscribe_with_options(
+        &self,
+        job_id: &JobId,
+        kind: &str,
+        session_id: &str,
+        turn_id: Option<&str>,
+        invocation_key: &str,
+        disposition: JobCompletionDisposition,
+        owner_principal: Option<&str>,
+        workspace_id: Option<&str>,
+        ttl_ms: Option<i64>,
     ) -> Result<JobBackgroundSubscription, JobNotificationError> {
         if session_id.is_empty() {
             return Err(JobNotificationError::Storage(
@@ -294,6 +467,7 @@ impl JobNotificationService {
             invocation_key: invocation_key.to_string(),
             kind: kind.to_string(),
             created_at: now,
+            disposition,
         };
         self.persist_subscription(&sub).await?;
         {
@@ -306,9 +480,285 @@ impl JobNotificationService {
                 }
                 return Ok(existing.clone());
             }
-            subs.insert(job_id_str, sub.clone());
+            subs.insert(job_id_str.clone(), sub.clone());
+        }
+        // M003: opt-in single-use resume lease for exactly one background
+        // wait. Created alongside the subscription (task-level authorization);
+        // consumed exactly once at delivery. Default stays notify_only.
+        if disposition == JobCompletionDisposition::ResumeOwner {
+            let ttl = ttl_ms
+                .unwrap_or(self.continuation_policy.default_ttl_ms)
+                .clamp(1, self.continuation_policy.max_ttl_ms);
+            let lease = JobContinuationLease {
+                lease_id: job_id_str.clone(),
+                notice_id: job_id_str.clone(),
+                job_id: job_id_str.clone(),
+                session_id: session_id.to_string(),
+                turn_id: turn_id.map(ToOwned::to_owned),
+                owner_principal: owner_principal.map(ToOwned::to_owned),
+                workspace_id: workspace_id.map(ToOwned::to_owned),
+                authorized_mode: "resume_owner".to_string(),
+                status: JobContinuationStatus::Pending,
+                expiry_ms: now.saturating_add(ttl),
+                max_wakes: self.continuation_policy.max_wakes,
+                wakes_used: 0,
+                created_at: now,
+                updated_at: now,
+            };
+            self.persist_lease(&lease).await?;
+            let mut leases = self.leases.write().await;
+            leases.insert(job_id_str, lease);
         }
         Ok(sub)
+    }
+
+    /// Load a continuation lease by its id (`lease_id = notice_id = job_id`).
+    pub async fn get_lease(
+        &self,
+        lease_id: &str,
+    ) -> Result<Option<JobContinuationLease>, JobNotificationError> {
+        {
+            let leases = self.leases.read().await;
+            if let Some(l) = leases.get(lease_id) {
+                return Ok(Some(l.clone()));
+            }
+        }
+        if let Some(pool) = &self.pool {
+            if let Some(json) = sqlx::query_scalar::<_, String>(
+                "SELECT record_json FROM job_continuation_lease WHERE lease_id = ?",
+            )
+            .bind(lease_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| JobNotificationError::Storage(e.to_string()))?
+            {
+                let lease: JobContinuationLease = serde_json::from_str(&json)?;
+                let mut leases = self.leases.write().await;
+                leases.insert(lease_id.to_string(), lease.clone());
+                return Ok(Some(lease));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Consume a pending resume lease exactly once (CAS Pending→Consumed).
+    ///
+    /// Enforces the M003 authority rule: the consuming session must equal
+    /// the lease's owning session; expiry, prior consumption, suppression,
+    /// and wake-budget exhaustion all fail (returning `Ok(false)`) rather
+    /// than spending inference. User cancellation suppresses the lease
+    /// separately via [`Self::suppress_lease`].
+    pub async fn consume_resume_lease(
+        &self,
+        lease_id: &str,
+        caller_session_id: &str,
+    ) -> Result<bool, JobNotificationError> {
+        self.load_lease_from_pool(lease_id).await?;
+        let now = chrono::Utc::now().timestamp_millis();
+        // Validate without holding the write lock across SQLite.
+        let valid = {
+            let leases = self.leases.read().await;
+            let Some(l) = leases.get(lease_id) else {
+                return Ok(false);
+            };
+            l.status == JobContinuationStatus::Pending
+                && l.session_id == caller_session_id
+                && now <= l.expiry_ms
+                && l.wakes_used < l.max_wakes
+        };
+        if !valid {
+            // Lazily expire stale leases so the terminal state is visible.
+            let should_expire = {
+                let leases = self.leases.read().await;
+                leases.get(lease_id).is_some_and(|l| {
+                    l.status == JobContinuationStatus::Pending && now > l.expiry_ms
+                })
+            };
+            if should_expire {
+                let _ = self.transition_lease(lease_id, "pending", "expired").await;
+            }
+            return Ok(false);
+        }
+        self.transition_lease(lease_id, "pending", "consumed").await
+    }
+
+    /// Suppress a lease (user cancel, archive, revocation, terminal cancel).
+    /// Idempotent: pending→suppressed, otherwise no-op success state.
+    pub async fn suppress_lease(&self, lease_id: &str) -> Result<bool, JobNotificationError> {
+        self.load_lease_from_pool(lease_id).await?;
+        if self
+            .transition_lease(lease_id, "pending", "suppressed")
+            .await?
+        {
+            return Ok(true);
+        }
+        // Already consumed/expired/suppressed: report current terminality.
+        let leases = self.leases.read().await;
+        Ok(leases
+            .get(lease_id)
+            .is_none_or(|l| l.status != JobContinuationStatus::Pending))
+    }
+
+    /// Classify the delivery state for a notice (M003 work package A).
+    pub async fn delivery_state(
+        &self,
+        notice_id: &str,
+    ) -> Result<Option<JobDeliveryState>, JobNotificationError> {
+        let notice = self.get(notice_id).await?;
+        let Some(n) = notice else {
+            return Ok(None);
+        };
+        let lease = self.get_lease(notice_id).await?;
+        Ok(Some(match n.state {
+            JobNotificationState::Pending | JobNotificationState::Claimed => {
+                if n.injected_event_id.is_some() {
+                    JobDeliveryState::SessionEventCommitted
+                } else {
+                    JobDeliveryState::Pending
+                }
+            }
+            JobNotificationState::Delivered => match lease.map(|l| l.status) {
+                Some(JobContinuationStatus::Pending) => JobDeliveryState::ResumeQueued,
+                Some(JobContinuationStatus::Consumed) => JobDeliveryState::Consumed,
+                Some(JobContinuationStatus::Expired) => JobDeliveryState::Expired,
+                Some(JobContinuationStatus::Suppressed) => JobDeliveryState::Suppressed,
+                None => JobDeliveryState::AvailableToOwner,
+            },
+            JobNotificationState::Suppressed => JobDeliveryState::Suppressed,
+            JobNotificationState::Expired | JobNotificationState::Failed => {
+                JobDeliveryState::Expired
+            }
+        }))
+    }
+
+    async fn persist_lease(
+        &self,
+        lease: &JobContinuationLease,
+    ) -> Result<(), JobNotificationError> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
+        };
+        let record_json = serde_json::to_string(lease)
+            .map_err(|e| JobNotificationError::Storage(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO job_continuation_lease (lease_id, notice_id, job_id, session_id, turn_id, owner_principal, workspace_id, authorized_mode, status, expiry_ms, max_wakes, wakes_used, created_at, updated_at, record_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(lease_id) DO NOTHING",
+        )
+        .bind(&lease.lease_id)
+        .bind(&lease.notice_id)
+        .bind(&lease.job_id)
+        .bind(&lease.session_id)
+        .bind(&lease.turn_id)
+        .bind(&lease.owner_principal)
+        .bind(&lease.workspace_id)
+        .bind(&lease.authorized_mode)
+        .bind(job_continuation_status_to_str(lease.status))
+        .bind(lease.expiry_ms)
+        .bind(lease.max_wakes as i64)
+        .bind(lease.wakes_used as i64)
+        .bind(lease.created_at)
+        .bind(lease.updated_at)
+        .bind(record_json)
+        .execute(pool)
+        .await
+        .map_err(|e| JobNotificationError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn transition_lease(
+        &self,
+        lease_id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, JobNotificationError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(pool) = &self.pool {
+            let result = sqlx::query(
+                "UPDATE job_continuation_lease SET status = ?2, updated_at = ?3, \
+                 wakes_used = CASE WHEN ?2 = 'consumed' THEN wakes_used + 1 ELSE wakes_used END, \
+                 record_json = json_set(json_set(json_set(record_json, '$.status', ?2), '$.updated_at', ?3), '$.wakes_used', CASE WHEN ?2 = 'consumed' THEN wakes_used + 1 ELSE wakes_used END) \
+                 WHERE lease_id = ?1 AND status = ?4",
+            )
+            .bind(lease_id)
+            .bind(to)
+            .bind(now)
+            .bind(from)
+            .execute(pool)
+            .await
+            .map_err(|e| JobNotificationError::Io(std::io::Error::other(e.to_string())))?;
+            if result.rows_affected() > 0 {
+                let mut leases = self.leases.write().await;
+                if let Some(l) = leases.get_mut(lease_id) {
+                    l.status = match to {
+                        "consumed" => JobContinuationStatus::Consumed,
+                        "expired" => JobContinuationStatus::Expired,
+                        "suppressed" => JobContinuationStatus::Suppressed,
+                        _ => JobContinuationStatus::Pending,
+                    };
+                    l.updated_at = now;
+                    if to == "consumed" {
+                        l.wakes_used = l.wakes_used.saturating_add(1);
+                    }
+                }
+                return Ok(true);
+            }
+            // Refresh cache from the durable row on CAS miss.
+            self.load_lease_from_pool(lease_id).await?;
+            return Ok(false);
+        }
+        let mut leases = self.leases.write().await;
+        let Some(l) = leases.get_mut(lease_id) else {
+            return Ok(false);
+        };
+        if job_continuation_status_to_str(l.status) != from {
+            return Ok(false);
+        }
+        l.status = match to {
+            "consumed" => JobContinuationStatus::Consumed,
+            "expired" => JobContinuationStatus::Expired,
+            "suppressed" => JobContinuationStatus::Suppressed,
+            _ => JobContinuationStatus::Pending,
+        };
+        l.updated_at = now;
+        if to == "consumed" {
+            l.wakes_used = l.wakes_used.saturating_add(1);
+        }
+        Ok(true)
+    }
+
+    async fn load_lease_from_pool(&self, lease_id: &str) -> Result<(), JobNotificationError> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
+        };
+        let result = sqlx::query_scalar::<_, String>(
+            "SELECT record_json FROM job_continuation_lease WHERE lease_id = ?",
+        )
+        .bind(lease_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| JobNotificationError::Storage(e.to_string()))?;
+        let Some(json) = result else {
+            return Ok(());
+        };
+        let mut lease: JobContinuationLease = serde_json::from_str(&json)?;
+        let state_row: Option<String> =
+            sqlx::query_scalar("SELECT status FROM job_continuation_lease WHERE lease_id = ?")
+                .bind(lease_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| JobNotificationError::Storage(e.to_string()))?;
+        if let Some(s) = state_row.as_deref() {
+            lease.status = match s {
+                "consumed" => JobContinuationStatus::Consumed,
+                "expired" => JobContinuationStatus::Expired,
+                "suppressed" => JobContinuationStatus::Suppressed,
+                _ => JobContinuationStatus::Pending,
+            };
+        }
+        let mut leases = self.leases.write().await;
+        leases.insert(lease_id.to_string(), lease);
+        Ok(())
     }
 
     pub async fn get_subscription(

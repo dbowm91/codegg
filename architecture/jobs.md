@@ -393,6 +393,24 @@ The `job` model tool (`status|wait|cancel|output`) reuses the
 "Generic job terminal notices" and `architecture/authorization.md" for the
 owner rule.
 
+### Safe continuation and visibility (M003)
+
+Background submission accepts `on_complete: notify_only|resume_owner`
+(default `notify_only`). `resume_owner` creates one single-use continuation
+lease (`job_continuation_lease`, migration v74) bound to the host-resolved
+session/turn/principal/workspace ancestry with a bounded TTL (default 30m,
+max 4h) and exactly one wake. Delivery consumes the lease once per logical
+terminal at the next safe, user-authorized turn boundary — never an
+autonomous idle wake, never a second continuation under duplicates or
+concurrent frontends. Cancel/expiry/revocation/foreign-owner suppresses the
+lease before any invocation. Delivery states (`Pending →
+SessionEventCommitted → AvailableToOwner/ResumeQueued →
+Consumed/Expired/Suppressed`) are queryable; crash at each boundary
+reconstructs without duplicate inference. Ended turns spend no tokens; the
+durable notice remains visible on reconnect/restart/next turn. See
+`architecture/agent.md` "Background job continuation" and
+`architecture/projection.md` "Background job visibility".
+
 ### Boundary Enforcement
 
 `crates/codegg-core/src/jobs/` is UI-, server-, plugin-, and auth-free:

@@ -342,6 +342,18 @@ No runtime configuration. All limits, versions, and caps are
 compile-time constants. The projection protocol version is bumped
 when additive changes land that the reducer MUST interpret.
 
+## Background job visibility (M003)
+
+Background jobs need no new projection variant and no TUI polling task as
+a source of truth. The bounded job list is the existing `JobList` protocol
+surface (filtered by owning session); pending completion notices are the
+existing `SessionEvent::JobTerminalNotification` rows, visible on reconnect,
+restart, and next-turn replay with the same authoritative state as the
+daemon. The `job` model tool provides cancel/wait/inspect over the same
+store. Out-of-order events, multi-client scoped visibility, reconnect
+snapshots, and TUI shutdown are covered by the existing event-log and
+`JobStore` durability (one logical notice per terminal; redacted bounds).
+
 ## Invariants & Gotchas
 
 1. **Derived, not authoritative**: The projection is never a second

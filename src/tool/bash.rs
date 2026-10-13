@@ -346,6 +346,11 @@ impl Tool for BashTool {
                     "type": "string",
                     "enum": ["foreground", "background"],
                     "description": "Execution mode. 'foreground' (default) blocks until completion and returns output. 'background' returns a stable JobHandle immediately for scheduler-backed routes; one terminal notification arrives without polling. Direct-only routes (native tool, git, rejected) fail closed in background without spawning."
+                },
+                "on_complete": {
+                    "type": "string",
+                    "enum": ["notify_only", "resume_owner"],
+                    "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally authorizes exactly one bounded continuation for this wait at the next safe turn boundary; user cancel, expiry, or revocation wins before any invocation. Applies to background only."
                 }
             },
             "required": ["command"]
@@ -543,7 +548,14 @@ impl BashTool {
             .unwrap_or("foreground");
         let is_background = matches!(execution_mode.to_lowercase().as_str(), "background" | "bg");
         if is_background {
-            let bg = Self::background_ctx(audit_ctx)?;
+            let mut bg = Self::background_ctx(audit_ctx)?;
+            bg.disposition = input
+                .get("on_complete")
+                .and_then(|v| v.as_str())
+                .map(crate::scheduler::job_notifications::JobCompletionDisposition::from_str)
+                .unwrap_or(
+                    crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly,
+                );
             // Safety decisions above are frozen to this admitted operation;
             // the background submitter never reparses or broadens scope.
             let handle_value = if should_active_route {

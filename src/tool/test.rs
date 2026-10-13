@@ -145,6 +145,11 @@ impl Tool for TestTool {
                     "type": "string",
                     "enum": ["foreground", "background"],
                     "description": "Execution mode. 'foreground' (default) blocks until completion and returns the compact report. 'background' returns a stable JobHandle immediately; one terminal notification is delivered when the job finishes. No polling is needed."
+                },
+                "on_complete": {
+                    "type": "string",
+                    "enum": ["notify_only", "resume_owner"],
+                    "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally authorizes exactly one bounded continuation for this wait at the next safe turn boundary; user cancel, expiry, or revocation wins before any invocation. Applies to background only."
                 }
             },
             "required": ["scope"]
@@ -313,6 +318,16 @@ impl TestTool {
             .as_ref()
             .and_then(|c| c.invocation_key.clone())
             .unwrap_or_else(|| format!("test-bg:{}", uuid::Uuid::new_v4()));
+        let disposition = input
+            .get("on_complete")
+            .and_then(|v| v.as_str())
+            .map(crate::scheduler::job_notifications::JobCompletionDisposition::from_str)
+            .unwrap_or(crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly);
+        let owner_principal = ctx.as_ref().and_then(|c| {
+            c.origin_principal
+                .clone()
+                .or_else(|| c.principal_identity.clone())
+        });
         let mut request = parse_test_request(&input)?;
         request.session_id = Some(session_id.clone());
         let resolved = crate::test_runner::resolve_test_command(&request)
@@ -367,12 +382,16 @@ impl TestTool {
         // restarts after submit but before subscribe, retry with the same
         // invocation key returns the same job and completes the subscribe.
         notifications
-            .subscribe(
+            .subscribe_with_options(
                 &submitted.job_id,
                 "test",
                 &session_id,
                 turn_id.as_deref(),
                 &invocation_key,
+                disposition,
+                owner_principal.as_deref(),
+                Some(submitted.workspace_id.as_str()),
+                None,
             )
             .await
             .map_err(|e| ToolError::Execution(format!("background subscribe failed: {e}")))?;
@@ -391,6 +410,7 @@ impl TestTool {
             "submitted_at": handle.submitted_at,
             "inspect_ref": handle.inspect_ref,
             "cancel_ref": handle.cancel_ref,
+            "on_complete": disposition.as_str(),
             "message": "background test accepted; one terminal notification will arrive without polling",
         }))
     }
