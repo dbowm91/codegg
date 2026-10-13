@@ -11,6 +11,7 @@ $job = [IntPtr]::Zero
 $processInfo = $null
 $environmentPointer = [IntPtr]::Zero
 $securePassword = $null
+$secretHandleStream = $null
 
 Add-Type -TypeDefinition @'
 using System;
@@ -87,6 +88,8 @@ public static class C021Native {
     public static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
 }
 '@
 
@@ -163,6 +166,10 @@ try {
     if ([IO.File]::ReadAllText($secret) -ne 'synthetic-c021-secret') {
         throw 'Runner administrator cannot read the protected synthetic secret fixture.'
     }
+    $secretHandleStream = [IO.File]::OpenRead($secret)
+    if (-not [C021Native]::SetHandleInformation($secretHandleStream.SafeFileHandle.DangerousGetHandle(), 1, 1)) {
+        throw "Could not mark the synthetic secret handle inheritable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+    }
 
     $resultPath = Join-Path $stage 'child-result.json'
     $childScriptPath = Join-Path $stage 'child-probe.ps1'
@@ -191,6 +198,24 @@ try { [IO.File]::Delete(`$env:C021_SECRET); `$observed.outside_delete = 'allowed
 if (`$env:C021_GIT) { `$repo = [IO.Path]::Combine(`$env:C021_STAGE, 'git-repo'); & `$env:C021_GIT init --quiet `$repo; `$initExit = `$LASTEXITCODE; if (`$initExit -eq 0) { & `$env:C021_GIT -C `$repo status --porcelain; `$observed.git = if (`$LASTEXITCODE -eq 0) {'allowed'} else {'failed'} } else { `$observed.git = 'failed' } }
 foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; path=`$env:C021_CARGO})) { if (`$tool.path) { & `$tool.path --version; `$observed[`$tool.name] = if (`$LASTEXITCODE -eq 0) {'allowed'} else {'failed'} } else { `$observed[`$tool.name] = 'not_available' } }
 `$observed.descendant_pid = 0
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class C021ChildHandleProbe {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetFileType(IntPtr handle);
+}
+'@
+try {
+    `$candidateHandle = [IntPtr]::new([Int64]::Parse(`$env:C021_SECRET_HANDLE))
+    if ([C021ChildHandleProbe]::GetFileType(`$candidateHandle) -eq 1) {
+        `$safeHandle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new(`$candidateHandle, `$false)
+        `$stream = [IO.FileStream]::new(`$safeHandle, [IO.FileAccess]::Read)
+        `$reader = [IO.StreamReader]::new(`$stream)
+        `$observed.inherited_secret_handle = if (`$reader.ReadToEnd() -eq 'synthetic-c021-secret') {'leaked'} else {'not_transferred'}
+        `$reader.Dispose()
+    } else { `$observed.inherited_secret_handle = 'not_transferred' }
+} catch { `$observed.inherited_secret_handle = 'not_transferred' }
 `$descendantScript = '[Threading.Thread]::Sleep(60000)'
 `$descendant = [Diagnostics.Process]::Start([Diagnostics.ProcessStartInfo]::new(`$PSHOME + '\powershell.exe', '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(`$descendantScript))))
 `$observed.descendant_pid = `$descendant.Id
@@ -209,6 +234,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         TMP = $stage
         PATH = "$systemRoot\System32;$systemRoot;$systemRoot\System32\Wbem;$systemRoot\System32\WindowsPowerShell\v1.0"
         C021_RESULT = $resultPath
+        C021_SECRET_HANDLE = [string]$secretHandleStream.SafeFileHandle.DangerousGetHandle().ToInt64()
         C021_GIT = $git
         C021_PYTHON = $python
         C021_CARGO = $cargo
@@ -311,7 +337,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         principal_sid = $accountSid
         principal_created = $accountCreated
         suspended_launch_job_before_resume = $launchJobVerified
-        inherited_handles = 'No custom handles supplied; CreateProcessWithLogonW exposes no handle-inheritance parameter; active hostile-handle transfer probe not run'
+        inherited_handles = 'An inheritable handle to the synthetic host secret was supplied by the parent; child could not use it. CreateProcessWithLogonW exposes no handle-inheritance parameter.'
         child_exit_code = $childExit
         child = $result
         descendant_killed_when_job_closed = $descendantGone
@@ -333,6 +359,9 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         -not $descendantGone -or $hostDaclBefore -ne $hostDaclAfter -or
         $secretHashBefore -ne $secretHashAfter) {
         throw 'C021 strict identity, stage, Job, cleanup, or host-fixture invariant failed.'
+    }
+    if ($result.inherited_secret_handle -ne 'not_transferred') {
+        throw 'C021 leaked the marked inheritable synthetic host-secret handle.'
     }
     foreach ($name in @('direct','junction','case_alias','hardlink','ads')) {
         $readResult = $result.PSObject.Properties["read_$name"].Value
@@ -358,6 +387,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
     if ($processInfo -and $processInfo.hProcess -ne [IntPtr]::Zero) { [void][C021Native]::CloseHandle($processInfo.hProcess) }
     if ($processInfo -and $processInfo.hThread -ne [IntPtr]::Zero) { [void][C021Native]::CloseHandle($processInfo.hThread) }
     if ($environmentPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::FreeHGlobal($environmentPointer) }
+    if ($secretHandleStream) { $secretHandleStream.Dispose() }
     if ($accountCreated) {
         Remove-LocalUser -Name $account -ErrorAction SilentlyContinue
         if (-not (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) { Write-Output 'C021_CLEANUP principal_removed=true' }
