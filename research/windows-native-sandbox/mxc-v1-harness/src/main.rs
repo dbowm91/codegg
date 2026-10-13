@@ -280,8 +280,10 @@ Set-Content -NoNewline -LiteralPath $env:C020_DESCENDANT_PID_FILE -Value $child.
         format!("type {} >nul 2>&1 && echo sibling_read=leaked || echo sibling_read=denied", batch_quote(&sibling_secret)),
         format!("echo synthetic-write>{} 2>nul && echo outside_write=leaked || echo outside_write=denied", batch_quote(&outside)),
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
-        format!("{} -NoProfile -NonInteractive -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&handle_script)),
-        format!("{} -NoProfile -NonInteractive -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&descendant_script)),
+        format!("{} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&handle_script)),
+        "echo handle_probe_exit=%errorlevel%".into(),
+        format!("{} -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {}", batch_quote(&system32.join("WindowsPowerShell\\v1.0\\powershell.exe")), batch_quote(&descendant_script)),
+        "echo descendant_probe_exit=%errorlevel%".into(),
     ];
     if let Some(git) = &git {
         let repo = stage.join("git-init");
