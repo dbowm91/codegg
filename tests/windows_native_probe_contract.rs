@@ -169,7 +169,7 @@ fn child_script(action: Action) -> &'static str {
             "$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $env:C019_PIPE, [IO.Pipes.PipeDirection]::InOut); try {$pipe.Connect(500); 'C019_RESULT=leaked'} catch {'C019_RESULT=denied'} finally {$pipe.Dispose()}"
         }
         Action::NullDeviceAccess => {
-            "$s=$null; try {$s=[IO.File]::Open('NUL',[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); [Console]::WriteLine('C019_RESULT=allowed')} catch {[Console]::WriteLine('C019_RESULT=denied:'+$_.Exception.GetType().Name)} finally {if ($s) {$s.Dispose()}}"
+            "$s=$null; try {$s=[IO.File]::Open('\\\\.\\NUL',[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); [Console]::WriteLine('C019_RESULT=allowed')} catch {[Console]::WriteLine('C019_RESULT=denied:'+$_.Exception.GetType().Name)} finally {if ($s) {$s.Dispose()}}"
         }
         Action::UncHostReadUnavailable => "'C019_RESULT=not_run'",
         Action::InheritedHandleNotTransferred => "'C019_RESULT=not_run'",
@@ -263,10 +263,16 @@ async fn execute(
         OsString::from("-Command"),
         OsString::from(script.clone()),
     ];
-    // Request the managed launcher's private AppContainer temp projection.
-    // It grants only that disposable package-local directory and starts from
-    // the OS runtime without changing a host path ACL.
-    let cwd = PathBuf::from(r"C:\__codegg_test_profile_temp__");
+    // Restricted probes request the private AppContainer temp projection;
+    // the unrestricted device baseline starts from the OS runtime directly.
+    let cwd = if restricted {
+        PathBuf::from(r"C:\__codegg_test_profile_temp__")
+    } else {
+        std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .expect("SystemRoot is set")
+            .join("System32")
+    };
     let mut request = ManagedProcessRequest::new(
         std::iter::once(shell.clone().into_os_string())
             .chain(args.iter().cloned())
