@@ -147,6 +147,7 @@ function Get-SddlFingerprint([string] $Path) {
 
 function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [IntPtr] $Token,
         [string] $Exe, [string] $Command, [string] $Directory) {
+    Write-Output "C024_CHILD_START mode=$Mode"
     $startup = [C024StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C024StartupInfo])
     $pi = [C024ProcessInformation]::new()
@@ -184,10 +185,17 @@ function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [In
         if (-not [C024Native]::SetInformationJobObject($localJob, 9, [ref]$limits, $size)) { throw "SetInformationJobObject failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
         if (-not [C024Native]::AssignProcessToJobObject($localJob, $pi.hProcess)) { throw "AssignProcessToJobObject failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
         if ([C024Native]::ResumeThread($pi.hThread) -eq [uint32]::MaxValue) { throw "ResumeThread failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-        $wait = [C024Native]::WaitForSingleObject($pi.hProcess, 60000)
-        if ($wait -ne 0) { throw "C024 child wait failed: $wait" }
-        $exitCode = [uint32]0
-        [void][C024Native]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode)
+        $wait = [C024Native]::WaitForSingleObject($pi.hProcess, 15000)
+        if ($wait -eq 0) {
+            $exitCode = [uint32]0
+            [void][C024Native]::GetExitCodeProcess($pi.hProcess, [ref]$exitCode)
+        } elseif ($wait -eq 258) {
+            [void][C024Native]::TerminateJobObject($localJob, 1)
+            [void][C024Native]::WaitForSingleObject($pi.hProcess, 5000)
+            $exitCode = $null
+        } else {
+            throw "C024 child wait failed: $wait"
+        }
     } catch {
         [void][C024Native]::TerminateJobObject($localJob, 1)
         [void][C024Native]::TerminateProcess($pi.hProcess, 1)
@@ -199,7 +207,7 @@ function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [In
         [void][C024Native]::CloseHandle($pi.hProcess)
     }
     $result = if (Test-Path -LiteralPath $resultPath) { Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json } else { $null }
-    [ordered]@{ created = $true; win32_error = 0; exit_code = $exitCode; result = $result }
+    [ordered]@{ created = $true; win32_error = 0; timed_out = ($wait -eq 258); exit_code = $exitCode; result = $result }
 }
 
 try {
