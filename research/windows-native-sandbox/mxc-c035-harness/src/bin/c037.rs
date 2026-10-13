@@ -272,6 +272,18 @@ fn run() {
         .filter(|proof| proof["nonce"] == nonce && proof["phase"] == "entry");
     let descendant_proof = read_utf16_json(&descendant)
         .filter(|proof| proof["nonce"] == nonce && proof["pid"].as_u64().is_some());
+    let descendant_status = stdout
+        .lines()
+        .find(|line| line.starts_with("C037_DESCENDANT_STATUS="))
+        .map(str::to_owned);
+    let descendant_result = stdout
+        .lines()
+        .find(|line| line.starts_with("C037_DESCENDANT_RESULT="))
+        .map(str::to_owned);
+    let descendant_cleanup_confirmed = descendant_status.as_ref().is_some_and(|status| {
+        (status.contains("wait:0,exit:0") || status.contains("wait:258"))
+            && (!status.contains("wait:258") || status.contains("timeout_cleanup:0"))
+    });
     let child_entry = entry_proof.is_some();
     let acl_after_run = Command::new("icacls.exe")
         .arg(&secret)
@@ -348,7 +360,7 @@ fn run() {
         "mxc_launcher_handle_owner_relation":"the public request exposes no explicit handle-transfer API; a numeric value supplied in command arguments is only a probe and is not transfer evidence",
         "mxc_handle_attempted":true,"mxc_handle_attempt":{"present":child_proof.as_ref().is_some_and(|p|p["handle_present"]==true),"same_file":child_proof.as_ref().is_some_and(|p|p["handle_same_file"]==true),"read_secret":child_proof.as_ref().is_some_and(|p|p["secret_match"]==true)},
         "path_read_denied":child_denied,"child_entry":child_entry,"child_pid":child_pid,"stage_write_proof_present":child_proof.is_some(),"mxc_probe_result":child_proof,
-        "descendant_probe_result":descendant_proof,"descendant_cleanup":if descendant_proof.is_some() && outcome["wait"] == "Exited(0)" {"completed with exit code 0 and synchronously reaped within 10s; parent PID correlated"} else {"not confirmed; child exit/descendant proof is incomplete"},
+        "descendant_probe_result":descendant_proof,"descendant_status":descendant_status,"descendant_probe_diagnostic":descendant_result,"descendant_cleanup_confirmed":descendant_cleanup_confirmed,"descendant_cleanup":if descendant_cleanup_confirmed {"process completed or was terminated on timeout and reaped"} else {"not confirmed; native wait/cleanup observation incomplete"},
         "stdout_stderr_ok":stdio_ok,"stdin_pipe_write_ok":outcome["stdin_pipe_write_ok"],"execution":outcome,
         "explicit_transfer_supported":false,"explicit_transfer_observed":false,"unavailable_dimensions":["public ContainerRequest has no arbitrary handle field","DuplicateHandle/cross-process authority","named-pipe IPC beyond SDK stdio","Windows sandbox host matrix","network enforcement"],
         "fixture_integrity":{"content_unchanged":fixture_content_unchanged,"synthetic_fixture_acl_stable_after_setup":synthetic_acl_stable,"original_host_acl_mutation":false,"only_disposable_synthetic_fixture_acl_granted":true},

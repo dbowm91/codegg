@@ -152,15 +152,25 @@ static int child(int argc, wchar_t **argv) {
         si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
         BOOL created = CreateProcessW(argv[8], command, NULL, NULL, TRUE,
             CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+        DWORD create_error = created ? 0 : GetLastError();
+        DWORD wait_result = WAIT_FAILED, exit_code = STILL_ACTIVE, timeout_cleanup = 0;
         if (!created) {
             proof_error = 43;
         } else {
-            DWORD wait = WaitForSingleObject(pi.hProcess, 10000), code = 0;
-            if (wait == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+            wait_result = WaitForSingleObject(pi.hProcess, 10000);
+            if (wait_result == WAIT_OBJECT_0) {
+                GetExitCodeProcess(pi.hProcess, &exit_code);
+            } else if (wait_result == WAIT_TIMEOUT) {
+                TerminateProcess(pi.hProcess, ERROR_TIMEOUT);
+                timeout_cleanup = WaitForSingleObject(pi.hProcess, 1000);
+                GetExitCodeProcess(pi.hProcess, &exit_code);
+            }
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
-            if (wait != WAIT_OBJECT_0 || code != 0) proof_error = 44;
+            if (wait_result != WAIT_OBJECT_0 || exit_code != 0) proof_error = 44;
         }
+        printf("C037_DESCENDANT_STATUS=created:%d,create_error:%lu,wait:%lu,exit:%lu,timeout_cleanup:%lu\n",
+            created ? 1 : 0, create_error, wait_result, exit_code, timeout_cleanup);
     }
     if (token) CloseHandle(token);
     if (user) HeapFree(GetProcessHeap(), 0, user);
@@ -212,7 +222,10 @@ static int control(int argc, wchar_t **argv, BOOL inherit) {
 }
 
 static int descendant_probe(int argc, wchar_t **argv) {
-    if (argc != 9) return 80;
+    if (argc != 9) {
+        printf("C037_DESCENDANT_RESULT=bad-argc,%d\n", argc);
+        return 80;
+    }
     uintptr_t raw = (uintptr_t)_wcstoui64(argv[4], NULL, 10);
     HANDLE inherited = (HANDLE)raw;
     DWORD flags = 0, handle_error = 0, type = FILE_TYPE_UNKNOWN, read_error = 0;
@@ -248,7 +261,10 @@ static int descendant_probe(int argc, wchar_t **argv) {
         GetCurrentProcessId(), _wtoi(argv[8]), argv[3], has_flags ? L"true" : L"false", same_file ? L"true" : L"false", handle_error,
         type, read_ok ? L"true" : L"false", read_error, secret_match ? L"true" : L"false",
         path_read ? L"true" : L"false", path_error, path_match ? L"true" : L"false");
-    return write_text(argv[2], proof) == 0 ? 0 : 81;
+    int write_error = write_text(argv[2], proof);
+    printf("C037_DESCENDANT_RESULT=pid:%lu,parent:%lu,proof_write_error:%d,last_error:%lu\n",
+        GetCurrentProcessId(), _wtoi(argv[8]), write_error, GetLastError());
+    return write_error == 0 ? 0 : 81;
 }
 
 static int stage_only(int argc, wchar_t **argv) {
