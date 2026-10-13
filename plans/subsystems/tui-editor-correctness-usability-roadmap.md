@@ -1,6 +1,6 @@
 # TUI Editor Correctness and Usability Roadmap
 
-Status: active (planning registered; production implementation not started)
+Status: closed (C001, C002, M003, M004 all closed with individual closure records; completion definition met 2026-10-13)
 
 Parent: `plans/subsystems/desktop-frontend-ide-foundation-roadmap.md`, M006-A through M006-E (historically closed).
 
@@ -13,7 +13,7 @@ Long-term references:
 - `plans/003-planning-process.md` — milestone sizing, corrective records and handoff.
 - `plans/subsystems/editor-document-foundation-roadmap.md` — closed M005 document ownership.
 
-Accepted ADRs: ADR-0008 (LSP preview-apply), ADR-0010 (shared client), ADR-0011 (document ownership), ADR-0012 (warm-only authorized LSP reads), ADR-0018 (safe location identity). Proposed ADR-0021 governs a new completion transport/edit contract; no implementation of that contract is authorized by this roadmap alone.
+Accepted ADRs: ADR-0008 (LSP preview-apply), ADR-0010 (shared client), ADR-0011 (document ownership), ADR-0012 (warm-only authorized LSP reads), ADR-0018 (safe location identity), ADR-0021 (native editor completion read + revision-checked local edit, Option B — accepted 2026-10-13, implemented by M003, consumed by M004).
 
 ## 1. Purpose and ownership
 
@@ -82,7 +82,7 @@ Plan: `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-
 
 ### M004 — Completion popup, transactional acceptance and qualification
 
-Plan: `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md`. Status: **ready** (M003 + C001 closed, C002 closed for integration). Wire a bounded popup, focus and cancellation, candidate preview, safe selection into one controller transaction, and complete adversarial TUI trajectories. Exit: ordinary Rust completion works across daemon/socket mode, preserving undo/redo and refusing stale or unsafe edits; all milestone closure records and integrated tests exist.
+Plan: `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md`. Status: **closed** (`fd2faaaf1`, closure `plans/closure/tui-editor-correctness-usability/004-status.md`). Wire a bounded popup, focus and cancellation, candidate preview, safe selection into one controller transaction, and complete adversarial TUI trajectories. Exit: ordinary Rust completion works across daemon/socket mode, preserving undo/redo and refusing stale or unsafe edits; all milestone closure records and integrated tests exist.
 
 ## 8. Cross-cutting requirements
 
@@ -111,4 +111,4 @@ Close this roadmap only when C001, C002, M003 and M004 have individual closure f
 | C001 | closed | `plans/implementation/tui-editor-correctness-usability/001-semantic-token-fidelity.md` | `plans/closure/tui-editor-correctness-usability/001-status.md` (`32fd7505`) |
 | C002 | closed | `plans/implementation/tui-editor-correctness-usability/002-bounded-editor-render-and-tree-walk.md` | `plans/closure/tui-editor-correctness-usability/002-status.md` (`bd891348f`) |
 | M003 | closed | `plans/implementation/tui-editor-correctness-usability/003-authorized-lsp-completion-contract.md` | `plans/closure/tui-editor-correctness-usability/003-status.md` (`44671d690`) |
-| M004 | ready | `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md` | pending |
+| M004 | closed | `plans/implementation/tui-editor-correctness-usability/004-editor-completion-presentation-and-qualification.md` | `plans/closure/tui-editor-correctness-usability/004-status.md` (`fd2faaaf1`) |

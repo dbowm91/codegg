@@ -1,6 +1,9 @@
 # TUI Editor Correctness/Usability M004 — Completion Presentation and Qualification
 
-Status: active (M003 closed `plans/closure/tui-editor-correctness-usability/003-status.md`, C001/C002 closed; implementation in progress).
+Status: implemented; closed
+
+Implementation: `fd2faaaf1`
+Closure: `plans/closure/tui-editor-correctness-usability/004-status.md`
 
 Prior status was `blocked: M003 completion contract not yet closed`. All hard
 gates are satisfied; the M003 `LspCompletionGet` contract is the binding
