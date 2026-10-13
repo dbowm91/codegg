@@ -72,7 +72,7 @@ Status: closed at `e828bebf` (closure `plans/closure/async-background-jobs/001-s
 Produce durable `JobId` notification/replay identity and one fully usable model-facing `test.execution_mode=background` path. One submitted test may finish before or after its parent checks for work; model-visible completion is one event, not repeated `test` or `status` calls. No generic idle auto-resume.
 
 ### M002 — Background Bash and routed build/lint/format
-Status: ready (unblocked by M001 closure `e828bebf`). Plan: `plans/implementation/async-background-jobs/002-background-bash-and-build-routes.md`.
+Status: closed at `19028149` (closure `plans/closure/async-background-jobs/002-status.md`).
 Support an explicit background option for long-running shell/build/test/lint/format commands via the canonical scheduler, without raw-shell bypass or loss of existing foreground output/audit. No implicit `auto` mode in this milestone.
 
 ### M003 — Safe agent continuation, attention delivery, and frontend controls
