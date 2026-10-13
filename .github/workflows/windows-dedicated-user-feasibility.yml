@@ -55,6 +55,7 @@ jobs:
           $principal = [Security.Principal.WindowsPrincipal]::new($identity)
           "Runner identity: $($identity.Name)"
           "Administrator role: $($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
+          whoami /priv
 
       - name: Run bounded broad-readable and restricted-token comparison
         shell: pwsh

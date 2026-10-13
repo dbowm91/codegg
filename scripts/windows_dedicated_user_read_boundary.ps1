@@ -80,6 +80,11 @@ public static class C024Native {
         StringBuilder commandLine, IntPtr processAttributes, IntPtr threadAttributes,
         bool inheritHandles, uint creationFlags, IntPtr environment, IntPtr currentDirectory,
         ref C024StartupInfo startup, out C024ProcessInformation processInformation);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags,
+        string application, StringBuilder commandLine, uint creationFlags, IntPtr environment,
+        IntPtr currentDirectory, ref C024StartupInfo startup,
+        out C024ProcessInformation processInformation);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr CreateJobObjectW(IntPtr attributes, string name);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -150,10 +155,13 @@ function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [In
     if ($Mode -eq 'normal') {
         $created = [C024Native]::CreateProcessWithLogonW($User, $null, $Password, 1, $Exe,
             $line, 0x00000004, [IntPtr]::Zero, $Directory, [ref]$startup, [ref]$pi)
-    } else {
+    } elseif ($Mode -eq 'asuser-control' -or $Mode -eq 'write-restricted' -or $Mode -eq 'restricted') {
         $created = [C024Native]::CreateProcessAsUserW($Token, $Exe, $line, [IntPtr]::Zero,
             [IntPtr]::Zero, $false, 0x00000004, [IntPtr]::Zero,
             [IntPtr]::Zero, [ref]$startup, [ref]$pi)
+    } else {
+        $created = [C024Native]::CreateProcessWithTokenW($Token, 0, $Exe, $line,
+            0x00000004, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$startup, [ref]$pi)
     }
     if (-not $created) {
         return [ordered]@{ created = $false; win32_error = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); exit_code = $null; result = $null }
@@ -263,6 +271,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
     }
     $asUserControl = Start-TestChild -Mode asuser-control -User $account -Password $null -Token $baseToken `
         -Exe $powerShell -Command $commandLine -Directory $stage
+    $withTokenControl = Start-TestChild -Mode with-token-control -User $account -Password $null -Token $baseToken `
+        -Exe $powerShell -Command $commandLine -Directory $stage
     $sidPointer = [IntPtr]::Zero
     $sidArray = [IntPtr]::Zero
     try {
@@ -285,6 +295,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         -Exe $powerShell -Command $commandLine -Directory $null
     $restricted = Start-TestChild -Mode restricted -User $account -Password $null -Token $restrictedToken `
         -Exe $powerShell -Command $commandLine -Directory $null
+    $restrictedWithToken = Start-TestChild -Mode restricted-with-token -User $account -Password $null -Token $restrictedToken `
+        -Exe $powerShell -Command $commandLine -Directory $stage
     $broadAfter = Get-SddlFingerprint $broadRoot
     $privateAfter = Get-SddlFingerprint $privateRoot
     $secretHashAfter = (Get-FileHash -LiteralPath $broadSecret -Algorithm SHA256).Hash
@@ -298,7 +310,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         $restricted.result.stage_write -eq 'allowed'
     $disposition = if ($strictPositive) {
         'partial-positive-matrix-incomplete'
-    } elseif ($asUserControl.result -and $asUserControl.result.token_user -eq $accountSid) {
+    } elseif (($asUserControl.result -and $asUserControl.result.token_user -eq $accountSid) -or
+        ($withTokenControl.result -and $withTokenControl.result.token_user -eq $accountSid)) {
         'negative-restricted-token-tool-launch'
     } else {
         'blocked-create-process-as-user-control'
@@ -316,8 +329,10 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         restricting_sid = $limitingSid
         normal_account_baseline = $normal
         create_process_as_user_unrestricted_account_control = $asUserControl
+        create_process_with_token_unrestricted_account_control = $withTokenControl
         write_restricted_child = $writeRestricted
         restricted_primary_token_launch = $restricted
+        restricted_create_process_with_token = $restrictedWithToken
         broad_fixture_sddl_before = $broadBefore
         broad_fixture_sddl_after = $broadAfter
         private_fixture_sddl_before = $privateBefore
@@ -338,7 +353,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         -not $report.broad_secret_sha256_unchanged -or -not $report.private_secret_sha256_unchanged) {
         throw 'C024 changed a source fixture descriptor or content hash.'
     }
-    if ($restricted.result -and $restricted.result.broad_direct -eq 'allowed') {
+    if (($restricted.result -and $restricted.result.broad_direct -eq 'allowed') -or
+        ($restrictedWithToken.result -and $restrictedWithToken.result.broad_direct -eq 'allowed')) {
         throw 'C024 security-negative: the true restricting-SID child read the broad-readable source fixture.'
     }
 } catch {
