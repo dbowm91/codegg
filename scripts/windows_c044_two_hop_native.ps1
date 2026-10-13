@@ -259,8 +259,28 @@ try {
     @($junctionSecret, $hardlink, $ads, $secret.ToUpperInvariant(), "\\?\$secret") | Set-Content -LiteralPath $aliasFile -Encoding ascii
 
     $script = @'
-param([string]$Mode, [string]$Secret, [string]$Stage, [string]$Report, [string]$RestrictingSid, [string]$Git, [string]$Probe, [string]$Nonce, [string]$EntryPath, [string]$ProofPath, [string]$HostWritePath, [string]$AliasFile)
+param([string]$Mode, [string]$ParamsFile)
 $ErrorActionPreference = 'Stop'
+$params = @{}
+foreach ($paramLine in @(Get-Content -LiteralPath $ParamsFile -Encoding ascii)) {
+    if ([string]::IsNullOrWhiteSpace($paramLine)) { continue }
+    $k, $v = $paramLine -split '=', 2
+    $params[$k.Trim()] = $v
+}
+$Secret = $params['Secret']
+$Stage = $params['Stage']
+$Report = $params['Report']
+$RestrictingSid = $params['RestrictingSid']
+$Git = $params['Git']
+$Probe = $params['Probe']
+$Nonce = $params['Nonce']
+$EntryPath = $params['EntryPath']
+$ProofPath = $params['ProofPath']
+$HostWritePath = $params['HostWritePath']
+$AliasFile = $params['AliasFile']
+foreach ($required in @('Secret','Stage','Report','RestrictingSid','Git','Probe','Nonce','EntryPath','ProofPath','HostWritePath','AliasFile')) {
+    if ([string]::IsNullOrWhiteSpace($params[$required])) { throw "Runner params file is missing $required." }
+}
 
 function Start-RestrictedChild([IntPtr] $Token, [string] $Application, [string] $Arguments, [string] $WorkDir, [uint32] $WaitMs) {
     $info = [C044ProcessInformation]::new()
@@ -422,10 +442,26 @@ try {
     $stageDaclBefore = (Get-Acl -LiteralPath $stage).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
     $git = (Get-Command git.exe -ErrorAction Stop).Source
     $pwsh = (Get-Process -Id $PID).Path
+    # Runner inputs travel via a stage params file: keeps the first-hop
+    # LogonW command line to three short args.
+    $paramsFile = Join-Path $stage 'runner-params.txt'
+    @(
+        "Secret=$secret",
+        "Stage=$stage",
+        "Report=$reportPath",
+        "RestrictingSid=$limitingSid",
+        "Git=$git",
+        "Probe=$probeStaged",
+        "Nonce=$nonce",
+        "EntryPath=$entryPath",
+        "ProofPath=$proofPath",
+        "HostWritePath=$hostWritePath",
+        "AliasFile=$aliasFile"
+    ) | Set-Content -LiteralPath $paramsFile -Encoding ascii
     $passwordBytes = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
     try { $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordBytes) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBytes) }
-    $args = @($runnerScript, 'runner', $secret, $stage, $reportPath, $limitingSid, $git, $probeStaged, $nonce, $entryPath, $proofPath, $hostWritePath, $aliasFile) | ForEach-Object { '"' + $_.Replace('"','\"') + '"' }
+    $args = @($runnerScript, 'runner', $paramsFile) | ForEach-Object { '"' + $_.Replace('"','\"') + '"' }
     $line = [Text.StringBuilder]::new('"' + $pwsh + '" -NoLogo -NoProfile -NonInteractive -File ' + ($args -join ' '))
     $startup = [C044StartupInfo]::new(); $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C044StartupInfo])
     $processInfo = [C044ProcessInformation]::new()
