@@ -572,10 +572,18 @@ tool output so that header is the expand affordance.
 **Working strip** (`render_working_strip`). One throbber row plus one row per
 advertised subagent, reserved from the prompt allocation and carved back off
 like the hint line and the todo strip, so it sits *between the transcript and
-the composer* and reads as part of the buffer. It draws only while
-`SessionStatus::Working`; an idle buffer gets the rows back. Row 0 is the
+the composer* and reads as part of the buffer. It draws while
+`SessionStatus::Working` **or** while `SessionState::stopped_turn`; a buffer
+with nothing running and nothing stopped gets the rows back. A stopped turn
+keeps the strip deliberately: the user stopped it on purpose, and the very
+next question is whether it is still stopped and how to carry on, so an
+indicator that vanishes the instant work stops answers neither. Row 0 is the
 throbber (the activity line, or `⠋ working Ns` during the window before the
-first event names a phase); the rows below it are clickable and their hit
+first event names a phase), followed by the key that changes the situation —
+`x to stop`, `press x again to stop agent` while a confirmation is armed, or
+`■ stopped · press x or /start` once it is. A long pause with no way out is
+what reads as a dropped connection, so the row names the exit even while the
+agent is working. The rows below it are clickable and their hit
 rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
@@ -653,6 +661,48 @@ widget. `src/tui/wrap.rs` owns the shared implementation: `wrap_to_strings` /
 message lines with it (the widget paints no `Paragraph::wrap`, so a line wider
 than the viewport is clipped at the edge); the `/logs` dialog scrolls in
 wrapped rows rather than logical lines.
+
+Every tool/shell output path wraps to `width - TOOL_OUTPUT_INDENT`, including
+the pre-numbered `read` path — that block carries no fence chrome, so its line
+numbers are its own gutter and the wrap budget is `width - gutter`. A path that
+skips the wrap is not merely clipped, it is *unreachable*: there is no
+horizontal scrollbar and `scroll_left`/`scroll_right` are no-ops.
+
+### Chat viewport scrolling
+
+The row index (`src/tui/components/messages/layout.rs`) is the contract between
+what is drawn and where you can scroll. `MessageLayoutCache` holds the rows the
+renderer actually emitted and derives every offset from them, so `scroll` is a
+true row index into the drawn buffer.
+
+This is deliberately *not* an estimate. `MessagesWidget::estimate_msg_lines`
+used to re-derive row counts by re-implementing the emit loops, and it drifted
+on two tool-output paths — it counted wrapped rows for collapsed output while
+the renderer wrapped the first N *logical* lines, and it counted wrapped rows
+for `read` output while the renderer emitted one unwrapped row per line. Since
+the disagreement is per message it accumulated down the buffer: the further back
+you scrolled, the further the cached offset sat from the row actually drawn.
+Symptomatically that is a transcript that clips off the edge and gets worse the
+longer it gets, with most of the history unreachable.
+
+Two rules follow:
+
+- **There is one row producer.** `MessagesWidget::build_message_rows` is it.
+  Anything that needs a row count builds rows; anything that draws rows uses
+  the same call. Do not add a cheaper counter beside it.
+- **Rebuilds are suffix-scoped.** `rows_dirty_from` is a watermark, and
+  `MessageLayoutCache::truncate_from` drops only that suffix. Streaming appends
+  to the last message, so a token costs one message rather than the whole
+  transcript; `invalidate_tail_rows` is the streaming/tool-result path and
+  `invalidate_rows_from` the general one. A suffix (rather than a set of dirty
+  indices) is what lets the blank-collapse across a message boundary be
+  recomputed correctly during a partial rebuild.
+
+`messages.max_scroll()`, `scroll_position()`, `scrollbar_state()` and the render
+all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
+`find_visible_range` no longer exist — the render slices rows directly instead
+of rebuilding a window of neighbouring messages and converting a cache offset
+into a position inside it.
 
 ### Long Output → Info Dialog
 
@@ -2028,7 +2078,39 @@ project is meaningless in the next. Advisory daemon statuses stay visible:
 ### Command mode and agent management (M006-F)
 
 M006-F adds the `:` command line to the editor buffer and turns `/agents`
-into a management panel. It consumes the `document.v1` surface the earlier
+into a management panel.
+
+#### `/agents` opens a box, and `Enter` opens the editor
+
+Bare `/agents` opens `PanelPickerDialog` ("which panel should this go in?")
+rather than jumping straight into the side column. Every other `/` command
+that brings up a surface has a box of its own, and a list that *is* already
+the whole answer looks like nothing happened — which is exactly the "selecting
+an agent does not appear to do anything" symptom. The text listing is still
+reachable at `/agents show` and `/agents --all`.
+
+`PanelPickerDialog` shares its query/cursor/scroll/mode/keymap with the manager
+through `PanelListState` (`components/dialogs/panel_list.rs`). Two boxes that
+both list panels must agree on what `j` does, where the filter goes, and what
+`Enter` commits; the alternative is a third copy of `move_cursor`/`scroll`/
+`matches`/`mode_badge`, which is how a box and its panel drift. The cursor is
+an index into `SidePanelId::ALL`, never into the filtered view — filtering
+narrows visibility without renumbering what `Enter` acts on, pinned by
+`typing_narrows_what_is_visible_without_moving_the_highlight`.
+
+The picker commits through the **same** `TuiMsg::SelectPanel` the manager
+emits; there is no second route into panel selection.
+`App::pending_panel_picker_subject` is what gives the selection its second
+half: the manager selects a panel and stops, while this box exists to have the
+chosen content *loaded* into the chosen panel afterwards. It is spent on
+commit, so a picker the user abandoned cannot load its content into the next
+panel they pick.
+
+`AgentsPanel::handle_key` had **no `Enter` arm** — it fell through to the
+catch-all and returned `Consumed` without emitting a message, so selecting a
+row consumed the key and did nothing. `Enter` now means the same as `e`:
+open that agent's config. The verbs stayed provenance-checked in the command
+layer, so adding a key does not widen what a built-in allows. It consumes the `document.v1` surface the earlier
 editor milestones established; the one *additive* protocol change is the
 create/delete pair described below.
 
@@ -2355,6 +2437,70 @@ With no core client available (daemon unreachable) the action reports an error
 toast instead of silently doing nothing; a failed creation never fabricates a
 session. Covered by `apply_new_session_created_*` in `src/tui/mod.rs`.
 
+### The launch directory starts its own session (`ensure_launch_session`)
+
+`App::ensure_launch_session` (`src/tui/app/project_session.rs`) runs once from
+`main.rs`, after the launch-directory bootstrap and the initial-session load,
+and is a no-op whenever a session is already bound. It exists because the
+inproc (`--standalone`) startup branch only acted for an explicit
+`--fork`/`--session`/`--continue`, so a plain `--standalone` launch reached the
+event loop with **no session at all**.
+
+That is the same defect `NewSession` above was written for, reached by a
+different door: every session-scoped surface — chat, files, agents, models —
+resolves its binding through the active session, so a launch that leaves
+`session_state.session` as `None` looks like a broken install rather than a
+missing keystroke, and the user's first action is `Ctrl+N`.
+
+It reuses `sessions::start_new_session`, so the request carries the **typed**
+`(project_id, workspace_id)` pair the daemon can resolve — not the bare
+directory locator the initial-session path uses. It is deliberately not
+`App::new_session`: that clears the transcript, resets the route, and can open
+a template picker, none of which belong in a launch with nothing to clear.
+Gated on `!cli.no_session`.
+
+### Stopping a turn and carrying on (`/stop`, `/start`, `x`)
+
+`CoreRequest::TurnCancel` is addressed by `(session_id, turn_id)` and the
+daemon **rejects** a mismatch (`turn_id_mismatch`) rather than ignoring it, so
+stopping a turn is impossible without the id. Both wires that carry one —
+`CoreEvent::TurnStarted` and the submit receipt — used to be discarded, which
+is why nothing in the TUI could interrupt a running agent. `TurnStarted` now
+binds `SessionState::active_turn_id`; every terminal turn event clears it.
+
+A cancelled turn arrives as an ordinary `TurnCompleted` with an unrecognised
+`stop_reason`, so `SessionStatus` alone cannot distinguish "I stopped this"
+from "the agent finished". `SessionState::stopped_turn` carries that, and it
+**survives** `TurnCompleted` deliberately: the stopped badge and `/start` are
+still what the user should see until they resume or send a new prompt. A new
+`TurnStarted` clears it.
+
+`/stop` marks `stopped_turn` optimistically and only undoes it when the
+request genuinely fails — the daemon's cancel is cooperative, so waiting for
+`TurnCompleted` would leave a visible lag between the keypress and the badge,
+and a user who presses twice needs the second press to be a no-op.
+`no_active_turn` and `turn_id_mismatch` are absorbed as "it had already
+finished" rather than reported as errors; punishing that common race would be
+worse than the silence.
+
+There is no protocol-level resume-a-stopped-turn, so `/start` **re-submits**
+(`turn_control::start`): the cancelled turn's work is gone and the transcript
+carries the context. A `/start` that claimed to revive the dead turn would
+silently run something the user did not ask for.
+
+The spelling is `/start`, not `/resume`, because `/sessions` has owned the
+`resume` alias for switching sessions all along and the registry rejects a
+name/alias collision rather than letting one silently shadow the other.
+
+`x` (`InputAction::ToggleAgentRun`) covers both directions in one key because
+the state already says which applies. Stopping is the destructive direction, so
+it is gated behind a second press of the same key inside `STOP_ARM_WINDOW`
+(3s); an accidental `x` while reaching for a chord must not kill a turn. The
+arm is expired by the render pump, not only on the next keypress, so a
+confirmation nobody acts on clears itself. Bare-char binding, so Insert mode
+types the letter — asserted by
+`a_single_x_in_insert_mode_is_typed_rather_than_stopping_the_agent`.
+
 ## Directory Structure
 
 ```
@@ -2490,7 +2636,7 @@ tui/
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
-│   │   └── layout.rs       # Message layout/measurement helpers
+│   │   └── layout.rs       # Row index: drawn rows → scroll offsets
 │   ├── notification.rs     # NotificationManager
 │   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
 │   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)

@@ -73,6 +73,10 @@ pub enum Dialog {
     /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
     /// `policy_selector.rs`.
     PolicySelector,
+    /// "Which panel should this content go in?" — opened by `/agents` and
+    /// shared with the panel manager's list mechanics. See
+    /// `components/dialogs/panel_picker.rs`.
+    PanelPicker,
 }
 
 impl Dialog {
@@ -127,6 +131,7 @@ impl Dialog {
                 | Self::TriggerSecret
                 | Self::WorkspaceDashboard
                 | Self::PolicySelector
+                | Self::PanelPicker
         )
     }
 }

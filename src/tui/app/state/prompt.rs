@@ -66,7 +66,22 @@ pub struct PromptState {
     /// session panel must not silently redirect what they type into the
     /// agent. Cancelling clears it and leaves the text in place.
     pub chat_seed: Option<ChatComposeSeed>,
+    /// When the "press again to stop the agent" confirmation was armed.
+    ///
+    /// Stopping a running turn is destructive and one keystroke away from a
+    /// stray `x`, so it is gated behind a second press of the same key inside
+    /// [`STOP_ARM_WINDOW`]. `None` is the disarmed state; the arm also expires
+    /// on its own so a confirmation prompt cannot sit on screen forever after
+    /// the user has looked away.
+    pub stop_armed_at: Option<std::time::Instant>,
 }
+
+/// How long the stop confirmation stays armed before it lapses.
+///
+/// Long enough to press a key twice deliberately, short enough that a
+/// confirmation nobody acts on does not outlive the attention it was asking
+/// for.
+pub const STOP_ARM_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 
 impl PromptState {
     /// Begin one session-create continuation.  A second submit while this is
