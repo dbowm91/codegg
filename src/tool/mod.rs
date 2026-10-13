@@ -528,6 +528,11 @@ impl ToolRegistry {
         } else {
             bash_tool
         };
+        let bash_tool = if let Some(ref svc) = options.job_notification_service {
+            bash_tool.with_job_notifications(svc.clone())
+        } else {
+            bash_tool
+        };
         let bash_tool = if let Some(asset_pin) = options.asset_pin.clone() {
             bash_tool.with_asset_pin(asset_pin)
         } else {

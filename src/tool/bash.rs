@@ -73,6 +73,8 @@ pub struct BashTool {
     pub(crate) command_intent_config: Option<CommandIntentConfig>,
     pub(crate) run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     pub(crate) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub(crate) job_notifications:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
     pub(crate) asset_pin:
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(crate) routing_disabled_override: Option<bool>,
@@ -95,6 +97,7 @@ impl BashTool {
             command_intent_config: None,
             run_store: None,
             submission: None,
+            job_notifications: None,
             asset_pin: None,
             routing_disabled_override: None,
             workspace_root: None,
@@ -150,6 +153,14 @@ impl BashTool {
         submission: Arc<crate::scheduler::JobSubmissionService>,
     ) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_job_notifications(
+        mut self,
+        service: Arc<crate::scheduler::job_notifications::JobNotificationService>,
+    ) -> Self {
+        self.job_notifications = Some(service);
         self
     }
 
@@ -304,7 +315,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return its output. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable."
+        "Execute a shell command and return its output. For web search and URL fetching, prefer the `websearch` and `webfetch` tools — they handle rate limits, SSRF protection, and bot detection. `curl`/`wget` to arbitrary URLs is permitted but discouraged; use them only when a tool is genuinely unsuitable. Set execution_mode=background for long builds/tests to receive a stable JobHandle immediately and one terminal notification on completion without blocking or polling."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -330,6 +341,11 @@ impl Tool for BashTool {
                          it to wait on something that should be fast, because a hung command \
                          will hold the turn until it expires."
                     )
+                },
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["foreground", "background"],
+                    "description": "Execution mode. 'foreground' (default) blocks until completion and returns output. 'background' returns a stable JobHandle immediately for scheduler-backed routes; one terminal notification arrives without polling. Direct-only routes (native tool, git, rejected) fail closed in background without spawning."
                 }
             },
             "required": ["command"]
@@ -517,6 +533,56 @@ impl BashTool {
         } else {
             false
         };
+
+        // M002 background: explicit opt-in only, after all safety checks
+        // above (deny, length, security, preflight, workspace) and with the
+        // admitted plan frozen. Foreground remains the default.
+        let execution_mode = input
+            .get("execution_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("foreground");
+        let is_background = matches!(execution_mode.to_lowercase().as_str(), "background" | "bg");
+        if is_background {
+            let bg = Self::background_ctx(audit_ctx)?;
+            // Safety decisions above are frozen to this admitted operation;
+            // the background submitter never reparses or broadens scope.
+            let handle_value = if should_active_route {
+                let (decision_ref, plan_ref) = match (decision.as_ref(), plan.as_ref()) {
+                    (Some(d), Some(p)) => (d, p),
+                    _ => {
+                        return Err(ToolError::Execution(
+                            "internal invariant violated: active routing requires a decision and plan"
+                                .to_string(),
+                        ));
+                    }
+                };
+                self.dispatch_command_target_background(
+                    decision_ref,
+                    plan_ref,
+                    canonical_workdir.as_deref(),
+                    execution_timeout,
+                    &bg,
+                )
+                .await?
+            } else {
+                // Adopt the canonical scheduler-backed Shell translation for
+                // raw-shell background (same executor/approval/sandbox as the
+                // foreground Shell route); never a detached PID or unsupervised
+                // host shell.
+                self.submit_shell_background(
+                    command,
+                    canonical_workdir.as_deref(),
+                    execution_timeout,
+                    &bg,
+                )
+                .await?
+            };
+            // Audit represents submission, not process completion.
+            let digest = crate::live_execution_audit::command_digest_str(command);
+            self.emit_command_audit(audit_ctx, "bash", &digest, "submitted")
+                .await;
+            return Ok(serde_json::to_string_pretty(&handle_value).unwrap_or_default());
+        }
 
         let (mut result, output, execution_outcome, delegated_run_id) = if should_active_route {
             // ACTIVE ROUTING: dispatch to structured backend

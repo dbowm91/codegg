@@ -1348,6 +1348,291 @@ impl BashTool {
             ))),
         }
     }
+
+    /// M002 background context: host-resolved owner lineage for an explicit
+    /// background request. Never synthesized from model input; missing
+    /// session fails without spawning.
+    pub(crate) fn background_ctx(
+        audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
+    ) -> Result<BashBackgroundCtx, ToolError> {
+        let session_id = audit_ctx
+            .and_then(|c| c.session_id.clone())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ToolError::Execution(
+                    "background bash requires a real host-originated session context".into(),
+                )
+            })?;
+        let turn_id = audit_ctx.and_then(|c| c.turn_id.clone());
+        let invocation_key = audit_ctx
+            .and_then(|c| c.invocation_key.clone())
+            .unwrap_or_else(|| format!("bash-bg:{}", uuid::Uuid::new_v4()));
+        Ok(BashBackgroundCtx {
+            session_id,
+            turn_id,
+            invocation_key,
+        })
+    }
+
+    /// Shared background submit: durable acceptance + durable subscription
+    /// before the handle is returned. Crash between submit and subscribe is
+    /// healed by retry with the same invocation key.
+    async fn submit_bash_background(
+        &self,
+        kind: codegg_core::jobs::JobKind,
+        kind_str: &str,
+        payload: codegg_core::jobs::JobPayload,
+        workspace_root: &Path,
+        timeout: Duration,
+        idempotency: codegg_core::jobs::IdempotencyClass,
+        bg: &BashBackgroundCtx,
+    ) -> Result<serde_json::Value, ToolError> {
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "background bash requires the daemon scheduler".into(),
+            ));
+        };
+        let Some(notifications) = self.job_notifications.clone() else {
+            return Err(ToolError::Execution(
+                "background bash requires the daemon job notification service".into(),
+            ));
+        };
+        let workspace_id = submission
+            .workspace_id_for_root(workspace_root)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let key_digest = crate::tool::tool_program_context::stable_digest(&bg.invocation_key);
+        let submission_key =
+            crate::scheduler::submission::SubmissionKey::new(format!("bash-bg:{key_digest}"))
+                .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
+        let submitted = submission
+            .submit(
+                Some(submission_key),
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: Some(bg.session_id.clone()),
+                    turn_id: bg.turn_id.clone(),
+                    kind,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload,
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
+                    timeout: Some(timeout),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                    target: codegg_core::jobs::ExecutionTarget::default(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        notifications
+            .subscribe(
+                &submitted.job_id,
+                kind_str,
+                &bg.session_id,
+                bg.turn_id.as_deref(),
+                &bg.invocation_key,
+            )
+            .await
+            .map_err(|e| ToolError::Execution(format!("background subscribe failed: {e}")))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let handle = crate::scheduler::job_notifications::job_handle_for(
+            &submitted.job_id,
+            kind_str,
+            "submitted",
+            now,
+            None,
+        );
+        Ok(serde_json::json!({
+            "job_id": handle.job_id,
+            "kind": handle.kind,
+            "status": handle.status,
+            "submitted_at": handle.submitted_at,
+            "inspect_ref": handle.inspect_ref,
+            "cancel_ref": handle.cancel_ref,
+            "message": "background bash accepted; one terminal notification will arrive without polling",
+        }))
+    }
+
+    /// M002 background shell translation: the same scheduler-backed
+    /// `JobKind::Shell` route the foreground `dispatch_to_shell` uses, with
+    /// identical argv construction and platform launcher semantics. Used for
+    /// both `RouteToShell` and raw-shell background (adopted translation).
+    pub(crate) async fn submit_shell_background(
+        &self,
+        command: &str,
+        canonical_workdir: Option<&Path>,
+        timeout: Duration,
+        bg: &BashBackgroundCtx,
+    ) -> Result<serde_json::Value, ToolError> {
+        let cwd = canonical_workdir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let argv = super::process::shell_argv(command, self.windows_shell)?;
+        let payload = codegg_core::jobs::JobPayload::Shell {
+            command: command.to_string(),
+            argv: Some(argv),
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+        };
+        let cwd_ref = canonical_workdir.unwrap_or(Path::new("."));
+        // Re-resolve the workspace root the same way the foreground path
+        // does (canonical workdir, else ".").
+        let root = if cwd_ref.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            cwd_ref
+        };
+        self.submit_bash_background(
+            codegg_core::jobs::JobKind::Shell,
+            "shell",
+            payload,
+            root,
+            timeout,
+            codegg_core::jobs::IdempotencyClass::NonIdempotent,
+            bg,
+        )
+        .await
+    }
+
+    /// M002 background dispatch for active-routing targets. Scheduler-backed
+    /// routes submit with trusted owner lineage; direct-only routes fail
+    /// closed without spawning (no fallback, no reparse, no downgrade).
+    pub(crate) async fn dispatch_command_target_background(
+        &self,
+        decision: &CommandDispatchTarget,
+        plan: &CommandPlan,
+        canonical_workdir: Option<&Path>,
+        timeout: Duration,
+        bg: &BashBackgroundCtx,
+    ) -> Result<serde_json::Value, ToolError> {
+        match decision {
+            CommandDispatchTarget::RouteToTestRunner {
+                argv,
+                validated_command,
+                ..
+            } => {
+                let _ = validated_command;
+                let cwd = canonical_workdir.unwrap_or(Path::new("."));
+                let payload = codegg_core::jobs::JobPayload::Test {
+                    command: crate::command_intent::plan::NativeCommand::from_argv(argv.clone())
+                        .map(|c| c.display())
+                        .unwrap_or_default(),
+                    argv: argv.clone(),
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                    scope: Some("bash-dispatch".into()),
+                    parent_run_id: None,
+                };
+                self.submit_bash_background(
+                    codegg_core::jobs::JobKind::Test,
+                    "test",
+                    payload,
+                    cwd,
+                    timeout,
+                    codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    bg,
+                )
+                .await
+            }
+            CommandDispatchTarget::RouteToManagedProcess { command, cwd, .. } => {
+                let kind = match plan.intent.kind {
+                    CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
+                    CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
+                    CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
+                    _ => codegg_core::jobs::JobKind::ManagedProcess,
+                };
+                let kind_str = kind.as_str().to_string();
+                let cwd_owned = Path::new(cwd).to_path_buf();
+                let payload = codegg_core::jobs::JobPayload::ManagedArgv {
+                    argv: command.full_argv(),
+                    cwd: Some(cwd_owned.to_string_lossy().into_owned()),
+                };
+                let cwd_path = cwd_owned.clone();
+                self.submit_bash_background(
+                    kind,
+                    &kind_str,
+                    payload,
+                    &cwd_path,
+                    timeout,
+                    codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    bg,
+                )
+                .await
+            }
+            CommandDispatchTarget::RouteToShell { command, .. } => {
+                self.submit_shell_background(command, canonical_workdir, timeout, bg)
+                    .await
+            }
+            CommandDispatchTarget::RouteToPythonScripting { script, mode, .. } => {
+                let idempotency = match mode {
+                    crate::command_intent::plan::PythonModeGuess::Transform => {
+                        codegg_core::jobs::IdempotencyClass::NonIdempotent
+                    }
+                    _ => codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                };
+                let mode_str = match mode {
+                    crate::command_intent::plan::PythonModeGuess::Analyze => "analyze",
+                    crate::command_intent::plan::PythonModeGuess::Transform => "transform",
+                    crate::command_intent::plan::PythonModeGuess::Verify => "verify",
+                    crate::command_intent::plan::PythonModeGuess::Unknown => "analyze",
+                };
+                // Background python uses the invocation-keyed submission key
+                // (never source-hash-only) so two independent invocations of
+                // the same script stay distinct while retries dedup.
+                let cwd = canonical_workdir.unwrap_or(Path::new("."));
+                let payload = codegg_core::jobs::JobPayload::Python {
+                    script_path: String::new(),
+                    args: vec![],
+                    mode: mode_str.to_string(),
+                    source: Some(script.clone()),
+                    source_hash: Some(
+                        crate::python_script::source_store::compute_digest(script),
+                    ),
+                    cwd: Some(cwd.to_string_lossy().into_owned()),
+                    timeout_secs: Some(timeout.as_secs()),
+                };
+                self.submit_bash_background(
+                    codegg_core::jobs::JobKind::Python,
+                    "python",
+                    payload,
+                    cwd,
+                    timeout,
+                    idempotency,
+                    bg,
+                )
+                .await
+            }
+            CommandDispatchTarget::RouteToNativeTool { command, .. } => Err(ToolError::Execution(
+                format!(
+                    "background execution_mode is not supported for native-tool route '{}': no safe scheduler-backed translation exists without changing command semantics; use foreground or a scheduler-backed shell/build/test form",
+                    command.executable
+                ),
+            )),
+            CommandDispatchTarget::RouteToGit { .. } => Err(ToolError::Execution(
+                "background execution_mode is not supported for the git route: no safe scheduler-backed translation exists here; use foreground or the typed git tool"
+                    .into(),
+            )),
+            CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(
+                "command rejected: {reason}"
+            ))),
+        }
+    }
+}
+
+/// Trusted owner lineage for one explicit background bash request.
+pub(crate) struct BashBackgroundCtx {
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub invocation_key: String,
 }
 
 #[cfg(test)]
