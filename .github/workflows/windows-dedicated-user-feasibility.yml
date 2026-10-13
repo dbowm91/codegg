@@ -11,6 +11,9 @@ on:
       - 'scripts/windows_restricted_primary_token_probe.c'
       - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
       - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
+      - 'scripts/windows_token_initialization_trace.ps1'
+      - 'scripts/windows_token_initialization_marker.c'
+      - 'plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md'
   pull_request:
     paths:
       - '.github/workflows/windows-dedicated-user-feasibility.yml'
@@ -21,10 +24,18 @@ on:
       - 'scripts/windows_restricted_primary_token_probe.c'
       - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
       - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
+      - 'scripts/windows_token_initialization_trace.ps1'
+      - 'scripts/windows_token_initialization_marker.c'
+      - 'plans/implementation/windows-native-sandbox/028-token-launch-initialization-diagnostic.md'
   workflow_dispatch:
     inputs:
       run_read_boundary:
         description: Run the C027 primary-token interop and same-file read-boundary probe
+        type: boolean
+        required: false
+        default: false
+      run_token_trace:
+        description: Run the bounded C028 token initialization phase trace
         type: boolean
         required: false
         default: false
@@ -66,3 +77,14 @@ jobs:
       - name: Run bounded C027 primary-token interop and read comparison
         shell: pwsh
         run: ./scripts/windows_restricted_primary_token_feasibility.ps1
+
+  token-initialization-trace:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_token_trace
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run bounded C028 token initialization phase trace
+        shell: pwsh
+        run: ./scripts/windows_token_initialization_trace.ps1
