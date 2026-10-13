@@ -14,8 +14,8 @@ Repository baseline reviewed: `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 
 Implementation commits or pull requests:
 
-- Pending commit on `planning/linux-execution-isolation` — initial trusted Git
-  process policy, hostile fsmonitor/hook probes, documentation and static guard.
+- `eb0f18c76e27688c41c437143c2eba60e55035ca` — initial trusted Git process
+  policy, hostile fsmonitor/hook probes, documentation and static guard.
 
 ## 1. Executive finding
 
