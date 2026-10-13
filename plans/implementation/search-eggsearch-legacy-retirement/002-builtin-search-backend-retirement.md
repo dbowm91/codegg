@@ -14,8 +14,9 @@ Planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
 Hard dependency:
 
-- CodeGG M001 parity release adoption and provider-contract reconciliation
-  closed.
+- CodeGG M001 **pre-release pinned integration + paired-process qualification**
+  strictly closed. This is a development compatibility gate, not a CodeGG
+  public release/packaging or end-to-end operability gate.
 
 Relevant predecessor evidence:
 
@@ -27,8 +28,17 @@ Relevant predecessor evidence:
 
 ## 1. Objective
 
-Remove CodeGG's duplicate external-search implementation after the pinned
-eggsearch release has proven the provider compatibility surface.
+Remove CodeGG's duplicate external-search implementation after **CodeGG
+source-development M001** has proven the pinned eggsearch contract with
+the **offline paired-process compatibility suite**. No requirement for a
+working end-to-end coding agent or an actual CodeGG release/installer.
+Retirement is a maintenance and security-boundary cleanup, not a release
+readiness claim.
+
+After M002, rerun the **exact same single-command offline paired
+CodeGG runtime + eggsearch subprocess suite** used for M001, with a
+reduced `eggsearch|disabled` config. Confirm an absent/broken sidecar
+fails actionably and never routes through a legacy HTTP provider.
 
 After M002:
 
