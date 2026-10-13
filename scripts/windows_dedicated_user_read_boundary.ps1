@@ -280,9 +280,9 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         if ($sidPointer -ne [IntPtr]::Zero) { [void][C024Native]::LocalFree($sidPointer) }
     }
     $writeRestricted = Start-TestChild -Mode write-restricted -User $account -Password $null -Token $writeRestrictedToken `
-        -Exe $powerShell -Command $commandLine -Directory $stage
+        -Exe $powerShell -Command $commandLine -Directory $null
     $restricted = Start-TestChild -Mode restricted -User $account -Password $null -Token $restrictedToken `
-        -Exe $powerShell -Command $commandLine -Directory $stage
+        -Exe $powerShell -Command $commandLine -Directory $null
     $broadAfter = Get-SddlFingerprint $broadRoot
     $privateAfter = Get-SddlFingerprint $privateRoot
     $secretHashAfter = (Get-FileHash -LiteralPath $broadSecret -Algorithm SHA256).Hash
