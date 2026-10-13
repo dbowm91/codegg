@@ -214,9 +214,19 @@ The receipt is structured coordinator data, not status inferred from source
 notes. It distinguishes complete, partial, failed, skipped, truncated, and
 unknown outcomes; carries bounded warning codes, failed-provider labels,
 coverage text, and links from each existing per-run source UUID to eggsearch's
-stable ID. Unknown older responses remain unknown. A complete response with
-zero sources is a confirmed no-match; failed or incomplete collection is
-rendered in research outputs as a coverage gap. Upstream trust/provenance is
+stable ID. For eggsearch v0.4.1 diagnostic responses, `retrieval_summary`
+contains per-role/provider/subquery `dimensions`; `dimensions[*].state` and
+`attempt_outcome` are the status evidence. `has_failures`, job/dimension/role
+counts, truncation evidence, and `workflow_coverage` qualify that evidence.
+`completed_no_match` is a positive completed outcome for its represented role;
+`not_applicable`, skipped, unavailable, partial, failed, interrupted, unknown
+states, incomplete role counts, and uncertain result limits cannot prove
+absence. The compact `retrieval_status` projection omits dimensions, so its
+aggregate booleans alone never establish complete retrieval. Unknown older
+responses remain unknown unless they carry positively recognized legacy
+completion evidence. A complete response with zero sources is a scoped
+confirmed no-match; failed or incomplete collection is rendered in research
+outputs as a coverage gap. Upstream trust/provenance is
 retained as descriptive evidence only; CodeGG continues to mark network source
 content `external_untrusted`. Receipts are persisted in the additive
 `retrieval.json` run artifact and loaded into `ResearchBundle`; older runs
@@ -497,3 +507,18 @@ missing `mod.rs` row to the module-layout table. Verified accurate:
 all enum variant lists (`ResearchMode` 8, `ResearchAudience` 5, `ResearchDepth`
 3, `ResearchOutputProfile` 5, `ClaimType` 7, `SourceType` 10), `ResearchBudget`
 6 fields, and the five output-profile artifact filenames (`store.rs:117-121`).
+
+Verified 2026-10-13 against `eggstack/eggsearch` immutable tag `v0.4.1`
+(`32769d684417567dfb30fc5adea1475cee7f0ed0`), its
+`src/core/retrieval_status.rs`, `src/mcp/tools/research_search.rs`,
+`src/mcp/tools/security_search.rs`, and `src/mcp/projection.rs`: diagnostic
+research/security tool responses expose `retrieval_summary.dimensions` with
+per-dimension state/outcome/truncation evidence plus summary counts and
+`workflow_coverage`; compact projection replaces that summary with aggregate
+`retrieval_status` and removes workflow coverage. The CodeGG adapter now
+reduces those dimensions conservatively and keeps missing/additive states
+indeterminate. Offline schema fixtures live under
+`tests/fixtures/eggsearch/v0.4.1/`. No live v0.4.1 binary smoke was run. The
+previous M001 paragraph's unqualified claim that any complete zero-source
+response proves no-match was too broad; completion must now be established
+from role-aware tagged retrieval evidence.

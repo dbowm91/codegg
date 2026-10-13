@@ -799,6 +799,144 @@ async fn security_research_source_uses_structured_security_evidence() {
     assert_eq!(recorded[0].1["workflow"], "security_review");
 }
 
+fn build_tagged_retrieval_mock(research: String, security: String) -> McpService {
+    let mut service = McpService::new();
+    let names = [
+        "web_search",
+        "web_fetch",
+        "provider_status",
+        "research_search",
+        "security_search",
+    ];
+    let tools = names
+        .iter()
+        .map(|name| McpTool {
+            name: (*name).to_string(),
+            description: format!("Mock {name}"),
+            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            server: "eggsearch".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    service.register_mock_server(
+        "eggsearch",
+        tools,
+        Box::new(move |tool, args| {
+            validate_current_eggsearch_request(tool, &args)?;
+            match tool {
+                "research_search" => Ok(research.clone()),
+                "security_search" => Ok(security.clone()),
+                "web_search" => Ok("{}".to_string()),
+                "web_fetch" => Ok("".to_string()),
+                "provider_status" => Ok("{}".to_string()),
+                _ => Err(McpError::Server(format!("unexpected tool {tool}"))),
+            }
+        }),
+    );
+    service
+}
+
+fn research_request(mode: ResearchMode) -> ResearchRequest {
+    ResearchRequest {
+        id: "tagged-retrieval-test".into(),
+        question: "test query".into(),
+        mode,
+        audience: ResearchAudience::AgentReviewer,
+        depth: ResearchDepth::Medium,
+        output_profiles: vec![],
+        constraints: vec![],
+        sources: vec![],
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources: 4,
+            max_chunks_per_source: 1,
+            max_evidence_spans: 1,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network: true,
+        },
+        created_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn fake_mcp_tagged_completed_empty_receipt_survives_report_path() {
+    let completed =
+        include_str!("fixtures/eggsearch/v0.4.1/research_search-completed-empty.json").to_string();
+    let service = Arc::new(tokio::sync::RwLock::new(build_tagged_retrieval_mock(
+        completed,
+        include_str!("fixtures/eggsearch/v0.4.1/research_search-dimension-failure.json")
+            .to_string(),
+    )));
+    let context = SearchRuntimeContext::new(eggsearch_config_all_caps()).with_mcp(service);
+    let source = EggsearchSource::new().with_search_runtime(context);
+    let plan = ResearchPlan {
+        scope: "test".into(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let collection = source
+        .collect_with_receipt(&research_request(ResearchMode::Landscape), &plan)
+        .await
+        .unwrap();
+    assert!(collection.sources.is_empty());
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Complete
+    );
+    let report = codegg::research::synthesis::render_retrieval_status(&collection.receipts);
+    assert!(report.contains("complete; 0 source(s)"));
+    assert!(report.contains("represented retrieval scope"));
+    assert!(!report.contains("not a negative finding"));
+}
+
+#[tokio::test]
+async fn fake_mcp_tagged_dimension_only_failure_remains_failed_and_reported() {
+    let failed = include_str!("fixtures/eggsearch/v0.4.1/research_search-dimension-failure.json")
+        .to_string();
+    let service = Arc::new(tokio::sync::RwLock::new(build_tagged_retrieval_mock(
+        failed.clone(),
+        include_str!("fixtures/eggsearch/v0.4.1/security_search-dimension-failure.json")
+            .to_string(),
+    )));
+    let context = SearchRuntimeContext::new(eggsearch_config_all_caps()).with_mcp(service);
+    let source = EggsearchSource::new().with_search_runtime(context);
+    let plan = ResearchPlan {
+        scope: "test".into(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let collection = source
+        .collect_with_receipt(&research_request(ResearchMode::Landscape), &plan)
+        .await
+        .unwrap();
+    assert!(collection.sources.is_empty());
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Failed
+    );
+    assert_eq!(collection.receipts[0].failed_providers, ["exa"]);
+    let report = codegg::research::synthesis::render_retrieval_status(&collection.receipts);
+    assert!(report.contains("failed; 0 source(s)"));
+    assert!(report.contains("Providers failed: exa"));
+    assert!(report.contains("not a negative finding"));
+    let security = source
+        .collect_with_receipt(&research_request(ResearchMode::SecurityReview), &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        security.receipts[0].state,
+        codegg::research::types::RetrievalState::Failed
+    );
+    assert_eq!(security.receipts[0].failed_providers, ["osv"]);
+}
+
 /// Build a mock with ALL upstream tools registered.
 fn build_full_mock_eggsearch(
     recorded_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,

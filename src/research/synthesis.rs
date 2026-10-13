@@ -46,6 +46,9 @@ pub fn render_retrieval_status(receipts: &[ResearchRetrievalReceipt]) -> String 
                 receipt.trust_markers.join(", ")
             );
         }
+        if matches!(receipt.state, RetrievalState::Complete) && receipt.source_count == 0 {
+            out.push_str("  No sources matched within the represented retrieval scope; this does not establish global absence.\n");
+        }
         if !matches!(receipt.state, RetrievalState::Complete) {
             out.push_str("  Evidence coverage is incomplete or unconfirmed; absence of results is not a negative finding.\n");
         }

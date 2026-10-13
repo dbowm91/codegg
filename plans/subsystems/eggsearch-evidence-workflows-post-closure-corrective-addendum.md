@@ -1,6 +1,6 @@
 # Eggsearch Evidence Workflows — M001 Post-Closure Retrieval Contract Corrective
 
-Status: active (C001 ready)
+Status: active (C001 closing)
 Primary class: correctness / compatibility
 Repository baseline: `agent/eggsearch-evidence-workflow-20261013`; implementation `6be801e3a02349630a153f4141e9a69dce789584`; accepted historical closure `plans/closure/eggsearch-evidence-workflows/001-status.md`.
 
@@ -43,7 +43,7 @@ Preserve M001's successful work: structured receipt transport, nested dates, sou
 
 ### C001 — Tagged-retrieval-summary dimension normalization
 
-Status: **ready**. Plan:
+Status: **closing**. Plan:
 `plans/implementation/eggsearch-evidence-workflows-corrective/001-tagged-retrieval-dimension-normalization.md`.
 
 Dependencies:

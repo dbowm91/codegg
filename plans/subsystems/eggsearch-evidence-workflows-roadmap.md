@@ -1,6 +1,6 @@
 # Eggsearch Evidence Fidelity and Agent Workflow Roadmap
 
-Status: active (M001 historical closure; C001 corrective ready; M002-M005 dependency-blocked)
+Status: active (M001 historical closure; C001 corrective closing; M002-M005 dependency-blocked)
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13)
 Upstream evidence: eggsearch `v0.4.1` published/qualified; upstream main declares `0.4.2`. CodeGG's managed pin remains `0.3.9` until the independently registered legacy-retirement M001 lands.
 
@@ -62,7 +62,7 @@ Existing legacy-retirement M001 (READY) ----------> M004 projection (blocked)
 ```
 
 - New evidence M001 is **historically closed** at `plans/closure/eggsearch-evidence-workflows/001-status.md`; its typed receipt transport is implemented, but the tagged upstream dimensional status contract escaped original verification.
-- Post-closure corrective C001 is **ready** and must strictly close before M004. Authority: `plans/subsystems/eggsearch-evidence-workflows-post-closure-corrective-addendum.md`; handoff: `plans/implementation/eggsearch-evidence-workflows-corrective/001-tagged-retrieval-dimension-normalization.md`. It is independent of the runtime-pin migration, but must requalify on adopted release when available.
+- Post-closure corrective C001 is **closing** and must strictly close before M004. Authority: `plans/subsystems/eggsearch-evidence-workflows-post-closure-corrective-addendum.md`; handoff: `plans/implementation/eggsearch-evidence-workflows-corrective/001-tagged-retrieval-dimension-normalization.md`. It is independent of the runtime-pin migration, but must requalify on adopted release when available.
 - M002 and M003 are **blocked** on the separate legacy-retirement M001 adopting and qualifying the pinned release.
 - M004 is **blocked** on *both* post-closure C001 and legacy-retirement M001; do not render unverified completeness status.
 - M005 is **blocked** on M002 and M004. Tool execution authority remains CodeGG-owned.
