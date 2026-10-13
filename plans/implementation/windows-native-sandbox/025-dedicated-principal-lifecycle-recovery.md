@@ -83,3 +83,15 @@ Exact SHA, VM OS/build/KB, setup/run/restart commands and actual fault-injection
 ## 16. Handoff
 
 C026 consumes this as feasibility/recovery evidence. No `Required` or account installer may be enabled here.
+
+## 17. Restricted-token authority across provisioning and recovery
+
+C025 is reachable **only** after C024 passes the two-process broad-readable-file contrast: ordinary sandbox account reads the synthetic `Users`/`Authenticated Users`/`Everyone` allowed fixture, and its true read-restricted primary-token child cannot read that **same unchanged file** while executing the supported tool subset.
+
+The owned-state journal must record (or securely bind) the account SID, limiting/restricting SID identifier, created stage object IDs, Job/run generation, authority/lease identifier and original fixture hashes without persisting credentials in clear text. A reconciler must not infer authority to delete an account from name prefix, current username or an unverified journal row; compare live SID and recorded resource ownership before every destructive teardown. Treat password/profile material, desktop/window-station permissions, startup environment and inherited handles as independently reviewable resources.
+
+Failure injection must include a crash **after token construction but before suspended launch**, a crash after Job association but before resume, loss of the last Job handle, and restart with re-used account name but different SID. Reboot and orphan cleanup must verify the same restricted-token provenance rather than relaunching through the unrestricted C021 `CreateProcessWithLogonW` path. Missing privilege, stale SID, other-owned account, descriptor drift, or unknown Job handle ownership => quarantine/deny, never auto-recreate a broad-privilege child.
+
+Job child/grandchild inheritance needs a direct attempted `CREATE_BREAKAWAY_FROM_JOB` negative probe. Job close/parent-death must terminate descendants even if they create additional processes, and a sandbox child must never inherit the privileged Job owner handle.
+
+Official Windows references: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw and https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects .

@@ -81,3 +81,13 @@ Exact review author/independence, SHAs/Windows builds, positive/negative/unrun t
 ## 16. Handoff
 
 Review is a decision gate, not implementation. Subsequent product work requires separately accepted architecture and new bounded implementation plans.
+
+## 17. Independent access-check review and disposition refinements
+
+The reviewer must inspect **both** C024's positive normal-sandbox-account read baseline and the negative true-restricted-child read of the *same* unchanged broad-group-readable synthetic host object. A private-DACL-only denial, a parent-side `AccessCheck` result, a `WRITE_RESTRICTED` write denial, and a simulated/absent restriction are **not** acceptable read-confinement evidence. Independently sample the actual child `TokenUser` / restricted SID memberships, original object DACL/owner/control and per-alias file ID, stage access, named-pipe and inherited handle observations. The reviewer must state whether restrictions continue to hold after descendant creation and process restart.
+
+Examine the privileged helper trust boundary separately: identity/credential storage, `CreateProcessAsUserW` privilege prerequisites, startup desktop/window-station and GUI messaging risk, daemon elevation exposure, resource ownership/reconciliation, Job-last-handle cleanup, and attempted child breakaway. A test fixture running as an administrator is **not** evidence that an ordinary user-mode daemon can safely perform account/token provisioning. Document the intended, separately authorized provisioning model before allowing even a **proposed** production ADR.
+
+Independent test re-execution must use a different fixture or perturbation from the implementation author's primary test where feasible; report reviewer independence and raw native outcomes. Any inability to establish a safe broker/account lifecycle or to deny group-readable host files yields `no-admission` or `blocked`, not 'conditionally supported'. Windows network behavior remains unclaimed regardless of filesystem result.
+
+Microsoft authority: https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken ; https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw ; https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects .

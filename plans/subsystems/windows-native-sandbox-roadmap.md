@@ -157,6 +157,8 @@ Microsoft MXC SDK `v1.0.0` published 2026-10-07 after old M007 preview pin; its 
 
 Evidence basis `research/windows-native-sandbox/c023-c026-corrective-assessment.md`. No original populated-workspace DACL/SACL/MIC changes, no broad user-profile grants, no production account install, no M005 network claim, and no automatic C011/M004–M006 or AppContainer C015–C018 unblocking.
 
+**2026-10-13 handoff refinement (no milestone renumbering):** C024 must prove a two-pass access-check result with actual children: the ordinary dedicated user **can read** an unchanged, broad-group-readable synthetic host file; its independently verified **non-`WRITE_RESTRICTED` read-restricted primary-token child cannot read that same object**, while reading stage and running shell/Git. Windows `CreateProcessWithLogonW` cannot accept the prebuilt restricting token; `CreateProcessAsUserW` (or an equally verified native launcher) must show privilege, token provenance and pre-resume Job ownership. Lack of a safe launch or tool compatibility closes C024 negative rather than falling back to the ordinary account. C025 must retain restricting SID and Job ownership through crashes/reboot; C026 independently reproduces this test and audits privileged setup. Existing C023/C024 ready and C025/C026 blocked statuses are unchanged. See `research/windows-native-sandbox/c023-c026-corrective-assessment.md` and C024–C026 `17` supplements.
+
 ## 8. Cross-cutting requirements
 
 ### Storage and migration
