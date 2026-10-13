@@ -261,6 +261,8 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
             throw "Sandbox-account token acquisition failed: Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()) (interactive attempt $logonError)"
         }
     }
+    $asUserControl = Start-TestChild -Mode asuser-control -User $account -Password $null -Token $baseToken `
+        -Exe $powerShell -Command $commandLine -Directory $stage
     $sidPointer = [IntPtr]::Zero
     $sidArray = [IntPtr]::Zero
     try {
@@ -294,7 +296,13 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         $restricted.result.limiting_sid_seen_in_child -and
         $restricted.result.broad_direct -like 'denied:*' -and
         $restricted.result.stage_write -eq 'allowed'
-    $disposition = if ($strictPositive) { 'partial-positive-matrix-incomplete' } else { 'negative-or-blocked-tool-launch' }
+    $disposition = if ($strictPositive) {
+        'partial-positive-matrix-incomplete'
+    } elseif ($asUserControl.result -and $asUserControl.result.token_user -eq $accountSid) {
+        'negative-restricted-token-tool-launch'
+    } else {
+        'blocked-create-process-as-user-control'
+    }
     $report = [ordered]@{
         contract = 'codegg.windows_dedicated_user_read_boundary.v1'
         disposition = $disposition
@@ -307,6 +315,7 @@ try { [IO.File]::WriteAllText([IO.Path]::Combine(`$stage, 'child-write.txt'), 's
         account_sid = $accountSid
         restricting_sid = $limitingSid
         normal_account_baseline = $normal
+        create_process_as_user_unrestricted_account_control = $asUserControl
         write_restricted_child = $writeRestricted
         restricted_primary_token_launch = $restricted
         broad_fixture_sddl_before = $broadBefore
