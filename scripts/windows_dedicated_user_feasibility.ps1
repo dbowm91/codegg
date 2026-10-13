@@ -109,7 +109,7 @@ function Set-PrivateDirectoryAcl([string] $Path, [string[]] $Sids) {
             [Security.AccessControl.AccessControlType]::Allow)
         [void]$acl.AddAccessRule($rule)
     }
-    [IO.Directory]::SetAccessControl($Path, $acl)
+    Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
 function Invoke-RunnerCommand([string] $File, [string] $Arguments) {
