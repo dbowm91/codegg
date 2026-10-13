@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active (planning; ADR-0024 accepted; M001 ready as three ordered correctives; M002/M003 dependency-blocked)
+Status: active (planning; ADR-0024 accepted; M001 C001 closed, C002 ready, C003 blocked on C002; M002/M003 dependency-blocked)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -48,9 +48,9 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 ### M001 internal handoff ordering — avoid a permissive-but-incorrect policy
 
-- **M001 C001** `plans/implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md`: **ready**. First fix config catch-all rule shadowing, explicit scoped Deny precedence and persisted first-token approval reuse for compound shell. This is the release-blocking correctness gate.
-- **M001 C002** `plans/implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md`: blocked on C001 closure. Reclassify built-in syntax-only hard blocks, classifier critical severity and Eggsact command-preflight "high risk" as advisory, while preserving explicit operator Deny, deterministic invalidity and existing human-shell behavior.
-- **M001 C003** `plans/implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md`: blocked on C001/C002 closure. Qualify everyday developer workflow behavior with an exact-revision corpus, prompt counts, routing, obtained filesystem isolation, explicit Deny/Ask preservation and honest network limitations. Ordinary Bash syntax alone is not an escalation signal.
+- **M001 C001** `plans/implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md`: **closed** at `plans/closure/command-authorization-and-execution-boundaries/004-status.md`. Specific configured rules beat fallbacks; current Deny is evaluated before saved Allow; complex shell and wrapper/interpreter scopes cannot reuse a first-token family grant.
+- **M001 C002** `plans/implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md`: **ready**. C001 closed. Reclassify built-in syntax-only hard blocks, classifier critical severity and Eggsact command-preflight "high risk" as advisory, while preserving explicit operator Deny, deterministic invalidity and existing human-shell behavior.
+- **M001 C003** `plans/implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md`: blocked on C002 closure. Qualify everyday developer workflow behavior with an exact-revision corpus, prompt counts, routing, obtained filesystem isolation, explicit Deny/Ask preservation and honest network limitations. Ordinary Bash syntax alone is not an escalation signal.
 - The parent M001 must not close until all three C001–C003 evidence records and the original inventory criteria pass. This sub-slicing **does not** promote C001–C003 into new Linux execution milestones or re-open historical Linux Git C001 closure. M002 cross-tool routing still depends on parent M001, not on Linux backend promotion.
 
 ### Existing workstream dependencies
@@ -67,9 +67,9 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 | ID | Class | Handoff | Status | Exit |
 |---|---|---|---|---|
 | M001 | invariant | `implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md` | ready, sliced C001–C003 | Permission matching and narrow grants correct, built-in syntax signals advisory, routine developer work low-friction; explicit rules and FullHost warnings truthful |
-| M001 C001 | invariant | `implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md` | **active** | Specific configured rules not shadowed; compound commands cannot reuse a first-token grant |
-| M001 C002 | invariant | `implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md` | blocked: C001 | No built-in syntax-only hard denial; risk classifier and command preflight advisory, explicit user policy intact |
-| M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | blocked: C001/C002 | Everyday coding commands low-friction with zero unnecessary **syntax-caused** prompts inside authorized sandbox; exact native limitations recorded |
+| M001 C001 | invariant | `implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md` | **closed** | Specific configured rules not shadowed; current Deny remains terminal; saved family grants do not cover compound shell |
+| M001 C002 | invariant | `implementation/command-authorization-and-execution-boundaries/005-m001-advisory-policy-and-preflight-corrective.md` | **ready** | No built-in syntax-only hard denial; risk classifier and command preflight advisory, explicit user policy intact |
+| M001 C003 | capability | `implementation/command-authorization-and-execution-boundaries/006-m001-developer-workflow-friction-qualification.md` | blocked: C002 | Everyday coding commands low-friction with zero unnecessary **syntax-caused** prompts inside authorized sandbox; exact native limitations recorded |
 | M002 | infrastructure | `implementation/command-authorization-and-execution-boundaries/002-approval-preflight-and-routing-convergence.md` | blocked: M001 | one approval precedence and execution ceiling across shell/typed tools; denied capability cannot be laundered |
 | M003 | invariant | `implementation/command-authorization-and-execution-boundaries/003-equivalent-effects-and-execution-observability.md` | blocked: M002 | equivalent forbidden effects cannot bypass actual enforcement by changing invocation surface; transparent unknown/unsupported |
 
