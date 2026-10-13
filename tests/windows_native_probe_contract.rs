@@ -263,10 +263,10 @@ async fn execute(
         OsString::from("-Command"),
         OsString::from(script.clone()),
     ];
-    let cwd = std::env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .expect("SystemRoot is set")
-        .join("System32");
+    // Start within the authorized writable stage just as a real projection
+    // workload would. System32 is executable/readable but is not the workspace
+    // root and is an invalid working directory for relative tool behavior.
+    let cwd = stage.to_path_buf();
     let mut request = ManagedProcessRequest::new(
         std::iter::once(shell.clone().into_os_string())
             .chain(args.iter().cloned())
