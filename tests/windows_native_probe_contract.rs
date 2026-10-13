@@ -6,7 +6,7 @@
 
 use codegg::managed_process::{
     EnvironmentPolicy, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
-    SandboxExecutionOutcome, SandboxRequest,
+    SandboxExecutionOutcome, SandboxRequest, TerminationReason,
 };
 use codegg::security::sandbox::SandboxLaunchSpec;
 use serde::Serialize;
@@ -179,7 +179,7 @@ fn child_script(action: Action) -> &'static str {
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
-    let token = "$whoami = Join-Path $env:SystemRoot 'System32\\whoami.exe'; $token = (& $whoami /all | ForEach-Object { $_.Trim() }) -join ';'; Write-Output ('C019_TOKEN=' + $token);";
+    let token = "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('C019_TOKEN=' + $identity.Name + '|' + $identity.User.Value);";
     if matches!(
         action,
         Action::DirectHostRead
@@ -328,7 +328,9 @@ async fn execute(
                 .find_map(|line| line.strip_prefix("C019_TOKEN="))
                 .unwrap_or("token details not emitted")
                 .to_owned();
-            let mut state = if output.contains("C019_RESULT=allowed") {
+            let mut state = if !matches!(result.termination, TerminationReason::Exited) {
+                State::Blocked
+            } else if output.contains("C019_RESULT=allowed") {
                 State::Allowed
             } else if output.contains("C019_RESULT=denied") {
                 State::Denied
@@ -339,8 +341,11 @@ async fn execute(
             } else {
                 State::Failed
             };
-            let mut error =
-                (!result.exit_status.success()).then(|| result.stderr.to_string_lossy());
+            let mut error = if !matches!(result.termination, TerminationReason::Exited) {
+                Some(format!("child termination: {:?}", result.termination))
+            } else {
+                (!result.exit_status.success()).then(|| result.stderr.to_string_lossy())
+            };
             let sandbox_verified = if restricted {
                 matches!(
                     &result.sandbox,
@@ -434,12 +439,7 @@ async fn c019_shared_native_security_probe_contract() {
     let case_alias = host.join("SYNTHETIC-CREDENTIAL.TXT");
     std::fs::write(&credential, "synthetic-c019-secret").unwrap();
     std::fs::write(&sibling_secret, "synthetic-c019-sibling").unwrap();
-    let extended_path = PathBuf::from(format!(
-        r"\\?\{}",
-        std::fs::canonicalize(&credential)
-            .expect("canonical synthetic credential path")
-            .display()
-    ));
+    let extended_path = PathBuf::from(format!(r"\\?\{}", credential.display()));
     let hardlink = host.join("credential-hardlink.txt");
     std::fs::hard_link(&credential, &hardlink).expect("synthetic hardlink");
     let ads = PathBuf::from(format!("{}:c019", credential.display()));
