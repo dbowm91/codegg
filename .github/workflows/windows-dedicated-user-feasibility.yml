@@ -7,18 +7,24 @@ on:
       - 'scripts/windows_dedicated_user_feasibility.ps1'
       - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
       - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'scripts/windows_restricted_primary_token_feasibility.ps1'
+      - 'scripts/windows_restricted_primary_token_probe.c'
       - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
+      - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
   pull_request:
     paths:
       - '.github/workflows/windows-dedicated-user-feasibility.yml'
       - 'scripts/windows_dedicated_user_feasibility.ps1'
       - 'plans/implementation/windows-native-sandbox/021-dedicated-user-native-feasibility.md'
       - 'scripts/windows_dedicated_user_read_boundary.ps1'
+      - 'scripts/windows_restricted_primary_token_feasibility.ps1'
+      - 'scripts/windows_restricted_primary_token_probe.c'
       - 'plans/implementation/windows-native-sandbox/024-dedicated-principal-token-and-host-read-boundary.md'
+      - 'plans/implementation/windows-native-sandbox/027-restricted-primary-token-win32-interop-corrective.md'
   workflow_dispatch:
     inputs:
       run_read_boundary:
-        description: Run the C024 broad-readable host fixture and restricted-token probe
+        description: Run the C027 primary-token interop and same-file read-boundary probe
         type: boolean
         required: false
         default: false
@@ -44,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Record C024 test runner metadata
+      - name: Record C027 test runner metadata
         shell: pwsh
         run: |
           $os = Get-CimInstance Win32_OperatingSystem
@@ -57,6 +63,6 @@ jobs:
           "Administrator role: $($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"
           whoami /priv
 
-      - name: Run bounded broad-readable and restricted-token comparison
+      - name: Run bounded C027 primary-token interop and read comparison
         shell: pwsh
-        run: ./scripts/windows_dedicated_user_read_boundary.ps1
+        run: ./scripts/windows_restricted_primary_token_feasibility.ps1
