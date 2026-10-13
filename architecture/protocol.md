@@ -23,7 +23,7 @@ crates/codegg-protocol/src/
 │                      #   ServerCapabilities
 ├── interactive_process.rs # InteractiveProcess attach/stream DTOs
 ├── human_shell.rs        # human_shell.v1 bounded daemon run DTOs
-├── lsp.rs              # LSP preview-apply and read-surface DTOs
+├── lsp.rs              # LSP preview-apply, read-surface, and completion DTOs
 ├── plugin.rs           # PluginManifestDto, PluginInvocation, PluginResponse
 ├── projection/         # Frontend-neutral session projection contract
 ├── provider.rs         # Secret-safe provider connection/provisioning DTOs
@@ -220,7 +220,7 @@ Groups present in `CoreRequest` but not enumerated above (see
 `ActiveGoalLoad`,
 `ManagedWorktree*` (4), `WorkPlanBindRepository` /
 `WorkPlanRepositoryBinding` (2) plus `WorkOrderBindRepository`,
-`EditCheckpoint*` (6), `Lsp*` (4), `Audit*` (3),
+`EditCheckpoint*` (6), `Lsp*` (5, incl. M003 `LspCompletionGet`), `Audit*` (3),
 `InteractiveProcess*` (10), `Presence*` (3), `Chat*` (19), `Team*` (11),
 approval/execution policy (`ApprovalPreferenceGet`, `ApprovalModeSet`,
 `SandboxProfileSet`, `RuntimePolicySet`, `TaskModelPreferenceSet`,
@@ -616,7 +616,7 @@ Verified 2026-10-10 against `crates/codegg-protocol/src/lib.rs`,
   `PROJECTION_PROTOCOL_VERSION = 1` at `projection/caps.rs:27`; every
   enumerated variant name in the CoreRequest/CoreResponse/CoreEvent/TuiMessage
   groups resolves to a real variant; the not-enumerated counts
-  `Document*` 9, `ManagedWorktree*` 4, `EditCheckpoint*` 6, `Lsp*` 4,
+  `Document*` 9, `ManagedWorktree*` 4, `EditCheckpoint*` 6, `Lsp*` 5,
   `Audit*` 3, `InteractiveProcess*` 10, `Presence*` 3, `Chat*` 19, `Team*` 11,
   `WorkOrder*` 22, and WorkPlan repository bindings 2; the
   `CreateProviderConnectionResult` alias; and

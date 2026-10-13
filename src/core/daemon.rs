@@ -2927,6 +2927,12 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
             CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
+            // M003: the completion read resolves its session exactly like the
+            // preview-apply write, so a team principal with `file.read` on
+            // the session's project passes and one without is denied — never
+            // `NotReady`, never `MissingScope` for a bound session. The M006-B
+            // reads are deliberately untouched here.
+            CoreRequest::LspCompletionGet { request } => Some(request.session_id.as_str()),
             CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
             CoreRequest::GoalSet { session_id, .. }
             | CoreRequest::GoalFromFile { session_id, .. }

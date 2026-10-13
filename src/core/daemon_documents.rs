@@ -57,21 +57,38 @@ impl CoreDaemon {
         &self,
         snapshot: &codegg_protocol::document::DocumentSnapshotDto,
     ) -> bool {
+        // M003: the sync witness. A revision is recorded only when the push
+        // below succeeds; every other exit clears the witness, so a revision
+        // that never reached a server can never later read as synchronized.
+        // Eviction clears it too (see `DocumentService`), matching the
+        // `didClose` the close path sends exactly on eviction.
         let Some(service) = &self.deps.lsp_service else {
             return false;
         };
-        let Ok(workspace_id) = codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
-        else {
-            return true;
+        let workspace_id = match codegg_core::workspace::WorkspaceId::parse(&snapshot.workspace_id)
+        {
+            Ok(workspace_id) => workspace_id,
+            Err(_) => {
+                self.documents.clear_lsp_synced(&snapshot.document_id);
+                return true;
+            }
         };
         let Some(workspace) = self.workspaces.resolve(&workspace_id).await else {
+            self.documents.clear_lsp_synced(&snapshot.document_id);
             return true;
         };
         let path = workspace.canonical_root.join(&snapshot.relative_path);
-        service
+        let degraded = service
             .set_managed_document(&path, &snapshot.text, snapshot.dirty)
             .await
-            .is_err()
+            .is_err();
+        if degraded {
+            self.documents.clear_lsp_synced(&snapshot.document_id);
+        } else {
+            self.documents
+                .record_lsp_synced(&snapshot.document_id, snapshot.revision);
+        }
+        degraded
     }
 
     async fn refresh_external_disk(

@@ -979,6 +979,47 @@ provides its initial authoritative snapshot, but this implementation does not
 emit ongoing diagnostic changes. Consumers must use the pull result and must
 not claim live push updates until a separately qualified driver exists.
 
+### Completion read surface (M003, ADR-0021 Option B)
+
+`CoreRequest::LspCompletionGet` is a dedicated completion read, separate from
+`LspReadGet` by decision, not by accident: the read family's point requests
+carry no document revision or edit contract, and reusing one as insert
+authority would invite exactly that confusion (Option C, not selected). The
+response `LspCompletionResultDto` distinguishes `Ready` (possibly zero
+candidates), `NotReady` (cold or still-warming server), `Stale` (caller behind
+the daemon), `Unsynced` (daemon behind the language server), and `Unsupported`
+(no completion provider). Transport and authorization failures are not
+statuses: they travel as `CoreResponse::Error`.
+
+Warm-only holds end to end. The handler resolves the client with
+`find_existing_client_for_root_hint` and queries through
+`LspOperations::completion_for_warm_client`, which takes an already-warm key —
+no call path reaches `get_or_create_client`. Status precedence is Stale (pure
+caller precondition, no server contact), then NotReady (cold outranks
+Unsynced), then Unsynced, then the capability verdict. A warm server without a
+completion provider is `Unsupported`; a still-warming one is `NotReady`.
+
+The revision binding is a daemon-side sync witness, because none existed: the
+managed-document push path records the delivered daemon revision per document
+id (`DocumentService::record_lsp_synced`), clears it on push failure and on
+eviction — matching the `didClose` the close path sends exactly on eviction —
+and the completion handler compares caller revision, daemon-current revision,
+and last-pushed revision. Controller `daemon_revision`, daemon buffer
+revision, and the witness are three different counters; the mapping is that
+the first must equal the second (`Stale` otherwise) and the second must equal
+the third (`Unsynced` otherwise). Client optimistic revisions are never
+assumed synchronized.
+
+Candidates are inert data. `egglsp` classifies each item structurally —
+snippet format, non-empty `additionalTextEdits`, attached `command`,
+out-of-snapshot UTF-16 range, `insertAndReplace` — and only a plain in-range
+`textEdit`, or a spec-default insertion at the cursor, is applicable. The
+daemon applies the protocol's display caps and the replacement-text byte bound;
+an oversized edit becomes `EditTooLarge` rather than being cut. Server order
+is preserved, `is_incomplete` survives, and count/byte truncation is measured.
+The model-facing `completion_bounded` projection is untouched and must never
+be reused as insert authority: it strips every edit payload by construction.
+
 ### download.rs - Binary Download
 
 ```rust

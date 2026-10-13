@@ -1527,6 +1527,12 @@ pub enum CoreResponse {
     LspReadResult {
         result: crate::lsp::LspReadResultDto,
     },
+    /// M003: result of one bounded inert LSP completion read (`via_session`,
+    /// `file.read`). `status` is authoritative and must be checked before
+    /// `candidates`; every non-`Ready` result carries none.
+    LspCompletionResult {
+        result: crate::lsp::LspCompletionResultDto,
+    },
     /// M006-B: the authoritative current diagnostics of a project
     /// (`direct_project`, `file.read`). This is the resync authority that the
     /// project-scoped push stream is reconciled against.
@@ -2720,6 +2726,16 @@ pub enum CoreRequest {
     /// daemon has not started returns `NotReady` and never launches one.
     LspReadGet {
         request: crate::lsp::LspReadRequestDto,
+    },
+    /// M003: one bounded inert LSP completion read — typed candidates with
+    /// explicit supported/unsupported edit metadata bound to the synchronized
+    /// document snapshot (`via_session` + `file.read`).
+    ///
+    /// Warm-only by contract (ADR-0021 §2): a read against a server the
+    /// daemon has not started returns `NotReady` and never launches one. No
+    /// edit is applied; M004 owns user interaction and controller mutation.
+    LspCompletionGet {
+        request: crate::lsp::LspCompletionRequestDto,
     },
     /// M006-B: fetch the authoritative current diagnostics for a project
     /// (`direct_project` + `file.read`).

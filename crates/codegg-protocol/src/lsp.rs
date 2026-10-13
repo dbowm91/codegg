@@ -130,6 +130,10 @@ pub enum LspReadInvalid {
     InvalidPath,
     /// The symbol query exceeded [`MAX_LSP_SYMBOL_QUERY_BYTES`].
     QueryTooLong,
+    /// The document attachment locator was empty. Carried here so the
+    /// completion read shares the read family's rejection taxonomy rather
+    /// than inventing a parallel one.
+    InvalidAttachment,
 }
 
 /// Authorized request for one bounded LSP read.
@@ -407,6 +411,285 @@ pub struct LspDiagnosticsProjectionDto {
     pub file: LspFileDiagnosticsDto,
 }
 
+// ---------------------------------------------------------------------------
+// M003 completion read surface (ADR-0021, Option B)
+// ---------------------------------------------------------------------------
+
+/// Maximum candidates returned for one completion read.
+pub const MAX_LSP_COMPLETION_CANDIDATES: usize = 100;
+/// Maximum total bytes across one completion result's labels, details and
+/// replacement text. Past this the daemon stops adding candidates and sets
+/// `truncated`.
+pub const MAX_LSP_COMPLETION_RESULT_BYTES: usize = 256 * 1024;
+/// Maximum characters for a candidate label or its filter/sort text.
+/// Display strings are truncated; edits never are.
+pub const MAX_LSP_COMPLETION_LABEL_CHARS: usize = 200;
+/// Maximum characters for candidate detail text.
+pub const MAX_LSP_COMPLETION_DETAIL_CHARS: usize = 200;
+/// Maximum bytes for one candidate's replacement text. An oversized edit is
+/// reported non-applicable, never silently truncated: truncating an edit
+/// changes what would be inserted.
+pub const MAX_LSP_COMPLETION_EDIT_BYTES: usize = 8192;
+/// Maximum characters for an explicit trigger-character string.
+pub const MAX_LSP_COMPLETION_TRIGGER_CHARS: usize = 8;
+
+/// Authorized request for one bounded inert LSP completion read.
+///
+/// `session_id`, `path` and `document_id` are locators only, mirroring
+/// [`LspReadRequestDto`]: the daemon resolves the session's project and
+/// workspace, then checks the attachment against them. `revision` is a
+/// precondition, not authority: the daemon answers `Ready` only when it
+/// equals the daemon's current revision for the attachment, and `Stale`
+/// otherwise. Positions are zero-based UTF-16 offsets, matching the language
+/// server's view of the document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCompletionRequestDto {
+    pub session_id: String,
+    /// Workspace-relative path. Must agree with the attachment's path; the
+    /// two locators disagreeing is a client bug, rejected outright.
+    pub path: String,
+    /// Actual document attachment identity (`document.v1`).
+    pub document_id: String,
+    /// Caller's view of the daemon revision. Must equal the daemon's current
+    /// revision for a `Ready` answer.
+    pub revision: u64,
+    /// Zero-based UTF-16 line of the cursor.
+    pub line: u32,
+    /// Zero-based UTF-16 character of the cursor.
+    pub character: u32,
+    /// Explicit trigger character, when the user typed one.
+    #[serde(default)]
+    pub trigger_character: Option<String>,
+    /// Desired candidate cap. Must be within
+    /// [`MAX_LSP_COMPLETION_CANDIDATES`]; the daemon additionally clamps, so
+    /// a newer client can never coax an older bound out of a newer daemon.
+    pub max_candidates: u32,
+}
+
+impl LspCompletionRequestDto {
+    /// Validate before any service call so a malformed request can never
+    /// reach a language server.
+    pub fn validate(&self) -> Result<(), LspReadInvalid> {
+        if self.path.is_empty() {
+            return Err(LspReadInvalid::InvalidPath);
+        }
+        if self.document_id.is_empty() {
+            return Err(LspReadInvalid::InvalidAttachment);
+        }
+        if self.max_candidates == 0 || self.max_candidates as usize > MAX_LSP_COMPLETION_CANDIDATES
+        {
+            return Err(LspReadInvalid::IncoherentFields);
+        }
+        if let Some(trigger) = &self.trigger_character {
+            let chars = trigger.chars().count();
+            if chars == 0 || chars > MAX_LSP_COMPLETION_TRIGGER_CHARS {
+                return Err(LspReadInvalid::IncoherentFields);
+            }
+        }
+        Ok(())
+    }
+
+    /// Effective item cap: the validated request clamped to the protocol
+    /// bound, so daemon code never re-derives the minimum.
+    pub fn capped_max_candidates(&self) -> usize {
+        (self.max_candidates as usize).min(MAX_LSP_COMPLETION_CANDIDATES)
+    }
+}
+
+/// Why a completion read did or did not produce candidates.
+///
+/// Every non-`Ready` state is explicit. `NotReady` (no warm server) is not an
+/// empty success; `Stale` (caller behind the daemon) is not `Unsynced`
+/// (daemon behind the language server); `Unsupported` (no completion
+/// provider) is neither. Transport and authorization failures are not
+/// statuses at all: they travel as `CoreResponse::Error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspCompletionStatus {
+    Ready,
+    NotReady,
+    Stale,
+    Unsynced,
+    Unsupported,
+}
+
+/// One supported plain-text insert/replace, with UTF-16 coordinates the
+/// daemon validated against the exact snapshot the server saw.
+///
+/// The frontend must re-validate these coordinates against its own current
+/// controller snapshot before applying: the daemon's snapshot may have moved
+/// on by the time the user accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCompletionEditDto {
+    pub start_line: u32,
+    pub start_character: u32,
+    pub end_line: u32,
+    pub end_character: u32,
+    /// Replacement text, bounded by [`MAX_LSP_COMPLETION_EDIT_BYTES`].
+    pub new_text: String,
+}
+
+/// Why a visible candidate cannot be applied in v1.
+///
+/// Unsupported candidates stay visible with their reason rather than being
+/// silently downgraded to label insertion: a downgrade would insert text the
+/// server did not mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LspCompletionUnsupportedReason {
+    /// `insertTextFormat` is a snippet: placeholders cannot be applied.
+    Snippet,
+    /// Non-empty `additionalTextEdits`: more than one edit, possibly with
+    /// imports the editor must not apply blindly.
+    AdditionalEdits,
+    /// A server `command` is attached: commands are never executed.
+    Command,
+    /// The edit range falls outside the snapshot the server saw.
+    OutOfRange,
+    /// The replacement text exceeds [`MAX_LSP_COMPLETION_EDIT_BYTES`].
+    EditTooLarge,
+    /// `insertAndReplace` ranges: not normalized in v1.
+    InsertAndReplace,
+}
+
+/// Whether one candidate may be applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LspCompletionApplicabilityDto {
+    Applicable {
+        edit: LspCompletionEditDto,
+    },
+    NonApplicable {
+        reason: LspCompletionUnsupportedReason,
+    },
+}
+
+/// One inert completion candidate.
+///
+/// Inert by construction: there is no command, no snippet body, and no
+/// second edit. Display strings are truncated to their caps; only an
+/// [`LspCompletionApplicabilityDto::Applicable`] edit may be applied, and
+/// only after the frontend re-validates it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCompletionCandidateDto {
+    /// Display label, truncated to [`MAX_LSP_COMPLETION_LABEL_CHARS`].
+    pub label: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// LSP item kind as a stable lowercase name (`"function"`, …).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Server filter text for the M004 local filter, truncated like a label.
+    #[serde(default)]
+    pub filter_text: Option<String>,
+    /// Server sort text, truncated like a label.
+    #[serde(default)]
+    pub sort_text: Option<String>,
+    pub applicability: LspCompletionApplicabilityDto,
+}
+
+/// Result of one completion read.
+///
+/// `status` is authoritative and comes first in meaning: a caller must check
+/// it before reading `candidates`, and every non-`Ready` result carries an
+/// empty candidate list by construction. `document_id` and `revision` echo
+/// the daemon's binding so a client discards responses with an unexpected
+/// identity or revision instead of applying them to the wrong document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCompletionResultDto {
+    pub document_id: String,
+    /// Daemon-current revision at query time.
+    pub revision: u64,
+    /// Revision last delivered to the language server, when known.
+    #[serde(default)]
+    pub synced_revision: Option<u64>,
+    pub status: LspCompletionStatus,
+    #[serde(default)]
+    pub candidates: Vec<LspCompletionCandidateDto>,
+    /// `true` when the server truncated to the candidate or byte budget, so
+    /// the client knows the list is not the server's whole answer.
+    #[serde(default)]
+    pub truncated: bool,
+    /// The server's own `is_incomplete` flag: more may exist server-side.
+    #[serde(default)]
+    pub incomplete: bool,
+}
+
+impl LspCompletionResultDto {
+    fn non_ready(
+        document_id: String,
+        revision: u64,
+        synced_revision: Option<u64>,
+        status: LspCompletionStatus,
+    ) -> Self {
+        Self {
+            document_id,
+            revision,
+            synced_revision,
+            status,
+            candidates: Vec::new(),
+            truncated: false,
+            incomplete: false,
+        }
+    }
+
+    /// No warm server (or a still-warming one). Starts nothing.
+    pub fn not_ready(document_id: String) -> Self {
+        Self::non_ready(document_id, 0, None, LspCompletionStatus::NotReady)
+    }
+
+    /// The caller's revision is not the daemon's current revision.
+    pub fn stale(document_id: String, revision: u64, synced_revision: Option<u64>) -> Self {
+        Self::non_ready(
+            document_id,
+            revision,
+            synced_revision,
+            LspCompletionStatus::Stale,
+        )
+    }
+
+    /// The daemon's current revision was never delivered to the server.
+    pub fn unsynced(document_id: String, revision: u64, synced_revision: Option<u64>) -> Self {
+        Self::non_ready(
+            document_id,
+            revision,
+            synced_revision,
+            LspCompletionStatus::Unsynced,
+        )
+    }
+
+    /// The warm server advertises no completion provider.
+    pub fn unsupported(document_id: String, revision: u64, synced_revision: Option<u64>) -> Self {
+        Self::non_ready(
+            document_id,
+            revision,
+            synced_revision,
+            LspCompletionStatus::Unsupported,
+        )
+    }
+
+    /// A warm, synchronized answer. An empty candidate list is a real answer:
+    /// the server had nothing to suggest.
+    pub fn ready(
+        document_id: String,
+        revision: u64,
+        synced_revision: Option<u64>,
+        candidates: Vec<LspCompletionCandidateDto>,
+        truncated: bool,
+        incomplete: bool,
+    ) -> Self {
+        Self {
+            document_id,
+            revision,
+            synced_revision,
+            status: LspCompletionStatus::Ready,
+            candidates,
+            truncated,
+            incomplete,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +814,164 @@ mod tests {
         let result = LspReadResultDto::not_ready(LspReadOperation::Hover);
         assert_eq!(result.status, LspReadStatus::NotReady);
         assert!(result.payload.is_none());
+    }
+
+    // ---- M003 completion read surface ----
+
+    fn completion_request() -> LspCompletionRequestDto {
+        LspCompletionRequestDto {
+            session_id: "session-1".to_string(),
+            path: "src/lib.rs".to_string(),
+            document_id: "doc-1".to_string(),
+            revision: 4,
+            line: 3,
+            character: 7,
+            trigger_character: None,
+            max_candidates: 100,
+        }
+    }
+
+    #[test]
+    fn a_coherent_completion_request_validates() {
+        assert_eq!(completion_request().validate(), Ok(()));
+        assert_eq!(completion_request().capped_max_candidates(), 100);
+    }
+
+    #[test]
+    fn a_completion_request_without_a_path_is_rejected() {
+        let mut request = completion_request();
+        request.path = String::new();
+        assert_eq!(request.validate(), Err(LspReadInvalid::InvalidPath));
+    }
+
+    #[test]
+    fn a_completion_request_without_an_attachment_is_rejected() {
+        // The attachment is a locator, but an empty one is a client bug, not
+        // a lookup miss: reject before any service call.
+        let mut request = completion_request();
+        request.document_id = String::new();
+        assert_eq!(request.validate(), Err(LspReadInvalid::InvalidAttachment));
+    }
+
+    #[test]
+    fn a_completion_request_with_zero_or_excessive_cap_is_rejected() {
+        let mut request = completion_request();
+        request.max_candidates = 0;
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+        request.max_candidates = MAX_LSP_COMPLETION_CANDIDATES as u32 + 1;
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+    }
+
+    #[test]
+    fn a_completion_request_with_a_bad_trigger_is_rejected() {
+        let mut request = completion_request();
+        request.trigger_character = Some(String::new());
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+        request.trigger_character = Some("x".repeat(MAX_LSP_COMPLETION_TRIGGER_CHARS + 1));
+        assert_eq!(request.validate(), Err(LspReadInvalid::IncoherentFields));
+        request.trigger_character = Some(".".to_string());
+        assert_eq!(request.validate(), Ok(()));
+    }
+
+    #[test]
+    fn non_ready_completion_results_carry_no_candidates() {
+        for status in [
+            LspCompletionStatus::NotReady,
+            LspCompletionStatus::Stale,
+            LspCompletionStatus::Unsynced,
+            LspCompletionStatus::Unsupported,
+        ] {
+            let result = match status {
+                LspCompletionStatus::NotReady => {
+                    LspCompletionResultDto::not_ready("doc-1".to_string())
+                }
+                LspCompletionStatus::Stale => {
+                    LspCompletionResultDto::stale("doc-1".to_string(), 9, Some(8))
+                }
+                LspCompletionStatus::Unsynced => {
+                    LspCompletionResultDto::unsynced("doc-1".to_string(), 9, Some(8))
+                }
+                LspCompletionStatus::Unsupported => {
+                    LspCompletionResultDto::unsupported("doc-1".to_string(), 9, Some(8))
+                }
+                LspCompletionStatus::Ready => unreachable!("not under test"),
+            };
+            assert_eq!(result.status, status);
+            assert!(result.candidates.is_empty(), "{status:?} must not suggest");
+            assert!(!result.truncated);
+            assert!(!result.incomplete);
+        }
+    }
+
+    #[test]
+    fn stale_and_unsynced_echo_the_daemon_binding() {
+        // The echo is what lets a client rebase (stale) or wait (unsynced)
+        // instead of guessing.
+        let stale = LspCompletionResultDto::stale("doc-1".to_string(), 9, Some(8));
+        assert_eq!(stale.revision, 9);
+        assert_eq!(stale.synced_revision, Some(8));
+        let unsynced = LspCompletionResultDto::unsynced("doc-1".to_string(), 9, None);
+        assert_eq!(unsynced.synced_revision, None);
+    }
+
+    #[test]
+    fn a_ready_empty_completion_is_distinct_from_not_ready() {
+        let ready = LspCompletionResultDto::ready(
+            "doc-1".to_string(),
+            9,
+            Some(9),
+            Vec::new(),
+            false,
+            false,
+        );
+        assert_eq!(ready.status, LspCompletionStatus::Ready);
+        assert!(ready.candidates.is_empty());
+        let cold = LspCompletionResultDto::not_ready("doc-1".to_string());
+        assert_eq!(cold.status, LspCompletionStatus::NotReady);
+        assert_ne!(ready.status, cold.status);
+    }
+
+    #[test]
+    fn completion_status_names_are_stable_snake_case() {
+        let json = serde_json::to_string(&LspCompletionStatus::NotReady).unwrap();
+        assert_eq!(json, "\"not_ready\"");
+        let back: LspCompletionStatus = serde_json::from_str("\"unsynced\"").unwrap();
+        assert_eq!(back, LspCompletionStatus::Unsynced);
+    }
+
+    #[test]
+    fn older_completion_wire_without_optional_fields_defaults_closed() {
+        // Forward robustness: a result missing the additive fields must read
+        // as "nothing suggested", never as applicable.
+        let result: LspCompletionResultDto = serde_json::from_str(
+            r#"{"document_id":"doc-1","revision":9,"status":"ready","candidates":[]}"#,
+        )
+        .expect("older result remains deserializable");
+        assert_eq!(result.status, LspCompletionStatus::Ready);
+        assert_eq!(result.synced_revision, None);
+        assert!(!result.truncated);
+        assert!(!result.incomplete);
+    }
+
+    #[test]
+    fn completion_applicability_tags_are_stable() {
+        let applicable = LspCompletionApplicabilityDto::Applicable {
+            edit: LspCompletionEditDto {
+                start_line: 1,
+                start_character: 2,
+                end_line: 1,
+                end_character: 5,
+                new_text: "foo".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&applicable).unwrap();
+        assert!(json.contains("\"kind\":\"applicable\""), "{json}");
+        let reason = LspCompletionApplicabilityDto::NonApplicable {
+            reason: LspCompletionUnsupportedReason::AdditionalEdits,
+        };
+        let json = serde_json::to_string(&reason).unwrap();
+        assert!(json.contains("\"kind\":\"non_applicable\""), "{json}");
+        assert!(json.contains("\"additional_edits\""), "{json}");
     }
 
     #[test]

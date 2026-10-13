@@ -77,7 +77,8 @@ impl DaemonRequestFamily {
             // keeps ADR-0008's mutation path independently readable.
             CoreRequest::LspReadGet { .. }
             | CoreRequest::LspDiagnosticsGet { .. }
-            | CoreRequest::LspDiagnosticsSubscribe { .. } => Self::Lsp,
+            | CoreRequest::LspDiagnosticsSubscribe { .. }
+            | CoreRequest::LspCompletionGet { .. } => Self::Lsp,
             CoreRequest::AssetRefresh { .. } => Self::Assets,
             CoreRequest::AssetRefreshCapabilities => Self::Assets,
             CoreRequest::AssetRefreshStatus { .. } => Self::Assets,

@@ -81,11 +81,13 @@ in-memory daemons without a pool decide under the same broad policy.
 
 **M006-B diverges from the generic projection gate, deliberately.** The
 `ProjectionSubscribe` operation is `Opaque + project.observe`, which is
-correct for lifecycle projections carrying workflow state. LSP reads and
-diagnostics are gated at `file.read` instead (`lsp_read_get`,
-`lsp_diagnostics_get`, `lsp_diagnostics_subscribe`), because diagnostics carry
+correct for lifecycle projections carrying workflow state. LSP reads,
+completion, and diagnostics are gated at `file.read` instead
+(`lsp_read_get`, `lsp_completion_get`, `lsp_diagnostics_get`,
+`lsp_diagnostics_subscribe`), because diagnostics carry
 source messages, code, and snippets, and `project.observe` would understate
-what is disclosed.
+what is disclosed. The completion read shares the reads' gate deliberately:
+suggestions carry code, and no weaker `project.observe` shortcut exists.
 
 The diagnostics **stream** is therefore its own request,
 `LspDiagnosticsSubscribe`, rather than a flag on `ProjectionSubscribe`. That is
@@ -432,6 +434,7 @@ not a Core operation):
 | `job_submit` | via_session | `job.submit` |
 | `job_wait` | via_job | `session.read` |
 | `lsp_preview_apply` | via_session | `file.modify` |
+| `lsp_completion_get` | via_session | `file.read` |
 | `lsp_read_get` | via_session | `file.read` |
 | `lsp_diagnostics_get` | direct_project | `file.read` |
 | `lsp_diagnostics_subscribe` | direct_project | `file.read` |

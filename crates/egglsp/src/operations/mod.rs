@@ -11,7 +11,11 @@ pub use code_actions::{
     select_source_action_edit, CodeActionPreview, CodeActionSummary, SourceActionPreviewKind,
     CODE_ACTION_SUMMARY_DEFAULT_MAX,
 };
-pub use completion::{completion_kind_to_string, CompletionCandidate, COMPLETION_DETAIL_MAX_CHARS};
+pub use completion::{
+    classify_completion_items, completion_kind_to_string, ClassifiedCompletionItem,
+    CompletionCandidate, CompletionSupport, CompletionUnsupportedKind, InertCompletionEdit,
+    COMPLETION_DETAIL_MAX_CHARS,
+};
 pub use formatting::{
     document_end_position_utf16, sha256_hex, FormattingPreview, VersionedFileEvidence,
     FORMATTING_PREVIEW_MAX_DIFF_BYTES,
