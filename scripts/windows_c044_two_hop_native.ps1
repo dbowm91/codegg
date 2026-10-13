@@ -253,10 +253,13 @@ try {
     Set-Acl -LiteralPath $probeStaged -AclObject $probeAcl
 
     $junctionSecret = Join-Path $junction 'synthetic-c044-secret.txt'
-    $aliasList = @($junctionSecret, $hardlink, $ads, $secret.ToUpperInvariant(), "\\?\$secret") -join '|'
+    # Alias routes travel via a stage file, not argv: keeps the first-hop
+    # LogonW command line short and free of exotic characters.
+    $aliasFile = Join-Path $stage 'aliases.txt'
+    @($junctionSecret, $hardlink, $ads, $secret.ToUpperInvariant(), "\\?\$secret") | Set-Content -LiteralPath $aliasFile -Encoding ascii
 
     $script = @'
-param([string]$Mode, [string]$Secret, [string]$Stage, [string]$Report, [string]$RestrictingSid, [string]$Git, [string]$Probe, [string]$Nonce, [string]$EntryPath, [string]$ProofPath, [string]$HostWritePath, [string]$AliasList)
+param([string]$Mode, [string]$Secret, [string]$Stage, [string]$Report, [string]$RestrictingSid, [string]$Git, [string]$Probe, [string]$Nonce, [string]$EntryPath, [string]$ProofPath, [string]$HostWritePath, [string]$AliasFile)
 $ErrorActionPreference = 'Stop'
 
 function Start-RestrictedChild([IntPtr] $Token, [string] $Application, [string] $Arguments, [string] $WorkDir, [uint32] $WaitMs) {
@@ -312,7 +315,9 @@ try {
     }
     $aliasArgs = ''
     $aliasPaths = @()
-    if (-not [string]::IsNullOrWhiteSpace($AliasList)) { $aliasPaths = $AliasList -split '\|' }
+    if (-not [string]::IsNullOrWhiteSpace($AliasFile) -and (Test-Path -LiteralPath $AliasFile)) {
+        $aliasPaths = @(Get-Content -LiteralPath $AliasFile -Encoding ascii) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    }
     foreach ($alias in $aliasPaths) { $aliasArgs += ' "' + $alias + '"' }
     $probeArgs = '"' + $Probe + '" "' + $EntryPath + '" "' + $ProofPath + '" "' + $Nonce + '" "' + $Secret + '" "' + $HostWritePath + '"' + $aliasArgs
     $startup = [C044StartupInfo]::new(); $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C044StartupInfo])
@@ -420,7 +425,7 @@ try {
     $passwordBytes = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
     try { $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordBytes) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordBytes) }
-    $args = @($runnerScript, 'runner', $secret, $stage, $reportPath, $limitingSid, $git, $probeStaged, $nonce, $entryPath, $proofPath, $hostWritePath, $aliasList) | ForEach-Object { '"' + $_.Replace('"','\"') + '"' }
+    $args = @($runnerScript, 'runner', $secret, $stage, $reportPath, $limitingSid, $git, $probeStaged, $nonce, $entryPath, $proofPath, $hostWritePath, $aliasFile) | ForEach-Object { '"' + $_.Replace('"','\"') + '"' }
     $line = [Text.StringBuilder]::new('"' + $pwsh + '" -NoLogo -NoProfile -NonInteractive -File ' + ($args -join ' '))
     $startup = [C044StartupInfo]::new(); $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C044StartupInfo])
     $processInfo = [C044ProcessInformation]::new()
