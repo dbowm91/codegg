@@ -481,6 +481,23 @@ same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
 mechanics as Tool Program M017, with a separate `job_notification` /
 `job_background_subscription` table pair (migration v73).
 
+### CI watch observation authority (M004)
+
+CI polls are sub-second network reads, not process executions: admitting
+them as scheduler jobs would occupy process permits and queue capacity for
+the wrong resource class. The durable/timer authority for watches is the
+narrow `ci_watch` record adapter itself (`next_check_at`, backoff, ETag,
+attempt budget, expiry), advanced only at existing daemon-owned activity
+points (explicit tool calls, turn boundaries capped at 2). The durable
+completion path reuses the scheduler-owned notification authority
+(persist final, then exactly one M001 notice, then M003 delivery). Routing
+finite adaptive watch sequences through `ScheduleStore` recurring
+schedules was deliberately rejected (namespace clutter, overlap
+mis-semantics); see `src/scheduler/ci_watch.rs` header. Watch rows live in
+`ci_watch` (migration v75); single-use resume leases reuse the M003
+`job_continuation_lease` table via matching M001 subscriptions
+(`ciwatch:<watch_id>`).
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:

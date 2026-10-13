@@ -32,6 +32,7 @@ pub struct AgentLoopBuildInput {
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     pub job_notification_service:
         Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    pub ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
     /// M003: resolved effective approval mode for this turn. `None` means
     /// the `Interactive` default; daemon turns resolve the persisted
     /// principal preference before construction.
@@ -84,6 +85,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     }
     if let Some(svc) = input.job_notification_service {
         agent_loop.set_job_notification_service(svc);
+    }
+    if let Some(svc) = input.ci_watch_service {
+        agent_loop.set_ci_watch_service(svc);
     }
     if let Some(mode) = input.approval_mode {
         agent_loop.set_approval_mode(mode);

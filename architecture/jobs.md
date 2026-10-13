@@ -393,6 +393,32 @@ The `job` model tool (`status|wait|cancel|output`) reuses the
 "Generic job terminal notices" and `architecture/authorization.md" for the
 owner rule.
 
+### GitHub Actions watching (M004)
+
+`src/scheduler/ci_watch.rs` registers one immutable watch target
+(`github_actions` + owner/repo + exact run id, or commit SHA resolving to
+exactly one run) and returns a stable `ciw-<digest>` handle. Observations
+are short bounded GETs (15s timeout, 256KiB cap, ETag revalidation,
+Retry-After honored, exponential backoff + deterministic jitter, attempt
+budget, TTL) advanced only at daemon-owned points — explicit `ci_watch`
+tool calls and turn-boundary advancement (max 2 per boundary). No
+per-watch interval, no background task, no process/CPU permit held across
+polls; a dormant watcher is one durable row (`ci_watch`, migration v75).
+Terminal `completed` maps every GitHub conclusion explicitly (`success` →
+pass; `failure/cancelled/timed_out/action_required/startup_failure` →
+typed failure with a bounded failing-step summary; `neutral/skipped/stale/
+unknown` → attention, never passed). Transport failures (401/403/404/429/
+5xx, redirects, malformed bodies) back off within budget and never become
+"CI failed"; ambiguous/multiple runs, SHA drift, repo mismatch, and
+cross-origin redirects fail closed as attention. Watch cancellation stops
+watching only, never the remote workflow. Exactly one terminal M001 notice
+(kind `ci_watch`, `notice_id = ciwatch:<watch_id>`) follows the persisted
+final; terminal targets are never re-polled; M003 delivers notify/resume
+from there. Base URLs come from daemon configuration
+(`CODEGG_GITHUB_API_ALLOWLIST`, default api.github.com) and are never
+model-supplied; credentials resolve per poll from `GITHUB_TOKEN`/`GH_TOKEN`
+(never stored — rows keep `credential_ref` only) and never enter logs.
+
 ### Safe continuation and visibility (M003)
 
 Background submission accepts `on_complete: notify_only|resume_owner`

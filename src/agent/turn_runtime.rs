@@ -272,6 +272,22 @@ impl TurnRuntime for DefaultTurnRuntime {
                 .set_job_notification_service(job_notification_service.clone())
                 .await;
         }
+        // M004: daemon-owned CI watch service over the same pool and the
+        // M001 notifier (terminal watches reuse the verified notice/lease
+        // machinery). Base URLs from daemon environment configuration. No
+        // pool (headless exec) degrades to in-memory rows for the turn
+        // lifetime; production daemons always have a pool.
+        let ci_watch_service = Arc::new(match pool.clone() {
+            Some(pool) => crate::scheduler::ci_watch::CiWatchService::with_pool(
+                pool,
+                job_notification_service.clone(),
+                crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+            ),
+            None => crate::scheduler::ci_watch::CiWatchService::new(
+                job_notification_service.clone(),
+                crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+            ),
+        });
         let workspace_locks = workspace_service_lease.as_ref().map(|lease| lease.locks());
 
         // ── Provider resolution ──────────────────────────────────────
@@ -401,6 +417,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
                 job_notification_service: Some(job_notification_service.clone()),
+                ci_watch_service: Some(ci_watch_service.clone()),
                 workspace_locks,
                 lsp_service: lsp_service.clone(),
                 document_service,
@@ -770,6 +787,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             workspace_service_lease,
             notification_service: Some(notification_service),
             job_notification_service: Some(job_notification_service),
+            ci_watch_service: Some(ci_watch_service),
             approval_mode,
             sandbox_profile,
             credential_observer,

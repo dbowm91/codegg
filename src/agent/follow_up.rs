@@ -44,6 +44,16 @@ impl AgentLoop {
                 tracing::error!(%error, "Tool Program notification recovery error");
             }
         }
+        // M004: advance due CI watches first (bounded daemon-owned
+        // observations), so watches that terminalize on this boundary flow
+        // into the notice injection below in the same turn. At most
+        // MAX_ADVANCE_PER_BOUNDARY observations; idle watches cost zero.
+        if let Some(ref watches) = self.services.ci_watch_service {
+            let advanced = watches.advance_due_watches(&self.session_id).await;
+            if advanced > 0 {
+                tracing::debug!(advanced, "advanced due CI watches at turn boundary");
+            }
+        }
         // M001: generic job terminal notices share the same safe-boundary
         // injection. No consumption-only toast: every notice becomes one
         // durable session event plus one system message at the next turn.

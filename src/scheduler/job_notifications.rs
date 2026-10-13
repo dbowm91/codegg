@@ -858,6 +858,81 @@ impl JobNotificationService {
         Ok(Some(stored))
     }
 
+    /// Record the exactly-one terminal notice for a CI watch (M004).
+    ///
+    /// Watches are not scheduler jobs, so there is no `JobRecord`; the
+    /// durable `ci_watch` row (created explicitly by the owning session)
+    /// is the subscription proof, registered here as a matching
+    /// `job_background_subscription` with `job_id = ciwatch:<watch_id>`
+    /// at watch-creation time. This method checks that subscription and
+    /// fails closed (`Unauthorized`) without it, preserving the "only
+    /// explicitly subscribed background work notifies" invariant.
+    /// Idempotent on `notice_id = ciwatch:<watch_id>`; non-final statuses
+    /// (`running`, `interrupted`) return `Ok(None)`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_terminal_for_watch(
+        &self,
+        notice_job_id: &str,
+        kind: &str,
+        session_id: &str,
+        turn_id: Option<&str>,
+        status: &str,
+        summary: &str,
+        run_id: Option<&str>,
+    ) -> Result<Option<JobTerminalNotice>, JobNotificationError> {
+        if !matches!(
+            status,
+            "completed" | "failed" | "cancelled" | "timed_out" | "expired" | "needs_attention"
+        ) {
+            return Ok(None);
+        }
+        if session_id.is_empty() {
+            return Err(JobNotificationError::Unauthorized(
+                "watch terminal has no owning session".into(),
+            ));
+        }
+        let sub = self.get_subscription(notice_job_id).await?;
+        let Some(sub) = sub else {
+            return Err(JobNotificationError::Unauthorized(
+                "watch has no background subscription".into(),
+            ));
+        };
+        if sub.session_id != session_id {
+            return Err(JobNotificationError::Unauthorized(
+                "watch session does not match background subscription".into(),
+            ));
+        }
+        let bounded_summary = bound_summary(summary, self.policy.max_summary_chars);
+        let payload = format!("{notice_job_id}|{status}|{bounded_summary}|{kind}");
+        let payload_digest = format!("sha256:{:x}", Sha256::digest(payload.as_bytes()));
+        let now = chrono::Utc::now().timestamp_millis();
+        let notice = JobTerminalNotice {
+            notice_id: notice_job_id.to_string(),
+            job_id: notice_job_id.to_string(),
+            kind: kind.to_string(),
+            session_id: session_id.to_string(),
+            turn_id: turn_id.map(ToOwned::to_owned),
+            invocation_key: Some(sub.invocation_key.clone()),
+            status: status.to_string(),
+            summary: bounded_summary,
+            run_id: run_id.map(ToOwned::to_owned),
+            payload_digest,
+            state: JobNotificationState::Pending,
+            created_at: now,
+            updated_at: now,
+            claim_owner: None,
+            claim_lease_until: None,
+            delivered_at: None,
+            retry_count: 0,
+            injection_key: format!("job-notify:{notice_job_id}:{session_id}"),
+            injected_event_id: None,
+        };
+        let stored = self.record_notice(notice).await?;
+        self.enforce_session_bound(&stored.session_id, self.policy.max_pending_per_session)
+            .await?;
+        Ok(Some(stored))
+    }
+
     /// Reconcile terminal background jobs that completed before their
     /// subscription was durably recorded, or that terminated while the
     /// notifier was unavailable (restart, crash, lost receiver).
@@ -1649,6 +1724,13 @@ pub fn format_job_notice_content(notice: &JobTerminalNotice) -> String {
         ),
         "expired" => format!(
             "Background job {} (kind {}) expired: {}",
+            notice.job_id, notice.kind, notice.summary
+        ),
+        // M004: an unverified/ambiguous CI result is attention, never a
+        // CI failure. The message names the condition explicitly so a
+        // failed API call or unclear conclusion cannot read as "CI failed".
+        "needs_attention" => format!(
+            "Background job {} (kind {}) needs attention: {}",
             notice.job_id, notice.kind, notice.summary
         ),
         _ => format!(

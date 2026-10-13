@@ -13,6 +13,7 @@ pub mod batch;
 pub mod batch_fetch;
 pub mod broker;
 pub mod catalog;
+pub mod ci_watch;
 pub mod codesearch;
 pub mod commit;
 pub mod contract;
@@ -365,6 +366,9 @@ pub struct ToolRegistryOptions {
     /// and the `job` control tool are enabled.
     pub job_notification_service:
         Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    /// Optional daemon-owned GitHub Actions watch service (M004). When
+    /// `Some`, the `ci_watch` tool is enabled.
+    pub ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
     /// Explicit runtime-owned search/MCP services for search/evidence
     /// wrapper tools (M005). When `None`, wrappers receive an isolated
     /// default context (default config, no shared service). Production
@@ -800,6 +804,15 @@ impl ToolRegistry {
                 job_tool = job_tool.with_notifications(svc.clone());
             }
             registry.register(job_tool);
+        }
+        // M004: one small discoverable GitHub Actions watcher. The model
+        // never polls GitHub itself; terminal delivery reuses M001/M003.
+        {
+            let mut watch_tool = crate::tool::ci_watch::CiWatchTool::new();
+            if let Some(ref svc) = options.ci_watch_service {
+                watch_tool = watch_tool.with_service(svc.clone());
+            }
+            registry.register(watch_tool);
         }
         // Python execution is scheduler-owned like every other heavy surface.
         // Without the submission service PythonScriptTool::execute fails
@@ -1259,6 +1272,7 @@ impl ToolRegistry {
             asset_pin: None,
             notification_service: None,
             job_notification_service: None,
+            ci_watch_service: None,
             search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
                 &config.search.clone().unwrap_or_default(),
             )),
@@ -1314,6 +1328,7 @@ impl ToolRegistry {
             asset_pin: None,
             notification_service: None,
             job_notification_service: None,
+            ci_watch_service: None,
             search_runtime: None,
             research_provider: None,
             research_model: None,

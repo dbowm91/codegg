@@ -244,6 +244,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 74 {
         migrate_and_record(pool, 74).await?;
     }
+    if current_version < 75 {
+        migrate_and_record(pool, 75).await?;
+    }
 
     Ok(())
 }
@@ -330,6 +333,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             72 => migrate_v72(&mut tx).await?,
             73 => migrate_v73(&mut tx).await?,
             74 => migrate_v74(&mut tx).await?,
+            75 => migrate_v75(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3007,6 +3011,63 @@ async fn migrate_v74(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "#,
         "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_session ON job_continuation_lease(session_id, status, expiry_ms)",
         "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_job ON job_continuation_lease(job_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs M004: durable GitHub Actions watch records.
+///
+/// One row per explicitly created watch (`watch_id` stable per accepted
+/// invocation). The row carries the frozen immutable target, observation
+/// scheduling state (`next_check_at`, backoff, ETag, attempt budget,
+/// expiry), owner lineage, and the terminal result. No historical row is
+/// backfilled: absent row means "no watch". The terminal CI result is
+/// delivered once through the M001 job-notification table (kind
+/// `ci_watch`); the watch row itself never carries model-visible content.
+async fn migrate_v75(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS ci_watch (
+            watch_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            run_id INTEGER,
+            commit_sha TEXT,
+            check_selector TEXT,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            invocation_key TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending', 'observing', 'completed_success', 'completed_failure', 'cancelled', 'expired', 'needs_attention')),
+            conclusion TEXT,
+            conclusion_detail TEXT,
+            last_etag TEXT,
+            next_check_at INTEGER NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            attempt_budget INTEGER NOT NULL,
+            expiry_ms INTEGER NOT NULL,
+            owner_principal TEXT,
+            workspace_id TEXT,
+            credential_ref TEXT NOT NULL,
+            api_base_url TEXT NOT NULL,
+            last_observed_sha TEXT,
+            last_run_status TEXT,
+            final_url TEXT,
+            failure_summary TEXT,
+            on_complete TEXT NOT NULL DEFAULT 'notify_only',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(provider, owner, repo, run_id, commit_sha, check_selector, session_id, invocation_key)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_session ON ci_watch(session_id, state, next_check_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_due ON ci_watch(state, next_check_at)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

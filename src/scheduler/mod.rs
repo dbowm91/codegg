@@ -29,6 +29,7 @@
 //! by the queue or admission controller in isolation.
 
 pub mod admission;
+pub mod ci_watch;
 pub mod config;
 pub mod eggwork;
 pub mod events;
