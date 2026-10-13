@@ -136,10 +136,41 @@ fn root_report(reason: &str, backends: &[impl std::fmt::Debug]) {
     );
 }
 
+#[cfg(windows)]
+fn inherited_handle_probe() {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{GetFileType, ReadFile, FILE_TYPE_DISK};
+
+    let outcome = std::env::var("C020_SECRET_HANDLE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| {
+            let handle = HANDLE(value as *mut std::ffi::c_void);
+            if unsafe { GetFileType(handle) } != FILE_TYPE_DISK {
+                return Some(false);
+            }
+            let mut bytes = [0u8; 128];
+            let mut read = 0u32;
+            let result = unsafe { ReadFile(handle, Some(&mut bytes), Some(&mut read), None) };
+            result
+                .ok()
+                .map(|()| &bytes[..read as usize] == b"synthetic-c020-secret")
+        });
+    match outcome {
+        Some(true) => println!("inherited_handle=leaked"),
+        Some(false) | None => println!("inherited_handle=not_transferred"),
+    }
+}
+
 fn main() {
     if !cfg!(windows) {
         eprintln!("C020 harness must execute on Windows");
         std::process::exit(2);
+    }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--c020-inherited-handle-probe") {
+        inherited_handle_probe();
+        return;
     }
 
     let backends = v1::available_backends();
@@ -162,7 +193,6 @@ fn main() {
     let sibling = run_root.join("original-sibling");
     let outside = run_root.join("outside-stage-write.txt");
     let script_path = stage.join("probe.cmd");
-    let handle_script = stage.join("inherited-handle.py");
     let descendant_script = stage.join("descendant.py");
     let descendant_pid_file = stage.join("descendant.pid");
     let secret = host.join("synthetic-c020-secret.txt");
@@ -230,22 +260,6 @@ fn main() {
             return;
         }
     };
-    let handle_probe_source = r#"
-import msvcrt
-import os
-
-handle = int(os.environ["C020_SECRET_HANDLE"])
-try:
-    fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
-    try:
-        print("inherited_handle=leaked" if os.read(fd, 128) == b"synthetic-c020-secret" else "inherited_handle=not_transferred")
-    except OSError:
-        print("inherited_handle=not_transferred")
-    finally:
-        os.close(fd)
-except OSError:
-    print("inherited_handle=not_transferred")
-"#;
     let descendant_probe_source = r#"
 import os
 import subprocess
@@ -259,11 +273,6 @@ with open(os.environ["C020_DESCENDANT_PID_FILE"], "w", encoding="ascii") as pid_
     pid_file.write(str(child.pid))
 print(f"descendant_probe_pid={child.pid}")
 "#;
-    if let Err(error) = fs::write(&handle_script, handle_probe_source) {
-        root_report(&format!("write inherited handle probe: {error}"), &backends);
-        let _ = fs::remove_dir_all(&run_root);
-        return;
-    }
     if let Err(error) = fs::write(&descendant_script, descendant_probe_source) {
         root_report(&format!("write descendant probe: {error}"), &backends);
         let _ = fs::remove_dir_all(&run_root);
@@ -285,10 +294,10 @@ print(f"descendant_probe_pid={child.pid}")
         format!("type {} >nul 2>&1 && echo pipe=leaked || echo pipe=denied", batch_quote(Path::new(&pipe_path))),
     ];
     if let Some(python) = &python {
+        let executable = std::env::current_exe().expect("harness executable path");
         lines.push(format!(
-            "{} {}",
-            batch_quote(python),
-            batch_quote(&handle_script)
+            "{} --c020-inherited-handle-probe",
+            batch_quote(&executable)
         ));
         lines.push(
             "if errorlevel 1 (echo handle_probe_exit=failed) else (echo handle_probe_exit=0)"
@@ -344,6 +353,11 @@ print(f"descendant_probe_pid={child.pid}")
         icacls_snapshot(&secret).unwrap_or_else(|error| format!("snapshot failed: {error}"));
     let secret_before = fs::read(&secret).unwrap_or_default();
     let mut readonly_paths = vec![system32.to_string_lossy().into_owned()];
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            readonly_paths.push(parent.to_string_lossy().into_owned());
+        }
+    }
     for tool in [&git, &python, &cargo].into_iter().flatten() {
         if let Some(parent) = tool.parent() {
             readonly_paths.push(parent.to_string_lossy().into_owned());
