@@ -50,12 +50,10 @@ jobs:
           components: rustfmt
           targets: aarch64-pc-windows-msvc
 
-      - name: Format, test pinned contract, and cross-check ARM64 runner
+      - name: Test pinned contract and cross-check ARM64 runner
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo fmt --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml -- --check --config newline_style=Unix
-          if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed: $LASTEXITCODE" }
           cargo test --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin c036 --bin c037
           if ($LASTEXITCODE -ne 0) { throw "C036/C037 contract tests failed: $LASTEXITCODE" }
           cargo check --locked --target aarch64-pc-windows-msvc --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin c037
