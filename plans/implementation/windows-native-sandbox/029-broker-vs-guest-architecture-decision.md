@@ -1,10 +1,10 @@
 # Windows Native Sandbox C029 — Architecture Decision: Broker versus Native Windows Guest
 
-Status: blocked (C028 closure and maintainer ADR-0021 decision)
+Status: implemented (no-admission disposition; Windows constrained execution remains unavailable)
 Primary class: invariant/architecture
 Repository baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843` on `work/windows-native-sandbox-foundation` (2026-10-13).
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0021-launch-authority-decision-gate`.
-Architecture proposal: `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` (not accepted); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
+Architecture decision: `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` (rejected; no admission); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
 Canonical references: `plans/000-long-term-specification.md` sections 4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` section 8; `plans/003-planning-process.md`; ADR-0004, ADR-0016, ADR-0020.
 Immutable evidence: C024, C026 and C027 status records.
 
@@ -22,7 +22,7 @@ C027 returned Win32 1314 and token child timeout without real read proof. Window
 
 ## 4. Security invariants
 
-No new privilege or product backend in C029; same `ManagedProcessService` launch authority, no original file ACL modifications, truthful obtained security. Both alternatives blocked until reviewed decision.
+No new privilege or product backend in C029; same `ManagedProcessService` launch authority, no original file ACL modifications, truthful obtained security. The maintainer decision leaves both alternatives terminally blocked and unselected.
 
 ## 5. In-scope / out-of-scope
 
@@ -30,7 +30,7 @@ Research, threat model, OS/toolchain/cost matrix, approved ADR disposition. Excl
 
 ## 6. Required changes
 
-On decision, review and mark ADR-0021 accepted with **one** selected feasibility option or reject/record no-admission. Change C030 or C031 readiness only for selected route with qualified host; unselected remains blocked.
+Record the maintainer decision in ADR-0021. The decision is no admission: reject route selection, keep Windows constrained execution unavailable, and leave C030/C031 terminally blocked as unselected alternatives.
 
 ## 7. Ordered work packages
 
@@ -54,11 +54,11 @@ Docs only: `git diff --check`; `python3 scripts/check_sandbox_contract.py`; `pyt
 
 ## 12. Documentation updates
 
-ADR-0021 accepted/rejected decision, C029 closure, updated registry/roadmap selected/blocked states and trust-boundary diagram.
+ADR-0021 rejection/no-admission decision, C029 closure, and updated registry/roadmap terminal blocked states. No trust-boundary implementation or production path is authorized.
 
 ## 13. Acceptance criteria
 
-One mutually exclusive candidate selected **only after human review** or explicit no admission; honest security/OS/cost matrix and scoped next plan; production still unavailable.
+Explicit no-admission recorded after human review; honest security/OS/cost matrix and terminal disposition of both unselected candidates; production remains unavailable.
 
 ## 14. Stop conditions
 
@@ -66,10 +66,10 @@ Reject if broker accepts arbitrary agent EXE/SID/ACL or can accidentally execute
 
 ## 15. Closure evidence
 
-Signed-off decision/risk evidence, C028 outcome, candidate choice/blocked rationale, plan readiness and no production admission.
+Maintainer no-admission decision, C028 outcome, rationale for not selecting either candidate, terminal plan states and no production admission.
 
 ## 16. Handoff
 
-Unselected C030 or C031 stays blocked. Do not automatically reopen closed C025/C026 or claim M004.
+C030 and C031 remain terminally blocked and unselected. Reconsideration requires a new explicit architecture decision and fresh qualified evidence; this decision does not reopen C025/C026, qualify M004, or authorize a production backend.
 
-Write `plans/closure/windows-native-sandbox/029-status.md` with exact native evidence or a blocked/negative disposition; never rewrite historical closures.
+Closure: `plans/closure/windows-native-sandbox/029-status.md`.

@@ -1,6 +1,6 @@
 # ADR-0021 research: Win32 launch authority or native Windows guest
 
-Status: evidence-based comparison, not production qualification
+Status: evidence-based comparison; ADR-0021 rejected with no admission (2026-10-13)
 Baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843`; 2026-10-13.
 
 ## Current native evidence
@@ -29,6 +29,6 @@ A broker pipe with default DACL can grant overly broad access. The privileged se
 
 ## Decision rule
 
-C028 is conditionally closed with the negative pre-user-entry phase result. C029 has its required observed disposition but still requires explicit maintainer acceptance/rejection of ADR-0021, including a decision to select one test-only option or retain no admission. C030/C031 remain blocked and mutually exclusive until a route is selected; each also requires its own operational host. Even a positive feasibility result cannot mark filesystem/network `Enforced` or unblock C011/M004 without a later independently reviewed production security path.
+C028 is conditionally closed with the negative pre-user-entry phase result. The maintainer's C029 disposition rejects route selection and retains no admission. ADR-0021 is rejected; C030 broker and C031 guest remain terminally blocked as unselected alternatives. Reconsideration requires a new explicit architecture decision and fresh qualified evidence, plus each route's operational host. Even a positive feasibility result cannot mark filesystem/network `Enforced` or unblock C011/M004 without a later independently reviewed production security path.
 
 Microsoft references: https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw ; https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights ; https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/ .

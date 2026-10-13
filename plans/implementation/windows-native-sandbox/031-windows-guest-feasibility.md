@@ -1,10 +1,10 @@
 # Windows Native Sandbox C031 — Native Windows Guest Isolation Feasibility
 
-Status: blocked (C029 accepted guest choice; virtualization-capable operator host)
+Status: blocked (terminal — ADR-0021 rejected; guest route unselected)
 Primary class: security/infrastructure
 Repository baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843` on `work/windows-native-sandbox-foundation` (2026-10-13).
 Source roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md#adr-0021-launch-authority-decision-gate`.
-Architecture proposal: `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` (not accepted); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
+Architecture decision: `plans/adrs/ADR-0021-windows-privileged-launch-vs-guest-isolation.md` (rejected; no admission); research: `research/windows-native-sandbox/adr-0021-authority-options.md`.
 Canonical references: `plans/000-long-term-specification.md` sections 4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` section 8; `plans/003-planning-process.md`; ADR-0004, ADR-0016, ADR-0020.
 Immutable evidence: C024, C026 and C027 status records.
 
@@ -14,7 +14,7 @@ Evaluate Windows Sandbox or Hyper-V guest executing **native Windows** tools wit
 
 ## 2. Readiness and dependencies
 
-C029 must select guest through accepted ADR-0021. Host must support requested edition/hypervisor and isolated disposable VM; hosted Windows GitHub CI eligibility cannot be assumed.
+C029 rejected route selection under ADR-0021. This plan is terminally blocked and is not eligible to run. Reconsideration requires a new explicit architecture decision, fresh qualified evidence, and a supported virtualization-capable operator host with an isolated disposable VM; hosted Windows GitHub CI eligibility cannot be assumed.
 
 ## 3. Current repo evidence
 

@@ -1,6 +1,6 @@
 # ADR-0021 — Windows Privileged Launch versus Guest Isolation
 
-Status: proposed — no production route selected
+Status: rejected — no admission; neither test-only route selected
 Date: 2026-10-13
 Decision owners: Codegg maintainers
 Evidence baseline: `7a27bc7e6566616fc1b2b8a69637f12050d42843`
@@ -28,16 +28,24 @@ Required: real denial of original host files including broadly readable data; us
 
 **D — Reuse existing root DACL or AppContainer ACL workaround:** rejected by C011/C013 host-data leakage and descriptor drift; do not reopen without new security decision.
 
-## Proposed decision and gates
+## Decision (2026-10-13)
+
+**No admission.** The maintainer rejected selection of either the privileged broker or Windows guest feasibility route. Windows constrained execution remains unavailable, and `SandboxRequest::Required` remains fail-closed.
+
+C028's hosted run `38396698509` created four primary-token children, verified token/session/Job/suspend state, and then timed out before user entry in every CRT/profile combination. It proved neither a restricted-child read denial nor usable initialization. The privileged comparison was not run on a separately consented isolated VM. These results provide no basis to admit or prioritize either a privileged broker or guest route; both introduce substantial unqualified trust and operational boundaries. Preserve the safe unavailable default until a future explicit decision is supported by new evidence.
+
+C030 and C031 are therefore terminally blocked as unselected alternatives. This rejection does not reject the long-term isolation requirement, qualify any Windows sandbox capability, or authorize a production backend. Reconsideration requires a new explicit architecture decision and fresh qualified evidence.
+
+## Decision history and gates
 
 1. **C028** records a bounded native phase diagnosis of the C027 timeout, plus controlled privilege comparison **only on operator-consented isolated Windows VM**.
-2. **C029**, after C028 closure, presents explicit security/cost/host-compatibility evidence for exactly one disposition: broker feasibility (C030), native guest feasibility (C031), or retain unavailable. This ADR is **not accepted** until a maintainer explicitly reviews and accepts that selection. Missing VM evidence cannot be treated as a broker success.
-3. C030 and C031 are mutually exclusive blocked experiments; the selected one alone may become ready after ADR acceptance and its operational host gate. A completed experiment does not grant production admission.
+2. **C029** presented the security/cost/host-compatibility evidence and recorded the maintainer's no-admission disposition. Neither candidate was selected; missing VM evidence was not treated as broker success.
+3. C030 and C031 remain mutually exclusive, terminally blocked alternatives. Neither is ready. A future architecture decision must explicitly reopen one route and satisfy its operational host gate; a completed experiment would still not grant production admission.
 4. C011/M004–M006 and C015–C018 remain blocked. No automatic privileged install, no backend registration, no network or filesystem `Enforced`, no FullHost fallback, no historic closure rewrite.
 
 ## Consequences and migration
 
-Broker path adds Windows service privilege and untrusted IPC authorization surface; guest path adds virtualization/edition, single-instance or VM pooling, data-copy and output-promotion complexity. The current `Required` fail-closed behavior remains mandatory. No production binary, protocol, schema, user setting, installer, account or ACL change authorized by this **proposed** ADR.
+Broker path adds Windows service privilege and untrusted IPC authorization surface; guest path adds virtualization/edition, single-instance or VM pooling, data-copy and output-promotion complexity. The current `Required` fail-closed behavior remains mandatory. No production binary, protocol, schema, user setting, installer, account or ACL change is authorized by this rejected ADR.
 
 ## Supporting authoritative references
 
