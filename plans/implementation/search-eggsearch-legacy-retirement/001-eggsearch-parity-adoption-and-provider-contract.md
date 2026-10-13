@@ -23,7 +23,7 @@ Dependency disposition (2026-10-13): **satisfied**. Upstream
 strictly closes parity M003–M005, confirms published immutable v0.4.1
 (tag `v0.4.1` at `32769d684417567dfb30fc5adea1475cee7f0ed0`),
 and unblocks CodeGG downstream adoption at `>=0.4.1`.
-The published v0.4.1 release passed the ten-tool/provid​​er contract smoke;
+The published v0.4.1 release passed the ten-tool/provider contract smoke;
 CodeGG must still run its own pinned-binary compatibility and installation
 qualification before closing M001. v0.4.2 is not automatically substituted
 without equivalent release/contract qualification.
