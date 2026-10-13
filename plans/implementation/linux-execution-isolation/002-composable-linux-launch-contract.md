@@ -1,6 +1,6 @@
 # Linux Execution Isolation M002 — Composable Linux Launch and Obtained Enforcement
 
-Status: active (internal contract/probe only; production Linux backend promotion still requires ADR-0023 acceptance)
+Status: implemented (closure: `plans/closure/linux-execution-isolation/002-status.md`; macOS compile evidence pending)
 Primary class: infrastructure
 Interface dependency: M001/C001 trusted Git capability matrix; M001 strict closure is NOT a hard dependency.
 Repository baseline: `481d5077de516758795084a860a15c747a889170` (rebased Linux branch, 2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed Linux backend gate: ADR-0023; do not treat it as accepted. Accepted cross-tool security authority: ADR-0024. The infrastructure interface and legacy/fake adapter work may close without backend promotion. Target closure: `plans/closure/linux-execution-isolation/002-status.md`.
