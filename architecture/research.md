@@ -206,7 +206,21 @@ adapter. It:
 4. Parses grouped results from `groups[*].results` in response order
    (line 69-119).
 5. Converts each result to a `SourceRecord` with `trust=external_untrusted`
-   notes (line 171-253).
+   notes, nested publication dates, upstream stable-ID association, and a
+   separate `ResearchRetrievalReceipt` (see `RetrievalState` in
+   `src/research/types.rs`).
+
+The receipt is structured coordinator data, not status inferred from source
+notes. It distinguishes complete, partial, failed, skipped, truncated, and
+unknown outcomes; carries bounded warning codes, failed-provider labels,
+coverage text, and links from each existing per-run source UUID to eggsearch's
+stable ID. Unknown older responses remain unknown. A complete response with
+zero sources is a confirmed no-match; failed or incomplete collection is
+rendered in research outputs as a coverage gap. Upstream trust/provenance is
+retained as descriptive evidence only; CodeGG continues to mark network source
+content `external_untrusted`. Receipts are persisted in the additive
+`retrieval.json` run artifact and loaded into `ResearchBundle`; older runs
+without the artifact load with an empty receipt list.
 
 The bounded `external_untrusted` string is a display projection, not the
 authoritative input for source conversion.

@@ -685,10 +685,11 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     ));
     assert!(calls.lock().await.is_empty());
 
-    let sources = source
-        .collect(&request(true), &plan)
+    let collection = source
+        .collect_with_receipt(&request(true), &plan)
         .await
         .expect("network-enabled research should use eggsearch");
+    let sources = collection.sources;
     assert_eq!(sources.len(), 3);
     assert_eq!(sources[0].uri, "https://example.org/paper-1");
     assert_eq!(sources[1].uri, "https://example.org/paper-2");
@@ -705,6 +706,18 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     assert_eq!(
         sources[2].source_quality,
         codegg::research::types::SourceQuality::OfficialDocs
+    );
+    assert_eq!(collection.receipts.len(), 1);
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Unknown,
+        "legacy text-only eggsearch responses cannot establish complete coverage"
+    );
+    assert_eq!(
+        collection.receipts[0].sources[0]
+            .upstream_stable_id
+            .as_deref(),
+        Some("paper-1")
     );
     let recorded = calls.lock().await;
     assert_eq!(recorded.len(), 1);

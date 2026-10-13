@@ -28,6 +28,8 @@ pub struct EggsearchSource {
 }
 
 type ResultItem<'a> = (&'a Map<String, Value>, Option<&'a Map<String, Value>>);
+const MAX_UPSTREAM_LABEL_CHARS: usize = 128;
+const MAX_SNIPPET_CHARS: usize = 4_000;
 
 impl EggsearchSource {
     pub fn new() -> Self {
@@ -148,7 +150,7 @@ impl EggsearchSource {
             for provider in values.iter().filter_map(Value::as_str) {
                 let provider = provider.trim();
                 if !provider.is_empty() && !providers.iter().any(|value| value == provider) {
-                    providers.push(provider.to_string());
+                    providers.push(provider.chars().take(MAX_UPSTREAM_LABEL_CHARS).collect());
                 }
             }
         }
@@ -158,7 +160,7 @@ impl EggsearchSource {
                 if let Some(provider) = Self::string_field(object, &["provider", "source"]) {
                     let provider = provider.trim();
                     if !provider.is_empty() && !providers.iter().any(|value| value == provider) {
-                        providers.push(provider.to_string());
+                        providers.push(provider.chars().take(MAX_UPSTREAM_LABEL_CHARS).collect());
                     }
                 }
             }
@@ -204,18 +206,23 @@ impl EggsearchSource {
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))
             .map(str::to_owned);
-        let snippet = ["snippet", "abstract", "content", "description"]
+        let snippet: Option<String> = ["snippet", "abstract", "content", "description"]
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))
-            .map(str::to_owned);
+            .map(|value| value.chars().take(MAX_SNIPPET_CHARS).collect());
         let providers = Self::providers(item, group);
         let kind = Self::source_kind(item, group);
 
-        let published_at = ["published_at", "publishedAt", "published"]
-            .iter()
-            .find_map(|field| item.get(*field).and_then(Value::as_str))
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc));
+        let published_at = item
+            .get("metadata")
+            .and_then(Value::as_object)
+            .and_then(|metadata| Self::string_field(metadata, &["published_at"]))
+            .or_else(|| {
+                ["published_at", "publishedAt", "published"]
+                    .iter()
+                    .find_map(|field| item.get(*field).and_then(Value::as_str))
+            })
+            .and_then(Self::parse_timestamp);
 
         let source_quality = if kind.contains("official") || kind.contains("documentation") {
             SourceQuality::OfficialDocs
@@ -235,7 +242,7 @@ impl EggsearchSource {
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))
         {
-            notes.push(format!("stable_id={stable_id}"));
+            notes.push(format!("stable_id={}", Self::bounded_label(stable_id)));
         }
         for provider in providers {
             notes.push(format!("provider={provider}"));
@@ -245,8 +252,18 @@ impl EggsearchSource {
         }
         if let Some(group) = group {
             if let Some(label) = group.get("label").and_then(Value::as_str) {
-                notes.push(format!("group_label={label}"));
+                notes.push(format!("group_label={}", Self::bounded_label(label)));
             }
+        }
+        if let Some(provenance) = item
+            .get("provenance")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("trust").and_then(Value::as_str))
+        {
+            notes.push(format!(
+                "upstream_provenance={}",
+                Self::bounded_label(provenance)
+            ));
         }
         if let Some(snippet) = snippet {
             // Tagged with an explicit key so the coordinator can recover the
@@ -281,6 +298,134 @@ impl EggsearchSource {
             .collect()
     }
 
+    fn bounded_label(value: &str) -> String {
+        value
+            .chars()
+            .filter(|character| !character.is_control() && *character != '\n' && *character != '\r')
+            .take(MAX_UPSTREAM_LABEL_CHARS)
+            .collect()
+    }
+
+    fn parse_timestamp(value: &str) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(value)
+            .ok()
+            .map(|value| value.with_timezone(&Utc))
+            .or_else(|| {
+                chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|date| date.and_hms_opt(0, 0, 0))
+                    .map(|date| DateTime::from_naive_utc_and_offset(date, Utc))
+            })
+    }
+
+    fn receipt_from_value(
+        value: &Value,
+        success: bool,
+        truncated: bool,
+        sources: &[SourceRecord],
+    ) -> ResearchRetrievalReceipt {
+        let state_object = value
+            .get("retrieval_state")
+            .or_else(|| value.get("retrieval_summary"));
+        let state_value = state_object.and_then(|state| {
+            state
+                .get("status")
+                .or_else(|| state.get("state"))
+                .and_then(Value::as_str)
+        });
+        let complete = state_object
+            .and_then(|state| state.get("complete"))
+            .and_then(Value::as_bool);
+        let failed_providers: Vec<String> = value
+            .get("providers_failed")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(Self::bounded_label)
+            .filter(|item| !item.is_empty())
+            .take(32)
+            .collect();
+        let parsed_state = state_value.map(str::to_ascii_lowercase);
+        let state = if truncated {
+            RetrievalState::Truncated
+        } else if !success || !failed_providers.is_empty() {
+            if sources.is_empty() {
+                RetrievalState::Failed
+            } else {
+                RetrievalState::Partial
+            }
+        } else {
+            match (parsed_state.as_deref(), complete) {
+                (Some("complete" | "completed" | "success" | "succeeded"), Some(true) | None) => {
+                    RetrievalState::Complete
+                }
+                (Some("partial" | "degraded" | "incomplete"), _) | (_, Some(false)) => {
+                    RetrievalState::Partial
+                }
+                (Some("failed" | "error"), _) => RetrievalState::Failed,
+                (Some("skipped" | "policy_skipped"), _) => RetrievalState::Skipped,
+                (Some("truncated"), _) => RetrievalState::Truncated,
+                _ => RetrievalState::Unknown,
+            }
+        };
+        let mut warning_codes = Vec::new();
+        if let Some(warnings) = value.get("structured_warnings").and_then(Value::as_array) {
+            for warning in warnings.iter().take(32) {
+                let code = warning
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown_warning");
+                let code = Self::bounded_label(code);
+                if !warning_codes.contains(&code) {
+                    warning_codes.push(code);
+                }
+            }
+        }
+        let coverage = state_object
+            .and_then(|state| state.get("coverage"))
+            .and_then(Value::as_str)
+            .map(Self::bounded_label);
+        let mut trust_markers: Vec<String> = value
+            .get("trust_markers")
+            .and_then(Value::as_object)
+            .map(|markers| {
+                markers
+                    .iter()
+                    .filter(|(_, marker)| !marker.is_null() && *marker != &Value::Bool(false))
+                    .take(32)
+                    .map(|(name, _)| Self::bounded_label(name))
+                    .collect()
+            })
+            .unwrap_or_default();
+        trust_markers.sort();
+        let source_links = sources
+            .iter()
+            .map(|source| RetrievalSourceLink {
+                source_id: source.id.clone(),
+                upstream_stable_id: source.note_value("stable_id").map(str::to_owned),
+                group: source.note_value("group_label").map(str::to_owned),
+                providers: source
+                    .notes
+                    .iter()
+                    .filter_map(|note| note.strip_prefix("provider=").map(str::to_owned))
+                    .collect(),
+                published_at: source.published_at,
+                provenance: source.note_value("upstream_provenance").map(str::to_owned),
+            })
+            .collect();
+        ResearchRetrievalReceipt {
+            adapter: "eggsearch".to_string(),
+            state,
+            source_count: sources.len(),
+            coverage,
+            warning_codes,
+            trust_markers,
+            failed_providers,
+            sources: source_links,
+        }
+    }
+
     fn convert_output(output: &str) -> Result<Vec<SourceRecord>> {
         let payload: Value =
             serde_json::from_str(Self::payload_from_framed(output)).map_err(|e| {
@@ -293,20 +438,74 @@ impl EggsearchSource {
 
     fn convert_structured(
         result: search_backend::StructuredSearchResult,
-    ) -> Result<Vec<SourceRecord>> {
+    ) -> Result<SourceCollection> {
         if let Some(value) = result.value {
-            return Ok(Self::convert_value(&value));
+            let sources = Self::convert_value(&value);
+            // The full structured value is authoritative even when the
+            // separately bounded display projection was truncated.
+            let receipt = Self::receipt_from_value(&value, result.success, false, &sources);
+            return Ok(SourceCollection {
+                sources,
+                receipts: vec![receipt],
+            });
         }
         if result.truncated {
-            return Err(ResearchError::SourceCollection(
-                "eggsearch returned truncated display evidence without a structured result"
-                    .to_string(),
-            ));
+            return Ok(SourceCollection {
+                sources: Vec::new(),
+                receipts: vec![ResearchRetrievalReceipt {
+                    adapter: "eggsearch".to_string(),
+                    state: RetrievalState::Truncated,
+                    source_count: 0,
+                    coverage: None,
+                    warning_codes: vec![],
+                    trust_markers: vec![],
+                    failed_providers: vec![],
+                    sources: vec![],
+                }],
+            });
         }
-        Self::convert_output(&result.output)
+        if !result.success {
+            return Ok(SourceCollection {
+                sources: Vec::new(),
+                receipts: vec![ResearchRetrievalReceipt {
+                    adapter: "eggsearch".to_string(),
+                    state: RetrievalState::Failed,
+                    source_count: 0,
+                    coverage: None,
+                    warning_codes: vec!["tool_error".to_string()],
+                    trust_markers: vec![],
+                    failed_providers: vec![],
+                    sources: vec![],
+                }],
+            });
+        }
+        let sources = Self::convert_output(&result.output)?;
+        Ok(SourceCollection {
+            receipts: vec![ResearchRetrievalReceipt {
+                adapter: "eggsearch".to_string(),
+                state: RetrievalState::Unknown,
+                source_count: sources.len(),
+                coverage: None,
+                warning_codes: vec![],
+                trust_markers: vec![],
+                failed_providers: vec![],
+                sources: sources
+                    .iter()
+                    .map(|source| RetrievalSourceLink {
+                        source_id: source.id.clone(),
+                        upstream_stable_id: source.note_value("stable_id").map(str::to_owned),
+                        group: source.note_value("group_label").map(str::to_owned),
+                        providers: vec![],
+                        published_at: source.published_at,
+                        provenance: source.note_value("upstream_provenance").map(str::to_owned),
+                    })
+                    .collect(),
+            }],
+            sources,
+        })
     }
 
-    async fn collect_external(&self, request: &ResearchRequest) -> Result<Vec<SourceRecord>> {
+    async fn collect_external(&self, request: &ResearchRequest) -> Result<SourceCollection> {
         let input = Self::request_input(request);
         // Explicit runtime context (production registry path) avoids the
         // deprecated process-global slots entirely. Legacy construction
@@ -321,9 +520,23 @@ impl EggsearchSource {
             search_backend::dispatch_security_search_structured(&input).await
         } else {
             search_backend::dispatch_research_search_structured(&input).await
+        };
+        match result {
+            Ok(result) => Self::convert_structured(result),
+            Err(_error) => Ok(SourceCollection {
+                sources: Vec::new(),
+                receipts: vec![ResearchRetrievalReceipt {
+                    adapter: "eggsearch".to_string(),
+                    state: RetrievalState::Failed,
+                    source_count: 0,
+                    coverage: None,
+                    warning_codes: vec!["tool_error".to_string()],
+                    trust_markers: vec![],
+                    failed_providers: vec![],
+                    sources: vec![],
+                }],
+            }),
         }
-        .map_err(|error| ResearchError::SourceCollection(error.to_string()))?;
-        Self::convert_structured(result)
     }
 }
 
@@ -341,10 +554,52 @@ impl ResearchSourceAdapter for EggsearchSource {
             if !request.budget.allow_network {
                 return Err(ResearchError::NetworkNotAllowed);
             }
+            self.collect_with_receipt(request, _plan)
+                .await
+                .map(|collection| collection.sources)
+        })
+    }
 
-            let mut sources = self.collect_external(request).await?;
-            sources.truncate(request.budget.max_sources);
-            Ok(sources)
+    fn collect_with_receipt<'a>(
+        &'a self,
+        request: &'a ResearchRequest,
+        _plan: &'a ResearchPlan,
+    ) -> Pin<Box<dyn Future<Output = Result<SourceCollection>> + Send + 'a>> {
+        Box::pin(async move {
+            if !request.budget.allow_network {
+                return Ok(SourceCollection {
+                    sources: Vec::new(),
+                    receipts: vec![ResearchRetrievalReceipt {
+                        adapter: "eggsearch".to_string(),
+                        state: RetrievalState::Skipped,
+                        source_count: 0,
+                        coverage: None,
+                        warning_codes: vec!["network_policy_disabled".to_string()],
+                        trust_markers: vec![],
+                        failed_providers: vec![],
+                        sources: vec![],
+                    }],
+                });
+            }
+            let mut collection = self.collect_external(request).await?;
+            let was_truncated = collection.sources.len() > request.budget.max_sources;
+            collection.sources.truncate(request.budget.max_sources);
+            if was_truncated {
+                if let Some(receipt) = collection.receipts.first_mut() {
+                    receipt.state = RetrievalState::Truncated;
+                    receipt
+                        .warning_codes
+                        .push("source_budget_truncated".to_string());
+                    receipt.source_count = collection.sources.len();
+                    receipt.sources.retain(|link| {
+                        collection
+                            .sources
+                            .iter()
+                            .any(|source| source.id == link.source_id)
+                    });
+                }
+            }
+            Ok(collection)
         })
     }
 }
@@ -507,9 +762,9 @@ mod tests {
             truncated: true,
             success: true,
         };
-        let sources = EggsearchSource::convert_structured(result).unwrap();
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].uri, "https://example.com/structured");
+        let collection = EggsearchSource::convert_structured(result).unwrap();
+        assert_eq!(collection.sources.len(), 1);
+        assert_eq!(collection.sources[0].uri, "https://example.com/structured");
     }
 
     #[test]
@@ -520,7 +775,90 @@ mod tests {
             truncated: true,
             success: true,
         };
-        let error = EggsearchSource::convert_structured(result).unwrap_err();
-        assert!(error.to_string().contains("truncated display evidence"));
+        let collection = EggsearchSource::convert_structured(result).unwrap();
+        assert_eq!(collection.receipts[0].state, RetrievalState::Truncated);
+    }
+
+    #[test]
+    fn preserves_nested_date_stable_identity_and_structured_outcome() {
+        let result = search_backend::StructuredSearchResult {
+            output: String::new(),
+            value: Some(json!({
+                "retrieval_state": {"status": "partial", "complete": false, "coverage": "2 of 3 providers"},
+                "providers_failed": ["exa"],
+                "structured_warnings": [{"code": "prompt_injection", "severity": "high"}],
+                "trust_markers": {"sanitized": true, "injection_detected": true},
+                "groups": [{"label": "Research", "results": [{
+                    "stable_id": "src-42", "url": "https://example.com/x", "title": "X",
+                    "metadata": {"published_at": "2025-03-04", "source_kind": "paper"},
+                    "trust": "local_trusted", "providers": ["arxiv"]
+                }]}]
+            })),
+            truncated: false,
+            success: true,
+        };
+        let collection = EggsearchSource::convert_structured(result).unwrap();
+        assert_eq!(collection.receipts[0].state, RetrievalState::Partial);
+        assert_eq!(collection.receipts[0].failed_providers, ["exa"]);
+        assert_eq!(collection.receipts[0].warning_codes, ["prompt_injection"]);
+        assert_eq!(
+            collection.receipts[0].trust_markers,
+            ["injection_detected", "sanitized"]
+        );
+        let source = &collection.sources[0];
+        assert_eq!(source.note_value("stable_id"), Some("src-42"));
+        assert_eq!(
+            source.published_at.unwrap().to_rfc3339(),
+            "2025-03-04T00:00:00+00:00"
+        );
+        assert_eq!(source.note_value("trust"), Some("external_untrusted"));
+        assert_eq!(
+            source.note_value("upstream_provenance"),
+            Some("local_trusted")
+        );
+        assert_eq!(collection.receipts[0].sources[0].source_id, source.id);
+    }
+
+    #[test]
+    fn failed_complete_empty_and_unknown_results_remain_distinct() {
+        let make = |success, value| search_backend::StructuredSearchResult {
+            output: String::new(),
+            value: Some(value),
+            truncated: false,
+            success,
+        };
+        let complete_empty = EggsearchSource::convert_structured(make(
+            true,
+            json!({
+                "retrieval_state": {"status": "complete", "complete": true}, "groups": []
+            }),
+        ))
+        .unwrap();
+        let failed_empty =
+            EggsearchSource::convert_structured(make(false, json!({"groups": []}))).unwrap();
+        let partial_with_sources = EggsearchSource::convert_structured(make(
+            false,
+            json!({"groups": [{"results": [{"stable_id": "kept", "url": "https://example.com/kept"}]}]}),
+        ))
+        .unwrap();
+        let providers_failed_empty = EggsearchSource::convert_structured(make(
+            true,
+            json!({"providers_failed": ["exa", "tavily"], "groups": []}),
+        ))
+        .unwrap();
+        let unknown_empty =
+            EggsearchSource::convert_structured(make(true, json!({"groups": []}))).unwrap();
+        assert_eq!(complete_empty.receipts[0].state, RetrievalState::Complete);
+        assert_eq!(failed_empty.receipts[0].state, RetrievalState::Failed);
+        assert_eq!(
+            partial_with_sources.receipts[0].state,
+            RetrievalState::Partial
+        );
+        assert_eq!(partial_with_sources.sources.len(), 1);
+        assert_eq!(
+            providers_failed_empty.receipts[0].state,
+            RetrievalState::Failed
+        );
+        assert_eq!(unknown_empty.receipts[0].state, RetrievalState::Unknown);
     }
 }

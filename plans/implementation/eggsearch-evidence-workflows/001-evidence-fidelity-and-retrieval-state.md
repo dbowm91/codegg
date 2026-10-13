@@ -1,6 +1,6 @@
 # Eggsearch Evidence Workflows M001 — Evidence Fidelity and Retrieval State
 
-Status: ready
+Status: implemented
 Primary class: correctness / infrastructure
 Planning baseline: CodeGG `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`
 

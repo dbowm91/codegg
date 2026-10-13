@@ -1,6 +1,6 @@
 # Eggsearch Evidence Fidelity and Agent Workflow Roadmap
 
-Status: active (M001 ready; M002-M005 dependency-blocked)
+Status: closing (M001 implementation landed; M002-M005 dependency-blocked)
 Planning baseline: CodeGG main `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13)
 Upstream evidence: eggsearch `v0.4.1` published/qualified; upstream main declares `0.4.2`. CodeGG's managed pin remains `0.3.9` until the independently registered legacy-retirement M001 lands.
 
@@ -68,7 +68,7 @@ against adopted release when available) ----> New M004 (hard)
 
 | Milestone | Class | Status | Implementation plan | User-visible exit |
 |---|---|---|---|---|
-| M001 Evidence identity, metadata, failure-state fidelity | correctness/infrastructure | ready | `plans/implementation/eggsearch-evidence-workflows/001-evidence-fidelity-and-retrieval-state.md` | Research distinguishes no matches from provider failure, preserves source IDs and nested timestamps |
+| M001 Evidence identity, metadata, failure-state fidelity | correctness/infrastructure | closing | `plans/implementation/eggsearch-evidence-workflows/001-evidence-fidelity-and-retrieval-state.md` | Implementation landed; closure evidence in progress |
 | M002 Repository and specialist-search semantic controls | capability | blocked (legacy M001) | `plans/implementation/eggsearch-evidence-workflows/002-repository-and-specialist-search-goals.md` | Coding/research/security agents express task goals via current provider-neutral fields |
 | M003 Constrained web discovery and fetch compatibility | capability | blocked (legacy M001) | `plans/implementation/eggsearch-evidence-workflows/003-web-search-constraints.md` | Exact dates/domains/locales are carried and enforcement limitations disclosed |
 | M004 Budgeted semantic model projection | correctness/performance | blocked (M001 + legacy M001) | `plans/implementation/eggsearch-evidence-workflows/004-structured-context-projection.md` | Short model evidence without cutting away important source cards and failure state |
