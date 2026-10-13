@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $runId = [Guid]::NewGuid().ToString('N')
 $account = "c021_$($runId.Substring(0, 8))"
 $accountCreated = $false
+$hardlink = $null
 $stage = Join-Path $env:RUNNER_TEMP "codegg-c021-stage-$runId"
 $hostFixture = Join-Path $env:USERPROFILE "codegg-c021-host-$runId"
 $junction = Join-Path $env:RUNNER_TEMP "codegg-c021-junction-$runId"
@@ -328,6 +329,9 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
     foreach ($name in @('outside_create_write','outside_move','outside_delete')) {
         if ($result.$name -ne 'denied') { throw "C021 host mutation probe was not denied: $name" }
     }
+} catch {
+    Write-Output "C021_FAILURE=$($_.Exception.ToString())"
+    throw
 } finally {
     if ($job -ne [IntPtr]::Zero) {
         if ($processInfo -and $processInfo.hProcess -ne [IntPtr]::Zero -and
@@ -347,7 +351,7 @@ foreach (`$tool in @(@{name='python'; path=`$env:C021_PYTHON}, @{name='cargo'; p
         if (-not (Get-LocalUser -Name $account -ErrorAction SilentlyContinue)) { Write-Output 'C021_CLEANUP principal_removed=true' }
     }
     if (Test-Path -LiteralPath $junction) { Remove-Item -LiteralPath $junction -Force -ErrorAction SilentlyContinue }
-    if (Test-Path -LiteralPath $hardlink) { Remove-Item -LiteralPath $hardlink -Force -ErrorAction SilentlyContinue }
+    if ($hardlink -and (Test-Path -LiteralPath $hardlink)) { Remove-Item -LiteralPath $hardlink -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $hostFixture) { Remove-Item -LiteralPath $hostFixture -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
     Write-Output "C021_CLEANUP host_fixture_removed=$(-not (Test-Path -LiteralPath $hostFixture)) stage_removed=$(-not (Test-Path -LiteralPath $stage))"

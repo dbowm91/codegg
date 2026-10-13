@@ -11,6 +11,13 @@ Codegg reference: `b1024ba719c627f8a294cb50170d48ec08ce62f4`.
 - C014: Windows Server 2025 hosted run 38316065754 launched a test AppContainer child and read/wrote its own projection but Git init failed opening `/dev/null`. Subsequent denied-host, IPC, handle, Cargo and Python tests **did not run**. Investigate device `\Device\Null` as a hypothesis, not a proven cause. Original AppContainer/projection C015–C018 remains blocked.
 - Existing `src/managed_process/windows.rs` implements test-only restricted child launch/Job and `src/managed_process/windows_acl_lease.rs` holds **disposable-fixture-only** ACL lease machinery. `src/security/sandbox/policy.rs` is policy/preflight, not a Windows read-denial enforcement backend.
 
+## ADR-0020 successor hosted evidence
+
+- **C019 accepted:** exact source SHA `2a39eb6eba4234ff865e8a92282797203dab681f`, GitHub Actions run `38330137971` (Windows Server 2025 Datacenter, `10.0.26100`, UBR `33438`, Rust/Cargo 1.89.0, Git 2.55.0.windows.5, Python 3.12.10). The 1-test actual-child matrix and 6-test restricted-process lifecycle suite passed. The per-child AppContainer-private stage was writable; direct, junction, case-alias, extended-path, hardlink, ADS, sibling, outside-write, and pipe attempts were separately denied. Host/sibling DACL snapshots and synthetic secret bytes were unchanged. Git/Python/Cargo child tool actions returned `failed`; they remain compatibility observations, not denial results. UNC, hostile inherited handle, and durable restart probes were explicitly not run with reasons in C019 output.
+- **C014 device cause remains unconfirmed:** the C019 restricted and unrestricted children both reported `.NET File.Open("\\\\.\\NUL")` as `MethodInvocationException`. The probe did not capture an underlying Win32 error or identify Git/MSYS's `/dev/null` syscall, so it does not establish an ACL or device-object defect.
+- **C020 host prerequisite discovered:** hosted run `38330611716` on `windows-11-arm` observed Windows 11 Enterprise 25H2, build `26200`, UBR `9457`, ARM64, installed hotfixes including `KB5126052`, loadable `C:\Windows\System32\processmodel.dll`, and the `CreateProcessSecurityEnvironment` export. This is host eligibility evidence only; no MXC policy or containment claim follows from it. The pinned v1.0.0 SDK still requires actual backend/tier and running-child policy qualification.
+- **C021 first hosted attempt:** run `38330611632` created and removed its disposable local principal, but a null cleanup-path bug replaced the primary script failure. It is not candidate evidence; the cleanup/report harness is being corrected and will be rerun.
+
 ## Public implementations to learn from
 
 | Harness | Published approach | Limit relevant to Codegg |

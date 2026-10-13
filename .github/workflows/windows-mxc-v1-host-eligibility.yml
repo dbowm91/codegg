@@ -5,10 +5,12 @@ on:
     paths:
       - '.github/workflows/windows-mxc-v1-host-eligibility.yml'
       - 'plans/implementation/windows-native-sandbox/020-mxc-v1-native-process-isolation-feasibility.md'
+      - 'research/windows-native-sandbox/mxc-v1-harness/**'
   pull_request:
     paths:
       - '.github/workflows/windows-mxc-v1-host-eligibility.yml'
       - 'plans/implementation/windows-native-sandbox/020-mxc-v1-native-process-isolation-feasibility.md'
+      - 'research/windows-native-sandbox/mxc-v1-harness/**'
   workflow_dispatch:
 
 permissions:
@@ -78,3 +80,10 @@ jobs:
           } else {
             Write-Output 'C020 disposition: host prerequisite set present; native MXC policy qualification remains mandatory.'
           }
+
+      - name: Install isolated MXC Rust toolchain
+        uses: dtolnay/rust-toolchain@1.93.1
+
+      - name: Build and run pinned MXC v1 native policy fixture
+        shell: pwsh
+        run: cargo run --locked --manifest-path research/windows-native-sandbox/mxc-v1-harness/Cargo.toml

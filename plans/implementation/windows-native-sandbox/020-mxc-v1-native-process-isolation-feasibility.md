@@ -1,6 +1,6 @@
 # Windows Native Sandbox C020 — MXC v1 Native Windows Process Isolation Requalification
 
-Status: blocked (hard: C019 accepted shared matrix; operational: supported serviced Windows 11 test host)
+Status: active (C019 shared oracle accepted; serviced Windows 11 ARM64 PSEC host observed)
 Date: 2026-10-12
 Primary class: infrastructure / security feasibility
 Objective: Reassess MXC v1.0.0 under the actual Windows native process isolation tier, qualify Codegg's read/write/deny contract and developer tool compatibility, and publish a bounded positive/negative/blocked result.
