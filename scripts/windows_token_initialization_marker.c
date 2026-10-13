@@ -16,12 +16,13 @@ static DWORD write_context(void) {
     HANDLE file = CreateFileW(L"context.txt", FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return GetLastError();
-    WCHAR value[32768];
+    WCHAR *value = (WCHAR *)VirtualAlloc(NULL, 32768 * sizeof(WCHAR), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!value) { CloseHandle(file); return GetLastError(); }
     DWORD error = ERROR_SUCCESS;
     const WCHAR *names[] = {L"USERNAME", L"USERPROFILE", L"TEMP", L"TMP", L"PATH"};
     for (DWORD i = 0; i < ARRAYSIZE(names); ++i) {
-        DWORD length = GetEnvironmentVariableW(names[i], value, (DWORD)ARRAYSIZE(value));
-        if (length >= ARRAYSIZE(value)) { error = ERROR_BUFFER_OVERFLOW; break; }
+        DWORD length = GetEnvironmentVariableW(names[i], value, 32768);
+        if (length >= 32768) { error = ERROR_BUFFER_OVERFLOW; break; }
         DWORD written = 0;
         if (!WriteFile(file, names[i], (DWORD)(lstrlenW(names[i]) * sizeof(WCHAR)), &written, NULL) ||
             !WriteFile(file, L"=", sizeof(WCHAR), &written, NULL) ||
@@ -32,7 +33,7 @@ static DWORD write_context(void) {
     }
     DWORD desktopLength = 0;
     HDESK desktop = GetThreadDesktop(GetCurrentThreadId());
-    if (!desktop || !GetUserObjectInformationW(desktop, UOI_NAME, value, (DWORD)sizeof(value), &desktopLength)) {
+    if (!desktop || !GetUserObjectInformationW(desktop, UOI_NAME, value, 32768 * sizeof(WCHAR), &desktopLength)) {
         error = GetLastError();
     } else {
         DWORD written = 0;
@@ -40,6 +41,7 @@ static DWORD write_context(void) {
             !WriteFile(file, value, desktopLength - sizeof(WCHAR), &written, NULL) ||
             !WriteFile(file, L"\r\n", 2 * sizeof(WCHAR), &written, NULL)) error = GetLastError();
     }
+    VirtualFree(value, 0, MEM_RELEASE);
     CloseHandle(file);
     return error;
 }
