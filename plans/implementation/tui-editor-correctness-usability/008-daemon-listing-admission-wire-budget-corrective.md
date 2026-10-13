@@ -1,6 +1,6 @@
 # TUI Editor Post-Closure Corrective C006 — Daemon Directory Scan Permit and Wire-Size Bound
 
-Status: **ready for implementation handoff** (planning only; not implemented or verified)
+Status: implemented; closed — implementation `7995f8bf` on branch `plans/tui-editor-correctness-usability-20261013`; closure `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md`.
 
 Baseline: branch `plans/tui-editor-correctness-usability-20261013` at `f5cc17f24dc05a9e73938e2fd3328f23f5207f53` (2026-10-13); inspect current HEAD and preserve concurrent changes before starting.
 
