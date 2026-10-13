@@ -1,0 +1,116 @@
+name: Windows MXC C036 denial capture provenance (test only)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/windows-mxc-c036-capture.yml'
+      - 'research/windows-native-sandbox/mxc-c035-harness/**'
+      - 'plans/implementation/windows-native-sandbox/036-mxc-denial-capture-provenance-corrective.md'
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-c036-capture:
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record eligible host inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $os = Get-CimInstance Win32_OperatingSystem
+          $current = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $evidence = [ordered]@{
+            edition = $os.Caption
+            version = $os.Version
+            build = [int]$current.CurrentBuild
+            ubr = [int]$current.UBR
+            display_version = $current.DisplayVersion
+            architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+            mxc_sdk = '1.0.0'
+            rust = '1.93.1 (isolated test-only toolchain)'
+            git_sha = '${{ github.sha }}'
+            workflow_run_id = '${{ github.run_id }}'
+            qualification = 'Evidence collection only; no production admission claim.'
+          }
+          $json = $evidence | ConvertTo-Json -Compress
+          "C036_HOST=$json"
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Format, test pinned API contract, and cross-check ARM64 harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed: $LASTEXITCODE" }
+          cargo test --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin c036
+          if ($LASTEXITCODE -ne 0) { throw "C036 contract tests failed: $LASTEXITCODE" }
+          cargo check --locked --target aarch64-pc-windows-msvc --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin c036
+          if ($LASTEXITCODE -ne 0) { throw "ARM64 C036 check failed: $LASTEXITCODE" }
+
+      - name: Build native ARM64 helper and record PE provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = 'research/windows-native-sandbox/mxc-c035-harness/native_probe.c'
+          $helper = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c036-native-probe.exe'
+          cl.exe /nologo /O2 /W4 /DUNICODE /D_UNICODE /Fe:$helper $source advapi32.lib
+          if ($LASTEXITCODE -ne 0) { throw "cl.exe failed: $LASTEXITCODE" }
+          $machine = (& dumpbin.exe /headers $helper | Select-String 'machine \(' | Select-Object -First 1).ToString().Trim()
+          $imports = (& dumpbin.exe /imports $helper | Out-String).Trim()
+          $hash = (Get-FileHash -Algorithm SHA256 $helper).Hash
+          $object = Join-Path $env:RUNNER_TEMP 'c036-version.obj'
+          $compiler = (& cl.exe /Bv /nologo /c $source "/Fo:$object" 2>&1 | Out-String).Trim()
+          if ($machine -notmatch 'ARM64' -or [string]::IsNullOrWhiteSpace($imports) -or [string]::IsNullOrWhiteSpace($compiler)) { throw 'ARM64 PE machine, import table, or compiler version evidence is missing.' }
+          $json = [ordered]@{ helper_sha256=$hash; machine=$machine; imports=$imports; compiler=$compiler } | ConvertTo-Json -Compress
+          "C036_HELPER=$json"
+          $json | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "C036_NATIVE_HELPER=$helper" | Add-Content -LiteralPath $env:GITHUB_ENV
+
+      - name: Run C036 real-child capture and negative controls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $reportPath = Join-Path $env:RUNNER_TEMP 'codegg-mxc-c036-report.json'
+          $env:C036_NATIVE_HELPER = $env:C036_NATIVE_HELPER
+          $env:C036_REPORT_JSON = $reportPath
+          cargo run --locked --manifest-path research/windows-native-sandbox/mxc-c035-harness/Cargo.toml --bin c036 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c036-console.txt')
+          if ($LASTEXITCODE -ne 0) { throw "C036 evidence runner failed: $LASTEXITCODE" }
+          if (-not (Test-Path $reportPath)) { throw 'C036 machine-readable report missing' }
+          $report = Get-Content -Raw $reportPath | ConvertFrom-Json
+          $summary = if ($report.qualified_test_only) { 'C036 result: bounded positive test-only evidence; not production admission.' } else { 'C036 result: negative or incomplete evidence. Workflow success records collection only and is not admission.' }
+          $summary | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          "C036_QUALIFIED_TEST_ONLY=$($report.qualified_test_only)"
+
+      - name: Stage synthetic capture artifacts
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'codegg-c036-artifacts'
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c036-report.json') -Destination $artifactRoot -ErrorAction SilentlyContinue
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'codegg-mxc-c036-console.txt') -Destination $artifactRoot -ErrorAction SilentlyContinue
+          Get-ChildItem -Path $env:RUNNER_TEMP -Directory -Filter 'codegg-mxc-c036-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter 'denials.*.json' -File -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination $artifactRoot -ErrorAction SilentlyContinue }
+
+      - name: Upload synthetic C036 report and denial documents
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-mxc-c036-${{ github.run_id }}
+          path: ${{ runner.temp }}/codegg-c036-artifacts/**
+          if-no-files-found: warn
+          retention-days: 7

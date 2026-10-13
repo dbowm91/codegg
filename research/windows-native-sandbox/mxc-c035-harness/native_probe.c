@@ -149,9 +149,31 @@ static int control(int argc, wchar_t **argv) {
     return wait == WAIT_OBJECT_0 && code == 0 ? 0 : 53;
 }
 
+static int stage_only(int argc, wchar_t **argv) {
+    if (argc != 4) return 60;
+    wchar_t proof[512];
+    _snwprintf_s(proof, 512, _TRUNCATE,
+        L"{\"pid\":%lu,\"nonce\":\"%s\",\"marker\":\"stage-only-proof\"}",
+        GetCurrentProcessId(), argv[3]);
+    return write_text(argv[2], proof) == 0 ? 0 : 61;
+}
+
+static int sleep_probe(int argc, wchar_t **argv) {
+    if (argc != 5) return 70;
+    wchar_t entry[512];
+    _snwprintf_s(entry, 512, _TRUNCATE,
+        L"{\"pid\":%lu,\"nonce\":\"%s\",\"phase\":\"entry\"}",
+        GetCurrentProcessId(), argv[3]);
+    if (write_text(argv[2], entry) != 0) return 71;
+    Sleep((DWORD)_wtoi(argv[4]));
+    return 0;
+}
+
 int wmain(int argc, wchar_t **argv) {
     if (argc > 1 && wcscmp(argv[1], L"--child") == 0) return child(argc, argv);
     if (argc > 1 && wcscmp(argv[1], L"--control") == 0) return control(argc, argv);
+    if (argc > 1 && wcscmp(argv[1], L"--stage-only") == 0) return stage_only(argc, argv);
+    if (argc > 1 && wcscmp(argv[1], L"--sleep") == 0) return sleep_probe(argc, argv);
     if (argc > 1 && wcscmp(argv[1], L"--exit-before-entry") == 0) return 23;
     return 2;
 }
