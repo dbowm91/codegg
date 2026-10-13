@@ -1,6 +1,9 @@
 # TUI Editor Correctness/Usability C001 — Semantic Token Fidelity
 
-Status: ready for handoff
+Status: implemented; closed
+
+Implementation: `32fd7505ee22a76cbd1b0395f6968dfe14cfc052`
+Closure: `plans/closure/tui-editor-correctness-usability/001-status.md`
 
 Baseline: `main` `6b611b5ca7f019783a91f04530d5ae56124f7ee9` (2026-10-13); inspect HEAD again before editing.
 Roadmap: `plans/subsystems/tui-editor-correctness-usability-roadmap.md` C001.
