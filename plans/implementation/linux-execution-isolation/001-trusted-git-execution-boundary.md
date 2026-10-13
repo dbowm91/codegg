@@ -1,6 +1,6 @@
 # Linux Execution Isolation M001 — Trusted Git Execution and Hostile Repository Metadata
 
-Status: ready for handoff
+Status: blocked
 Primary class: invariant
 Hard dependencies: none; no ADR-0022 acceptance required for this existing-authority corrective.
 Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0022; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
@@ -81,3 +81,12 @@ Every inventoried trusted Git entrypoint either disables repo-controlled executi
 ## 11. Stop conditions
 
 Stop if a required Git behavior cannot be made non-executable under its current trust level; a known race survives without enforceable isolation; a fix would require redefining user approval or agent authority; or the remaining issue requires read-only mount overlays (M003). Record blocked behavior rather than broadening trust.
+
+## 12. Current stop condition
+
+The initial boundary work is implemented, but closure is blocked because the
+safe policy denies filter/merge-driver and network Git operations, including
+ordinary typed add/checkout/fetch/push workflows. The existing approval route
+does not yet provide a distinct contained execution class for those operations.
+Do not mark M001 closed until the maintainer selects an authorized contained
+route or explicitly accepts the compatibility loss and the roadmap is revised.

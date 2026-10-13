@@ -72,6 +72,19 @@ Every raw execution call flows through `egggit::process::GitEnvPolicy::apply()`
 kill_on_drop). stdout/stderr pass through
 `redact_url_credentials_in_text` before reaching any downstream consumer.
 
+The trusted process policy also pins repository-controlled execution settings
+with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
+SSH command overrides, signing programs and pagers are disabled; diff/show/log
+also receive `--no-ext-diff --no-textconv`. Global config and repository
+identity overrides supplied in argv are refused before spawn, and unknown Git
+subcommands are refused so repository aliases cannot become commands. Trusted
+operations that can run clean/smudge filters or merge drivers (including
+add/checkout/restore/merge/rebase/stash mutation, clone, fetch, push, and hard
+reset) are refused until separately authorized contained or mediated routes
+exist. `stash list` and `worktree list` remain available. This boundary does
+not protect writable `.git` metadata, nor does it claim network isolation;
+those are separate Linux execution-isolation milestones.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, and `ProjectionHints`.
@@ -84,7 +97,8 @@ exit code, and `ProjectionHints`.
 2. Capture pre-operation `RepoSnapshot` via `git status --porcelain=v2 -z
    --branch`.
 3. Render argv via `codegg_git::render_argv` (no shell).
-4. Execute with timeout and `GitEnvPolicy` hardening.
+4. Execute with timeout and `GitEnvPolicy` hardening. Operations requiring
+   repository-controlled filters or merge drivers fail before Git spawn.
 5. Capture post-operation snapshot (even on nonzero exit where safe).
 6. Classify outcome (`Completed`, `NoOp`, `FastForward`, `Conflict`,
    `Rejected`) from before/after snapshots and exit code.
@@ -262,7 +276,10 @@ action regardless of routing mode.
    `ALLOWED_ENV_VARS` (21 vars), strips `ALWAYS_STRIPPED_ENV_VARS` (28
    vars), pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`,
    `GIT_SEQUENCE_EDITOR=true`, strips `EDITOR`/`VISUAL`, sets
-   `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`.
+   `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`; adds fixed Git config
+   overrides for executable repository settings; denies caller-supplied
+   global config/repository redirects, unknown aliases, and unsafe filter or
+   merge-driver operations before spawn.
 2. `NetworkEnvPolicy::apply_to_command()`: same as base, plus restores
    `NETWORK_ALLOWED_ENV_VARS` (21 vars: `GIT_ASKPASS`, `GIT_SSH_COMMAND`,
    `GIT_SSH_VARIANT`, `GIT_CONFIG_COUNT/GLOBAL/SYSTEM`, `GIT_AUTHOR_*`,

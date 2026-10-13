@@ -51,7 +51,7 @@ Trusted Git commands require a distinct reviewed execution route. Ordinary Bash 
 
 | Milestone | Class | Implementation | Status | User/operator exit |
 |---|---|---|---|---|
-| M001 Trusted Git execution boundary and hostile-metadata probes | invariant | `implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` | ready | Trusted Git no longer executes unapproved repo-controlled hooks/filters/monitors in higher authority; verified negative fixtures and remaining metadata scope documented |
+| M001 Trusted Git execution boundary and hostile-metadata probes | invariant | `implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` | blocked: authorized contained route needed | Safe policy blocks repository-controlled executable settings, but also refuses ordinary typed filter/merge/network operations; maintainer must select a contained exception route or accept the compatibility loss before closure |
 | M002 Composable Linux launch and obtained-capability contract | infrastructure | `implementation/linux-execution-isolation/002-composable-linux-launch-contract.md` | blocked: ADR-0022 acceptance | One canonical launcher and truthful dimensioned status, verified fail-closed probes with unchanged default behavior |
 | M003 Protected workspace mount view | capability | `implementation/linux-execution-isolation/003-protected-workspace-mounts.md` | blocked: M002/M001 | Workspace writes work, but configured Git/agent credential descendants cannot be rewritten; overlays and real gitdirs protected |
 | M004 Process, IPC and seccomp containment | capability | `implementation/linux-execution-isolation/004-process-ipc-seccomp.md` | blocked: M002; M003 interface | Host processes, daemon sockets and host proc are inaccessible under an opted-in isolated tier |
@@ -91,4 +91,8 @@ The roadmap closes only when M001–M008 have accepted, exact-revision closure r
 
 ## 12. Milestone status
 
-M001 ready for handoff; M002 blocked on proposed ADR-0022's owner acceptance; M003–M008 named blockers above. All implementation plan documents are prepared for sequential handoff; none is marked implemented or verified.
+M001's initial policy and native probes are implemented, but closure is blocked
+on the authorized contained Git route described in its plan and closure record.
+M002 is independently blocked on proposed ADR-0022 owner acceptance; M003–M008
+retain their named dependency gates. No enhanced Linux isolation capability is
+claimed as implemented or verified.

@@ -85,6 +85,80 @@ pub const ALWAYS_STRIPPED_ENV_VARS: &[&str] = &[
     "PAGER",
 ];
 
+/// Git operations that can apply repository-controlled filters or merge
+/// drivers. The daemon's trusted Git route does not run them: callers that
+/// need those semantics must execute Git inside the already-contained child
+/// boundary, where repository metadata has no extra authority.
+const REPOSITORY_EXECUTABLE_OPERATIONS: &[&str] = &[
+    "add",
+    "checkout",
+    "cherry-pick",
+    "clone",
+    "fetch",
+    "merge",
+    "push",
+    "pull",
+    "rebase",
+    "restore",
+    "revert",
+    "stash",
+    "switch",
+];
+
+/// Built-in subcommands used by CodeGG's typed Git operations and structured
+/// readers. Unknown subcommands are denied because Git expands repository
+/// aliases for names that are not built-ins.
+const TRUSTED_GIT_BUILTINS: &[&str] = &[
+    "add",
+    "am",
+    "apply",
+    "blame",
+    "branch",
+    "cat-file",
+    "check-attr",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "commit",
+    "config",
+    "diff",
+    "diff-tree",
+    "fetch",
+    "for-each-ref",
+    "grep",
+    "init",
+    "log",
+    "ls-files",
+    "ls-tree",
+    "merge",
+    "merge-base",
+    "mv",
+    "notes",
+    "pull",
+    "push",
+    "rebase",
+    "reflog",
+    "remote",
+    "reset",
+    "restore",
+    "revert",
+    "rev-parse",
+    "rev-list",
+    "rm",
+    "show",
+    "stash",
+    "status",
+    "switch",
+    "tag",
+    "update-ref",
+    "worktree",
+];
+
+/// A deliberately missing executable used to turn a disallowed trusted Git
+/// request into a spawn failure before Git can inspect repository metadata.
+const DENIED_GIT_EXECUTABLE: &str = "/__codegg_trusted_git_operation_denied__";
+
 /// Base policy for local Git operations.
 #[derive(Debug, Clone)]
 pub struct GitEnvPolicy {
@@ -108,8 +182,18 @@ impl Default for GitEnvPolicy {
 impl GitEnvPolicy {
     /// Construct an async command from a complete argv (`git` included).
     pub fn apply(&self, argv: &[String], cwd: &Path) -> Command {
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
+        let denied = trusted_git_request_denied(argv);
+        let mut cmd = Command::new(if denied {
+            DENIED_GIT_EXECUTABLE
+        } else {
+            argv.first()
+                .map(String::as_str)
+                .unwrap_or(DENIED_GIT_EXECUTABLE)
+        });
+        if !denied {
+            add_trusted_git_overrides(&mut cmd, argv);
+        }
+        cmd.current_dir(cwd);
         apply_environment(&mut cmd, self);
         cmd.kill_on_drop(true);
         cmd
@@ -117,11 +201,156 @@ impl GitEnvPolicy {
 
     /// Construct a synchronous command from a complete argv (`git` included).
     pub fn apply_sync(&self, argv: &[String], cwd: &Path) -> StdCommand {
-        let mut cmd = StdCommand::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
+        let denied = trusted_git_request_denied(argv);
+        let mut cmd = StdCommand::new(if denied {
+            DENIED_GIT_EXECUTABLE
+        } else {
+            argv.first()
+                .map(String::as_str)
+                .unwrap_or(DENIED_GIT_EXECUTABLE)
+        });
+        if !denied {
+            add_trusted_git_overrides(&mut cmd, argv);
+        }
+        cmd.current_dir(cwd);
         isolate_child_process_group(&mut cmd);
         apply_environment(&mut cmd, self);
         cmd
+    }
+}
+
+fn trusted_git_request_denied(argv: &[String]) -> bool {
+    if argv.is_empty() || argv[0] != "git" {
+        return true;
+    }
+
+    // These global Git options can replace the policy after it is installed.
+    // CodeGG's typed renderers do not need them; reject raw callers that try
+    // to supply configuration or redirect repository identity.
+    if argv
+        .iter()
+        .skip(1)
+        .take_while(|arg| arg.starts_with('-'))
+        .any(|arg| {
+            arg == "-c"
+                || arg.starts_with("-c") && arg.len() > 2
+                || arg == "--config-env"
+                || arg.starts_with("--config-env=")
+                || arg == "--git-dir"
+                || arg.starts_with("--git-dir=")
+                || arg == "--work-tree"
+                || arg.starts_with("--work-tree=")
+                || arg == "-C"
+                || arg.starts_with("-C") && arg.len() > 2
+        })
+    {
+        return true;
+    }
+
+    let Some(subcommand) = argv.get(1).map(String::as_str) else {
+        return true;
+    };
+    if !TRUSTED_GIT_BUILTINS.contains(&subcommand) {
+        return true;
+    }
+    if subcommand == "stash" {
+        return argv.get(2).is_none_or(|operation| operation != "list");
+    }
+    if subcommand == "worktree" {
+        return argv.get(2).is_none_or(|operation| operation != "list");
+    }
+    if subcommand == "reset"
+        && argv
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--hard" | "--merge" | "--keep"))
+    {
+        return true;
+    }
+    if subcommand == "cat-file" && argv.iter().any(|arg| arg == "--filters") {
+        return true;
+    }
+    if matches!(subcommand, "diff" | "diff-tree" | "show" | "log" | "blame")
+        && argv
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--ext-diff" | "--textconv"))
+    {
+        return true;
+    }
+    !subcommand.starts_with('-') && REPOSITORY_EXECUTABLE_OPERATIONS.contains(&subcommand)
+}
+
+fn add_trusted_git_overrides<C>(cmd: &mut C, argv: &[String])
+where
+    C: CommandArguments,
+{
+    // These options take precedence over repository-local config and prevent
+    // Git from promoting config values into child processes. Network routing
+    // remains possible through the separately reviewed environment policy.
+    for (key, value) in [
+        ("core.fsmonitor", "false"),
+        ("core.hooksPath", "/dev/null"),
+        ("core.pager", "cat"),
+        ("core.sshCommand", ""),
+        ("credential.helper", ""),
+        ("diff.external", ""),
+        ("commit.gpgSign", "false"),
+        ("tag.gpgSign", "false"),
+        ("gpg.program", ""),
+        ("core.askPass", ""),
+        ("protocol.ext.allow", "never"),
+    ] {
+        cmd.arg("-c");
+        cmd.arg(format!("{key}={value}"));
+    }
+    cmd.arg("--no-pager");
+    if argv.get(1).is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "diff" | "diff-tree" | "show" | "log" | "blame"
+        )
+    }) {
+        cmd.arg(argv[1].as_str());
+        cmd.arg("--no-ext-diff");
+        cmd.arg("--no-textconv");
+        cmd.args(&argv[2..]);
+    } else {
+        cmd.args(&argv[1..]);
+    }
+}
+
+trait CommandArguments {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self;
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>;
+}
+
+impl CommandArguments for Command {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.arg(arg)
+    }
+
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.args(args)
+    }
+}
+
+impl CommandArguments for StdCommand {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.arg(arg)
+    }
+
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.args(args)
     }
 }
 
@@ -461,6 +690,235 @@ mod tests {
         // an unbounded `spawn_blocking` wait, so a stuck git could hang a
         // `git_query` call indefinitely.
         assert!(DEFAULT_READ_TIMEOUT <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn trusted_git_policy_overrides_execution_bearing_repository_config() {
+        let cwd = Path::new(".");
+        let argv = vec!["git".to_string(), "diff".to_string()];
+        let cmd = GitEnvPolicy::default().apply_sync(&argv, cwd);
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "core.fsmonitor=false",
+            "core.hooksPath=/dev/null",
+            "core.sshCommand=",
+            "credential.helper=",
+            "diff.external=",
+            "commit.gpgSign=false",
+            "tag.gpgSign=false",
+            "--no-pager",
+            "--no-ext-diff",
+            "--no-textconv",
+        ] {
+            assert!(
+                args.iter().any(|arg| arg == required),
+                "missing {required:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_git_policy_denies_filter_and_merge_driver_operations() {
+        let cwd = Path::new(".");
+        for subcommand in [
+            "add",
+            "checkout",
+            "restore",
+            "merge",
+            "rebase",
+            "stash",
+            "operation",
+        ] {
+            let argv = vec!["git".to_string(), subcommand.to_string()];
+            let cmd = GitEnvPolicy::default().apply_sync(&argv, cwd);
+            assert_eq!(cmd.get_program(), DENIED_GIT_EXECUTABLE, "{subcommand}");
+        }
+
+        let stash_list = vec!["git".to_string(), "stash".to_string(), "list".to_string()];
+        assert_eq!(
+            GitEnvPolicy::default()
+                .apply_sync(&stash_list, cwd)
+                .get_program(),
+            "git"
+        );
+
+        let worktree_list = vec![
+            "git".to_string(),
+            "worktree".to_string(),
+            "list".to_string(),
+        ];
+        assert_eq!(
+            GitEnvPolicy::default()
+                .apply_sync(&worktree_list, cwd)
+                .get_program(),
+            "git"
+        );
+
+        let reset_hard = vec!["git".to_string(), "reset".to_string(), "--hard".to_string()];
+        assert_eq!(
+            GitEnvPolicy::default()
+                .apply_sync(&reset_hard, cwd)
+                .get_program(),
+            DENIED_GIT_EXECUTABLE
+        );
+
+        for argv in [
+            vec![
+                "git".to_string(),
+                "cat-file".to_string(),
+                "--filters".to_string(),
+            ],
+            vec![
+                "git".to_string(),
+                "diff".to_string(),
+                "--textconv".to_string(),
+            ],
+            vec![
+                "git".to_string(),
+                "show".to_string(),
+                "--ext-diff".to_string(),
+            ],
+            vec![
+                "git".to_string(),
+                "diff-tree".to_string(),
+                "--textconv".to_string(),
+            ],
+        ] {
+            assert_eq!(
+                GitEnvPolicy::default().apply_sync(&argv, cwd).get_program(),
+                DENIED_GIT_EXECUTABLE
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_git_policy_denies_caller_config_and_repository_redirects() {
+        let cwd = Path::new(".");
+        for extra in [
+            vec![
+                "-c".to_string(),
+                "core.fsmonitor=true".to_string(),
+                "status".to_string(),
+            ],
+            vec![
+                "--config-env=core.fsmonitor=GIT_CONFIG_COUNT".to_string(),
+                "status".to_string(),
+            ],
+            vec!["-C/other/repo".to_string(), "status".to_string()],
+            vec![
+                "--git-dir=/other/repo/.git".to_string(),
+                "status".to_string(),
+            ],
+        ] {
+            let mut argv = vec!["git".to_string()];
+            argv.extend(extra);
+            assert_eq!(
+                GitEnvPolicy::default().apply_sync(&argv, cwd).get_program(),
+                DENIED_GIT_EXECUTABLE
+            );
+        }
+
+        // `-c` is also a valid subcommand option (for example `git grep -c`);
+        // only global configuration overrides before the subcommand are denied.
+        let grep_count = vec!["git".to_string(), "grep".to_string(), "-c".to_string()];
+        assert_eq!(
+            GitEnvPolicy::default()
+                .apply_sync(&grep_count, cwd)
+                .get_program(),
+            "git"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_status_does_not_run_repository_fsmonitor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        assert!(init.status.success());
+
+        let marker = root.join("fsmonitor-ran");
+        let hook = root.join("fsmonitor.sh");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'token\\n'\n",
+                marker.display()
+            ),
+        )
+        .expect("write fsmonitor hook");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make fsmonitor executable");
+        let config = StdCommand::new("git")
+            .args([
+                "config",
+                "core.fsmonitor",
+                hook.to_str().expect("hook path"),
+            ])
+            .current_dir(root)
+            .status()
+            .expect("set hostile fsmonitor");
+        assert!(config.success());
+
+        let status = run(&["status".to_string()], root)
+            .await
+            .expect("trusted status");
+        assert!(status.status.success());
+        assert!(!marker.exists(), "repository fsmonitor must not execute");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_commit_does_not_run_repository_hooks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git command")
+        };
+        assert!(run(&["init", "--initial-branch=main"]).status.success());
+        assert!(run(&["config", "user.email", "test@example.com"])
+            .status
+            .success());
+        assert!(run(&["config", "user.name", "Test"]).status.success());
+
+        let marker = root.join("hook-ran");
+        let hook_dir = root.join(".git/hooks");
+        let hook = hook_dir.join("post-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))
+            .expect("write post-commit hook");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make hook executable");
+        std::fs::write(root.join("tracked.txt"), "content\n").expect("write file");
+        assert!(run(&["add", "tracked.txt"]).status.success());
+
+        let output = super::run(
+            &[
+                "commit".to_string(),
+                "-m".to_string(),
+                "initial".to_string(),
+            ],
+            root,
+        )
+        .await
+        .expect("trusted commit");
+        assert!(output.status.success());
+        assert!(
+            !marker.exists(),
+            "repository post-commit hook must not execute"
+        );
     }
 
     /// Drive a command through `run_command` with a short deadline.

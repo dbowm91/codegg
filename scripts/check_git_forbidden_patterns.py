@@ -342,6 +342,44 @@ def check_direct_git_process_construction() -> List[Finding]:
     return findings
 
 
+def check_trusted_git_execution_policy() -> List[Finding]:
+    """Keep repository-controlled Git execution controls at the sole owner."""
+    findings: List[Finding] = []
+    path = CRATES / "egggit" / "src" / "process.rs"
+    if not path.exists():
+        return [
+            Finding(
+                rule="trusted-git-policy-missing",
+                file="crates/egggit/src/process.rs",
+                line=1,
+                message="canonical Git process owner is missing",
+            )
+        ]
+    text = path.read_text()
+    required = [
+        "trusted_git_request_denied(argv)",
+        "add_trusted_git_overrides(&mut cmd, argv)",
+        "REPOSITORY_EXECUTABLE_OPERATIONS",
+        "TRUSTED_GIT_BUILTINS",
+        '"core.fsmonitor"',
+        '"core.hooksPath"',
+        '"diff.external"',
+        '"credential.helper"',
+        '"protocol.ext.allow"',
+    ]
+    missing = [token for token in required if token not in text]
+    if missing:
+        findings.append(
+            Finding(
+                rule="trusted-git-policy-incomplete",
+                file=str(path.relative_to(ROOT)),
+                line=1,
+                message=f"canonical trusted Git policy is missing controls: {', '.join(missing)}",
+            )
+        )
+    return findings
+
+
 def check_runstore_argv_sanitization() -> List[Finding]:
     """RunStore invocations whose argv comes from a git
     `render_argv` call must flow through
@@ -400,6 +438,7 @@ CHECKS = [
     check_expose_secret_callers,
     check_duplicated_env_policy,
     check_direct_git_process_construction,
+    check_trusted_git_execution_policy,
     check_rerun_argv_construction,
     check_runstore_argv_sanitization,
 ]

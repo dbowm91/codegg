@@ -84,6 +84,16 @@ read backend identity out of the registry, so none of them change.
 
 Linux enforcement uses the maintained `landlock` crate.
 
+The trusted CodeGG Git subprocess policy is a separate boundary: it pins
+repository-configured hooks/fsmonitor/external diff/textconv/credential helper
+and signing behavior, rejects unknown Git aliases and caller-supplied global
+config or repository redirects, and refuses operations that need
+repository-controlled filters or merge drivers, plus clone/fetch/push, until
+contained or mediated routes exist. This does not make writable `.git`
+metadata immutable and does not establish network isolation. See
+`architecture/git.md` and the Linux execution-isolation M001 closure record
+for current evidence and open items.
+
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the
   running binary (inherited env/PATH/cwd cannot select it)

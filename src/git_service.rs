@@ -1536,7 +1536,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn execute_add_returns_raw_output() {
+    async fn execute_add_is_refused_by_trusted_git_policy() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
         std::fs::write(dir.path().join("new.txt"), "new file").unwrap();
@@ -1547,11 +1547,12 @@ mod tests {
         let svc = GitExecutionService::new();
         let result = svc
             .execute(&GitOperation::Add { paths: vec![path] }, dir.path())
-            .await
-            .unwrap();
+            .await;
 
-        assert!(result.success);
-        assert!(result.payload.is_none());
+        assert!(
+            result.is_err(),
+            "trusted add must refuse repository filters"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

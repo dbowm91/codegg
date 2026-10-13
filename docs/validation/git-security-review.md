@@ -422,3 +422,24 @@ The following test suites cover security-relevant behavior. The polish pass adde
 | `src/tool/git.rs::schema_tests` | Schema snapshot: mutation enum, recover enum, description |
 | `src/git_network_ops.rs` tests | Config key validation, push force classification, URL redaction |
 | **`scripts/check_git_forbidden_patterns.py`** | 5 static checks for forbidden patterns (CI-ready) |
+
+---
+
+## Linux execution isolation M001 addendum (2026-10-13)
+
+The historical review above predates the Linux execution-isolation work and
+must not be read as evidence that repository-controlled Git programs are
+disabled. The current `egggit::process::GitEnvPolicy` pins hook, fsmonitor,
+external diff, textconv, credential-helper, SSH-command and signing settings;
+it rejects caller-supplied global config/repository redirects and unknown
+subcommands. Trusted operations that may invoke clean/smudge filters or merge
+drivers are refused before spawn. Focused native Linux tests prove a configured
+fsmonitor and post-commit hook do not run, and policy unit tests cover the
+refusal set and argv overrides.
+
+This is an interim boundary, not closure of M001. Writable `.git` metadata can
+still change between command review and launch; the command builder's refused
+operation result is currently a spawn error rather than a typed policy result;
+network SSH configuration and the full trusted entrypoint inventory still
+need review. See `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md`
+and its closure record for the exact remaining gate.
