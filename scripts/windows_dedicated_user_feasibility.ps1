@@ -353,11 +353,19 @@ try {
     $stageDaclAfter = Get-DaclFingerprint $stage
     $secretHashAfter = (Get-FileHash -LiteralPath $secret -Algorithm SHA256).Hash
     $siblingSecretHashAfter = (Get-FileHash -LiteralPath $siblingSecret -Algorithm SHA256).Hash
+    $hostOs = Get-CimInstance Win32_OperatingSystem
+    $hostWindowsVersion = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $installedHotfixes = @(Get-HotFix | Sort-Object InstalledOn | Select-Object -Last 12 | ForEach-Object {
+        "$($_.HotFixID):$($_.InstalledOn.ToString('yyyy-MM-dd'))"
+    })
     $report = [ordered]@{
         contract = 'codegg.windows_dedicated_user_feasibility.v1'
-        host_edition = (Get-CimInstance Win32_OperatingSystem).Caption
-        host_version = (Get-CimInstance Win32_OperatingSystem).Version
-        host_build = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
+        host_edition = $hostOs.Caption
+        host_version = $hostOs.Version
+        host_build = $hostWindowsVersion.CurrentBuild
+        host_ubr = $hostWindowsVersion.UBR
+        host_display_version = $hostWindowsVersion.DisplayVersion
+        installed_hotfixes = $installedHotfixes
         runner_identity = $adminIdentity.Name
         runner_is_administrator = $true
         principal_name = $account
