@@ -225,7 +225,7 @@ function Get-SddlFingerprint([string] $Path) {
 }
 
 function Get-FileIdentity([string] $Path) {
-    $handle = [C027Native]::CreateFileW($Path, 0x80000000, 7, [IntPtr]::Zero, 3, 0x80, [IntPtr]::Zero)
+    $handle = [C027Native]::CreateFileW($Path, [uint32]2147483648L, 7, [IntPtr]::Zero, 3, 0x80, [IntPtr]::Zero)
     if ($handle -eq [IntPtr](-1)) { throw "CreateFileW metadata failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
     try {
         $information = [C027ByHandleFileInformation]::new()
