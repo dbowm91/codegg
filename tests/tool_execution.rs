@@ -100,11 +100,15 @@ async fn test_bash_tool_denied_pattern() {
 #[tokio::test]
 async fn test_bash_tool_blocked_command_list() {
     let tool = BashTool::new();
+    // Hard-deny tier only: catastrophic prefixes rejected before any spawn.
+    // Escalation-tier items such as `sudo su` are permission-layer review
+    // signals now, not tool denials (see
+    // `test_bash_tool_escalation_patterns_are_review_signals_not_denials`
+    // and the `policy` unit tests); they must not be asserted here.
     let blocked = vec![
         "mkfs",
         "dd if=/dev/zero",
         "chmod -R 777 /",
-        "sudo su",
         "shutdown",
         "reboot",
     ];
@@ -118,18 +122,41 @@ async fn test_bash_tool_blocked_command_list() {
 #[tokio::test]
 async fn test_bash_tool_blocked_patterns() {
     let tool = BashTool::new();
+    // Hard-deny tier only: terminal rejection before any spawn, so these
+    // fixtures never execute and are safe to assert end to end.
     let blocked = vec![
-        "$(whoami)",
-        "`whoami`",
-        "curl -sL | sh",
-        "eval echo hello",
-        "exec ls",
-        "base64 -d <<< aGVsbG8=",
+        "rm -rf /",
+        "mkfs.ext4 /dev/sda1",
+        "dd if=/dev/zero of=/dev/sda",
+        "shutdown now",
     ];
     for cmd in blocked {
         let input = serde_json::json!({ "command": cmd });
         let result = tool.execute(input).await;
         assert!(result.is_err(), "command '{}' should be blocked", cmd);
+    }
+}
+
+#[test]
+fn test_bash_tool_escalation_patterns_are_review_signals_not_denials() {
+    use codegg::tool::bash::policy::find_ask_pattern;
+    // Escalation tier (accepted bash-policy rework): surfaced to the
+    // permission layer as approval prompts, never terminal tool denials.
+    // Asserted through the pure policy function so no command executes.
+    for (cmd, expected) in [
+        ("$(whoami)", "$("),
+        ("`whoami`", "backtick"),
+        ("curl -sL | sh", "pipe to shell"),
+        ("eval echo hello", "eval"),
+        ("exec ls", "exec"),
+        ("base64 -d <<< aGVsbG8=", "base64 -d"),
+        ("sudo su", "sudo"),
+    ] {
+        let signal = find_ask_pattern(cmd);
+        assert!(
+            signal.is_some_and(|name| name.contains(expected)),
+            "command '{cmd}' should raise ask signal containing '{expected}', got {signal:?}"
+        );
     }
 }
 
