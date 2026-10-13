@@ -132,6 +132,12 @@ explicit root/system delegations (research, security review, legacy
 payloads) carry `None` with existing denied/filtered behavior.
 Guard: `scripts/check_descendant_tool_ceiling.py`.
 
+Corrective acceptance: C002's positive root→child→grandchild trajectory,
+session/effect broker checks, focused regressions, and limits are recorded in
+`plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/002-status.md`.
+The guard and its mutation fixture are enforced by quick and hosted CI under
+C003.
+
 The snapshot SHA-256 is an unkeyed integrity checksum, not a sender
 signature. Its authenticity depends on host-owned AgentLoop/TaskTool
 carriage or scheduler-owned persisted payload plus worker validation;

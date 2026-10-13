@@ -124,6 +124,16 @@ run_quick() {
     echo "==> python3 scripts/check_first_party_skills.py"
     (cd "$REPO_ROOT" && python3 scripts/check_first_party_skills.py)
 
+    echo "==> Tool runtime broker, descriptor, descendant, and disclosure guards"
+    (cd "$REPO_ROOT" && python3 scripts/check_mcp_broker_adapter.py)
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_descriptor_snapshot.py)
+    (cd "$REPO_ROOT" && python3 scripts/check_descendant_tool_ceiling.py)
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_disclosure_wire.py)
+    echo "==> Tool runtime retry admission guard"
+    (cd "$REPO_ROOT" && python3 scripts/check_tool_retry_admission.py)
+    echo "==> Tool runtime guard positive/negative fixtures"
+    (cd "$REPO_ROOT" && python3 scripts/test_tool_runtime_guards.py)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

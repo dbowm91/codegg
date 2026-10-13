@@ -33,11 +33,23 @@ scripts/verify.sh full     # broad verification before handoff or release
 16. `check_provider_catalog_consistency.py`
 17. `check_provider_resilience_ownership.py`
 18. `check_eggwork_target_routing.py`
-19. `cargo check --workspace --all-targets --locked`
+19. `check_mcp_broker_adapter.py`
+20. `check_tool_descriptor_snapshot.py`
+21. `check_descendant_tool_ceiling.py`
+22. `check_tool_disclosure_wire.py`
+23. `check_tool_retry_admission.py`
+24. `test_tool_runtime_guards.py` (positive and negative source fixtures)
+25. `cargo check --workspace --all-targets --locked`
 
-Quick runs **19** steps (18 checks plus the workspace `cargo check`). The
-boundary and provider-wire guards were added after this list was first
-written; `scripts/verify.sh` is the authority.
+Quick runs **25 steps** (24 checks plus the workspace `cargo check`). The
+tool-runtime guard suite follows the ordinary repository guards: M001 broker
+adapter, M002 descriptor snapshot, M003 descendant authority, M004 disclosure
+wire, C001 retry admission, then an offline positive/negative fixture runner.
+Each fixture first
+accepts the checked-in source and then mutates one required boundary so its
+guard must fail. Missing guard inputs fail; fixtures need no credentials or
+network. Hosted CI runs the same six commands explicitly. `scripts/verify.sh`
+and `.github/workflows/ci.yml` define the executable order.
 
 ### `verify.sh full`
 
@@ -315,14 +327,20 @@ pre-consolidation). Steps in order:
 7. HTTP route disposition guard (`check_http_route_disposition.py`)
 8. Audit coverage guard (`check_audit_coverage.py`)
 9. Scheduler bypass guard (`check_scheduler_bypass.py`)
-10. Formatting (`cargo fmt --check --all`)
-11. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
-12. Live-Eggwork relevance detection
+10. MCP broker adapter guard (`check_mcp_broker_adapter.py`)
+11. Tool descriptor snapshot guard (`check_tool_descriptor_snapshot.py`)
+12. Descendant tool ceiling guard (`check_descendant_tool_ceiling.py`)
+13. Tool disclosure wire guard (`check_tool_disclosure_wire.py`)
+14. Tool retry admission guard (`check_tool_retry_admission.py`)
+15. Tool-runtime guard positive/negative fixtures (`test_tool_runtime_guards.py`)
+16. Formatting (`cargo fmt --check --all`)
+17. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
+18. Live-Eggwork relevance detection
 (`scripts/detect-live-eggwork-changes.sh`; main pushes always
 require live; PRs require live only for live-relevant paths)
-13. Conditional Eggwork fixture prebuild
+19. Conditional Eggwork fixture prebuild
 (`scripts/prebuild-eggwork-fixtures.sh`; skipped when live is omitted)
-14. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
+20. Workspace tests (`cargo nextest run --workspace --locked --profile ci`;
 full suite on main/relevant-PR live path, `-E 'not
 binary(eggwork_remote_execution_live)'` on the ordinary unrelated-PR
 fast path).

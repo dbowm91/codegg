@@ -37,6 +37,7 @@ on:
       - 'src/core/daemon_projects.rs'
       - 'src/core/daemon.rs'
       - '.github/workflows/desktop-e2e.yml'
+  workflow_dispatch:
 
 # Pinned to 24.04: Tauri 2.12 documents WebKitGTK 4.1 system dependencies
 # there, and ubuntu-latest is migrating to 26 (see CI annotations).

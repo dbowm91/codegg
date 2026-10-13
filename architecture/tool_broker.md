@@ -165,6 +165,10 @@ This ensures existing tools work without modification.
    qualified chain, `execute()` remains single-attempt. A timeout from a
    non-idempotent MCP call therefore cannot cause another `tools/call` from
    the batch layer.
+   C001's accepted retry-admission evidence is recorded in
+   `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/001-status.md`;
+   the static owner check and negative mutation fixture run in quick and hosted
+   CI under C003.
 6. **Trusted audit preservation (M001)**: `BrokerInvocationContext`
    carries `execution_audit: Option<TrustedExecutionAuditContext>`
    threaded only from daemon-owned admission. `execute_with_retry`

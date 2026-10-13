@@ -2,8 +2,9 @@ name: CI
 
 # Routine verification: one bounded job answering the ordinary development
 # question — does this revision format, compile, lint, and pass the default
-# workspace tests? Cheap authority guards (route disposition, audit
-# coverage, scheduler bypass) run here as well as in `verify.sh quick`.
+# workspace tests? Cheap authority/runtime guards (route disposition, audit
+# coverage, scheduler bypass, agent tool-runtime boundaries) run here as well
+# as in `verify.sh quick`.
 # Optional feature, plugin, example, LSP, and cross-platform checks
 # remain available locally via scripts/verify.sh
 # and the change-specific matrix in architecture/testing.md.
@@ -125,6 +126,24 @@ jobs:
 
       - name: Config merge coverage guard
         run: python3 scripts/check_config_merge_coverage.py
+
+      - name: MCP broker adapter guard
+        run: python3 scripts/check_mcp_broker_adapter.py
+
+      - name: Tool descriptor snapshot guard
+        run: python3 scripts/check_tool_descriptor_snapshot.py
+
+      - name: Descendant tool ceiling guard
+        run: python3 scripts/check_descendant_tool_ceiling.py
+
+      - name: Tool disclosure wire guard
+        run: python3 scripts/check_tool_disclosure_wire.py
+
+      - name: Tool retry admission guard
+        run: python3 scripts/check_tool_retry_admission.py
+
+      - name: Tool runtime guard positive and negative fixtures
+        run: python3 scripts/test_tool_runtime_guards.py
 
       - name: No hardcoded model catalog guard
         run: python3 scripts/check_no_hardcoded_models.py
