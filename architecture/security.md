@@ -130,6 +130,20 @@ pub struct SandboxLaunchSpec {
 `SandboxLaunchSpec` names **paths, not a mechanism**, so the same spec
 serves every backend.
 
+**Linux launch contract (M002 interface slice):**
+`src/security/sandbox/linux_launch.rs` models requested filesystem, network,
+process/IPC, syscall, and resource dimensions under an immutable parent
+ceiling. `ManagedProcessService` routes today's constrained Linux launches
+through that contract and selects only the existing private helper. Its
+read-only host probe reports namespace objects/limits, seccomp and proc
+kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
+cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
+do not prove a child obtained enforcement. No namespace backend is registered
+or promoted. Offline networking, protected mounts, seccomp, and resource
+limits remain unavailable until their ADR and native evidence gates close.
+The existing Landlock-only default and unrestricted network behavior are
+unchanged.
+
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
 

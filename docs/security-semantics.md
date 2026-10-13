@@ -78,6 +78,13 @@ For that reason CodeGG follows the same direction the major agents took:
 Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
 `full_host`) plus Landlock, which a regex cannot emulate.
 
+On Linux, host feature discovery for user namespaces, other namespace types,
+seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
+It does not mean those dimensions were applied to a child. CodeGG currently
+uses its existing filesystem helper; network remains unrestricted under the
+legacy profile, and enhanced namespace/network/resource requests remain
+unavailable until their native enforcement gates close.
+
 ### Tuning
 
 Three global pattern lists configure the review controls:

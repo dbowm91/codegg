@@ -1247,6 +1247,29 @@ fn prepare_launch_argv(
             }
             #[cfg(unix)]
             {
+                #[cfg(target_os = "linux")]
+                {
+                    use crate::security::sandbox::linux_launch::{
+                        LinuxLaunchAdapter, LinuxLaunchPlan, LinuxLaunchRequest,
+                        ProductionLinuxLaunchAdapter,
+                    };
+                    let launch_request = LinuxLaunchRequest::legacy_filesystem(spec);
+                    match ProductionLinuxLaunchAdapter
+                        .plan(&launch_request)
+                        .map_err(|reason| {
+                            ManagedProcessError::SandboxFailed(format!(
+                                "invalid Linux launch request: {reason}"
+                            ))
+                        })? {
+                        LinuxLaunchPlan::LegacyPrivateHelper => {}
+                        LinuxLaunchPlan::EnhancedUnavailable { dimensions } => {
+                            return Err(ManagedProcessError::SandboxFailed(format!(
+                                "Linux launch dimensions unavailable: {}",
+                                dimensions.join(", ")
+                            )));
+                        }
+                    }
+                }
                 let helper = {
                     #[cfg(test)]
                     if let Some(helper) = helper_override {
@@ -1627,7 +1650,15 @@ fn interpret_sandbox_status(
     let status = status_bytes.ok_or_else(|| {
         ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
     })?;
-    match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
+    let decoded = decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)?;
+    #[cfg(target_os = "linux")]
+    if let SandboxRequest::Required(spec) = sandbox {
+        let request =
+            crate::security::sandbox::linux_launch::LinuxLaunchRequest::legacy_filesystem(spec);
+        crate::security::sandbox::linux_launch::observe_legacy_outcome(&request, &decoded)
+            .map_err(ManagedProcessError::SandboxFailed)?;
+    }
+    match decoded {
         SandboxLaunchOutcome::Enforced {
             backend,
             abi,
