@@ -498,6 +498,18 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   end on the selected message's last row, so scrolling up filled the screen
   with blank rows *below* the selection and made every later message
   unreachable. Centre, then clamp — tail-follow still lands on the newest.
+- **One row producer for the main buffer.** `MessagesWidget::build_message_rows`
+  is the only thing that turns a message into rows, and
+  `messages/layout.rs` derives every scroll offset from what it emits. A
+  cheaper parallel counter (`estimate_msg_lines`) drifted from the emit loops
+  on two tool-output paths, and since the disagreement is per message it
+  *accumulated* — long transcripts clipped off the edge and most of the history
+  was unreachable. Do not add a second counter beside the builder. Rebuilds are
+  suffix-scoped via `rows_dirty_from` (streaming appends to the last message),
+  so a token costs one message, not the buffer. Any new output path must wrap
+  to `width - TOOL_OUTPUT_INDENT`: the widget paints no `Paragraph::wrap` and
+  has no horizontal scroll, so an unwrapped line is not merely clipped, it is
+  unreachable.
 - **`/chat` and the chat panel are one implementation, not two.**
   `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
   viewport anchor, and the hints; each surface owns only its composer. They

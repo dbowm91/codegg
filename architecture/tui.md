@@ -654,6 +654,48 @@ message lines with it (the widget paints no `Paragraph::wrap`, so a line wider
 than the viewport is clipped at the edge); the `/logs` dialog scrolls in
 wrapped rows rather than logical lines.
 
+Every tool/shell output path wraps to `width - TOOL_OUTPUT_INDENT`, including
+the pre-numbered `read` path — that block carries no fence chrome, so its line
+numbers are its own gutter and the wrap budget is `width - gutter`. A path that
+skips the wrap is not merely clipped, it is *unreachable*: there is no
+horizontal scrollbar and `scroll_left`/`scroll_right` are no-ops.
+
+### Chat viewport scrolling
+
+The row index (`src/tui/components/messages/layout.rs`) is the contract between
+what is drawn and where you can scroll. `MessageLayoutCache` holds the rows the
+renderer actually emitted and derives every offset from them, so `scroll` is a
+true row index into the drawn buffer.
+
+This is deliberately *not* an estimate. `MessagesWidget::estimate_msg_lines`
+used to re-derive row counts by re-implementing the emit loops, and it drifted
+on two tool-output paths — it counted wrapped rows for collapsed output while
+the renderer wrapped the first N *logical* lines, and it counted wrapped rows
+for `read` output while the renderer emitted one unwrapped row per line. Since
+the disagreement is per message it accumulated down the buffer: the further back
+you scrolled, the further the cached offset sat from the row actually drawn.
+Symptomatically that is a transcript that clips off the edge and gets worse the
+longer it gets, with most of the history unreachable.
+
+Two rules follow:
+
+- **There is one row producer.** `MessagesWidget::build_message_rows` is it.
+  Anything that needs a row count builds rows; anything that draws rows uses
+  the same call. Do not add a cheaper counter beside it.
+- **Rebuilds are suffix-scoped.** `rows_dirty_from` is a watermark, and
+  `MessageLayoutCache::truncate_from` drops only that suffix. Streaming appends
+  to the last message, so a token costs one message rather than the whole
+  transcript; `invalidate_tail_rows` is the streaming/tool-result path and
+  `invalidate_rows_from` the general one. A suffix (rather than a set of dirty
+  indices) is what lets the blank-collapse across a message boundary be
+  recomputed correctly during a partial rebuild.
+
+`messages.max_scroll()`, `scroll_position()`, `scrollbar_state()` and the render
+all read that one index, so they cannot disagree. `MessageLayoutCache::new` and
+`find_visible_range` no longer exist — the render slices rows directly instead
+of rebuilding a window of neighbouring messages and converting a cache offset
+into a position inside it.
+
 ### Long Output → Info Dialog
 
 `App::show_short_or_info(info_type, lines)` routes output to short toast
@@ -2490,7 +2532,7 @@ tui/
 │   ├── image.rs            # ImageViewer (image rendering via ANSI)
 │   ├── messages.rs         # MessagesWidget (message display, streaming)
 │   ├── messages/           # MessagesWidget submodules
-│   │   └── layout.rs       # Message layout/measurement helpers
+│   │   └── layout.rs       # Row index: drawn rows → scroll offsets
 │   ├── notification.rs     # NotificationManager
 │   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
 │   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)

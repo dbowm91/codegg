@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, ScrollbarState, Widget};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -313,16 +313,16 @@ pub struct MessagesWidget {
     pub search_visible: bool,
     pub visible_height: usize,
     pub width: u16,
+    /// Rows the renderer emitted for each message, flattened and indexed by
+    /// absolute row. This is the single source of truth for scroll math: row
+    /// counts are measured from real output rather than re-derived by a second
+    /// implementation of the same rules, which is what let long buffers clip
+    /// off-screen.
     message_layout_cache: RefCell<Option<MessageLayoutCache>>,
-    last_render_cache: RefCell<Option<LastRenderCache>>,
-}
-
-#[derive(Clone)]
-struct LastRenderCache {
-    streaming_len: usize,
-    width: u16,
-    message_ptr_id: usize,
-    lines: Vec<Line<'static>>,
+    /// First message whose rows in `message_layout_cache` are stale.
+    /// Streaming appends to the last message, so the common case rebuilds one
+    /// message instead of re-emitting the whole buffer.
+    rows_dirty_from: Cell<usize>,
 }
 
 /// Split a string into wrapped lines of at most `width` display columns each.
@@ -335,7 +335,7 @@ struct LastRenderCache {
 /// boundaries to avoid overflowing the render area. Trailing whitespace is
 /// trimmed from each output line so the wrap doesn't double-space between
 /// words or leave stray spaces at line ends.
-use crate::tui::wrap::{wrap_count, wrap_to_strings};
+use crate::tui::wrap::wrap_to_strings;
 
 fn extract_tool_target(name: &str, input: &str) -> String {
     if input.is_empty() {
@@ -442,144 +442,61 @@ impl MessagesWidget {
         self.width.saturating_sub(TOOL_OUTPUT_INDENT)
     }
 
-    /// Rendered line count for `text` once tool-output lines are wrapped.
-    /// Must stay in lockstep with the emit loops below so the layout cache and
-    /// the render agree and the scroll range remains accurate.
-    fn wrapped_output_line_count(&self, text: &str) -> usize {
-        let wrap_width = self.tool_output_wrap_width();
-        if wrap_width == 0 {
-            return text.lines().count().max(1);
-        }
-        text.lines()
-            .map(|line| crate::tui::wrap::wrap_count(line, wrap_width))
-            .sum::<usize>()
-            .max(1)
-    }
-
-    pub fn estimate_msg_lines(&self, msg: &UIMessage) -> usize {
-        // Returns the post-collapse line count for `msg`, matching what the
-        // render path produces (after `collapse_blank_lines` is applied to the
-        // full visible message range). This keeps the layout cache and the
-        // render in sync so scroll position and the scrollbar stay accurate.
-        let mut lines = 0usize;
-        if self.show_timestamps && msg.timestamp.is_some() {
-            lines += 1;
-        }
-        let width = self.width.max(2) as usize;
-        for part in &msg.parts {
-            match part {
-                MsgPart::Text { content } => {
-                    lines += self.estimate_text_part_lines(msg, content, width as u16);
-                }
-                MsgPart::Reasoning { content, collapsed } => {
-                    lines += 1;
-                    if self.show_thinking && !*collapsed {
-                        lines += collapse_blank_lines(&render_markdown(
-                            content,
-                            &self.theme,
-                            self.theme.muted,
-                            (width.saturating_sub(2)) as u16,
-                        ))
-                        .len()
-                        .max(1);
-                    }
-                }
-                MsgPart::ToolCall {
-                    input,
-                    output,
-                    status,
-                    expanded,
-                    ..
-                } => {
-                    lines += 1;
-                    if matches!(status, ToolStatus::Pending | ToolStatus::Running)
-                        && output.is_empty()
-                    {
-                        lines += 1;
-                    } else if !output.is_empty() {
-                        // Count post-wrap rows, not logical lines: a long
-                        // output line occupies several viewport rows once
-                        // wrapped, and under-counting here is what made the
-                        // scrollbar stop short of the real content.
-                        let output_line_count = self.wrapped_output_line_count(output);
-                        if *expanded {
-                            if !input.is_empty() {
-                                lines += input.lines().count().min(TOOL_INPUT_PREVIEW_LINES);
-                                if input.lines().count() > TOOL_INPUT_PREVIEW_LINES {
-                                    lines += 1;
-                                }
-                            }
-                            lines += output_line_count;
-                        } else {
-                            lines += output_line_count.min(TOOL_OUTPUT_PREVIEW_LINES);
-                            if output.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
-                                lines += 1;
-                            }
-                        }
-                    }
-                }
-                MsgPart::Image { .. } => {
-                    lines += 1;
-                }
-                MsgPart::ShellCell {
-                    stdout_preview,
-                    stderr_preview,
-                    expanded,
-                    ..
-                } => {
-                    lines += 1;
-                    if *expanded {
-                        lines += self.wrapped_output_line_count(stdout_preview);
-                        if !stderr_preview.is_empty() {
-                            lines += self.wrapped_output_line_count(stderr_preview);
-                        }
-                    } else {
-                        lines += self
-                            .wrapped_output_line_count(stdout_preview)
-                            .min(TOOL_OUTPUT_PREVIEW_LINES);
-                        if stdout_preview.lines().count() > TOOL_OUTPUT_PREVIEW_LINES {
-                            lines += 1;
-                        }
-                    }
-                }
-                MsgPart::RunCell { .. } => {
-                    lines += 1;
-                }
-            }
-        }
-        // Streaming tail: 1 label line + N token lines (matching render).
-        if msg.role == MessageRole::Assistant
+    /// Build the rows the renderer emits for the message at `msg_idx`.
+    ///
+    /// This is the *only* row producer. Scroll offsets are measured from what
+    /// it returns, so a change to the emit loops below cannot silently move the
+    /// scroll range away from the drawn content — the previous design kept a
+    /// parallel `estimate_msg_lines` that re-implemented these rules and had
+    /// already drifted on two tool-output paths.
+    fn build_message_rows(&self, msg_idx: usize) -> Vec<Line<'static>> {
+        let Some(msg) = self.messages.get(msg_idx) else {
+            return Vec::new();
+        };
+        let is_streaming_tail = msg.role == MessageRole::Assistant
             && !self.streaming_tokens.is_empty()
-            && self.messages.last().is_some_and(|m| std::ptr::eq(m, msg))
-        {
-            lines += 1 + collapse_blank_lines(&render_markdown(
+            && msg_idx + 1 == self.messages.len();
+
+        // Search highlighting only recolours spans and never changes how many
+        // rows a message occupies, so it is built here alongside the rest of
+        // the message rather than applied over the cached rows afterwards.
+        // `search`/`clear_search` drop the row index when the match set
+        // changes.
+        let current_match = if self.search_visible {
+            self.find_match_for_msg(msg_idx)
+        } else {
+            None
+        };
+        let match_bg = current_match.map(|_| self.theme.selection);
+
+        let mut rows = match msg.role {
+            MessageRole::User => self.build_user_lines(msg, msg_idx, match_bg),
+            MessageRole::Assistant => {
+                self.build_assistant_parts_lines(msg, msg_idx, current_match, match_bg)
+            }
+        };
+
+        // Streaming tail: the label plus the tokens received so far. Kept with
+        // the message rows so it is counted in the same place it is drawn.
+        if is_streaming_tail {
+            let label = if self.assistant_is_thinking {
+                "Thinking..."
+            } else {
+                "Generating..."
+            };
+            rows.push(Line::from(Span::styled(
+                label,
+                Style::default().fg(self.theme.muted),
+            )));
+            let tail_width = self.width.saturating_sub(2);
+            rows.extend(render_markdown(
                 &self.streaming_tokens,
                 &self.theme,
                 self.theme.muted,
-                self.width.saturating_sub(2),
-            ))
-            .len()
-            .max(1);
+                tail_width,
+            ));
         }
-        lines
-    }
-
-    fn estimate_text_part_lines(&self, msg: &UIMessage, content: &str, width: u16) -> usize {
-        match msg.role {
-            MessageRole::User => content
-                .lines()
-                .map(|line| wrap_count(line, width.saturating_sub(2)))
-                .sum::<usize>()
-                .max(1),
-            MessageRole::Assistant => collapse_blank_lines(&render_markdown(
-                content,
-                &self.theme,
-                self.theme.muted,
-                width,
-            ))
-            .len()
-            .max(1),
-        }
+        rows
     }
 
     pub fn new(theme: Arc<Theme>) -> Self {
@@ -604,7 +521,7 @@ impl MessagesWidget {
             visible_height: 20,
             width: 80,
             message_layout_cache: RefCell::new(None),
-            last_render_cache: RefCell::new(None),
+            rows_dirty_from: Cell::new(0),
         }
     }
 
@@ -628,12 +545,7 @@ impl MessagesWidget {
         if self.width != width {
             self.width = width;
             self.invalidate_layout_cache();
-            self.invalidate_render_cache();
         }
-    }
-
-    fn invalidate_render_cache(&self) {
-        *self.last_render_cache.borrow_mut() = None;
     }
 
     pub fn set_auto_scroll(&mut self, val: bool) {
@@ -757,8 +669,7 @@ impl MessagesWidget {
             }
         }
 
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -776,8 +687,7 @@ impl MessagesWidget {
                         collapsed: false,
                     });
                 }
-                self.invalidate_layout_cache();
-                self.invalidate_render_cache();
+                self.invalidate_tail_rows();
                 if self.auto_scroll && was_at_bottom {
                     self.scroll = usize::MAX;
                 }
@@ -793,8 +703,7 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
         });
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -826,8 +735,7 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
         });
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
@@ -836,8 +744,8 @@ impl MessagesWidget {
     pub fn update_shell_cell(&mut self, id: u64, f: impl FnOnce(&mut ShellCellUpdate)) {
         let mut update = ShellCellUpdate::default();
         f(&mut update);
-        let mut updated = false;
-        for msg in &mut self.messages {
+        let mut updated = None;
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for part in &mut msg.parts {
                 if let MsgPart::ShellCell {
                     id: cell_id,
@@ -901,18 +809,17 @@ impl MessagesWidget {
                         if let Some(ref s) = update.projection_raw_handle {
                             *projection_raw_handle = Some(s.clone());
                         }
-                        updated = true;
+                        updated = Some(msg_idx);
                         break;
                     }
                 }
             }
-            if updated {
+            if updated.is_some() {
                 break;
             }
         }
-        if updated {
-            self.invalidate_layout_cache();
-            self.invalidate_render_cache();
+        if let Some(msg_idx) = updated {
+            self.invalidate_rows_from(msg_idx);
         }
     }
 
@@ -935,16 +842,15 @@ impl MessagesWidget {
             timestamp: Some(chrono::Local::now().timestamp()),
             is_plan_mode: None,
         });
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
         }
     }
 
     pub fn mark_tool_call_running(&mut self, id: &str) {
-        let mut updated = false;
-        for msg in &mut self.messages {
+        let mut updated = None;
+        for (msg_idx, msg) in self.messages.iter_mut().enumerate() {
             for part in &mut msg.parts {
                 if let MsgPart::ToolCall {
                     id: part_id,
@@ -954,18 +860,17 @@ impl MessagesWidget {
                 {
                     if part_id == id {
                         *status = ToolStatus::Running;
-                        updated = true;
+                        updated = Some(msg_idx);
                         break;
                     }
                 }
             }
-            if updated {
+            if updated.is_some() {
                 break;
             }
         }
-        if updated {
-            self.invalidate_layout_cache();
-            self.invalidate_render_cache();
+        if let Some(msg_idx) = updated {
+            self.invalidate_rows_from(msg_idx);
         }
     }
 
@@ -1000,8 +905,7 @@ impl MessagesWidget {
                 }
             }
         }
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
         if self.auto_scroll {
             self.scroll = usize::MAX;
         }
@@ -1060,8 +964,7 @@ impl MessagesWidget {
         }
         let ms = started.elapsed().as_millis();
         self.reasoning_durations.insert(last_idx, ms);
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_tail_rows();
     }
 
     pub fn toggle_reasoning(&mut self, msg_idx: usize) {
@@ -1072,8 +975,7 @@ impl MessagesWidget {
                 }
             }
         }
-        self.invalidate_layout_cache();
-        self.invalidate_render_cache();
+        self.invalidate_rows_from(msg_idx);
     }
 
     pub fn message_has_reasoning(&self, msg_idx: usize) -> bool {
@@ -1095,8 +997,7 @@ impl MessagesWidget {
             }
         }
         if toggled {
-            self.invalidate_layout_cache();
-            self.invalidate_render_cache();
+            self.invalidate_rows_from(msg_idx);
         }
         toggled
     }
@@ -1115,7 +1016,6 @@ impl MessagesWidget {
         self.sel_msg = None;
         self.undo_stack.clear();
         self.invalidate_layout_cache();
-        self.invalidate_render_cache();
     }
 
     pub fn undo(&mut self) -> bool {
@@ -1135,7 +1035,6 @@ impl MessagesWidget {
             }
         }
         self.invalidate_layout_cache();
-        self.invalidate_render_cache();
         self.scroll = 0;
         true
     }
@@ -1154,13 +1053,21 @@ impl MessagesWidget {
             self.messages.push(msg);
         }
         self.invalidate_layout_cache();
-        self.invalidate_render_cache();
         self.scroll = usize::MAX;
         true
     }
 
     fn with_layout_cache<R>(&self, f: impl FnOnce(&MessageLayoutCache) -> R) -> R {
-        if self.message_layout_cache.borrow().is_none() {
+        // A stale suffix is as invalid as no cache at all: streaming marks the
+        // last message dirty on every token and leaves the index in place, so
+        // the watermark — not just the presence of a cache — decides whether to
+        // rebuild. `build_layout_cache` re-borrows the cell mutably, so neither
+        // check may hold a live borrow across it.
+        let needs_build = {
+            let cache = self.message_layout_cache.borrow();
+            cache.is_none() || self.rows_dirty_from.get() < self.messages.len()
+        };
+        if needs_build {
             let cache = self.build_layout_cache();
             *self.message_layout_cache.borrow_mut() = Some(cache);
         }
@@ -1169,19 +1076,45 @@ impl MessagesWidget {
     }
 
     fn invalidate_layout_cache(&self) {
+        self.rows_dirty_from.set(0);
         *self.message_layout_cache.borrow_mut() = None;
-        self.invalidate_render_cache();
     }
 
+    /// Mark message `msg_idx` and everything after it stale.
+    ///
+    /// Streaming appends to the last message and tool results land on the
+    /// message they belong to, so both are a suffix change. The blank-collapse
+    /// across the `msg_idx - 1` / `msg_idx` boundary is recomputed when the
+    /// suffix is rebuilt, which is why the watermark is a suffix and not a set.
+    fn invalidate_rows_from(&mut self, msg_idx: usize) {
+        self.rows_dirty_from
+            .set(self.rows_dirty_from.get().min(msg_idx));
+    }
+
+    /// Invalidate the message currently being streamed into — the common case,
+    /// since the live tail is always the last message.
+    fn invalidate_tail_rows(&mut self) {
+        let last = self.messages.len().saturating_sub(1);
+        self.invalidate_rows_from(last);
+    }
+
+    /// Rebuild the stale suffix of the row index from real render output.
+    ///
+    /// Only messages from `rows_dirty_from` onward are re-emitted, so an
+    /// appended streaming token costs one message rather than the whole
+    /// transcript, while every offset still comes from rows that were actually
+    /// drawn.
     fn build_layout_cache(&self) -> MessageLayoutCache {
-        let mut offsets = Vec::with_capacity(self.messages.len());
-        let mut total = 0usize;
-        for (idx, msg) in self.messages.iter().enumerate() {
-            let count = self.estimate_msg_lines(msg);
-            offsets.push((idx, total, count));
-            total += count;
+        let len = self.messages.len();
+        let dirty_from = self.rows_dirty_from.get().min(len);
+        let mut cache = self.message_layout_cache.take().unwrap_or_default();
+        cache.truncate_from(dirty_from);
+        for idx in dirty_from..len {
+            let rows = self.build_message_rows(idx);
+            cache.push_message(idx, rows);
         }
-        MessageLayoutCache::new(offsets, total)
+        self.rows_dirty_from.set(len);
+        cache
     }
 
     pub fn get_selected_content(&self) -> String {
@@ -1423,7 +1356,7 @@ impl MessagesWidget {
                 timestamp: Some(chrono::Local::now().timestamp()),
                 is_plan_mode: None,
             });
-            self.invalidate_layout_cache();
+            self.invalidate_tail_rows();
         }
 
         if self.streaming_tokens.len() + token.len() > MAX_STREAMING_TOKENS_SIZE {
@@ -1448,7 +1381,7 @@ impl MessagesWidget {
             self.streaming_tokens = next;
         }
         self.streaming_tokens.push_str(token);
-        self.invalidate_layout_cache();
+        self.invalidate_tail_rows();
 
         if self.auto_scroll && was_at_bottom {
             self.scroll = usize::MAX;
@@ -1459,13 +1392,13 @@ impl MessagesWidget {
         if !self.streaming_tokens.is_empty() {
             self.add_assistant_text(self.streaming_tokens.clone());
             self.streaming_tokens.clear();
-            self.invalidate_layout_cache();
+            self.invalidate_tail_rows();
         }
     }
 
     pub fn clear_streaming(&mut self) {
         self.streaming_tokens.clear();
-        self.invalidate_layout_cache();
+        self.invalidate_tail_rows();
     }
 
     pub fn search(&mut self, query: &str) {
@@ -1534,6 +1467,12 @@ impl MessagesWidget {
             self.search_visible = true;
             self.sel_msg = Some(self.search_matches[0].msg_idx);
         }
+        // Highlighting is baked into the cached rows (see
+        // `build_message_rows`), so a new match set means the rows are stale.
+        // `search_next`/`search_prev` do not need this: the highlight is
+        // per-message (`find_match_for_msg` takes the first match in a
+        // message), so moving the current match does not change any row.
+        self.invalidate_layout_cache();
     }
 
     pub fn search_next(&mut self) {
@@ -1577,6 +1516,7 @@ impl MessagesWidget {
         self.search_matches.clear();
         self.search_current = 0;
         self.search_visible = false;
+        self.invalidate_layout_cache();
     }
 
     pub fn is_searching(&self) -> bool {
@@ -1685,115 +1625,36 @@ impl Widget for &MessagesWidget {
         let search_chrome_height = if self.search_visible { 2 } else { 0 };
         let message_available = available.saturating_sub(search_chrome_height);
 
-        let (scroll, visible_msg_range, range_start_offset) = self.with_layout_cache(|cache| {
-            let total_lines = cache.total_lines();
-            let max_scroll = total_lines.saturating_sub(message_available);
+        // The rows drawn below are exactly the rows the offsets were measured
+        // from, so `scroll` is a true row index. It used to be converted to an
+        // offset inside a re-built window of neighbouring messages and then
+        // clamped, so any disagreement between the row estimate and the rows
+        // the window actually produced silently showed the wrong slice — the
+        // buffer clipped off-screen and grew worse the further back you read.
+        let visible: Vec<Line<'static>> = self.with_layout_cache(|cache| {
+            let total_rows = cache.total_lines();
+            let max_scroll = total_rows.saturating_sub(message_available);
             let scroll = if self.scroll == usize::MAX {
                 max_scroll
             } else {
                 self.scroll.min(max_scroll)
             };
-            let (start, end) = if message_available == 0 {
-                (0, 0)
-            } else {
-                cache.find_visible_range(scroll, message_available)
-            };
-            let range_start_offset = cache.get_offset(start).unwrap_or(0);
-            (scroll, start..end, range_start_offset)
+            let end = scroll.saturating_add(message_available).min(total_rows);
+            cache.rows_from(scroll, end)
         });
 
-        let mut lines: Vec<Line<'_>> = Vec::new();
-        for (idx, msg) in self.messages.iter().enumerate() {
-            if idx < visible_msg_range.start {
-                continue;
-            }
-            if idx >= visible_msg_range.end {
-                break;
-            }
-
-            let is_last = self.messages.last().is_some_and(|m| std::ptr::eq(m, msg));
-            let current_match = self.find_match_for_msg(idx);
-            let is_search_match = self.search_visible && current_match.is_some();
-            let match_bg = if is_search_match {
-                Some(self.theme.selection)
-            } else {
-                None
-            };
-
-            // For the last assistant message, use the cached parts-render
-            // (parts don't change frame-to-frame during streaming; the
-            // streaming_tokens tail is appended below).
-            if is_last
-                && matches!(msg.role, MessageRole::Assistant)
-                && !self.streaming_tokens.is_empty()
-            {
-                if let Some(cached) = self.get_cached_last_assistant_parts(msg) {
-                    lines.extend(cached.iter().cloned());
-                } else {
-                    let built = self.build_assistant_parts_lines(msg, idx, current_match, match_bg);
-                    self.store_cached_last_assistant_parts(msg, built.clone());
-                    lines.extend(built);
-                }
-                // Streaming tail: append label + each streaming line (cheap).
-                let streaming_label = if self.assistant_is_thinking {
-                    "Thinking..."
-                } else {
-                    "Generating..."
-                };
-                let streaming_style = Style::default().fg(self.theme.muted);
-                lines.push(Line::from(Span::styled(streaming_label, streaming_style)));
-                let tail_width = self.width.saturating_sub(2);
-                lines.extend(prefix_rendered_lines(
-                    render_markdown(
-                        &self.streaming_tokens,
-                        &self.theme,
-                        self.theme.muted,
-                        tail_width,
-                    ),
-                    "",
-                    Style::default(),
-                ));
-                continue;
-            }
-
-            // Non-cached path: build lines directly.
-            match &msg.role {
-                MessageRole::User => {
-                    lines.extend(self.build_user_lines(msg, idx, match_bg));
-                }
-                MessageRole::Assistant => {
-                    lines.extend(self.build_assistant_parts_lines(
-                        msg,
-                        idx,
-                        current_match,
-                        match_bg,
-                    ));
-                }
-            }
-        }
-
-        // Live activity line. Appended after the message loop so it always
-        // trails the newest output — while the user is scrolled to the
-        // bottom (the auto-scroll default) this is the last row on
-        // screen. It deliberately sits OUTSIDE the layout cache, which
-        // counts only message lines; the line is always at the tail, so
-        // adding it never shifts the cached offsets for anything above.
+        // Live activity line. Appended after the window so it always trails
+        // the newest output — while the user is scrolled to the bottom (the
+        // auto-scroll default) this is the last row on screen. It deliberately
+        // sits OUTSIDE the row index, which covers message rows only; the line
+        // is always at the tail, so adding it never shifts anything above it.
+        let mut display_lines: Vec<Line<'static>> = visible;
         if let Some(activity) = &self.activity {
-            lines.push(Line::from(Span::styled(
+            display_lines.push(Line::from(Span::styled(
                 activity.line(),
                 Style::default().fg(self.theme.primary),
             )));
         }
-
-        // Collapse consecutive blank lines on the FULL visible message range
-        // (not the window slice) so relational spacing between messages stays
-        // consistent regardless of where the scroll position lands.
-        let lines = collapse_blank_lines(&lines);
-
-        let scroll_offset = scroll.saturating_sub(range_start_offset);
-        let visible_start = scroll_offset.min(lines.len().saturating_sub(1));
-        let visible_end = (visible_start + message_available).min(lines.len());
-        let visible: Vec<Line<'_>> = lines[visible_start..visible_end].to_vec();
 
         if self.search_visible {
             let match_count = self.search_matches.len();
@@ -1814,13 +1675,13 @@ impl Widget for &MessagesWidget {
             let search_style = Style::default()
                 .fg(self.theme.foreground)
                 .bg(self.theme.selection);
-            let mut display_lines = vec![Line::from(Span::styled(search_bar, search_style))];
-            display_lines.push(Line::from(""));
-            display_lines.extend(visible);
-            let paragraph = Paragraph::new(display_lines);
+            let mut chrome = vec![Line::from(Span::styled(search_bar, search_style))];
+            chrome.push(Line::from(""));
+            chrome.extend(display_lines);
+            let paragraph = Paragraph::new(chrome);
             paragraph.render(area, buf);
         } else {
-            let paragraph = Paragraph::new(visible);
+            let paragraph = Paragraph::new(display_lines);
             paragraph.render(area, buf);
         }
     }
@@ -2130,11 +1991,18 @@ impl MessagesWidget {
                             TOOL_OUTPUT_PREVIEW_LINES
                         };
                         if let Some(lang) = infer_tool_output_language(name, input) {
-                            for output_line in
-                                render_numbered_code_output(output, &lang, &self.theme)
-                                    .into_iter()
-                                    .take(limit)
-                            {
+                            // The preview limit counts *logical* lines, so
+                            // truncate before wrapping — otherwise one long
+                            // line consumes several rows of the collapsed
+                            // preview and shortens it unpredictably.
+                            let preview = output.lines().take(limit).collect::<Vec<_>>().join("\n");
+                            let wrap_width = self.tool_output_wrap_width();
+                            for output_line in render_numbered_code_output(
+                                &preview,
+                                &lang,
+                                &self.theme,
+                                wrap_width,
+                            ) {
                                 let mut spans = vec![Span::raw("    ")];
                                 spans.extend(output_line.spans);
                                 lines.push(Line::from(spans));
@@ -2411,31 +2279,6 @@ impl MessagesWidget {
             }
         }
         lines
-    }
-
-    fn get_cached_last_assistant_parts(&self, msg: &UIMessage) -> Option<Vec<Line<'static>>> {
-        let cache = self.last_render_cache.borrow();
-        let c = cache.as_ref()?;
-        // Cache is keyed on (streaming_len=0 means "the parts themselves,
-        // ignoring streaming tail") and width and a stable identity of the
-        // message buffer. We use the address of the msg as a cheap identity
-        // (the last assistant message is stable for the duration of streaming).
-        if c.streaming_len == usize::MAX
-            && c.width == self.width
-            && c.message_ptr_id == msg as *const _ as usize
-        {
-            return Some(c.lines.clone());
-        }
-        None
-    }
-
-    fn store_cached_last_assistant_parts(&self, msg: &UIMessage, lines: Vec<Line<'static>>) {
-        *self.last_render_cache.borrow_mut() = Some(LastRenderCache {
-            streaming_len: usize::MAX, // sentinel meaning "parts cache"
-            width: self.width,
-            message_ptr_id: msg as *const _ as usize,
-            lines,
-        });
     }
 }
 
@@ -3093,28 +2936,48 @@ fn infer_tool_output_language(name: &str, input: &str) -> Option<String> {
     }
 }
 
-fn render_numbered_code_output(output: &str, lang: &str, theme: &Arc<Theme>) -> Vec<Line<'static>> {
+fn render_numbered_code_output(
+    output: &str,
+    lang: &str,
+    theme: &Arc<Theme>,
+    width: u16,
+) -> Vec<Line<'static>> {
     let code = output
         .lines()
         .map(strip_read_line_number)
         .collect::<Vec<_>>()
         .join("\n");
     let highlighted = highlight_code(&code, lang, theme.code_theme());
-    output
-        .lines()
-        .zip(highlighted)
-        .map(|(original, highlighted_line)| {
+    let mut lines = Vec::new();
+    for (original, highlighted_line) in output.lines().zip(highlighted) {
+        let number_prefix = split_read_line_number(original)
+            .map(|(prefix, _)| Span::styled(prefix.to_string(), Style::default().fg(theme.muted)));
+        // `read` output is emitted without the surrounding code-block chrome,
+        // so the line-number gutter it carries is its own prefix. Wrapping has
+        // to account for it — this path used to emit one unwrapped row per
+        // source line, and since the widget paints no `Paragraph::wrap`, any
+        // line wider than the viewport was cut off at the right edge with no
+        // way to reach the rest. Continuation rows carry no gutter, matching
+        // the fence-less shape of the block.
+        let gutter = number_prefix
+            .as_ref()
+            .map(|s| s.content.as_ref())
+            .unwrap_or("");
+        let gutter_width = unicode_width::UnicodeWidthStr::width(gutter) as u16;
+        let code_width = width.saturating_sub(gutter_width);
+        for (row_idx, wrapped) in wrap_code_spans(&highlighted_line.spans, code_width)
+            .into_iter()
+            .enumerate()
+        {
             let mut spans = Vec::new();
-            if let Some((prefix, _)) = split_read_line_number(original) {
-                spans.push(Span::styled(
-                    prefix.to_string(),
-                    Style::default().fg(theme.muted),
-                ));
+            if row_idx == 0 {
+                spans.extend(number_prefix.clone());
             }
-            spans.extend(highlighted_line.spans);
-            Line::from(spans)
-        })
-        .collect()
+            spans.extend(wrapped.spans);
+            lines.push(Line::from(spans));
+        }
+    }
+    lines
 }
 
 fn strip_read_line_number(line: &str) -> &str {
@@ -3339,25 +3202,7 @@ fn format_time(ts: i64) -> String {
 }
 
 fn is_blank_line(line: &Line) -> bool {
-    line.spans.is_empty()
-        || line
-            .spans
-            .iter()
-            .all(|s| s.content.is_empty() || s.content.chars().all(|c| c == ' '))
-}
-
-fn collapse_blank_lines<'a>(lines: &'a [Line<'a>]) -> Vec<Line<'a>> {
-    let mut result = Vec::with_capacity(lines.len());
-    let mut prev_blank = false;
-    for line in lines {
-        let blank = is_blank_line(line);
-        if blank && prev_blank {
-            continue;
-        }
-        result.push(line.clone());
-        prev_blank = blank;
-    }
-    result
+    layout::is_blank_line(line)
 }
 
 pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'static>> {
@@ -3422,6 +3267,16 @@ pub fn highlight_code(code: &str, lang: &str, code_theme: &str) -> Vec<Line<'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::wrap::wrap_count;
+
+    /// Row count for a single-message buffer, measured through the row index
+    /// the renderer and the scrollbar both read.
+    fn rows_of(widget: &mut MessagesWidget, msg: UIMessage) -> usize {
+        widget.messages.clear();
+        widget.messages.push(msg);
+        widget.invalidate_layout_cache();
+        widget.total_lines()
+    }
 
     #[test]
     fn scrolling_down_to_bottom_reenables_auto_scroll() {
@@ -3666,7 +3521,7 @@ mod tests {
     }
 
     #[test]
-    fn estimate_msg_lines_short_text() {
+    fn row_index_short_text_is_one_row() {
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         let msg = UIMessage {
@@ -3678,11 +3533,11 @@ mod tests {
             is_plan_mode: None,
         };
         // 1 (one-line text) — no implicit border/header is added.
-        assert_eq!(widget.estimate_msg_lines(&msg), 1);
+        assert_eq!(rows_of(&mut widget, msg), 1);
     }
 
     #[test]
-    fn estimate_msg_lines_text_wraps_to_width() {
+    fn row_index_counts_wrapped_text() {
         let mut widget = MessagesWidget::default();
         widget.set_width(20);
         let long = "x".repeat(50);
@@ -3694,7 +3549,7 @@ mod tests {
             timestamp: None,
             is_plan_mode: None,
         };
-        let n = widget.estimate_msg_lines(&msg);
+        let n = rows_of(&mut widget, msg);
         // width=20 minus 2 = 18 cols; 50 chars / 18 = 3 lines
         assert!(
             n >= 2,
@@ -3703,7 +3558,7 @@ mod tests {
     }
 
     #[test]
-    fn estimate_msg_lines_code_block_with_lang_header() {
+    fn row_index_counts_code_block_header() {
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         let code = "```rust\nfn main() {}\n```".to_string();
@@ -3714,15 +3569,13 @@ mod tests {
             is_plan_mode: None,
         };
         // 1 ┌─ RUST header + 1 code line = 2 lines
-        assert!(widget.estimate_msg_lines(&msg) >= 2);
+        assert!(rows_of(&mut widget, msg) >= 2);
     }
 
     #[test]
-    fn estimate_msg_lines_matches_rendered_markdown_code_width() {
-        let mut widget = MessagesWidget::default();
-        widget.set_width(20);
+    fn row_index_matches_rendered_markdown_code_width() {
         let code = "```rust\nlet value = 1234567890;\n```".to_string();
-        let msg = UIMessage {
+        let msg = || UIMessage {
             role: MessageRole::Assistant,
             parts: vec![MsgPart::Text {
                 content: code.clone(),
@@ -3730,10 +3583,27 @@ mod tests {
             timestamp: None,
             is_plan_mode: None,
         };
-        let rendered_lines =
-            render_markdown(&code, &widget.theme, widget.theme.muted, widget.width);
-        let rendered = collapse_blank_lines(&rendered_lines);
-        assert_eq!(widget.estimate_msg_lines(&msg), rendered.len());
+
+        let mut wide = MessagesWidget::default();
+        wide.set_width(80);
+        let wide_rows = rows_of(&mut wide, msg());
+
+        let mut narrow = MessagesWidget::default();
+        narrow.set_width(20);
+        let narrow_rows = rows_of(&mut narrow, msg());
+
+        // A code block that fits on one row at 80 columns must occupy more than
+        // one row at 20 — the gutter and the `width - gutter` wrap budget both
+        // have to be reflected in the count the scrollbar is built from.
+        assert_eq!(
+            narrow_rows,
+            render_markdown(&code, &narrow.theme, narrow.theme.muted, 20).len(),
+            "row count must match the rendered markdown at the same width"
+        );
+        assert!(
+            narrow_rows >= wide_rows,
+            "a narrower viewport cannot produce fewer rows ({narrow_rows} vs {wide_rows})"
+        );
     }
 
     #[test]
@@ -3779,46 +3649,51 @@ mod tests {
     }
 
     #[test]
-    fn estimate_msg_lines_collapses_consecutive_blanks_in_prose() {
+    fn row_index_collapses_consecutive_blanks_in_prose() {
         // Markdown paragraph breaks render as one separator line, while
-        // single newlines inside a paragraph are soft breaks. The estimator
-        // must match that rendered output so scroll math stays accurate.
+        // single newlines inside a paragraph are soft breaks. The row index is
+        // measured from that rendered output, so a run of blank lines must
+        // never inflate the buffer's height — an inflated height makes the
+        // scroll range overshoot the content and strands the tail.
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
-        let cases = [
-            "a\n\nb",
-            "a\n\n\nb",
-            "a\n\n\n\nb",
-            "a\nb\n\nc",
-            "a\n\nb\n\n\nc",
-        ];
-        for content in cases {
-            let msg = UIMessage {
-                role: MessageRole::Assistant,
-                parts: vec![MsgPart::Text {
-                    content: content.to_string(),
-                }],
-                timestamp: None,
-                is_plan_mode: None,
-            };
-            let n = widget.estimate_msg_lines(&msg);
-            let rendered_lines =
-                render_markdown(content, &widget.theme, widget.theme.muted, widget.width);
-            let expected = collapse_blank_lines(&rendered_lines).len();
-            assert_eq!(n, expected, "content={content:?}");
+        let rows_for = |widget: &mut MessagesWidget, content: &str| {
+            rows_of(
+                widget,
+                UIMessage {
+                    role: MessageRole::Assistant,
+                    parts: vec![MsgPart::Text {
+                        content: content.to_string(),
+                    }],
+                    timestamp: None,
+                    is_plan_mode: None,
+                },
+            )
+        };
+
+        let one_break = rows_for(&mut widget, "a\n\nb");
+        for content in ["a\n\n\nb", "a\n\n\n\nb", "a\n \n\n\nb"] {
+            assert_eq!(
+                rows_for(&mut widget, content),
+                one_break,
+                "blank runs must not add rows: {content:?}"
+            );
         }
 
-        let paragraph_lines =
-            render_markdown("a\n\nb", &widget.theme, widget.theme.muted, widget.width);
+        let two_breaks = rows_for(&mut widget, "a\n\nb\n\nc");
         assert_eq!(
-            collapse_blank_lines(&paragraph_lines).len(),
-            3,
-            "paragraph break should keep a blank separator"
+            rows_for(&mut widget, "a\n\nb\n\n\nc"),
+            two_breaks,
+            "blank runs between paragraphs must not add rows"
+        );
+        assert!(
+            two_breaks > one_break,
+            "a second paragraph should still add rows"
         );
     }
 
     #[test]
-    fn estimate_msg_lines_blank_inside_code_block_not_collapsed() {
+    fn row_index_keeps_blanks_inside_code_block() {
         // Blank lines inside a fenced code block must NOT be collapsed —
         // they're meaningful (e.g., separating functions). This matches
         // the render path's code-block handling.
@@ -3832,19 +3707,17 @@ mod tests {
             is_plan_mode: None,
         };
         // ┌─ RUST + fn a() {} + blank + fn b() {} = 4 lines
-        assert_eq!(widget.estimate_msg_lines(&msg), 4);
+        assert_eq!(rows_of(&mut widget, msg), 4);
     }
 
     #[test]
-    fn estimate_msg_lines_includes_streaming_tail() {
+    fn row_index_includes_streaming_tail() {
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         widget.set_visible_height(20);
         widget.add_user_message("hi".to_string(), None);
         widget.add_streaming_token("streaming content here");
-        // estimate must be called with a reference to the actual message in
-        // the vector (the ptr::eq check requires identity).
-        let n = widget.estimate_msg_lines(widget.messages.last().unwrap());
+        let n = widget.total_lines();
         // 0 (empty parts) + 1 (label) + 1 (streaming line) = 2 minimum
         assert!(
             n >= 2,
@@ -3897,7 +3770,8 @@ mod tests {
     #[test]
     fn numbered_read_output_highlights_code_without_coloring_line_numbers() {
         let widget = MessagesWidget::default();
-        let rendered = render_numbered_code_output("     1: fn main() {}\n", "rust", &widget.theme);
+        let rendered =
+            render_numbered_code_output("     1: fn main() {}\n", "rust", &widget.theme, 80);
 
         let first = rendered.first().expect("expected highlighted output");
         assert_eq!(first.spans.first().unwrap().content.as_ref(), "     1: ");
@@ -3939,29 +3813,271 @@ mod tests {
         let _ = state;
     }
 
+    /// A width change re-wraps every message, so the row index has to be
+    /// rebuilt from scratch rather than reusing rows measured at the old width.
     #[test]
-    fn width_change_invalidates_render_cache() {
+    fn width_change_invalidates_the_row_index() {
         let mut widget = MessagesWidget::default();
         widget.set_width(80);
         widget.add_user_message("hi".to_string(), None);
-        widget.add_assistant_text("first response".to_string());
-        widget.add_streaming_token("partial");
-        // Populate render cache directly (in production it's populated during render).
-        let last_idx = widget.messages.len() - 1;
-        widget.store_cached_last_assistant_parts(
-            &widget.messages[last_idx],
-            vec![Line::from("cached")],
+        widget.add_assistant_text(
+            "a response long enough that re-wrapping it at a much narrower \
+             width has to produce additional rows"
+                .to_string(),
         );
-        let cached: Option<Vec<Line<'static>>> =
-            widget.get_cached_last_assistant_parts(&widget.messages[last_idx]);
-        assert!(cached.is_some(), "cache should be populated after store");
-        // Width change should invalidate the cache.
-        widget.set_width(40);
-        let cached2: Option<Vec<Line<'static>>> =
-            widget.get_cached_last_assistant_parts(&widget.messages[last_idx]);
+        widget.add_streaming_token("partial");
+        let narrow = widget.total_lines();
+        widget.set_width(20);
+        let wide = widget.total_lines();
         assert!(
-            cached2.is_none(),
-            "cache should be invalidated after width change"
+            wide > narrow,
+            "re-wrapping at 20 columns should produce more rows than at 80 (got {wide} vs {narrow})"
+        );
+    }
+
+    /// A `ToolCall` message, for the scroll-math regression tests below.
+    fn tool_msg(name: &str, input: &str, output: &str, expanded: bool) -> UIMessage {
+        UIMessage {
+            role: MessageRole::Assistant,
+            parts: vec![MsgPart::ToolCall {
+                id: "t1".to_string(),
+                name: name.to_string(),
+                input: input.to_string(),
+                output: output.to_string(),
+                status: ToolStatus::Completed,
+                duration_ms: Some(1),
+                exit_code: Some(0),
+                output_lines: None,
+                expanded,
+            }],
+            timestamp: None,
+            is_plan_mode: None,
+        }
+    }
+
+    /// Rows drawn by the widget for one message, straight from the row index.
+    fn rows_drawn(widget: &MessagesWidget) -> Vec<String> {
+        widget.with_layout_cache(|cache| {
+            cache
+                .rows_from(0, cache.total_lines())
+                .iter()
+                .map(|line| line.to_string())
+                .collect()
+        })
+    }
+
+    /// Regression: the scroll range used to come from an estimate that
+    /// counted *wrapped* rows for collapsed tool output while the renderer
+    /// emitted wrapped rows for the first N *logical* lines. At width 40 the
+    /// two disagreed by more than an order of magnitude, so `max_scroll` was
+    /// far short of the real content and most of the output was unreachable
+    /// by scrolling.
+    #[test]
+    fn collapsed_tool_output_row_count_matches_what_is_drawn() {
+        for width in [40u16, 80, 120] {
+            let output = (0..12)
+                .map(|i| format!("line{i} {}", "y".repeat(90)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut widget = MessagesWidget::default();
+            widget.set_width(width);
+            widget.messages.push(tool_msg("bash", "{}", &output, false));
+            widget.invalidate_layout_cache();
+            assert_eq!(
+                widget.total_lines(),
+                rows_drawn(&widget).len(),
+                "row count diverged from the drawn rows at width {width}"
+            );
+        }
+    }
+
+    /// Regression: the same disagreement in the other direction for `read`
+    /// output. That path rendered pre-numbered code without wrapping, while the
+    /// estimate counted wrapped rows — so the scroll range overshot the content
+    /// and the tail of a `read` result could never be scrolled into view.
+    #[test]
+    fn read_tool_output_row_count_matches_what_is_drawn() {
+        for width in [40u16, 80, 120] {
+            let output = (0..12)
+                .map(|i| format!("     {i}: line{i} {}", "z".repeat(90)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut widget = MessagesWidget::default();
+            widget.set_width(width);
+            widget
+                .messages
+                .push(tool_msg("read", r#"{"path":"/tmp/x.rs"}"#, &output, true));
+            widget.invalidate_layout_cache();
+            assert_eq!(
+                widget.total_lines(),
+                rows_drawn(&widget).len(),
+                "read-output row count diverged from the drawn rows at width {width}"
+            );
+        }
+    }
+
+    /// `read` output is emitted without the code-block chrome, so the line
+    /// number gutter is its only prefix. It still has to be accounted for when
+    /// wrapping, or the code runs under the right edge and is clipped — the
+    /// widget paints no `Paragraph::wrap` and there is no horizontal scroll.
+    #[test]
+    fn numbered_read_output_is_wrapped_inside_the_viewport() {
+        let width = 40u16;
+        let widget = MessagesWidget::default();
+        let output = format!("     1: fn main() {{ {}\n", "let value = 1; ".repeat(12));
+        let rendered = render_numbered_code_output(output.trim_end(), "rust", &widget.theme, width);
+        assert!(
+            rendered.len() > 1,
+            "a long numbered line must wrap into several rows"
+        );
+        for line in &rendered {
+            let w = unicode_width::UnicodeWidthStr::width(line.to_string().as_str());
+            assert!(
+                w <= width as usize,
+                "numbered read row of width {w} exceeds viewport width {width}: {line:?}"
+            );
+        }
+        // The gutter belongs to the first wrapped row only.
+        assert_eq!(
+            rendered[0].spans.first().unwrap().content.as_ref(),
+            "     1: "
+        );
+        let rejoined: String = rendered
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(
+            rejoined.contains("let value = 1;"),
+            "wrapping must not drop the code body"
+        );
+    }
+
+    /// The end of the buffer must be reachable: the last drawn row at
+    /// `max_scroll` has to be the actual last row. This is the invariant the
+    /// old offset-into-a-rebuilt-window arithmetic could not hold once the
+    /// estimate drifted, and it is what made long transcripts unreadable.
+    #[test]
+    fn bottom_of_the_buffer_is_reachable_with_every_row_visible() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        widget.set_visible_height(10);
+        for i in 0..40 {
+            widget.add_user_message(format!("message {i} {}", "word ".repeat(20)), None);
+            widget.add_assistant_text(format!("reply {i} {}", "text ".repeat(20)));
+        }
+
+        let total = widget.total_lines();
+        assert!(total > 10, "the buffer should overflow the viewport");
+        let viewport = 10usize;
+
+        // Walking to the bottom one row at a time must land on the last row.
+        widget.scroll_to_top();
+        let last = widget.with_layout_cache(|cache| {
+            cache
+                .rows_from(total.saturating_sub(1), total)
+                .first()
+                .map(|line| line.to_string())
+                .unwrap_or_default()
+        });
+        assert!(!last.is_empty());
+
+        for _ in 0..(total + 5) {
+            widget.scroll_down();
+        }
+        assert_eq!(
+            widget.scroll_position(),
+            widget.max_scroll(),
+            "scrolling down should stop at max_scroll"
+        );
+
+        // At max_scroll the viewport is the last `viewport` rows of the
+        // buffer, so its final row is the buffer's final row and the window is
+        // completely full. A row index that disagrees with what is drawn
+        // leaves the tail stranded or shows blank space instead.
+        let scroll = widget.scroll_position();
+        let drawn = widget.with_layout_cache(|cache| cache.rows_from(scroll, total).len());
+        assert_eq!(
+            drawn, viewport,
+            "the viewport must be full at the bottom of the buffer"
+        );
+        let bottom = widget.with_layout_cache(|cache| {
+            cache
+                .rows_from(total.saturating_sub(1), total)
+                .first()
+                .map(|line| line.to_string())
+                .unwrap_or_default()
+        });
+        assert_eq!(bottom, last, "the bottom row must be reachable");
+    }
+
+    /// Expanding a tool call changes how many rows the buffer has. The row
+    /// index must follow, and the viewport must still be full afterwards —
+    /// a stale count here is what left the expanded output clipped.
+    #[test]
+    fn expanding_tool_output_updates_the_row_index_and_fills_the_viewport() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        widget.set_visible_height(12);
+        let output = (0..30)
+            .map(|i| format!("line{i} {}", "z".repeat(60)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        widget.messages.push(tool_msg("bash", "{}", &output, false));
+        widget.invalidate_layout_cache();
+        let collapsed_rows = widget.total_lines();
+
+        widget.toggle_tool_output(0);
+        assert!(
+            widget.total_lines() > collapsed_rows,
+            "expanding must add rows ({} -> {})",
+            collapsed_rows,
+            widget.total_lines()
+        );
+
+        // Scrolling to the bottom must fill the viewport rather than leaving
+        // blank space, which is what an over-counted row index caused.
+        widget.scroll_to_bottom();
+        let scroll = widget.scroll_position();
+        let drawn =
+            widget.with_layout_cache(|cache| cache.rows_from(scroll, scroll + 12).len().max(0));
+        assert_eq!(
+            drawn, 12,
+            "the viewport must be full at the bottom of an expanded tool output"
+        );
+    }
+
+    /// Streaming appends to the last message, so only that message's rows are
+    /// rebuilt. Everything above it must keep its offset, or the scroll
+    /// position drifts on every token.
+    #[test]
+    fn streaming_rebuilds_only_the_tail_rows() {
+        let mut widget = MessagesWidget::default();
+        widget.set_width(40);
+        widget.set_visible_height(10);
+        for i in 0..10 {
+            widget.add_user_message(format!("user {i}"), None);
+            widget.add_assistant_text(format!("assistant {i}"));
+        }
+        let before = widget.with_layout_cache(|cache| cache.total_lines());
+        let first_user_row = widget.with_layout_cache(|cache| cache.get_offset(0));
+
+        widget.add_streaming_token("more output arrives");
+
+        let after = widget.with_layout_cache(|cache| cache.total_lines());
+        assert!(
+            after > before,
+            "the streaming tail must add rows ({before} -> {after})"
+        );
+        assert_eq!(
+            widget.with_layout_cache(|cache| cache.get_offset(0)),
+            first_user_row,
+            "appending to the tail must not move the first message's offset"
+        );
+        assert_eq!(
+            widget.with_layout_cache(|cache| cache.total_lines()),
+            after,
+            "a second read of the index must be stable"
         );
     }
 
@@ -4078,7 +4194,7 @@ mod tests {
             timestamp: None,
             is_plan_mode: None,
         };
-        let estimated = widget.estimate_msg_lines(&msg);
+        let estimated = rows_of(&mut widget, msg);
         // 200 chars at ~36 usable columns must occupy several rows.
         assert!(
             estimated >= 5,
