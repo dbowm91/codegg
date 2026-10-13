@@ -208,6 +208,7 @@ fn main() {
             lines.push(format!("echo {name}=not_available"));
         }
     }
+    lines.push("exit /b 0".into());
     if let Err(error) = fs::write(&script_path, lines.join("\r\n")) {
         root_report(&format!("write stage probe script: {error}"), &backends);
         let _ = fs::remove_dir_all(&run_root);
