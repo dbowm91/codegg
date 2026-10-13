@@ -368,7 +368,7 @@ try {
     $source = Join-Path $PSScriptRoot 'windows_restricted_primary_token_probe.c'
     $compileLine = 'call "{0}" >nul && cl.exe /nologo /W4 /WX /MT /DUNICODE /D_UNICODE /O2 /Fe:"{1}" "{2}"' -f $vcvars, $helper, $source
     Push-Location $root
-    try { $compileOutput = & $env:ComSpec /d /s /c "`"$compileLine`" 2>&1" }
+    try { $compileOutput = & $env:ComSpec /d /c $compileLine 2>&1 }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $helper)) {
         throw "C027 native fixture compile failed ($LASTEXITCODE): $($compileOutput -join ' ')"
