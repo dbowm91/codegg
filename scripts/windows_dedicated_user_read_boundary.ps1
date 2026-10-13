@@ -147,7 +147,7 @@ function Get-SddlFingerprint([string] $Path) {
 
 function Start-TestChild([string] $Mode, [string] $User, [string] $Password, [IntPtr] $Token,
         [string] $Exe, [string] $Command, [string] $Directory) {
-    Write-Output "C024_CHILD_START mode=$Mode"
+    Write-Host "C024_CHILD_START mode=$Mode"
     $startup = [C024StartupInfo]::new()
     $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf([type][C024StartupInfo])
     $pi = [C024ProcessInformation]::new()
