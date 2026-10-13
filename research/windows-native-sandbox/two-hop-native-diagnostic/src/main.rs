@@ -132,7 +132,13 @@ mod tests {
 
     #[test]
     fn manifest_rejects_traversal_probe_names() {
-        let dir = PathBuf::from("/tmp/c044-stage");
+        // `/tmp` is not absolute on Windows (no drive prefix); use a
+        // platform-absolute stage dir like the neighboring test.
+        let dir = PathBuf::from(if cfg!(windows) {
+            "C:\\c044-stage"
+        } else {
+            "/tmp/c044-stage"
+        });
         let mut manifest =
             StageManifest::new("0123456789abcdef", dir).expect("valid manifest");
         manifest.probe_name = "../escape.exe".to_string();
