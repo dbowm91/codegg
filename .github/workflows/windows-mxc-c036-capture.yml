@@ -47,6 +47,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.93.1
         with:
+          components: rustfmt
           targets: aarch64-pc-windows-msvc
 
       - name: Format, test pinned API contract, and cross-check ARM64 harness
