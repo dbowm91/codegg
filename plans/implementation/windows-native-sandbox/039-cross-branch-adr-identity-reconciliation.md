@@ -1,6 +1,6 @@
 # Windows Native Sandbox C039 — Cross-branch ADR Identity Reconciliation
 
-Status: **active**; no new sandbox mechanism or architecture decision
+Status: **implemented**; no new sandbox mechanism or architecture decision
 Primary class: architecture/governance corrective
 Baseline: `work/windows-native-sandbox-foundation` HEAD `631ae9488f251ac70e91b9c8299d2c1c3bff83fa`; `main` HEAD `b9ba494c1b21638c2e2f660301ba207ce8859682`; common baseline `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`. Refresh both heads and allocation table before implementation.
 Source: `plans/subsystems/windows-native-sandbox-roadmap.md#post-adr-0024-pr-111-mainline-reconciliation`.
