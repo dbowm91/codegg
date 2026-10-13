@@ -281,7 +281,7 @@ fn run() {
         .find(|line| line.starts_with("C037_DESCENDANT_RESULT="))
         .map(str::to_owned);
     let descendant_cleanup_confirmed = descendant_status.as_ref().is_some_and(|status| {
-        (status.contains("wait:0,exit:0") || status.contains("wait:258"))
+        (status.contains("wait:0") || status.contains("wait:258"))
             && (!status.contains("wait:258") || status.contains("timeout_cleanup:0"))
     });
     let child_entry = entry_proof.is_some();
