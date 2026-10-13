@@ -330,25 +330,6 @@ async fn missing_filesystem_root_fails_before_the_test_child_is_created() {
     ));
 }
 
-#[tokio::test]
-async fn pre_cancelled_restricted_request_fails_before_profile_or_process_creation() {
-    let request = restricted_request(vec![
-        OsString::from("-NoLogo"),
-        OsString::from("-NoProfile"),
-        OsString::from("-NonInteractive"),
-        OsString::from("-Command"),
-        OsString::from("exit 0"),
-    ]);
-    request.cancellation.cancel();
-
-    let error = ManagedProcessService::run(request)
-        .await
-        .expect_err("cancelled launch must not create a restricted child");
-    assert!(matches!(
-        error,
-        codegg::managed_process::ManagedProcessError::CancelledBeforeSpawn
-    ));
-}
 
 #[tokio::test]
 async fn pre_cancelled_restricted_request_fails_before_profile_or_process_creation() {
