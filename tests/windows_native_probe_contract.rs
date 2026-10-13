@@ -169,7 +169,7 @@ fn child_script(action: Action) -> &'static str {
             "$pipe=[IO.Pipes.NamedPipeClientStream]::new('.', $env:C019_PIPE, [IO.Pipes.PipeDirection]::InOut); try {$pipe.Connect(500); 'C019_RESULT=leaked'} catch {'C019_RESULT=denied'} finally {$pipe.Dispose()}"
         }
         Action::NullDeviceAccess => {
-            "$s=$null; try {$s=[IO.File]::Open('\\\\.\\NUL',[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); 'C019_RESULT=allowed'} catch { 'C019_RESULT=denied:'+$_.Exception.GetType().Name } finally {if ($s) {$s.Dispose()}}"
+            "$s=$null; try {$s=[IO.File]::Open('\\\\.\\NUL',[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite); $s.WriteByte(0); 'C019_RESULT=allowed'} catch { 'C019_RESULT=denied:'+$_.Exception.GetType().Name } finally {if ($s) {$s.Dispose()}}"
         }
         Action::UncHostReadUnavailable => "'C019_RESULT=not_run'",
         Action::InheritedHandleNotTransferred => "'C019_RESULT=not_run'",
@@ -179,7 +179,7 @@ fn child_script(action: Action) -> &'static str {
 
 fn read_script(action: Action) -> String {
     let base = child_script(action);
-    let token = "";
+    let token = "$identity = [Security.Principal.WindowsIdentity]::GetCurrent(); Write-Output ('C019_TOKEN=' + $identity.Name + '|' + $identity.User.Value); Write-Output 'C019_CHILD_STARTED';";
     if matches!(
         action,
         Action::DirectHostRead
@@ -424,10 +424,18 @@ async fn execute(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c019_shared_native_security_probe_contract() {
     let fixture = tempfile::tempdir().expect("C019 disposable fixture");
-    let stage = std::env::temp_dir().join(format!(
+    let stage_parent = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .expect("SystemRoot is set")
+        .parent()
+        .expect("SystemRoot has a volume root")
+        .to_path_buf();
+    let stage = stage_parent.join(format!(
         "codegg-c019-stage-{}",
         uuid::Uuid::new_v4().simple()
     ));
+    let stage_parent_dacl_before =
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap();
     std::fs::create_dir(&stage).expect("create unique disposable AppContainer stage");
     let host = fixture.path().join("original-host");
     let sibling = fixture.path().join("original-sibling");
@@ -590,6 +598,8 @@ async fn c019_shared_native_security_probe_contract() {
         "contract": "codegg.windows_native_probe.v1",
         "host": "windows-hosted-runner",
         "fixture_integrity": {
+            "stage_parent_dacl_before_sha256": format!("{:x}", Sha256::digest(&stage_parent_dacl_before)),
+            "stage_parent_dacl_unchanged": codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap() == stage_parent_dacl_before,
             "host_dacl_before_sha256": format!("{:x}", Sha256::digest(&host_dacl_before)),
             "sibling_dacl_before_sha256": format!("{:x}", Sha256::digest(&sibling_dacl_before)),
             "host_credential_unchanged": std::fs::read(&credential).unwrap() == credential_before,
@@ -609,6 +619,10 @@ async fn c019_shared_native_security_probe_contract() {
     assert_eq!(
         codegg::managed_process::windows_acl_lease_dacl_snapshot(&sibling).unwrap(),
         sibling_dacl_before
+    );
+    assert_eq!(
+        codegg::managed_process::windows_acl_lease_dacl_snapshot(&stage_parent).unwrap(),
+        stage_parent_dacl_before
     );
     assert!(
         observations.iter().any(|observation| observation.executed),
