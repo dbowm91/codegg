@@ -396,45 +396,94 @@ pub struct PersistentDecision {
 /// deterministic fingerprints, never raw command text.
 pub const DECISION_SCOPE_MAX_LEN: usize = 80;
 
-/// Normalize a shell command into a capability scope (`cmd:<argv0>`).
+/// Normalize a shell command into a reusable permission scope.
 ///
-/// Only the deterministic first-token family is used: leading `VAR=value`
-/// assignments and `sudo`/`env` wrappers are skipped, the basename of the
-/// executable is lowercased, and only `[a-z0-9._-]` survives. Returns
-/// `None` when no family can be determined, in which case callers keep
-/// the legacy broad behavior. This is deliberately not a shell parser
-/// (see the M007 stop conditions): metacharacters, quoting, and compound
-/// commands do not change the family.
+/// A simple, unambiguous command uses `cmd:<argv0>`. Commands whose shell
+/// shape is complex use a digest of the complete invocation, so a saved
+/// family grant cannot authorize a compound command. This is a permission
+/// cache key only; it is not a shell security boundary.
 pub fn decision_scope_for_shell_command(command: &str) -> Option<String> {
-    let mut tokens = command.split_whitespace();
-    let argv0 = loop {
-        let token = tokens.next()?.trim();
-        if token.is_empty() {
-            continue;
-        }
-        if token == "sudo" || token == "env" {
-            continue;
-        }
-        if is_env_assignment(token) {
-            continue;
-        }
-        break token;
+    use crate::command_intent::shell_shape::ShellShape;
+
+    let ShellShape::SimpleArgv(argv) =
+        crate::command_intent::shell_shape::parse_shell_words(command)
+    else {
+        return Some(exact_command_scope(command));
     };
-    // Strip a leading path: `/usr/bin/cargo` and `cargo` are one family.
+    let Some(argv0) = simple_command_executable(&argv) else {
+        return Some(exact_command_scope(command));
+    };
     let base = argv0.rsplit('/').next().unwrap_or(argv0);
-    let normalized: String = base
-        .to_lowercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-')
-        .collect();
-    if normalized.is_empty() || normalized.len() > 64 {
-        return None;
+    if base.is_empty()
+        || base.len() > 64
+        || !base
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || command_family_requires_exact_scope(base)
+    {
+        return Some(exact_command_scope(command));
     }
-    let scope = format!("cmd:{normalized}");
-    if scope.len() > DECISION_SCOPE_MAX_LEN {
-        return None;
+    Some(format!("cmd:{}", base.to_ascii_lowercase()))
+}
+
+fn simple_command_executable(argv: &[String]) -> Option<&str> {
+    let mut index = 0;
+    if argv.first().is_some_and(|arg| arg == "env") {
+        index = 1;
+        let assignments_start = index;
+        while argv.get(index).is_some_and(|arg| is_env_assignment(arg)) {
+            index += 1;
+        }
+        if index == assignments_start || argv.get(index).is_some_and(|arg| arg.starts_with('-')) {
+            return None;
+        }
     }
-    Some(scope)
+    argv.get(index).map(String::as_str)
+}
+
+fn command_family_requires_exact_scope(command: &str) -> bool {
+    matches!(
+        command.to_ascii_lowercase().as_str(),
+        "sh" | "bash"
+            | "dash"
+            | "zsh"
+            | "fish"
+            | "ksh"
+            | "csh"
+            | "tcsh"
+            | "pwsh"
+            | "powershell"
+            | "sudo"
+            | "doas"
+            | "su"
+            | "runuser"
+            | "command"
+            | "exec"
+            | "nohup"
+            | "nice"
+            | "timeout"
+            | "time"
+            | "xargs"
+            | "busybox"
+            | "python"
+            | "python2"
+            | "python3"
+            | "node"
+            | "nodejs"
+            | "deno"
+            | "ruby"
+            | "perl"
+            | "php"
+            | "lua"
+            | "awk"
+    ) || command.to_ascii_lowercase().starts_with("python3.")
+}
+
+fn exact_command_scope(command: &str) -> String {
+    use sha2::Digest;
+
+    let digest = Sha256::digest(command.as_bytes());
+    format!("cmd:exact:{}", hex::encode(digest))
 }
 
 fn is_env_assignment(token: &str) -> bool {
@@ -812,6 +861,7 @@ pub struct PermissionChecker {
     canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
     canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
+    legacy_exec_mode: bool,
     path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
 }
 
@@ -831,6 +881,7 @@ impl PermissionChecker {
             canonicalized_config_tool_rules,
             canonicalized_session_tool_rules: Vec::new(),
             canonicalized_agent_tool_rules: Vec::new(),
+            legacy_exec_mode: false,
             path_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -886,6 +937,7 @@ impl PermissionChecker {
     /// deterministic denies, security escalations, and sandbox
     /// enforcement truthful instead of Allow-all.
     pub fn with_exec_mode(mut self) -> Self {
+        self.legacy_exec_mode = true;
         self.session_rules = PermissionRuleset {
             default: PermissionLevel::Allow,
             tool_rules: vec![
@@ -943,6 +995,12 @@ impl PermissionChecker {
                 }
             }
             return PermissionResult::Allow;
+        }
+
+        if self.effective_policy_denies(tool, path, None).await
+            || (self.legacy_exec_mode && self.configured_policy_denies(tool, path, None).await)
+        {
+            return PermissionResult::Deny;
         }
 
         {
@@ -1053,11 +1111,15 @@ impl PermissionChecker {
         args: Option<&str>,
         session_id: Option<&str>,
     ) -> PermissionResult {
-        // Persistent decisions always win (so a user who clicks "always
-        // allow" or "always deny" on a previous prompt doesn't get re-prompted).
-        // M007: the lookup is capability-scoped where the arguments carry a
-        // deterministic command family, so allowing `cargo test` does not
-        // imply all Bash. Legacy broad rows still match as fallback.
+        if self.effective_policy_denies(tool, path, args).await
+            || (self.legacy_exec_mode && self.configured_policy_denies(tool, path, args).await)
+        {
+            return PermissionResult::Deny;
+        }
+
+        // Persistent decisions remain reusable after current Deny rules are
+        // honored. Simple commands use a family scope; complex shell shapes
+        // use an exact-invocation digest; legacy broad rows remain compatible.
         let scope = match tool {
             "bash" | "terminal" | "test" => args.and_then(decision_scope_for_shell_command),
             "git" => args.and_then(decision_scope_for_git_subcommand),
@@ -1310,6 +1372,61 @@ impl PermissionChecker {
         Ok(canonical)
     }
 
+    async fn configured_policy_denies(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        args: Option<&str>,
+    ) -> bool {
+        let canonical_path = match path {
+            Some(path) => match self.canonicalize_path(path).await {
+                Ok(path) => Some(path),
+                Err(_) => return self.config_rules.default == PermissionLevel::Deny,
+            },
+            None => None,
+        };
+        match find_tool_rule_with_args(
+            &self.config_rules.tool_rules,
+            tool,
+            canonical_path.as_deref(),
+            args,
+        )
+        .await
+        {
+            Some(PermissionLevel::Deny) => true,
+            Some(_) => false,
+            None => self.config_rules.default == PermissionLevel::Deny,
+        }
+    }
+
+    async fn effective_policy_denies(
+        &self,
+        tool: &str,
+        path: Option<&str>,
+        args: Option<&str>,
+    ) -> bool {
+        let tool_level = if args.is_some() {
+            self.effective_tool_rule_with_args(tool, path, args).await
+        } else {
+            self.effective_tool_rule(tool, path).await
+        };
+        if let Some(level) = tool_level {
+            return level == PermissionLevel::Deny;
+        }
+        if let Some(path) = path {
+            let Ok(canonical) = self.canonicalize_path(path).await else {
+                return self.effective_default() == &PermissionLevel::Deny;
+            };
+            let canonical = canonical.to_string_lossy();
+            for (matcher, level) in &self.compiled_globs {
+                if matcher.is_match(canonical.as_ref()) {
+                    return level == &PermissionLevel::Deny;
+                }
+            }
+        }
+        self.effective_default() == &PermissionLevel::Deny
+    }
+
     fn effective_default(&self) -> &PermissionLevel {
         if self.agent_rules.default != PermissionLevel::Ask {
             return &self.agent_rules.default;
@@ -1486,9 +1603,12 @@ async fn find_tool_rule_with_args(
 ) -> Option<PermissionLevel> {
     let canonical_str = canonical_path.map(|p| p.to_string_lossy().to_string());
 
-    rules.iter().rev().find_map(|r| {
+    let mut specific_matches = Vec::new();
+    let mut fallback_match = None;
+    for rule in rules {
+        let r = rule;
         if !r.matches(tool) {
-            return None;
+            continue;
         }
 
         if let Some(ref paths) = r.paths {
@@ -1498,22 +1618,43 @@ async fn find_tool_rule_with_args(
                         .iter()
                         .any(|rule_path| canonical.starts_with(rule_path));
                     if !matches {
-                        return None;
+                        continue;
                     }
                 } else {
-                    return None;
+                    continue;
                 }
             }
         }
 
         if let Some(command) = args {
             if !r.matches_bash_command(command) {
-                return None;
+                continue;
             }
         }
+        let is_specific = args.is_some()
+            && r.bash_patterns.as_ref().is_some_and(|patterns| {
+                !patterns.is_empty() && !patterns.iter().any(|pattern| pattern == "*")
+            });
+        if is_specific {
+            specific_matches.push(r.level.clone());
+        } else {
+            fallback_match = Some(r.level.clone());
+        }
+    }
 
-        Some(r.level.clone())
-    })
+    if !specific_matches.is_empty() {
+        // Matching rules within one tier resolve conservatively while
+        // preserving the tier precedence enforced by the caller.
+        return specific_matches
+            .iter()
+            .max_by_key(|level| match level {
+                PermissionLevel::Deny => 2,
+                PermissionLevel::Ask => 1,
+                PermissionLevel::Allow => 0,
+            })
+            .cloned();
+    }
+    fallback_match
 }
 
 fn compile_path_rules(rules: &[PathRule]) -> Vec<(globset::GlobMatcher, PermissionLevel)> {
@@ -1547,7 +1688,28 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
 
     // Handle bash permissions with pattern support
     if perm.allow_all_bash.unwrap_or(false) {
-        // allow_all_bash=true: auto-approve all bash commands
+        // Explicit operator filters retain precedence over this broad grant.
+        if let Some(deny_patterns) = &perm.bash_deny_patterns {
+            if !deny_patterns.is_empty() {
+                tool_rules.push(ToolRule {
+                    tool: "bash".to_string(),
+                    level: PermissionLevel::Deny,
+                    paths: None,
+                    bash_patterns: Some(deny_patterns.clone()),
+                });
+            }
+        }
+        if let Some(ask_patterns) = &perm.bash_ask_patterns {
+            if !ask_patterns.is_empty() {
+                tool_rules.push(ToolRule {
+                    tool: "bash".to_string(),
+                    level: PermissionLevel::Ask,
+                    paths: None,
+                    bash_patterns: Some(ask_patterns.clone()),
+                });
+            }
+        }
+        // allow_all_bash=true remains a broad fallback for unmatched input.
         tool_rules.push(ToolRule {
             tool: "bash".to_string(),
             level: PermissionLevel::Allow,
@@ -2365,24 +2527,42 @@ mod tests {
             Some("cmd:cargo".to_string())
         );
         assert_eq!(
-            decision_scope_for_shell_command("  FOO=1 /usr/bin/cargo test"),
+            decision_scope_for_shell_command("env FOO=1 /usr/bin/cargo test"),
             Some("cmd:cargo".to_string())
         );
         assert_eq!(
-            decision_scope_for_shell_command("sudo rm -rf /tmp/x"),
-            Some("cmd:rm".to_string())
+            decision_scope_for_shell_command("/usr/bin/cargo test"),
+            Some("cmd:cargo".to_string())
+        );
+        assert!(
+            decision_scope_for_shell_command("cargo test; ./other-script")
+                .unwrap()
+                .starts_with("cmd:exact:")
         );
         assert_eq!(
             decision_scope_for_shell_command("GIT status"),
             Some("cmd:git".to_string())
         );
-        // Unparseable input yields no scope (broad legacy behavior),
-        // never a fabricated family.
-        assert_eq!(decision_scope_for_shell_command(""), None);
-        assert_eq!(decision_scope_for_shell_command("   "), None);
-        assert_eq!(decision_scope_for_shell_command("!!!"), None);
+        // Ambiguous input gets an exact-invocation scope, never a broad or
+        // fabricated first-token family.
+        assert!(decision_scope_for_shell_command("!!!")
+            .unwrap()
+            .starts_with("cmd:exact:"));
+        assert!(
+            decision_scope_for_shell_command("sh -c 'cargo test; ./other'")
+                .unwrap()
+                .starts_with("cmd:exact:")
+        );
+        assert!(decision_scope_for_shell_command("sudo cargo test")
+            .unwrap()
+            .starts_with("cmd:exact:"));
+        assert!(decision_scope_for_shell_command("python3 script.py")
+            .unwrap()
+            .starts_with("cmd:exact:"));
         let long = format!("{} arg", "a".repeat(100));
-        assert_eq!(decision_scope_for_shell_command(&long), None);
+        assert!(decision_scope_for_shell_command(&long)
+            .unwrap()
+            .starts_with("cmd:exact:"));
     }
 
     #[test]

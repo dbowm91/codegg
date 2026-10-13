@@ -1,6 +1,6 @@
 # Command Authorization M001 C001 — Permission Precedence and Scoped Grant Corrective
 
-Status: ready for implementation handoff
+Status: active
 Class: invariant / correctness
 Hard dependencies: accepted ADR-0024 (satisfied)
 Next: M001 C002 and C003; M001 closure must not claim complete until all three correctives pass.

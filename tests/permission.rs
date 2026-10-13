@@ -141,6 +141,227 @@ async fn test_permission_checker_with_config_deny() {
 }
 
 #[tokio::test]
+async fn specific_bash_patterns_override_generic_permission_fallbacks() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            default: Some("allow".to_string()),
+            bash_deny_patterns: Some(vec!["git push*".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None);
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git push origin main"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git status"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+
+    let ask_config = Config {
+        permission: Some(PermissionConfig {
+            bash: Some(PermissionRule::Action("ask".to_string())),
+            bash_allow_patterns: Some(vec!["echo allowed*".to_string()]),
+            bash_deny_patterns: Some(vec!["echo denied*".to_string()]),
+            bash_ask_patterns: Some(vec!["cargo test*".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&ask_config), None);
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("echo allowed text"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("echo denied text"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test --lib"), None)
+            .await,
+        PermissionResult::Ask(_)
+    ));
+}
+
+#[tokio::test]
+async fn explicit_configured_deny_cannot_be_bypassed_by_saved_broad_allow() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            default: Some("allow".to_string()),
+            bash_deny_patterns: Some(vec!["git push*".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None);
+    assert!(checker.always_allow("bash", None, None).await);
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git push origin main"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
+async fn current_tool_deny_cannot_be_bypassed_by_saved_allow() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            edit: Some(PermissionRule::Action("deny".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None);
+    assert!(checker.always_allow("edit", None, None).await);
+    assert!(matches!(
+        checker.check("edit", None, None).await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
+async fn allow_all_bash_fallback_does_not_override_higher_priority_deny() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            allow_all_bash: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Ask,
+        tool_rules: vec![ToolRule {
+            tool: "bash".to_string(),
+            level: PermissionLevel::Deny,
+            paths: None,
+            bash_patterns: Some(vec!["git push*".to_string()]),
+        }],
+        path_rules: Vec::new(),
+    });
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git push origin main"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git status"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+}
+
+#[tokio::test]
+async fn legacy_exec_mode_does_not_override_configured_deny() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            default: Some("allow".to_string()),
+            bash_deny_patterns: Some(vec!["git push*".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git push origin main"), None)
+            .await,
+        PermissionResult::Deny
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("git status"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+}
+
+#[tokio::test]
+async fn narrow_saved_command_grant_does_not_cover_compound_shell() {
+    let checker = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Ask,
+        tool_rules: vec![ToolRule {
+            tool: "bash".to_string(),
+            level: PermissionLevel::Ask,
+            paths: None,
+            bash_patterns: None,
+        }],
+        path_rules: Vec::new(),
+    });
+    assert!(
+        checker
+            .always_allow_scoped("bash", None, Some("cmd:cargo"), None)
+            .await
+    );
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test --all"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test; ./second.sh"), None)
+            .await,
+        PermissionResult::Ask(_)
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test && curl example.test"), None)
+            .await,
+        PermissionResult::Ask(_)
+    ));
+}
+
+#[tokio::test]
+async fn exact_saved_complex_command_grant_is_not_reused_for_a_variant() {
+    let command = "cargo test; ./second.sh";
+    let scope = codegg::permission::decision_scope_for_shell_command(command).unwrap();
+    assert!(scope.starts_with("cmd:exact:"));
+    let checker = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Ask,
+        tool_rules: vec![ToolRule {
+            tool: "bash".to_string(),
+            level: PermissionLevel::Ask,
+            paths: None,
+            bash_patterns: None,
+        }],
+        path_rules: Vec::new(),
+    });
+    assert!(
+        checker
+            .always_allow_scoped("bash", None, Some(&scope), None)
+            .await
+    );
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some(command), None)
+            .await,
+        PermissionResult::Allow
+    ));
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test; ./other.sh"), None)
+            .await,
+        PermissionResult::Ask(_)
+    ));
+}
+
+#[tokio::test]
 async fn test_permission_checker_always_allow() {
     let checker = PermissionChecker::new(None, None);
     checker.always_allow_legacy("bash", None).await;

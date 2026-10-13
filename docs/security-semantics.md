@@ -93,7 +93,16 @@ Three global pattern lists configure the review controls:
 |---|---|
 | `permission.bash_allow_patterns` | auto-approve without prompting (adds to a built-in read-only set: `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `wc`, `diff`, `cargo`, read-only `git`, …) |
 | `permission.bash_ask_patterns` | escalate to a prompt (additive to the built-in signals) |
-| `permission.bash_deny_patterns` | reject outright (your own rules; the catastrophic tier above is separate and cannot be relaxed) |
+| `permission.bash_deny_patterns` | deny a matching invocation (your own rule; the catastrophic tier above is separate and cannot be relaxed) |
+
+Within a permission tier, a matching pattern takes precedence over its
+unpatterned fallback, and Deny outranks Ask, which outranks Allow. A current
+effective Deny also outranks a remembered Allow. These patterns classify the
+invocation text; they do not prevent a script, wrapper, or alternate tool from
+producing an equivalent effect. Saved approvals for simple shell commands are
+scoped by executable family. Compound or ambiguous commands are scoped by a
+digest of the full command text, so they do not inherit a saved `cmd:cargo`
+grant. Older explicitly broad saved grants remain broad for compatibility.
 
 An escalation signal resolves under the active `approval_mode`: `interactive`
 prompts you, `automatic` routes to the bounded reviewer, and `yolo`

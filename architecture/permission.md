@@ -141,6 +141,26 @@ Safe bash patterns are defined in `default_bash_allow_patterns()`
 (`src/permission/mod.rs:1706`). Users can extend or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
 
+For Bash, rules retain the tier order agent > session > config. Within one
+tier, a matching command pattern takes precedence over an unpatterned fallback;
+among matching patterns, Deny outranks Ask, which outranks Allow. Thus a
+current effective Deny cannot be hidden by `default = "allow"`, an `ask`
+fallback, `allow_all_bash`, or a saved Allow. This resolves one invocation
+string only: glob patterns are preferences and do not prevent an equivalent
+effect through a script, wrapper, or another tool.
+
+Remembered shell approvals use `cmd:<executable>` only when the existing
+`command_intent::shell_shape` parser classifies the request as one simple
+command. A simple `env NAME=value <command>` wrapper and an absolute
+executable path are canonicalized. Shells, interpreters, and command wrappers
+use exact-invocation scopes even when their argument text has simple argv
+shape. Compound or ambiguous commands use a
+`cmd:exact:<sha256>` scope over the complete command text, so a saved
+`cmd:cargo` family grant cannot cover `cargo test; ./other-script`. Explicit
+legacy unscoped grants remain broad and readable for compatibility; current
+effective Deny rules still win. The digest is a cache scope, not shell parsing
+or OS enforcement.
+
 Escalation signals from the shell policy (`tool::bash::policy::find_ask_pattern`)
 are consulted on the same path, immediately after `destructive_match`: a hit
 returns `Ask` carrying an `ask_pattern` field rather than being rejected inside
@@ -540,10 +560,12 @@ allow_all_bash = false
     equivalents) resolve through the same contract; bare `exec` keeps the
     legacy permissive behavior as a documented compatibility alias.
     Remembered approvals are capability-scoped where deterministic
-    command data exists (`PersistentDecision.scope`: `cmd:<argv0>` for
-    shell, `git:<subcommand>` for git; exact-scope first, legacy broad
-    rows still match; scope is HMAC-signed, legacy signatures still
-    verify for unscoped rows). The TUI manifest model hint stays
+    command data exists (`PersistentDecision.scope`: `cmd:<argv0>` for simple
+    shell commands, `cmd:exact:<sha256>` for complex shell text, and
+    `git:<subcommand>` for git; exact-scope first, legacy broad rows still
+    match; scope is HMAC-signed, legacy signatures still verify for unscoped
+    rows). A current effective Deny is evaluated before the cache so a
+    legacy broad Allow cannot mask it. The TUI manifest model hint stays
     display-only (`reconcile_tab_model_with_daemon`).
 11. **M008 qualification (invariant/closure).** `tests/reliability_qualification_m008.rs`
     proves deterministic Deny across Interactive/Automatic/Yolo, reviewer
