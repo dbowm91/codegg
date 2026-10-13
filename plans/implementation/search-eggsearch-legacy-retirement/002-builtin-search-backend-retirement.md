@@ -1,6 +1,6 @@
 # Plan 002 — Builtin Search Backend Retirement
 
-Status: ready
+Status: blocked (M001 closed; paired-compatibility C001 ready, unclosed)
 
 Source roadmap:
 
@@ -18,6 +18,13 @@ Hard dependency:
   strictly closed at `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
   This is a development compatibility gate, not a CodeGG
   public release/packaging or end-to-end operability gate.
+- Post-closure paired-compatibility **C001** strictly closed at
+  `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md`
+  (not yet satisfied). C001's handoff plan:
+  `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md`.
+  Do not begin destructive provider/backend deletion until actual native
+  wrapper dispatch to the real tagged process and private child-env/config
+  qualification are verified.
 
 Relevant predecessor evidence:
 
@@ -36,8 +43,8 @@ working end-to-end coding agent or an actual CodeGG release/installer.
 Retirement is a maintenance and security-boundary cleanup, not a release
 readiness claim.
 
-After M002, rerun the **exact same single-command offline paired
-CodeGG runtime + eggsearch subprocess suite** used for M001, with a
+After M002, rerun the **C001-strengthened single-command offline paired
+CodeGG runtime + eggsearch subprocess suite**, with a
 reduced `eggsearch|disabled` config. Confirm an absent/broken sidecar
 fails actionably and never routes through a legacy HTTP provider.
 
