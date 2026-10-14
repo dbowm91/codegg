@@ -292,11 +292,21 @@ pub fn compile(
     let mut directories = BTreeSet::new();
     for mount in &mounts {
         add_parent_directories(&mount.destination, &mut directories)?;
+        if std::fs::metadata(&mount.source)
+            .map_err(|error| format!("cannot inspect mount source type: {error}"))?
+            .is_dir()
+        {
+            directories.insert(mount.destination.clone());
+        }
     }
     for path in &hidden {
         add_parent_directories(path, &mut directories)?;
+        if !std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+            directories.insert(path.clone());
+        }
     }
     add_parent_directories(cwd, &mut directories)?;
+    directories.insert(cwd.to_path_buf());
     if directories.len() > 4096 {
         return Err("protected mount view exceeds its directory-creation bound".into());
     }
@@ -570,7 +580,9 @@ fn validate_protected_tree(root: &Path) -> Result<(), String> {
 fn add_parent_directories(path: &Path, directories: &mut BTreeSet<PathBuf>) -> Result<(), String> {
     validate_path(path)?;
     let mut parents = path
-        .ancestors()
+        .parent()
+        .into_iter()
+        .flat_map(Path::ancestors)
         .filter(|parent| *parent != Path::new("/"))
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
