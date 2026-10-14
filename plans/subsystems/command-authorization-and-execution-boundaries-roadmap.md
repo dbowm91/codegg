@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active successor (M001–M003 closed; M004 audit/test-only slice conditionally closed; production constrained special routes remain unqualified)
+Status: closed (M001–M004 command authorization and route-admission scope complete; Linux containment gates remain independently owned)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -48,7 +48,7 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 ### M004 constrained-route successor
 
-`plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is conditionally closed for the route inventory and test-only admission contract at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`. Accepted constrained Bash remains in the raw `ManagedProcessService` Landlock route; active command-intent routes from Bash require explicit `FullHost`. The separate typed Test and Python tools do not yet prove accepted-profile propagation, and Git executable/remote operations remain gated on Linux containment/transport. Their constrained production promotion is blocked until same-or-narrower effects are proven or a typed refusal is installed. Linux C006's bounded protected-mount candidate is closed negative for strict M003 acceptance; future nested Git metadata protection and the native compatibility matrix remain unresolved, so C006 does not unblock any M004 production route. This is not reopening M001–M003 closure.
+`plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is closed at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`. One accepted-receipt predicate gates active Bash intent and typed Test/Python. Constrained Test/Python calls return typed BackendUnavailable before scheduler submission because those executors cannot preserve the exact snapshot. Accepted constrained Bash remains in the raw `ManagedProcessService` Landlock route. Git executable/remote operations remain gated on Linux containment/transport. No constrained special route is promoted. Linux C006's bounded protected-mount candidate is closed negative for strict M003 acceptance; future nested Git metadata protection and the native compatibility matrix remain unresolved, so C006 does not unblock production route parity. This is not reopening M001–M003 closure.
 
 C004 moved the accepted command authority to ADR-0032 with exact archived provenance. Its content and permissions remain unchanged; Windows ADR identities remain separately scoped.
 
@@ -73,7 +73,7 @@ C004 moved the accepted command authority to ADR-0032 with exact archived proven
 
 ## 7. Milestones
 
-| M004 | capability/invariant | `implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` | **conditionally closed (audit/test-only)** | Closure `../closure/command-authorization-and-execution-boundaries/007-status.md`; typed Test/Python constrained profiles and Git filters/hooks remain unqualified; no production route promotion |
+| M004 | capability/invariant | `implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` | **closed** | Closure `../closure/command-authorization-and-execution-boundaries/007-status.md`; accepted-receipt admission complete; constrained Test/Python fail before submission; Git gates retained |
 
 
 
@@ -119,4 +119,4 @@ No normative security claim relies on command-name/text patterns. Explicit Deny 
 
 ## 12. Status
 
-M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`; M002 is closed at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`. M003 is closed at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`: Linux filesystem effects, bounded audit outcomes, Windows GNU compilation, and the hosted macOS cross-target compile passed. Network/IPC remain unrestricted/unqualified; no native macOS runtime result is claimed. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim. M004's bounded route inventory and test-only admission design are conditionally closed at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`. Typed Test/Python and Git special routes remain unqualified for constrained production use; no new dispatcher or fallback was admitted. M001–M003 remain closed. Linux C004 is prerequisite metadata cleanup for unambiguous ADR references, not a new accepted security policy.
+M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`; M002 is closed at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`. M003 is closed at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`: Linux filesystem effects, bounded audit outcomes, Windows GNU compilation, and the hosted macOS cross-target compile passed. Network/IPC remain unrestricted/unqualified; no native macOS runtime result is claimed. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim. M004 is closed at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`: active Bash intent and typed Test/Python require valid accepted FullHost authority; constrained Test/Python return BackendUnavailable before submission. Git filters/hooks/remotes remain independently gated. M001–M003 remain closed. Linux C004 is prerequisite metadata cleanup for unambiguous ADR references, not a new accepted security policy.
