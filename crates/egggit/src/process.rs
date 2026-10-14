@@ -275,6 +275,17 @@ pub fn classify_git_request(argv: &[String]) -> GitExecutionPolicyOutcome {
     }
 
     if matches!(subcommand, "reset" | "clean") {
+        // A dry-run clean (`-n`/`--dry-run`) changes nothing: it is the
+        // read-only preview operators approve against, so it must not
+        // require the destructive capability. `reset` has no dry-run mode
+        // and a real clean still gates below.
+        if subcommand == "clean"
+            && argv
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-n" | "--dry-run"))
+        {
+            return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable;
+        }
         return GitExecutionPolicyOutcome::RequiresAdditionalAuthorization {
             capabilities: vec![GitExecutionCapability::DestructiveRepositoryChange],
         };
