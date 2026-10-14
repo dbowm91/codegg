@@ -1209,10 +1209,10 @@ mod tests {
             NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
         };
         use windows_sys::Win32::Security::{
-            AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, OpenProcessToken,
-            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
-            OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE,
-            TOKEN_QUERY, WRITE_RESTRICTED,
+            AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, GetTokenInformation,
+            OpenProcessToken, TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+            DISABLE_MAX_PRIVILEGE, OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES,
+            SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
         };
         use windows_sys::Win32::System::Threading::{
             CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, CREATE_NO_WINDOW,
@@ -1225,6 +1225,47 @@ mod tests {
         let report = stage.join("child-report.txt");
         std::fs::create_dir(&stage)?;
         std::fs::write(&outside, b"outside-original")?;
+
+        let mut raw_current_token = ptr::null_mut();
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut raw_current_token,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        let current_token = unsafe { OwnedHandle::from_raw_handle(raw_current_token as RawHandle) };
+        let mut user_bytes = 0u32;
+        unsafe {
+            let _ = GetTokenInformation(
+                current_token.as_raw_handle() as _,
+                TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut user_bytes,
+            );
+        }
+        if user_bytes < std::mem::size_of::<TOKEN_USER>() as u32 {
+            return Err(io::Error::other("current token user SID was unavailable"));
+        }
+        let mut user_storage =
+            vec![0usize; (user_bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe {
+            GetTokenInformation(
+                current_token.as_raw_handle() as _,
+                TokenUser,
+                user_storage.as_mut_ptr().cast(),
+                user_bytes,
+                &mut user_bytes,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        let user_sid = unsafe { (*user_storage.as_ptr().cast::<TOKEN_USER>()).User.Sid };
 
         // A synthetic restricting SID exists only for this disposable test.
         let authority = SID_IDENTIFIER_AUTHORITY {
@@ -1276,8 +1317,28 @@ mod tests {
             grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
             Trustee: trustee,
         };
+        let user_entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: user_sid.cast(),
+            },
+        };
+        let entries = [entry, user_entry];
         let mut acl = ptr::null_mut();
-        let error = unsafe { SetEntriesInAclW(1, &entry, ptr::null(), &mut acl) };
+        let error = unsafe {
+            SetEntriesInAclW(
+                entries.len() as u32,
+                entries.as_ptr(),
+                ptr::null(),
+                &mut acl,
+            )
+        };
         if error != 0 {
             return Err(io::Error::from_raw_os_error(error as i32));
         }
@@ -1309,18 +1370,6 @@ mod tests {
         let outside_dacl_before =
             crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?;
 
-        let mut current_token = ptr::null_mut();
-        if unsafe {
-            OpenProcessToken(
-                GetCurrentProcess(),
-                TOKEN_DUPLICATE | TOKEN_QUERY,
-                &mut current_token,
-            )
-        } == 0
-        {
-            return Err(last_error());
-        }
-        let current_token = unsafe { OwnedHandle::from_raw_handle(current_token as RawHandle) };
         let restriction = SID_AND_ATTRIBUTES {
             Sid: restricting_sid.0,
             Attributes: 0,
@@ -1463,10 +1512,10 @@ mod tests {
             NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
         };
         use windows_sys::Win32::Security::{
-            AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, OpenProcessToken,
-            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
-            SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_QUERY,
-            WRITE_RESTRICTED,
+            AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, GetTokenInformation,
+            OpenProcessToken, TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+            OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE,
+            TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
         };
         use windows_sys::Win32::System::Threading::{
             CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
@@ -1480,6 +1529,47 @@ mod tests {
         let report = stage.join("child-report.txt");
         std::fs::create_dir(&stage)?;
         std::fs::write(&outside, b"outside-original")?;
+
+        let mut raw_current_token = ptr::null_mut();
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut raw_current_token,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        let current_token = unsafe { OwnedHandle::from_raw_handle(raw_current_token as RawHandle) };
+        let mut user_bytes = 0u32;
+        unsafe {
+            let _ = GetTokenInformation(
+                current_token.as_raw_handle() as _,
+                TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut user_bytes,
+            );
+        }
+        if user_bytes < std::mem::size_of::<TOKEN_USER>() as u32 {
+            return Err(io::Error::other("current token user SID was unavailable"));
+        }
+        let mut user_storage =
+            vec![0usize; (user_bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+        if unsafe {
+            GetTokenInformation(
+                current_token.as_raw_handle() as _,
+                TokenUser,
+                user_storage.as_mut_ptr().cast(),
+                user_bytes,
+                &mut user_bytes,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        let user_sid = unsafe { (*user_storage.as_ptr().cast::<TOKEN_USER>()).User.Sid };
 
         let authority = SID_IDENTIFIER_AUTHORITY {
             Value: [0, 0, 0, 0, 0, 5],
@@ -1528,8 +1618,28 @@ mod tests {
             grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
             Trustee: trustee,
         };
+        let user_entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_USER,
+                ptstrName: user_sid.cast(),
+            },
+        };
+        let entries = [entry, user_entry];
         let mut acl = ptr::null_mut();
-        let error = unsafe { SetEntriesInAclW(1, &entry, ptr::null(), &mut acl) };
+        let error = unsafe {
+            SetEntriesInAclW(
+                entries.len() as u32,
+                entries.as_ptr(),
+                ptr::null(),
+                &mut acl,
+            )
+        };
         if error != 0 {
             return Err(io::Error::from_raw_os_error(error as i32));
         }
@@ -1560,19 +1670,6 @@ mod tests {
         let stage_dacl_before = crate::managed_process::windows_acl_lease_dacl_snapshot(&stage)?;
         let parent_dacl_before =
             crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?;
-
-        let mut raw_current_token = ptr::null_mut();
-        if unsafe {
-            OpenProcessToken(
-                GetCurrentProcess(),
-                TOKEN_DUPLICATE | TOKEN_QUERY,
-                &mut raw_current_token,
-            )
-        } == 0
-        {
-            return Err(last_error());
-        }
-        let current_token = unsafe { OwnedHandle::from_raw_handle(raw_current_token as RawHandle) };
         let executable = std::env::current_exe()?;
         let args = [
             OsString::from("--exact"),
