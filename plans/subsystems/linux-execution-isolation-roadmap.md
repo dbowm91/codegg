@@ -47,7 +47,7 @@ Trusted Git commands require a distinct reviewed execution route. Ordinary Bash 
 
 ### Next handoffs — explicit test-only vs production gates (2026-10-13)
 
-- **C004 ADR identity corrective: closing.** `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`. The Linux mechanism ADR is uniquely identified as ADR-0031 (proposed); accepted command authority is ADR-0032. C004 preserves exact archived aliases and does not accept the Linux design.
+- **C004 ADR identity corrective: closed at `plans/closure/linux-execution-isolation/012-status.md`.** `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`. The Linux mechanism ADR is uniquely identified as ADR-0031 (proposed); accepted command authority is ADR-0032. C004 preserves exact archived aliases and does not accept the Linux design.
 - **C005 native test-only Bubblewrap first hop: ready.** `plans/implementation/linux-execution-isolation/013-m003-bubblewrap-test-only-first-hop-and-feature-proof.md`. Real unprivileged user/mount namespace, helper identity, private status and no-target-on-setup-failure evidence; no production backend selection. Can run concurrently with C004.
 - **C006 M003 mount backend strengthening: blocked.** `plans/implementation/linux-execution-isolation/014-m003-protected-mount-view-and-git-metadata-backend.md`. Requires C004 closure, *separate explicit acceptance* of canonical proposed Linux ADR, M002 interface and strict-positive C005 native launch evidence. Protected nested Git/config/credential descendants and leased workspace writes need actual mount evidence.
 - **C007 M004/M005 native denial oracle: ready for fixture design only.** `plans/implementation/linux-execution-isolation/015-m004-m005-process-ipc-offline-fixture-and-denial-matrix.md`. Host proc, signals, pathname/abstract Unix sockets, inherited FD, IPv4/IPv6 TCP/UDP/DNS and required no-userns failures; actual claims blocked until real M003/M004/M005 enforcement.
@@ -65,7 +65,7 @@ The M001 initial strict-Git implementation is **blocked** by legitimate command 
 
 | Package | Status | Plan | Required proof |
 |---|---|---|---|
-| C004 | closing | `implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md` | Unique canonical ADR IDs, exact archive provenance, guard passing, no decision change |
+| C004 | closed | `implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md` | Closure `../closure/linux-execution-isolation/012-status.md`; unique identities, exact archive provenance, guard and quick verification pass, no decision change |
 | C005 | ready test-only | `implementation/linux-execution-isolation/013-m003-bubblewrap-test-only-first-hop-and-feature-proof.md` | Native first-hop positive/negative evidence, not production |
 | C006 | blocked | `implementation/linux-execution-isolation/014-m003-protected-mount-view-and-git-metadata-backend.md` | Accepted Linux ADR + qualifying C005 + real nested protection |
 | C007 | ready fixtures only | `implementation/linux-execution-isolation/015-m004-m005-process-ipc-offline-fixture-and-denial-matrix.md` | Real effect denial only when M004/M005 backend qualified |
