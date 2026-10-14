@@ -1211,8 +1211,9 @@ async fn e_fault_windows_converge_without_duplicates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn f_worktree_isolation_and_truthfulness() {
-    // Three concurrent mutation-capable Git work orders get distinct
-    // managed worktrees with independent leases/paths/provenance.
+    // Three concurrent mutation-capable Git work orders request managed
+    // worktrees. Until the contained clean/smudge-filter backend is available,
+    // each request must fail closed without materializing a Git worktree.
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -1243,39 +1244,41 @@ async fn f_worktree_isolation_and_truthfulness() {
     );
     let project_id = project_a();
     let repository_id = codegg_core::identity::RepositoryId::new();
-    let mut records = Vec::new();
-    for name in ["ws-a", "ws-b", "ws-c"] {
-        let request = codegg_core::worktree_service::CreateWorktreeRequest {
-            project_id: project_id.clone(),
-            repository_id: repository_id.clone(),
-            workspace_id: codegg_core::workspace::WorkspaceId::new_unchecked(name),
-            node_id: None,
-            repository_root: repo_dir.path().to_path_buf(),
-            base_commit: None,
-            base_path: None,
-            owner_run_id: codegg_core::identity::AgentRunId::new(),
+    let requests =
+        ["ws-a", "ws-b", "ws-c"].map(
+            |name| codegg_core::worktree_service::CreateWorktreeRequest {
+                project_id: project_id.clone(),
+                repository_id: repository_id.clone(),
+                workspace_id: codegg_core::workspace::WorkspaceId::new_unchecked(name),
+                node_id: None,
+                repository_root: repo_dir.path().to_path_buf(),
+                base_commit: None,
+                base_path: None,
+                owner_run_id: codegg_core::identity::AgentRunId::new(),
+            },
+        );
+    let (result_a, result_b, result_c) = tokio::join!(
+        service.create(&requests[0]),
+        service.create(&requests[1]),
+        service.create(&requests[2]),
+    );
+    for (workspace, result) in [("ws-a", result_a), ("ws-b", result_b), ("ws-c", result_c)] {
+        let Err(codegg_core::worktree_service::WorktreeServiceError::Git(message)) = result else {
+            panic!("{workspace} worktree must be refused without the contained Git backend");
         };
-        let (record, _lease) = service.create(&request).await.expect("worktree");
-        records.push(record);
-    }
-    assert_ne!(records[0].worktree_id, records[1].worktree_id);
-    assert_ne!(records[1].worktree_id, records[2].worktree_id);
-    assert_ne!(records[0].path, records[1].path);
-    assert_ne!(records[0].path, records[2].path);
-    let canonical_managed = managed_root
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|_| managed_root.path().to_path_buf());
-    for record in &records {
         assert!(
-            record.path.starts_with(&canonical_managed),
-            "worktree must live under the managed root"
+            message.contains("Git backend unavailable for [CleanSmudgeFilter]"),
+            "{workspace} should report the missing filter backend, got: {message}"
         );
     }
-    // No shared write root.
-    let mut paths: HashSet<_> = records.iter().map(|r| r.path.clone()).collect();
-    assert_eq!(paths.len(), 3);
-    paths.clear();
+    let listed = codegg_core::worktree::list_worktrees(repo_dir.path())
+        .await
+        .expect("list worktrees after refusals");
+    assert_eq!(
+        listed.len(),
+        1,
+        "refused requests must not materialize managed worktrees"
+    );
 
     // Dirty/conflicted attention: only clean trees are cleanup-safe; dirty
     // trees are retained, never silently cleaned.
@@ -1283,10 +1286,9 @@ async fn f_worktree_isolation_and_truthfulness() {
     assert!(!codegg_core::worktree_service::WorktreeHealth::Dirty.cleanup_safe());
     assert!(!codegg_core::worktree_service::WorktreeHealth::Conflicted.cleanup_safe());
 
-    // Cancellation during preparation and restart with an active lease are
-    // owned by the managed-worktree service (leases are independent per
-    // record above); cleanup/archive after terminal state follows the
-    // existing worktree rules (no ad-hoc directory copies in this path).
+    // Cancellation/restart ownership and cleanup/archive stay with the
+    // managed-worktree service after a contained backend is available; this
+    // fail-closed path creates no lease or worktree to clean up.
     assert_eq!(
         resolve_workspace_action(None, true, true),
         codegg_core::work_order::WorkspaceAction::UseManagedWorktree
