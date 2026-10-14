@@ -2,9 +2,9 @@
 
 Status: closed
 Primary class: invariant
-Hard dependencies: accepted ADR-0028 only.
+Hard dependencies: accepted ADR-0032 only.
 Target closure: `plans/closure/command-authorization-and-execution-boundaries/001-status.md`.
-Status and acceptance are planning declarations, not execution evidence. Source roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Repository baseline: `main` 2026-10-13 and Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8`. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. Accepted: ADR-0001/0002/0004/0016/0024; Linux mechanism ADR-0027 proposed. Closure belongs under `plans/closure/command-authorization-and-execution-boundaries/`.
+Status and acceptance are planning declarations, not execution evidence. Source roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Repository baseline: `main` 2026-10-13 and Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8`. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. Accepted: ADR-0001/0002/0004/0016/0024; Linux mechanism ADR-0031 proposed. Closure belongs under `plans/closure/command-authorization-and-execution-boundaries/`.
 
 ## 1. Objective
 

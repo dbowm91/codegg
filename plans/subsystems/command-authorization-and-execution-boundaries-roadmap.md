@@ -8,7 +8,7 @@ Long-term references:
 - `plans/002-long-term-roadmap.md`.
 - `plans/003-planning-process.md`.
 
-ADRs: accepted ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0028; proposed ADR-0027 for Linux stronger enforcement.
+ADRs: accepted ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0032; proposed ADR-0031 for Linux stronger enforcement.
 Related: `plans/subsystems/linux-execution-isolation-roadmap.md`, `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md` (historical closure not reopened).
 
 ## 1. Purpose and ownership boundary
@@ -50,7 +50,7 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 `plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is ready for a test-only route inventory/admission contract. Currently, accepted constrained Bash remains in the raw `ManagedProcessService` Landlock route while active Test/Python/Git/native routing requires an explicit `FullHost` snapshot. M004 can prove same-or-narrower scoped execution for selected tool routes, but must refuse (not auto-escalate) whenever that route cannot preserve actual obtained enforcement. Git executable/remote operations remain unavailable until independently qualified Linux containment/transport. This is not reopening M001–M003 closure.
 
-The accepted command ADR-0028 currently collides numerically with the Windows proposed ADR-0028; Linux C004 must migrate the ID with historical provenance. The decision's accepted content and permissions remain unchanged.
+C004 moved the accepted command authority to ADR-0032 with exact archived provenance. Its content and permissions remain unchanged; Windows ADR identities remain separately scoped.
 
 ### Completed M001–M003 dependency graph
 
@@ -64,11 +64,11 @@ The accepted command ADR-0028 currently collides numerically with the Windows pr
 
 ### Existing workstream dependencies
 
-- M001 Syntax-only blocker audit and policy classification: **closed**; hard dependency ADR-0028 accepted; interface independent of Linux feature rollout.
+- M001 Syntax-only blocker audit and policy classification: **closed**; hard dependency ADR-0032 accepted; interface independent of Linux feature rollout.
 - M002 Reviewer/preflight/permission/route convergence: **closed** at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`; one accepted snapshot/receipt survives broker attempts, duplicate preflight is removed, and constrained route widening fails closed.
 - M003 Cross-tool effect-equivalence/observability qualification: **closed** at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`; Linux filesystem effects, Windows GNU compile, and GitHub Actions macOS cross-target compile passed. Network/IPC claims remain explicitly unavailable without an enforcing backend.
 - Linux C001 typed Git denial/routing uses M001's written policy interface (**interface** dependency); implementation may proceed in parallel and must not pretend this closes executable Git compatibility.
-- Linux M002 composable contract depends on existing accepted ADR-0016 and ADR-0028, *not* M001 Git closure; proposed ADR-0027 gates concrete Bubblewrap backend promotion, not non-executable interface work.
+- Linux M002 composable contract depends on existing accepted ADR-0016 and ADR-0032, *not* M001 Git closure; proposed ADR-0031 gates concrete Bubblewrap backend promotion, not non-executable interface work.
 - Linux C002 contained Git workflow recovery hard-depends on real M002–M005 obtained containment for executable local filters/hooks; networked Git requires distinct M006/approved transport authority. Never treat an interface test as an actual containment proof.
 
 ## 7. Milestones
