@@ -5,7 +5,7 @@ for the C047 audit-safe slice. Production restricted-execution
 integration remains gated on a separately admitted backend (C048) and
 is explicitly NOT claimed here.
 
-Authority: ADR-0027 bounded test-only; ADR-0004 ceilings; ADR-0016
+Authority: ADR-0029 bounded test-only; ADR-0004 ceilings; ADR-0016
 platform-owned launch. C042 typed contract (`src/security/sandbox/
 guarantee.rs::negotiate`) is the negotiation gate any future backend
 must pass before an untrusted target starts.

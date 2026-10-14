@@ -17,7 +17,7 @@ before any untrusted target starts. Strict profiles are never satisfied
 by broad reads, `Unrestricted` network never satisfies offline,
 unknown/downgraded tiers never satisfy the no-host-mutation
 prohibition, test-only candidates never report production `Enforced`,
-and parent ceilings hold. No public profile was added (ADR-0028 stays
+and parent ceilings hold. No public profile was added (ADR-0030 stays
 proposed), no backend registered, no Unix behavior changed.
 
 ## 2. Requirement-to-evidence matrix
@@ -30,7 +30,7 @@ proposed), no backend registered, no Unix behavior changed.
 | Network separation | Offline requires proven WFP fact; `Unrestricted` refuses | pass | Matches `SandboxEnforcement` truthful reporting |
 | Tier/fallback prohibition | Unknown/downgraded/unproven-mutation refusals | pass | No vendor-label inference |
 | Unix status/config preserved | No `SandboxConfig`/status-frame changes; existing sandbox tests green | pass | Internal-only addition |
-| No public broad-read profile without ADR-0028 | No `SandboxProfile` variant, no serde/config change; `child_sandbox_allowed` reused | pass | Guard + code review |
+| No public broad-read profile without ADR-0030 | No `SandboxProfile` variant, no serde/config change; `child_sandbox_allowed` reused | pass | Guard + code review |
 | Docs updated after code | `architecture/security.md` + `architecture/process-tool-execution-ownership.md` paragraphs | pass | Internal contract only |
 
 ## 3. Production implementation evidence
@@ -43,7 +43,7 @@ proposed), no backend registered, no Unix behavior changed.
 - `src/security/sandbox.rs`: `pub mod guarantee;` + re-exports; no
   other changes.
 - Docs: one paragraph each in `architecture/security.md` (negotiation
-  rules, ADR-0028 not authorized) and
+  rules, ADR-0030 not authorized) and
   `architecture/process-tool-execution-ownership.md` (future Windows
   gate, no fallback/ceiling broadening).
 - No storage migration, no protocol/DTO, no runtime dispatch, no
@@ -133,7 +133,7 @@ No medium/high/critical findings.
 Milestone closed. C042 was the hard dependency for C043 (contract)
 and C047 (audit): C043's contract gate is now satisfied (host gate
 still blocks — see C043 closure); the C047 audit slice is closed
-herewith. No public broad-read work is unblocked (ADR-0028 still
+herewith. No public broad-read work is unblocked (ADR-0030 still
 proposed). C045/C046/C048 remain blocked on their separate ADRs and
 positive-backend gates.
 

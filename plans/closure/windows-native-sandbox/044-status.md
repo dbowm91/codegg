@@ -155,7 +155,7 @@ gate (strict-positive C044) has now definitively failed closed — no
 provisioning ADR may be premised on this topology. C046 stays
 blocked (no selected candidate). C048 stays blocked (no
 strict-positive backend on either line). No write-only outcome exists
-to promote; ADR-0028 acceptance is untouched.
+to promote; ADR-0030 acceptance is untouched.
 
 ## 12. Registry updates
 

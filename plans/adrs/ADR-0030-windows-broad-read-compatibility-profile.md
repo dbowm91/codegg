@@ -1,9 +1,9 @@
-# ADR-0028 — Explicit broad-read Windows compatibility profile
+# ADR-0030 — Explicit broad-read Windows compatibility profile
 
 Status: proposed — **not authorized for implementation or user-facing selection**
 Date: 2026-10-13
 Decision owners: Codegg maintainers
-Related: ADR-0004, ADR-0016, ADR-0027; plans/subsystems/windows-native-sandbox-roadmap.md; section 27/29 of plans/000-long-term-specification.md.
+Related: ADR-0004, ADR-0016, ADR-0029; plans/subsystems/windows-native-sandbox-roadmap.md; section 27/29 of plans/000-long-term-specification.md.
 
 ## Context and drivers
 
