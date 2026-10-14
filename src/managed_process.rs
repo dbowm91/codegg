@@ -2445,6 +2445,7 @@ mod tests {
             workspace.path().to_owned(),
             ProcessProvenance::new("c006-native", "managed-process-handoff"),
         );
+        request.timeout = Some(Duration::from_secs(15));
         request.sandbox = SandboxRequest::Required(spec.clone());
 
         let test_exe = std::env::current_exe().expect("unit test executable");
