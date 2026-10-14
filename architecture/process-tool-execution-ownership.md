@@ -93,7 +93,7 @@ surfaces, which spawn nothing and so are deliberately not manifest entries:
 | `src/interactive_process.rs` | Canonical interactive | Only PTY direct-spawn owner (M001). Every spawn holds a scheduler `AdmissionController` permit acquired before `openpty` (ManagedProcess resource class, no exclusivity key); cwd/env derive from the immutable `ExecutionContext`; bounded sequence-numbered scrollback; input/resize/terminate over the master fd; child process-group (setsid leader) cleanup with SIGTERM-then-SIGKILL escalation on terminate/shutdown. Handles are ephemeral UUIDs and do not survive daemon restart. No model-facing tool is registered here. |
 | `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
 | `src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
-| `src/tool/bash.rs`, `src/scheduler/` | Scheduler/adapter | Job admission and domain output remain local; managed argv attempts use `ManagedProcessService`. `TestJobExecutor` delegates to the domain-owned `test_runner::runner`; the typed Test tool remains FullHost-only while its runner is migrated to the canonical managed process owner (plan 008). |
+| `src/tool/bash.rs`, `src/scheduler/` | Scheduler/adapter | Job admission and domain output remain local; managed argv attempts use `ManagedProcessService`. `TestJobExecutor` delegates to `test_runner::runner`, which streams through `ManagedProcessService`; the accepted profile is stored in the durable Test payload and applied to the child launch. ReadOnly is refused before submission because test commands write build and report artifacts. |
 | `src/python_script/` | Scheduler/managed adapter | `PythonJobExecutor` uses `ManagedProcessService` and mode/code-derived Landlock policy. The typed Python tool carries the validated accepted `SandboxProfile` through its durable job payload; the process owner refuses constrained execution if the sandbox request is disabled. ReadOnly transform is refused before submission. |
 | `src/core/daemon_human_shell.rs`, `src/shell/daemon.rs` | Daemon human-shell owner | Resolves authenticated principal and registered workspace/project/session scope, applies human confirmation and persisted sandbox policy, reserves the shared scheduler process permit, and owns bounded run/read/cancel handles. Finite child lifecycle remains in `ManagedProcessService`; workspace-bound remote-node execution is refused. |
 | `src/tui/commands/shell.rs`, `src/tui/runtime/command_dispatch.rs` | Human-shell client adapter | Negotiates `human_shell.v1`, submits bounded typed create/read/cancel requests, and renders daemon results. It does not choose cwd or shell environment and has no local process fallback. |
@@ -119,11 +119,11 @@ The command M004 route audit in
 lifecycle ownership from authorization and sandbox equivalence. Scheduler
 admission, timeout supervision, or ManagedProcessService use alone does not
 prove that a specialized tool preserved the immutable accepted sandbox
-profile. The typed Test route remains on its domain-specific process owner and
-is not eligible for constrained promotion until the accepted profile and
-observed effects are carried end to end. Python applies its mode policy under
-the accepted filesystem profile ceiling; this establishes no network or IPC
-isolation.
+profile. Test and Python preserve the accepted filesystem profile through
+their durable scheduler payload and managed child launch; the test-runner
+parser, logs, reports, stall supervision, and cancellation remain above that
+owner. WorkspaceWrite effects are qualified separately. This establishes no
+network or IPC isolation.
 
 ## Safety and compatibility
 

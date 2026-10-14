@@ -331,6 +331,7 @@ fn test_payload() -> JobPayload {
         cwd: Some("/tmp".into()),
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
     }
 }
 

@@ -862,6 +862,7 @@ async fn run_inner(
         output_tx,
     ));
     let status_task = match (status_reader, status_ack_writer, &sandbox) {
+        #[cfg(target_os = "linux")]
         (Some(reader), Some(ack_writer), SandboxRequest::Required(spec))
             if spec.linux_protected_mount_view =>
         {
@@ -2035,6 +2036,8 @@ fn interpret_sandbox_status_for_termination(
     sandbox: &SandboxRequest,
     termination: TerminationReason,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = termination;
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
     }

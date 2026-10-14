@@ -3532,6 +3532,7 @@ mod tests {
             cwd: None,
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
         };
         assert!(matches!(
             exec.validate(&job),

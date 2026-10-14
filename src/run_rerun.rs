@@ -144,6 +144,7 @@ pub fn to_job(spec: ValidatedRerun, workspace_id: WorkspaceId) -> NewJob {
             cwd: Some(spec.cwd.to_string_lossy().into_owned()),
             scope: spec.scope,
             parent_run_id: Some(spec.parent_run_id),
+            sandbox_profile: None,
         },
         resource_request: ResourceRequest::for_kind(JobKind::Test),
         timeout: None,

@@ -1443,6 +1443,7 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

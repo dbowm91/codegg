@@ -33,6 +33,7 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
             cwd: Some("/tmp".into()),
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

@@ -570,6 +570,7 @@ impl BrokerCallback for BrokerAdapter {
                         cwd: resolved_cwd.clone(),
                         scope: cfg.scope.clone(),
                         parent_run_id: None,
+                        sandbox_profile: None,
                     },
                     timeout,
                 )
@@ -2369,6 +2370,7 @@ mod tests {
                 cwd: None,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

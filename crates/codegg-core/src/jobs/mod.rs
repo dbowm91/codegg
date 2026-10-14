@@ -1101,6 +1101,9 @@ pub enum JobPayload {
         /// other sensitive inputs are never carried in this payload.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_run_id: Option<crate::run_store::RunId>,
+        /// Accepted sandbox ceiling captured before scheduler admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
     },
     ManagedArgv {
         argv: Vec<String>,

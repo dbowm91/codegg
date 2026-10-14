@@ -21,8 +21,10 @@ M004 plan 007 closed the route inventory and fail-closed admission predicate. `M
 
 - Python validates the accepted Allow receipt and matching policy revision, stores the accepted `SandboxProfile` in the scheduler payload, and applies it at `ManagedProcessService`. Its mode-built sandbox is equal or narrower; ReadOnly transform is rejected before scheduler submission.
 - `ManagedProcessService` now has a profile handoff for scheduler jobs and rejects a constrained profile paired with a disabled sandbox before launch.
-- Focused local profile-enabled Python execution and scheduler integration tests pass. Full end-to-end profile handoff through a live scheduler and hosted native qualification remain required.
-- Test jobs still use `TestJobExecutor` and the domain test runner, which owns a direct child lifecycle and does not apply the accepted profile. The typed Test route therefore remains FullHost-only until its streaming owner is migrated.
+- A live model-facing Python tool call now passes accepted WorkspaceWrite through the durable scheduler payload, into `ManagedProcessService`, and returns the script's output. The test also verifies fail-closed behavior when the trusted helper is absent; the positive native case uses the installation-owned sibling helper.
+- Test validates and persists the accepted profile in its durable job payload. `TestJobExecutor` carries it into the domain runner, whose streaming child lifecycle now uses `ManagedProcessService`; output parsing, redacted logs, reports, run records, timeout, stall, and cancellation handling remain in the domain runner.
+- The live Test tool scheduler fixture verifies the accepted profile survives into the durable payload. A native WorkspaceWrite fixture proves a test process can write inside its workspace but cannot create a sibling marker. ReadOnly refuses before submission.
+- Hosted exact-head qualification remains required for the Linux protected-mount lane, Windows cross-target/diagnostic lane, and macOS target build.
 - Bash managed processes already carry accepted authorization directly into `ManagedProcessService`.
 
 ## 4. Invariants that must not regress
@@ -51,8 +53,8 @@ M004 plan 007 closed the route inventory and fail-closed admission predicate. `M
 
 ## 7. Ordered work packages
 
-1. **Python profile handoff (implementation in progress):** validate, persist profile, enforce ReadOnly/WorkspaceWrite mode ceiling, attach profile to `ManagedProcessService`, and close the live-scheduler plus hosted qualification gaps.
-2. **Test process ownership:** move the test runner child lifecycle to `ManagedProcessService` streaming; preserve its parser and cancellation/stall semantics.
+1. **Python profile handoff:** validate, persist profile, enforce ReadOnly/WorkspaceWrite mode ceiling, attach profile to `ManagedProcessService`, and pass local live-scheduler qualification. Hosted exact-head qualification remains.
+2. **Test process ownership:** move the test runner child lifecycle to `ManagedProcessService` streaming; preserve its parser and cancellation/stall semantics; pass local live-scheduler and constrained-effect qualification. Hosted exact-head qualification remains.
 3. **Security matrix:** exercise ReadOnly, WorkspaceWrite, FullHost, unavailable backend, missing/mismatched receipt, and no-target behavior.
 4. **Cross-platform/docs:** update execution ownership, architecture, and tool-execution skill; qualify Linux/macOS native builds/tests and Windows compile/hosted CI.
 5. **Closure:** record exact test and CI evidence; update registry and roadmap without reopening plan 007's historical closure.

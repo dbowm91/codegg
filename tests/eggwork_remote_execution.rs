@@ -523,6 +523,7 @@ fn routing_sends_remote_target_to_eggwork_and_keeps_local() {
         cwd: None,
         scope: None,
         parent_run_id: None,
+        sandbox_profile: None,
     };
     assert_eq!(
         executor_kind_for_job(&remote_test),

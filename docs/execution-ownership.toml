@@ -132,7 +132,7 @@ reason = "ManagedProcessService is invoked only by ManagedArgvExecutor"
 [[site]]
 path = "src/test_runner/runner.rs"
 owner = "definition_or_adapter"
-reason = "resolve_and_run_test is invoked only by TestJobExecutor; typed model-facing Test admission requires a valid accepted FullHost receipt and rejects constrained snapshots before job submission because this child launch does not consume accepted sandbox-profile evidence (command M004)"
+reason = "resolve_and_run_test is invoked only by TestJobExecutor; typed model-facing Test admission carries the accepted WorkspaceWrite profile through the scheduler and launches the test child through ManagedProcessService (command M004)"
 
 [[site]]
 path = "src/job_dispatcher.rs"

@@ -193,7 +193,7 @@ impl Tool for TestTool {
         }
         let request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         let max_report_bytes = request.max_report_bytes;
-        let (summary, _) = self.run_scheduled_test(request).await?;
+        let (summary, _) = self.run_scheduled_test(request, None).await?;
         Ok(match max_report_bytes {
             Some(max_report_bytes) => truncate_report_text(&summary, max_report_bytes),
             None => summary,
@@ -243,10 +243,9 @@ impl Tool for TestTool {
             });
         }
         let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
-        crate::tool::authorization::admit_full_host_specialized_route(
+        let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
                 .and_then(|context| context.execution_authorization.as_ref()),
-            crate::tool::authorization::SpecializedExecutionRoute::Test,
         )
         .map_err(|reason| match reason {
             crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
@@ -257,6 +256,12 @@ impl Tool for TestTool {
                 ToolError::Permission(reason.to_string())
             }
         })?;
+        let profile = snapshot.sandbox_profile();
+        if profile == codegg_core::approval::SandboxProfile::ReadOnly {
+            return Err(ToolError::BackendUnavailable(
+                "test execution requires the accepted WorkspaceWrite profile; select it before running tests".into(),
+            ));
+        }
         request.session_id = request
             .session_id
             .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
@@ -269,7 +274,7 @@ impl Tool for TestTool {
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .unwrap_or_default(),
         );
-        let (output, status) = match self.run_scheduled_test(request).await {
+        let (output, status) = match self.run_scheduled_test(request, Some(profile)).await {
             Ok(pair) => pair,
             Err(ToolError::Timeout(message)) => {
                 // M002: dispatched then reaped by the deadline — emit
@@ -451,6 +456,7 @@ impl TestTool {
     async fn run_scheduled_test(
         &self,
         request: TestRunRequest,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<(String, crate::scheduler::ExecutorStatus), ToolError> {
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
@@ -482,6 +488,7 @@ impl TestTool {
                         cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                         scope: Some(resolved.scope_label),
                         parent_run_id: None,
+                        sandbox_profile,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -767,10 +774,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn constrained_test_route_refuses_before_scheduler_submission() {
+    async fn constrained_test_route_reaches_scheduler_admission() {
         let tool = TestTool::default();
         let error = tool
             .execute_structured(json!({"scope": "auto"}), Some(constrained_context()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::Execution(_)));
+    }
+
+    #[tokio::test]
+    async fn readonly_test_route_refuses_before_scheduler_submission() {
+        let tool = TestTool::default();
+        let mut context = constrained_context();
+        context
+            .execution_authorization
+            .as_mut()
+            .expect("accepted authority")
+            .snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::ReadOnly,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        let error = tool
+            .execute_structured(json!({"scope": "auto"}), Some(context))
             .await
             .unwrap_err();
         assert!(matches!(error, ToolError::BackendUnavailable(_)));
