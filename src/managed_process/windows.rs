@@ -1469,7 +1469,15 @@ mod tests {
         )?;
         let wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 30_000) };
         if wait == WAIT_TIMEOUT {
-            let _ = job.terminate(1);
+            job.terminate(1)?;
+            if unsafe { WaitForSingleObject(process.as_raw_handle() as _, 5_000) }
+                != windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "WRITE_RESTRICTED child survived Job termination",
+                ));
+            }
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "WRITE_RESTRICTED child exceeded 30 seconds",
@@ -1783,15 +1791,29 @@ mod tests {
             ) {
                 unsafe {
                     let _ = TerminateProcess(process.as_raw_handle() as _, 1);
-                    let _ = WaitForSingleObject(process.as_raw_handle() as _, u32::MAX);
+                }
+                if unsafe { WaitForSingleObject(process.as_raw_handle() as _, 5_000) }
+                    != windows_sys::Win32::Foundation::WAIT_OBJECT_0
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "C052 failed to reap a pre-resume child within five seconds",
+                    ));
                 }
                 println!("C052_VARIANT {label} pre_resume=failed error={error}");
                 continue;
             }
             let wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 30_000) };
             if wait == WAIT_TIMEOUT {
-                let _ = job.terminate(1);
-                let _ = unsafe { WaitForSingleObject(process.as_raw_handle() as _, u32::MAX) };
+                job.terminate(1)?;
+                if unsafe { WaitForSingleObject(process.as_raw_handle() as _, 5_000) }
+                    != windows_sys::Win32::Foundation::WAIT_OBJECT_0
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "C052 timed-out child survived Job termination",
+                    ));
+                }
                 println!("C052_VARIANT {label} outcome=alive_without_child_report");
             } else if wait != WAIT_OBJECT_0 {
                 println!("C052_VARIANT {label} wait=failed error={}", last_error());
