@@ -113,3 +113,89 @@ A registry/reference search found no registered downstream plan with a hard or s
 - The four current-main TUI failures and optional-feature shell failure are recorded as unresolved qualification findings with upstream ownership.
 - No downstream plans were unblocked; no unrelated corrective was started.
 - Exact hosted CI and Desktop E2E run URLs, SHA and final statuses are recorded above.
+
+## 13. Re-qualification on current main `f7ac5228` (merge `6521560e`)
+
+This section appends new integration evidence without rewriting sections 1–12.
+Historical `667005a6` qualification and hosted runs `38482051870`/`38482058408`
+remain the evidence for that base.
+
+- Merge parents: branch tip `8a08a623` + `origin/main` `f7ac5228`; merge commit
+  `6521560e` on `planning/agent-tool-runtime-reconciliation`. `origin/main` had
+  moved 34 commits since `667005a6` (command authorization + Linux isolation
+  planning). No force-push; no lost commits.
+- Conflict disposition (exact, no unrelated history loss):
+  - `src/tool/backend.rs`, `src/tool/broker.rs`,
+    `src/scheduler/tool_program_executor.rs`, 13 test initializers: kept BOTH
+    `parent_tool_authority` (C002/M003 descendant ceiling) AND
+    `execution_authorization` (main command-authorization M002). Broker
+    `execution_context_for_attempt` forwards both; `From<ToolExecutionContext>`
+    carries both; test `make_ctx` initializers carry both `None`s.
+  - `src/agent/tool_batch.rs` `build_tool_execution_context`: kept BOTH the
+    delegation-ceiling mint (`parent_tool_authority`) and the
+    `execution_authorization` (`snapshot`/`receipt`/`command_preflight`) threading.
+  - `src/agent/tool_batch.rs` batch dispatch: kept HEAD no-`mcp__` fork per the
+    M001/C001 guard (`check_mcp_broker_adapter.py` forbids `mcp_tool_calls` and
+    execution-routing `starts_with("mcp__")`); dropped main's direct
+    `McpService::call_tool` fork with its caller-owned lock retry rather than
+    reintroducing a broker bypass. Kept main's 4-tuple
+    `(idx, tc, receipt, command_preflight)` plus the `child_allowed_tools`
+    binding, so both authorities reach the broker context.
+  - `plans/registry.md`: kept the HEAD Windows row and added main's command
+    authorization + Linux isolation rows.
+- Narrow rebase fixes (only touched by the struct-field addition, no authority
+  change): `src/tool/mcp_adapter.rs` test helper and
+  `tests/agent_tool_m003_descendant.rs` fixture gain
+  `execution_authorization: None`.
+- Verification on the merged tree (macOS arm64, Rust 1.89, `CARGO_BUILD_JOBS=2`):
+  - `python3 scripts/check_mcp_broker_adapter.py`,
+    `check_tool_descriptor_snapshot.py`, `check_descendant_tool_ceiling.py`,
+    `check_tool_disclosure_wire.py`, `check_tool_retry_admission.py`,
+    `scripts/test_tool_runtime_guards.py` — all pass, including all five
+    negative mutation fixtures.
+  - `bash scripts/verify.sh quick` — passes (fmt, all guards, workspace
+    `cargo check --all-targets`).
+  - `cargo fmt --all -- --check` — passes.
+  - `cargo check --workspace --all-targets --locked` — passes.
+  - Focused seven binaries (`agent_tool_m002_discovery`,
+    `agent_tool_m003_descendant`, `provider_tool_disclosure_wire`,
+    `agent_loop_harness`, `fake_eggsearch_mcp`, `tool_broker_integration`,
+    `subagent`) with `--no-fail-fast` — 172 passed, 1 failed:
+    `agent_loop_harness::shell_escalation_ask_waits_for_explicit_approval_before_dispatch`.
+    The same test fails identically on a clean `origin/main` worktree at
+    `f7ac5228`, so the merge introduces no new failure; ownership is the
+    upstream command-authorization workstream.
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings` — fails on
+    upstream `too_many_arguments` in `src/live_execution_audit.rs:104,135` and
+    `src/tool/bash.rs:282`, all from main's command-authorization code; this
+    branch's diff touches none of those functions. No unrelated fix attempted
+    per C003 non-goals.
+  - The four prior TUI panel tests fail identically in isolation on the merged
+    tree (0 passed, 4 failed), same upstream ownership as sections 4/10.
+  - Full `cargo nextest run --workspace --locked --profile ci --no-fail-fast`
+    was attempted locally and exceeded a 20-minute timeout without completing;
+    no green claim is made from it. The targeted re-runs above are the exact
+    merged-tree evidence.
+  - Hosted `CI / verify` and Desktop E2E were NOT re-run on merge SHA
+    `6521560e`; no green is claimed for unrun hosted workflows. Prior exact-SHA
+    hosted evidence (`453ecd1b`) stands for the `667005a6` base only.
+- Unresolved findings carried forward (all upstream, none blocking the
+  tool-runtime invariant itself):
+  - Medium — workspace Clippy `too_many_arguments` on main-owned audit/bash
+    functions (see above).
+  - Medium — `shell_escalation_ask` AllowOnce dispatch gap, reproduced on clean
+    `origin/main` `f7ac5228`; owned by command authorization.
+  - Medium — four TUI panel regressions, reproduced in isolation on the merged
+    tree; owned by TUI workstream.
+  - Medium — no hosted CI/Desktop E2E on the merge SHA; strict closure withheld
+    until exact-SHA hosted runs are green.
+- Disposition: C003 REMAINS conditionally closed at merge `6521560e`. C001/C002
+  remain closed. The tool-runtime guard/invariant acceptance criteria are met on
+  the merged tree; strict all-suite and hosted closure are withheld for the
+  named upstream failures. Merging this branch does not worsen `main`: every
+  merged-tree failure reproduces on clean `origin/main`.
+- Unblock audit (registry blocked-work + subsystem dependency graphs, same
+  commit): no registered plan lists this C003 or corrective addendum as a hard
+  or interface dependency. The blocked items (Linux M001/C002/C003/M003–M008,
+  search M001/M002, tool-advisor M004/M005) wait on unrelated native/backend
+  gates. Nothing is newly unblocked; no corrective follow-up was registered.

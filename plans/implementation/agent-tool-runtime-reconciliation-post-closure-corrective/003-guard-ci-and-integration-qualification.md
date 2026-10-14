@@ -1,6 +1,6 @@
 # Agent Tool Runtime Post-Closure Corrective C003 — Guard, CI and Integration Qualification
 
-Status: conditionally closed — accepted at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md`; current-main full suite has four reproducible upstream TUI failures, hosted CI failed on upstream Clippy, and Desktop E2E failed the M004 final transcript narration assertion
+Status: conditionally closed — accepted at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md` (including §13 re-qualification on merge `6521560e`); current-main full suite has four reproducible upstream TUI failures, hosted CI failed on upstream Clippy, and Desktop E2E failed the M004 final transcript narration assertion; merge re-qualification adds upstream Clippy `too_many_arguments` and `shell_escalation_ask` reproductions on clean `origin/main`, with no hosted runs on the merge SHA
 
 Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` implementation audit; current `main` at audit `b9ba494c1b21638c2e2f660301ba207ce8859682`; final integration base `667005a66e491efae6a28fca43931e05e94214f8`.
 
