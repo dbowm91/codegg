@@ -4,7 +4,7 @@ Status: closed blocked (both paired launches denied by hosted runner)
 Source implementation plan: `plans/implementation/windows-native-sandbox/052-two-hop-native-launch-differential.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: `7a638dd2`, `9b464bef`, `391a7cca`, `15b221f0`, `74ddf655`, `3e8d77e7`, `829ef60e` — bounded same-host token-flag differential and diagnostics
+Implementation commits: `17e935b2`, `12def7f1`, `c7743da3`, `13218f40`, `be62f9be`, `611904fd`, `31509f1f` — bounded same-host token-flag differential and diagnostics (rebased SHAs)
 
 ## 1. Executive finding
 

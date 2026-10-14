@@ -4,7 +4,7 @@ Status: closed (negative source/ABI gate; native re-probe not authorized)
 Source implementation plan: `plans/implementation/windows-native-sandbox/053-mxc-api-delta-and-strict-reentry-gate.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: `162c0c53` — close C053 MXC source gate
+Implementation commits: `f06f29c7` — close C053 MXC source gate (rebased SHA)
 
 ## 1. Executive finding
 

@@ -4,7 +4,7 @@ Status: closed blocked (host denied restricted-token child creation)
 Source implementation plan: `plans/implementation/windows-native-sandbox/050-write-restricted-disposable-root-feasibility.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: `0db2e5f8`, `7a638dd2`, `9b464bef`, `391a7cca`, `15b221f0`, `74ddf655`, `3e8d77e7`, `829ef60e` — feature-gated disposable-root probe and bounded-launch corrections
+Implementation commits: `ec77b062`, `17e935b2`, `12def7f1`, `c7743da3`, `13218f40`, `be62f9be`, `611904fd`, `31509f1f` — feature-gated disposable-root probe and bounded-launch corrections (rebased SHAs)
 
 ## 1. Executive finding
 

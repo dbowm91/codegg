@@ -4,7 +4,7 @@ Status: closed (no candidate; no production admission)
 Source implementation plan: `plans/implementation/windows-native-sandbox/054-windows-sandbox-successor-disposition-and-handoff.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: `829ef60e` — exact-SHA C050/C052 hosted evidence; this closure records the no-candidate disposition
+Implementation commits: `31509f1f`, `3c097eab` — C050/C052 diagnostics and no-candidate disposition (rebased SHAs; hosted run retains its historical exact SHA below)
 
 ## 1. Executive finding
 

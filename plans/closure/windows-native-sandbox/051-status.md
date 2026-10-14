@@ -4,7 +4,7 @@ Status: closed blocked (C050 strict-positive prerequisite not met)
 Source implementation plan: `plans/implementation/windows-native-sandbox/051-disposable-stage-native-toolchain-feasibility.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: `9b464bef` — bounded C050/C052 probe infrastructure and dependency evidence
+Implementation commits: `12def7f1` — bounded C050/C052 probe infrastructure and dependency evidence (rebased SHA)
 
 ## 1. Executive finding
 
