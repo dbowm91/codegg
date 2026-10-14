@@ -148,6 +148,7 @@ fn accepted_context(
         sandbox_profile: None,
         execution_audit: None,
         audit_emitter: None,
+        execution_authorization: None,
     };
     let mut context = to_core_context(Some(&direct), workspace_id, program_id).unwrap();
     context.contract_snapshot_json = contract_json;

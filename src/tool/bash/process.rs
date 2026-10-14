@@ -56,6 +56,14 @@ use crate::error::ToolError;
 /// a runaway command's worth of output.
 const TIMEOUT_OUTPUT_BYTES: usize = 4000;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawShellResultMetadata {
+    pub exit_code: Option<i32>,
+    pub output_truncated: bool,
+    pub cleanup: &'static str,
+    pub helper: &'static str,
+}
+
 /// Tail `data` to [`TIMEOUT_OUTPUT_BYTES`], marking that it was truncated.
 ///
 /// The tail is kept rather than the head: on a timeout the most recent
@@ -327,12 +335,34 @@ impl BashTool {
     /// Execute a command via raw shell (`sh -c`). This is the original behavior
     /// used by observe mode and as a fallback when active routing is disabled
     /// or dispatch fails.
+    #[cfg(windows)]
     pub(crate) async fn execute_via_raw_shell(
         &self,
         command: &str,
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
+        let (result, output, _, _) = self
+            .execute_via_raw_shell_with_authorization(command, canonical_workdir, timeout, None)
+            .await?;
+        Ok((result, output))
+    }
+
+    pub(crate) async fn execute_via_raw_shell_with_authorization(
+        &self,
+        command: &str,
+        canonical_workdir: Option<&Path>,
+        timeout: Duration,
+        authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    ) -> Result<
+        (
+            String,
+            std::process::Output,
+            crate::managed_process::SandboxExecutionOutcome,
+            RawShellResultMetadata,
+        ),
+        ToolError,
+    > {
         let cwd_owned = canonical_workdir
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok());
@@ -379,6 +409,7 @@ impl BashTool {
             cwd,
             crate::managed_process::ProcessProvenance::default(),
         );
+        request.execution_authorization = authorization;
         #[cfg(windows)]
         if let Some(raw_command) = raw_cmd_command {
             request = request.with_raw_command(raw_command);
@@ -453,22 +484,27 @@ impl BashTool {
             crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
             | crate::managed_process::SandboxExecutionOutcome::Disabled => {}
         }
+        let mut output_truncated = managed.stdout.is_truncated() || managed.stderr.is_truncated();
         if !stdout.is_empty() {
-            result.push_str(&super::output::truncate_output(
+            let bounded = super::output::truncate_output(
                 &stdout,
                 self.max_output_lines,
                 self.max_output_bytes,
-            ));
+            );
+            output_truncated |= bounded != stdout;
+            result.push_str(&bounded);
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n--- stderr ---\n");
             }
-            result.push_str(&super::output::truncate_output(
+            let bounded = super::output::truncate_output(
                 &stderr,
                 self.max_output_lines,
                 self.max_output_bytes,
-            ));
+            );
+            output_truncated |= bounded != stderr;
+            result.push_str(&bounded);
         }
         if managed.stdout.is_truncated() || managed.stderr.is_truncated() {
             result.push_str("\n[output truncated by managed process limits]");
@@ -483,7 +519,24 @@ impl BashTool {
             managed.stdout.as_bytes(),
             managed.stderr.as_bytes(),
         );
-        Ok((result, output))
+        let metadata = RawShellResultMetadata {
+            exit_code: managed.exit_status.code(),
+            output_truncated,
+            cleanup: if managed.cleanup.errors.is_empty() {
+                "complete"
+            } else {
+                "errors"
+            },
+            helper: if matches!(
+                managed.sandbox,
+                crate::managed_process::SandboxExecutionOutcome::Enforced { .. }
+            ) {
+                "codegg-sandbox-helper"
+            } else {
+                "none"
+            },
+        };
+        Ok((result, output, managed.sandbox, metadata))
     }
 
     /// Submit a planner-validated test argv to the daemon scheduler. The
@@ -954,6 +1007,10 @@ impl BashTool {
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(timeout);
+        let exec = match audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()) {
+            Some(authorization) => exec.with_execution_authorization(authorization),
+            None => exec,
+        };
         // M002: thread the daemon-built audit pair so this routed
         // mutation emits the single executor-owned `git_operation`
         // event. Absent in legacy/harness callers (silent).
@@ -1284,6 +1341,12 @@ impl BashTool {
         timeout: Duration,
         audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
+        if !active_route_matches_authorization(audit_ctx) {
+            return Err(ToolError::Permission(
+                "active command route cannot prove the accepted constrained sandbox; route refused"
+                    .into(),
+            ));
+        }
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
                 argv,
@@ -1649,9 +1712,54 @@ pub(crate) struct BashBackgroundCtx {
     pub owner_principal: Option<String>,
 }
 
+fn active_route_matches_authorization(
+    audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
+) -> bool {
+    audit_ctx
+        .and_then(|ctx| ctx.execution_authorization.as_ref())
+        .is_none_or(|authorization| authorization.snapshot.sandbox_profile().is_full_host())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_routes_require_an_explicit_full_host_snapshot() {
+        let mut context = crate::tool::backend::ToolExecutionContext::with_backend(
+            crate::tool::backend::ToolBackendKind::Native,
+        );
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed("yolo", None),
+                command_preflight: None,
+            });
+        assert!(!active_route_matches_authorization(Some(&context)));
+
+        let mut full_host = context.clone();
+        if let Some(authorization) = full_host.execution_authorization.as_mut() {
+            authorization.snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+        }
+        assert!(active_route_matches_authorization(Some(&full_host)));
+        assert!(active_route_matches_authorization(None));
+    }
 
     #[test]
     fn environment_policy_preserves_expected_vars() {

@@ -572,10 +572,18 @@ tool output so that header is the expand affordance.
 **Working strip** (`render_working_strip`). One throbber row plus one row per
 advertised subagent, reserved from the prompt allocation and carved back off
 like the hint line and the todo strip, so it sits *between the transcript and
-the composer* and reads as part of the buffer. It draws only while
-`SessionStatus::Working`; an idle buffer gets the rows back. Row 0 is the
+the composer* and reads as part of the buffer. It draws while
+`SessionStatus::Working` **or** while `SessionState::stopped_turn`; a buffer
+with nothing running and nothing stopped gets the rows back. A stopped turn
+keeps the strip deliberately: the user stopped it on purpose, and the very
+next question is whether it is still stopped and how to carry on, so an
+indicator that vanishes the instant work stops answers neither. Row 0 is the
 throbber (the activity line, or `⠋ working Ns` during the window before the
-first event names a phase); the rows below it are clickable and their hit
+first event names a phase), followed by the key that changes the situation —
+`x to stop`, `press x again to stop agent` while a confirmation is armed, or
+`■ stopped · press x or /start` once it is. A long pause with no way out is
+what reads as a dropped connection, so the row names the exit even while the
+agent is working. The rows below it are clickable and their hit
 rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
@@ -725,6 +733,92 @@ through the TUI `CoreClient`.
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
   constants). Rapid input coalesces; rapid resize is last-wins.
+
+**The VT screen retains a bounded history, and the viewport is a controller
+concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
+`vt100::Parser::new`. A zero-length history is not a tuning choice: it destroys
+every row the moment it scrolls off the top, which makes scrolling, selection,
+and copying output impossible — the reader can only ever address the current
+screen, which is precisely the text that is about to scroll away. Bounded rather
+than unbounded because a terminal view is long-lived and daemon-backed.
+
+`viewport_offset` (0 = following the tail) and the Helix cursor live on
+`InteractiveTerminalView`, not on either surface, because box and panel share one
+controller. Selection is an anchor/head pair in **viewport** coordinates rather
+than absolute buffer coordinates: scrolling shifts the viewport by `delta`, so
+stored points shift by the same `delta` through `SelectionState::translate`,
+which keeps a selection on the same text while the bounded history evicts rows
+underneath it. `sync_viewport` runs at the head of every read and clamps the
+offset first — `Grid::visible_rows` computes `scrollback.len() - offset`
+unguarded, so a stale offset is a panic rather than a clamp, and
+`clear_scrollback` is exactly how one arises (it rebuilds the emulator, so it
+also resets the cursor, offset, selection, and scrub overlay; a held selection
+would otherwise silently re-point at whatever lands on those cells).
+
+**The Helix selection rules live in one coordinate-agnostic module.**
+`src/tui/helix_selection.rs` owns `SelectionState<P>` and nothing else: it does
+not know what a point *is*. The terminal instantiates `P = (u16, u16)` viewport
+cells; the editor would instantiate it with byte offsets, which is why the two
+surfaces can share the rules without sharing coordinates. Three consequences are
+load-bearing, and all three are rules rather than drawing details:
+
+- **`v` is a mode, `x` is an action.** Character selection stores a head that
+  follows the cursor, so a bare movement extends it. Line selection pins its
+  head at arm time, so a bare movement only relocates the cursor and disarms
+  growth. That is what lets "press `x` again for the next line" and "press `x`
+  on the line I moved to" be the same key — the `growing` flag distinguishes
+  them, and comparing the cursor to the anchor cannot, because after one growth
+  the cursor is legitimately no longer on the anchor.
+- **The head is stored, not read from the cursor.** Storing it is what lets
+  line mode refuse to follow the cursor at all.
+- **Re-pinning after a scroll is a separate verb.** `translate` moves the anchor
+  and head with the content, then `repin_cursor` puts the cursor back on the
+  edge it walked off — following the head only in character mode, or walking
+  past the top edge would quietly select rows the reader never crossed.
+
+**Selection and navigation are claimed by the panel before the global map.**
+`classify_nav_key` answers `j/k/h/l` and arrows, `Ctrl+u`/`Ctrl+d`, `e`/`b`,
+`v`, `x`, `d`, `space+y`, and `C`. `d` and `C` are deliberately in that table
+rather than left to the global bindings: a focused panel is consulted *before*
+Normal-mode actions, so an unclaimed `d` would fall through to `OpenDiff`. `d`
+is the **delete operator** and `C` took over the clear it used to be, because a
+key that means "clear the whole view" and a key that means "remove what I
+selected" cannot be the same key. A bare `d` with nothing selected is a no-op
+that is still *consumed*, for exactly the precedence reason above. `C` is bound
+with and without `SHIFT` because terminals disagree on the encoding. Paging
+matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
+newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
+and `y` as separate events, so `prefix_pending` remembers the first key and any
+second key other than `y` disarms it and is then handled normally.
+
+**`d` deletes locally, and the overlay is keyed on text.** `vt100::Screen` is
+read-only — there is no API to remove a row — so deletion means the selected
+cells stop being rendered *and* stop being copyable. `Redactions` remembers each
+scrubbed range against the **row's text**, not its position, because a bounded
+scrollback has no stable row identity: output arriving shifts every row below it
+and eviction removes rows from the top, so a position-keyed overlay would drift
+onto whatever scrolls into the same cells. Resolving entries against the current
+viewport on every read keeps a deletion attached to the line it was applied to,
+so scrolling away and back does not silently un-delete it. Entries claim
+distinct rows in order, so deleting two identical lines blanks the two of them.
+The overlay is bounded (`MAX_TERMINAL_REDACTIONS`), and `clear_scrollback` drops
+it: the text it was keyed on is gone, and carrying it forward would hide
+whichever new output reuses that wording.
+
+The verbs live on the controller and are applied through `apply_nav`, which
+returns `ClearRequested` rather than clearing: only the command layer can issue
+the daemon operation, so a key press can never clear a view the user is not
+looking at. Esc drops a selection before it leaves either surface.
+
+**A docked terminal matches the PTY to the column.** `terminal_viewport_size`
+derives the initial size from the *outer* terminal, which is far wider than a
+side panel; without a resize the program wraps to columns nobody can see and the
+column shows the left edge of a much wider screen. The panel queues the real body
+rect through `queue_resize` (coalesced last-wins, so a drag costs one round trip)
+and the size is drained by `flush_terminal_resize`, shared with the input flush —
+the render path has no `App`, so it cannot send it itself. `queue_resize`'s typed
+error is discarded there: a panel showing an exited process must keep rendering
+rather than toast every frame.
 - **Reconnect/exit**: transport reconnect marks live views
   reconnecting with scrollback retained (`on_projection_reconnect`);
   re-attach resumes from the last cursor. Process exit renders the
@@ -947,6 +1041,57 @@ the right column comes back to whatever it was — the session panel if that was
 up, collapsed if the user had put it away. Re-docking a panel to the edge it is
 already on is a no-op rather than a self-push, or the next swap would "restore"
 a panel that never left.
+
+#### Resize mode: outward only, and the chord that arms it
+
+`Ctrl+N` arms a yazi-style resize mode. `Esc`, `Ctrl+N` again, or `Enter` leave
+it; it stays armed across repeated keys, because the gesture is "drag several
+borders in one visit" rather than "press a key, get one step". Normal mode only,
+like the panel manager — `h/j/k/l` are ordinary letters while composing, and a
+frame-level mode that could be armed mid-sentence would swallow the next four.
+
+`Ctrl+N` was `NewSession`; it is now the bare `n`, which the binding map already
+carried, so the remap costs nothing. The chord is deliberately **not** an
+`InputAction`: the frame is not a composable action, and a configurable binding
+would let it be pinned to a key a panel already owns.
+
+While armed, `h`/`j`/`k`/`l` name the focused surface's *own* border in that
+direction, and drag it **outward only**:
+
+| subject | `h` | `j` | `k` | `l` |
+|---|---|---|---|---|
+| right-docked panel | left border out → grows | frame edge | frame edge | frame edge |
+| left-docked panel | frame edge | frame edge | frame edge | right border out → grows |
+| bottom-docked panel | frame edge | frame edge | top border up → grows | frame edge |
+| main buffer (`LLM`) | left panel shrinks | bottom panel shrinks | nothing is above it | right panel shrinks |
+
+Two rules make this one rule rather than four cases. **Only shared borders
+move**: a column already owns its left edge to the frame, so a right-docked
+panel grows with `h` and *not* with `l` — the mirror of a left-docked panel
+growing with `l`. **Growth is relative**: the border belongs to both surfaces,
+so growing one shrinks the other. `resolve_resize` answers "which panel's size
+changes, and in which direction", so the same key cannot mean two things
+depending on which side the reader was standing on.
+
+The geometry is `src/tui/panel_resize.rs`, which knows nothing about `App`, and
+it is resolved **ahead of the focused panel** in `App::on_key`. Both orderings
+are forced: a focused panel consumes every key it is shown, so `h/j/k/l` would
+otherwise move the terminal cursor instead of a border; and the main buffer is
+the other half of the gesture, so `Ctrl+N` has to work with the keyboard *out*
+of a panel too. A resize key naming a frame edge is consumed and ignored rather
+than passed through — letting `l` resize on some rows and navigate on others is
+what makes a mode feel haunted.
+
+Column widths are **per edge** (`LayoutConfig::{left,right}_panel_width`,
+falling back to the shared `sidebar_width`), because "make the right column
+wider" and "make the left column wider" are different requests and one number
+can only satisfy one at a time. The bottom panel keeps `bottom_panel_ratio` as
+its *default* shape and records an exact `bottom_panel_rows` the first time its
+edge is dragged: the ratio is integer-divided against the frame height, so a
+one-point change is 0 rows on a short frame and 2 on a tall one — a key that
+appears dead for no stated reason. `TuiLayout::observe_frame` records the last
+rendered height purely so that conversion has a denominator. Sizes are
+runtime-only for this pass; only `ui.panel_placement` is persisted.
 
 `select(id)` goes through `slot.occupy`, so displacing a panel by selecting
 another one is remembered exactly as docking is. A user who walks to Chat in
@@ -2070,7 +2215,39 @@ project is meaningless in the next. Advisory daemon statuses stay visible:
 ### Command mode and agent management (M006-F)
 
 M006-F adds the `:` command line to the editor buffer and turns `/agents`
-into a management panel. It consumes the `document.v1` surface the earlier
+into a management panel.
+
+#### `/agents` opens a box, and `Enter` opens the editor
+
+Bare `/agents` opens `PanelPickerDialog` ("which panel should this go in?")
+rather than jumping straight into the side column. Every other `/` command
+that brings up a surface has a box of its own, and a list that *is* already
+the whole answer looks like nothing happened — which is exactly the "selecting
+an agent does not appear to do anything" symptom. The text listing is still
+reachable at `/agents show` and `/agents --all`.
+
+`PanelPickerDialog` shares its query/cursor/scroll/mode/keymap with the manager
+through `PanelListState` (`components/dialogs/panel_list.rs`). Two boxes that
+both list panels must agree on what `j` does, where the filter goes, and what
+`Enter` commits; the alternative is a third copy of `move_cursor`/`scroll`/
+`matches`/`mode_badge`, which is how a box and its panel drift. The cursor is
+an index into `SidePanelId::ALL`, never into the filtered view — filtering
+narrows visibility without renumbering what `Enter` acts on, pinned by
+`typing_narrows_what_is_visible_without_moving_the_highlight`.
+
+The picker commits through the **same** `TuiMsg::SelectPanel` the manager
+emits; there is no second route into panel selection.
+`App::pending_panel_picker_subject` is what gives the selection its second
+half: the manager selects a panel and stops, while this box exists to have the
+chosen content *loaded* into the chosen panel afterwards. It is spent on
+commit, so a picker the user abandoned cannot load its content into the next
+panel they pick.
+
+`AgentsPanel::handle_key` had **no `Enter` arm** — it fell through to the
+catch-all and returned `Consumed` without emitting a message, so selecting a
+row consumed the key and did nothing. `Enter` now means the same as `e`:
+open that agent's config. The verbs stayed provenance-checked in the command
+layer, so adding a key does not widen what a built-in allows. It consumes the `document.v1` surface the earlier
 editor milestones established; the one *additive* protocol change is the
 create/delete pair described below.
 
@@ -2397,6 +2574,70 @@ With no core client available (daemon unreachable) the action reports an error
 toast instead of silently doing nothing; a failed creation never fabricates a
 session. Covered by `apply_new_session_created_*` in `src/tui/mod.rs`.
 
+### The launch directory starts its own session (`ensure_launch_session`)
+
+`App::ensure_launch_session` (`src/tui/app/project_session.rs`) runs once from
+`main.rs`, after the launch-directory bootstrap and the initial-session load,
+and is a no-op whenever a session is already bound. It exists because the
+inproc (`--standalone`) startup branch only acted for an explicit
+`--fork`/`--session`/`--continue`, so a plain `--standalone` launch reached the
+event loop with **no session at all**.
+
+That is the same defect `NewSession` above was written for, reached by a
+different door: every session-scoped surface — chat, files, agents, models —
+resolves its binding through the active session, so a launch that leaves
+`session_state.session` as `None` looks like a broken install rather than a
+missing keystroke, and the user's first action is `Ctrl+N`.
+
+It reuses `sessions::start_new_session`, so the request carries the **typed**
+`(project_id, workspace_id)` pair the daemon can resolve — not the bare
+directory locator the initial-session path uses. It is deliberately not
+`App::new_session`: that clears the transcript, resets the route, and can open
+a template picker, none of which belong in a launch with nothing to clear.
+Gated on `!cli.no_session`.
+
+### Stopping a turn and carrying on (`/stop`, `/start`, `x`)
+
+`CoreRequest::TurnCancel` is addressed by `(session_id, turn_id)` and the
+daemon **rejects** a mismatch (`turn_id_mismatch`) rather than ignoring it, so
+stopping a turn is impossible without the id. Both wires that carry one —
+`CoreEvent::TurnStarted` and the submit receipt — used to be discarded, which
+is why nothing in the TUI could interrupt a running agent. `TurnStarted` now
+binds `SessionState::active_turn_id`; every terminal turn event clears it.
+
+A cancelled turn arrives as an ordinary `TurnCompleted` with an unrecognised
+`stop_reason`, so `SessionStatus` alone cannot distinguish "I stopped this"
+from "the agent finished". `SessionState::stopped_turn` carries that, and it
+**survives** `TurnCompleted` deliberately: the stopped badge and `/start` are
+still what the user should see until they resume or send a new prompt. A new
+`TurnStarted` clears it.
+
+`/stop` marks `stopped_turn` optimistically and only undoes it when the
+request genuinely fails — the daemon's cancel is cooperative, so waiting for
+`TurnCompleted` would leave a visible lag between the keypress and the badge,
+and a user who presses twice needs the second press to be a no-op.
+`no_active_turn` and `turn_id_mismatch` are absorbed as "it had already
+finished" rather than reported as errors; punishing that common race would be
+worse than the silence.
+
+There is no protocol-level resume-a-stopped-turn, so `/start` **re-submits**
+(`turn_control::start`): the cancelled turn's work is gone and the transcript
+carries the context. A `/start` that claimed to revive the dead turn would
+silently run something the user did not ask for.
+
+The spelling is `/start`, not `/resume`, because `/sessions` has owned the
+`resume` alias for switching sessions all along and the registry rejects a
+name/alias collision rather than letting one silently shadow the other.
+
+`x` (`InputAction::ToggleAgentRun`) covers both directions in one key because
+the state already says which applies. Stopping is the destructive direction, so
+it is gated behind a second press of the same key inside `STOP_ARM_WINDOW`
+(3s); an accidental `x` while reaching for a chord must not kill a turn. The
+arm is expired by the render pump, not only on the next keypress, so a
+confirmation nobody acts on clears itself. Bare-char binding, so Insert mode
+types the letter — asserted by
+`a_single_x_in_insert_mode_is_typed_rather_than_stopping_the_agent`.
+
 ## Directory Structure
 
 ```
@@ -2553,6 +2794,8 @@ tui/
 │   └── session.rs          # Session panel (delegates to SidebarWidget)
 ├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
 ├── selection.rs            # Terminal text selection over the rendered frame buffer
+├── helix_selection.rs      # Helix selection state machine (coordinate-agnostic)
+├── panel_resize.rs         # Outward-only panel resize rules + key→border geometry
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
 ├── editor.rs               # M006-A editor presentation record/state

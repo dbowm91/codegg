@@ -22,6 +22,10 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
+The Linux execution-isolation and command-authority decisions use ADR-0027 and
+ADR-0028, respectively. These identities were assigned after the Windows
+records landed on main so no ADR number is reused.
+
 ## Status lifecycle
 
 ```text
@@ -126,3 +130,15 @@ The Windows sandbox workstream `work/windows-native-sandbox-foundation` already 
 ## Cross-branch ADR-0022 reservation (2026-10-13)
 
 The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-daemon-authorized-workspace-directory-listing.md` as **proposed**. This supplements accepted ADR-0021 and does not constitute acceptance. Verify across active branches before allocating the next ADR number.
+
+## Windows successor decisions after PR #111 (2026-10-13)
+
+Renumbered 2026-10-14: the successor decisions first landed as ADR-0027/ADR-0028
+on the planning branch, but main had meanwhile assigned those numbers to the
+Linux execution-isolation (ADR-0027) and command-syntax authority (ADR-0028)
+decisions. The Windows records are ADR-0029/ADR-0030 below; the old numbers
+were never active on main and must not be reused for Windows references.
+
+- ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
+- ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

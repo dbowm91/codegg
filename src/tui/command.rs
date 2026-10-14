@@ -118,6 +118,17 @@ pub enum BuiltinSlashAction {
     Tree,
     AgentSelect,
     Agents,
+    /// Interrupt the turn the agent is currently running.
+    Stop,
+    /// Carry on after a stopped turn.
+    ///
+    /// Spelled `/start`, not `/resume`: `/sessions` has answered `resume`
+    /// since before turns were stoppable, and there it means "pick a stored
+    /// session back up" — a different act from carrying on after a stopped
+    /// turn. The registry rejects a name/alias collision rather than letting
+    /// one silently shadow the other, so the newer command takes the
+    /// unambiguous spelling and pairs with `/stop`.
+    StartTurn,
     New,
     Compact,
     Connect,
@@ -517,11 +528,20 @@ impl CommandRegistry {
                 .with_description("Switch theme (/theme, /theme list, /theme use <name>, /theme reload, /theme diagnostics)"),
             Command::new("/help", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Help)).with_description("Help"),
             Command::new("/sessions", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Sessions))
+                // `resume` stays a session switcher — "pick a stored session
+                // back up" is what it has always meant here. Carrying on after
+                // a *stopped turn* is spelled `/start`, because the registry
+                // rejects a name/alias collision rather than letting one
+                // silently shadow the other.
                 .with_aliases(&["resume", "continue"])
                 .with_description("Switch session"),
             Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),
+            Command::new("/stop", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Stop))
+                .with_description("Stop the agent's running turn (/stop)"),
+            Command::new("/start", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::StartTurn))
+                .with_description("Carry on after a stopped turn (/start)"),
             Command::new("/share", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Share))
                 .with_description("Share session"),
             Command::new("/unshare", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Unshare))
@@ -1159,12 +1179,14 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 161st is `/files` (the workspace file manager); 160th is `/panels`
-        // (the side-panel manager, the spelling of `⇧S` that stays typeable
-        // mid-prompt); 159th and 158th are `/terminal` (bare interactive
-        // terminal box) and `/terminal-clear`. Keep `architecture/command.md`
-        // counts in sync when adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 161);
+        // 163rd is `/start` and 162nd is `/stop` (carry on after a
+        // stopped turn; interrupt a running one). 161st is `/files` (the
+        // workspace file manager); 160th is `/panels` (the side-panel manager,
+        // the spelling of `⇧S` that stays typeable mid-prompt); 159th and 158th
+        // are `/terminal` (bare interactive terminal box) and
+        // `/terminal-clear`. Keep `architecture/command.md` counts in sync when
+        // adding more.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 163);
     }
 
     #[test]
@@ -1324,6 +1346,8 @@ mod tests {
             B::Tree,
             B::AgentSelect,
             B::Agents,
+            B::Stop,
+            B::StartTurn,
             B::New,
             B::Compact,
             B::Connect,

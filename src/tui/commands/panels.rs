@@ -83,6 +83,30 @@ pub(crate) fn open_panel_manager(app: &mut App) {
     app.push_dialog(crate::tui::app::Dialog::PanelManager, Box::new(dialog));
 }
 
+/// Open the "which panel should this go in?" box.
+///
+/// Shared by every `/` command whose content is a panel rather than a modal:
+/// the box answers exactly one question and commits through the same
+/// [`crate::tui::app::TuiMsg::SelectPanel`] the manager emits, so there is only
+/// one route into panel selection and a box and its panel cannot drift.
+///
+/// `subject` names what is being routed so the box reads as itself rather than
+/// as a copy of the manager.
+///
+/// The pending-routing flag is what makes the selection *mean* something: the
+/// manager selects a panel and stops, while this box exists to have the chosen
+/// content loaded into the chosen panel afterwards.
+pub(crate) fn open_panel_picker(app: &mut App, subject: &'static str) {
+    sync_chat_panel_project(app);
+    let dialog = crate::tui::components::dialogs::panel_picker::PanelPickerDialog::new(
+        Arc::clone(&app.ui_state.theme),
+        app.panel_host.active(),
+        subject,
+    );
+    app.pending_panel_picker_subject = Some(subject);
+    app.push_dialog(crate::tui::app::Dialog::PanelPicker, Box::new(dialog));
+}
+
 /// Push an applied placement back into the mounted manager.
 ///
 /// `TuiMsg` handling runs outside the mounted component, so the box cannot
@@ -949,6 +973,94 @@ pub(crate) fn toggle_selected_pane(app: &mut App) {
 /// Returns `true` when the panel consumed the key. A focused panel consumes
 /// everything by contract — see `panels/mod.rs` for why a leak would submit
 /// an agent turn.
+/// Answer one key while yazi-style resize mode is armed, or while it is being
+/// toggled. Returns whether the key was consumed.
+///
+/// Called from `App::on_key` ahead of the focused panel and ahead of the
+/// binding map, for two reasons that make it impossible to place anywhere
+/// else:
+///
+/// 1. A focused panel consumes every key it is shown, and `h`/`j`/`k`/`l` are
+///    its cursor movements. Resizing below the panel would mean a panel that
+///    silently ate the resize keys instead of moving.
+/// 2. `Ctrl+N` has to work with the keyboard in the **main buffer** too. The
+///    main buffer is the other half of the gesture — "make the chat column
+///    slimmer" is `l` from the transcript, and it is the same border `h` grows
+///    from the column's side.
+///
+/// Not routed through `TuiMsg`: every effect here is a synchronous frame
+/// mutation, and routing it through the message bus would only add a second
+/// spelling of "resize" for a key that has exactly one.
+pub(crate) fn handle_panel_resize_key(app: &mut App, key: KeyEvent) -> bool {
+    use crate::tui::panel_resize::{apply_resize, resize_edge_of, resolve_resize};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // Toggle. `Ctrl+N` rather than a bare letter because `n` is NewSession, and
+    // `Ctrl+N` was that too — the remap to a bare `n` is what freed the chord.
+    if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('n') {
+        let armed = app.panel_host.toggle_resizing();
+        announce_resize(app, armed);
+        return true;
+    }
+
+    if !app.panel_host.is_resizing() {
+        return false;
+    }
+
+    // Three ways out, because the mode is modal and a mode with one exit key
+    // is a trap. `Enter` is here as the "commit" spelling: resizing is
+    // immediate, so the reader reaches for it out of habit and it costs
+    // nothing.
+    if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+        app.panel_host.set_resizing(false);
+        announce_resize(app, false);
+        return true;
+    }
+
+    let Some(edge) = resize_edge_of(key) else {
+        // Anything else is routed normally. Resize mode owns exactly four
+        // keys, and claiming more than it acts on would make the mode feel
+        // like a trap rather than a layer.
+        return false;
+    };
+
+    let subject = app.panel_host.resize_subject();
+    let occupied = app.panel_host.occupied_placements();
+    // A resize key naming a frame edge is *consumed and ignored* rather than
+    // passed through: letting `l` reach the panel's cursor movement on some
+    // rows and resize a border on others is what makes a mode feel haunted.
+    if let Some(delta) = resolve_resize(subject, edge, &occupied) {
+        apply_resize(&mut app.ui_state.layout, delta);
+    }
+    true
+}
+
+/// Name the mode and the way out, on a toast the reader cannot miss.
+///
+/// Resize mode moves borders with no other visible feedback beyond the frame
+/// itself, and the frame is exactly what the reader is watching — so without a
+/// line naming the exit keys, "nothing is happening" and "I am in a mode"
+/// look identical.
+fn announce_resize(app: &mut App, armed: bool) {
+    use crate::tui::panel_resize::ResizeSubject;
+    if armed {
+        let subject = match app.panel_host.resize_subject() {
+            ResizeSubject::Main => "the LLM buffer",
+            ResizeSubject::Panel(placement) => placement.label(),
+        };
+        let message = format!(
+            "Resize {subject}: h/j/k/l drag its own borders outward · Esc or Enter to stop"
+        );
+        app.messages_state.toasts.info(&message);
+    } else {
+        app.messages_state
+            .toasts
+            .info("Resize off: h/j/k/l move the cursor again");
+    }
+}
+
+/// Route one key to the focused panel. Runs after [`handle_panel_resize_key`],
+/// which owns the modal resize layer.
 pub(crate) fn handle_panel_key(app: &mut App, key: KeyEvent, action: Option<InputAction>) -> bool {
     if !app.panel_host.is_visible_at(app.panel_host.placement()) {
         return false;

@@ -264,6 +264,16 @@ impl GitExecutionService {
             )));
         }
 
+        match egggit::classify_git_request(&render_argv(operation)) {
+            egggit::GitExecutionPolicyOutcome::AllowedTrustedNonExecutable => {}
+            egggit::GitExecutionPolicyOutcome::RequiresContainedExecution { capabilities } => {
+                return Err(GitServiceError::Policy(
+                    egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities },
+                ));
+            }
+            outcome => return Err(GitServiceError::Policy(outcome)),
+        }
+
         match operation {
             // Read operations → delegate to egggit for structured results
             GitOperation::Status { short } => self.execute_status(*short, repository_root).await,
@@ -862,7 +872,9 @@ impl GitExecutionService {
         let env = GitEnvPolicy::default();
 
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = env.apply(&argv_owned, &root);
+            let mut cmd = env
+                .apply(&argv_owned, &root)
+                .map_err(GitServiceError::Policy)?;
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
@@ -1214,6 +1226,8 @@ pub enum DiffParseError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitServiceError {
+    #[error("git execution policy outcome: {0}")]
+    Policy(egggit::GitExecutionPolicyOutcome),
     #[error("git service error: {0}")]
     Execution(String),
     #[error("repository error: {0}")]
@@ -1536,9 +1550,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn execute_add_returns_raw_output() {
+    async fn execute_add_returns_typed_containment_requirement() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
+        let marker = dir.path().join("clean-filter-ran");
+        let filter = dir.path().join("clean-filter.sh");
+        std::fs::write(
+            &filter,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&filter).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&filter, permissions).unwrap();
+        }
+        StdCommand::new("git")
+            .args(["config", "filter.codegg-test.clean"])
+            .arg(&filter)
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        std::fs::write(
+            dir.path().join(".gitattributes"),
+            "*.txt filter=codegg-test\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("new.txt"), "new file").unwrap();
 
         let root = RepoRoot::new(dir.path().to_str().unwrap()).unwrap();
@@ -1547,11 +1586,18 @@ mod tests {
         let svc = GitExecutionService::new();
         let result = svc
             .execute(&GitOperation::Add { paths: vec![path] }, dir.path())
-            .await
-            .unwrap();
+            .await;
 
-        assert!(result.success);
-        assert!(result.payload.is_none());
+        assert!(matches!(
+            result,
+            Err(GitServiceError::Policy(
+                egggit::GitExecutionPolicyOutcome::BackendUnavailable { .. }
+            ))
+        ));
+        assert!(
+            !marker.exists(),
+            "typed contained-backend outcome must not fall through to raw git add"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

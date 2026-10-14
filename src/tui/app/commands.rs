@@ -638,6 +638,14 @@ pub enum TuiCommand {
         request_id: String,
         error: Option<String>,
     },
+    /// A `TurnCancel` request finished. Carries the addressed turn so a
+    /// completion for a turn that has already been superseded is dropped
+    /// rather than applied to whatever is running now.
+    TurnCancelRequested {
+        session_id: String,
+        turn_id: String,
+        error: Option<String>,
+    },
     ShellExpand {
         id: u64,
         stream: String,

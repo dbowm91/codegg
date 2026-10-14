@@ -13,6 +13,7 @@ use codegg::tui::components::dialogs::theme::ThemePickerDialog;
 use codegg::tui::components::messages::{highlight_code, MessageRole, MessagesWidget, MsgPart};
 use codegg::tui::components::prompt::PromptWidget;
 use codegg::tui::layout::{LayoutConfig, TuiLayout};
+use codegg::tui::panels::PanelPlacement;
 use codegg::tui::theme::{all_themes, find_theme, theme_names, Theme};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -1371,21 +1372,42 @@ fn test_layout_config_default() {
     assert_eq!(config.prompt_height, 3);
     assert_eq!(config.header_height, 1);
     assert_eq!(config.footer_height, 1);
+    // Per-edge overrides start unset, so both columns come from the shared
+    // seed until a resize records a value for one of them.
+    assert_eq!(config.column_width(PanelPlacement::Left), 30);
+    assert_eq!(config.column_width(PanelPlacement::Right), 30);
+    assert_eq!(config.bottom_panel_rows, None);
 }
 
 #[test]
 fn test_layout_config_custom() {
     let config = LayoutConfig {
         sidebar_width: 50,
+        left_panel_width: None,
+        right_panel_width: None,
         min_main_width: 80,
         prompt_height: 5,
         header_height: 2,
         footer_height: 2,
         scrollbar_width: 1,
         bottom_panel_ratio: 35,
+        bottom_panel_rows: None,
     };
     assert_eq!(config.sidebar_width, 50);
     assert_eq!(config.min_main_width, 80);
+    assert_eq!(config.column_width(PanelPlacement::Right), 50);
+}
+
+#[test]
+fn a_resized_column_does_not_move_its_neighbour() {
+    let mut config = LayoutConfig::default();
+    config.set_right_panel_width(44);
+    assert_eq!(config.column_width(PanelPlacement::Right), 44);
+    assert_eq!(
+        config.column_width(PanelPlacement::Left),
+        30,
+        "one shared width cannot satisfy two independent resize requests"
+    );
 }
 
 #[test]

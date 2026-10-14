@@ -244,6 +244,14 @@ impl AgentLoop {
             .map(|p| Arc::new(crate::session::MessageStore::new(p)));
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
+        let preflight_policy = config
+            .preflight
+            .as_ref()
+            .map(crate::preflight::PreflightPolicy::from_config)
+            .unwrap_or_default();
+        let command_preflight = crate::preflight::PreflightService::new(preflight_policy)
+            .map_err(|error| tracing::warn!(%error, "command preflight unavailable"))
+            .ok();
         let tool_advisor_mode = tool_registry.advisor_mode();
         let decision_backend = tool_registry.decision_backend().clone();
         let decision_engine = tool_registry.decision_engine();
@@ -347,6 +355,7 @@ impl AgentLoop {
                 usage_store,
                 message_store,
                 security_service,
+                command_preflight,
                 todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
                     crate::task_state::TodoState::new(),
                 )),

@@ -52,6 +52,7 @@ use crate::protocol::interactive_process::{
     InteractiveOutputChunk, InteractiveResync, InteractiveResyncReason, MAX_ATTACHMENTS_PER_CLIENT,
     MAX_INTERACTIVE_CHUNK_BYTES, MAX_INTERACTIVE_INPUT_BYTES,
 };
+use crate::tui::helix_selection::{Selection, SelectionMode, SelectionPoint, SelectionState};
 
 /// Bytes of decoded terminal output retained per viewed terminal.
 ///
@@ -82,6 +83,132 @@ pub const MAX_TERMINAL_INPUT_BYTES: usize = MAX_INTERACTIVE_INPUT_BYTES;
 pub const MAX_TERMINAL_RENDER_BYTES: usize = MAX_INTERACTIVE_CHUNK_BYTES;
 pub const MAX_TERMINAL_SCREEN_COLS: u16 = 300;
 pub const MAX_TERMINAL_SCREEN_ROWS: u16 = 120;
+
+/// Retained VT scrollback rows per terminal.
+///
+/// Bounded rather than unbounded: this is a long-lived daemon-backed process
+/// view, and unbounded history is an unbounded per-terminal allocation. When
+/// the oldest rows age out, viewport coordinates shift with them — which is
+/// why the selection is anchored in viewport space (see
+/// [`crate::tui::helix_selection`]).
+pub const TERMINAL_SCROLLBACK_LINES: usize = 5_000;
+
+/// Scrubbed column ranges one view remembers after `d`.
+///
+/// Bounded because the overlay is a convenience, not a second document: a
+/// reader redacting a build log redacts a handful of lines, and an unbounded
+/// list would let repeated `d` grow a per-view allocation forever.
+pub const MAX_TERMINAL_REDACTIONS: usize = 64;
+
+/// A terminal selection point: a viewport `(row, col)` cell.
+///
+/// Row-major `Ord` is what lets the shared selection machine treat this as a
+/// flat reading order, and `Line = u16` is what lets it answer "which lines
+/// does this span" without knowing how wide the screen is.
+pub type TerminalPoint = (u16, u16);
+
+impl SelectionPoint for TerminalPoint {
+    type Line = u16;
+
+    fn line(&self) -> u16 {
+        self.0
+    }
+}
+
+/// One scrubbed column range, remembered by the *text* of its row rather than
+/// by its position.
+///
+/// Keyed on content because the VT emulator is read-only (there is no API to
+/// remove a row) and, more to the point, because a bounded scrollback has no
+/// stable row identity to key on: output arriving shifts every row below it,
+/// and eviction removes rows from the top. Remembering what the row *said*
+/// keeps a deletion attached to the text it was applied to, so scrolling away
+/// and back does not silently un-delete it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Redaction {
+    text: String,
+    from: u16,
+    to: u16,
+}
+
+/// Bounded set of [`Redaction`]s, resolved against the viewport on each read.
+#[derive(Debug, Default)]
+struct Redactions {
+    entries: VecDeque<Redaction>,
+}
+
+impl Redactions {
+    /// Remember one scrubbed range. Blank rows are refused: an empty `text`
+    /// would match every blank row on screen and erase an unrelated column.
+    fn push(&mut self, text: String, from: u16, to: u16) {
+        if text.is_empty() || from >= to {
+            return;
+        }
+        if self.entries.len() >= MAX_TERMINAL_REDACTIONS {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(Redaction { text, from, to });
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Match remembered redactions onto the rows currently in view.
+    ///
+    /// Returns one entry per viewport row, each a list of `[from, to)` column
+    /// ranges. Entries claim rows in order and never claim the same row
+    /// twice, so deleting two identical lines blanks the two of them rather
+    /// than the same line twice.
+    fn resolve(&self, row_text: &[String]) -> Vec<Vec<(u16, u16)>> {
+        let mut by_row: Vec<Vec<(u16, u16)>> = vec![Vec::new(); row_text.len()];
+        if self.entries.is_empty() {
+            return by_row;
+        }
+        let mut claimed = vec![false; row_text.len()];
+        for entry in &self.entries {
+            let Some(row) = row_text
+                .iter()
+                .enumerate()
+                .position(|(index, text)| !claimed[index] && *text == entry.text)
+            else {
+                continue;
+            };
+            claimed[row] = true;
+            by_row[row].push((entry.from, entry.to));
+        }
+        by_row
+    }
+
+    /// Copy `text` with every redacted column replaced by a space.
+    ///
+    /// Applied on the yank path as well as the render path: a selection made
+    /// *after* a deletion must not be able to copy back the text that was
+    /// deleted, or `d` would be a visual effect rather than a deletion.
+    fn scrub(text: &str, ranges: &[(u16, u16)]) -> String {
+        if ranges.is_empty() {
+            return text.to_string();
+        }
+        text.chars()
+            .enumerate()
+            .map(|(index, ch)| {
+                let column = u16::try_from(index).unwrap_or(u16::MAX);
+                if ranges
+                    .iter()
+                    .any(|&(from, to)| column >= from && column < to)
+                {
+                    ' '
+                } else {
+                    ch
+                }
+            })
+            .collect()
+    }
+}
 
 /// Explicit keyboard-focus state for one terminal view.
 ///
@@ -356,6 +483,26 @@ pub struct InteractiveTerminalView {
     pending_resize: Option<(u16, u16)>,
     cols: u16,
     rows: u16,
+    /// Rows the viewport is parked above the live bottom; 0 means "following".
+    viewport_offset: usize,
+    /// Helix cursor and any held selection, in viewport coordinates.
+    ///
+    /// Coordinates are **viewport** `(row, col)` — row 0 is the top visible
+    /// row once a scrollback offset is applied. Viewport rather than absolute
+    /// buffer coordinates is what keeps a selection on the *same text* while
+    /// the user scrolls: a scroll of `delta` rows moves the viewport by
+    /// `delta`, so every stored point is moved by the same `delta` through
+    /// [`SelectionState::translate`]. Absolute coordinates would instead drift
+    /// whenever the bounded scrollback evicted its oldest row underneath a
+    /// live selection.
+    nav: SelectionState<TerminalPoint>,
+    /// Columns scrubbed by `d`, resolved against the viewport on every read.
+    redactions: Redactions,
+    /// A bare `Space` is waiting for its second key (`space+y` yanks).
+    ///
+    /// Legacy xterm encoding delivers `Space` and `y` as two separate key
+    /// events rather than one chord, so the prefix has to be remembered.
+    pending_prefix: bool,
 }
 
 impl InteractiveTerminalView {
@@ -374,7 +521,44 @@ impl InteractiveTerminalView {
             pending_resize: None,
             cols,
             rows,
+            viewport_offset: 0,
+            nav: SelectionState::new((rows.saturating_sub(1), 0)),
+            redactions: Redactions::default(),
+            pending_prefix: false,
         }
+    }
+
+    /// Park the emulator viewport at this view's offset and pull the cursor back
+    /// inside the screen.
+    ///
+    /// Called at the head of every read and navigation entry point so a stale
+    /// offset can never reach the emulator: `Grid::visible_rows` computes
+    /// `scrollback.len() - scrollback_offset` unguarded, so an offset that
+    /// outgrew the retained history would underflow rather than clamp.
+    fn sync_viewport(&mut self) {
+        let max = self.screen.max_offset();
+        if self.viewport_offset > max {
+            self.viewport_offset = max;
+        }
+        self.screen.set_offset(self.viewport_offset);
+        let max_row = self.rows.saturating_sub(1);
+        let (row, col) = self.nav.cursor();
+        if row > max_row {
+            // `set_cursor`, not `move_to`: a clamp is bookkeeping, and letting
+            // it count as deliberate movement would disarm line-select growth
+            // every time the screen shrank under the cursor.
+            self.nav.set_cursor((max_row, col));
+        }
+    }
+
+    /// Move every stored viewport point by `delta` rows, clamped to the screen.
+    fn translate_rows(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        let rows = self.rows;
+        self.nav
+            .translate(|(row, col)| (shift_row(row, delta, rows), col));
     }
 
     /// Current daemon-link state for the view.
@@ -424,8 +608,110 @@ impl TerminalScreen {
         Self(vt100::Parser::new(
             rows.clamp(1, MAX_TERMINAL_SCREEN_ROWS),
             cols.clamp(1, MAX_TERMINAL_SCREEN_COLS),
-            0,
+            TERMINAL_SCROLLBACK_LINES,
         ))
+    }
+
+    /// How many rows the viewport may scroll back.
+    ///
+    /// `Screen::scrollback()` reports the *current* offset, not how far back
+    /// the history reaches, and the filled length of the underlying deque is
+    /// not exposed — only its allocated capacity is. Parking the offset at
+    /// `usize::MAX` and reading it back asks `set_scrollback` to clamp against
+    /// the real length, which is the only way to learn the true maximum; the
+    /// saved offset is restored so a read never disturbs the view.
+    fn max_offset(&mut self) -> usize {
+        let saved = self.0.screen().scrollback();
+        self.0.screen_mut().set_scrollback(usize::MAX);
+        let max = self.0.screen().scrollback();
+        self.0.screen_mut().set_scrollback(saved);
+        max
+    }
+
+    /// Park the viewport `offset` rows above the live bottom (0 = live).
+    fn set_offset(&mut self, offset: usize) {
+        self.0.screen_mut().set_scrollback(offset);
+    }
+
+    /// Cell text of one viewport row, trailing blanks trimmed.
+    fn row_text(&self, row: u16) -> String {
+        let (_, cols) = self.0.screen().size();
+        self.row_range_text(row, 0, cols).trim_end().to_string()
+    }
+
+    /// Cell text of one viewport row restricted to columns `[from, to)`.
+    ///
+    /// `Screen::rows` takes a *column* start and a width, and yields every
+    /// visible row — so the row is selected with `nth`, not by passing it as
+    /// the start.
+    fn row_range_text(&self, row: u16, from: u16, to: u16) -> String {
+        let (_, cols) = self.0.screen().size();
+        let to = to.min(cols);
+        if from >= to {
+            return String::new();
+        }
+        self.0
+            .screen()
+            .rows(from, to - from)
+            .nth(usize::from(row))
+            .unwrap_or_default()
+    }
+
+    /// Whether a viewport row is a continuation of the row above it.
+    fn row_wrapped(&self, row: u16) -> bool {
+        self.0.screen().row_wrapped(row)
+    }
+
+    /// Extract the selected text as clipboard-ready text.
+    ///
+    /// Honours row wrapping: a row that is a wrap continuation contributes no
+    /// newline, so a selection spanning a wrapped command reads back as one
+    /// line rather than as a stack of fragments. Line mode trims each row's
+    /// trailing blanks and joins with `\n`.
+    ///
+    /// `redactions` are the columns `d` has already scrubbed. They are applied
+    /// here as well as on the render path, because a yank is the one route by
+    /// which deleted text could otherwise leave the view — and a deletion the
+    /// user can copy straight back out is not a deletion.
+    fn selection_text(
+        &self,
+        selection: &Selection<TerminalPoint>,
+        redactions: &[Vec<(u16, u16)>],
+    ) -> String {
+        let (start, end) = selection.line_range();
+        let (first, last) = selection.bounds();
+        let cols = self.0.screen().size().1;
+        let single_row = start == end;
+        let mut out = String::new();
+        for row in start..=end {
+            // Line mode takes whole rows. Character mode takes the start row
+            // from the first selected column to the end of the row, the end row
+            // from column 0 through the last selected column, and everything
+            // between in full — which is what makes a selection dragged down
+            // two lines read back as whole middle lines instead of a diagonal.
+            // Deriving both cuts from the *ordered bounds* rather than from the
+            // anchor and head separately is what makes a backwards selection
+            // read the same as a forwards one.
+            let (from, to) = match selection.mode {
+                SelectionMode::Line => (0, cols),
+                SelectionMode::Char if single_row => (first.1, last.1.saturating_add(1)),
+                SelectionMode::Char if row == start => (first.1, cols),
+                SelectionMode::Char if row == end => (0, last.1.saturating_add(1)),
+                SelectionMode::Char => (0, cols),
+            };
+            let text = self.row_range_text(row, from, to);
+            let text = match redactions.get(usize::from(row)) {
+                Some(ranges) if !ranges.is_empty() => Redactions::scrub(&text, ranges),
+                _ => text,
+            };
+            // A wrapped row is a continuation of the row above, so it must not
+            // be newline-separated; an unwrapped one is a real line boundary.
+            if !out.is_empty() && row > start && !self.row_wrapped(row) {
+                out.push('\n');
+            }
+            out.push_str(text.trim_end());
+        }
+        out
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
@@ -465,7 +751,42 @@ impl TerminalScreen {
             .collect()
     }
 
-    fn styled_lines(&self, max_lines: usize) -> Vec<ratatui::text::Line<'static>> {
+    /// Visible rows in the emulator right now.
+    fn row_count(&self) -> u16 {
+        self.0.screen().size().0
+    }
+
+    /// Columns in the emulator right now.
+    fn col_count(&self) -> u16 {
+        self.0.screen().size().1
+    }
+
+    /// Trimmed text of every visible row, in viewport order.
+    ///
+    /// The `d` overlay is keyed on row text, so it needs this snapshot to match
+    /// remembered redactions against what is actually on screen.
+    fn viewport_row_text(&self) -> Vec<String> {
+        (0..self.row_count())
+            .map(|row| self.row_text(row))
+            .collect()
+    }
+
+    /// Render the visible viewport as styled lines, honouring the current
+    /// scrollback offset plus any active selection, scrub and cursor.
+    ///
+    /// `selection` carries its own head, so one `contains` test drives the
+    /// highlight whether the reader built the selection with `x` (where the
+    /// head is pinned and the cursor is free to wander) or `v` (where the head
+    /// tracks the cursor). `redactions` is the resolved `d` scrub, one entry
+    /// per viewport row.
+    fn styled_lines(
+        &self,
+        max_lines: usize,
+        selection: Option<Selection<TerminalPoint>>,
+        redactions: &[Vec<(u16, u16)>],
+        cursor: Option<TerminalPoint>,
+        highlight: ratatui::style::Style,
+    ) -> Vec<ratatui::text::Line<'static>> {
         use ratatui::style::{Modifier, Style};
         use ratatui::text::{Line, Span};
 
@@ -484,7 +805,15 @@ impl TerminalScreen {
                     }
                 }
             }
+            // A fully line-selected row is highlighted across its whole width,
+            // so a blank row inside the selection must still be painted.
+            if let Some(sel) = selection {
+                if sel.mode == SelectionMode::Line && sel.contains((row, 0)) {
+                    last_visible = last_visible.max(cols);
+                }
+            }
 
+            let scrubbed = redactions.get(usize::from(row));
             let mut spans = Vec::new();
             let mut active_style = Style::default();
             let mut active_text = String::new();
@@ -493,6 +822,19 @@ impl TerminalScreen {
                     continue;
                 };
                 if cell.is_wide_continuation() {
+                    continue;
+                }
+                // A scrubbed cell renders as a blank with default styling: the
+                // deletion has to read as *gone*, so it must not keep the
+                // colours it happened to be printed in.
+                if scrubbed
+                    .is_some_and(|ranges| ranges.iter().any(|&(from, to)| col >= from && col < to))
+                {
+                    if !active_text.is_empty() && active_style != Style::default() {
+                        spans.push(Span::styled(std::mem::take(&mut active_text), active_style));
+                    }
+                    active_style = Style::default();
+                    active_text.push(' ');
                     continue;
                 }
                 let mut style = Style::default();
@@ -519,6 +861,22 @@ impl TerminalScreen {
                     modifiers |= Modifier::REVERSED;
                 }
                 style = style.add_modifier(modifiers);
+                // Selection paints a background, never a foreground: `theme.selection`
+                // is a bg, and using it as fg renders dark-on-dark. Paired with the
+                // theme foreground so selected body text stays readable.
+                if selection.is_some_and(|sel| sel.contains((row, col))) {
+                    if let Some(bg) = highlight.bg {
+                        style = style.bg(bg);
+                    }
+                    if let Some(fg) = highlight.fg {
+                        style = style.fg(fg);
+                    }
+                }
+                if let Some((cur_row, cur_col)) = cursor {
+                    if cur_row == row && cur_col == col {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                }
                 if !active_text.is_empty() && style != active_style {
                     spans.push(Span::styled(std::mem::take(&mut active_text), active_style));
                 }
@@ -544,6 +902,82 @@ fn vt_color(color: vt100::Color) -> ratatui::style::Color {
         vt100::Color::Idx(index) => ratatui::style::Color::Indexed(index),
         vt100::Color::Rgb(red, green, blue) => ratatui::style::Color::Rgb(red, green, blue),
     }
+}
+
+/// Shift a stored viewport row by `delta`, clamping inside the screen.
+///
+/// Never panics on a negative intermediate: the cursor and the selection
+/// anchor are `u16` and the scroll delta is `i32`, so an upward scroll near
+/// row 0 is ordinary rather than exceptional.
+fn shift_row(row: u16, delta: i32, rows: u16) -> u16 {
+    let max = i32::from(rows.saturating_sub(1));
+    (i32::from(row) + delta).clamp(0, max) as u16
+}
+
+/// Column of the last character of the next word, or `None` at end of line.
+///
+/// Helix `e`, landing *on* the final character rather than one past it. That
+/// matters here more than it does in an editor: `v` then `e` is how a reader
+/// grabs one word out of a build log, and a cursor parked on the following
+/// space would copy the space with it every time.
+///
+/// Already sitting on a word's last character takes the *next* word, so
+/// repeated `e` advances instead of stalling.
+fn next_word_end(text: &str, from: u16) -> Option<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = usize::from(from).min(chars.len());
+    let at_word_end = index > 0
+        && !chars[index].is_whitespace()
+        && (index + 1 == chars.len() || chars[index + 1].is_whitespace());
+    if at_word_end {
+        index += 1;
+    }
+    while index < chars.len() && chars[index].is_whitespace() {
+        index += 1;
+    }
+    if index >= chars.len() {
+        return None;
+    }
+    while index + 1 < chars.len() && !chars[index + 1].is_whitespace() {
+        index += 1;
+    }
+    Some(index)
+}
+
+/// Column of the first character of the previous word, or `None` at BOL.
+///
+/// Helix `b`, the mirror of [`next_word_end`]. Landing on a word's first
+/// character steps back over the whitespace to the word *before* it, so
+/// repeated `b` walks the line rather than stalling on the boundary it just
+/// arrived at.
+fn previous_word_start(text: &str, from: u16) -> Option<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = usize::from(from).min(chars.len());
+    if index == 0 || chars.is_empty() {
+        return None;
+    }
+    if index == chars.len() {
+        index -= 1;
+    }
+    let at_word_start =
+        !chars[index].is_whitespace() && (index == 1 || chars[index - 1].is_whitespace());
+    if at_word_start {
+        let mut back = index;
+        while back > 0 && chars[back - 1].is_whitespace() {
+            back -= 1;
+        }
+        index = back;
+    }
+    while index > 0 && chars[index].is_whitespace() {
+        index -= 1;
+    }
+    if index == 0 {
+        return None;
+    }
+    while index > 0 && !chars[index - 1].is_whitespace() {
+        index -= 1;
+    }
+    Some(index)
 }
 
 /// Reference TUI controller over M002 handles.
@@ -944,6 +1378,18 @@ impl InteractiveTerminalController {
         view.scrollback.notice = None;
         view.screen.reset(view.rows, view.cols);
         view.screen_degraded = false;
+        // The emulator was rebuilt, so every coordinate the reader was holding
+        // — cursor, selection anchor, scroll offset — now names different text
+        // or nothing. Resetting the viewport and dropping the selection is the
+        // only truthful option: keeping them would silently move a yank to
+        // whatever happens to occupy those cells on the fresh screen.
+        view.viewport_offset = 0;
+        view.nav = SelectionState::new((view.rows.saturating_sub(1), 0));
+        // The scrub overlay is keyed on row text, and the text it was keyed on
+        // is gone. Carrying it forward would hide whichever new output happens
+        // to reuse the deleted line's wording.
+        view.redactions.clear();
+        view.pending_prefix = false;
         true
     }
 
@@ -1029,6 +1475,350 @@ impl InteractiveTerminalController {
         }
     }
 
+    // ── Viewport and Helix-style selection ─────────────────────────────
+    //
+    // Navigation state lives on the controller rather than on either surface,
+    // so the box and the docked panel cannot disagree about where the cursor
+    // is or what is selected. Nothing here forwards to the PTY: these are
+    // read/navigation verbs only.
+
+    /// Rows the viewport is parked above the live bottom; 0 means following.
+    pub fn viewport_offset(&self, handle: &str) -> Option<usize> {
+        self.views.get(handle).map(|view| view.viewport_offset)
+    }
+
+    /// Whether a `Space` prefix is armed awaiting its second key.
+    pub fn prefix_pending(&self, handle: &str) -> bool {
+        self.views
+            .get(handle)
+            .is_some_and(|view| view.pending_prefix)
+    }
+
+    /// Arm or disarm the `space` prefix.
+    pub fn set_prefix_pending(&mut self, handle: &str, pending: bool) -> bool {
+        match self.views.get_mut(handle) {
+            Some(view) => {
+                view.pending_prefix = pending;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Scroll by `delta` rows; positive walks toward older output.
+    ///
+    /// The cursor and any selection anchor ride along with the content rather
+    /// than staying pinned to a row, so a selection survives scrolling.
+    pub fn scroll_by(&mut self, handle: &str, delta: i32) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        let max = i64::try_from(view.screen.max_offset()).unwrap_or(0);
+        let current = i64::try_from(view.viewport_offset).unwrap_or(0);
+        let next = (current + i64::from(delta)).clamp(0, max);
+        let shift = i32::try_from(next - current).unwrap_or(0);
+        view.viewport_offset = usize::try_from(next).unwrap_or(0);
+        view.screen.set_offset(view.viewport_offset);
+        if shift != 0 {
+            // Scrolling toward older output moves the content *down*, so every
+            // stored point increases by the same amount. Riding along with the
+            // content is what keeps a cursor and a selection pointing at the
+            // same text instead of at the same cells.
+            view.translate_rows(shift);
+        }
+        true
+    }
+
+    /// Return the viewport to the live bottom.
+    pub fn scroll_to_bottom(&mut self, handle: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        let shift = -(i32::try_from(view.viewport_offset).unwrap_or(0));
+        view.viewport_offset = 0;
+        view.screen.set_offset(0);
+        if shift != 0 {
+            view.translate_rows(shift);
+        }
+        true
+    }
+
+    /// Page the viewport by whole viewport heights.
+    pub fn page_by(&mut self, handle: &str, direction: i32) -> bool {
+        let Some(rows) = self.views.get(handle).map(|view| view.rows) else {
+            return false;
+        };
+        let step = i32::from(rows.max(1));
+        self.scroll_by(handle, direction.saturating_mul(step))
+    }
+
+    /// Move the Helix cursor, scrolling the viewport when it hits an edge.
+    ///
+    /// The move goes through [`SelectionState::move_to`], which is the one
+    /// place that knows a movement extends a character selection but must not
+    /// extend a line one.
+    pub fn move_cursor(&mut self, handle: &str, drow: i32, dcol: i32) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        let (row, col) = view.nav.cursor();
+        let mut next_row = row;
+        let mut scroll = 0i32;
+        if drow != 0 {
+            let next = i32::from(row) + drow;
+            let max_row = i32::from(view.rows.saturating_sub(1));
+            if !(0..=max_row).contains(&next) {
+                next_row = next.clamp(0, max_row) as u16;
+                // Walking off an edge scrolls the viewport by the *opposite*
+                // sign: `k` past the top row must reveal older output, which is
+                // a *larger* scrollback offset, not a smaller one. Copying the
+                // movement sign here pinned the viewport at offset 0 and made
+                // `k` do nothing exactly where scrolling matters most.
+                scroll = -drow;
+            } else {
+                next_row = next as u16;
+            }
+        }
+        let mut next_col = col;
+        if dcol != 0 {
+            let width = view.screen.row_text(next_row).chars().count() as i32;
+            next_col = (i32::from(col) + dcol).clamp(0, width) as u16;
+        }
+        view.nav.move_to((next_row, next_col));
+        if scroll != 0 {
+            // The scroll translated the selection along with the content, which
+            // is right; only the cursor needs re-pinning to the edge it walked
+            // off, so that edge now names the line the scroll just revealed
+            // instead of bouncing back to row 1 and stalling the viewport there.
+            let edge = view.nav.cursor();
+            self.scroll_by(handle, scroll);
+            let Some(view) = self.views.get_mut(handle) else {
+                return false;
+            };
+            view.nav.repin_cursor(edge);
+        }
+        true
+    }
+
+    /// Helix `e` / `b`: jump the cursor to the next/previous word boundary.
+    ///
+    /// A deliberate movement like any other, so it extends a character
+    /// selection and disarms line-select growth — which is the whole reason
+    /// the shared state machine owns the "does this extend?" rule rather than
+    /// each motion deciding for itself.
+    pub fn word_motion(&mut self, handle: &str, forward: bool) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        let (row, col) = view.nav.cursor();
+        let text = view.screen.row_text(row);
+        let target = if forward {
+            next_word_end(&text, col)
+        } else {
+            previous_word_start(&text, col)
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        view.nav
+            .move_to((row, u16::try_from(target).unwrap_or(col)));
+        true
+    }
+
+    /// Enter a selection mode anchored at the cursor.
+    pub fn begin_selection(&mut self, handle: &str, mode: SelectionMode) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        match mode {
+            SelectionMode::Char => view.nav.select_char(),
+            SelectionMode::Line => view.nav.select_line(),
+        }
+        true
+    }
+
+    /// Helix `v`: toggle character selection at the cursor.
+    pub fn toggle_char_selection(&mut self, handle: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        view.nav.toggle_char();
+        true
+    }
+
+    /// Helix `x`: select the cursor's whole line, and grow by one more line on
+    /// every further press.
+    ///
+    /// Growth moves the *head* one row down, not the selection by whatever the
+    /// cursor happens to be sitting on. That distinction is the whole feature:
+    /// "press `x` again for the next line" and "press `x` on the line I moved
+    /// to" are the same key, and only the shared state machine's `growing`
+    /// flag can tell them apart.
+    pub fn toggle_line_selection(&mut self, handle: &str) -> bool {
+        {
+            let Some(view) = self.views.get_mut(handle) else {
+                return false;
+            };
+            view.sync_viewport();
+            if !view.nav.line_select_extends() {
+                view.nav.select_line();
+                return true;
+            }
+        }
+        let Some((head_row, col, max_row, offset)) = self.views.get(handle).map(|view| {
+            (
+                view.nav
+                    .selection()
+                    .map_or_else(|| view.nav.cursor().0, |selection| selection.head.0),
+                view.nav.cursor().1,
+                view.rows.saturating_sub(1),
+                view.viewport_offset,
+            )
+        }) else {
+            return false;
+        };
+        // At the last visible row there is nothing below to select until the
+        // viewport reveals it. Scrolling toward *newer* output translates every
+        // stored point up by one, so the growth below lands on the row that was
+        // just revealed. At offset 0 there is no newer output, so growth stops.
+        if head_row >= max_row && offset > 0 {
+            self.scroll_by(handle, -1);
+        }
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        let head_row = view
+            .nav
+            .selection()
+            .map_or_else(|| view.nav.cursor().0, |selection| selection.head.0);
+        let next = head_row.saturating_add(1).min(max_row);
+        // `set_cursor` deliberately does not move the head — growth below is
+        // the only thing that may extend a line selection.
+        view.nav.set_cursor((next, col));
+        view.nav.grow_to((next, col));
+        true
+    }
+
+    /// Helix `d`: delete the held selection from this view.
+    ///
+    /// The VT emulator is read-only, so "delete" means the selected cells stop
+    /// being shown and stop being copyable — it does not touch the daemon-side
+    /// process or its real scrollback. Rows are remembered by their text so a
+    /// deletion stays attached to the line it was applied to instead of
+    /// drifting onto whatever scrolls into the same cells later.
+    ///
+    /// Returns whether anything was deleted; a bare `d` with no selection is
+    /// a no-op, which is why it is still consumed by the caller — an unclaimed
+    /// `d` would fall through to the global `OpenDiff` binding.
+    pub fn delete_selection(&mut self, handle: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.sync_viewport();
+        let Some(selection) = view.nav.selection() else {
+            return false;
+        };
+        let (start, end) = selection.line_range();
+        let (first, last) = selection.bounds();
+        let cols = view.screen.col_count();
+        let whole_line = matches!(selection.mode, SelectionMode::Line);
+        for row in start..=end {
+            let text = view.screen.row_text(row);
+            if text.is_empty() {
+                continue;
+            }
+            let width = u16::try_from(text.chars().count()).unwrap_or(cols);
+            let from = if whole_line || row != start {
+                0
+            } else {
+                first.1
+            };
+            let to = if whole_line || row != end {
+                width
+            } else {
+                last.1.saturating_add(1)
+            };
+            view.redactions.push(text, from, to);
+        }
+        // `d` is an operator, not a mode: it consumes the selection it acted on.
+        view.nav.deactivate();
+        true
+    }
+
+    /// Drop any active selection and disarm the `space` prefix.
+    ///
+    /// Deliberately leaves the scrub overlay alone: cancelling a selection is
+    /// not an undo, and a reader who deleted three lines then mis-selected
+    /// should not get them back.
+    pub fn cancel_selection(&mut self, handle: &str) -> bool {
+        let Some(view) = self.views.get_mut(handle) else {
+            return false;
+        };
+        view.nav.deactivate();
+        view.pending_prefix = false;
+        true
+    }
+
+    /// Resolve the `d` scrub overlay against the rows currently in view.
+    fn resolved_redactions(view: &InteractiveTerminalView) -> Vec<Vec<(u16, u16)>> {
+        if view.redactions.is_empty() {
+            return Vec::new();
+        }
+        view.redactions.resolve(&view.screen.viewport_row_text())
+    }
+
+    /// Selected text, ready for the system clipboard.
+    pub fn selected_text(&mut self, handle: &str) -> Option<String> {
+        let view = self.views.get_mut(handle)?;
+        view.sync_viewport();
+        let selection = view.nav.selection()?;
+        let redactions = Self::resolved_redactions(view);
+        let text = view.screen.selection_text(&selection, &redactions);
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Active selection, for renderers.
+    pub fn selection(&self, handle: &str) -> Option<Selection<TerminalPoint>> {
+        self.views.get(handle)?.nav.selection()
+    }
+
+    /// Cursor position in viewport coordinates.
+    pub fn cursor(&self, handle: &str) -> Option<TerminalPoint> {
+        self.views.get(handle).map(|view| view.nav.cursor())
+    }
+
+    /// How many column ranges `d` has scrubbed from this view.
+    pub fn redaction_count(&self, handle: &str) -> usize {
+        self.views
+            .get(handle)
+            .map_or(0, |view| view.redactions.entries.len())
+    }
+
+    /// Render the visible viewport with selection highlight, scrub and cursor
+    /// applied.
+    pub fn render_view(
+        &mut self,
+        handle: &str,
+        max_lines: usize,
+        highlight: ratatui::style::Style,
+    ) -> Option<Vec<ratatui::text::Line<'static>>> {
+        let view = self.views.get_mut(handle)?;
+        view.sync_viewport();
+        let selection = view.nav.selection();
+        let redactions = Self::resolved_redactions(view);
+        let cursor = view.nav.cursor();
+        Some(
+            view.screen
+                .styled_lines(max_lines, selection, &redactions, Some(cursor), highlight),
+        )
+    }
+
     /// Render the newest lines from the bounded VT screen for one view.
     /// Escape sequences have already been interpreted and are never returned
     /// to the host TUI. Returns `None` for unknown handles.
@@ -1039,13 +1829,15 @@ impl InteractiveTerminalController {
     }
 
     /// Render interpreted screen cells with their safe SGR styles applied.
+    ///
+    /// Honours the parked viewport offset but draws no selection highlight;
+    /// prefer [`Self::render_view`] for anything a human is looking at.
     pub fn render_styled_lines(
-        &self,
+        &mut self,
         handle: &str,
         max_lines: usize,
     ) -> Option<Vec<ratatui::text::Line<'static>>> {
-        let view = self.views.get(handle)?;
-        Some(view.screen.styled_lines(max_lines.min(TERMINAL_VIEW_LINES)))
+        self.render_view(handle, max_lines, ratatui::style::Style::default())
     }
 
     /// Header lines describing one terminal for the dialog view,
@@ -1652,5 +2444,485 @@ mod tests {
             !headers.contains("hello"),
             "headers describe; they never carry output"
         );
+    }
+
+    // ── Scrollback, viewport, and Helix selection ────────────────────
+
+    /// A controller whose live screen holds `lines`, one per row.
+    ///
+    /// Lines are joined CRLF with **no trailing newline**, so the cursor comes to
+    /// rest on the last line and the visible rows are exactly `lines` in order —
+    /// row index `n` is `lines[n]`. Callers that want history pass more lines than
+    /// the screen has rows; the extra ones become retained scrollback.
+    ///
+    /// Tests below index rows against this rather than counting CRLFs, because a
+    /// trailing newline would scroll the screen by one and silently shift every
+    /// row index by one.
+    fn scrolled_history(rows: u16, lines: &[&str]) -> InteractiveTerminalController {
+        let mut controller = InteractiveTerminalController::new();
+        assert!(controller.apply_created(
+            "h".to_string(),
+            "ws-1".to_string(),
+            "cat".to_string(),
+            40,
+            rows
+        ));
+        let text = lines.join("\r\n");
+        let body = chunk(0, text.len() as u64, false, &text);
+        assert!(controller
+            .apply_attached("h", "a-1".to_string(), &body, None)
+            .expect("attach")
+            .is_none());
+        controller
+    }
+
+    #[test]
+    fn scrollback_is_retained_and_reachable_by_scrolling_back() {
+        let rows = 5;
+        let lines: Vec<String> = (0..40).map(|n| format!("page-{n:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut controller = scrolled_history(rows, &refs);
+
+        // Following the tail: only the newest page-one lines are on screen.
+        let tail = controller.render_lines("h", 50).expect("render").join("\n");
+        assert!(tail.contains("page-39"));
+        assert!(
+            !tail.contains("page-00"),
+            "with zero scrollback the oldest output is gone"
+        );
+
+        // Scrolling back brings the aged-out rows back into reach. This is the
+        // behaviour the previous zero-length scrollback made impossible.
+        assert!(controller.scroll_by("h", 100));
+        assert!(controller
+            .viewport_offset("h")
+            .is_some_and(|offset| offset > 0));
+        let history = controller
+            .render_lines("h", 200)
+            .expect("render")
+            .join("\n");
+        assert!(
+            history.contains("page-00"),
+            "scrolled-back viewport must expose retained scrollback"
+        );
+
+        // And the offset is bounded: scrolling past the end stops at the top
+        // of the retained history rather than running away.
+        let settled = controller.viewport_offset("h").expect("offset");
+        controller.scroll_by("h", 10_000);
+        assert_eq!(controller.viewport_offset("h"), Some(settled));
+
+        assert!(controller.scroll_to_bottom("h"));
+        assert_eq!(controller.viewport_offset("h"), Some(0));
+    }
+
+    #[test]
+    fn scroll_moves_the_cursor_and_anchor_with_the_content() {
+        let rows = 8;
+        let lines: Vec<String> = (0..40).map(|n| format!("line-{n:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut controller = scrolled_history(rows, &refs);
+        // Park the cursor well above the bottom so a downward shift has room.
+        controller.move_cursor("h", -3, 0);
+        controller.begin_selection("h", SelectionMode::Char);
+        let text_before = controller.selected_text("h");
+        let cursor_before = controller.cursor("h").expect("cursor");
+        let anchor_before = controller.selection("h").expect("selection").anchor;
+
+        // Scrolling up moves the content down, so both rows increase — the
+        // selection stays on the same text instead of drifting.
+        controller.scroll_by("h", 2);
+        let selection_after = controller.selection("h").expect("selection");
+        let cursor_after = controller.cursor("h").expect("cursor");
+        assert_eq!(cursor_after.0, cursor_before.0 + 2);
+        assert_eq!(selection_after.anchor.0, anchor_before.0 + 2);
+        assert_eq!(
+            controller.selected_text("h"),
+            text_before,
+            "the selection must still cover the same text after scrolling"
+        );
+    }
+
+    #[test]
+    fn character_selection_spans_and_reads_back_the_right_text() {
+        let rows = 6;
+        let lines = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+        let mut controller = scrolled_history(rows, &lines);
+        // Row 4 is "echo", row 5 is "foxtrot"; the cursor starts on row 5.
+        controller.move_cursor("h", -1, 0); // row 4 = "echo"
+        assert!(controller.begin_selection("h", SelectionMode::Char));
+        controller.move_cursor("h", 0, 3); // head col 3 on "echo"
+        controller.move_cursor("h", 1, 0); // head row 5
+
+        // The anchor is a whole-cell boundary, so the row it starts on is taken
+        // from its first column: (row 4, col 0) → (row 5, col 3) covers all of
+        // "echo" and the first four characters of "foxtrot".
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("echo\nfoxt"),
+            "char selection runs anchor→head inclusively, taking the anchor row whole"
+        );
+
+        // Dragging back up shortens the selection rather than reordering it.
+        controller.move_cursor("h", -1, 0);
+        assert_eq!(controller.selected_text("h").as_deref(), Some("echo"));
+    }
+
+    #[test]
+    fn line_selection_takes_whole_lines_and_grows_one_per_press() {
+        let rows = 6;
+        let lines = ["one", "two", "three", "four", "five", "six"];
+        let mut controller = scrolled_history(rows, &lines);
+        // Cursor starts on the bottom row (5 = "six"); row 3 is "four".
+        controller.move_cursor("h", -2, 0); // row 3 = "four"
+
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(controller.selected_text("h").as_deref(), Some("four"));
+
+        // Pressing `x` again extends the selection by exactly one line, which
+        // is what makes "hit x repeatedly to take the next line" work.
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(controller.selected_text("h").as_deref(), Some("four\nfive"));
+
+        // The third press reaches the bottom screen row, which still holds a real
+        // line, so it is included. A fourth has nowhere left to go.
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("four\nfive\nsix")
+        );
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("four\nfive\nsix"),
+            "growth stops at the last visible row"
+        );
+    }
+
+    #[test]
+    fn line_selection_reanchors_after_the_cursor_moves() {
+        let rows = 6;
+        let lines = ["one", "two", "three", "four", "five", "six"];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.move_cursor("h", -4, 0); // row 1 = "two"
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(controller.selected_text("h").as_deref(), Some("two"));
+
+        // Moving the cursor ends growth, so the next `x` re-anchors on the line
+        // the reader moved to rather than extending the old selection.
+        controller.move_cursor("h", 1, 0); // row 2 = "three"
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("three"),
+            "x after a move selects the cursor's line, not a grown range"
+        );
+
+        // And growth resumes from there.
+        assert!(controller.toggle_line_selection("h"));
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("three\nfour")
+        );
+    }
+
+    #[test]
+    fn line_selection_ignores_column_so_whole_line_is_copied() {
+        let rows = 4;
+        let lines = ["  indented", "tail", "x", "y"];
+        let mut controller = scrolled_history(rows, &lines);
+        // Cursor starts on row 3 ("y"); row 0 is the indented line.
+        controller.move_cursor("h", -3, 0); // row 0 = "  indented"
+        controller.move_cursor("h", 0, 7); // mid-line
+        assert!(controller.begin_selection("h", SelectionMode::Line));
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("  indented"),
+            "the cursor column must not narrow a whole-line selection"
+        );
+
+        controller.move_cursor("h", 0, 7); // past the end of the line
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("  indented"),
+            "a column clamped to the line end must not change the selection"
+        );
+    }
+
+    #[test]
+    fn selection_is_dropped_by_cancel_and_by_clear() {
+        let rows = 5;
+        let lines = ["a", "b", "c", "d", "e"];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.begin_selection("h", SelectionMode::Line);
+        assert!(controller.selection("h").is_some());
+        assert!(controller.cancel_selection("h"));
+        assert!(controller.selection("h").is_none());
+        assert!(controller.selected_text("h").is_none());
+
+        controller.toggle_line_selection("h");
+        assert!(controller.clear_scrollback("h"));
+        assert!(
+            controller.selection("h").is_none(),
+            "clear rebuilds the screen, so a held selection would name other text"
+        );
+        assert_eq!(controller.viewport_offset("h"), Some(0));
+    }
+
+    #[test]
+    fn unknown_handle_navigation_is_refused_not_panicking() {
+        let mut controller = InteractiveTerminalController::new();
+        assert!(!controller.scroll_by("nope", 5));
+        assert!(!controller.move_cursor("nope", 1, 0));
+        assert!(!controller.begin_selection("nope", SelectionMode::Char));
+        assert!(!controller.toggle_line_selection("nope"));
+        assert!(!controller.cancel_selection("nope"));
+        assert!(!controller.scroll_to_bottom("nope"));
+        assert_eq!(controller.viewport_offset("nope"), None);
+        assert_eq!(controller.cursor("nope"), None);
+    }
+
+    #[test]
+    fn viewport_cannot_underflow_when_history_shrinks_under_it() {
+        // `Grid::visible_rows` computes `scrollback.len() - offset` unguarded,
+        // so an offset left larger than the retained history is a panic, not a
+        // clamp. A clear is exactly how that happens.
+        let rows = 5;
+        let lines: Vec<String> = (0..40).map(|n| format!("page-{n:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut controller = scrolled_history(rows, &refs);
+        controller.scroll_by("h", 100);
+        assert!(controller.clear_scrollback("h"));
+        // Reading after the clear must be safe, and must report the fresh
+        // bottom rather than the offset the reader had before it.
+        assert!(controller.render_lines("h", 20).is_some());
+        assert_eq!(controller.viewport_offset("h"), Some(0));
+    }
+
+    // ── Word motion ────────────────────────────────────────────────────
+
+    #[test]
+    fn word_motion_walks_word_boundaries_within_the_cursor_row() {
+        // "cargo build --release --target x86_64"
+        let rows = 3;
+        let lines = ["cargo build --release --target x86_64", "", ""];
+        let mut controller = scrolled_history(rows, &lines);
+        // The cursor starts on the last row, which the fixture leaves blank;
+        // word motions are about the row the reader is actually on.
+        controller.move_cursor("h", -2, 0);
+        assert_eq!(controller.cursor("h"), Some((0, 0)));
+
+        // `e` lands *on* the last character of a word, not one past it, so
+        // `v` then `e` copies "cargo" rather than "cargo ". Repeated `e`
+        // advances because a cursor already at a word's end takes the next one.
+        for end in [4u16, 10, 20, 29, 36] {
+            assert!(
+                controller.word_motion("h", true),
+                "e must reach column {end}"
+            );
+            assert_eq!(controller.cursor("h").map(|(_, col)| col), Some(end));
+        }
+        assert!(
+            !controller.word_motion("h", true),
+            "there is no word after the last one"
+        );
+        assert_eq!(
+            controller.cursor("h").map(|(_, col)| col),
+            Some(36),
+            "a refused jump must leave the cursor alone rather than resetting it"
+        );
+
+        // `b` is the mirror: the first character of each word, walking back.
+        for start in [31u16, 22, 12, 6, 0] {
+            assert!(
+                controller.word_motion("h", false),
+                "b must reach column {start}"
+            );
+            assert_eq!(controller.cursor("h").map(|(_, col)| col), Some(start));
+        }
+        assert!(!controller.word_motion("h", false));
+    }
+
+    #[test]
+    fn word_motion_is_refused_for_an_unknown_handle() {
+        let mut controller = InteractiveTerminalController::new();
+        assert!(!controller.word_motion("nope", true));
+        assert!(!controller.word_motion("nope", false));
+    }
+
+    #[test]
+    fn word_motion_widens_a_char_selection_but_never_a_line_one() {
+        let rows = 3;
+        let lines = ["cargo build --release", "", ""];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.move_cursor("h", -2, 0);
+
+        controller.toggle_char_selection("h");
+        controller.word_motion("h", true);
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("cargo"),
+            "`e` after `v` extends, which is the whole point of `v` being a mode"
+        );
+        controller.word_motion("h", true);
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("cargo build")
+        );
+
+        controller.cancel_selection("h");
+        controller.begin_selection("h", SelectionMode::Line);
+        let before = controller.selected_text("h");
+        controller.word_motion("h", true);
+        controller.word_motion("h", true);
+        assert_eq!(
+            controller.selected_text("h"),
+            before,
+            "a bare movement must not add text to a line selection"
+        );
+    }
+
+    #[test]
+    fn v_twice_releases_the_selection_and_stops_extending() {
+        let rows = 3;
+        let lines = ["cargo build --release", "", ""];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.move_cursor("h", -2, 0);
+        controller.toggle_char_selection("h");
+        controller.move_cursor("h", 0, 5);
+        assert!(controller.selection("h").is_some());
+
+        controller.toggle_char_selection("h");
+        assert!(
+            controller.selection("h").is_none(),
+            "`v` toggles, it does not re-arm"
+        );
+        let parked = controller.cursor("h").expect("cursor");
+        controller.move_cursor("h", 0, 12);
+        assert!(
+            controller.selection("h").is_none(),
+            "movement after `v` was released must not re-arm it"
+        );
+        assert_ne!(controller.cursor("h").expect("cursor"), parked);
+    }
+
+    // ── Delete ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_blanks_the_selection_and_takes_it_back_out_of_the_clipboard() {
+        let rows = 3;
+        let lines = ["secret token abc", "keep me", ""];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.move_cursor("h", -2, 0); // row 0
+        controller.begin_selection("h", SelectionMode::Char);
+        controller.move_cursor("h", 0, 6); // covers "secret"
+
+        assert!(controller.delete_selection("h"));
+        assert!(
+            controller.selection("h").is_none(),
+            "`d` is an operator, so it consumes what it acted on"
+        );
+        assert_eq!(
+            controller.redaction_count("h"),
+            1,
+            "only the start row is inside a single-row selection"
+        );
+
+        // Deleted text must not come back through the yank path — that is the
+        // difference between a deletion and a visual effect.
+        controller.begin_selection("h", SelectionMode::Line);
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            Some("       token abc"),
+            "the scrubbed columns read back as blanks and the rest of the row \
+             survives; `keep me` on the next row is untouched"
+        );
+    }
+
+    #[test]
+    fn delete_of_a_line_selection_blanks_every_line_it_spans() {
+        let rows = 4;
+        let lines = ["one", "two", "three", "four"];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.move_cursor("h", -3, 0); // row 0 = "one"
+        controller.toggle_line_selection("h");
+        controller.toggle_line_selection("h"); // rows 0..=1
+        assert!(controller.delete_selection("h"));
+        assert_eq!(controller.redaction_count("h"), 2);
+
+        controller.move_cursor("h", -2, 0);
+        controller.begin_selection("h", SelectionMode::Line);
+        assert_eq!(controller.selected_text("h").as_deref(), None);
+    }
+
+    #[test]
+    fn a_deletion_stays_attached_to_its_line_when_the_viewport_moves() {
+        let rows = 5;
+        let lines: Vec<String> = (0..40).map(|n| format!("page-{n:02}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut controller = scrolled_history(rows, &refs);
+        controller.move_cursor("h", -4, 0);
+        controller.toggle_line_selection("h");
+        let before = controller.selected_text("h").expect("text");
+        assert!(controller.delete_selection("h"));
+
+        // Scroll away and come back. The overlay is keyed on row *text*
+        // precisely so this round trip does not resurrect the line.
+        controller.scroll_by("h", 4);
+        controller.scroll_by("h", -4);
+        controller.begin_selection("h", SelectionMode::Line);
+        assert_eq!(
+            controller.selected_text("h").as_deref(),
+            None,
+            "scrolling away and back must not un-delete {before:?}"
+        );
+    }
+
+    #[test]
+    fn delete_with_nothing_selected_deletes_nothing() {
+        let rows = 3;
+        let lines = ["alpha", "bravo", "charlie"];
+        let mut controller = scrolled_history(rows, &lines);
+        assert!(!controller.delete_selection("h"));
+        assert_eq!(controller.redaction_count("h"), 0);
+        assert!(!controller.delete_selection("nope"));
+
+        controller.begin_selection("h", SelectionMode::Line);
+        assert!(controller.delete_selection("h"));
+        assert!(
+            !controller.delete_selection("h"),
+            "the selection is consumed"
+        );
+    }
+
+    #[test]
+    fn clear_drops_the_scrub_overlay_with_the_screen() {
+        let rows = 3;
+        let lines = ["alpha", "bravo", "charlie"];
+        let mut controller = scrolled_history(rows, &lines);
+        controller.begin_selection("h", SelectionMode::Line);
+        assert!(controller.delete_selection("h"));
+        assert_eq!(controller.redaction_count("h"), 1);
+
+        assert!(controller.clear_scrollback("h"));
+        assert_eq!(
+            controller.redaction_count("h"),
+            0,
+            "the overlay is keyed on text the clear threw away; carrying it \
+             forward would hide whichever new output reuses that wording"
+        );
+    }
+
+    #[test]
+    fn the_scrub_overlay_is_bounded() {
+        let rows = 5;
+        let lines: Vec<String> = (0..200).map(|n| format!("unique-{n:03}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut controller = scrolled_history(rows, &refs);
+        for _ in 0..(MAX_TERMINAL_REDACTIONS + 25) {
+            controller.toggle_line_selection("h");
+            controller.delete_selection("h");
+        }
+        assert_eq!(controller.redaction_count("h"), MAX_TERMINAL_REDACTIONS);
     }
 }

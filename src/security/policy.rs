@@ -82,7 +82,9 @@ pub fn action_for_command(
     }
 
     // Critical + deny_critical_commands => Deny
-    if classification.risk == CommandRisk::Critical && config.gates.deny_critical_commands {
+    if classification.risk == CommandRisk::Critical
+        && config.gates.deny_critical_commands.unwrap_or(false)
+    {
         let reason = classification
             .reasons
             .first()
@@ -224,7 +226,9 @@ pub fn action_for_findings(
     }
 
     match worst.severity {
-        crate::security::finding::Severity::Critical if config.gates.deny_critical_commands => {
+        crate::security::finding::Severity::Critical
+            if config.gates.deny_critical_commands.unwrap_or(false) =>
+        {
             SecurityDecisionHint {
                 action: SecurityAction::Deny,
                 reason: format!("critical finding: {}", worst.compact_summary()),
@@ -313,7 +317,7 @@ mod tests {
     fn no_deny_config() -> SecurityConfig {
         SecurityConfig {
             gates: SecurityGateConfig {
-                deny_critical_commands: false,
+                deny_critical_commands: Some(false),
                 ask_on_high_risk_command: false,
                 ..Default::default()
             },
@@ -400,14 +404,30 @@ mod tests {
     }
 
     #[test]
-    fn test_critical_deny() {
+    fn test_critical_default_asks() {
         let c = make_classification_with_finding(
             CommandRisk::Critical,
             vec![SecurityCategory::DestructiveFilesystem],
         );
         let hint = action_for_command(&c, &default_config());
-        assert_eq!(hint.action, SecurityAction::Deny);
+        assert_eq!(hint.action, SecurityAction::Ask);
         assert!(hint.reason.contains("critical"));
+    }
+
+    #[test]
+    fn test_explicit_critical_deny_is_preserved() {
+        let config = SecurityConfig {
+            gates: SecurityGateConfig {
+                deny_critical_commands: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let c = make_classification(
+            CommandRisk::Critical,
+            vec![SecurityCategory::DangerousCommand],
+        );
+        assert_eq!(action_for_command(&c, &config).action, SecurityAction::Deny);
     }
 
     #[test]
@@ -512,13 +532,13 @@ mod tests {
     }
 
     #[test]
-    fn test_findings_critical_denies() {
+    fn test_findings_critical_default_asks() {
         let findings = vec![make_finding(
             Severity::Critical,
             SecurityCategory::RemoteCodeExecution,
         )];
         let hint = action_for_findings(&findings, &default_config());
-        assert_eq!(hint.action, SecurityAction::Deny);
+        assert_eq!(hint.action, SecurityAction::Ask);
     }
 
     #[test]
@@ -600,7 +620,7 @@ mod tests {
     fn test_critical_no_deny_asks() {
         let config = SecurityConfig {
             gates: SecurityGateConfig {
-                deny_critical_commands: false,
+                deny_critical_commands: Some(false),
                 ask_on_high_risk_command: true,
                 ..SecurityGateConfig::default()
             },

@@ -477,6 +477,7 @@ impl BrokerCallback for BrokerAdapter {
             // M002: shared bounded emitter travels with the trusted
             // context; tools emit only when both are present.
             audit_emitter: None,
+            execution_authorization: None,
         };
 
         if self

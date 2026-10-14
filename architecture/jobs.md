@@ -548,7 +548,13 @@ capped at 16 KiB; target output is never a control channel. On Unix,
 finite executions run in a child session; cancellation and timeout
 send SIGTERM, wait a bounded grace period, then SIGKILL the verified
 process group and reap the direct child. Other platforms retain
-direct-child cleanup only. Shell, TestRunner, and SubAgentPool retain
+direct-child cleanup only. On Linux, constrained launches also pass through
+the internal composable launch contract owned by this service. Its host
+feature probe is diagnostic only: the service still selects the existing
+filesystem helper, and namespace, offline-network, seccomp, and cgroup
+dimensions remain unavailable until native enforcement is implemented and
+qualified. Probe results never establish a child's obtained status.
+Shell, TestRunner, and SubAgentPool retain
 their domain semantics behind typed executors; TestRunner is an
 explicit lifecycle exemption because it streams parser input into
 durable line-oriented test logs and owns stall-timeout semantics.

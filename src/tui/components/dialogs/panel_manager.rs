@@ -63,19 +63,17 @@ use std::sync::Arc;
 use crate::tui::app::state::panel_hotkeys::PanelHotkeys;
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};
+use crate::tui::components::dialogs::panel_list::PanelListState;
 use crate::tui::input::InputMode;
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use crate::tui::theme::Theme;
 
-/// Upper bound on the filter text, so a held key cannot grow this without
-/// limit.
-const MAX_QUERY_LEN: usize = 48;
-
 pub struct PanelManagerDialog {
     theme: Arc<Theme>,
-    query: String,
-    /// Index into [`SidePanelId::ALL`], not into the filtered view.
-    cursor: usize,
+    /// Query, cursor, scroll and mode. Shared with the other panel picker so
+    /// `j`/`k`, the filter and the NOR/INS badge cannot mean two different
+    /// things in two boxes.
+    list: PanelListState,
     /// The user's saved digit bindings, read-only here: saving happens in
     /// the command layer so persistence lives in one place.
     hotkeys: PanelHotkeys,
@@ -95,20 +93,16 @@ pub struct PanelManagerDialog {
     /// moment they reached for `Shift+S`. Naming the state is the honest fix;
     /// changing the frame to match a strip is not.
     placement_visible: bool,
-    /// Which mode the filter is in. See the module notes.
-    mode: InputMode,
 }
 
 impl Clone for PanelManagerDialog {
     fn clone(&self) -> Self {
         Self {
             theme: Arc::clone(&self.theme),
-            query: self.query.clone(),
-            cursor: self.cursor,
+            list: self.list.clone(),
             hotkeys: self.hotkeys.clone(),
             placement: self.placement,
             placement_visible: self.placement_visible,
-            mode: self.mode,
         }
     }
 }
@@ -129,29 +123,21 @@ impl PanelManagerDialog {
     ) -> Self {
         Self {
             theme,
-            query: String::new(),
-            // Opens on the live panel, so `Enter` with no movement is a no-op
-            // rather than a silent jump to whatever happens to be first.
-            cursor: active.index(),
+            list: PanelListState::new(active),
             hotkeys,
             placement,
             placement_visible,
-            // Normal: the manager is reached with a Normal-mode chord and is
-            // read — scroll, move a panel — before anyone types into it.
-            // Opening in Insert made `j`/`k` filter text, which is
-            // indistinguishable from a dead pane.
-            mode: InputMode::Normal,
         }
     }
 
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.list.cursor()
     }
 
     /// Which mode the filter is in. Exposed for the parity tests, which cannot
     /// see the badge the render draws.
     pub fn input_mode(&self) -> InputMode {
-        self.mode
+        self.list.mode()
     }
 
     /// The placement the layout strip is showing.
@@ -173,63 +159,20 @@ impl PanelManagerDialog {
 
     /// The highlighted panel.
     pub fn selected(&self) -> Option<SidePanelId> {
-        SidePanelId::ALL.get(self.cursor).copied()
-    }
-
-    /// First visible row, scrolled so `cursor` is always on screen.
-    ///
-    /// There are more panels than rows — 33 entries into roughly ten lines —
-    /// so without this `j` walks the highlight straight off the bottom of
-    /// the box and `Enter` then commits a panel nobody can see was selected.
-    /// The highlight is the only thing saying which panel `Enter` will load,
-    /// so a highlight that has scrolled away is a silent mis-selection.
-    fn scroll(&self, list_height: u16) -> u16 {
-        // Two rows go to the list's own border.
-        let page = list_height.saturating_sub(2);
-        if page == 0 {
-            return 0;
-        }
-        let total = SidePanelId::ALL.len() as u16;
-        // Never past the end: with fewer rows than panels, sitting at the
-        // bottom is what puts the *last* entries on screen.
-        let max_offset = total.saturating_sub(page);
-        let cursor = self.cursor as u16;
-        if cursor < page {
-            return 0;
-        }
-        cursor
-            .saturating_add(1)
-            .saturating_sub(page)
-            .min(max_offset)
+        self.list.selected()
     }
 
     /// True when `panel` passes the current filter.
-    fn matches(&self, panel: SidePanelId) -> bool {
-        let query = self.query.trim().to_lowercase();
-        if query.is_empty() {
-            return true;
-        }
-        query.split_whitespace().all(|term| {
-            panel.label().to_lowercase().contains(term)
-                || panel.title().to_lowercase().contains(term)
-                || panel.hint().to_lowercase().contains(term)
-        })
+    ///
+    /// Delegated so the manager and the picker can never disagree about what
+    /// the filter means.
+    pub fn matches(&self, panel: SidePanelId) -> bool {
+        self.list.matches(panel)
     }
 
-    /// Move the highlight by `delta`, clamped to the registry.
-    fn move_cursor(&mut self, delta: isize) {
-        let len = SidePanelId::ALL.len() as isize;
-        if len == 0 {
-            return;
-        }
-        let next = (self.cursor as isize + delta).clamp(0, len - 1);
-        self.cursor = next as usize;
-    }
-
-    fn push_query(&mut self, ch: char) {
-        if self.query.chars().count() < MAX_QUERY_LEN {
-            self.query.push(ch);
-        }
+    /// The live filter text.
+    pub fn query(&self) -> &str {
+        self.list.query()
     }
 
     /// The layout strip: every edge, with the live one marked.
@@ -272,29 +215,6 @@ impl PanelManagerDialog {
         spans.push(Span::styled("· p", Style::default().fg(theme.muted)));
         spans
     }
-
-    /// Inverse-video `INS`/`NOR` badge, matching every other dockable box
-    /// exactly.
-    ///
-    /// It rides the filter row because that is the surface it governs: the box
-    /// opens in Normal, and a user who presses `j` expecting to scroll and
-    /// gets nothing typed has no other way to find out why.
-    fn mode_badge<'s>(&self, theme: &Arc<Theme>) -> Vec<Span<'s>> {
-        let (label, colour) = match self.mode {
-            InputMode::Normal => ("NOR", theme.muted),
-            InputMode::Insert => ("INS", theme.primary),
-        };
-        vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                format!(" {label} "),
-                Style::default()
-                    .fg(theme.background)
-                    .bg(colour)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]
-    }
 }
 
 impl Component for PanelManagerDialog {
@@ -304,7 +224,7 @@ impl Component for PanelManagerDialog {
         // The directional is a Normal-mode verb only. In Insert `Shift+H` is
         // the letter `H` and has to reach the filter — checked ahead of the
         // match so the printable arm below cannot shadow it with a bare `H`.
-        if self.mode == InputMode::Normal {
+        if self.list.mode() == InputMode::Normal {
             if let Some(dir) = crate::tui::panels::direction_of(key) {
                 let panel = self.selected()?;
                 return Some(TuiMsg::MovePanelTo {
@@ -314,18 +234,10 @@ impl Component for PanelManagerDialog {
             }
         }
 
+        // The manager's own verbs are answered first; everything shared with the
+        // other panel picker (Esc, arrows, `j`/`k`, `i`/`a`, Insert text) is
+        // delegated so the two boxes cannot drift.
         match key.code {
-            KeyCode::Esc => {
-                if self.mode == InputMode::Insert {
-                    // Leave Insert the way every other box here does, with the
-                    // filter intact — that is where the directional lives.
-                    self.mode = InputMode::Normal;
-                } else if self.query.is_empty() {
-                    return Some(TuiMsg::CloseDialog);
-                } else {
-                    self.query.clear();
-                }
-            }
             // Loading is the primary act in both modes: a user who filtered to
             // `chat` and pressed Enter wants chat, not to be handed back to a
             // box they have to leave themselves.
@@ -333,31 +245,13 @@ impl Component for PanelManagerDialog {
                 let panel = self.selected()?;
                 return Some(TuiMsg::SelectPanel { panel });
             }
-            // Paging and arrows are not text, so they keep their meaning while
-            // typing. In Normal they walk the highlight, as the box's own
-            // `j`/`k` do.
-            KeyCode::Up => self.move_cursor(-1),
-            KeyCode::Down => self.move_cursor(1),
-            KeyCode::PageUp => self.move_cursor(-10),
-            KeyCode::PageDown => self.move_cursor(10),
-            KeyCode::Backspace if self.mode == InputMode::Insert => {
-                self.query.pop();
-            }
-            KeyCode::Char('j') if self.mode == InputMode::Normal => self.move_cursor(1),
-            KeyCode::Char('k') if self.mode == InputMode::Normal => self.move_cursor(-1),
-            // Reaching the filter. `Enter` is *not* one of them — it already
-            // means "load" — so `i`/`a` and Esc are the two ways across, which
-            // is the same pair every other box offers.
-            KeyCode::Char('i') | KeyCode::Char('a') if self.mode == InputMode::Normal => {
-                self.mode = InputMode::Insert;
-            }
             // The layout strip. Not a filter character and not a panel verb:
             // `p` answers "where does the panel live", which the panel list
             // cannot, and folding it into the list would renumber every
             // panel. Guarded on no modifier for the same reason the digits
             // are — a `Ctrl+P` must keep its own meaning.
             KeyCode::Char('p')
-                if self.mode == InputMode::Normal && key.modifiers == KeyModifiers::NONE =>
+                if self.list.mode() == InputMode::Normal && key.modifiers == KeyModifiers::NONE =>
             {
                 return Some(TuiMsg::CyclePanelPlacement);
             }
@@ -365,23 +259,16 @@ impl Component for PanelManagerDialog {
             // so a Ctrl+digit (which recalls a saved panel) is not swallowed
             // here and recorded as a fresh binding by accident.
             KeyCode::Char(d)
-                if self.mode == InputMode::Normal
+                if self.list.mode() == InputMode::Normal
                     && key.modifiers == KeyModifiers::NONE
                     && d.is_ascii_digit() =>
             {
                 let panel = self.selected()?;
                 return Some(TuiMsg::SavePanelHotkey { digit: d, panel });
             }
-            KeyCode::Char(ch)
-                if self.mode == InputMode::Insert
-                    && (key.modifiers == KeyModifiers::NONE
-                        || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                self.push_query(ch);
-            }
             _ => {}
         }
-        None
+        self.list.handle_shared_key(key)
     }
 
     fn update(&mut self, _msg: TuiMsg) -> Option<TuiMsg> {
@@ -429,29 +316,9 @@ impl Component for PanelManagerDialog {
             buf,
         );
 
-        let filtering = !self.query.trim().is_empty();
-        let mut filter_spans = if filtering {
-            vec![
-                Span::styled("search ", Style::default().fg(theme.muted)),
-                Span::styled(
-                    format!("{}_", self.query),
-                    Style::default().fg(theme.primary),
-                ),
-            ]
-        } else if self.mode == InputMode::Normal {
-            vec![
-                Span::styled("i to filter", Style::default().fg(theme.muted)),
-                Span::styled(" panels", Style::default().fg(theme.border)),
-            ]
-        } else {
-            vec![Span::styled(
-                "type to filter panels…",
-                Style::default().fg(theme.muted),
-            )]
-        };
-        filter_spans.extend(self.mode_badge(theme));
+        let filtering = self.list.filtering();
         Widget::render(
-            Paragraph::new(Line::from(filter_spans)).block(
+            Paragraph::new(Line::from(self.list.filter_row(theme, "panels"))).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if filtering {
@@ -469,23 +336,15 @@ impl Component for PanelManagerDialog {
         // is not there.
         let mut lines: Vec<Line<'static>> = Vec::new();
         for (index, panel) in SidePanelId::ALL.iter().copied().enumerate() {
-            let selected = index == self.cursor;
-            let visible = self.matches(panel);
+            let selected = index == self.list.cursor();
+            let visible = self.list.matches(panel);
             let saved = self.hotkeys.digit_for(panel);
             let badge = match saved {
                 Some(digit) => format!("  ^-{digit}"),
                 None => String::new(),
             };
             let marker = if selected { "▸" } else { " " };
-            let style = if !visible {
-                Style::default().fg(theme.border)
-            } else if selected {
-                Style::default()
-                    .fg(theme.primary)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
+            let style = self.list.row_style(theme, index, visible);
             lines.push(Line::from(vec![
                 Span::styled(format!("{marker} "), style),
                 Span::styled(format!("{:<10}", panel.label()), style),
@@ -498,7 +357,7 @@ impl Component for PanelManagerDialog {
         }
         Widget::render(
             Paragraph::new(lines)
-                .scroll((self.scroll(chunks[2].height), 0))
+                .scroll((self.list.scroll(chunks[2].height), 0))
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -516,7 +375,7 @@ impl Component for PanelManagerDialog {
         // this is a `Length(3)` chunk, so anything past that is silently cut
         // and the row just ends mid-key. `p` and `0`-`9` are not repeated here
         // because the strip and the list rows already say where they live.
-        let footer = match (self.mode, filtering) {
+        let footer = match (self.list.mode(), filtering) {
             (InputMode::Insert, true) => "Enter load  Esc normal  Bksp edit",
             (InputMode::Insert, false) => "type to filter  Enter load  Esc normal",
             (InputMode::Normal, true) => "⇧H/J/K/L move  Enter load  Esc clear",
@@ -630,7 +489,7 @@ mod tests {
         let mut d = dialog();
         d.handle_key(key(KeyCode::Char('x'), KeyModifiers::NONE));
         d.handle_key(key(KeyCode::Char('y'), KeyModifiers::NONE));
-        assert_eq!(d.query, "", "Normal-mode keys must not narrow the list");
+        assert_eq!(d.query(), "", "Normal-mode keys must not narrow the list");
     }
 
     #[test]
@@ -660,14 +519,14 @@ mod tests {
             "one Esc must not discard a query mid-typing"
         );
         assert_eq!(d.input_mode(), InputMode::Normal);
-        assert_eq!(d.query, "c", "the query survives Esc");
+        assert_eq!(d.query(), "c", "the query survives Esc");
 
         assert_eq!(
             d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
             None,
             "a second Esc clears rather than closing"
         );
-        assert_eq!(d.query, "", "the query is cleared");
+        assert_eq!(d.query(), "", "the query is cleared");
 
         assert_eq!(
             d.handle_key(key(KeyCode::Esc, KeyModifiers::NONE)),
@@ -726,7 +585,7 @@ mod tests {
         d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
         d.handle_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
         assert_eq!(d.input_mode(), InputMode::Insert);
-        assert_eq!(d.query, "H", "the H reached the filter");
+        assert_eq!(d.query(), "H", "the H reached the filter");
     }
 
     /// A bare arrow is not the gesture. In the manager it walks the highlight
@@ -737,7 +596,7 @@ mod tests {
         d.handle_key(key(KeyCode::Char('i'), KeyModifiers::NONE));
         d.handle_key(key(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(d.cursor(), 1);
-        assert_eq!(d.query, "", "and did not filter anything");
+        assert_eq!(d.query(), "", "and did not filter anything");
     }
 
     // --------------------------------------------------------------- layout

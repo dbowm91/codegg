@@ -1946,6 +1946,18 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app.pending_turn_submission = None;
             }
         }
+        TuiCommand::TurnCancelRequested {
+            session_id,
+            turn_id,
+            error,
+        } => {
+            crate::tui::commands::turn_control::apply_cancel_result(
+                app,
+                &session_id,
+                &turn_id,
+                error,
+            );
+        }
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);
         }

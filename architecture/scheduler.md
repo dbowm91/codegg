@@ -93,11 +93,30 @@ pub struct JobScheduler { ... }
 ```
 
 Core fields: `store`, `workspaces`, `executors`, `admission`, `queue`,
-`running`, `completions`, `running_per_workspace`, `ready_counts`,
-`running_total`, `admission_blocks`, `queue_overflows`,
+`running`, `completions`, `completion_signals`, `running_per_workspace`,
+`ready_counts`, `running_total`, `admission_blocks`, `queue_overflows`,
 `oldest_queued_age_secs`, `notify`, `shutdown`, `config`,
 `daemon_generation`, `event_tx`, `audit_emitter` (M001/M003 injected
 bounded emitter for live `job_complete`; no direct store ownership).
+
+Two wake signals, deliberately not shared:
+
+- `notify` — the main run loop's **reconciliation** signal. Single-consumer and
+  coalescing, so `notify_one` is correct there.
+- `completion_signals` — per-`JobId` broadcast used by `wait_for_completion`.
+  Each job gets a bounded `watch` generation counter; publishing a terminal
+  outcome advances only that job's counter. `Notify` holds a single permit and
+  wakes one *arbitrary* waiter, so with several jobs in flight the waiter whose
+  job finished could be left asleep for its whole bound. Waiters subscribe
+  **before** their first `completions` read, which closes the publish-vs-park
+  race without a timeout fallback.
+
+`wait_for_completion` still re-checks durable state on a bounded backstop tick
+(`COMPLETION_RECHECK_INTERVAL`) as a safety net for terminal transitions that
+bypass the scheduler's publish helpers; it is not the delivery path.
+`signal_job` is called from the executor-completion path, `mark_unschedulable`,
+and queued `request_cancel` (which terminalizes without any executor, so it
+never publishes a `completions` entry).
 
 Key methods:
 - `spawn_run()` — spawn the main loop on the Tokio runtime

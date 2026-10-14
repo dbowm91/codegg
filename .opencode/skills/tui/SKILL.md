@@ -35,6 +35,8 @@ root and lifecycle modules.
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
 | `src/tui/commands/` | command-handler submodules (see `mod.rs` for the current set) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
+| `src/tui/helix_selection.rs` | The Helix selection **state machine** over a generic `SelectionPoint`. Coordinate-agnostic on purpose: the terminal instantiates it with viewport cells, the editor would instantiate it with byte offsets. Owns the rules (`v` is a mode, `x` is an action, a movement extends only in character mode); owns no surface. |
+| `src/tui/panel_resize.rs` | Outward-only panel resize: which key drags which border, and on which panel. Knows nothing about `App`. |
 | `src/tui/runtime/` | Runtime loop and event routing |
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
 | `src/tui/route.rs` | `Route`/`RouteManager` primary views (Home, Session, Workspace, Editor) |
@@ -449,14 +451,53 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
-- **The working strip owns turn liveness.** `render_working_strip` draws one
-  throbber row plus one row per advertised subagent between the transcript and
-  the composer, reserved from the prompt allocation and carved back off like
-  the hint line and the todo strip. It draws only while `Working`.
+- **The working strip owns turn liveness, and it names the way out.**
+  `render_working_strip` draws one throbber row plus one row per advertised
+  subagent between the transcript and the composer, reserved from the prompt
+  allocation and carved back off like the hint line and the todo strip. It
+  draws while `Working` **or** while `SessionState::stopped_turn` — a stopped
+  turn keeps the strip deliberately, because the user's next question is
+  whether it is still stopped and how to carry on, and an indicator that
+  vanishes the instant work stops answers neither. Row 0 pairs the phase with
+  the key that changes it (`x to stop`, `press x again to stop agent` while a
+  confirmation is armed, `■ stopped · press x or /start` once stopped): a
+  long pause with no way out is what reads as a dropped connection.
   `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
   because the strip is carved out of the prompt chunk — the reverse order
   resolves every subagent click to click-to-focus. Hit rects live in
   `SubagentState::hits` and are rebuilt every frame.
+- **A turn must be interruptible, and the id is what makes it so.**
+  `TurnCancel` is addressed by `(session_id, turn_id)` and the daemon
+  *rejects* a mismatch, so `SessionState::active_turn_id` — bound from
+  `TurnStarted`, cleared by every terminal turn event — is the only thing that
+  can stop a turn. A cancelled turn arrives as an ordinary `TurnCompleted`,
+  so `stopped_turn` is what distinguishes "I stopped this" from "it
+  finished", and it deliberately survives `TurnCompleted`. `/stop` marks it
+  optimistically and undoes only on a real failure, because the daemon's
+  cancel is cooperative and the lag would otherwise be visible. There is no
+  protocol-level resume, so `/start` **re-submits**; never imply it revives
+  the cancelled turn. `x` is one key for both directions — the state says
+  which applies — and the destructive one takes a second press inside
+  `STOP_ARM_WINDOW`, expired by the render pump rather than only on the next
+  key. Bare-char binding, so Insert types the letter.
+- **The launch directory starts its own session.** `App::ensure_launch_session`
+  runs once from `main.rs` and is a no-op whenever a session is bound, because
+  every session-scoped surface resolves through it and a launch without one
+  reads as a broken install rather than a missing `Ctrl+N`. It reuses
+  `sessions::start_new_session` so the request carries the **typed**
+  `(project_id, workspace_id)` pair, and is deliberately not
+  `App::new_session` (that clears the view and can open a template picker).
+- **Two panel boxes, one list implementation.** `PanelManagerDialog` and
+  `PanelPickerDialog` (opened by bare `/agents`) share query/cursor/scroll/
+  mode/keymap through `PanelListState`; two boxes that both list panels must
+  agree on what `j` does. The cursor is an index into `SidePanelId::ALL`,
+  never into the filtered view — filtering narrows visibility without
+  renumbering what `Enter` acts on. The picker commits the **same**
+  `TuiMsg::SelectPanel` the manager emits; `App::pending_panel_picker_subject`
+  is what gives the selection its second half (load the content into the
+  chosen panel), and it is spent on commit so an abandoned picker cannot leak
+  into the next pick. A panel row that a user selects must do something:
+  `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
   `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
   A snapshot that arrives replaces the rows; a *missing* snapshot does not,
@@ -597,6 +638,73 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;
   never write raw child escape sequences to the host terminal.
+- **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
+  speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
+  `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`
+  selects the cursor's whole line and grows one line per press, `d` deletes the
+  selection, `space+y` yanks to the system clipboard, and `C` clears scrollback
+  while the process keeps running. In focused (INS) mode the PTY owns the
+  keyboard and every key goes through `classify_key`, so a `v` or `d` typed at
+  a running program stays program input. Five things make this work and are
+  easy to undo by accident:
+  1. The emulator holds a **bounded 5,000-row scrollback**. A zero-length
+     history destroys rows as they scroll off, leaving nothing to scroll to or
+     select — the reader can only address the screen, which is exactly the text
+     about to disappear.
+  2. **The selection rules live in `tui::helix_selection`, not on either
+     surface.** `SelectionState<P>` is coordinate-agnostic on purpose: the
+     terminal instantiates `P = (u16, u16)` cells, the editor would instantiate
+     it with byte offsets. `v` is a **mode** (the head follows the cursor, so
+     movement extends) and `x` is an **action** (the head is pinned, so a bare
+     movement cannot widen it) — that split is the whole reason `x` can mean
+     both "select this line" and "again, the next one". Never re-derive those
+     rules per surface.
+  3. Navigation state lives on the **controller**, so box and panel cannot
+     disagree; selection coordinates are **viewport** offsets and shift with
+     the content on every scroll.
+  4. `sync_viewport` clamps the offset before every read —
+     `Grid::visible_rows` subtracts without guarding, so a stale offset is a
+     panic, and `clear_scrollback` is how one arises. `clear_scrollback` also
+     drops the scrub overlay: it is keyed on text the clear threw away.
+  5. Verbs are applied by `apply_nav`, which returns `ClearRequested` rather
+     than clearing, because only the command layer can issue the daemon
+     operation. `d` and `C` must both stay in `classify_nav_key` — a focused
+     panel is consulted before the global bindings, so an unclaimed `d` falls
+     through to `OpenDiff`. `space+y` is two events in legacy xterm encoding,
+     so the prefix is remembered state (`prefix_pending`), not a chord.
+  `d` deletes **locally**: `vt100::Screen` is read-only, so `Redactions`
+  remembers each scrubbed range against the **row's text** rather than its
+  position — a bounded scrollback has no stable row identity, and a
+  position-keyed overlay drifts onto whatever scrolls into the same cells.
+  Deleted text is also excluded from the yank path, or `d` would be a visual
+  effect rather than a deletion. A docked terminal resizes its PTY to the real
+  panel rect and drains it through `flush_terminal_resize`, because the render
+  path has no `App` and the program otherwise wraps to columns the narrow
+  column cannot show.
+- **Panel resize is a modal frame gesture, and `Ctrl+N` is the only chord.**
+  `h/j/k/l` drag the focused surface's **own** borders *outward only*: `h` is
+  its left border, `l` its right, `j` its bottom, `k` its top. Only shared
+  borders move, so a right-docked panel grows with `h` and not with `l`, and a
+  border belongs to two surfaces — growing one shrinks the other. That makes
+  `l` from the main buffer narrow the chat column while `h` from inside the
+  chat column widens it, which is the whole point of doing it from both sides.
+  `resolve_resize` (`tui::panel_resize`) answers "which panel changes, and
+  which way", so the same key cannot mean two things depending on the subject.
+  It must be resolved **ahead of the focused panel** in `App::on_key`: a
+  focused panel consumes every key it is shown, so `h/j/k/l` would otherwise
+  move a terminal cursor instead of a border — and it must also work with the
+  keyboard in the main buffer, which is the other half of the gesture. A resize
+  key naming a frame edge is consumed and ignored, never passed through. Leave
+  with `Esc`, `Enter`, or `Ctrl+N` again; stay armed across keys, because the
+  gesture is "drag several borders in one visit". Normal-mode only, like
+  `Shift+S` — a frame mode that could be armed mid-sentence would swallow the
+  next four letters. `Ctrl+N` is deliberately **not** an `InputAction`: the
+  frame is not a composable action, and a configurable binding would let it be
+  pinned to a key a panel already owns. New session is the bare `n`. Column
+  widths are per edge (`LayoutConfig::{left,right}_panel_width`, falling back
+  to `sidebar_width`), and the bottom panel records an exact `bottom_panel_rows`
+  because a percentage cannot express a one-row step — `observe_frame` records
+  the last rendered height purely so that conversion has a denominator.
 - **Project scope**: resolve `App::project_execution_context()` before
   spawning project-scoped work. The active tab supplies project/workspace/
   session identities and the workspace root. Never use process cwd or the

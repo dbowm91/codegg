@@ -134,8 +134,17 @@ const MIN_MAIN_PANEL_HEIGHT: u16 = 12;
 
 /// Layout configuration for the TUI.
 pub struct LayoutConfig {
-    /// Width of the sidebar in columns
+    /// Default width of a side column in columns.
+    ///
+    /// The seed for both edges, and the value a column falls back to when it
+    /// has never been dragged. Per-edge overrides below exist because "make
+    /// the right column wider" and "make the left column wider" are different
+    /// requests; one shared number can only satisfy one of them.
     pub sidebar_width: u16,
+    /// Left-column width after a resize, or `None` for [`Self::sidebar_width`].
+    pub left_panel_width: Option<u16>,
+    /// Right-column width after a resize, or `None` for [`Self::sidebar_width`].
+    pub right_panel_width: Option<u16>,
     /// Minimum width for the main content area
     pub min_main_width: u16,
     /// Height of the prompt area in lines
@@ -152,18 +161,58 @@ pub struct LayoutConfig {
     /// useless when it is three rows tall and wasteful when it is half the
     /// terminal; percentage keeps it proportional at any window size.
     pub bottom_panel_ratio: u16,
+    /// Exact bottom-panel height once the reader has dragged that edge.
+    ///
+    /// Set by [`crate::tui::panel_resize`], and the only unit a resize step can
+    /// use: the ratio is integer-divided against the frame height, so a
+    /// one-point change is zero rows on a short frame and two on a tall one.
+    pub bottom_panel_rows: Option<u16>,
+}
+
+impl LayoutConfig {
+    /// Width of the column on `placement`, falling back to `sidebar_width`.
+    pub fn column_width(&self, placement: PanelPlacement) -> u16 {
+        let override_width = match placement {
+            PanelPlacement::Left => self.left_panel_width,
+            PanelPlacement::Right | PanelPlacement::Bottom => self.right_panel_width,
+        };
+        override_width.unwrap_or(self.sidebar_width)
+    }
+
+    /// Resolved width of the left column.
+    pub fn left_panel_width(&self, fallback: u16) -> u16 {
+        self.left_panel_width.unwrap_or(fallback)
+    }
+
+    /// Resolved width of the right column.
+    pub fn right_panel_width(&self, fallback: u16) -> u16 {
+        self.right_panel_width.unwrap_or(fallback)
+    }
+
+    /// Record a resized left column.
+    pub fn set_left_panel_width(&mut self, width: u16) {
+        self.left_panel_width = Some(width);
+    }
+
+    /// Record a resized right column.
+    pub fn set_right_panel_width(&mut self, width: u16) {
+        self.right_panel_width = Some(width);
+    }
 }
 
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             sidebar_width: 30,
+            left_panel_width: None,
+            right_panel_width: None,
             min_main_width: 40,
             prompt_height: 3,
             header_height: 1,
             footer_height: 1,
             scrollbar_width: 1,
             bottom_panel_ratio: 35,
+            bottom_panel_rows: None,
         }
     }
 }
@@ -171,6 +220,15 @@ impl Default for LayoutConfig {
 /// Manages terminal layout and area calculations.
 pub struct TuiLayout {
     pub config: LayoutConfig,
+    /// Height of the frame this layout was last asked to divide.
+    ///
+    /// Recorded by [`Self::observe_frame`] so a resize can convert the bottom
+    /// panel's *percentage* into an exact row count the first time a reader
+    /// drags that edge. A percentage cannot drive a one-row step on its own —
+    /// it is integer-divided against the frame height, so a point is 0 rows on
+    /// a short frame and 2 on a tall one — which is exactly the kind of key
+    /// that appears dead for no stated reason.
+    frame_height: u16,
 }
 
 impl TuiLayout {
@@ -179,7 +237,20 @@ impl TuiLayout {
     }
 
     pub fn with_config(config: LayoutConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            frame_height: 0,
+        }
+    }
+
+    /// Record the frame this layout is about to divide.
+    pub fn observe_frame(&mut self, area: Rect) {
+        self.frame_height = area.height;
+    }
+
+    /// Frame height most recently observed; 0 before the first render.
+    pub fn frame_height(&self) -> u16 {
+        self.frame_height
     }
 
     /// Split the frame into the main pane plus a rect per occupied panel edge.
@@ -214,7 +285,7 @@ impl TuiLayout {
             .collect();
         let mut remainder = area;
         for placement in columns {
-            let Some(panel_width) = self.column_panel_width(remainder) else {
+            let Some(panel_width) = self.column_panel_width(remainder, placement) else {
                 // Too narrow for another column: this edge stays collapsed
                 // rather than squeezing the transcript out of existence.
                 continue;
@@ -243,8 +314,11 @@ impl TuiLayout {
 
     /// Columns a side panel can take, or `None` when the frame cannot spare
     /// them without starving the transcript.
-    fn column_panel_width(&self, area: Rect) -> Option<u16> {
-        let panel_width = self.config.sidebar_width;
+    ///
+    /// Per edge rather than one shared number, so a reader who widened the
+    /// right column does not silently widen the left one as well.
+    fn column_panel_width(&self, area: Rect, placement: PanelPlacement) -> Option<u16> {
+        let panel_width = self.config.column_width(placement);
         // Two columns need twice the width. Checking each in turn is what
         // stops the second column from silently eating the transcript when
         // the frame is only just wide enough for one.
@@ -254,17 +328,25 @@ impl TuiLayout {
     /// Rows a bottom-docked panel gets, or `None` when the frame is too
     /// short to split at all.
     ///
+    /// An explicit row count from a resize wins over the ratio; the ratio is
+    /// only the shape the panel is given before anyone drags its edge.
+    ///
     /// The ratio is clamped against both floors rather than trusted: a window
     /// 20 rows tall would otherwise hand 7 to the panel and 13 to a buffer
     /// whose viewport alone asks for 10, and a window 12 rows tall would
     /// produce a negative remainder.
-    fn bottom_panel_height(&self, height: u16) -> Option<u16> {
+    pub(crate) fn bottom_panel_height(&self, height: u16) -> Option<u16> {
         if height < MIN_MAIN_PANEL_HEIGHT + MIN_BOTTOM_PANEL_HEIGHT {
             return None;
         }
-        let ratio = self.config.bottom_panel_ratio.min(100);
-        let preferred = (u32::from(height) * u32::from(ratio) / 100) as u16;
         let ceiling = height - MIN_MAIN_PANEL_HEIGHT;
+        let preferred = match self.config.bottom_panel_rows {
+            Some(rows) => rows,
+            None => {
+                let ratio = self.config.bottom_panel_ratio.min(100);
+                (u32::from(height) * u32::from(ratio) / 100) as u16
+            }
+        };
         Some(preferred.max(MIN_BOTTOM_PANEL_HEIGHT).min(ceiling))
     }
 

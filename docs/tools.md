@@ -132,11 +132,30 @@ Thirteen tools are registered, split by whether the model sees them up front:
 
 `command_preflight` and `config_preflight` are also driven from the harness
 side by the eggsact preflight service, which checks shell commands, patches,
-and config writes before they take effect. It is enabled by default in
-`warn` mode, and its mode is configurable from `off` through `observe` and
-`warn` to `block_on_definite`. Note that this is a different surface from the
-`!` human-shell confirmation, which is a separate regex-based screen in the
-shell policy.
+and config writes before they take effect. Command-risk findings are advisory,
+including in `block_on_definite`; deterministic typed-input failures remain
+blocking. It is enabled by default in `warn` mode, and its mode is configurable
+from `off` through `observe` and `warn` to `block_on_definite`. This is a
+different surface from the `!` human-shell confirmation, which retains its own
+policy.
+
+### Routine commands and approval
+
+Once the requested workspace and action are authorized, routine development
+commands such as Cargo, Python test/lint runners, package scripts, local Git,
+and ordinary shell composition do not prompt solely because they use quotes,
+wrappers, environment assignments, pipes, or substitutions. A configured
+`ask` rule, an explicit Deny, or a meaningful risk signal still follows its
+normal route. `AlwaysAllow` remains scoped to the saved command scope; a
+compound command does not inherit a simple executable-family grant.
+
+Approval mode controls how a review request is handled, not what the sandbox
+can enforce. If filesystem confinement is required and unavailable, execution
+fails before the target runs. The Linux Landlock-only backend confines the
+filesystem roots it reports, but network and Unix IPC remain unrestricted.
+Networked Git, credentials, or another capability outside the current scope
+requires its separate authority and cannot be enabled by changing command
+spelling.
 
 The whole family is configured under `[deterministic_tools]`, whose defaults
 match the report above:

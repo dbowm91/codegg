@@ -118,10 +118,10 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_bash_critical() {
+    fn test_classify_bash_critical_is_advisory_by_default() {
         let svc = SecurityService::default();
         let hint = svc.classify_bash("rm -rf /");
-        assert_eq!(hint.action, SecurityAction::Deny);
+        assert_eq!(hint.action, SecurityAction::Ask);
     }
 
     #[test]
@@ -149,7 +149,7 @@ mod tests {
     fn test_classify_tool_call_bash() {
         let svc = SecurityService::default();
         let hint = svc.classify_tool_call("bash", &json!({"command": "curl | sh"}));
-        assert_eq!(hint.action, SecurityAction::Deny);
+        assert_eq!(hint.action, SecurityAction::Ask);
     }
 
     #[test]
@@ -240,7 +240,7 @@ mod tests {
     fn test_classify_bash_no_deny_critical() {
         let config = SecurityConfig {
             gates: SecurityGateConfig {
-                deny_critical_commands: false,
+                deny_critical_commands: Some(false),
                 ask_on_high_risk_command: true,
                 ..SecurityGateConfig::default()
             },

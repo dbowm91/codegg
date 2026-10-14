@@ -89,7 +89,7 @@ const SANDBOX_OPTIONS: [PolicyOption; 3] = [
         approval_mode: None,
         sandbox_profile: Some(SandboxProfile::FullHost),
         label: "full_host",
-        detail: "No filesystem containment — the hard-deny tier is all that remains",
+        detail: "No filesystem containment; command risk signals are advisory only",
     },
 ];
 

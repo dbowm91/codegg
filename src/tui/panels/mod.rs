@@ -1119,6 +1119,13 @@ pub struct SidePanelHost {
     /// keyboard into it yet.
     selected: PanelPlacement,
     focused: bool,
+    /// Whether yazi-style resize mode is armed (`Ctrl+N`).
+    ///
+    /// Host state rather than `App` state because the *subject* of a resize is
+    /// "whatever surface has the keyboard", and only the host knows that: a
+    /// panel takes the keyboard through [`Self::focus`], the main buffer takes
+    /// it through [`Self::blur`], and the two mean opposite resizes.
+    resizing: bool,
     session: session::SessionPanel,
     agents: agents::AgentsPanel,
     chat: chat::ChatPanel,
@@ -1158,6 +1165,7 @@ impl SidePanelHost {
             // existed.
             selected: PanelPlacement::default(),
             focused: false,
+            resizing: false,
             session: session::SessionPanel,
             agents: agents::AgentsPanel::default(),
             chat: chat::ChatPanel::default(),
@@ -1556,6 +1564,50 @@ impl SidePanelHost {
     /// Return keyboard focus to the composer.
     pub fn blur(&mut self) {
         self.focused = false;
+    }
+
+    /// Whether resize mode is armed.
+    pub fn is_resizing(&self) -> bool {
+        self.resizing
+    }
+
+    /// Arm or disarm resize mode, returning the new state.
+    pub fn set_resizing(&mut self, resizing: bool) -> bool {
+        self.resizing = resizing;
+        resizing
+    }
+
+    /// Flip resize mode, returning the new state.
+    pub fn toggle_resizing(&mut self) -> bool {
+        self.resizing = !self.resizing;
+        self.resizing
+    }
+
+    /// Which surface a resize key acts on.
+    ///
+    /// The focused panel when the keyboard is in one, otherwise the main
+    /// buffer — which is the whole reason the mode lives here: a chat column
+    /// and the transcript beside it share a border, and `h` has to mean the
+    /// opposite thing on each side of it.
+    pub fn resize_subject(&self) -> crate::tui::panel_resize::ResizeSubject {
+        use crate::tui::panel_resize::ResizeSubject;
+        if self.focused && self.is_visible_at(self.selected) {
+            ResizeSubject::Panel(self.selected)
+        } else {
+            ResizeSubject::Main
+        }
+    }
+
+    /// Every edge currently showing a panel, in [`PanelPlacement::ALL`] order.
+    ///
+    /// The same list the render path derives, read from one place so a resize
+    /// can never reason about a border that is not actually on screen.
+    pub fn occupied_placements(&self) -> Vec<PanelPlacement> {
+        PanelPlacement::ALL
+            .iter()
+            .copied()
+            .filter(|placement| self.is_visible_at(*placement))
+            .collect()
     }
 
     /// Route one key while the host holds focus.

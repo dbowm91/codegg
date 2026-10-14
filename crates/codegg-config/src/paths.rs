@@ -447,7 +447,14 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             merged.provider_connections = Some(v.clone());
         }
         if let Some(ref v) = config.security {
-            merged.security = Some(v.clone());
+            let mut next = v.clone();
+            if next.gates.deny_critical_commands.is_none() {
+                next.gates.deny_critical_commands = merged
+                    .security
+                    .as_ref()
+                    .and_then(|current| current.gates.deny_critical_commands);
+            }
+            merged.security = Some(next);
         }
         if let Some(ref v) = config.deterministic_tools {
             merged.deterministic_tools = Some(v.clone());
@@ -1165,13 +1172,18 @@ mod tests {
         assert!(shell.output.is_some(), "unset output survives from base");
     }
 
-    /// Sections whose fields are all non-`Option` cannot be combined without
-    /// an `Option`-backed shadow, so they replace wholesale.
+    /// Default-backed sections replace wholesale, except the new presence-
+    /// aware critical command denial gate, whose explicit value survives a
+    /// higher-priority partial security section.
     #[test]
     fn test_merge_configs_replaces_default_backed_sections_whole() {
         let base = Config {
             security: Some(crate::schema::SecurityConfig {
                 enabled: true,
+                gates: crate::schema::SecurityGateConfig {
+                    deny_critical_commands: Some(true),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             deterministic_tools: Some(crate::schema::DeterministicToolsConfig {
@@ -1194,7 +1206,49 @@ mod tests {
 
         let merged = merge_configs(&[base, overlay]);
 
-        assert!(!merged.security.expect("security section").enabled);
+        assert!(!merged.security.as_ref().expect("security section").enabled);
+        assert_eq!(
+            merged
+                .security
+                .as_ref()
+                .expect("security section")
+                .gates
+                .deny_critical_commands,
+            Some(true),
+            "a partial higher-priority section must not erase explicit strict denial"
+        );
+        let explicit_override = Config {
+            security: Some(crate::schema::SecurityConfig {
+                gates: crate::schema::SecurityGateConfig {
+                    deny_critical_commands: Some(false),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged_with_explicit_override = merge_configs(&[
+            Config {
+                security: Some(crate::schema::SecurityConfig {
+                    gates: crate::schema::SecurityGateConfig {
+                        deny_critical_commands: Some(true),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            explicit_override,
+        ]);
+        assert_eq!(
+            merged_with_explicit_override
+                .security
+                .unwrap()
+                .gates
+                .deny_critical_commands,
+            Some(false),
+            "an explicit higher-priority false must override the lower setting"
+        );
         assert!(
             !merged
                 .deterministic_tools

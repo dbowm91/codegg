@@ -422,3 +422,27 @@ The following test suites cover security-relevant behavior. The polish pass adde
 | `src/tool/git.rs::schema_tests` | Schema snapshot: mutation enum, recover enum, description |
 | `src/git_network_ops.rs` tests | Config key validation, push force classification, URL redaction |
 | **`scripts/check_git_forbidden_patterns.py`** | 5 static checks for forbidden patterns (CI-ready) |
+
+---
+
+## Linux execution isolation M001 initial addendum (2026-10-13)
+
+The historical review above predates the Linux execution-isolation work and
+must not be read as evidence that repository-controlled Git programs are
+disabled. The initial `egggit::process::GitEnvPolicy` pinned hook, fsmonitor,
+external diff, textconv, credential-helper, SSH-command and signing settings,
+but used a fabricated spawn error and broad operation-name refusals. Initial
+native Linux tests proved a configured fsmonitor and post-commit hook did not
+run; the full integration suite also found legitimate local Git workflows
+were unavailable.
+
+The C001 corrective replaces that request handling with
+`GitExecutionPolicyOutcome` values and checked command construction. Safe
+non-executable local requests continue under fixed Git config pins; filter,
+merge-driver, alias, or transport capabilities report that a real contained
+route is required. This restores truthful denial provenance but does not
+restore the remaining Git mutation or remote workflows. Writable `.git`
+metadata, local executable Git recovery, and mediated remote credentials are
+still separate gates. See
+`plans/implementation/linux-execution-isolation/009-m001-typed-git-policy-reconciliation.md`
+and `plans/closure/linux-execution-isolation/009-status.md`.

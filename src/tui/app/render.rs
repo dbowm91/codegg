@@ -68,6 +68,10 @@ impl App {
             .copied()
             .filter(|placement| self.panel_host.is_visible_at(*placement))
             .collect();
+        // Recorded so a resize can convert the bottom panel's percentage into
+        // an exact row count the first time a reader drags that edge; a
+        // percentage cannot express a one-row step on its own.
+        self.ui_state.layout.observe_frame(area);
         let regions = self.ui_state.layout.split(area, &occupied);
         let main_chunks = [regions.main];
         let main_area = main_chunks[0];
@@ -1222,9 +1226,15 @@ impl App {
         1 + shown as u16 + overflow
     }
 
-    /// Whether a turn is in flight and the strip should be drawn.
+    /// Whether the strip has anything to say.
+    ///
+    /// A stopped turn counts. The user stopped it on purpose and the very next
+    /// question is "is it still stopped, and how do I carry on" — an indicator
+    /// that vanishes the instant work stops answers neither, and the buffer
+    /// goes quiet exactly when they are deciding what to type next.
     fn should_show_working_strip(&self) -> bool {
         matches!(self.session_state.session_status, SessionStatus::Working)
+            || self.session_state.stopped_turn
     }
 
     /// Draw the working strip: a throbber with elapsed time and the current
@@ -1233,6 +1243,11 @@ impl App {
     /// Hit rects are recorded as they are drawn so a click resolves to the
     /// row the user actually saw rather than a recomputed layout.
     fn render_working_strip(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        // Expire a lapsed stop confirmation here rather than only on the next
+        // keypress: the pump runs on every animation tick, so a prompt the
+        // user walked away from clears itself instead of waiting to be
+        // overwritten by whatever they type next.
+        crate::tui::commands::turn_control::expire_pending_stop_armed(self);
         let Some(area) = chunk else {
             self.ui_state.working_area = None;
             self.ui_state.subagents.hits.clear();
@@ -1259,16 +1274,40 @@ impl App {
         // Row 0: the throbber. `ActivityIndicator::line` derives its glyph
         // from whole elapsed seconds, so it animates on the 80ms pump without
         // depending on render cadence.
-        let phase = self
-            .messages_state
-            .messages
-            .activity
-            .as_ref()
-            .map(|activity| activity.line())
-            .unwrap_or_else(|| self.working_elapsed_fallback());
+        //
+        // The right-hand side is the reason a long pause reads as progress
+        // rather than as a disconnect: it names the one key that changes the
+        // situation. An indicator that only reports the current phase still
+        // leaves a user staring at a frozen screen with no way out.
+        let phase = if self.session_state.stopped_turn {
+            // Stopped is not a phase of a running turn, so it does not get a
+            // spinner — an animated glyph beside "stopped" would be a lie
+            // about whether anything is still running.
+            format!(
+                "■ stopped · press {} or /start",
+                crate::tui::commands::turn_control::STOP_KEY_LABEL
+            )
+        } else {
+            let phase = self
+                .messages_state
+                .messages
+                .activity
+                .as_ref()
+                .map(|activity| activity.line())
+                .unwrap_or_else(|| self.working_elapsed_fallback());
+            let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
+            // A stop waits for a confirming second press, so while the arm is
+            // live the line must say exactly which press completes it —
+            // otherwise the confirmation is invisible and the key looks dead.
+            if crate::tui::commands::turn_control::stop_armed(self) {
+                format!("{phase} · press {key} again to stop agent")
+            } else {
+                format!("{phase} · {key} to stop")
+            }
+        };
         let running_subs = self.ui_state.subagents.running_count();
         let mut head = phase;
-        if running_subs > 0 {
+        if running_subs > 0 && !self.session_state.stopped_turn {
             head.push_str(&format!(" · {running_subs} subagent"));
             if running_subs != 1 {
                 head.push('s');
@@ -1276,7 +1315,11 @@ impl App {
         }
         lines.push(Line::from(Span::styled(
             format!(" {head}"),
-            Style::default().fg(theme.primary),
+            Style::default().fg(if self.session_state.stopped_turn {
+                theme.warning
+            } else {
+                theme.primary
+            }),
         )));
 
         for (index, sub) in self
