@@ -1,6 +1,6 @@
 # Linux Execution Isolation Roadmap
 
-Status: active (ADR-0028 accepted; Linux mechanism ADR-0027 proposed; interface and typed Git corrective ready)
+Status: active (ADR-0028 and Linux mechanism ADR-0027 accepted; interface and typed Git corrective ready)
 
 Long-term references:
 - `plans/000-long-term-specification.md#4-architectural-principles`
@@ -10,7 +10,7 @@ Long-term references:
 - `plans/001-terminology-and-domain-model.md#8-scheduler-and-execution-terms`
 - `plans/002-long-term-roadmap.md`
 
-Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, **accepted ADR-0028** (syntax advisory, authority enforced), proposed ADR-0027 (Linux backend mechanisms). Related command-policy roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Related but independent roadmap: `sandbox-containment-post-closure-corrective-roadmap.md` (C001–C003 closed; C004 conditionally closed); Windows sandbox stays separate.
+Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, **accepted ADR-0028** (syntax advisory, authority enforced), **accepted ADR-0027** (Linux backend mechanisms). Related command-policy roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Related but independent roadmap: `sandbox-containment-post-closure-corrective-roadmap.md` (C001–C003 closed; C004 conditionally closed); Windows sandbox stays separate.
 
 ## 1. Purpose and ownership boundary
 
@@ -45,7 +45,7 @@ Trusted Git commands require a distinct reviewed execution route. Ordinary Bash 
 
 ## 6. Dependency graph
 
-The M001 initial strict-Git implementation is **blocked** by legitimate command compatibility (9/12 historical Git mutation cases failed). **C001** (typed Git disposition, no fabricated spawn error) is **ready** using accepted ADR-0028 and may proceed in parallel with command-policy M001 once its written interface is stable. **M002** (internal composable launch contract) is **ready** under accepted ADR-0016 and ADR-0028; M001 Git closure is **not** a hard prerequisite. Only *production promotion of the new Bubblewrap/Linux namespace backend* requires acceptance of proposed ADR-0027. **M003** (protected mount view) hard-depends on M002 + accepted ADR-0027 and consumes C001's **interface** contract, not M001's strict closure. **M004** (process/IPC/seccomp) hard-depends on M002 + accepted ADR-0027 and has M003 as an **interface** dependency. **M005** (offline network) hard-depends on M004/M002, M006 (mediated egress) on M005, and M007 (cgroups) on M002 (independent of M003–M006). **C002** (legitimate executable *local* Git recovery) hard-depends on C001 and native-verified M002–M005; **C003** (remote Git authorization/transport) hard-depends on C001, M005 and M006 plus explicit credential/transport authority, and consumes C002 state as an interface. M001 can strictly close only after C001–C003 resolve its original required workflows, or a separate explicit scoped limitation is approved and recorded; no hidden change to original closure record. **M008** full qualification hard-depends on M001/C001–C003 and M002–M007. Qualified no-proxy or HTTPS-only subsets can be recorded independently but do not close the full roadmap. Native kernel feature availability is an **operational** closure condition, never permission for uncontained fallback.
+The M001 initial strict-Git implementation is **blocked** by legitimate command compatibility (9/12 historical Git mutation cases failed). **C001** (typed Git disposition, no fabricated spawn error) is **closed** under accepted ADR-0028. **M002** (internal composable launch contract) is **conditionally closed** at the interface/probe boundary under accepted ADR-0016 and ADR-0028; M001 Git closure is **not** a hard prerequisite. ADR-0027 is now accepted for opt-in implementation, but no enhanced backend is admitted until native closure evidence is accepted. **M003** (protected mount view) hard-depends on M002 + accepted ADR-0027 and consumes C001's **interface** contract, not M001's strict closure. **M004** (process/IPC/seccomp) hard-depends on M002 + accepted ADR-0027 and has M003 as an **interface** dependency. **M005** (offline network) hard-depends on M004/M002, M006 (mediated egress) on M005, and M007 (cgroups) on M002 (independent of M003–M006). **C002** (legitimate executable *local* Git recovery) hard-depends on C001 and native-verified M002–M005; **C003** (remote Git authorization/transport) hard-depends on C001, M005 and M006 plus explicit credential/transport authority, and consumes C002 state as an interface. M001 can strictly close only after C001–C003 resolve its original required workflows, or a separate explicit scoped limitation is approved and recorded; no hidden change to original closure record. **M008** full qualification hard-depends on M001/C001–C003 and M002–M007. Qualified no-proxy or HTTPS-only subsets can be recorded independently but do not close the full roadmap. Native kernel feature availability is an **operational** closure condition, never permission for uncontained fallback.
 
 ## 7. Milestones
 
@@ -81,7 +81,7 @@ Use focused kernel-faithful child probes in `tests/sandbox_containment.rs` / `te
 
 ## 10. Risks and decisions
 
-- ADR-0027 **proposed**; operator must accept the composed Linux backend/network intent contract before M002 production promotion. Do not self-accept during code implementation.
+- ADR-0027 is accepted for staged opt-in implementation. This does not admit an enhanced backend or change defaults; native capability closure evidence is still required.
 - Bubblewrap relies on unprivileged user namespaces; locked-down hosts and WSL1 may reject it. Do not invent a bypass or use setuid wrapper; retain truthful legacy tier.
 - Mount ordering/alias/overlays may conceal gitdir or allow indirect writes; require real security fixtures and refusal on ambiguity.
 - Rust/Cargo builds, Git worktrees, LSP/PTY and Python subprocesses need actual tool compatibility evidence; scoped scratch avoids global cache writes, not infinite compatibility.
@@ -94,4 +94,4 @@ The roadmap closes only when M001–M008 and C001–C003 have accepted, exact-re
 
 ## 12. Milestone status
 
-M001's initial policy and native probes are implemented but historical closure remains **blocked** (legitimate Git mutation tests fail). C001 typed Git policy reconciliation is active; M002 **internal launch contract** remains independently ready without a hard dependency on M001 closure. C002/C003 local/remote Git restoration and new Linux backend deployment remain blocked by the named native enforcement/authorization gates. ADR-0027 is proposed and must be accepted before real Bubblewrap backend promotion; ADR-0028 governs representation-independent command authorization now. M003–M008 remain dependency-gated. No enhanced Linux isolation capability is claimed as implemented or verified.
+M001's initial policy and native probes are implemented but historical closure remains **blocked** (legitimate Git mutation tests fail). C001 typed Git policy reconciliation is closed; M002 **internal launch contract** is conditionally closed at the interface/probe boundary without a hard dependency on M001 closure. ADR-0027 is accepted for staged opt-in implementation; no enhanced backend is admitted before its exact native closure evidence. C002/C003 local/remote Git restoration and backend promotion remain blocked by their native enforcement and authorization gates. ADR-0028 governs representation-independent command authorization. M003 is dependency-ready; M004–M008 and C002/C003 remain gated by the roadmap dependency graph. No enhanced Linux isolation capability is claimed as implemented or verified.

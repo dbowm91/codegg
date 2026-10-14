@@ -1,8 +1,8 @@
 # ADR-0027: Composable Linux Execution Isolation and Obtained-Capability Authority
 
-Status: proposed
+Status: accepted
 
-Date: 2026-10-13
+Date: 2026-10-14
 
 Decision owners: project maintainers
 
@@ -47,7 +47,7 @@ Adopt a trusted bubblewrap-based launch adapter for a narrower filesystem view a
 
 Stronger host/kernel boundaries are possible using rootless OCI containers, gVisor, or microVMs. Deferred as optional execution targets due to runtime/dependency, filesystem identity, build-cache, TTY and local-daemon integration overhead. May be appropriate for high-risk fully autonomous runs later.
 
-## Decision (proposed; do not silently activate before acceptance)
+## Decision
 
 1. Define an internal **composable Linux launch policy** consumed by `ManagedProcessService` and applied before target code: filesystem-view requirements, mount exclusions, network intent, PID/IPC/proc requirements, syscall/FD constraints, and optional resource budget. Each dimension has `required/optional/not_requested` intent and **obtained** evidence; a required component failure aborts before user code. The existing Landlock-only backend continues to report its existing guarantees until an explicit rollout changes it.
 2. Select a trusted bubblewrap namespace/mount adapter for the new Linux filesystem view. Build a read-allowlisted mount graph from Codegg's backend-neutral read roots (not `--ro-bind / /` unless every exposed subtree is explicitly proven safe), writable leased workspace/scratch mounts, and read-only or hidden overlays for protected descendants. Include `.git` directories, worktree `.git` pointer, resolved gitdir/common-dir, trusted executable metadata and sensitive agent settings. Reject symlink/rename/mount alias races or unsupported overlay ordering; do not rely on lexical string comparisons for grants.
@@ -96,4 +96,4 @@ ADR-0028 is accepted and defines the cross-platform authorization semantics abov
 
 ## Supersession
 
-None. ADR-0028 governs command authorization and representation-independent enforcement semantics; this proposed ADR selects the Linux mechanisms implementing those semantics. M002's typed interface work does not imply acceptance of Bubblewrap backend promotion. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.
+None. ADR-0028 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance authorizes opt-in implementation and qualification of the staged Linux backend. It does not admit an enhanced backend, change default egress, or authorize a default-profile migration; each capability remains unavailable until its native closure evidence is accepted.
