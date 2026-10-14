@@ -71,6 +71,7 @@ python3 scripts/check_sandbox_contract.py
 python3 scripts/check_sandbox_policy_wiring.py
 python3 scripts/check_adr_integrity.py
 cargo fmt --all -- --check
+scripts/verify.sh quick
 ```
 
 ### Results
@@ -90,6 +91,8 @@ cargo fmt --all -- --check
   Unix-only APIs in `sandbox_containment` and `src/main.rs`, not on this change.
 - Sandbox contract, sandbox policy wiring, ADR integrity and rustfmt checks:
   passed.
+- `scripts/verify.sh quick`: passed, including workspace all-targets check and
+  the repository's routine static verification set.
 
 ## 5. Invariant review
 
