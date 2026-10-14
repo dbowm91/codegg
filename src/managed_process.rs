@@ -1705,6 +1705,7 @@ async fn read_bubblewrap_status_with_ack(
     }
     bytes.push(first[0]);
 
+    let mut ack_error = None;
     if first[0] == b'{' {
         while bytes.last() != Some(&b'\n') {
             if bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
@@ -1725,8 +1726,11 @@ async fn read_bubblewrap_status_with_ack(
         });
         if ready {
             let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
-            writer.write_all(&[0xA5]).await?;
-            writer.flush().await?;
+            if let Err(error) = writer.write_all(&[0xA5]).await {
+                ack_error = Some(error);
+            } else if let Err(error) = writer.flush().await {
+                ack_error = Some(error);
+            }
         }
     } else {
         drop(ack_writer);
@@ -1740,6 +1744,15 @@ async fn read_bubblewrap_status_with_ack(
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "sandbox status stream exceeds 16 KiB",
+        ));
+    }
+    if let Some(error) = ack_error {
+        return Err(io::Error::new(
+            error.kind(),
+            format!(
+                "Bubblewrap setup ACK failed: {error}; status stream: {}",
+                String::from_utf8_lossy(&bytes)
+            ),
         ));
     }
     Ok(bytes)
