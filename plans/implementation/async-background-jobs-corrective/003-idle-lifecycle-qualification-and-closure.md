@@ -1,7 +1,7 @@
 # Async Background Jobs Corrective C003 — Full Idle Lifecycle and Integration Qualification
 
-Status: ready for handoff
-Baseline: `8e155498e39118b913c47a7b37a4769223ea1c02` (C001 closed at `21b35c79`, C002 closed at `8e155498`; revalidate latest corrective head before work).
+Status: implemented
+Baseline: `8e155498e39118b913c47a7b37a4769223ea1c02` (C001 closed at `21b35c79`, C002 closed at `8e155498`; corrective head `94f4cae1` at handoff).
 Roadmap: `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md`
 Historical milestone evidence: M001–M004 closures `plans/closure/async-background-jobs/001-status.md` through `004-status.md`.
 Class: correctness/qualification, no generalized product expansion.
