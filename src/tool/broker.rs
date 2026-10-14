@@ -130,6 +130,8 @@ pub struct BrokerInvocationContext {
     /// so canonical tool owners can emit structural events; tools never
     /// construct an emitter themselves. `None` preserves silent behavior.
     pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
+    /// Accepted authorization context, preserved unchanged across retries.
+    pub execution_authorization: Option<super::authorization::ExecutionAuthorizationContext>,
 }
 
 impl BrokerInvocationContext {
@@ -205,6 +207,7 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             current_policy_revision: None,
             execution_audit: ctx.execution_audit,
             audit_emitter: ctx.audit_emitter,
+            execution_authorization: ctx.execution_authorization,
         }
     }
 }
@@ -859,58 +862,7 @@ impl ToolBroker {
                 break;
             }
 
-            let mut exec_ctx = ToolExecutionContext {
-                backend: super::backend::ToolBackendKind::Native,
-                session_id: ctx.session_id.clone(),
-                cwd: ctx.cwd.clone(),
-                permission_mode: ctx.permission_mode.clone(),
-                timeout_ms: Some(effective_timeout),
-                invocation_key: ctx.submission_key.clone(),
-                turn_id: ctx.turn_id.clone(),
-                agent_id: ctx.agent_id.clone(),
-                parent_job_id: ctx.job_id.clone(),
-                parent_attempt_id: ctx.attempt_id.clone(),
-                provider_name: None,
-                backend_policy: None,
-                cancellation: ctx.cancellation.clone(),
-                deadline: ctx.deadline,
-                decision_id: None,
-                decision_outcome: None,
-                workspace_path_policy_id: None,
-                workspace_path_policy_revision: None,
-                permission_policy_revision: None,
-                principal_identity: None,
-                origin_principal: None,
-                origin_auth_method: None,
-                origin_decision_id: None,
-                caller_class: None,
-                max_effect_class: None,
-                decision_issued_at: None,
-                decision_expires_at: None,
-                decision_revoked_at: None,
-                program_contract_snapshot: None,
-                sandbox_profile: None,
-                // M003: forward the delegation ceiling threaded through
-                // the broker context (agent `task` path); `None`
-                // otherwise, in which case model-driven delegation fails
-                // closed at launch.
-                parent_tool_authority: ctx.parent_tool_authority.clone(),
-                execution_audit: None,
-                audit_emitter: None,
-            };
-            // M001: preserve the daemon-threaded trusted execution-audit
-            // context when supplied. Origin strings are projected from
-            // the trusted context only; `principal_ref`, tool input,
-            // model output, and grant strings never contribute.
-            if let Some(audit) = ctx.execution_audit.clone() {
-                exec_ctx.apply_execution_audit(&audit);
-            }
-            // M002: thread the shared bounded emitter alongside the
-            // trusted context so canonical tool owners can emit
-            // structural events. Tools emit only when both are present.
-            if let Some(emitter) = ctx.audit_emitter.clone() {
-                exec_ctx.apply_audit_emitter(&emitter);
-            }
+            let exec_ctx = execution_context_for_attempt(&ctx, effective_timeout);
             let attempt_input = input.clone();
             let result = match ctx.cancellation.clone() {
                 Some(token) => {
@@ -1339,6 +1291,59 @@ fn validate_json_schema(
     Ok(())
 }
 
+/// Build the per-attempt view from one immutable broker invocation. Retries
+/// may change timeout accounting, but never authorization state.
+fn execution_context_for_attempt(
+    ctx: &BrokerInvocationContext,
+    effective_timeout: u64,
+) -> ToolExecutionContext {
+    let mut exec_ctx = ToolExecutionContext {
+        backend: super::backend::ToolBackendKind::Native,
+        session_id: ctx.session_id.clone(),
+        cwd: ctx.cwd.clone(),
+        permission_mode: ctx.permission_mode.clone(),
+        timeout_ms: Some(effective_timeout),
+        invocation_key: ctx.submission_key.clone(),
+        turn_id: ctx.turn_id.clone(),
+        agent_id: ctx.agent_id.clone(),
+        parent_job_id: ctx.job_id.clone(),
+        parent_attempt_id: ctx.attempt_id.clone(),
+        provider_name: None,
+        backend_policy: None,
+        cancellation: ctx.cancellation.clone(),
+        deadline: ctx.deadline,
+        decision_id: None,
+        decision_outcome: None,
+        workspace_path_policy_id: None,
+        workspace_path_policy_revision: None,
+        permission_policy_revision: None,
+        principal_identity: None,
+        origin_principal: None,
+        origin_auth_method: None,
+        origin_decision_id: None,
+        caller_class: None,
+        max_effect_class: None,
+        decision_issued_at: None,
+        decision_expires_at: None,
+        decision_revoked_at: None,
+        program_contract_snapshot: None,
+        sandbox_profile: None,
+        // M003: forward the delegation ceiling threaded through
+        // the broker context (agent `task` path); `None` otherwise.
+        parent_tool_authority: ctx.parent_tool_authority.clone(),
+        execution_authorization: ctx.execution_authorization.clone(),
+        execution_audit: None,
+        audit_emitter: None,
+    };
+    if let Some(audit) = ctx.execution_audit.clone() {
+        exec_ctx.apply_execution_audit(&audit);
+    }
+    if let Some(emitter) = ctx.audit_emitter.clone() {
+        exec_ctx.apply_audit_emitter(&emitter);
+    }
+    exec_ctx
+}
+
 // ─── Broker errors ────────────────────────────────────────────────
 
 /// Errors returned by the ToolBroker pipeline.
@@ -1491,6 +1496,7 @@ mod tests {
             current_policy_revision: None,
             execution_audit: None,
             audit_emitter: None,
+            execution_authorization: None,
         }
     }
 
@@ -1595,6 +1601,44 @@ mod tests {
         broker
             .validate_pre_execution(&process, &ctx, &serde_json::json!({}))
             .expect("independently authorized ProcessExec must remain admitted");
+    }
+
+    #[test]
+    fn retry_attempt_contexts_preserve_one_authorization_snapshot_and_receipt() {
+        let mut invocation = make_ctx();
+        invocation.execution_authorization =
+            Some(super::super::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Automatic,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    Some("principal".into()),
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy-r7".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "reviewer_allow",
+                    Some("policy-r7".into()),
+                ),
+                command_preflight: Some(super::super::authorization::CommandPreflightResult {
+                    summary: Some("bounded advisory".into()),
+                }),
+            });
+
+        let first = execution_context_for_attempt(&invocation, 10_000);
+        let retry = execution_context_for_attempt(&invocation, 5_000);
+        assert_eq!(first.execution_authorization, retry.execution_authorization);
+        assert_eq!(
+            first
+                .execution_authorization
+                .as_ref()
+                .map(|auth| auth.receipt.decision_id.as_str()),
+            retry
+                .execution_authorization
+                .as_ref()
+                .map(|auth| auth.receipt.decision_id.as_str())
+        );
     }
 
     #[tokio::test]

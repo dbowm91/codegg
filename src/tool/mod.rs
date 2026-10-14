@@ -6,6 +6,7 @@
 //! and execution logic.
 
 pub mod apply_patch;
+pub mod authorization;
 pub mod backend;
 pub mod backend_config;
 pub mod bash;
@@ -537,28 +538,26 @@ impl ToolRegistry {
         let sandbox_profile = options
             .sandbox_profile
             .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite);
-        let bash_tool = match sandbox_profile {
-            codegg_core::approval::SandboxProfile::FullHost => {
-                tracing::info!(
-                    "sandbox profile FullHost: bash runs without CodeGG filesystem containment (explicit, auditable)"
-                );
-                bash_tool
+        let bash_tool = if sandbox_profile.is_full_host() {
+            tracing::info!(
+                "sandbox profile FullHost: bash runs without CodeGG filesystem containment (explicit, auditable)"
+            );
+            bash_tool.with_configured_sandbox_profile(sandbox_profile)
+        } else if workspace_root.is_none() {
+            tracing::warn!(
+                profile = sandbox_profile.as_str(),
+                "sandbox profile requested without a workspace root; execution will refuse unavailable containment"
+            );
+            bash_tool.with_configured_sandbox_profile(sandbox_profile)
+        } else if let Some(root) = workspace_root.as_ref() {
+            match crate::security::sandbox::sandbox_config_for_profile(sandbox_profile, root) {
+                Some(config) => bash_tool
+                    .with_landlock_sandbox_custom(config)
+                    .with_configured_sandbox_profile(sandbox_profile),
+                None => bash_tool.with_configured_sandbox_profile(sandbox_profile),
             }
-            constrained => match workspace_root.as_ref() {
-                Some(root) => {
-                    match crate::security::sandbox::sandbox_config_for_profile(constrained, root) {
-                        Some(config) => bash_tool.with_landlock_sandbox_custom(config),
-                        None => bash_tool,
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        profile = constrained.as_str(),
-                        "sandbox profile requested without a workspace root; bash runs without OS containment (reported as unavailable, never FullHost)"
-                    );
-                    bash_tool
-                }
-            },
+        } else {
+            bash_tool.with_configured_sandbox_profile(sandbox_profile)
         };
         let verify_bash = bash_tool.clone();
         registry.register(bash_tool);

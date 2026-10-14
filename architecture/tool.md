@@ -94,8 +94,8 @@ src/tool/
 │                       # validator for terminal.rs compatibility
 ├── bash/
 │   ├── policy.rs       # Canonical model-shell safety/classification seam
-│   │                   # plus Bash-owned policy glue (blocked patterns,
-│   │                   # blocked/allow lists, child worktree ceiling, kill
+│   │                   # plus Bash-owned policy glue (advisory risk patterns,
+│   │                   # explicit blocked/allow lists, child worktree checks, kill
 │   │                   # switches, intent-family adapters). Terminal calls
 │   │                   # the shared safety seam; this module never spawns.
 │   ├── process.rs      # Supervised execution: raw-shell spawn via
@@ -147,6 +147,13 @@ src/tool/
 ├── deterministic.rs    # EggsactTool wrapper, build_eggsact_tools()
 └── ...
 ```
+
+For commands issued inside an already-authorized workspace/action, ordinary
+shell grammar and language-runner syntax do not create a second approval by
+themselves. Explicit operator rules and concrete risk findings still feed the
+existing authorization route. A requested sandbox is reported according to the
+backend actually obtained; Landlock-only Linux runs do not restrict network or
+Unix IPC. The human-owned `!` shell keeps its separate confirmation policy.
 
 ## Mutation Surface and Edit Checkpoints
 
@@ -338,7 +345,7 @@ advertised):
 
 | Tool | Disclosure | File | Description |
 |------|------------|------|-------------|
-| **bash** | Core | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, platform sandbox when available). Raw shell uses `sh -c` on Unix and the configured Windows PowerShell, `cmd.exe`, Git Bash, or WSL on Windows; structured argv bypasses shell parsing. Windows shell calls receive a cleaned per-run TEMP/TMP directory, but shell selection does not enable filesystem containment. 120s timeout. Facade sequences policy → execution → result. |
+| **bash** | Core | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with advisory risk classification, explicit text filters, allowlist, and platform sandbox when available. Raw shell uses `sh -c` on Unix and the configured Windows PowerShell, `cmd.exe`, Git Bash, or WSL on Windows; structured argv bypasses shell parsing. Windows shell calls receive a cleaned per-run TEMP/TMP directory, but shell selection does not enable filesystem containment. 120s timeout. Facade sequences policy → execution → result. |
 | **verify** | Core | `verify.rs` | Bounded Cargo `check`/`build`/`lint`/`typecheck`/`format_check`/`auto` facade delegating through `BashTool`. Takes no command/package/path field. |
 | **read** | Core | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
 | **write** | Core | `write.rs` | Create or overwrite files with auto-formatting. |
@@ -558,6 +565,21 @@ validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
 `tests/sandbox_policy_wiring.rs`.
 
+**M002 accepted execution context:** the agent loop carries the accepted
+`ExecutionPolicySnapshot`, permission receipt, and bounded command-preflight
+summary through `ToolExecutionContext` and the broker invocation. Every broker
+retry derives its attempt context from that same immutable value. Bash skips
+its local preflight scan when this production context is present, avoiding a
+second decision after approval. It verifies that the registered profile still
+matches the accepted snapshot and refuses constrained execution when the
+filesystem backend is unavailable. Raw Bash passes the context to
+`ManagedProcessRequest`, which refuses a disabled sandbox when the accepted
+snapshot requires filesystem containment. Typed Git mutation paths carry the
+context into `GitMutationExecutor`; the typed Git policy remains responsible
+for executable Git capabilities. Direct legacy tool calls without an accepted
+context retain tool-local preflight behavior. This check does not establish
+network or IPC confinement.
+
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`
 and passed through from `with_config()`, `with_session_config_defaults()`,
@@ -715,8 +737,8 @@ shared retry context. See [tool_broker.md](tool_broker.md) and
 1. **Path validation**: All file paths validated before access
 2. **Symlink protection**: `check_path_for_symlinks()` rejects symlinks
 3. **Permission enforcement**: Tools check permissions before execution
-4. **Canonical shell blocked patterns**: Bash policy owns regex-based detection of shell patterns; the retained terminal compatibility adapter delegates to it. Patterns are split by disposition. A small **hard-deny** tier (fork bombs, `rm -rf` on `/` or `~`, `mkfs`/`dd` against a block device, system shutdown/reboot, `kill -9 -1`) is enforced inside the tool, below the permission system, so no approval mode and no user rule can weaken it — this is what backs the "deterministic hard denies still deny" invariant in `policy_surface`. Everything else is an **escalation signal** consumed by the permission layer before execution, where it becomes a normal `PermissionResult::Ask` resolved under the configured approval mode. An escalation signal is deliberately not a boundary: it constrains the invocation, not the program, which is the same reasoning Claude Code documents ("not a security boundary around the program") and the reason Gemini deprecated its blocklist. Containment is `SandboxProfile` plus Landlock. Matching runs against `sanitize_command`, which drops quoted-heredoc bodies and blanks single-quoted regions and backslash escapes — POSIX `sh` performs no expansion inside `'...'`, so `$VAR`, backticks, `$( )`, and standalone `&` there are data, not syntax. Double-quoted regions are deliberately still scanned, because expansion does occur there. `exec`, `eval`, and dot-source are anchored to command position (start of input or a command separator), so `docker exec`, `kubectl exec`, `cargo exec`, `cargo eval`, and `find . -name '*.sh'` produce no signal while `ls; exec sh` and `cat f | exec sh` escalate. Absolute-path rules target system paths explicitly, so `/tmp` scratch writes are allowed. Interpreter inline-code rules (`python -c`, `node -e`) require whitespace immediately after the bare name, so the *routed* forms `python3 -c` and `node -e` still reach command-intent, which owns them and hands them to the scheduler-owned Python executor.
-5. **Canonical blocked commands**: Bash policy owns the shared HashSet of full commands blocked (rm -rf /, etc.); terminal may add only narrower adapter restrictions.
+4. **Canonical shell risk patterns**: Bash patterns provide advisory metadata for dangerous command shapes. They may contribute to one Ask through the existing approval router; they never provide OS containment or a guaranteed denial. Ordinary shell syntax such as wrappers, environment assignments, quoting, pipelines, and substitutions is not itself a risk signal. Explicit configured text denies remain best-effort invocation filters. Actual containment comes from the selected sandbox, child lease, and protected-resource checks.
+5. **Canonical blocked commands**: Built-in command names are not a terminal blocklist. Explicit operator restrictions and narrow adapter restrictions remain best-effort text policy.
 6. **SSRF protection**: WebFetch validates URLs against internal IPs
 7. **Subprocess PATH**: Uses `std::env::var_os("PATH")` (not hardcoded)
 8. **Environment filtering**: TerminalTool retains its compatibility-specific filtering of LD_PRELOAD, DYLD_*

@@ -141,6 +141,39 @@ Safe bash patterns are defined in `default_bash_allow_patterns()`
 (`src/permission/mod.rs:1706`). Users can extend or override these via
 `bash_allow_patterns` and `bash_deny_patterns` config fields.
 
+For Bash, rules retain the tier order agent > session > config. Within one
+tier, a matching command pattern takes precedence over an unpatterned fallback;
+among matching patterns, Deny outranks Ask, which outranks Allow. Thus a
+current effective Deny cannot be hidden by `default = "allow"`, an `ask`
+fallback, `allow_all_bash`, or a saved Allow. This resolves one invocation
+string only: glob patterns are preferences and do not prevent an equivalent
+effect through a script, wrapper, or another tool.
+
+When a workspace and action are already authorized, routine development
+commands do not receive an additional Ask solely for quotes, shell wrappers,
+interpreter flags, environment assignments, pipes, or substitutions. Explicit
+`ask`/`deny` rules, meaningful risk signals, and a missing required sandbox
+still follow their normal review or denial paths. Interactive, Automatic, and
+Yolo change how an Ask is resolved; they do not widen the captured execution
+scope. A FullHost request has host authority and must not be described as
+protected by command-pattern review.
+Operator-selected `bash_deny_patterns` are best-effort invocation filters; they
+are not kernel enforcement. Built-in command risk classification may request
+review, but ordinary wrappers, quotes, expansions, and pipelines do not prompt
+solely because of their syntax.
+
+Remembered shell approvals use `cmd:<executable>` only when the existing
+`command_intent::shell_shape` parser classifies the request as one simple
+command. A simple `env NAME=value <command>` wrapper and an absolute
+executable path are canonicalized. Shells, interpreters, and command wrappers
+use exact-invocation scopes even when their argument text has simple argv
+shape. Compound or ambiguous commands use a
+`cmd:exact:<sha256>` scope over the complete command text, so a saved
+`cmd:cargo` family grant cannot cover `cargo test; ./other-script`. Explicit
+legacy unscoped grants remain broad and readable for compatibility; current
+effective Deny rules still win. The digest is a cache scope, not shell parsing
+or OS enforcement.
+
 Escalation signals from the shell policy (`tool::bash::policy::find_ask_pattern`)
 are consulted on the same path, immediately after `destructive_match`: a hit
 returns `Ask` carrying an `ask_pattern` field rather than being rejected inside
@@ -512,6 +545,30 @@ allow_all_bash = false
    return a bounded `SandboxEscalationRequest`, never a silent turn-wide
    `FullHost` switch. Protocol exposes `SandboxEnforcementDto` on the
    snapshot (additive `sandbox_enforcement`).
+**M002 accepted execution context.** An accepted agent tool call carries
+`ExecutionAuthorizationContext`: the immutable batch snapshot, permission
+receipt, and bounded command-preflight advisory. The value travels through
+`ToolExecutionContext` and `BrokerInvocationContext`; broker retries reuse
+it unchanged. Bash consumes the preflight result already evaluated before
+approval and does not run a second scan afterward. It refuses production
+calls when the registered sandbox profile differs from the accepted
+snapshot or required filesystem enforcement is unavailable. Raw Bash passes
+the context to `ManagedProcessRequest`, which refuses a disabled sandbox for
+a constrained snapshot. Typed Git mutation executors also retain the accepted
+context while their own Git policy remains the capability authority. The
+context records authorization inputs; it does not claim every downstream
+effect was observed or contained.
+**M003 command outcome observability.** The command execution event correlates
+the permission receipt and decision source with the requested profile, safe
+route label, advisory risk level, and actual obtained filesystem/network
+outcome. Raw shell reports the completed managed-process enforcement result;
+timeouts are explicitly unavailable, and Landlock-only networking remains
+unrestricted. Completed raw-shell events also carry exit code,
+output-truncation status, cleanup status, and helper identity. The event stores
+structural digests and bounded labels, never command text, arguments, output,
+or generated script content. This is launch and route provenance, not a trace
+of every nested syscall; see
+`architecture/audit.md` and the M003 validation record.
 9. **M006 automatic reviewer (ADR-0004).** `Automatic` escalations resolve
    through the dedicated bounded reviewer (`src/permission/reviewer.rs`,
    see `approval_reviewer.md`) when a reviewer model is configured and
@@ -546,10 +603,12 @@ allow_all_bash = false
     equivalents) resolve through the same contract; bare `exec` keeps the
     legacy permissive behavior as a documented compatibility alias.
     Remembered approvals are capability-scoped where deterministic
-    command data exists (`PersistentDecision.scope`: `cmd:<argv0>` for
-    shell, `git:<subcommand>` for git; exact-scope first, legacy broad
-    rows still match; scope is HMAC-signed, legacy signatures still
-    verify for unscoped rows). The TUI manifest model hint stays
+    command data exists (`PersistentDecision.scope`: `cmd:<argv0>` for simple
+    shell commands, `cmd:exact:<sha256>` for complex shell text, and
+    `git:<subcommand>` for git; exact-scope first, legacy broad rows still
+    match; scope is HMAC-signed, legacy signatures still verify for unscoped
+    rows). A current effective Deny is evaluated before the cache so a
+    legacy broad Allow cannot mask it. The TUI manifest model hint stays
     display-only (`reconcile_tab_model_with_daemon`).
 11. **M008 qualification (invariant/closure).** `tests/reliability_qualification_m008.rs`
     proves deterministic Deny across Interactive/Automatic/Yolo, reviewer

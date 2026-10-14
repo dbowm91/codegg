@@ -217,6 +217,8 @@ impl ExecutionContext {
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitMutationError {
+    #[error("git execution policy outcome: {0}")]
+    Policy(egggit::GitExecutionPolicyOutcome),
     /// Subprocess failed (spawn error, non-zero exit, network failure).
     /// The contained `ExecutionContext` carries operation kind, remote
     /// name (when applicable), classified failure kind, exit code, and
@@ -298,6 +300,7 @@ impl GitMutationError {
 impl From<GitServiceError> for GitMutationError {
     fn from(err: GitServiceError) -> Self {
         match err {
+            GitServiceError::Policy(outcome) => Self::Policy(outcome),
             GitServiceError::Execution(s) => {
                 // Legacy path: no operation context available. The
                 // service error string is sanitized through the
@@ -377,7 +380,9 @@ async fn capture_snapshot(repo_root: &Path) -> Result<RepoSnapshot, GitMutationE
         "--branch".to_string(),
     ];
     let env = GitEnvPolicy::default();
-    let mut cmd = env.apply(&argv, repo_root);
+    let mut cmd = env
+        .apply(&argv, repo_root)
+        .map_err(GitMutationError::Policy)?;
     let output = cmd.output().await.map_err(|e| {
         GitMutationError::execution_kind("snapshot", format!("snapshot spawn failed: {e}"))
     })?;
@@ -485,6 +490,9 @@ pub struct GitMutationExecutor {
     pub execution_audit: Option<codegg_core::audit_instrumentation::TrustedExecutionAuditContext>,
     /// Shared bounded audit emitter injected by the daemon boundary.
     pub audit_emitter: Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>,
+    /// Accepted authorization context from the agent/broker route, when
+    /// available. Typed Git authority remains enforced by the Git policy.
+    pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
 }
 
 // Manual Debug impl because `GitExecutionService` does not derive Debug.
@@ -511,6 +519,7 @@ impl GitMutationExecutor {
             timeout: Duration::from_secs(30),
             execution_audit: None,
             audit_emitter: None,
+            execution_authorization: None,
         }
     }
 
@@ -542,6 +551,14 @@ impl GitMutationExecutor {
         emitter: codegg_core::audit_instrumentation::ExecutionAuditEmitter,
     ) -> Self {
         self.audit_emitter = Some(emitter);
+        self
+    }
+
+    pub fn with_execution_authorization(
+        mut self,
+        authorization: crate::tool::authorization::ExecutionAuthorizationContext,
+    ) -> Self {
+        self.execution_authorization = Some(authorization);
         self
     }
 
@@ -593,6 +610,35 @@ impl GitMutationExecutor {
             .await;
     }
 
+    async fn emit_git_policy_outcome(
+        &self,
+        operation: &GitOperation,
+        outcome: &egggit::GitExecutionPolicyOutcome,
+    ) {
+        let (Some(audit), Some(emitter)) =
+            (self.execution_audit.as_ref(), self.audit_emitter.as_ref())
+        else {
+            return;
+        };
+        let Some(op_label) = git_audit_op_label(operation) else {
+            return;
+        };
+        let ref_digest = git_audit_ref_digest(operation);
+        let outcome_digest = codegg_core::audit_instrumentation::structural_digest(
+            format!("{outcome:?}").as_bytes(),
+        );
+        let scope = format!("{op_label}|{ref_digest}|policy_blocked|{outcome_digest}");
+        emit_git_operation_parts(
+            audit,
+            emitter,
+            op_label,
+            &ref_digest,
+            "policy_blocked",
+            &scope,
+        )
+        .await;
+    }
+
     /// Capture a `RepoSnapshot` for the given repository root.
     pub async fn snapshot(&self, repo_root: &Path) -> Result<RepoSnapshot, GitMutationError> {
         capture_snapshot(repo_root).await
@@ -614,7 +660,14 @@ impl GitMutationExecutor {
             ));
         }
 
-        let raw = self.run_subprocess(&argv, repo_root).await?;
+        let raw = match self.run_subprocess(&argv, repo_root).await {
+            Ok(raw) => raw,
+            Err(GitMutationError::Policy(outcome)) => {
+                self.emit_git_policy_outcome(operation, &outcome).await;
+                return Err(GitMutationError::Policy(outcome));
+            }
+            Err(error) => return Err(error),
+        };
         let after = match self.snapshot(repo_root).await {
             Ok(s) => s,
             Err(_) => before.clone(),
@@ -662,12 +715,10 @@ impl GitMutationExecutor {
         let argv_owned = argv.to_vec();
         let env = self.env_policy.clone();
 
-        let output = match tokio::time::timeout(timeout, async move {
-            let mut cmd = env.apply(&argv_owned, &repo_root_owned);
-            cmd.output().await
-        })
-        .await
-        {
+        let mut cmd = env
+            .apply(&argv_owned, &repo_root_owned)
+            .map_err(GitMutationError::Policy)?;
+        let output = match tokio::time::timeout(timeout, cmd.output()).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 return Err(GitMutationError::execution_kind(

@@ -1,7 +1,8 @@
 //! Integration tests for the typed Git mutation framework (`src/git_mutations.rs`,
 //! `src/git_mutations_ops.rs`). Each test builds a fresh in-temp-dir Git repo,
-//! stages changes, runs the typed mutation helpers, and asserts on the
-//! returned [`MutationResult`] (state delta, exit code, success).
+//! prepares changes, runs the typed mutation helpers, and asserts on either
+//! their successful state delta or the typed capability handoff when a
+//! contained local Git backend is not available.
 //!
 //! These tests rely on the host having `git` in PATH. The repo skips
 //! gracefully (via `binary_check`) if `git` is not available so CI on
@@ -127,6 +128,20 @@ fn exec() -> codegg::git_mutations::GitMutationExecutor {
     GitMutationExecutor::new().with_env_policy(GitEnvPolicy::default())
 }
 
+fn assert_backend_unavailable<T: std::fmt::Debug>(
+    result: Result<T, codegg::git_mutations::GitMutationError>,
+) {
+    match result {
+        Err(codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities },
+        )) => assert!(
+            !capabilities.is_empty(),
+            "missing required capability evidence"
+        ),
+        other => panic!("expected typed unavailable Git capability, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn stage_all_marks_changes_staged() {
     if !git_available() {
@@ -135,20 +150,7 @@ async fn stage_all_marks_changes_staged() {
     }
     let repo = fresh_repo();
     fs_utils::write(&repo.path().join("new.txt"), "1\n");
-    let res = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
-    assert_clean(&res);
-    let staged = Command::new("git")
-        .args(["diff", "--cached", "--name-only"])
-        .current_dir(repo.path())
-        .output()
-        .unwrap();
-    let files = String::from_utf8_lossy(&staged.stdout).to_string();
-    assert!(
-        files.contains("new.txt"),
-        "expected new.txt in staged set, got: {files}"
-    );
+    assert_backend_unavailable(git_mutations_ops::stage_all(&exec(), repo.path()).await);
 }
 
 #[tokio::test]
@@ -159,19 +161,8 @@ async fn stage_paths_returns_paths_in_delta() {
     let repo = fresh_repo();
     fs_utils::write(&repo.path().join("a.txt"), "a\n");
     fs_utils::write(&repo.path().join("b.txt"), "b\n");
-    let res = git_mutations_ops::stage_paths(&exec(), repo.path(), vec!["a.txt".to_string()])
-        .await
-        .unwrap();
-    assert_clean(&res);
-    assert!(
-        res.delta.paths_staged.iter().any(|p| p == "a.txt"),
-        "expected a.txt in paths_staged, got {:?}",
-        res.delta.paths_staged
-    );
-    assert!(
-        res.delta.paths_staged.iter().all(|p| p != "b.txt"),
-        "b.txt should not be staged: {:?}",
-        res.delta.paths_staged
+    assert_backend_unavailable(
+        git_mutations_ops::stage_paths(&exec(), repo.path(), vec!["a.txt".to_string()]).await,
     );
 }
 
@@ -240,33 +231,28 @@ async fn commit_amend_returns_previous_message() {
 }
 
 #[tokio::test]
-async fn branch_create_and_switch_round_trip() {
+async fn branch_create_and_switch_requires_contained_checkout() {
     if !git_available() {
         return;
     }
     let repo = fresh_repo();
-    let res = git_mutations_ops::create_and_switch(&exec(), repo.path(), "feature", None)
-        .await
-        .unwrap();
-    assert_clean(&res);
-    let cur = current_branch(repo.path());
-    assert_eq!(cur, "feature");
-    assert!(branch_list(repo.path()).iter().any(|b| b == "feature"));
+    assert_backend_unavailable(
+        git_mutations_ops::create_and_switch(&exec(), repo.path(), "feature", None).await,
+    );
 }
 
 #[tokio::test]
-async fn branch_delete_refuses_current() {
+async fn branch_delete_noncurrent_uses_trusted_ref_update() {
     if !git_available() {
         return;
     }
     let repo = fresh_repo();
-    let _ = git_mutations_ops::create_and_switch(&exec(), repo.path(), "feature", None)
-        .await
+    let created = Command::new("git")
+        .args(["branch", "feature"])
+        .current_dir(repo.path())
+        .output()
         .unwrap();
-    // Switch back to main so deleting feature is safe.
-    let _ = git_mutations_ops::switch_branch(&exec(), repo.path(), "main", false)
-        .await
-        .unwrap();
+    assert!(created.status.success());
     let res = git_mutations_ops::branch_delete(&exec(), repo.path(), "feature", false)
         .await
         .unwrap();
@@ -278,149 +264,45 @@ async fn branch_delete_refuses_current() {
 }
 
 #[tokio::test]
-async fn stash_push_then_apply_restores_state() {
+async fn stash_push_reports_contained_filter_requirement() {
     if !git_available() {
         return;
     }
     let repo = fresh_repo();
     fs_utils::write(&repo.path().join("README.md"), "tweaked\n");
     write_and_stage(repo.path(), "README.md", "tweaked\n");
-    let push = git_mutations_ops::stash_push(&exec(), repo.path(), Some("work"), false, Vec::new())
-        .await
-        .unwrap();
-    assert_clean(&push);
-    // After stash, working tree should be clean.
-    let status_after = git_status_clean(repo.path());
-    assert!(status_after, "expected clean tree after stash");
-    let apply = git_mutations_ops::stash_apply(&exec(), repo.path(), Some("stash@{0}"), false)
-        .await
-        .unwrap();
-    assert_clean(&apply);
+    assert_backend_unavailable(
+        git_mutations_ops::stash_push(&exec(), repo.path(), Some("work"), false, Vec::new()).await,
+    );
 }
 
 #[tokio::test]
-async fn merge_fast_forward_records_into_state_delta() {
+async fn merge_fast_forward_reports_contained_execution_requirement() {
     if !git_available() {
         return;
     }
     let repo = fresh_repo();
-    let _ = git_mutations_ops::create_and_switch(&exec(), repo.path(), "topic", None)
-        .await
-        .unwrap();
-    fs_utils::write(&repo.path().join("b.txt"), "b\n");
-    let _ = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
-    let _ = git_mutations_ops::commit_with_selection(
-        &exec(),
-        repo.path(),
-        codegg::git_mutations::CommitSelection::StageAll,
-        "add b",
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    let _ = git_mutations_ops::switch_branch(&exec(), repo.path(), "main", false)
-        .await
-        .unwrap();
-    let res =
-        git_mutations_ops::merge(&exec(), repo.path(), vec!["topic".to_string()], false, None)
-            .await
-            .unwrap();
-    assert!(matches!(
-        res.outcome,
-        MutationOutcome::FastForward { .. } | MutationOutcome::Completed
-    ));
+    assert_backend_unavailable(
+        git_mutations_ops::merge(&exec(), repo.path(), vec!["main".to_string()], false, None).await,
+    );
 }
 
 #[tokio::test]
-async fn merge_conflict_yields_conflict_outcome() {
+async fn merge_conflict_path_reports_contained_execution_requirement() {
     if !git_available() {
         return;
     }
     let repo = fresh_repo();
-    // Create the shared ancestor on a side branch so both `main` and
-    // `other` can diverge before the merge.
-    let _ = git_mutations_ops::create_and_switch(&exec(), repo.path(), "feature", None)
-        .await
-        .unwrap();
-    fs_utils::write(&repo.path().join("a.txt"), "common\n");
-    let _ = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
-    let _ = git_mutations_ops::commit_with_selection(
-        &exec(),
-        repo.path(),
-        codegg::git_mutations::CommitSelection::StageAll,
-        "add a",
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    // Back to main, take diverging commit.
-    let _ = git_mutations_ops::switch_branch(&exec(), repo.path(), "main", false)
-        .await
-        .unwrap();
-    fs_utils::write(&repo.path().join("a.txt"), "main-change\n");
-    let _ = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
-    let _ = git_mutations_ops::commit_with_selection(
-        &exec(),
-        repo.path(),
-        codegg::git_mutations::CommitSelection::StageAll,
-        "main a",
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    // Switch to other side, diverging commit.
-    let _ = git_mutations_ops::switch_branch(&exec(), repo.path(), "feature", false)
-        .await
-        .unwrap();
-    fs_utils::write(&repo.path().join("a.txt"), "other-change\n");
-    let _ = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
-    let _ = git_mutations_ops::commit_with_selection(
-        &exec(),
-        repo.path(),
-        codegg::git_mutations::CommitSelection::StageAll,
-        "other a",
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    let _ = git_mutations_ops::switch_branch(&exec(), repo.path(), "main", false)
-        .await
-        .unwrap();
-    let res = git_mutations_ops::merge(
-        &exec(),
-        repo.path(),
-        vec!["feature".to_string()],
-        false,
-        None,
-    )
-    .await
-    .unwrap();
-    assert!(
-        matches!(res.outcome, MutationOutcome::Conflict),
-        "expected Conflict, got {:?}",
-        res.outcome
+    assert_backend_unavailable(
+        git_mutations_ops::merge(
+            &exec(),
+            repo.path(),
+            vec!["feature".to_string()],
+            false,
+            None,
+        )
+        .await,
     );
-    assert!(
-        !res.success || res.delta.conflicts.iter().any(|c| c.contains("a.txt")),
-        "expected conflict in a.txt or non-success, got conflicts={:?}",
-        res.delta.conflicts
-    );
-    // Abort to leave the repo in a clean state.
-    let _ = git_mutations_ops::abort_in_progress(&exec(), repo.path())
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -429,11 +311,18 @@ async fn env_policy_pins_git_terminal_prompt_and_editor() {
         return;
     }
     let repo = fresh_repo();
-    fs_utils::write(&repo.path().join("a.txt"), "a\n");
-    let push = git_mutations_ops::stash_push(&exec(), repo.path(), Some("pol"), false, Vec::new())
-        .await
-        .unwrap();
-    assert_clean(&push);
+    write_and_stage(repo.path(), "a.txt", "a\n");
+    let commit = git_mutations_ops::commit_with_selection(
+        &exec(),
+        repo.path(),
+        codegg::git_mutations::CommitSelection::AlreadyStaged,
+        "policy test",
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_clean(&commit.mutation);
     // Any subsequent mutation must not see leaked GIT_EDITOR env.
     let leak_check = std::env::var("GIT_EDITOR").ok();
     let _ = leak_check; // intentionally not asserted; the executor clears env before spawn
@@ -445,14 +334,11 @@ async fn projector_summary_includes_outcome() {
         return;
     }
     let repo = fresh_repo();
-    fs_utils::write(&repo.path().join("a.txt"), "a\n");
-    let _ = git_mutations_ops::stage_all(&exec(), repo.path())
-        .await
-        .unwrap();
+    write_and_stage(repo.path(), "a.txt", "a\n");
     let outcome = git_mutations_ops::commit_with_selection(
         &exec(),
         repo.path(),
-        codegg::git_mutations::CommitSelection::StageAll,
+        codegg::git_mutations::CommitSelection::AlreadyStaged,
         "a",
         false,
         false,
@@ -515,13 +401,4 @@ fn current_branch(repo: &Path) -> String {
         .output()
         .expect("git branch");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn git_status_clean(repo: &Path) -> bool {
-    let out = Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(repo)
-        .output()
-        .expect("git status");
-    String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }

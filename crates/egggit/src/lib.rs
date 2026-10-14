@@ -49,7 +49,10 @@ pub use operation_state::{
     MergeState, OperationFamily, RebaseState, RecoveryAction, RepositoryOperationState,
     SequenceState, SequencerState, UnknownOperationState,
 };
-pub use process::{GitEnvPolicy, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS};
+pub use process::{
+    classify_git_request, GitEnvPolicy, GitExecutionCapability, GitExecutionPolicyOutcome,
+    ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS,
+};
 pub use refs::{
     list_branches, list_remotes, list_tags, resolve_commit, BranchInfo, RemoteInfo, TagInfo,
 };
@@ -66,6 +69,9 @@ use thiserror::Error;
 /// Errors returned by the `egggit` API.
 #[derive(Debug, Error)]
 pub enum EgggitError {
+    #[error("git policy outcome: {0}")]
+    Policy(process::GitExecutionPolicyOutcome),
+
     #[error("io error: {0}")]
     Io(String),
 

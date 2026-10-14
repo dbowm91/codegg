@@ -85,6 +85,70 @@ pub const ALWAYS_STRIPPED_ENV_VARS: &[&str] = &[
     "PAGER",
 ];
 
+/// Executable authority that a Git request may obtain from repository data or
+/// its transport. Callers use these facts to select a real contained backend;
+/// the list is never treated as a reason to manufacture a process error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GitExecutionCapability {
+    RepositoryAlias,
+    CleanSmudgeFilter,
+    MergeDriver,
+    Hook,
+    ExternalDiffOrTextconv,
+    RemoteHelper,
+    Network,
+    Credential,
+    DestructiveRepositoryChange,
+}
+
+/// Policy classification for one shell-free Git argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitExecutionPolicyOutcome {
+    AllowedTrustedNonExecutable,
+    RequiresContainedExecution {
+        capabilities: Vec<GitExecutionCapability>,
+    },
+    RequiresAdditionalAuthorization {
+        capabilities: Vec<GitExecutionCapability>,
+    },
+    DeniedExplicitAuthority {
+        reason: String,
+    },
+    InvalidRequest {
+        reason: String,
+    },
+    BackendUnavailable {
+        capabilities: Vec<GitExecutionCapability>,
+    },
+}
+
+impl std::fmt::Display for GitExecutionPolicyOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AllowedTrustedNonExecutable => formatter.write_str("trusted non-executable Git"),
+            Self::RequiresContainedExecution { capabilities } => {
+                write!(
+                    formatter,
+                    "contained Git execution required: {capabilities:?}"
+                )
+            }
+            Self::RequiresAdditionalAuthorization { capabilities } => {
+                write!(
+                    formatter,
+                    "additional Git authorization required: {capabilities:?}"
+                )
+            }
+            Self::DeniedExplicitAuthority { reason } => write!(formatter, "Git denied: {reason}"),
+            Self::InvalidRequest { reason } => write!(formatter, "invalid Git request: {reason}"),
+            Self::BackendUnavailable { capabilities } => {
+                write!(formatter, "Git backend unavailable for {capabilities:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GitExecutionPolicyOutcome {}
+
 /// Base policy for local Git operations.
 #[derive(Debug, Clone)]
 pub struct GitEnvPolicy {
@@ -107,21 +171,249 @@ impl Default for GitEnvPolicy {
 
 impl GitEnvPolicy {
     /// Construct an async command from a complete argv (`git` included).
-    pub fn apply(&self, argv: &[String], cwd: &Path) -> Command {
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
+    pub fn apply(&self, argv: &[String], cwd: &Path) -> Result<Command, GitExecutionPolicyOutcome> {
+        ensure_trusted_git_request(argv)?;
+        let mut cmd = Command::new("git");
+        add_trusted_git_overrides(&mut cmd, argv);
+        cmd.current_dir(cwd);
         apply_environment(&mut cmd, self);
         cmd.kill_on_drop(true);
-        cmd
+        Ok(cmd)
     }
 
     /// Construct a synchronous command from a complete argv (`git` included).
-    pub fn apply_sync(&self, argv: &[String], cwd: &Path) -> StdCommand {
-        let mut cmd = StdCommand::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
+    pub fn apply_sync(
+        &self,
+        argv: &[String],
+        cwd: &Path,
+    ) -> Result<StdCommand, GitExecutionPolicyOutcome> {
+        ensure_trusted_git_request(argv)?;
+        let mut cmd = StdCommand::new("git");
+        add_trusted_git_overrides(&mut cmd, argv);
+        cmd.current_dir(cwd);
         isolate_child_process_group(&mut cmd);
         apply_environment(&mut cmd, self);
-        cmd
+        Ok(cmd)
+    }
+}
+
+/// Classify a shell-free Git invocation before it crosses the process
+/// boundary. Contained/authorization outcomes are typed handoffs; they never
+/// become fabricated executable paths or generic spawn failures.
+pub fn classify_git_request(argv: &[String]) -> GitExecutionPolicyOutcome {
+    if argv.is_empty() || argv[0] != "git" {
+        return GitExecutionPolicyOutcome::InvalidRequest {
+            reason: "expected complete argv beginning with git".into(),
+        };
+    }
+
+    // Global config and repository selectors change the authority context
+    // after policy evaluation. CodeGG's typed renderers do not need them.
+    if argv
+        .iter()
+        .skip(1)
+        .take_while(|arg| arg.starts_with('-'))
+        .any(|arg| {
+            arg == "-c"
+                || arg.starts_with("-c") && arg.len() > 2
+                || arg == "--config-env"
+                || arg.starts_with("--config-env=")
+                || arg == "--git-dir"
+                || arg.starts_with("--git-dir=")
+                || arg == "--work-tree"
+                || arg.starts_with("--work-tree=")
+                || arg == "-C"
+                || arg.starts_with("-C") && arg.len() > 2
+                || arg == "--exec-path"
+                || arg.starts_with("--exec-path=")
+        })
+    {
+        return GitExecutionPolicyOutcome::DeniedExplicitAuthority {
+            reason: "caller supplied global Git configuration or repository redirection".into(),
+        };
+    }
+
+    let Some(subcommand) = argv.get(1).map(String::as_str) else {
+        return GitExecutionPolicyOutcome::InvalidRequest {
+            reason: "missing Git operation".into(),
+        };
+    };
+    if subcommand.starts_with('-') {
+        return GitExecutionPolicyOutcome::InvalidRequest {
+            reason: "missing Git operation before operation arguments".into(),
+        };
+    }
+
+    if matches!(subcommand, "diff" | "diff-tree" | "show" | "log" | "blame")
+        && argv
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--ext-diff" | "--textconv"))
+    {
+        return requires_containment(vec![GitExecutionCapability::ExternalDiffOrTextconv]);
+    }
+
+    // Operations that only inspect trusted repository state. Diff extension
+    // execution paths are disabled explicitly by add_trusted_git_overrides.
+    if matches!(
+        subcommand,
+        "fetch" | "pull" | "push" | "clone" | "ls-remote"
+    ) {
+        return remote_git_requires_containment();
+    }
+
+    if subcommand == "remote" {
+        let operation = argv.get(2).map(String::as_str).unwrap_or_default();
+        if matches!(operation, "update" | "prune")
+            || operation == "show"
+                && !argv
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "-n" | "--no-fetch"))
+        {
+            return remote_git_requires_containment();
+        }
+        return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable;
+    }
+
+    if matches!(subcommand, "reset" | "clean") {
+        return GitExecutionPolicyOutcome::RequiresAdditionalAuthorization {
+            capabilities: vec![GitExecutionCapability::DestructiveRepositoryChange],
+        };
+    }
+
+    let capabilities = match subcommand {
+        "add" => vec![GitExecutionCapability::CleanSmudgeFilter],
+        "checkout" | "restore" | "switch" => {
+            vec![GitExecutionCapability::CleanSmudgeFilter]
+        }
+        "merge" | "cherry-pick" | "rebase" | "revert" => vec![
+            GitExecutionCapability::CleanSmudgeFilter,
+            GitExecutionCapability::MergeDriver,
+            GitExecutionCapability::Hook,
+        ],
+        "commit" => return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable,
+        "grep" if argv.iter().any(|arg| arg == "--textconv") => {
+            vec![GitExecutionCapability::ExternalDiffOrTextconv]
+        }
+        "stash" if argv.get(2).is_some_and(|operation| operation == "list") => {
+            return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable;
+        }
+        "stash" => vec![
+            GitExecutionCapability::CleanSmudgeFilter,
+            GitExecutionCapability::Hook,
+        ],
+        "worktree" if argv.get(2).is_some_and(|operation| operation == "list") => {
+            return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable;
+        }
+        "worktree" => vec![GitExecutionCapability::CleanSmudgeFilter],
+        "am" | "bisect" => vec![GitExecutionCapability::Hook],
+        "apply" | "blame" | "branch" | "cat-file" | "check-attr" | "config" | "diff"
+        | "diff-tree" | "for-each-ref" | "grep" | "init" | "log" | "ls-files" | "ls-tree"
+        | "merge-base" | "mv" | "notes" | "reflog" | "rev-parse" | "rev-list" | "rm" | "show"
+        | "status" | "tag" | "update-ref" => {
+            if subcommand == "cat-file" && argv.iter().any(|arg| arg == "--filters") {
+                return requires_containment(vec![GitExecutionCapability::CleanSmudgeFilter]);
+            }
+            return GitExecutionPolicyOutcome::AllowedTrustedNonExecutable;
+        }
+        _ => vec![GitExecutionCapability::RepositoryAlias],
+    };
+    requires_containment(capabilities)
+}
+
+fn requires_containment(capabilities: Vec<GitExecutionCapability>) -> GitExecutionPolicyOutcome {
+    GitExecutionPolicyOutcome::RequiresContainedExecution { capabilities }
+}
+
+fn remote_git_requires_containment() -> GitExecutionPolicyOutcome {
+    requires_containment(vec![
+        GitExecutionCapability::RemoteHelper,
+        GitExecutionCapability::Network,
+        GitExecutionCapability::Credential,
+    ])
+}
+
+fn ensure_trusted_git_request(argv: &[String]) -> Result<(), GitExecutionPolicyOutcome> {
+    match classify_git_request(argv) {
+        GitExecutionPolicyOutcome::AllowedTrustedNonExecutable => Ok(()),
+        GitExecutionPolicyOutcome::RequiresContainedExecution { capabilities } => {
+            Err(GitExecutionPolicyOutcome::BackendUnavailable { capabilities })
+        }
+        other => Err(other),
+    }
+}
+
+fn add_trusted_git_overrides<C>(cmd: &mut C, argv: &[String])
+where
+    C: CommandArguments,
+{
+    // These options take precedence over repository-local config and prevent
+    // Git from promoting config values into child processes. Network routing
+    // remains possible through the separately reviewed environment policy.
+    for (key, value) in [
+        ("core.fsmonitor", "false"),
+        ("core.hooksPath", "/dev/null"),
+        ("core.pager", "cat"),
+        ("core.sshCommand", ""),
+        ("credential.helper", ""),
+        ("diff.external", ""),
+        ("commit.gpgSign", "false"),
+        ("tag.gpgSign", "false"),
+        ("gpg.program", ""),
+        ("core.askPass", ""),
+        ("protocol.ext.allow", "never"),
+    ] {
+        cmd.arg("-c");
+        cmd.arg(format!("{key}={value}"));
+    }
+    cmd.arg("--no-pager");
+    if argv.get(1).is_some_and(|arg| {
+        matches!(
+            arg.as_str(),
+            "diff" | "diff-tree" | "show" | "log" | "blame"
+        )
+    }) {
+        cmd.arg(argv[1].as_str());
+        cmd.arg("--no-ext-diff");
+        cmd.arg("--no-textconv");
+        cmd.args(&argv[2..]);
+    } else {
+        cmd.args(&argv[1..]);
+    }
+}
+
+trait CommandArguments {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self;
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>;
+}
+
+impl CommandArguments for Command {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.arg(arg)
+    }
+
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.args(args)
+    }
+}
+
+impl CommandArguments for StdCommand {
+    fn arg<S: AsRef<std::ffi::OsStr>>(&mut self, arg: S) -> &mut Self {
+        self.arg(arg)
+    }
+
+    fn args<I, S>(&mut self, args: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        self.args(args)
     }
 }
 
@@ -230,7 +522,9 @@ pub async fn run_with_timeout(
     let cwd = cwd.to_path_buf();
     let rendered = argv.join(" ");
     tokio::task::spawn_blocking(move || {
-        let mut cmd = GitEnvPolicy::default().apply_sync(&argv, &cwd);
+        let mut cmd = GitEnvPolicy::default()
+            .apply_sync(&argv, &cwd)
+            .map_err(EgggitError::Policy)?;
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -378,7 +672,9 @@ pub async fn run_bounded_with_timeout(
     let cwd = cwd.to_path_buf();
     let rendered = argv.join(" ");
     tokio::task::spawn_blocking(move || {
-        let mut cmd = GitEnvPolicy::default().apply_sync(&argv, &cwd);
+        let mut cmd = GitEnvPolicy::default()
+            .apply_sync(&argv, &cwd)
+            .map_err(EgggitError::Policy)?;
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -461,6 +757,214 @@ mod tests {
         // an unbounded `spawn_blocking` wait, so a stuck git could hang a
         // `git_query` call indefinitely.
         assert!(DEFAULT_READ_TIMEOUT <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn trusted_git_policy_overrides_execution_bearing_repository_config() {
+        let cwd = Path::new(".");
+        let argv = vec!["git".to_string(), "diff".to_string()];
+        let cmd = GitEnvPolicy::default().apply_sync(&argv, cwd).unwrap();
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for required in [
+            "core.fsmonitor=false",
+            "core.hooksPath=/dev/null",
+            "core.sshCommand=",
+            "credential.helper=",
+            "diff.external=",
+            "commit.gpgSign=false",
+            "tag.gpgSign=false",
+            "--no-pager",
+            "--no-ext-diff",
+            "--no-textconv",
+        ] {
+            assert!(
+                args.iter().any(|arg| arg == required),
+                "missing {required:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_policy_returns_execution_classes_without_fabricated_spawns() {
+        let argv = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            classify_git_request(&argv(&["git", "status"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "branch", "--show-current"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "add", "file"])),
+            GitExecutionPolicyOutcome::RequiresContainedExecution {
+                capabilities: vec![GitExecutionCapability::CleanSmudgeFilter]
+            }
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "fetch", "origin"])),
+            GitExecutionPolicyOutcome::RequiresContainedExecution {
+                capabilities: vec![
+                    GitExecutionCapability::RemoteHelper,
+                    GitExecutionCapability::Network,
+                    GitExecutionCapability::Credential,
+                ]
+            }
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "remote", "get-url", "origin"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        assert!(matches!(
+            classify_git_request(&argv(&["git", "remote", "show", "origin"])),
+            GitExecutionPolicyOutcome::RequiresContainedExecution { .. }
+        ));
+        assert!(matches!(
+            GitEnvPolicy::default().apply_sync(&argv(&["git", "add", "file"]), Path::new(".")),
+            Err(GitExecutionPolicyOutcome::BackendUnavailable { .. })
+        ));
+        assert!(GitEnvPolicy::default()
+            .apply_sync(&argv(&["git", "status"]), Path::new("."))
+            .is_ok());
+        assert!(matches!(
+            classify_git_request(&argv(&["git", "show", "--textconv"])),
+            GitExecutionPolicyOutcome::RequiresContainedExecution { .. }
+        ));
+        assert_eq!(
+            classify_git_request(&argv(&["git", "possibly-an-alias"])),
+            GitExecutionPolicyOutcome::RequiresContainedExecution {
+                capabilities: vec![GitExecutionCapability::RepositoryAlias]
+            }
+        );
+        assert!(matches!(
+            classify_git_request(&argv(&["not-git", "status"])),
+            GitExecutionPolicyOutcome::InvalidRequest { .. }
+        ));
+    }
+
+    #[test]
+    fn trusted_git_policy_denies_caller_config_and_repository_redirects() {
+        let cwd = Path::new(".");
+        for extra in [
+            vec![
+                "-c".to_string(),
+                "core.fsmonitor=true".to_string(),
+                "status".to_string(),
+            ],
+            vec![
+                "--config-env=core.fsmonitor=GIT_CONFIG_COUNT".to_string(),
+                "status".to_string(),
+            ],
+            vec!["-C/other/repo".to_string(), "status".to_string()],
+            vec![
+                "--git-dir=/other/repo/.git".to_string(),
+                "status".to_string(),
+            ],
+        ] {
+            let mut argv = vec!["git".to_string()];
+            argv.extend(extra);
+            assert!(matches!(
+                GitEnvPolicy::default().apply_sync(&argv, cwd),
+                Err(GitExecutionPolicyOutcome::DeniedExplicitAuthority { .. })
+            ));
+        }
+
+        // `-c` is also a valid subcommand option (for example `git grep -c`);
+        // only global configuration overrides before the subcommand are denied.
+        let grep_count = vec!["git".to_string(), "grep".to_string(), "-c".to_string()];
+        assert!(GitEnvPolicy::default().apply_sync(&grep_count, cwd).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_status_does_not_run_repository_fsmonitor() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        assert!(init.status.success());
+
+        let marker = root.join("fsmonitor-ran");
+        let hook = root.join("fsmonitor.sh");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'token\\n'\n",
+                marker.display()
+            ),
+        )
+        .expect("write fsmonitor hook");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make fsmonitor executable");
+        let config = StdCommand::new("git")
+            .args([
+                "config",
+                "core.fsmonitor",
+                hook.to_str().expect("hook path"),
+            ])
+            .current_dir(root)
+            .status()
+            .expect("set hostile fsmonitor");
+        assert!(config.success());
+
+        let status = run(&["status".to_string()], root)
+            .await
+            .expect("trusted status");
+        assert!(status.status.success());
+        assert!(!marker.exists(), "repository fsmonitor must not execute");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_commit_does_not_run_repository_hooks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let run = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git command")
+        };
+        assert!(run(&["init", "--initial-branch=main"]).status.success());
+        assert!(run(&["config", "user.email", "test@example.com"])
+            .status
+            .success());
+        assert!(run(&["config", "user.name", "Test"]).status.success());
+
+        let marker = root.join("hook-ran");
+        let hook_dir = root.join(".git/hooks");
+        let hook = hook_dir.join("post-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))
+            .expect("write post-commit hook");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make hook executable");
+        std::fs::write(root.join("tracked.txt"), "content\n").expect("write file");
+        assert!(run(&["add", "tracked.txt"]).status.success());
+
+        let output = super::run(
+            &[
+                "commit".to_string(),
+                "-m".to_string(),
+                "initial".to_string(),
+            ],
+            root,
+        )
+        .await
+        .expect("trusted commit");
+        assert!(output.status.success());
+        assert!(
+            !marker.exists(),
+            "repository post-commit hook must not execute"
+        );
     }
 
     /// Drive a command through `run_command` with a short deadline.

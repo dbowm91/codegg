@@ -72,6 +72,21 @@ Every raw execution call flows through `egggit::process::GitEnvPolicy::apply()`
 kill_on_drop). stdout/stderr pass through
 `redact_url_credentials_in_text` before reaching any downstream consumer.
 
+The trusted process policy also pins repository-controlled execution settings
+with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
+SSH command overrides, signing programs and pagers are disabled; diff/show/log
+also receive `--no-ext-diff --no-textconv`. `classify_git_request` returns a
+typed `GitExecutionPolicyOutcome` before command construction. It distinguishes
+trusted non-executable requests, requests requiring contained execution or
+additional authorization, explicit authority changes, and malformed requests.
+The command builder returns this outcome instead of spawning a fabricated
+missing executable. Operations requiring filters, merge drivers, or remote
+transport remain unavailable until their containment/mediation plan lands;
+their subcommand names alone are not treated as the security boundary.
+`stash list`, `worktree list`, and the verified non-executable local flows
+remain available. This policy does not protect writable `.git` metadata or
+claim network isolation; those are separate Linux execution-isolation gates.
+
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, and `ProjectionHints`.
@@ -84,7 +99,8 @@ exit code, and `ProjectionHints`.
 2. Capture pre-operation `RepoSnapshot` via `git status --porcelain=v2 -z
    --branch`.
 3. Render argv via `codegg_git::render_argv` (no shell).
-4. Execute with timeout and `GitEnvPolicy` hardening.
+4. Execute with timeout and `GitEnvPolicy` hardening. Operations requiring
+   repository-controlled filters or merge drivers fail before Git spawn.
 5. Capture post-operation snapshot (even on nonzero exit where safe).
 6. Classify outcome (`Completed`, `NoOp`, `FastForward`, `Conflict`,
    `Rejected`) from before/after snapshots and exit code.
@@ -262,7 +278,11 @@ action regardless of routing mode.
    `ALLOWED_ENV_VARS` (21 vars), strips `ALWAYS_STRIPPED_ENV_VARS` (28
    vars), pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`,
    `GIT_SEQUENCE_EDITOR=true`, strips `EDITOR`/`VISUAL`, sets
-   `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`.
+   `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`; adds fixed Git config
+   overrides for executable repository settings; returns typed outcomes for
+   caller-supplied global config/repository redirects and capability needs
+   before spawn. An unknown Git subcommand is classified as a contained
+   repository-alias capability rather than sent to Git.
 2. `NetworkEnvPolicy::apply_to_command()`: same as base, plus restores
    `NETWORK_ALLOWED_ENV_VARS` (21 vars: `GIT_ASKPASS`, `GIT_SSH_COMMAND`,
    `GIT_SSH_VARIANT`, `GIT_CONFIG_COUNT/GLOBAL/SYSTEM`, `GIT_AUTHOR_*`,

@@ -91,6 +91,7 @@ pub(super) struct AgentLoopServices {
     /// [`crate::session::MessageStore::append_batch`].
     pub(super) message_store: Option<Arc<crate::session::MessageStore>>,
     pub(super) security_service: crate::security::service::SecurityService,
+    pub(super) command_preflight: Option<crate::preflight::PreflightService>,
     pub(super) todo_state: Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
     pub(super) task_state_policy: crate::model_profile::types::TaskStatePolicy,
     pub(super) todo_pool: Option<sqlx::SqlitePool>,

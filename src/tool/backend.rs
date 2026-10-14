@@ -159,6 +159,10 @@ pub struct ToolExecutionContext {
     /// child request/payload; missing on the model-driven path fails
     /// closed at delegation.
     pub parent_tool_authority: Option<crate::agent::parent_authority::ParentToolAuthoritySnapshot>,
+    /// M002: authorization state accepted at the tool-batch boundary.
+    /// This immutable value is threaded through the broker and every retry;
+    /// tools must not reconstruct authority from model input or live mode.
+    pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
 }
 
 impl ToolExecutionContext {
@@ -204,6 +208,7 @@ impl ToolExecutionContext {
             program_contract_snapshot: None,
             sandbox_profile: None,
             parent_tool_authority: None,
+            execution_authorization: None,
             execution_audit: None,
             audit_emitter: None,
         }

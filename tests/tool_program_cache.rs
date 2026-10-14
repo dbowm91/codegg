@@ -139,6 +139,7 @@ fn program_ctx() -> BrokerInvocationContext {
         execution_audit: None,
         audit_emitter: None,
         parent_tool_authority: None,
+        execution_authorization: None,
     }
 }
 

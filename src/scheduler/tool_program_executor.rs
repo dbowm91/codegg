@@ -479,6 +479,7 @@ impl BrokerCallback for BrokerAdapter {
             audit_emitter: None,
             // M003: program path carries no delegation ceiling.
             parent_tool_authority: None,
+            execution_authorization: None,
         };
 
         if self

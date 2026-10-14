@@ -468,6 +468,7 @@ mod tests {
             current_policy_revision: Some("test-v1".into()),
             execution_audit: None,
             audit_emitter: None,
+            execution_authorization: None,
         };
         let _ = &mut ctx;
         let contract = ToolContract::legacy("probe", serde_json::json!({"type": "object"}));

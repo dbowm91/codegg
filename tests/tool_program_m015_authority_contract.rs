@@ -43,6 +43,7 @@ fn accepted_context() -> ToolExecutionContext {
         parent_tool_authority: None,
         execution_audit: None,
         audit_emitter: None,
+        execution_authorization: None,
     }
 }
 

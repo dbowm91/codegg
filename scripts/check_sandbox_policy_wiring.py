@@ -166,6 +166,32 @@ def check_backend_registry() -> list[str]:
         errors.append("seatbelt.rs: credential denies must follow writable-root re-allows")
 
     managed = managed_process.read_text()
+    linux_launch = sandbox_dir / "linux_launch.rs"
+    for pattern, what in [
+        (r"pub struct LinuxLaunchRequest", "typed Linux launch request"),
+        (r"parent_ceiling", "immutable parent ceiling"),
+        (r"pub fn probe_linux_host_features", "read-only Linux host probe"),
+        (r"pub struct LinuxObtainedEnforcement", "typed obtained enforcement facts"),
+        (r"EnhancedUnavailable", "unavailable enhanced backend outcome"),
+    ]:
+        err = check_contains(linux_launch, pattern, what)
+        if err:
+            errors.append(err)
+    if not re.search(
+        r"ProductionLinuxLaunchAdapter[\s\S]{0,160}\.plan\(&launch_request\)[\s\S]{0,500}"
+        r"LegacyPrivateHelper",
+        managed,
+    ):
+        errors.append(
+            "managed_process.rs: Linux launch contract must gate the canonical helper path"
+        )
+    if re.search(
+        r"BackendId::(?:BUBBLEWRAP|NAMESPACE)|name:\s*\"(?:Bubblewrap|namespace)\"",
+        (sandbox_dir / "backend.rs").read_text(),
+    ):
+        errors.append(
+            "backend.rs: enhanced Linux backend cannot be registered before native proof"
+        )
     if not re.search(
         r"tempdir\(\)[\s\S]{0,900}spec\.write_paths\.push\(scratch_path\.clone\(\)\)[\s\S]{0,300}with_var\(\"TMPDIR\"",
         managed,

@@ -104,7 +104,7 @@ mod tests {
     /// read, rather than a synthetic `sleep`.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_hanging_git_command_is_killed_at_the_deadline() {
+    async fn trusted_git_status_disables_repository_fsmonitor() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         let run = |args: &[&str]| {
@@ -119,9 +119,14 @@ mod tests {
         run(&["config", "user.name", "Test"]);
 
         // `core.fsmonitor` is consulted by `git status`; pointing it at a
-        // sleeping program makes the read hang exactly like a wedged repo.
+        // marker-writing sleeper proves the trusted route disables it.
+        let marker = root.join("fsmonitor-ran");
         let hook = root.join("hang.sh");
-        std::fs::write(&hook, "#!/bin/sh\nsleep 120\n").expect("write hook");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\ntouch '{}'\nsleep 120\n", marker.display()),
+        )
+        .expect("write hook");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -131,7 +136,7 @@ mod tests {
         run(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
 
         let started = Instant::now();
-        // Short bound so the test stays fast; production uses
+        // Short bound so a policy regression fails quickly; production uses
         // `DEFAULT_READ_TIMEOUT` (30s).
         let result =
             crate::process::run_with_timeout(&["status".to_string()], root, Duration::from_secs(2))
@@ -139,17 +144,13 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(
-            result.is_err(),
-            "a hung read must surface as an error, not hang forever"
-        );
-        assert!(
-            matches!(result, Err(crate::EgggitError::Timeout(_))),
-            "the failure must be a timeout, got {:?}",
-            result.err()
+            result.is_ok_and(|output| output.status.success()),
+            "trusted status should succeed with repository fsmonitor disabled"
         );
         assert!(
             elapsed < Duration::from_secs(20),
-            "the deadline must be enforced promptly, took {elapsed:?}"
+            "status must not wait for the hostile fsmonitor, took {elapsed:?}"
         );
+        assert!(!marker.exists(), "repository fsmonitor must not execute");
     }
 }
