@@ -8,7 +8,7 @@ Canonical references:
 - `plans/000-long-term-specification.md` §§4, 17, 27–29;
 - `plans/001-terminology-and-domain-model.md` §8;
 - `plans/003-planning-process.md` §§2, 4, 6–10;
-- **accepted** `plans/adrs/ADR-0028-command-syntax-and-execution-authority.md` (governs this contradiction);
+- **accepted** `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (governs this contradiction; ADR-0028 is a historical alias archived by the identity migration);
 - accepted ADR-0004 for approval vs obtained sandbox separation.
 
 Historical ownership, retained without retrospective rewrites:
