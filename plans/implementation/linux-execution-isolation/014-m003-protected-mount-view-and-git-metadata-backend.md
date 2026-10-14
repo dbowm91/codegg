@@ -35,10 +35,17 @@ mount setup but the target's ELF loader could not resolve `/lib64`; the
 canonical runtime grants had omitted the host's `/lib64 -> /usr/lib64`
 compatibility alias. The compiler now recreates standard `/bin`, `/sbin`,
 `/lib`, and `/lib64` aliases only when their resolved sources are inside an
-already-granted read-only runtime root. Exact-head run `38534083804` is pending.
-Earlier attempts exposed and corrected a Git fixture assumption about the
-hooks directory, inaccessible global deny-path probing, status-fd inheritance,
-and status/ack handling needed to report Bubblewrap's actual setup error.
+already-granted read-only runtime root. Exact-head run `38534083804` passed the
+native `ManagedProcessService` handoff on Ubuntu 24.04: 1/1 test passed in
+0.51 seconds after compilation. The child wrote an allowed workspace file,
+read but could not change root Git config/hooks, could not read/write existing
+or future denied secrets or an outside symlink target, saw no host `/proc` or
+`/sys`, ran Python, and completed fail-closed identity and timeout probes. The
+next run (`38535156777`) adds a child-created hardlink attempt and caps the
+workflow at 20 minutes. Earlier attempts exposed and corrected a Git fixture
+assumption about the hooks directory, inaccessible global deny-path probing,
+status-fd inheritance, and status/ack handling needed to report Bubblewrap's
+actual setup error.
 
 C006 remains unqualified: the hosted test is only the first positive/negative
 mount handoff slice. Native adversarial coverage, linked worktrees, race and
