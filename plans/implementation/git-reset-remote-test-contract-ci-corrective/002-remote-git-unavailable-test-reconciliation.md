@@ -1,6 +1,6 @@
 # Git Reset/Remote Test-Contract C002 — Remote Git Unavailable Fixtures
 
-Status: active (implementation on `planning/shell-policy-adr0028-and-git-clean-ci-correctives`)
+Status: implemented; closed (implementation `7922bb0e`; closure `plans/closure/git-reset-remote-test-contract-ci-corrective/002-status.md`; hosted `CI / verify` run `38643674863` — scope green, residual recovery red classified as pre-existing Linux-C002 scope)
 
 Baseline: `1cd71e4c` (branch head before implementation).
 

@@ -1,6 +1,6 @@
 # Git Reset/Remote Test-Contract CI — Corrective Addendum
 
-Status: active — C001/C002 ready (implementation on the shell/Git-clean corrective branch)
+Status: closed — C001/C002 closed (implementation `7922bb0e`; closures `plans/closure/git-reset-remote-test-contract-ci-corrective/001-status.md`, `002-status.md`; hosted `CI / verify` run `38643674863` — all eight clean/reset/remote fixtures green, residual `git_recovery_integration` red classified as pre-existing Linux-C002 scope; Linux contained/remote Git stays separately blocked)
 
 Planning baseline: `1cd71e4c` (branch `planning/shell-policy-adr0028-and-git-clean-ci-correctives`, 2026-10-14).
 
@@ -23,7 +23,7 @@ After Git-clean C001 (`b0392431`) replaced the stale `clean_removes_untracked_fi
 
 ## Milestones
 
-**C001 — Typed Git-reset authorization test reconciliation** — invariant; **ready**.
+**C001 — Typed Git-reset authorization test reconciliation** — invariant; **closed** (`7922bb0e`; closure `plans/closure/git-reset-remote-test-contract-ci-corrective/001-status.md`).
 
 Plan: `plans/implementation/git-reset-remote-test-contract-ci-corrective/001-typed-git-reset-test-authorization.md`.
 
@@ -31,7 +31,7 @@ No hard new dependencies; accepted typed policy and the failing fixtures are pre
 
 Acceptance: both stale reset positives become typed-denial fixtures asserting exactly `RequiresAdditionalAuthorization[DestructiveRepositoryChange]` with HEAD/worktree/index invariance and no dispatch; a classifier unit fixture pins every reset mode's gating. The suite stops claiming an unauthenticated destructive reset succeeds. Closure in `plans/closure/git-reset-remote-test-contract-ci-corrective/001-status.md`.
 
-**C002 — Remote Git containment test reconciliation** — invariant; **ready** (interface: Linux C003 owns the positive path).
+**C002 — Remote Git containment test reconciliation** — invariant; **closed** (`7922bb0e`; closure `plans/closure/git-reset-remote-test-contract-ci-corrective/002-status.md`).
 
 Plan: `plans/implementation/git-reset-remote-test-contract-ci-corrective/002-remote-git-unavailable-test-reconciliation.md`.
 
