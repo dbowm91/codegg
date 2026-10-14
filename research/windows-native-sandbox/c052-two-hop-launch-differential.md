@@ -22,7 +22,7 @@ edition 2024 and is not a CodeGG dependency. The C044 hosted negative is run
 | Dimension | CodeGG C044 | Anthropic srt-win source | Codex source | Differential status |
 |---|---|---|---|---|
 | First hop | `CreateProcessWithLogonW`, disposable account, suspended, explicit environment; outer Job assignment before resume | Disposable sandbox account and runner; runner establishes the second-hop boundary | Separate command-runner account/launcher topology in documented design | Different topologies; not isolated in C044 run |
-| Second-hop token | Runner calls `CreateRestrictedToken` on its own primary token with one restricting SID; flags `0` | Runner token policy includes restricted-token setup, group/privilege handling and self-protection checks | `WRITE_RESTRICTED` policy maps writable roots; read denial is explicitly unsupported for split-read rules | Candidate one-variable hypothesis: change only C044's flags from `0` to `WRITE_RESTRICTED`; not yet run |
+| Second-hop token | Runner calls `CreateRestrictedToken` on its own primary token with one restricting SID; flags `0` | Runner token policy includes restricted-token setup, group/privilege handling and self-protection checks | `WRITE_RESTRICTED` policy maps writable roots; read denial is explicitly unsupported for split-read rules | Paired flags attempted on one host; both process creation calls were denied before child entry |
 | Child creation | `CreateProcessAsUserW`, `CREATE_SUSPENDED`, no inherited handles; verifies Job then resumes with previous suspend count `1` | `CreateProcessAsUserW`, suspended launch, Job assignment, explicit handle-list and mitigation attributes | Windows sandbox launcher has a dedicated native launch layer | Handle/mitigation context differs; no C044 child-entry variant tested |
 | Desktop / station | `STARTUPINFO.lpDesktop` unset; inherits runner context | Runner checks non-default desktop and starts under a private non-interactive desktop | Not enough source evidence in the inspected policy module to compare this field | Plausible context difference, but not shown causal |
 | Environment / cwd | Narrow environment and staged cwd | Runner-controlled environment and launch directory | Launcher-controlled child configuration | Exact per-variable paired evidence absent |
@@ -45,11 +45,16 @@ and the existing C044 run is not a same-host paired control for either pinned
 upstream implementation. C044's `CreateRestrictedToken` flags (`0`) and the
 probe image DACL make one variable falsifiable: change only the flags to
 `WRITE_RESTRICTED`, so reads use the ordinary account check while writes also
-require the synthetic restricting SID. The C052 test runs those two flag
-variants on one disposable Windows host, with the same source token, account,
+require the synthetic restricting SID. The C052 test attempted those two
+flag variants on one hosted Windows host, with the same source token, account,
 test executable, environment, cwd, stage ACL, Job-before-resume path and token
 SID verification. It uses `CreateProcessAsUserW` and no inherited handles in
-both variants. The exact hosted result is recorded in the C052 closure.
+both variants. Hosted run `38615233054`, exact head
+`829ef60e36080f78514f83ef77820678811f5711`, emitted
+`process_creation=failed` with Win32 error 5 (`Access is denied`) for both
+`c044_flags_zero` and `write_restricted`. Neither child ran. The experiment
+did not discriminate the flag hypothesis; the detailed disposition is in the
+C052 closure.
 
 This is a token-flag differential using the hosted runner account, not a
 reproduction under C044's separately provisioned standard account. Its marker
@@ -62,7 +67,11 @@ explicit file DACL grants read/execute to the temporary account but not the
 restricting SID, while the token is created with flags `0`. A paired
 `WRITE_RESTRICTED` run preserves the restricting SID's write check while
 allowing normal-token reads needed for image/runtime loading. Whether it
-explains C044 depends on the paired output and is stated only in the closure.
+explains C044 remains unknown because the hosted runner denied both paired
+process-creation calls before entry. The hosted principal was `runneradmin`
+(administrator role and high integrity, UAC enabled); it was not C044's
+disposable standard account. No filesystem behavior or strict-read conclusion
+is derived from these launch failures.
 
 ## Source references
 

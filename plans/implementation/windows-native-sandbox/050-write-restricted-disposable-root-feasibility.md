@@ -1,8 +1,8 @@
 # Windows Native Sandbox C050 — WRITE_RESTRICTED token and disposable-root feasibility
 
-Status: ready — strictly test-only synthetic fixture; no production admission
+Status: closed blocked — hosted runner denied CreateProcessWithTokenW; see `plans/closure/windows-native-sandbox/050-status.md`
 Class: infrastructure (native feasibility)
-Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (refresh at execution).
+Baseline: main `39f149a15ef529d66787d1d11551872ea22ec384` (reviewed 2026-10-14).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).
 Authority: ADR-0004, ADR-0016, ADR-0029 bounded test-only, C042 internal guarantee contract. ADR-0030 proposed/not implementation authority.
 Dependencies: C041 and C042 hard (closed); C049 interface/soft (no public profile required for a private probe); an actual Windows runner is operational.

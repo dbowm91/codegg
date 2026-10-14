@@ -1,8 +1,8 @@
 # Windows Native Sandbox C054 — Next-candidate disposition and bounded handoff
 
-Status: blocked — await completed C049/C050/C052 and C053 source delta decision; C051 conditional
+Status: closed — no candidate qualifies; C049–C053 dispositions recorded in `plans/closure/windows-native-sandbox/054-status.md`
 Class: invariant (evidence/authorization handoff)
-Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (refresh before closure).
+Baseline: main `39f149a15ef529d66787d1d11551872ea22ec384` (reviewed 2026-10-14).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).
 Authority: ADR-0004, ADR-0016, accepted bounded ADR-0029, proposed ADR-0030; no production admission from this plan.
 Dependencies: C049 + C050 + C052 closure hard (positive or negative); C053 source-level delta disposition hard; C051 only if C050 write-positive and stage chosen. Independent security/provisioning/staging ADRs remain separate hard gates for production.

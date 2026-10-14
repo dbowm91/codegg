@@ -1,8 +1,8 @@
 # Windows Native Sandbox C052 — Two-hop native launcher differential against C044
 
-Status: ready — strictly test-only diagnostic; independent of C049/C050
+Status: closed blocked — both paired CreateProcessAsUserW calls were denied on the hosted runner; see `plans/closure/windows-native-sandbox/052-status.md`
 Class: infrastructure (bounded corrective research)
-Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (refresh before implementation).
+Baseline: main `39f149a15ef529d66787d1d11551872ea22ec384` (reviewed 2026-10-14).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).
 Authority: ADR-0016 and ADR-0029 bounded test-only; historical C028/C032/C044 negative closures. No installation/provisioning approval, no ADR-0030 acceptance.
 Dependencies: C044 negative evidence hard (closed); disposable consented Windows runner operational. C042 contract interface only.
