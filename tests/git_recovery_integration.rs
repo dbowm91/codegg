@@ -295,43 +295,51 @@ fn available_actions_continue_and_abort_only_for_sequencer() {
 // ── Recovery end-to-end ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn recovery_abort_in_progress_clears_state() {
+async fn recovery_abort_requires_contained_backend() {
     if !git_available() {
         return;
     }
     let dir = setup_conflict();
     let exec = codegg::git_mutations::GitMutationExecutor::new();
     let result = codegg::git_recovery::abort_in_progress_typed(&exec, dir.path()).await;
-    assert!(result.is_ok(), "abort should succeed: {result:?}");
+    assert!(
+        result.is_err(),
+        "merge abort requires contained Git execution"
+    );
     let state = detect_operation_state_for_root(dir.path()).unwrap();
-    assert!(state.is_clean(), "after abort repo should be clean");
+    assert!(
+        matches!(state, RepositoryOperationState::Merge(_)),
+        "refused abort must preserve the in-progress merge: {state:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn recovery_continue_with_unresolved_conflicts_fails() {
+async fn recovery_continue_with_unresolved_conflicts_requires_contained_backend() {
     if !git_available() {
         return;
     }
     let dir = setup_conflict();
     let exec = codegg::git_mutations::GitMutationExecutor::new();
-    // Don't resolve conflicts; continue should fail or report Conflict.
+    // Don't resolve conflicts; contained execution is required before Git
+    // may run merge drivers, filters, or hooks.
     let result = codegg::git_recovery::continue_in_progress(&exec, dir.path()).await;
-    // Git's behavior: continue exits non-zero when conflicts are still present.
-    assert!(result.is_ok(), "ok variant expected, got {result:?}");
-    // Cleanup.
-    let _ = Command::new("git")
-        .args(["merge", "--abort"])
-        .current_dir(dir.path())
-        .output();
+    assert!(
+        result.is_err(),
+        "merge continue requires contained Git execution"
+    );
+    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    assert!(matches!(state, RepositoryOperationState::Merge(_)));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn recovery_continue_after_resolution_succeeds() {
+async fn recovery_continue_after_resolution_requires_contained_backend() {
     if !git_available() {
         return;
     }
     let dir = setup_conflict();
-    // Resolve the conflict by taking ours, then `git add` to mark.
+    // Resolve the conflict by taking ours, then `git add` to mark. The
+    // continuation itself remains gated until Git's executable metadata is
+    // contained.
     std::fs::write(dir.path().join("conflict.txt"), "main-a\nline2\nline3\n").unwrap();
     Command::new("git")
         .args(["add", "conflict.txt"])
@@ -340,23 +348,12 @@ async fn recovery_continue_after_resolution_succeeds() {
         .unwrap();
     let exec = codegg::git_mutations::GitMutationExecutor::new();
     let result = codegg::git_recovery::continue_in_progress(&exec, dir.path()).await;
-    // The exit code may be non-zero because git's `merge --continue`
-    // semantics vary; we instead assert that the operation completed
-    // and we no longer have an active merge state once we've cleaned.
-    assert!(result.is_ok(), "continue after resolution should succeed");
-    if let Ok(r) = &result {
-        // Useful for debugging:
-        eprintln!(
-            "continue result: success={} exit={} outcome={:?}",
-            r.success, r.exit_code, r.outcome
-        );
-    }
-    // After resolution `git status` should no longer be in a conflicted state.
-    let state_after = detect_operation_state_for_root(dir.path()).unwrap();
     assert!(
-        !state_after.is_clean() || matches!(state_after, RepositoryOperationState::None),
-        "in-progress operation cleared after resolution+continue: {state_after:?}"
+        result.is_err(),
+        "merge continue requires contained Git execution"
     );
+    let state_after = detect_operation_state_for_root(dir.path()).unwrap();
+    assert!(matches!(state_after, RepositoryOperationState::Merge(_)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -394,7 +391,7 @@ async fn recovery_abort_without_state_errors() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn recovery_skip_during_rebase_skips_step() {
+async fn recovery_skip_during_rebase_requires_contained_backend() {
     if !git_available() {
         return;
     }
@@ -429,9 +426,15 @@ async fn recovery_skip_during_rebase_skips_step() {
         .output()
         .unwrap();
     let exec = codegg::git_mutations::GitMutationExecutor::new();
-    // Skip the conflicted commit; rebase should advance or finish.
+    // Skipping may apply the next commit and therefore remains gated with
+    // the other rebase operations until executable metadata is contained.
     let result = codegg::git_recovery::skip_in_progress(&exec, dir.path()).await;
-    assert!(result.is_ok());
+    assert!(
+        result.is_err(),
+        "rebase skip requires contained Git execution"
+    );
+    let state = detect_operation_state_for_root(dir.path()).unwrap();
+    assert!(matches!(state, RepositoryOperationState::Rebase(_)));
 }
 
 #[test]
