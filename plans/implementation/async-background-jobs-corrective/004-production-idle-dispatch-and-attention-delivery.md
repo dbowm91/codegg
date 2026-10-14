@@ -1,6 +1,6 @@
 # Async Background Jobs Corrective C004 — Production Idle Dispatch and Completion Attention
 
-Status: ready for handoff — production-wiring corrective, NOT implemented
+Status: partially implemented (delivery landed, resume blocked) — see closure `plans/closure/async-background-jobs-corrective/004-status.md`; successor C005 owns resume
 Source baseline: `716cfece6a78147e7f4684c1455ac3c558b2d761` on `work/async-background-jobs-idle-completion-corrective-plans` (reviewed 2026-10-14). Revalidate actual implementation HEAD before editing. This plan branch descends from that implementation branch; `main` has diverged independently.
 Subsystem: `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md` (new C004 successor).
 Historical original milestones/closure: M001–M004 under `plans/closure/async-background-jobs/`; C001/C002/C003 under `plans/closure/async-background-jobs-corrective/001-status.md`, `002-status.md`, `003-status.md`.
