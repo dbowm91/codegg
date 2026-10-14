@@ -131,8 +131,8 @@ The Windows sandbox workstream `work/windows-native-sandbox-foundation` already 
 
 The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-daemon-authorized-workspace-directory-listing.md` as **proposed**. This supplements accepted ADR-0021 and does not constitute acceptance. Verify across active branches before allocating the next ADR number.
 
-## Windows successor decisions after PR #111 (2026-10-13)
+## Windows successor decisions after PR #111 (2026-10-13; renumbered 2026-10-14)
 
-- ADR-0027 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
-- ADR-0028 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- ADR-0029 (filed as ADR-0027, renumbered to resolve the collision with the Linux execution-isolation ADR-0027) — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
+- ADR-0030 (filed as ADR-0028, renumbered to resolve the collision with the command-syntax ADR-0028) — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

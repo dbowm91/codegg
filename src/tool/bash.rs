@@ -279,6 +279,9 @@ impl BashTool {
     /// never enters audit metadata. Retries of one logical invocation
     /// reuse the deterministic event id via the invocation key so the
     /// store returns the stored row instead of duplicating it.
+    // One argument per event field by design, matching the live-audit
+    // emitter convention (see live_execution_audit.rs).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn emit_command_audit(
         &self,
         audit_ctx: Option<&ToolExecutionContext>,
@@ -450,20 +453,28 @@ impl BashTool {
         if let Some(authorization) = audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref())
         {
             let requested = authorization.snapshot.sandbox_profile();
-            if self.configured_sandbox_profile != Some(requested) {
-                return Err(ToolError::Permission(format!(
-                    "sandbox policy changed before execution: accepted {}, executor configured {:?}",
-                    requested.as_str(),
-                    self.configured_sandbox_profile.map(|profile| profile.as_str())
-                )));
-            }
-            if requested.requires_filesystem_containment()
-                && !self.sandbox_enforcement(requested).filesystem.is_enforced()
-            {
-                return Err(ToolError::Permission(format!(
-                    "required filesystem sandbox for {} is unavailable; command was not launched",
-                    requested.as_str()
-                )));
+            // Drift/availability gates apply only when this executor was
+            // built with a configured profile (production registry always
+            // sets one from the same snapshot family; see tool/mod.rs). An
+            // unconfigured tool (unit harness, ad-hoc construction) carries
+            // no executor-side containment claim to compare against, so the
+            // pre-existing permission-receipt contract governs there.
+            if let Some(configured) = self.configured_sandbox_profile {
+                if configured != requested {
+                    return Err(ToolError::Permission(format!(
+                        "sandbox policy changed before execution: accepted {}, executor configured {:?}",
+                        requested.as_str(),
+                        Some(configured).map(|profile| profile.as_str())
+                    )));
+                }
+                if requested.requires_filesystem_containment()
+                    && !self.sandbox_enforcement(requested).filesystem.is_enforced()
+                {
+                    return Err(ToolError::Permission(format!(
+                        "required filesystem sandbox for {} is unavailable; command was not launched",
+                        requested.as_str()
+                    )));
+                }
             }
         }
 

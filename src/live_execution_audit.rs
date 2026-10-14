@@ -100,7 +100,11 @@ pub struct CommandExecutionResultMetadata {
 ///
 /// `scope` must come from [`invocation_scope`]. Best-effort through
 /// the shared emitter: store failure/timeout surfaces counters plus a
-/// warn and never fails the owning execution.
+/// warn and never fails the owning execution. One argument per event
+/// field by design, matching the existing emitter convention.
+// The front door forwards every field to the _with_result variant below;
+// bundling them into a struct would churn both signatures for no gain.
+#[allow(clippy::too_many_arguments)]
 pub async fn emit_command_execute(
     emitter: &ExecutionAuditEmitter,
     audit: &TrustedExecutionAuditContext,
@@ -132,6 +136,9 @@ pub async fn emit_command_execute(
 }
 
 /// Emit a command event with facts only available after managed execution.
+// One argument per event field by design, matching the existing emitter
+// convention; see emit_command_execute above.
+#[allow(clippy::too_many_arguments)]
 pub async fn emit_command_execute_with_result(
     emitter: &ExecutionAuditEmitter,
     audit: &TrustedExecutionAuditContext,

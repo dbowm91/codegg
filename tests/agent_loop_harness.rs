@@ -4749,13 +4749,21 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
     ];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
     let mut registry = ToolRegistry::new();
-    registry.register(codegg::tool::bash::BashTool::new());
+    // FullHost on both sides: this test exercises the Ask/AllowOnce approval
+    // gate, not sandbox containment. The loop snapshot and the tool's
+    // configured profile must agree (drift gate), and containment-requiring
+    // profiles cannot execute from an enforcement-less harness tool.
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
+    );
 
     let mut agent_loop = build_test_agent_loop_with_permissions(
         scripted_provider,
         registry,
         PermissionChecker::new(None, None),
     );
+    agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("shell-escalation-approval-gate");
 
     let perm_id = "call_shell_escalation-bash".to_string();

@@ -1,4 +1,4 @@
-# ADR-0027 — Windows sandbox capability-stratified successor research
+# ADR-0029 — Windows sandbox capability-stratified successor research
 
 Status: accepted — **bounded test-only successor architecture and contract preparation only; no production backend/profile admission**
 Date: 2026-10-13
@@ -21,7 +21,7 @@ Major harness comparison: Codex and Anthropic Windows sandbox-runtime use dedica
 2. Authorize C041 mainline verification/build guard, C042 internal non-public guarantee contract, C043 test-only MXC BaseContainer adapter and C044 test-only compiled two-hop native-runner diagnosis. Test-only outcomes cannot register any backend or enable production Windows Required. An independent future production-admission decision is mandatory.
 3. Prefer MXC BaseContainer as the **first eligible research candidate** on supported Windows 11, not as an automatically selected production default. Pin SDK/helper/runtime ABI, exact host tier and OS edition/build/architecture. Require a proven *no-original-host-DACL-mutation* path. Verify that the pinned API exposes, honors and reports disabling fallback DACL mutation; if missing or ambiguous, stop rather than assuming compatibility. Do not introduce SDK MSRV uplift into the Rust 1.89 workspace solely for a spike.
 4. Retain dedicated-principal/two-stage launch as a parallel research candidate. Replace PowerShell-dependent child-entry inference with a small compiled native first-instruction probe. Restricted token creation, identity, loader startup, target operation and process cleanup are independent test results. No durable account, original-user ACL grant or automatic elevation follows from this ADR.
-5. WFP offline/mediated network capability, persistent account provisioning, staged-workspace promotion, public broad-read profiles and release admission require **separate explicit decisions and affirmative evidence**. ADR-0028 is the proposed public broad-read profile decision; it is not approved by this ADR.
+5. WFP offline/mediated network capability, persistent account provisioning, staged-workspace promotion, public broad-read profiles and release admission require **separate explicit decisions and affirmative evidence**. ADR-0030 is the proposed public broad-read profile decision; it is not approved by this ADR.
 6. Canonical ManagedProcessService / JobSubmissionService / daemon approval and audit remain the only local execution owners. Shell syntax/regex filtering is not a substitute for OS containment; avoid obstructing ordinary Git/Python/Cargo tools with superficial deny rules.
 7. C011/M004–M006 and C015–C018 remain blocked, C030/C031 terminally unselected, and C029/C034/C038 no-admission unchanged. No upstream negative closure may be rewritten.
 
@@ -45,7 +45,7 @@ Tests must verify effective backend/tier, actual child entry, same-file broad-re
 
 ## Compatibility, migration, operational and security effects
 
-No product config, public schema, service, installer, production registry, existing SandboxProfile or historical status changes. Proposed future compatibility profile is explicitly separate in ADR-0028. Windows-native test-support is not a release feature. Test-only operations use disposable synthetic fixtures, bounded profiles/handles, narrow inherited stdio, and exact-SHA native reports. Real user worktrees, credentials and privileged host endpoints are out of scope. Windows edition/architecture gaps stay unavailable, not automatic host access.
+No product config, public schema, service, installer, production registry, existing SandboxProfile or historical status changes. Proposed future compatibility profile is explicitly separate in ADR-0030. Windows-native test-support is not a release feature. Test-only operations use disposable synthetic fixtures, bounded profiles/handles, narrow inherited stdio, and exact-SHA native reports. Real user worktrees, credentials and privileged host endpoints are out of scope. Windows edition/architecture gaps stay unavailable, not automatic host access.
 
 ## Verification and stop criteria
 
