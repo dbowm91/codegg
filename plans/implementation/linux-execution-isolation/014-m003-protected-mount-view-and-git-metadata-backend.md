@@ -28,14 +28,16 @@ and dedicated workflow now exercise the actual `ManagedProcessService`
 handoff, permitted workspace writes, protected Git config/hooks, existing and
 future denied secrets, outside paths/symlinks, and fail-closed metadata/lease
 identity checks. C006 stays active until the hosted runner executes that test
-and the remaining native compatibility matrix is covered. The first three
+and the remaining native compatibility matrix is covered. The first four
 hosted native attempts confirmed Bubblewrap 0.9.0 availability and helper/test
 compilation, then exposed and fixed (1) a Git fixture assumption about the
 hooks directory, (2) a preflight probe of inaccessible global deny paths, and
 (3) descriptor loss when Bubblewrap closed arbitrary inherited descriptors.
-The third run failed at the actual handoff with no status frame; the current
-implementation uses Bubblewrap's supported status/barrier descriptors and is
-awaiting another hosted run.
+The third run failed at the actual handoff with no status frame. The fourth
+reached the Bubblewrap status/ack exchange, but the ack write failed with
+`EPIPE`. The helper now explicitly clears close-on-exec on the acknowledgment
+descriptor at the helper-to-Bubblewrap exec boundary; another hosted run is
+pending.
 The compiler protects an absent workspace-root `.git` path and discovers
 existing nested submodule metadata at launch. It does not establish protection
 for a new nested repository created later inside a newly created writable
