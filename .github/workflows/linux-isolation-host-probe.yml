@@ -41,15 +41,16 @@ jobs:
           echo "privileged_namespace_status=$?"
           python3 - <<'PY'
           import pathlib, subprocess, tempfile
-          with tempfile.TemporaryDirectory(prefix="codegg-overlay-probe-", ignore_cleanup_errors=True) as base:
+          with tempfile.TemporaryDirectory(prefix="codegg-overlay-probe-") as base:
               root = pathlib.Path(base)
               lower, upper, work = (root / name for name in ("lower", "upper", "work"))
               for path in (lower, upper, work):
                   path.mkdir()
-              subprocess.run(["sudo", "chown", "-R", "0:0", str(root)], check=True)
               root.chmod(0o755)
-              for path in (lower, upper, work):
+              for path in (lower,):
                   path.chmod(0o755)
+              for path in (upper, work):
+                  path.chmod(0o777)
               (lower / "baseline").write_text("baseline")
               script = "mount -t overlay overlay -o lowerdir=/lower,upperdir=/upper,workdir=/work,userxattr,redirect_dir=off,index=off,metacopy=off /merged && printf upper > /merged/created"
               args = ["sudo", "bwrap", "--unshare-user", "--uid", "0", "--gid", "0", "--cap-add", "CAP_SYS_ADMIN", "--ro-bind", str(lower), "/lower", "--bind", str(upper), "/upper", "--bind", str(work), "/work", "--dir", "/merged", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--ro-bind", "/lib64", "/lib64", "--ro-bind", "/etc", "/etc", "--dev", "/dev", "--proc", "/proc", "--", "/bin/sh", "-c", script]
