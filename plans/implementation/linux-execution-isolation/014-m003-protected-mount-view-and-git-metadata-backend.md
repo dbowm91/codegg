@@ -1,6 +1,6 @@
 # Linux Execution Isolation C006 — M003 Protected Mount View and Git Metadata Integration
 
-Status: **active** — ADR-0031 was accepted on 2026-10-14. An explicit internal Bubblewrap mount-view route is implemented, but remains unqualified and disabled by default. Native protected-mount and production-launch evidence are still closure gates. Prior blocked baseline: `plans/closure/linux-execution-isolation/014-status.md`.
+Status: **closed negative for strict M003 acceptance** — the bounded opt-in protected-mount candidate and its first native qualification slice are implemented; M003 production acceptance remains blocked by unprotectable future nested Git metadata and the uncompleted compatibility/threat matrix. Closure: `plans/closure/linux-execution-isolation/014-status.md`.
 Class: capability / security invariant
 Closure target: `plans/closure/linux-execution-isolation/014-status.md`.
 Baseline: main @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13 EDT). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical identity reconciled under C004). Linux mechanism: accepted ADR-0031; this plan implements its protected-mount slice without enabling production defaults. Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of completed implementation or test execution.
@@ -41,17 +41,25 @@ native `ManagedProcessService` handoff on Ubuntu 24.04: 1/1 test passed in
 read but could not change root Git config/hooks, could not read/write existing
 or future denied secrets or an outside symlink target, saw no host `/proc` or
 `/sys`, ran Python, and completed fail-closed identity and timeout probes. The
-next run (`38535156777`) adds a child-created hardlink attempt and caps the
-workflow at 20 minutes. Earlier attempts exposed and corrected a Git fixture
-assumption about the hooks directory, inaccessible global deny-path probing,
-status-fd inheritance, and status/ack handling needed to report Bubblewrap's
-actual setup error.
+run `38535156777` passed the child-created hardlink probe: the protected Git
+config could not be linked into the writable workspace. Run `38536302274`
+passed after the obtained-scope reporter was corrected to list only regular
+`/etc` files actually mounted. Earlier attempts exposed and corrected a Git
+fixture assumption about the hooks directory, inaccessible global deny-path
+probing, status-fd inheritance, status/ack handling, mount destination type,
+and standard runtime aliases.
 
-C006 remains unqualified: the hosted test is only the first positive/negative
-mount handoff slice. Native adversarial coverage, linked worktrees, race and
-descriptor-inheritance matrices, ordinary toolchain/LSP/PTY compatibility,
-startup measurements, and the non-activated typed Git metadata transaction
-contract remain open.
+C006 closes with a **negative disposition for strict M003 acceptance**. The
+native pass qualifies only the bounded root-repository mount handoff. The
+compiler discovers existing nested Git metadata at launch and masks an absent
+workspace-root `.git`, but it cannot protect `.git` created later under a new
+writable nested directory. A static Bubblewrap mount graph cannot intercept
+that future path. Linked worktrees/common-dir aliases, rename races, toolchain,
+LSP/PTY compatibility, startup measurements, and the typed Git metadata
+transaction contract also remain unqualified. The Landlock default remains
+canonical, and no production route is registered or enabled. M003/C002 remain
+blocked until an accepted corrective establishes protection for future nested
+metadata and the remaining native matrix passes.
 The compiler protects an absent workspace-root `.git` path and discovers
 existing nested submodule metadata at launch. It does not establish protection
 for a new nested repository created later inside a newly created writable
