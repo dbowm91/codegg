@@ -315,7 +315,7 @@ async fn config_unset_clears_allowlisted_key() {
 // ── Network fetch / pull / push (local bare remote) ─────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn fetch_from_local_bare_remote_succeeds() {
+async fn fetch_requires_contained_backend() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -329,24 +329,14 @@ async fn fetch_from_local_bare_remote_succeeds() {
     // Now reset local to before the push, then fetch.
     assert_status_success(&["reset", "--hard", "HEAD~1"], local.path());
     let exec = executor();
-    let res = git_network_ops::fetch(&exec, local.path(), Some("origin"), vec![], false, false)
-        .await
-        .expect("fetch");
-    assert!(res.success, "fetch should succeed: {}", res.stderr);
-    // remote main should now have the pushed commit
-    let listed = run_git(&["log", "origin/main", "--oneline"], local.path())
-        .output()
-        .expect("log");
-    let s = String::from_utf8_lossy(&listed.stdout).to_string();
-    assert!(
-        s.contains("second"),
-        "missing second commit in origin/main: {s}"
-    );
+    let result =
+        git_network_ops::fetch(&exec, local.path(), Some("origin"), vec![], false, false).await;
+    assert!(result.is_err(), "fetch requires the contained Git backend");
     drop(remote);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn push_to_local_bare_remote_succeeds() {
+async fn push_requires_contained_backend() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -365,10 +355,8 @@ async fn push_to_local_bare_remote_succeeds() {
         delete: false,
         dry_run: false,
     };
-    let res = git_network_ops::push(&exec, local.path(), req)
-        .await
-        .expect("push");
-    assert!(res.success, "push should succeed: {}", res.stderr);
+    let result = git_network_ops::push(&exec, local.path(), req).await;
+    assert!(result.is_err(), "push requires the contained Git backend");
     drop(remote);
 }
 
@@ -389,7 +377,7 @@ async fn push_force_is_marked_destructive() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn pull_from_local_bare_remote_succeeds() {
+async fn pull_requires_contained_backend() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -402,7 +390,7 @@ async fn pull_from_local_bare_remote_succeeds() {
     // Reset local to before push so pull has something to fetch
     assert_status_success(&["reset", "--hard", "HEAD~1"], local.path());
     let exec = executor();
-    let res = git_network_ops::pull(
+    let result = git_network_ops::pull(
         &exec,
         local.path(),
         Some("origin"),
@@ -410,16 +398,15 @@ async fn pull_from_local_bare_remote_succeeds() {
         git_network_ops::PullStrategy::FastForwardOnly,
         false,
     )
-    .await
-    .expect("pull");
-    assert!(res.success, "pull should succeed: {}", res.stderr);
+    .await;
+    assert!(result.is_err(), "pull requires the contained Git backend");
     drop(remote);
 }
 
 // ── Reset / clean ───────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn reset_hard_moves_head_and_drops_changes() {
+async fn reset_hard_requires_additional_authorization() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -434,21 +421,21 @@ async fn reset_hard_moves_head_and_drops_changes() {
         .expect("rev-parse");
     let before_sha = String::from_utf8_lossy(&before.stdout).trim().to_string();
     let exec = executor();
-    let res = git_network_ops::reset_hard(&exec, dir.path(), Some("HEAD~1"))
-        .await
-        .expect("reset_hard");
-    assert!(res.success, "reset --hard should succeed: {}", res.stderr);
+    let result = git_network_ops::reset_hard(&exec, dir.path(), Some("HEAD~1")).await;
+    assert!(
+        result.is_err(),
+        "reset --hard requires additional authorization"
+    );
     let after = run_git(&["rev-parse", "HEAD"], dir.path())
         .output()
         .expect("rev-parse");
     let after_sha = String::from_utf8_lossy(&after.stdout).trim().to_string();
-    assert_ne!(before_sha, after_sha);
-    // extra.txt should be gone
-    assert!(!dir.path().join("extra.txt").exists());
+    assert_eq!(before_sha, after_sha);
+    assert!(dir.path().join("extra.txt").exists());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reset_soft_keeps_working_tree() {
+async fn reset_soft_requires_additional_authorization() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -458,21 +445,24 @@ async fn reset_soft_keeps_working_tree() {
     assert_status_success(&["add", "kept.txt"], dir.path());
     assert_status_success(&["commit", "-q", "-m", "soft target"], dir.path());
     let exec = executor();
-    let res = git_network_ops::reset_soft(&exec, dir.path(), Some("HEAD~1"))
-        .await
-        .expect("reset_soft");
-    assert!(res.success);
-    // File should still exist on disk
+    let before = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse before");
+    let result = git_network_ops::reset_soft(&exec, dir.path(), Some("HEAD~1")).await;
+    assert!(
+        result.is_err(),
+        "reset --soft requires additional authorization"
+    );
     assert!(dir.path().join("kept.txt").exists());
-    // kept.txt should be in the staged set now
+    let after = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse after");
+    assert_eq!(before.stdout, after.stdout);
     let status = run_git(&["status", "--porcelain"], dir.path())
         .output()
         .expect("status");
     let s = String::from_utf8_lossy(&status.stdout).to_string();
-    assert!(
-        s.contains("A  kept.txt") || s.starts_with("A"),
-        "kept.txt should be staged: {s}"
-    );
+    assert!(s.is_empty(), "refused reset must leave repo unchanged: {s}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -496,7 +486,7 @@ async fn clean_preview_lists_untracked_files() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn clean_removes_untracked_files() {
+async fn clean_requires_additional_authorization_without_accepted_context() {
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -511,11 +501,15 @@ async fn clean_removes_untracked_files() {
         ignored: false,
         paths: vec![],
     };
-    let res = git_network_ops::clean(&exec, dir.path(), req)
-        .await
-        .expect("clean");
-    assert!(res.success, "clean should succeed: {}", res.stderr);
-    assert!(!dir.path().join("garbage.txt").exists());
+    let result = git_network_ops::clean(&exec, dir.path(), req).await;
+    assert!(
+        result.is_err(),
+        "destructive cleanup must not execute without its additional authorization"
+    );
+    assert!(
+        dir.path().join("garbage.txt").exists(),
+        "refused cleanup must leave the untracked file untouched"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
