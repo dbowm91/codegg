@@ -520,6 +520,14 @@ One daemon-scoped `Arc<JobNotificationService>` + `Arc<CiWatchService>`
 `TurnRunInput`) is the lifetime authority; per-turn construction is the
 legacy fallback only.
 
+C004 adds the delivery leg on the same authority: one daemon-scoped
+`Arc<ContinuationService>` (fail-closed store ownership, no dispatch) and
+one post-commit fanout channel. `record_notice` sends only first-write
+terminals after the durable commit; a daemon-owned forwarder publishes the
+live `BackgroundJobCompleted` hint. No per-job task, no busy poll, no
+long-held CPU permit; shutdown aborts the forwarder while committed
+notices stay durable for notice-row + next-turn recovery.
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:

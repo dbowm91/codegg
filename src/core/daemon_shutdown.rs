@@ -52,6 +52,13 @@ impl CoreDaemon {
         if let Some(handle) = self._ci_watch_driver_handle.take() {
             handle.abort();
         }
+        // C004 completion fanout: abort the forwarder; the unbounded
+        // channel is dropped with the notifier, so in-flight terminals
+        // already committed stay durable and are recovered via the notice
+        // row + next-turn session event on restart.
+        if let Some(handle) = self._idle_completion_handle.take() {
+            handle.abort();
+        }
     }
 
     /// Canonical shutdown phase names in execution order.

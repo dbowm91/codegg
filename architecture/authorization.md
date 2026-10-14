@@ -93,6 +93,16 @@ in-memory daemons without a pool decide under the same broad policy.
   availability, then CAS-claims exactly one `(notice, grant)` intent. An
   observer with a guessed job/watch id holds no grant and stays notify-only;
   revocation/expiry/budget exhaustion suppress before invocation.
+- `continuation-grant` (C004 delivery slice) — no authenticated production
+  grant workflow exists yet: `ContinuationService::authorize` still accepts
+  caller-supplied lineage strings and is therefore an unauthenticated
+  service boundary until wired through daemon request authority. The daemon
+  owns the store but wires no coordinator/executor and never invokes
+  `maybe_dispatch` in production, so existing grant rows are
+  non-autonomous and every completion stays notify-only (fail-closed).
+  A model `on_complete` flag or a fake `client_id` never substitutes for
+  grant verification; autonomous provider resume is explicitly blocked
+  pending a server-resolved principal/session/workspace grant path.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed

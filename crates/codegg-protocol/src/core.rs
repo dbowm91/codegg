@@ -4170,6 +4170,24 @@ pub enum CoreEvent {
         change: String,
         state: String,
     },
+    /// A background job or CI watch reached a durable terminal state.
+    ///
+    /// C004 production idle-delivery: published by the daemon-owned
+    /// completion fanout immediately after the durable
+    /// `JobNotificationService` notice commits, without waiting for the
+    /// next agent turn. Structural hint only: receivers re-fetch the
+    /// full notice through the authorized job/watch path on doubt.
+    /// Carries identity, kind, terminal status, and a bounded
+    /// redacted summary — never stdout dumps, credentials, raw CI
+    /// logs, or remote instructions.
+    BackgroundJobCompleted {
+        session_id: String,
+        notice_id: String,
+        job_id: String,
+        kind: String,
+        status: String,
+        summary: String,
+    },
 }
 
 #[cfg(test)]

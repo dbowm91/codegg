@@ -354,6 +354,14 @@ store. Out-of-order events, multi-client scoped visibility, reconnect
 snapshots, and TUI shutdown are covered by the existing event-log and
 `JobStore` durability (one logical notice per terminal; redacted bounds).
 
+C004 adds one additive live hint on the same durability: a persisted,
+session-scoped `CoreEvent::BackgroundJobCompleted` (identity, kind,
+terminal status, bounded redacted summary; `Safe` publication) published
+immediately after the notice commits, without waiting for the next turn.
+Reconnect and daemon restart replay the identical notice id/status exactly
+once via `core_event_log`; the notice row (plus next-turn session event)
+remains the authority and the toast is never a second database.
+
 ## Invariants & Gotchas
 
 1. **Derived, not authoritative**: The projection is never a second

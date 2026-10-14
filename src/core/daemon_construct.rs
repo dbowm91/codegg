@@ -308,7 +308,35 @@ impl CoreDaemon {
         // per turn) so turns cannot race it.
         let shared_notifier = deps.shared_job_notification_service();
         let shared_watches = deps.shared_ci_watch_service();
+        // C004 daemon-scoped continuation store (fail-closed: owning the
+        // store never starts turns; no coordinator dispatch is wired).
+        let shared_continuation = deps.shared_continuation_service();
         scheduler.set_job_notification_service_sync(shared_notifier.clone());
+        // C004 post-commit completion fanout: one unbounded channel per
+        // daemon. The notifier sends each newly stored terminal here after
+        // its durable commit; the forwarder below publishes the live
+        // owner-scoped `BackgroundJobCompleted` hint. Duplicates never
+        // send (see `record_notice`), so live delivery is exactly-once per
+        // logical terminal. A full/closed channel never fails the terminal
+        // path; durability is the notice row, not the hint.
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::scheduler::job_notifications::JobTerminalNotice,
+        >();
+        shared_notifier.set_completion_hook_sync(completion_tx);
+        let idle_completion_handle = {
+            let event_log_for_fanout = event_log.clone();
+            let router_for_fanout = notification_router.clone();
+            tokio::runtime::Handle::try_current().ok().map(|handle| {
+                handle.spawn(async move {
+                    crate::core::daemon::CoreDaemon::forward_idle_completions(
+                        completion_rx,
+                        event_log_for_fanout,
+                        router_for_fanout,
+                    )
+                    .await;
+                })
+            })
+        };
         // C001 idle driver: one earliest-due wake loop per pooled daemon.
         // Pool-less (in-memory/headless) daemons explicitly have no idle
         // persistence: `ci_watch_driver` stays `None` and idle advancement is
@@ -465,6 +493,8 @@ impl CoreDaemon {
             _projection_maintenance_handle: projection_maintenance_handle,
             ci_watch_driver,
             _ci_watch_driver_handle: ci_watch_driver_handle,
+            continuation_service: Some(shared_continuation),
+            _idle_completion_handle: idle_completion_handle,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
             // M002: share the scheduler's admission controller so
             // interactive spawns draw from the same process-slot

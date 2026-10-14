@@ -61,6 +61,7 @@ fn should_persist(event: &CoreEvent) -> bool {
             | CoreEvent::AgentRunGroupUpserted { .. }
             | CoreEvent::SessionUpdated { .. }
             | CoreEvent::AssetRefreshCompleted { .. }
+            | CoreEvent::BackgroundJobCompleted { .. }
             | CoreEvent::Error { .. }
     )
 }

@@ -305,6 +305,11 @@ pub struct JobNotificationService {
     pub policy: JobNotificationPolicy,
     pub continuation_policy: JobContinuationPolicy,
     pool: Option<SqlitePool>,
+    /// C004 daemon-owned post-commit completion fanout. Installed once by
+    /// the daemon at startup; `None` in legacy/test paths that never asked
+    /// for live delivery. Fired only for newly stored terminals (never for
+    /// idempotent duplicates), after the durable commit, best-effort.
+    completion_tx: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<JobTerminalNotice>>>,
 }
 
 /// Bounds for single-use continuation leases (M003).
@@ -339,6 +344,7 @@ impl JobNotificationService {
             policy: JobNotificationPolicy::default(),
             continuation_policy: JobContinuationPolicy::default(),
             pool: None,
+            completion_tx: std::sync::RwLock::new(None),
         }
     }
 
@@ -351,6 +357,7 @@ impl JobNotificationService {
             policy,
             continuation_policy: JobContinuationPolicy::default(),
             pool: None,
+            completion_tx: std::sync::RwLock::new(None),
         }
     }
 
@@ -363,6 +370,38 @@ impl JobNotificationService {
             policy: JobNotificationPolicy::default(),
             continuation_policy: JobContinuationPolicy::default(),
             pool: Some(pool),
+            completion_tx: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// C004: install the daemon-owned post-commit live-delivery sender.
+    /// The daemon calls this once at startup; tests may install their own
+    /// channel to observe exactly-once fanout without a daemon. Sync so
+    /// daemon construction (which is sync) can install without awaiting.
+    pub fn set_completion_hook_sync(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<JobTerminalNotice>,
+    ) {
+        if let Ok(mut guard) = self.completion_tx.write() {
+            *guard = Some(tx);
+        }
+    }
+
+    /// Async alias for test/harness paths already in async context.
+    pub async fn set_completion_hook(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<JobTerminalNotice>,
+    ) {
+        self.set_completion_hook_sync(tx);
+    }
+
+    fn emit_completion(&self, notice: &JobTerminalNotice) {
+        // Best-effort, non-blocking: the durable commit already happened;
+        // a full/closed channel never fails the terminal path.
+        if let Ok(guard) = self.completion_tx.read() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(notice.clone());
+            }
         }
     }
 
@@ -1105,6 +1144,9 @@ impl JobNotificationService {
                 entry.push(notice.notice_id.clone());
             }
         }
+        // C004 post-commit fanout: durable first-write won, so publish the
+        // live hint exactly once. Duplicates return above without emitting.
+        self.emit_completion(&notice);
         Ok(notice)
     }
 

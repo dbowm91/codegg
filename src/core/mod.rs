@@ -456,6 +456,7 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::ToolProgramCompleted { .. } => "tool_program_completed",
         CoreEvent::ToolProgramFailed { .. } => "tool_program_failed",
         CoreEvent::ToolProgramUpdated { .. } => "tool_program_updated",
+        CoreEvent::BackgroundJobCompleted { .. } => "background_job_completed",
         CoreEvent::Error { .. } => "error",
         _ => "other",
     }

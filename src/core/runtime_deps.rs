@@ -112,6 +112,14 @@ pub struct CoreRuntimeDeps {
     /// daemon lifetime alongside the notifier above; shared by every turn
     /// and by the daemon-owned idle driver. `None` until initialized.
     pub ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
+    /// C004 daemon-scoped singleton idle-continuation grant/intent store.
+    /// Created once per daemon lifetime alongside the notifier above.
+    /// Production idle provider dispatch remains blocked (fail-closed):
+    /// no daemon path calls `maybe_dispatch` with a real executor until
+    /// an authenticated host-grant workflow exists. The store is owned
+    /// here so future grant issuance can bind server-resolved principal,
+    /// session, and workspace instead of caller-supplied strings.
+    pub continuation_service: Option<Arc<crate::scheduler::idle_continuation::ContinuationService>>,
     /// C001 daemon-owned idle CI-watch coordinator (earliest-due wake loop).
     /// `None` when idle watch support is unavailable (pool-less) or not yet
     /// started; exactly one loop per daemon when present.
@@ -149,6 +157,7 @@ impl Clone for CoreRuntimeDeps {
             submission: self.submission.clone(),
             job_notification_service: self.job_notification_service.clone(),
             ci_watch_service: self.ci_watch_service.clone(),
+            continuation_service: self.continuation_service.clone(),
             ci_watch_driver: self.ci_watch_driver.clone(),
             scheduler_config: self.scheduler_config.clone(),
             connection_manager: self.connection_manager.clone(),
@@ -198,6 +207,23 @@ impl CoreRuntimeDeps {
         self.ci_watch_service = Some(created.clone());
         created
     }
+
+    /// C004 shared daemon-scoped continuation store, creating it once on
+    /// first use. Pointer identity is the singleton proof. Production
+    /// dispatch stays fail-closed: owning the store does not start turns.
+    pub fn shared_continuation_service(
+        &mut self,
+    ) -> Arc<crate::scheduler::idle_continuation::ContinuationService> {
+        if let Some(existing) = self.continuation_service.clone() {
+            return existing;
+        }
+        let created = Arc::new(match self.pool.clone() {
+            Some(pool) => crate::scheduler::idle_continuation::ContinuationService::with_pool(pool),
+            None => crate::scheduler::idle_continuation::ContinuationService::new(),
+        });
+        self.continuation_service = Some(created.clone());
+        created
+    }
 }
 
 impl CoreRuntimeDeps {
@@ -243,6 +269,7 @@ impl CoreRuntimeDeps {
             submission: None,
             job_notification_service: None,
             ci_watch_service: None,
+            continuation_service: None,
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
@@ -291,6 +318,7 @@ impl CoreRuntimeDeps {
             submission: None,
             job_notification_service: None,
             ci_watch_service: None,
+            continuation_service: None,
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
@@ -358,6 +386,7 @@ impl CoreRuntimeDeps {
             submission: None,
             job_notification_service: None,
             ci_watch_service: None,
+            continuation_service: None,
             ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager,

@@ -124,6 +124,18 @@ pub struct CoreDaemon {
     /// one loop per daemon when present; held to keep the task alive.
     pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
     pub(crate) _ci_watch_driver_handle: Option<tokio::task::JoinHandle<()>>,
+    /// C004 daemon-owned idle-continuation grant/intent store. `None` in
+    /// legacy/test daemons that never asked for the shared handle.
+    /// Production idle provider dispatch stays blocked: owning the store
+    /// does not start turns and no daemon path invokes `maybe_dispatch`
+    /// with a real executor until an authenticated host-grant workflow
+    /// exists (see `ContinuationService` docs).
+    pub continuation_service: Option<Arc<crate::scheduler::idle_continuation::ContinuationService>>,
+    /// C004 daemon-owned completion fanout task. Forwards durable terminal
+    /// notices (machine jobs and CI watches) to the live `EventLog` +
+    /// `NotificationRouter` hint path. Held to keep the task alive; `None`
+    /// when no channel was installed (pool-less or pre-C004 paths).
+    pub(crate) _idle_completion_handle: Option<tokio::task::JoinHandle<()>>,
     /// Total events the event bridge was forced to drop because the
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.
@@ -456,6 +468,69 @@ impl CoreDaemon {
         tokio::spawn(async move {
             documents.detach_client(&client_id).await;
         });
+    }
+
+    /// C004 daemon-owned idle-completion fanout worker.
+    ///
+    /// Drains durable terminal notices (machine jobs and CI watches) that
+    /// the shared `JobNotificationService` committed before sending, and
+    /// publishes one owner-scoped live hint per logical terminal:
+    ///
+    /// - `EventLog::BackgroundJobCompleted` (persisted, session-scoped, so
+    ///   live subscribers and `Resume`/replay observe the identical
+    ///   notice id/status without starting an agent turn);
+    /// - an ephemeral `NotificationRouter` toast (dedupe-keyed by
+    ///   notice id, never a second completion database).
+    ///
+    /// The durable notice row is the authority; this transport is a hint.
+    /// Duplicates never arrive here (`record_notice` sends only on
+    /// first-write). A closed receiver or a failed publish never fails
+    /// the terminal path. Never spends model tokens and never starts a
+    /// turn: autonomous provider resume stays blocked (fail-closed).
+    pub(crate) async fn forward_idle_completions(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<
+            crate::scheduler::job_notifications::JobTerminalNotice,
+        >,
+        event_log: Arc<super::event_log::EventLog>,
+        router: Arc<super::notification::NotificationRouter>,
+    ) {
+        use crate::protocol::core::CoreEvent;
+        while let Some(notice) = rx.recv().await {
+            let session_id = notice.session_id.clone();
+            if session_id.is_empty() {
+                continue;
+            }
+            let payload = CoreEvent::BackgroundJobCompleted {
+                session_id: session_id.clone(),
+                notice_id: notice.notice_id.clone(),
+                job_id: notice.job_id.clone(),
+                kind: notice.kind.clone(),
+                status: notice.status.clone(),
+                summary: notice.summary.clone(),
+            };
+            event_log
+                .publish(Some(session_id.clone()), None, payload)
+                .await;
+            let priority = match notice.status.as_str() {
+                "completed" => super::notification::NotificationPriority::Normal,
+                _ => super::notification::NotificationPriority::High,
+            };
+            router
+                .emit(super::notification::NotificationEvent {
+                    id: format!("bg-{}", notice.notice_id),
+                    session_id: Some(session_id),
+                    turn_id: notice.turn_id.clone(),
+                    kind: super::notification::NotificationKind::BackgroundJobCompleted,
+                    priority,
+                    message: format!(
+                        "Background {} {}: {}",
+                        notice.kind, notice.status, notice.summary
+                    ),
+                    dedupe_key: Some(notice.notice_id.clone()),
+                    created_at: chrono::Utc::now(),
+                })
+                .await;
+        }
     }
 
     /// Interactive Process Sessions M002: transport-derived authority for

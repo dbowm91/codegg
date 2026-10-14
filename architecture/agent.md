@@ -752,6 +752,15 @@ becomes `needs_attention` (never replayed). Only host-authored compact
 refs enter authorized context; `on_complete` copy in tool descriptions names
 the grant requirement.
 
+C004 (delivery slice) publishes the durable terminal to live frontends
+without waiting for the next turn: the daemon-owned fanout emits one
+persisted, session-scoped `CoreEvent::BackgroundJobCompleted` per logical
+terminal immediately after the notice commits, replayable on reconnect and
+restart with the identical notice id/status. Delivery spends zero model
+tokens. Autonomous idle provider resume stays blocked: the daemon owns the
+continuation store but wires no coordinator/executor, so grants alone never
+start a turn and `maybe_dispatch` is never invoked by production.
+
 ## Invariants & Gotchas
 
 ### Session transcript persistence

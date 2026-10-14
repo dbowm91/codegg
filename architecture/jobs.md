@@ -461,6 +461,31 @@ status/result refs enter authorized prompt context. Grant/queued/resumed/
 declined/expired status is visible through existing session/attention
 projections (no TUI polling); user cancel always wins before invocation.
 
+### Production idle delivery (C004, delivery slice)
+
+C004 wires the daemon-owned delivery leg without changing the next-turn
+marker above: one `ContinuationService` singleton per daemon lifetime
+(`CoreRuntimeDeps::shared_continuation_service`, `CoreDaemon::
+continuation_service`; pointer identity is the singleton proof), plus a
+single post-commit completion fanout. `JobNotificationService::
+record_notice` sends each newly stored terminal (machine jobs and CI
+watches share this one path; idempotent duplicates never send) over an
+unbounded channel after its durable commit; a daemon-owned forwarder
+publishes one owner-scoped `CoreEvent::BackgroundJobCompleted`
+(session/notice/job identity, kind, terminal status, bounded redacted
+summary — never stdout, credentials, raw CI logs, or remote
+instructions) via the existing `EventLog` + projection/replay path, plus
+an ephemeral `NotificationRouter` toast (dedupe-keyed by notice id, never
+a second completion database). The event is persisted (`should_persist`,
+`core_event_type = background_job_completed`, `Safe` publication), so
+live subscribers and `Resume`/replay observe the identical notice
+id/status without starting an agent turn, and a restarted daemon over the
+same pool replays the same notice. No per-job poller, no second
+scheduler, no model tokens spent by delivery. Autonomous provider resume
+stays explicitly blocked: no daemon path invokes `maybe_dispatch` with a
+real executor until an authenticated host-grant workflow exists (see
+`architecture/authorization.md`); grants alone dispatch nothing.
+
 ### Boundary Enforcement
 
 `crates/codegg-core/src/jobs/` is UI-, server-, plugin-, and auth-free:
