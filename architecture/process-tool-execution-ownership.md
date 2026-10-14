@@ -110,7 +110,12 @@ reconciliation refuses drift and preserves conflicting journals. The
 test-only path stores records under the per-user daemon root at
 `sandbox/acl-leases`, with `CODEGG_DAEMON_HOME` as the normal root override.
 There is no production caller or operator repair command, and existing
-workspaces remain unqualified.
+workspaces remain unqualified. Future Windows backends negotiate through
+the internal C042 guarantee contract
+(`src/security/sandbox/guarantee.rs::negotiate`): the immutable requested
+policy plus attested candidate capabilities either produce an exact
+satisfied contract or refuse before spawn, with no `FullHost` fallback
+and no parent-ceiling broadening.
 
 Raw model-shell commands use a separately constructed argv: Unix uses `sh -c`,
 while Windows defaults to the inbox Windows PowerShell executable and can opt

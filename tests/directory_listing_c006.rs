@@ -85,6 +85,27 @@ async fn call(daemon: &CoreDaemon, request_id: &str, request: CoreRequest) -> Co
     call_as(daemon, TUI_CLIENT, request_id, request).await
 }
 
+/// Wait until the admission semaphore shows `expected` permits or `timeout`
+/// elapses. The worker thread releases its permit a step after it decrements
+/// the probe's `active` count (guard drop order: `_active` before `_permit`),
+/// so `wait_for_active(0)` does not imply the permit is back yet. An
+/// immediate `available_permits()` read after it can observe a leak that
+/// never happened when the worker thread sits descheduled in that window —
+/// exactly what a loaded CI machine produces. Poll like every other
+/// cross-thread barrier in this file instead of asserting on arrival.
+async fn wait_for_permits(daemon: &CoreDaemon, expected: usize, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if daemon.directory_listing_permits.available_permits() == expected {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return daemon.directory_listing_permits.available_permits() == expected;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 fn error_of(response: &CoreResponse) -> (String, String) {
     match response {
         CoreResponse::Error { code, message } => (code.clone(), message.clone()),
@@ -377,7 +398,10 @@ async fn aborted_handler_does_not_release_permit_before_blocking_worker_exit() {
         "worker must exit after release"
     );
     daemon.directory_listing_probe.clear_gate();
-    assert_eq!(daemon.directory_listing_permits.available_permits(), 1);
+    assert!(
+        wait_for_permits(&daemon, 1, WAIT).await,
+        "released worker must return its admission permit"
+    );
 
     // A third request after exit may serve a real listing.
     let third = listing_of(
@@ -573,7 +597,10 @@ async fn hundred_concurrent_clients_never_enter_second_blocking_scan() {
         "blocked worker must exit"
     );
     daemon.directory_listing_probe.clear_gate();
-    assert_eq!(daemon.directory_listing_permits.available_permits(), 1);
+    assert!(
+        wait_for_permits(&daemon, 1, WAIT).await,
+        "released worker must return its admission permit"
+    );
 }
 
 // ---- F2: full-response budget ----
