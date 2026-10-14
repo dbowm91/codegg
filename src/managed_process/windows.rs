@@ -1216,8 +1216,8 @@ mod tests {
         };
         use windows_sys::Win32::System::Threading::{
             CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
-            STARTUPINFOW,
+            TerminateProcess, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+            PROCESS_INFORMATION, STARTUPINFOW,
         };
 
         let temp = tempfile::tempdir()?;
