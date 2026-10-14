@@ -179,7 +179,11 @@ impl BashTool {
         self
     }
 
-    pub(crate) fn with_configured_sandbox_profile(
+    /// Configure the sandbox profile this tool instance was built to enforce.
+    ///
+    /// The per-call accepted authorization still has to match this profile;
+    /// this setting alone does not grant execution authority.
+    pub fn with_configured_sandbox_profile(
         mut self,
         profile: codegg_core::approval::SandboxProfile,
     ) -> Self {

@@ -78,7 +78,8 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
     );
     let mut tool = BashTool::new()
         .with_run_store(store)
-        .with_submission(submission);
+        .with_submission(submission)
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     let _scheduler_task = scheduler.spawn_run();
     if let Some(cic) = config {
         tool = tool.with_command_intent_config(cic);
@@ -126,6 +127,42 @@ async fn all_runs(store: &MemRunStore) -> Vec<codegg_core::run_store::RunManifes
     out
 }
 
+fn accepted_full_host_context() -> codegg::tool::backend::ToolExecutionContext {
+    let mut context = codegg::tool::backend::ToolExecutionContext::with_backend(
+        codegg::tool::backend::ToolBackendKind::Native,
+    );
+    context.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                Some("session".into()),
+                Some("agent".into()),
+                Some("policy".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "yolo",
+                Some("policy".into()),
+            ),
+            command_preflight: None,
+        });
+    context
+}
+
+async fn execute_active(
+    tool: &BashTool,
+    command: &str,
+) -> Result<String, codegg::error::ToolError> {
+    tool.execute_structured(
+        json!({"command": command}),
+        Some(accepted_full_host_context()),
+    )
+    .await
+    .map(|result| result.output)
+}
+
 // ── 1. Observe mode: no command-intent routing record ─────────────────
 
 #[tokio::test]
@@ -166,10 +203,7 @@ async fn active_test_command_routes_to_test_runner_as_delegated() {
     let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Active routing dispatches directly to the canonical TestRunner.
-    let _ = tool
-        .execute(json!({"command": "cargo test --help"}))
-        .await
-        .unwrap();
+    let _ = execute_active(&tool, "cargo test --help").await.unwrap();
 
     let runs = all_runs(&store).await;
     // BashTool must NOT have persisted a duplicate — TestRunner owns the
@@ -190,10 +224,7 @@ async fn active_git_readonly_routes_to_git_caller_owned() {
     let store = Arc::new(MemRunStore::new());
     let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
-    let _ = tool
-        .execute(json!({"command": "git status"}))
-        .await
-        .unwrap();
+    let _ = execute_active(&tool, "git status").await.unwrap();
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1, "active git must persist one record");
@@ -201,12 +232,8 @@ async fn active_git_readonly_routes_to_git_caller_owned() {
     assert_eq!(m.kind, RunKind::GitRead);
     assert_eq!(m.ownership, RunOwnership::Caller);
     assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
-    // Actual backend is Git — Track U unified dispatch routes bash-translated
-    // git reads through `GitMutationExecutor` (or the managed-argv fallback
-    // inside `dispatch_to_git`), matching the native-tool path.
     assert_eq!(m.actual_backend, Some(ActualBackend::Git));
     assert!(m.fallback.is_none());
-    // argv should be the actual git invocation (no sh -c wrapping)
     let argv = m.invocation.argv.as_ref().expect("argv present");
     assert_eq!(argv[0], "git");
     assert_eq!(argv[1], "status");
@@ -220,10 +247,7 @@ async fn active_search_routes_to_managed_argv_caller_owned() {
     let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Use a search-like command that classifies as SearchReadOnly
-    let _ = tool
-        .execute(json!({"command": "rg pattern src/"}))
-        .await
-        .unwrap();
+    let _ = execute_active(&tool, "rg pattern src/").await.unwrap();
 
     let runs = all_runs(&store).await;
     assert_eq!(runs.len(), 1);
@@ -713,10 +737,7 @@ async fn bash_tool_routes_active_test_through_canonical_test_runner() {
 
     // "cargo test --help" classifies as Test, plans TestRunner, and
     // dispatches through `dispatch_to_test_runner` → `resolve_and_run_test`.
-    let _ = tool
-        .execute(json!({"command": "cargo test --help"}))
-        .await
-        .unwrap();
+    let _ = execute_active(&tool, "cargo test --help").await.unwrap();
 
     let runs = all_runs(&store).await;
     // Exactly one record: TestRunner owns it (DelegatedBackend).
@@ -762,8 +783,7 @@ async fn bash_tool_routes_active_python_through_canonical_executor() {
     let tool = make_bash_tool(Some(active_config()), store.clone()).await;
 
     // Python classify → plan PythonScript → dispatch to canonical executor.
-    let _ = tool
-        .execute(json!({"command": "python3 -c 'print(1+1)'"}))
+    let _ = execute_active(&tool, "python3 -c 'print(1+1)'")
         .await
         .unwrap();
 
@@ -839,7 +859,7 @@ async fn one_logical_execution_produces_exactly_one_record() {
         "rg pattern src/",
         "python3 -c 'print(42)'",
     ] {
-        let _ = tool.execute(json!({"command": cmd})).await.unwrap();
+        let _ = execute_active(&tool, cmd).await.unwrap();
     }
 
     let runs = all_runs(&store).await;
