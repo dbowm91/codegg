@@ -726,9 +726,15 @@ through the TUI `CoreClient`.
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
   `/terminal-remove [handle]`, `/terminal-clear [handle]`.
 - **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
-  to the process), `Esc` unfocuses, `Esc` again closes with detach.
-  The raw `Esc` byte is never forwarded and a prompt is never submitted
-  from terminal focus (`classify_key`).
+  to the process). Leaving focus is `Esc Esc` or `Ctrl-]`; in viewing mode a
+  single `Esc` closes with detach.
+  A lone `Esc` **is** forwarded to the PTY (full-screen programs own it), and a
+  prompt is never submitted from terminal focus (`classify_key_stateful`, via
+  `InteractiveTerminalController::classify_focused`). `Esc Esc` exists because
+  `Ctrl-]` alone is untypeable on a US Mac keyboard, which left macOS users
+  with no reachable exit and a TUI that looked frozen; the pair is cleared by
+  any intervening key and by every focus transition, so only a *consecutive*
+  pair escapes.
 - **Bounds**: 64 KiB scrollback window per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
@@ -1266,6 +1272,19 @@ Terminal panel is granted `&mut InteractiveTerminalController` — the *same*
 object the `/terminal` box drives, because two VT parsers for one PTY would
 disagree about what is on screen. That grant carries presentation state only:
 no client, no locator, no authority to choose a project or a terminal.
+
+**A focused PTY claims the host's exit keys.** `owns_exit_key` takes `ctx`
+because the claim depends on state the panel does not own. The Terminal panel
+returns true for `Esc`/`q` **only while its view is focused**, so those keys
+route into `handle_key` instead of `SidePanelHost::blur`. Declining them split
+the two focus flags: the host dropped panel focus while
+`TerminalFocus::Focused` stayed set on the view, so `q` looked like it left and
+the PTY still held the keyboard — and because `panel_active` requires
+`is_focused()`, the panel then saw no keys at all while still reporting INS.
+That is the reported "no key combo lets me leave": the keyboard was already
+gone before `Esc Esc` could ever be pressed. `handle_key` owns the exit and ends
+in `TuiMsg::TerminalPanelBlur`, the one call that clears the view's focus. In
+Normal mode the panel declines, so `Esc`/`q` remain cheap focus exits.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:

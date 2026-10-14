@@ -367,15 +367,16 @@ your login shell (`$SHELL`, falling back to `sh`) — you do not have to name a
 command first. `/terminal-create <command> [args...]` is still there when you
 want to run a specific program instead.
 
-The terminal starts in viewing mode; press `i` to focus it. While focused,
-literal `Esc` is sent to the program (for example, Vim), and `Ctrl-]` returns
-keyboard focus to the TUI. Press `Esc` while viewing to close and detach. The
+The terminal starts in viewing mode; press `i` to focus it. While focused, a
+literal `Esc` is sent to the program (for example, Vim). Press `Esc` **twice**
+to return keyboard focus to the TUI, or `Ctrl-]` if your keyboard has that
+chord. Press `Esc` while viewing to close and detach. The
 screen interprets VT cursor movement, erase, SGR colors, and alternate-screen
 control in bounded local state; child escape sequences are not written to the
 outer terminal. Resizing the TUI resizes the PTY to the usable dialog viewport.
 
 `/terminal` then `Shift+L` moves it into the side panel, where it behaves the
-same way: `i` takes the keyboard, `Ctrl-]` gives it back. If the process behind
+same way: `i` takes the keyboard, `Esc Esc` gives it back. If the process behind
 the panel has exited, `i` starts a fresh shell instead — the panel never leaves
 you staring at a dead one. `/terminal-clear` wipes the local scrollback and
 screen while the process keeps running.

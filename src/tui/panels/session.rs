@@ -46,7 +46,7 @@ impl SidePanel for SessionPanel {
 
     /// The session panel has no input mode of its own, so `Esc` and `q`
     /// always return to the composer.
-    fn owns_exit_key(&self, _key: KeyEvent) -> bool {
+    fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
         false
     }
 

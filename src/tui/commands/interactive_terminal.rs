@@ -29,7 +29,7 @@ use crate::protocol::interactive_process::{
 };
 use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::spawn_registered_tui_task;
-use crate::tui::interactive_terminal::{classify_key, TerminalKey, TerminalKeyAction};
+use crate::tui::interactive_terminal::{TerminalKey, TerminalKeyAction};
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 /// Resolve the canonical workspace for a new terminal from the active
@@ -1348,7 +1348,7 @@ pub(crate) fn focus_terminal(app: &mut App, handle: Option<String>) {
     };
     if app.interactive_terminals.focus(&handle) {
         app.messages_state.toasts.info(&format!(
-            "Terminal {handle} focused: keystrokes go to the process; Ctrl-] leaves focus"
+            "Terminal {handle} focused: keystrokes go to the process; Esc Esc leaves focus"
         ));
         refresh_terminal_dialog(app, &handle);
     } else {
@@ -1377,7 +1377,7 @@ pub(crate) fn focus_terminal_panel(app: &mut App, handle: &str) {
     }
     if app.interactive_terminals.focus(handle) {
         app.messages_state.toasts.info(&format!(
-            "Terminal {handle} focused: keystrokes go to the process; Ctrl-] leaves focus"
+            "Terminal {handle} focused: keystrokes go to the process; Esc Esc leaves focus"
         ));
         return;
     }
@@ -1495,10 +1495,13 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
         return false;
     }
 
-    // Focused: every key goes through the focus gate. Ctrl-] leaves focus;
-    // literal Esc and other supported input forward to the PTY.
+    // Focused: every key goes through the focus gate. Esc Esc (or Ctrl-])
+    // leaves focus; a lone Esc and other supported input forward to the PTY.
     let terminal_key = map_key(key);
-    match classify_key(true, terminal_key) {
+    match app
+        .interactive_terminals
+        .classify_focused(&handle, terminal_key)
+    {
         TerminalKeyAction::EscapeFocus => {
             app.interactive_terminals.escape(&handle);
             app.messages_state
@@ -1763,7 +1766,7 @@ fn terminal_error_hint(code: &str, message: &str) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
-    use crate::tui::interactive_terminal::InteractiveTerminalController;
+    use crate::tui::interactive_terminal::{classify_key, InteractiveTerminalController};
 
     fn test_chunk(text: &str) -> InteractiveOutputChunk {
         InteractiveOutputChunk {

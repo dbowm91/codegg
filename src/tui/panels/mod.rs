@@ -908,7 +908,11 @@ pub trait SidePanel {
     /// A panel with an input mode uses the key to leave that mode — keeping
     /// its buffer — instead, because `q` while composing is a letter, not a
     /// command. The host drops focus only once the panel declines.
-    fn owns_exit_key(&self, _key: KeyEvent) -> bool {
+    ///
+    /// Takes `ctx` because the claim can depend on state the panel does not
+    /// own: the Terminal panel claims these keys only while its PTY view is
+    /// focused, which lives on the controller rather than on the panel.
+    fn owns_exit_key(&self, _key: KeyEvent, _ctx: &PanelCtx<'_>) -> bool {
         false
     }
 
@@ -1657,11 +1661,17 @@ impl SidePanelHost {
         // first refusal: a chat panel in Compose mode uses `Esc` to return
         // to Normal with its buffer intact before focus leaves.
         if is_exit_key(key) {
-            if self.panel().owns_exit_key(key) {
-                self.panel().handle_key(key, action, ctx);
-            } else {
-                self.blur();
+            if self.panel().owns_exit_key(key, ctx) {
+                // The panel answered the key itself, so its intent has to
+                // reach the caller. Discarding it here and returning a bare
+                // `Consumed` meant a panel could claim `Esc` and emit
+                // `TerminalPanelBlur` into nothing: focus stayed on the PTY,
+                // the host looked like it had handled the key, and there was no
+                // exit left. Returning the panel's own answer keeps the
+                // first-refusal contract and the effect.
+                return Some(self.panel().handle_key(key, action, ctx));
             }
+            self.blur();
             return Some(PanelKey::Consumed);
         }
         Some(self.panel().handle_key(key, action, ctx))

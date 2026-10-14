@@ -25,8 +25,8 @@
 //!   `CoreRequest::InteractiveProcess*` operation and every state change is
 //!   applied from a `CoreResponse` (or a typed transport notice).
 //! - Keyboard bytes reach a terminal only when that terminal has explicit
-//!   focus ([`TerminalFocus::Focused`]). Esc is forwarded; Ctrl-] leaves
-//!   focus without sending bytes to the child.
+//!   focus ([`TerminalFocus::Focused`]). Esc is forwarded; a second Esc
+//!   (or Ctrl-]) leaves focus without sending bytes to the child.
 //! - Client disconnect drops attachments only (M002 `handle_disconnect`
 //!   semantics): scrollback is retained locally and the link moves to
 //!   [`TerminalLinkState::Reconnecting`]. A daemon restart invalidates the
@@ -367,7 +367,9 @@ pub enum TerminalKeyAction {
 /// Route one key through the terminal focus gate.
 ///
 /// - `Ctrl-]` while focused yields [`TerminalKeyAction::EscapeFocus`].
-///   Literal `Esc` is forwarded for full-screen applications.
+///   Literal `Esc` is forwarded for full-screen applications, except for a
+///   second consecutive `Esc`, which yields [`TerminalKeyAction::EscapeFocus`]
+///   (see [`classify_key_stateful`]).
 /// - Any key while unfocused yields [`TerminalKeyAction::Ignored`]: the
 ///   prompt owns the keyboard until focus is explicit.
 /// - While focused, printable input and the explicit control bytes
@@ -375,13 +377,48 @@ pub enum TerminalKeyAction {
 ///   ANSI sequences, `Ctrl-C`/`Ctrl-D`) yield
 ///   [`TerminalKeyAction::Forward`]. Everything else is ignored.
 pub fn classify_key(focused: bool, key: TerminalKey) -> TerminalKeyAction {
+    let mut pending_escape = false;
+    classify_key_stateful(focused, key, &mut pending_escape)
+}
+
+/// [`classify_key`] with the one piece of state it actually needs.
+///
+/// `Esc` is stateful because it is both a prefix and a program-level key:
+/// forwarded alone, because vim and less need it, but a *second* one in a row
+/// means the user is trying to get out. Splitting this out keeps the plain
+/// classifier pure for callers that hold no view, and keeps the box and the
+/// panel on one implementation — they share this, not a private copy each.
+pub fn classify_key_stateful(
+    focused: bool,
+    key: TerminalKey,
+    pending_escape: &mut bool,
+) -> TerminalKeyAction {
     if !focused {
+        *pending_escape = false;
         return TerminalKeyAction::Ignored;
     }
     match key {
-        TerminalKey::ExitFocus => TerminalKeyAction::EscapeFocus,
-        TerminalKey::Esc => TerminalKeyAction::Forward(vec![0x1b]),
-        TerminalKey::Other => TerminalKeyAction::Ignored,
+        TerminalKey::ExitFocus => {
+            *pending_escape = false;
+            TerminalKeyAction::EscapeFocus
+        }
+        TerminalKey::Esc => {
+            if *pending_escape {
+                // Consume the pair: a third `Esc` starts over rather than
+                // bouncing between "leaves" and "forwarded".
+                *pending_escape = false;
+                return TerminalKeyAction::EscapeFocus;
+            }
+            *pending_escape = true;
+            TerminalKeyAction::Forward(vec![0x1b])
+        }
+        TerminalKey::Other => {
+            // An unrecognised key is not evidence about the user's intent, but
+            // it *is* a separator: `Esc`, `j`, `Esc` is a program using Esc as
+            // a prefix, not a second escape attempt.
+            *pending_escape = false;
+            TerminalKeyAction::Ignored
+        }
         TerminalKey::Enter => TerminalKeyAction::Forward(vec![b'\r']),
         TerminalKey::Backspace => TerminalKeyAction::Forward(vec![0x7f]),
         TerminalKey::Tab => TerminalKeyAction::Forward(vec![b'\t']),
@@ -392,6 +429,9 @@ pub fn classify_key(focused: bool, key: TerminalKey) -> TerminalKeyAction {
         TerminalKey::Right => TerminalKeyAction::Forward(b"\x1b[C".to_vec()),
         TerminalKey::Left => TerminalKeyAction::Forward(b"\x1b[D".to_vec()),
         TerminalKey::Char(c) => {
+            // Typing disarms the pending escape: the point of the pair is that
+            // it is *consecutive*.
+            *pending_escape = false;
             let mut bytes = [0u8; 4];
             TerminalKeyAction::Forward(c.encode_utf8(&mut bytes).as_bytes().to_vec())
         }
@@ -503,6 +543,16 @@ pub struct InteractiveTerminalView {
     /// Legacy xterm encoding delivers `Space` and `y` as two separate key
     /// events rather than one chord, so the prefix has to be remembered.
     pending_prefix: bool,
+    /// A lone `Esc` is waiting for its second press (`Esc Esc` unfocuses).
+    ///
+    /// The same two-key reason as [`Self::pending_prefix`], and it exists
+    /// because the alternative left macOS users with no way out: `Ctrl-]` is
+    /// the only chord that leaves focus outright, and a US Mac keyboard has no
+    /// `]` key, so the documented exit was one nobody could press. `Esc` must
+    /// stay forwarded on its own — full-screen programs (vim, less, tmux) own
+    /// it — but a *second* consecutive one with nothing between is a person
+    /// who changed their mind, not a program asking for a prefix.
+    pending_escape: bool,
     /// Whether the box prints the full diagnostics dump above the output.
     ///
     /// Off by default. The dump is six lines of handle, workspace, attachment
@@ -532,6 +582,7 @@ impl InteractiveTerminalView {
             nav: SelectionState::new((rows.saturating_sub(1), 0)),
             redactions: Redactions::default(),
             pending_prefix: false,
+            pending_escape: false,
             diagnostics: false,
         }
     }
@@ -1339,6 +1390,9 @@ impl InteractiveTerminalController {
             } else {
                 TerminalFocus::Hidden
             };
+            // Every focus transition starts unarmed: an `Esc` armed while
+            // viewing must not become an instant exit the moment focus lands.
+            other.pending_escape = false;
         }
         self.active = Some(handle.to_string());
         true
@@ -1351,12 +1405,28 @@ impl InteractiveTerminalController {
             if view.focus == TerminalFocus::Focused {
                 view.focus = TerminalFocus::Viewing;
             }
+            // An armed `Esc` must not survive into the next focus: leaving and
+            // immediately re-entering would make the user's first `Esc` — the
+            // one aimed at the program — leave focus instead.
+            view.pending_escape = false;
         }
         for other in self.views.values_mut() {
             if other.focus == TerminalFocus::Hidden {
                 other.focus = TerminalFocus::Viewing;
             }
         }
+    }
+
+    /// Route one key for the focused `handle`, consulting its `Esc Esc` arming.
+    ///
+    /// The single entry point both surfaces call, so the box and the panel
+    /// cannot disagree about when a second `Esc` means "let me out".
+    pub fn classify_focused(&mut self, handle: &str, key: TerminalKey) -> TerminalKeyAction {
+        let Some(view) = self.views.get_mut(handle) else {
+            return TerminalKeyAction::Ignored;
+        };
+        let focused = view.focus == TerminalFocus::Focused;
+        classify_key_stateful(focused, key, &mut view.pending_escape)
     }
 
     /// Whether `handle` currently owns the keyboard.
@@ -1865,7 +1935,7 @@ impl InteractiveTerminalController {
             view.command,
             view.link.label(),
             match view.focus {
-                TerminalFocus::Focused => " · FOCUSED (Ctrl-] leaves)",
+                TerminalFocus::Focused => " · FOCUSED (Esc Esc leaves)",
                 TerminalFocus::Viewing => " · i to type",
                 TerminalFocus::Hidden => "",
             }
@@ -1939,7 +2009,7 @@ impl InteractiveTerminalController {
                 }
             ),
             format!(
-                "focus:       {} (Ctrl-] leaves focus; input needs explicit focus)",
+                "focus:       {} (Esc Esc leaves focus; input needs explicit focus)",
                 match view.focus {
                     TerminalFocus::Hidden => "hidden",
                     TerminalFocus::Viewing => "viewing",
@@ -2153,6 +2223,129 @@ mod tests {
         assert_eq!(
             classify_key(true, TerminalKey::Esc),
             TerminalKeyAction::Forward(vec![0x1b])
+        );
+    }
+
+    /// Regression: `Ctrl-]` was the *only* documented way out of focused
+    /// terminal input, and a US Mac keyboard has no `]` key — so a macOS user
+    /// who pressed `i` had no reachable exit and the TUI looked frozen. `Esc`
+    /// twice is that exit.
+    #[test]
+    fn escape_twice_leaves_focus_on_a_keyboard_that_has_no_right_bracket() {
+        let mut pending = false;
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::Forward(vec![0x1b]),
+            "a lone Esc still belongs to the program under it"
+        );
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::EscapeFocus,
+            "a second consecutive Esc is the user asking to get out"
+        );
+        assert!(
+            !pending,
+            "the pair must not re-arm: a third Esc starts over rather than bouncing"
+        );
+    }
+
+    /// The escape is *consecutive* on purpose. `Esc` then a printable key then
+    /// `Esc` is a program using Esc as a prefix (vim, readline), not a user
+    /// failing twice to escape.
+    #[test]
+    fn typing_between_escapes_disarms_the_pair() {
+        let mut pending = false;
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Char('j'), &mut pending),
+            TerminalKeyAction::Forward(vec![b'j'])
+        );
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::Forward(vec![0x1b]),
+            "the interleaved key means this Esc is a program prefix again"
+        );
+    }
+
+    /// An unknown key is not an escape attempt, but it is a separator: an
+    /// unrecognised keypress between two `Esc` breaks the pair the same way
+    /// printable input does.
+    #[test]
+    fn an_unrecognised_key_separates_the_escape_pair() {
+        let mut pending = false;
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Other, &mut pending),
+            TerminalKeyAction::Ignored
+        );
+        assert_eq!(
+            classify_key_stateful(true, TerminalKey::Esc, &mut pending),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
+    }
+
+    /// The armed escape belongs to one focus session. Leaving and
+    /// re-entering must not inherit it, or the user's first `Esc` after
+    /// refocusing — the one aimed at the program — leaves focus instead.
+    #[test]
+    fn refocusing_clears_an_armed_escape() {
+        let mut controller = live_attached();
+        let handle = "h";
+        assert!(controller.focus(handle));
+        // Arm it, then leave and come back.
+        assert!(matches!(
+            controller.classify_focused(handle, TerminalKey::Esc),
+            TerminalKeyAction::Forward(_)
+        ));
+        controller.escape(handle);
+        assert!(controller.focus(handle));
+        assert_eq!(
+            controller.classify_focused(handle, TerminalKey::Esc),
+            TerminalKeyAction::Forward(vec![0x1b]),
+            "a fresh focus session starts unarmed"
+        );
+    }
+
+    /// The pair is also cleared by leaving focus, so an `Esc` armed inside one
+    /// box cannot pop the user out of the panel they docked it into.
+    #[test]
+    fn the_escape_pair_survives_nothing_but_consecutive_escapes() {
+        let mut controller = live_attached();
+        let handle = "h";
+        assert!(controller.focus(handle));
+        assert!(matches!(
+            controller.classify_focused(handle, TerminalKey::Esc),
+            TerminalKeyAction::Forward(_)
+        ));
+        controller.escape(handle);
+        // Unfocused, the next Esc is the prompt's business, not ours.
+        assert_eq!(
+            controller.classify_focused(handle, TerminalKey::Esc),
+            TerminalKeyAction::Ignored
+        );
+        assert!(controller.focus(handle));
+        assert_eq!(
+            controller.classify_focused(handle, TerminalKey::Esc),
+            TerminalKeyAction::Forward(vec![0x1b])
+        );
+    }
+
+    /// The header is the only place the exit is advertised, so a chord nobody
+    /// can type has to be visible here as the regression that it was.
+    #[test]
+    fn the_focused_header_advertises_a_typeable_exit() {
+        let mut controller = live_attached();
+        controller.focus("h");
+        let header = controller.header_lines("h").expect("header");
+        assert!(
+            header[0].contains("Esc Esc"),
+            "the box must show the chord a Mac keyboard can send: {header:?}"
         );
     }
 

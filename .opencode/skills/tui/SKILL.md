@@ -644,10 +644,21 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   locally or send frontend cwd/environment. Insert a run into shell history
   only after daemon admission; preserve the captured session/workspace binding
   so late output cannot be promoted into another tab.
-- **Interactive terminal keys** are modal input: focused Esc is forwarded to
-  the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
+- **Interactive terminal keys** are modal input: a focused lone `Esc` is
+  forwarded to the PTY, `Esc Esc` (or `Ctrl-]`) leaves focus, and viewing-mode
+  Esc detaches/closes. `Esc Esc` is the reachable exit on keyboards without a
+  `]` key, and any intervening key disarms the pair. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;
   never write raw child escape sequences to the host terminal.
+- **Focus must never desync between the panel host and the PTY view.**
+  `SidePanelHost::blur` and `TerminalFocus` are separate flags, and
+  `panel_active` requires `is_focused()` — so a focused PTY that declines
+  `owns_exit_key` looks like it left while still reporting INS, and then takes
+  no keys at all. A panel whose view can hold the keyboard claims the host's
+  exit keys (`owns_exit_key` takes `ctx` for exactly this) and ends in the
+  blur that clears its own focus. Terminal output is interpreted by bounded VT
+  screen state before Ratatui rendering; never write raw child escape sequences
+  to the host terminal.
 - **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
   speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
   `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`
