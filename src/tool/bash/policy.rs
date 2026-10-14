@@ -1089,6 +1089,17 @@ mod tests {
     }
 
     #[test]
+    fn default_blocked_commands_is_empty_by_design() {
+        // ADR-0028: built-in syntax/risk is advisory. The empty default is
+        // the contract — terminal authority is explicit configuration,
+        // permission, and sandbox, never a built-in text block.
+        assert!(
+            default_blocked_commands().is_empty(),
+            "default blocked-command set must stay empty under ADR-0028"
+        );
+    }
+
+    #[test]
     fn classify_test_command() {
         let intent = classify_command("cargo test");
         assert_eq!(intent.kind, CommandIntentKind::Test);

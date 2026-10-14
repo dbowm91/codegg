@@ -496,14 +496,25 @@ async fn clean_preview_lists_untracked_files() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn clean_removes_untracked_files() {
+async fn clean_without_destructive_capability_returns_typed_denial() {
+    // C001 corrective (ADR-0028): a temporary directory is containment, not
+    // authorization. Real `git clean` requires an explicit
+    // `DestructiveRepositoryChange` capability; the no-grant executor must
+    // return the typed policy refusal before any child is launched, leaving
+    // the worktree untouched. This replaces the stale
+    // `clean_removes_untracked_files` positive expectation, which demanded
+    // that an unauthenticated destructive cleanup succeed.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
     }
     let dir = fresh_repo();
-    fs_utils::write(&dir.path().join("garbage.txt"), "remove me\n");
-    assert!(dir.path().join("garbage.txt").exists());
+    fs_utils::write(&dir.path().join("garbage-no-grant.txt"), "remove me\n");
+    assert!(dir.path().join("garbage-no-grant.txt").exists());
+    let head_before = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse HEAD")
+        .stdout;
     let exec = executor();
     let req = CleanRequest {
         force: true,
@@ -511,11 +522,45 @@ async fn clean_removes_untracked_files() {
         ignored: false,
         paths: vec![],
     };
-    let res = git_network_ops::clean(&exec, dir.path(), req)
+    let err = git_network_ops::clean(&exec, dir.path(), req)
         .await
-        .expect("clean");
-    assert!(res.success, "clean should succeed: {}", res.stderr);
-    assert!(!dir.path().join("garbage.txt").exists());
+        .expect_err("real clean without a destructive capability must be denied");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::RequiresAdditionalAuthorization { capabilities },
+        ) => {
+            assert!(
+                capabilities.contains(&egggit::GitExecutionCapability::DestructiveRepositoryChange),
+                "clean denial must require DestructiveRepositoryChange, got: {capabilities:?}"
+            );
+        }
+        other => panic!(
+            "clean without grant must return typed RequiresAdditionalAuthorization, got: {other:?}"
+        ),
+    }
+    // No child dispatch and no mutation: the untracked fixture remains, the
+    // tracked commit/HEAD/index are unchanged.
+    assert!(
+        dir.path().join("garbage-no-grant.txt").exists(),
+        "denied clean must leave the untracked fixture in place"
+    );
+    assert!(
+        dir.path().join("README.md").exists(),
+        "denied clean must leave tracked files in place"
+    );
+    let head_after = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse HEAD after")
+        .stdout;
+    assert_eq!(head_before, head_after, "denied clean must not move HEAD");
+    let status = run_git(&["status", "--porcelain"], dir.path())
+        .output()
+        .expect("status after denied clean");
+    let s = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(
+        s.contains("garbage-no-grant.txt"),
+        "denied clean must leave the untracked entry visible: {s}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
