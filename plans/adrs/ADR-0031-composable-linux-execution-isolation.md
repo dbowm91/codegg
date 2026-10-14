@@ -1,8 +1,10 @@
 # ADR-0031: Composable Linux Execution Isolation and Obtained-Capability Authority
 
-Status: proposed
+Status: accepted
 
 Date: 2026-10-13
+
+Accepted: 2026-10-14
 
 Decision owners: project maintainers
 
@@ -47,7 +49,7 @@ Adopt a trusted bubblewrap-based launch adapter for a narrower filesystem view a
 
 Stronger host/kernel boundaries are possible using rootless OCI containers, gVisor, or microVMs. Deferred as optional execution targets due to runtime/dependency, filesystem identity, build-cache, TTY and local-daemon integration overhead. May be appropriate for high-risk fully autonomous runs later.
 
-## Decision (proposed; do not silently activate before acceptance)
+## Decision
 
 1. Define an internal **composable Linux launch policy** consumed by `ManagedProcessService` and applied before target code: filesystem-view requirements, mount exclusions, network intent, PID/IPC/proc requirements, syscall/FD constraints, and optional resource budget. Each dimension has `required/optional/not_requested` intent and **obtained** evidence; a required component failure aborts before user code. The existing Landlock-only backend continues to report its existing guarantees until an explicit rollout changes it.
 2. Select a trusted bubblewrap namespace/mount adapter for the new Linux filesystem view. Build a read-allowlisted mount graph from Codegg's backend-neutral read roots (not `--ro-bind / /` unless every exposed subtree is explicitly proven safe), writable leased workspace/scratch mounts, and read-only or hidden overlays for protected descendants. Include `.git` directories, worktree `.git` pointer, resolved gitdir/common-dir, trusted executable metadata and sensitive agent settings. Reject symlink/rename/mount alias races or unsupported overlay ordering; do not rely on lexical string comparisons for grants.
@@ -92,8 +94,8 @@ References: https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/REA
 
 ## Command syntax / policy layering (ADR-0032)
 
-ADR-0032 is accepted and defines the cross-platform authorization semantics above this proposed Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. This ADR's proposed Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under already accepted ADR-0016/ADR-0032; adoption of the new concrete Linux backend remains subject to accepting this proposed ADR and native qualification. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
+ADR-0032 is accepted and defines the cross-platform authorization semantics above this Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. The Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under accepted ADR-0016/ADR-0032; production adoption of the concrete Linux backend still requires native qualification and the separate rollout gates in the roadmap. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
 
 ## Supersession
 
-None. ADR-0032 governs command authorization and representation-independent enforcement semantics; this proposed ADR selects the Linux mechanisms implementing those semantics. M002's typed interface work does not imply acceptance of Bubblewrap backend promotion. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.
+None. ADR-0032 governs command authorization and representation-independent enforcement semantics; this ADR selects the Linux mechanisms implementing those semantics. Acceptance records the architecture decision; it does not register or enable a production backend, change defaults, or satisfy native qualification and rollout gates.

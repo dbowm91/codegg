@@ -21,7 +21,7 @@ Implementation commits:
 
 The bounded C005 feasibility experiment is conditionally closed with positive native evidence for unprivileged Bubblewrap user, mount, PID, network, and IPC namespaces on this host. The fixture proves the child entered distinct namespaces, received `no_new_privs` before the shell payload, could not see the parent-owned status-pipe descriptor, and did not run after an invalid required mount.
 
-This does not qualify the M003 protected mount backend. The test uses narrow runtime directory binds and a disposable writable fixture; it does not build protected nested Git/credential overlays, validate worktree aliases, or route production managed processes through Bubblewrap. No production backend was selected or registered. ADR-0031 remains proposed.
+This does not qualify the M003 protected mount backend. The test uses narrow runtime directory binds and a disposable writable fixture; it does not build protected nested Git/credential overlays, validate worktree aliases, or route production managed processes through Bubblewrap. No production backend was selected or registered. ADR-0031 was proposed when this closure was written and was accepted separately on 2026-10-14; this later decision does not promote a backend, qualify M003, or alter this test-only closure.
 
 ## 2. Requirement-to-evidence matrix
 

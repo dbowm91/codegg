@@ -28,11 +28,14 @@ C004 archived the exact pre-migration Linux and command ADR records under
 `plans/archive/linux-command-adr-id-aliases/` and recorded source Git blob IDs,
 SHA-256 digests, and the identity mapping in
 `plans/archive/linux-command-adr-id-aliases/migration.json`. Linux execution
-isolation is ADR-0031 (proposed); command syntax authority is ADR-0032
-(accepted, unchanged). The concurrent Windows identity migration reserves
+isolation is ADR-0031 (accepted 2026-10-14); command syntax authority is ADR-0032
+(accepted, unchanged). ADR-0031 acceptance selects the architecture but does not
+register or enable a production backend; native qualification and rollout gates
+remain in the Linux roadmap. The concurrent Windows identity migration reserves
 ADR-0029/ADR-0030; Windows ADR-0027 and ADR-0028 retain their separate meanings
 in this branch. A number-only reference must be interpreted by subsystem and
-path. Renumbering did not accept Linux backend design or alter Windows status.
+path. Renumbering did not accept Linux backend design or alter Windows status;
+ADR-0031 was accepted separately on 2026-10-14.
 
 `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
 records the migration contract and
@@ -147,6 +150,6 @@ The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-da
 
 - ADR-0027 — accepted for **bounded Windows research and test-only successor work** only; no production backend is selected.
 - ADR-0028 — **proposed** Windows broad-read profile; no production authorization.
-- ADR-0031 — **proposed** composable Linux execution isolation; no production backend authorization.
+- ADR-0031 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
 - ADR-0032 — **accepted** command syntax is advisory and execution authority is enforced; identity migration did not reaccept or alter this decision.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

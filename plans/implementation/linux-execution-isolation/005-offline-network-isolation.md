@@ -5,7 +5,7 @@ Primary class: capability
 Repository baseline: `main` @ `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`, 2026-10-13.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016. ADR-0031 remains proposed, not accepted.
+Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031.
 No production implementation or verification is asserted by this plan.
 Target closure record: `plans/closure/linux-execution-isolation/005-status.md`.
 

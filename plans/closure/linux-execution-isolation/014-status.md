@@ -16,16 +16,16 @@ Implementation commits: none. Production M003 backend work is not authorized whi
 
 ## 1. Executive finding
 
-C006 remains blocked. C004 resolved the ADR identity collision, but did not accept ADR-0031. ADR-0031 still has status `proposed`. The C005 Bubblewrap evidence proves a bounded test-only namespace first hop; its closure explicitly does not qualify protected Git/credential mounts, production status ownership, or toolchain/PTY compatibility. M002 is conditionally closed for its typed interface/probe only and selects no new backend. The protected mount graph and Git metadata integration were not implemented or tested.
+C006 remains blocked. At this record's reviewed baseline, ADR-0031 was proposed and the C004 identity cleanup had not accepted it. The C005 Bubblewrap evidence proves a bounded test-only namespace first hop; its closure explicitly does not qualify protected Git/credential mounts, production status ownership, or toolchain/PTY compatibility. M002 is conditionally closed for its typed interface/probe only and selects no new backend. The protected mount graph and Git metadata integration were not implemented or tested.
 
-The separate maintainer decision on ADR-0031 is still pending. This record does not infer acceptance from the request to continue implementation plans.
+The separate maintainer decision was pending at the reviewed baseline; see the dated status update below.
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 is uniquely identified; its proposed/accepted state did not change. |
-| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0031-composable-linux-execution-isolation.md` | blocked | Current status remains `proposed`; a maintainer disposition is required before production backend work. |
+| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0031-composable-linux-execution-isolation.md` | pass (2026-10-14) | ADR-0031 is accepted. This clears the architecture decision gate only; it does not prove or enable a production backend. |
 | C005 strict-positive native production launcher qualification | `plans/closure/linux-execution-isolation/013-status.md` | partial / blocked | Real test-only namespaces and setup-failure behavior passed, but protected overlays, production adapter integration, toolchain, Git workspace, and PTY compatibility were not qualified. |
 | M002 typed launch contract | `plans/closure/linux-execution-isolation/002-status.md` | partial | Interface/probe slice is conditionally closed; no mount backend is selected and enhanced dimensions remain unavailable. |
 | Protected workspace/Git metadata implementation | no implementation | blocked | No mount manifest, protected nested overlays, worktree alias handling, metadata lease, or trusted integration exists. |
@@ -47,11 +47,14 @@ No C006 production code or test fixture was added. No C006-specific test command
 
 | Severity | Blocker | Impact | Required action |
 |---|---|---|---|
-| high | ADR-0031 has no explicit maintainer acceptance. | Production M003 architecture and backend changes cannot begin under the plan's hard gate. | Obtain and record an explicit accept/reject/leave-proposed disposition; do not infer it. |
-| high | C005 is test-only and does not qualify the protected mount view or production adapter. | Nested Git/credential protection and exact obtained filesystem status remain unproven. | After the ADR gate, complete the actual mount/compiler/adapter design and strict-positive real-child matrix or stop with a corrective. |
+| high | C005 is test-only and does not qualify the protected mount view or production adapter. | Nested Git/credential protection and exact obtained filesystem status remain unproven. | Complete the actual mount/compiler/adapter design and strict-positive real-child matrix or stop with a corrective. |
 | high | Git executable metadata writes and trusted Git effects have no protected-metadata lease. | Hooks/config/filters may still bridge untrusted writes into trusted execution. | Implement and verify lease-scoped metadata handling before C002 admission. |
 | medium | Toolchain, Git worktree, LSP/test and PTY compatibility under an isolated mount view is unknown. | No supported compatibility profile can be advertised. | Qualify these paths on the native backend candidate before rollout. |
 
 ## 6. Roadmap and registry disposition
 
-C006 remains in the blocked dependency register. Its blockers are explicit ADR-0031 disposition and qualifying production mount evidence; no plan became ready. This is a blocked status record, not a successful milestone closure.
+C006 remains in the blocked dependency register. ADR-0031 acceptance cleared the architecture decision gate on 2026-10-14; qualifying production mount evidence, protected Git metadata handling, and compatibility evidence remain outstanding. No plan became ready from the ADR decision alone. This is a blocked status record, not a successful milestone closure.
+
+## 7. Status update — 2026-10-14
+
+The maintainer accepted ADR-0031. This supersedes only the pending-decision statements above; the reviewed-baseline findings and implementation evidence remain unchanged. C006 is still blocked until the protected mount graph, production launch integration, Git metadata lease, strict-positive real-child denial matrix, and required compatibility evidence are implemented and verified. Acceptance does not select, register, or enable the Bubblewrap backend or change defaults.
