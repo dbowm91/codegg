@@ -1,7 +1,7 @@
 # Async Background Jobs — Idle Completion and Delivery Corrective Addendum
 
-Status: active — C001 closed; C002 ready; C003 blocked on C002
-Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79`, closure `plans/closure/async-background-jobs-corrective/001-status.md` (2026-10-14). Handoff branch is a descendant; revalidate exact HEAD before code changes.
+Status: active — C001 closed; C002 closed; C003 ready
+Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md` (2026-10-14). Handoff branch is a descendant; revalidate exact HEAD before code changes.
 
 ## Authority, scope and history
 
@@ -55,8 +55,8 @@ C001 must first make terminal observation and notify-only delivery effective wit
 | Milestone | Status | Handoff plan | Strict result |
 |---|---|---|---|
 | C001 idle CI watch driver, service lifetime, durable creation | closed | `plans/implementation/async-background-jobs-corrective/001-daemon-watch-admission-and-reconciliation.md` | A sleeping session's CI run is observed and terminal notice persisted; no other turn/status needed (closure `plans/closure/async-background-jobs-corrective/001-status.md`, implementation `21b35c79`) |
-| C002 authorized idle resume and single-turn queue | ready | `plans/implementation/async-background-jobs-corrective/002-explicit-idle-owner-continuation.md` | Notify-only never spends tokens; explicitly approved resume triggers at most one normal owner turn while idle |
-| C003 end-to-end verification and closure disposition | blocked on C002 | `plans/implementation/async-background-jobs-corrective/003-idle-lifecycle-qualification-and-closure.md` | Required deterministic real-daemon trajectory and exact-head CI; all claims/registry reconciled |
+| C002 authorized idle resume and single-turn queue | closed | `plans/implementation/async-background-jobs-corrective/002-explicit-idle-owner-continuation.md` | Notify-only never spends tokens; explicitly approved resume triggers at most one normal owner turn while idle (closure `plans/closure/async-background-jobs-corrective/002-status.md`, implementation `8e155498`) |
+| C003 end-to-end verification and closure disposition | ready | `plans/implementation/async-background-jobs-corrective/003-idle-lifecycle-qualification-and-closure.md` | Required deterministic real-daemon trajectory and exact-head CI; all claims/registry reconciled |
 
 ## End-state use cases and negative guarantees
 
