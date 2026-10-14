@@ -1216,6 +1216,20 @@ impl PythonJobExecutor {
     pub fn new(run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>) -> Self {
         Self { run_store }
     }
+
+    /// Resolve the RunStore that owns this attempt's run record.
+    ///
+    /// The scheduler injects the workspace lease's store through
+    /// [`JobExecutionContext::run_store`], so a constructor-injected store is
+    /// only a fallback for direct construction. Registering this executor with
+    /// `None` therefore still produces a real RunStore record instead of
+    /// silently dropping run ownership evidence.
+    fn store_for<'a>(
+        &'a self,
+        ctx: &'a JobExecutionContext,
+    ) -> Option<&'a Arc<dyn codegg_core::run_store::RunStore>> {
+        self.run_store.as_ref().or(ctx.run_store.as_ref())
+    }
 }
 
 #[async_trait]
@@ -1417,7 +1431,7 @@ impl JobExecutor for PythonJobExecutor {
         // Begin RunStore record BEFORE execution (plan §6: RunStore owns raw
         // stdout, stderr, diff, source hash, sandbox evidence, and terminal
         // status — ownership begins before process launch).
-        let run_handle = if let Some(ref store) = self.run_store {
+        let run_handle = if let Some(store) = self.store_for(&ctx) {
             crate::python_script::tool::begin_python_run(store, &request, &pre_result).await
         } else {
             None
@@ -1451,7 +1465,7 @@ impl JobExecutor for PythonJobExecutor {
 
         // Persist to RunStore: write artifacts and complete the run
         let run_id = if let Some(handle) = run_handle {
-            if let Some(ref store) = self.run_store {
+            if let Some(store) = self.store_for(&ctx) {
                 crate::python_script::tool::write_python_run_artifacts(store, &handle, &result)
                     .await;
                 crate::python_script::tool::complete_python_run(store, handle, &result).await

@@ -69,6 +69,8 @@ const TOOL_OUTPUT_PREVIEW_LINES: usize = 8;
 const TOOL_INPUT_PREVIEW_LINES: usize = 4;
 /// Columns the renderer indents tool/shell output by (`Span::raw("    ")`).
 const TOOL_OUTPUT_INDENT: u16 = 4;
+/// Left gutter of a tool-call header row, including the status glyph.
+const TOOL_HEADER_INDENT: u16 = 4;
 const TOOL_SPINNER_FRAMES: [&str; 8] = ["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 
 fn tool_spinner_frame() -> &'static str {
@@ -337,6 +339,22 @@ pub struct MessagesWidget {
 /// words or leave stray spaces at line ends.
 use crate::tui::wrap::wrap_to_strings;
 
+/// Generous display-width ceiling for an inline tool-call target.
+///
+/// The previous value was 60 *characters*, applied with a silent
+/// `.chars().take(60)` and no marker, so an ordinary shell command such as
+/// `for repo in tauri-apps/tauri emilk/egui iced-rs/iced slint-u…` was
+/// amputated mid-word with nothing indicating it had been cut. The user could
+/// not tell what was running, which matters most precisely when a call is
+/// stuck and the command is the only diagnostic clue.
+///
+/// Real tool calls are far shorter than this ceiling; it exists only to bound
+/// pathological input, and it is display-width aware and explicitly marked when
+/// it engages.
+const TOOL_TARGET_MAX_WIDTH: usize = 400;
+
+/// Collapse embedded newlines into a visible separator so a multi-line command
+/// still renders as one wrappable header without silently losing content.
 fn extract_tool_target(name: &str, input: &str) -> String {
     if input.is_empty() {
         return String::new();
@@ -344,9 +362,15 @@ fn extract_tool_target(name: &str, input: &str) -> String {
     let parsed: Result<serde_json::Value, _> = serde_json::from_str(input);
     let val = match parsed {
         Ok(v) => v,
-        Err(_) => return input.lines().next().unwrap_or("").to_string(),
+        Err(_) => {
+            let first_line = input.lines().next().unwrap_or("");
+            return crate::tui::wrap::elide_marked(
+                &crate::tui::wrap::normalize_inline(first_line),
+                TOOL_TARGET_MAX_WIDTH,
+            );
+        }
     };
-    match name {
+    let raw = match name {
         "read" | "write" | "edit" | "multiedit" | "glob" | "grep" => val
             .get("path")
             .or_else(|| val.get("file_path"))
@@ -354,7 +378,7 @@ fn extract_tool_target(name: &str, input: &str) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "bash" | "exec" => val
+        "bash" | "exec" | "terminal" => val
             .get("command")
             .or_else(|| val.get("cmd"))
             .and_then(|v| v.as_str())
@@ -377,10 +401,11 @@ fn extract_tool_target(name: &str, input: &str) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-    }
-    .chars()
-    .take(60)
-    .collect::<String>()
+    };
+    crate::tui::wrap::elide_marked(
+        &crate::tui::wrap::normalize_inline(&raw),
+        TOOL_TARGET_MAX_WIDTH,
+    )
 }
 
 fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
@@ -1943,19 +1968,33 @@ impl MessagesWidget {
                     } else {
                         ""
                     };
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  {} {}{}{}", icon, display_name, summary_str, toggle),
-                        base_style,
-                    )]));
+                    // Wrap the header. A tool call's argument line is the only
+                    // record of what is actually running, so it must stay
+                    // fully readable: there is no horizontal scroll and
+                    // `scroll_left`/`scroll_right` are no-ops, so an unwrapped
+                    // line wider than the viewport is simply unreachable.
+                    let header = format!("  {} {}{}{}", icon, display_name, summary_str, toggle);
+                    let header_width = self.width.saturating_sub(TOOL_HEADER_INDENT).max(8);
+                    for row in crate::tui::wrap::wrap_to_strings(&header, header_width) {
+                        lines.push(Line::from(vec![Span::styled(row, base_style)]));
+                    }
                     if matches!(status, ToolStatus::Pending | ToolStatus::Running)
                         && output.is_empty()
                     {
+                        // Distinguish "admitted and executing" from "accepted
+                        // but not started". A single catch-all string made a
+                        // job stuck in admission indistinguishable from one
+                        // actually running, which is exactly the ambiguity
+                        // that made these stalls hard to diagnose.
+                        let detail = match status {
+                            ToolStatus::Pending => {
+                                "queued — not started yet (waiting on admission or approval)"
+                            }
+                            _ => "running — waiting for command/tool output...",
+                        };
                         lines.push(Line::from(vec![
                             Span::raw("    "),
-                            Span::styled(
-                                "waiting for command/tool output...",
-                                Style::default().fg(self.theme.muted),
-                            ),
+                            Span::styled(detail, Style::default().fg(self.theme.muted)),
                         ]));
                     } else if !output.is_empty() {
                         if *expanded && !input.is_empty() {
@@ -2009,12 +2048,29 @@ impl MessagesWidget {
                             }
                         } else {
                             let wrap_width = self.tool_output_wrap_width();
-                            for output_line in output.lines().take(limit) {
+                            // `websearch`/`research` return one dense JSON
+                            // document. Rendered verbatim it is a single
+                            // wrapped blob: no field structure, no item
+                            // separation, no sense of how many results came
+                            // back. Project it to a readable outline for the
+                            // collapsed view and keep the raw JSON behind the
+                            // existing expand affordance. This is display
+                            // only — the model still receives the original.
+                            let outline = if *expanded {
+                                None
+                            } else {
+                                render_structured_output_outline(name, output)
+                            };
+                            let body: Vec<String> = match outline {
+                                Some(rows) => rows,
+                                None => output.lines().map(ToOwned::to_owned).collect(),
+                            };
+                            for output_line in body.iter().take(limit) {
                                 // Wrap each logical line so long paths, URLs
                                 // and single-line JSON stay fully readable
                                 // instead of being cut off at the right edge.
                                 let wrapped = if wrap_width == 0 {
-                                    vec![output_line.to_string()]
+                                    vec![output_line.clone()]
                                 } else {
                                     crate::tui::wrap::wrap_to_strings(output_line, wrap_width)
                                 };
@@ -2919,6 +2975,84 @@ fn prefix_rendered_lines(
             Line::from(spans)
         })
         .collect()
+}
+
+/// Project a structured tool result into a human-readable outline.
+///
+/// `websearch` and `research` return a JSON document. Printed verbatim in a
+/// terminal it is one long wrapped line: braces, escaped quotes, and no
+/// separation between results, so a human cannot scan it without re-reading the
+/// whole blob. This renders the same data as an indented outline with named
+/// fields and numbered array entries.
+///
+/// Returns `None` for tools whose output is not structured, and for tools where
+/// the raw form is already the readable one — so ordinary command output is
+/// untouched.
+fn render_structured_output_outline(name: &str, output: &str) -> Option<Vec<String>> {
+    const STRUCTURED_TOOLS: &[&str] = &["websearch", "research", "webfetch"];
+    if !STRUCTURED_TOOLS.contains(&name) {
+        return None;
+    }
+    let trimmed = output.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let mut rows = Vec::new();
+    write_json_outline(&value, 0, &mut rows);
+    if rows.is_empty() {
+        None
+    } else {
+        Some(rows)
+    }
+}
+
+fn json_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "null".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn write_json_outline(value: &serde_json::Value, indent: usize, out: &mut Vec<String>) {
+    let pad = "  ".repeat(indent);
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.is_empty() {
+                out.push(format!("{pad}(empty)"));
+                return;
+            }
+            for (key, item) in map {
+                match item {
+                    serde_json::Value::Array(items) => {
+                        let noun = if items.len() == 1 { "item" } else { "items" };
+                        out.push(format!("{pad}{key} — {} {noun}:", items.len()));
+                        for (index, entry) in items.iter().enumerate() {
+                            out.push(format!("{pad}  [{index}]"));
+                            write_json_outline(entry, indent + 2, out);
+                        }
+                    }
+                    serde_json::Value::Object(_) => {
+                        out.push(format!("{pad}{key}:"));
+                        write_json_outline(item, indent + 1, out);
+                    }
+                    _ => out.push(format!("{pad}{key}: {}", json_scalar(item))),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                out.push(format!("{pad}(empty)"));
+                return;
+            }
+            for (index, entry) in items.iter().enumerate() {
+                out.push(format!("{pad}[{index}]"));
+                write_json_outline(entry, indent + 1, out);
+            }
+        }
+        scalar => out.push(format!("{pad}{}", json_scalar(scalar))),
+    }
 }
 
 fn infer_tool_output_language(name: &str, input: &str) -> Option<String> {

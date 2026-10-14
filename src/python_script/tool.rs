@@ -10,6 +10,9 @@ use crate::tool::{Tool, ToolCategory};
 use super::projection::project_python_run;
 use super::types::{PythonExecutionMode, PythonRunResult, PythonScriptRequest};
 
+/// Upper bound on a model-supplied `timeout`, in seconds.
+const MAX_TIMEOUT_SECS: u64 = 900;
+
 /// Result of a delegated Python run. The `run_id` is `Some` iff a `RunStore`
 /// record was successfully begun — it is the proof of delegated ownership.
 #[derive(Debug, Clone)]
@@ -467,7 +470,7 @@ impl Tool for PythonScriptTool {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Wall-clock timeout in seconds. Default 60 for analyze/transform, 300 for verify."
+                    "description": "Wall-clock timeout in seconds. Default 60 for analyze/transform, 300 for verify. Clamped to 900."
                 },
                 "intent": {
                     "type": "string",
@@ -534,16 +537,21 @@ fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
 
-    let timeout = input
-        .get("timeout")
-        .and_then(|v| v.as_u64())
-        .map(Some)
-        .unwrap_or_else(|| {
-            Some(match mode {
-                PythonExecutionMode::Verify => 300,
-                _ => 60,
-            })
-        });
+    let default_timeout = match mode {
+        PythonExecutionMode::Verify => 300,
+        _ => 60,
+    };
+    // The tool's wait bound is `timeout + 30s`, so an uncapped model-supplied
+    // timeout turns any dispatch or execution stall into a silent, output-free
+    // wait of arbitrary length. Clamp rather than reject: a larger request is
+    // a reasonable intent, just not one that may hold the turn open.
+    let timeout = Some(
+        input
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(default_timeout)
+            .clamp(1, MAX_TIMEOUT_SECS),
+    );
 
     let intent = input
         .get("intent")

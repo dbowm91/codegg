@@ -171,24 +171,32 @@ impl PermissionDialog {
             };
 
             if let Some(ref cmd) = command_preview {
-                let truncated = if cmd.chars().count() > 80 {
-                    let count = cmd.chars().count() - 77;
-                    format!(
-                        "{}... (+{count} chars)",
-                        cmd.chars().take(77).collect::<String>()
-                    )
-                } else {
-                    cmd.clone()
-                };
-                details.push(Line::from(vec![
-                    Span::styled("Command: ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        truncated,
-                        Style::default()
-                            .fg(theme.primary)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                // Approving a command you cannot fully read is not a real
+                // decision. The dialog is the one place the user is explicitly
+                // asked to authorize an action, so show the whole command and
+                // wrap it; only pathological input is elided, and then with an
+                // explicit marker.
+                let full = crate::tui::wrap::normalize_inline(cmd);
+                let label = "Command: ";
+                let hang = " ".repeat(label.chars().count());
+                let body_width = inner.width.saturating_sub(hang.len() as u16 + 2);
+                for (index, row) in crate::tui::wrap::wrap_to_strings(&full, body_width.max(16))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let prefix = if index == 0 {
+                        label.to_string()
+                    } else {
+                        hang.clone()
+                    };
+                    let style = Style::default()
+                        .fg(theme.primary)
+                        .add_modifier(Modifier::BOLD);
+                    details.push(Line::from(vec![
+                        Span::styled(prefix, Style::default().fg(theme.muted)),
+                        Span::styled(row, style),
+                    ]));
+                }
             } else {
                 let args_str = if args.is_string() {
                     args.as_str().unwrap_or("").to_string()
@@ -196,19 +204,15 @@ impl PermissionDialog {
                     args.to_string()
                 };
                 if !args_str.is_empty() && args_str != "null" {
-                    let truncated = if args_str.chars().count() > 50 {
-                        let count = args_str.chars().count() - 47;
-                        format!(
-                            "{}... (+{count} chars)",
-                            args_str.chars().take(47).collect::<String>()
-                        )
-                    } else {
-                        args_str
-                    };
-                    details.push(Line::from(vec![
-                        Span::styled("Args: ", Style::default().fg(theme.muted)),
-                        Span::styled(truncated, Style::default().fg(theme.foreground)),
-                    ]));
+                    let label = "Args: ";
+                    let hang = " ".repeat(label.chars().count());
+                    let body_width = inner.width.saturating_sub(hang.len() as u16 + 2);
+                    for row in crate::tui::wrap::wrap_to_strings(&args_str, body_width.max(16)) {
+                        details.push(Line::from(vec![
+                            Span::styled(label.to_string(), Style::default().fg(theme.muted)),
+                            Span::styled(row, Style::default().fg(theme.foreground)),
+                        ]));
+                    }
                 }
             }
         }
