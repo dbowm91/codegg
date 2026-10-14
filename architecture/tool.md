@@ -581,14 +581,16 @@ Command M004 route qualification is tracked in
 `research/command-authorization-m004-route-coverage.md`. The active
 command-intent routes dispatched from Bash remain explicit-FullHost-only;
 classifier labels do not grant authority. The typed `test` and `python_script`
-tools now check the immutable accepted authorization before scheduler
-submission. They admit only a valid receipt with an explicit `FullHost`
-snapshot; constrained or missing authority returns a typed denial/backend
-unavailable result before a job is created. Their executors still do not
-preserve constrained profiles, so no constrained parity is claimed. For test
-commands, use Bash when its managed route is equivalent and the same accepted
-profile is retained. Git filters/hooks and remote operations remain behind
-Linux C002/C003 containment and transport gates.
+tools check the immutable accepted authorization before scheduler submission.
+Python now carries a valid accepted profile through its durable job payload to
+`ManagedProcessService`; its mode policy can narrow WorkspaceWrite to
+read-only execution, and ReadOnly refuses transform mode before submission.
+The managed owner refuses a constrained job without a sandbox request. Test
+still admits only explicit FullHost snapshots: its domain runner owns a direct
+child lifecycle and must move that lifecycle to managed streaming before it
+can accept constrained profiles. This work is tracked by corrective plan
+008. Git filters/hooks and remote operations remain behind Linux C002/C003
+containment and transport gates.
 
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`

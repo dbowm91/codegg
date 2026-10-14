@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: closed (M001–M004 command authorization and route-admission scope complete; Linux containment gates remain independently owned)
+Status: active (original M001–M004 admission scope is closed; corrective 008 carries constrained specialized execution)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -48,7 +48,7 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 ### M004 constrained-route successor
 
-`plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is closed at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`. One accepted-receipt predicate gates active Bash intent and typed Test/Python. Constrained Test/Python calls return typed BackendUnavailable before scheduler submission because those executors cannot preserve the exact snapshot. Accepted constrained Bash remains in the raw `ManagedProcessService` Landlock route. Git executable/remote operations remain gated on Linux containment/transport. No constrained special route is promoted. Linux C006's bounded protected-mount candidate is closed negative for strict M003 acceptance; future nested Git metadata protection and the native compatibility matrix remain unresolved, so C006 does not unblock production route parity. This is not reopening M001–M003 closure.
+`plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is closed at `plans/closure/command-authorization-and-execution-boundaries/007-status.md`. One accepted-receipt predicate gates active Bash intent and typed Test/Python; plan 007's fail-closed disposition remains its historical scope. Corrective 008 is active to carry accepted constrained profiles through the scheduler and process owner for Test/Python. Linux containment and Git executable/remote gates remain independently owned; no Linux production backend promotion follows from this corrective.
 
 C004 moved the accepted command authority to ADR-0032 with exact archived provenance. Its content and permissions remain unchanged; Windows ADR identities remain separately scoped.
 
@@ -74,6 +74,7 @@ C004 moved the accepted command authority to ADR-0032 with exact archived proven
 ## 7. Milestones
 
 | M004 | capability/invariant | `implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` | **closed** | Closure `../closure/command-authorization-and-execution-boundaries/007-status.md`; accepted-receipt admission complete; constrained Test/Python fail before submission; Git gates retained |
+| M004-C1 | capability/invariant | `implementation/command-authorization-and-execution-boundaries/008-m004-constrained-specialist-execution.md` | **active** | Carry accepted profile to Test/Python execution owners; no route may launch without same-or-narrower obtained filesystem effects |
 
 
 

@@ -391,6 +391,10 @@ pub struct ManagedProcessRequest {
     /// process is launched from an agent tool call. This remains local
     /// plumbing and is not projected into child environment variables.
     pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+    /// Accepted profile ceiling when a scheduler payload cannot retain the
+    /// ephemeral permission receipt. The broker validates the receipt before
+    /// submission; the process owner still enforces constrained containment.
+    pub required_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 impl ManagedProcessRequest {
@@ -410,6 +414,7 @@ impl ManagedProcessRequest {
             sandbox: SandboxRequest::Disabled,
             provenance,
             execution_authorization: None,
+            required_sandbox_profile: None,
         }
     }
 
@@ -592,16 +597,14 @@ async fn run_inner(
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
-    if request
-        .execution_authorization
-        .as_ref()
-        .is_some_and(|authorization| {
-            authorization
-                .snapshot
-                .sandbox_profile()
-                .requires_filesystem_containment()
-                && matches!(&request.sandbox, SandboxRequest::Disabled)
-        })
+    let required_profile = request.required_sandbox_profile.or_else(|| {
+        request
+            .execution_authorization
+            .as_ref()
+            .map(|authorization| authorization.snapshot.sandbox_profile())
+    });
+    if required_profile.is_some_and(|profile| profile.requires_filesystem_containment())
+        && matches!(&request.sandbox, SandboxRequest::Disabled)
     {
         return Err(ManagedProcessError::SandboxFailed(
             "accepted execution policy requires filesystem containment, but the launch request disabled it".into(),
@@ -626,6 +629,7 @@ async fn run_inner(
         sandbox,
         provenance,
         execution_authorization: _execution_authorization,
+        required_sandbox_profile: _required_sandbox_profile,
     } = request;
 
     if executable.is_empty() {
@@ -2160,6 +2164,22 @@ mod tests {
         let error = run(process)
             .await
             .expect_err("constrained authorization cannot use a disabled sandbox");
+        assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn scheduler_carried_constrained_profile_refuses_disabled_sandbox_before_spawn() {
+        let root = tempfile::tempdir().expect("process marker directory");
+        let marker = root.path().join("must-not-exist");
+        let mut process = request(&format!("touch {}", marker.display()));
+        process.required_sandbox_profile =
+            Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+
+        let error = run(process)
+            .await
+            .expect_err("scheduler profile cannot use a disabled sandbox");
         assert!(matches!(error, ManagedProcessError::SandboxFailed(_)));
         assert!(!marker.exists());
     }

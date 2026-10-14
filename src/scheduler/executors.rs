@@ -1288,32 +1288,35 @@ impl JobExecutor for PythonJobExecutor {
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
 
-        let (source, mode_str, cwd, timeout_secs, workspace_root) = match &ctx.job.payload {
-            JobPayload::Python {
-                source,
-                mode,
-                cwd,
-                timeout_secs,
-                ..
-            } => (
-                source.clone(),
-                mode.clone(),
-                cwd.clone(),
-                *timeout_secs,
-                ctx.job
-                    .labels
-                    .get("workspace_root")
-                    .cloned()
-                    .map(PathBuf::from),
-            ),
-            _ => {
-                return failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    "unsupported payload kind".into(),
-                );
-            }
-        };
+        let (source, mode_str, cwd, timeout_secs, sandbox_profile, workspace_root) =
+            match &ctx.job.payload {
+                JobPayload::Python {
+                    source,
+                    mode,
+                    cwd,
+                    timeout_secs,
+                    sandbox_profile,
+                    ..
+                } => (
+                    source.clone(),
+                    mode.clone(),
+                    cwd.clone(),
+                    *timeout_secs,
+                    *sandbox_profile,
+                    ctx.job
+                        .labels
+                        .get("workspace_root")
+                        .cloned()
+                        .map(PathBuf::from),
+                ),
+                _ => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "unsupported payload kind".into(),
+                    );
+                }
+            };
 
         // Resolve source: inline source required; legacy script_path payloads
         // without inline source are rejected (plan §6: arbitrary or missing
@@ -1451,9 +1454,10 @@ impl JobExecutor for PythonJobExecutor {
 
         // The canonical process service owns cancellation and descendant
         // cleanup; do not drop an in-flight execution future as a substitute.
-        let result = crate::python_script::executor::execute_python_script_with_cancellation(
+        let result = crate::python_script::executor::execute_python_script_with_profile(
             &request,
             ctx.cancellation.clone(),
+            sandbox_profile,
         )
         .await;
 

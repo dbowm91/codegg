@@ -83,6 +83,17 @@ pub async fn execute_python_script_with_cancellation(
     request: &PythonScriptRequest,
     cancellation: CancellationToken,
 ) -> PythonRunResult {
+    execute_python_script_with_profile(request, cancellation, None).await
+}
+
+/// Execute Python with the accepted filesystem profile carried by the
+/// scheduler job. The profile is a ceiling only; Python's mode may request
+/// fewer rights, and ReadOnly cannot launch a workspace-writing transform.
+pub async fn execute_python_script_with_profile(
+    request: &PythonScriptRequest,
+    cancellation: CancellationToken,
+    required_profile: Option<codegg_core::approval::SandboxProfile>,
+) -> PythonRunResult {
     let start = Instant::now();
 
     // Compute script body hash for reproducibility tracking
@@ -95,6 +106,22 @@ pub async fn execute_python_script_with_cancellation(
             String::new(),
             format!("script exceeds maximum length of {MAX_SCRIPT_LENGTH} bytes"),
             Duration::ZERO,
+            request.mode,
+            request.code.len(),
+            PythonRiskAssessment::safe(),
+            PythonCapabilityEnvelope::analyze(),
+            script_body_hash,
+        );
+    }
+
+    if required_profile == Some(codegg_core::approval::SandboxProfile::ReadOnly)
+        && request.mode == PythonExecutionMode::Transform
+    {
+        return make_result(
+            PythonRunStatus::SpawnError,
+            String::new(),
+            "Python transform requires the accepted WorkspaceWrite profile".into(),
+            start.elapsed(),
             request.mode,
             request.code.len(),
             PythonRiskAssessment::safe(),
@@ -357,6 +384,7 @@ pub async fn execute_python_script_with_cancellation(
         Some(spec) => crate::managed_process::SandboxRequest::Required(spec),
         None => crate::managed_process::SandboxRequest::Disabled,
     };
+    process.required_sandbox_profile = required_profile;
 
     let managed = match crate::managed_process::ManagedProcessService::run(process).await {
         Ok(result) => result,
@@ -853,6 +881,37 @@ mod tests {
         let result = execute_python_script(&request).await;
         assert!(result.is_success(), "stderr: {}", result.stderr);
         assert!(result.stdout.contains("hello from python"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn execute_analyze_with_scheduler_carried_workspace_profile() {
+        let dir = test_cwd("profiled_analyze");
+        let request = PythonScriptRequest {
+            code: "print('profiled python')".to_string(),
+            mode: PythonExecutionMode::Analyze,
+            cwd: dir.clone(),
+            workspace_root: Some(dir),
+            timeout_secs: Some(10),
+            session_id: None,
+            intent: None,
+        };
+        let result = execute_python_script_with_profile(
+            &request,
+            CancellationToken::new(),
+            Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+        )
+        .await;
+        if matches!(
+            crate::security::sandbox::platform_sandbox_capability(),
+            crate::security::sandbox::SandboxCapability::Available { .. }
+        ) {
+            assert!(result.is_success(), "result: {result:#?}");
+            assert!(result.stdout.contains("profiled python"));
+        } else {
+            assert!(!result.is_success());
+            assert!(result.policy_decision.is_some());
+        }
     }
 
     #[tokio::test]

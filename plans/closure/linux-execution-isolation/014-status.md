@@ -113,14 +113,17 @@ The passing 1-test native slice is not M003 production approval. No M003,
 M004/M005 or Git C002 enforcement is claimed; the Landlock-only behavior stays
 canonical.
 
-Before M003 can be retried, a separately reviewed design must provide an
-enforceable policy for metadata created after launch-time discovery. Candidate
-directions include a staged/copy-on-write workspace with validated promotion
-that excludes executable Git metadata, or a kernel mediation mechanism that
-can enforce path-component policy for newly created directories. Any successor
-must preserve normal workspace edits, prove safe promotion and crash cleanup,
-and pass the remaining native matrix. Static pre-scan, command-name filtering,
-and mounting only currently existing `.git` paths do not satisfy this gate.
+The 2026-10-14 trust-boundary review concludes that arbitrary nested `.git`
+creation need not be forbidden if a new repository cannot redirect a trusted
+daemon Git operation outside its selected worktree or introduce executable
+metadata on a trusted route. `research/linux-execution-isolation/m003-future-git-metadata-trust-boundary.md`
+records that design. `egggit::process::GitEnvPolicy` now pins the selected
+worktree and isolates system/global config; native tests prove a hostile local
+`core.worktree` cannot redirect trusted status and executable fsmonitor
+metadata does not run. The C006 mount candidate remains unqualified for
+production, and the other native/compatibility gates listed above remain open.
+This update does not rewrite the reviewed-baseline evidence or change the
+negative C006 disposition.
 
 Registry disposition: C006 is closed as a bounded negative qualification;
 M003 remains blocked, and nothing is unblocked. C007 and C008 retain their

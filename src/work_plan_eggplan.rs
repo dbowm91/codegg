@@ -354,6 +354,7 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                 source_hash,
                 cwd,
                 timeout_secs: payload_timeout,
+                sandbox_profile: _,
             } => {
                 // Script/source digest participates; the path string alone is
                 // execution identity only when no inline source exists.
@@ -1606,6 +1607,7 @@ mod tests {
             source_hash: None,
             cwd: None,
             timeout_secs: None,
+            sandbox_profile: None,
         };
         assert!(verification_digest_for_job(&python).is_err());
         // Legacy Subagent payloads stay verification-unavailable.
