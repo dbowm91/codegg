@@ -147,6 +147,13 @@ impl DaemonRequestFamily {
             CoreRequest::SessionControlTakeover { .. } => Self::Turns,
             CoreRequest::JobAttempts { .. } => Self::Jobs,
             CoreRequest::JobCancel { .. } => Self::Jobs,
+            // C005 (ADR-0031): grant management is ordinary
+            // principal-authorized project mutation on the daemon-owned
+            // continuation store; it shares the Jobs owner, store, and
+            // audit seams. Dispatch itself is never a wire operation.
+            CoreRequest::ContinuationGrantCreate { .. } => Self::Jobs,
+            CoreRequest::ContinuationGrantRevoke { .. } => Self::Jobs,
+            CoreRequest::ContinuationGrantStatus { .. } => Self::Jobs,
             CoreRequest::JobGet { .. } => Self::Jobs,
             CoreRequest::JobList { .. } => Self::Jobs,
             CoreRequest::JobRecoveryReport => Self::Jobs,

@@ -490,10 +490,23 @@ notice, never a turn. The forwarder checks
 second daemon over the same pool (stale `flock`, divergent
 `CODEGG_DAEMON_HOME`) absorbs rather than duplicates hints; the residual
 same-id race is benign (consumers dedupe by notice id). No per-job poller, no second
-scheduler, no model tokens spent by delivery. Autonomous provider resume
-stays explicitly blocked: no daemon path invokes `maybe_dispatch` with a
-real executor until an authenticated host-grant workflow exists (see
-`architecture/authorization.md`); grants alone dispatch nothing.
+scheduler, no model tokens spent by delivery. C005 (ADR-0031, accepted)
+closes the resume half the slice left blocked: an authenticated grant
+workflow (`ContinuationGrantCreate`/`Revoke`/`Status` through daemon
+request authority, server-resolved origin, immutable
+`continuation_grant` attribution in migration v78) plus the
+daemon-internal delegated entry `submit_idle_continuation_turn`
+(post-commit fanout wake + bounded restart twin
+`reconcile_idle_continuation_wakes` in `recover_jobs`; call-site guard
+`scripts/check_idle_continuation_callsites.py`). The wake revalidates
+the grant against current team/session/provider state, CAS-claims the
+`(notice, grant)` intent, and admits through the canonical `TurnSubmit`
+path attributed to the grant owner (`idle:<grant_id>` client marker).
+Legacy rows without stored origin stay non-autonomous; one logical
+terminal admits at most one owner turn (deterministic delegation
+submission id + receipt before provider entry; ambiguity becomes
+`needs_attention`); store caches never overwrite (DB-fresh grant loads
+for authority decisions, never-overwrite intent fills).
 
 ### Boundary Enforcement
 

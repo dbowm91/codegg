@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
-    CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
-    JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto, ProjectHealthDto,
-    ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto,
-    RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto,
-    WorkspaceServiceHealthDto,
+    CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto,
+    ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto,
+    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
+    SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1414,6 +1414,19 @@ pub enum CoreResponse {
     JobRecoveryReport {
         report: RecoveryReportDto,
     },
+    /// Acknowledgement that an idle-continuation grant was approved.
+    ContinuationGrantCreated {
+        grant_id: String,
+    },
+    /// Acknowledgement that an idle-continuation grant was revoked.
+    ContinuationGrantRevoked {
+        grant_id: String,
+    },
+    /// One idle-continuation grant bound to the requesting session, or
+    /// `None` when unknown or bound to another session.
+    ContinuationGrantStatus {
+        grant: Option<ContinuationGrantDto>,
+    },
     // ── Session Projections M2: Replay Protocol ──────────────────────
     /// Daemon projection replay capabilities and negotiated limits.
     ProjectionCapabilitiesResponse {
@@ -2629,6 +2642,48 @@ pub enum CoreRequest {
     },
     /// Trigger a recovery pass and return the report.
     JobRecoveryReport,
+    // ── C005 (ADR-0031): authenticated idle-continuation grants ──
+    /// Approve exactly one bounded idle continuation for a background
+    /// wait. Identity (principal/session/workspace/model/connection) is
+    /// resolved server-side from the transport authority and the owning
+    /// session row; the payload carries only locators and bounds, never
+    /// identity. Creating the grant IS the approval: the gate requires
+    /// `agent.invoke` on the owning session's project, the same authority
+    /// sufficient to submit the future turn. No default credentials, no
+    /// silent approval, no upgrade of legacy grant rows.
+    ContinuationGrantCreate {
+        session_id: String,
+        notice_job_id: String,
+        #[serde(default)]
+        allowed_model: Option<String>,
+        #[serde(default)]
+        allowed_connection: Option<String>,
+        #[serde(default)]
+        max_continuations: Option<u32>,
+        #[serde(default)]
+        max_tokens: Option<u64>,
+        #[serde(default)]
+        max_tool_calls: Option<u32>,
+        #[serde(default)]
+        max_duration_ms: Option<i64>,
+        #[serde(default)]
+        ttl_ms: Option<i64>,
+    },
+    /// Revoke a grant created through `ContinuationGrantCreate`. Scoped
+    /// to the owning session; revocation takes effect at the next wake
+    /// revalidation and through the existing in-turn controller and
+    /// permission paths for a running delegated turn.
+    ContinuationGrantRevoke {
+        session_id: String,
+        grant_id: String,
+    },
+    /// Inspect one grant bound to the owning session. Unknown or
+    /// foreign-session grants read as absent (privacy-safe, same shape
+    /// as the job surfaces).
+    ContinuationGrantStatus {
+        session_id: String,
+        grant_id: String,
+    },
     // ── Session Projections M2: Replay Protocol ──────────────────────
     /// Query daemon projection replay capabilities and limits.
     ProjectionCapabilities,

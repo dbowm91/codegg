@@ -349,15 +349,22 @@ impl CoreDaemon {
             crate::scheduler::job_notifications::JobTerminalNotice,
         >();
         shared_notifier.set_completion_hook_sync(completion_tx);
+        // C005 (ADR-0031) delegated-wake cell: published post-`Arc` via
+        // `attach_idle_wake`. The forwarder below upgrades it per notice;
+        // unset means notify-only (fail-closed).
+        let idle_wake_cell: Arc<std::sync::OnceLock<std::sync::Weak<super::daemon::CoreDaemon>>> =
+            Arc::new(std::sync::OnceLock::new());
         let idle_completion_handle = {
             let event_log_for_fanout = event_log.clone();
             let router_for_fanout = notification_router.clone();
+            let wake_cell_for_fanout = idle_wake_cell.clone();
             tokio::runtime::Handle::try_current().ok().map(|handle| {
                 handle.spawn(async move {
                     crate::core::daemon::CoreDaemon::forward_idle_completions(
                         completion_rx,
                         event_log_for_fanout,
                         router_for_fanout,
+                        wake_cell_for_fanout,
                     )
                     .await;
                 })
@@ -521,6 +528,7 @@ impl CoreDaemon {
             _ci_watch_driver_handle: ci_watch_driver_handle,
             continuation_service: Some(shared_continuation),
             _idle_completion_handle: idle_completion_handle,
+            idle_wake_cell,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
             // M002: share the scheduler's admission controller so
             // interactive spawns draw from the same process-slot

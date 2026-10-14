@@ -293,6 +293,70 @@ pub struct NewGrant {
     pub ttl_ms: Option<i64>,
 }
 
+/// C005 (ADR-0031): server-resolved origin for one host-approved grant.
+///
+/// Every identity field here MUST be resolved server-side by the grant
+/// handler (transport authority + gate decision + owning session row),
+/// never copied from the request payload. The type boundary — not a
+/// comment — is what keeps caller-supplied `NewGrant` strings from
+/// reaching the autonomous path: only this input flows into
+/// [`ContinuationService::authorize_host_grant`], and only grants with a
+/// stored [`codegg_core::authorization::OriginAttribution`] row (written
+/// by the same handler) are wake-eligible. Legacy `NewGrant` rows stay
+/// non-autonomous.
+pub struct HostGrantInput {
+    pub notice_job_id: String,
+    pub session_id: String,
+    pub owner_principal: String,
+    pub workspace_id: Option<String>,
+    pub origin_turn_id: Option<String>,
+    pub allowed_model: Option<String>,
+    pub allowed_connection: Option<String>,
+    pub max_continuations: Option<u32>,
+    pub max_tokens: Option<u64>,
+    pub max_tool_calls: Option<u32>,
+    pub max_duration_ms: Option<i64>,
+    pub ttl_ms: Option<i64>,
+}
+
+/// Delegated client marker recorded as audit/presence metadata for an
+/// idle-continuation turn. Never an authority: the authority is the
+/// reconstructed grant owner.
+pub fn delegated_client_id(grant_id: &str) -> String {
+    format!("idle:{grant_id}")
+}
+
+/// Deterministic delegation submission id: identical (notice, grant)
+/// pairs coalesce on the durable receipt, so a retried wake never mints
+/// a second turn identity.
+pub fn delegation_submission_id(notice_id: &str, grant_id: &str) -> String {
+    format!(
+        "idle-{:x}",
+        sha2::Sha256::digest(format!("idle-continuation|{notice_id}|{grant_id}").as_bytes())
+    )
+}
+
+/// Canonical digest over the delegated turn content bound to one wake.
+/// The receipt identity check compares this, so a reused submission id
+/// with different content or authority is a conflict, never a replay.
+pub fn delegation_request_digest(
+    notice_id: &str,
+    grant_id: &str,
+    session_id: &str,
+    owner_principal: &str,
+    summary: &str,
+) -> String {
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(
+            format!(
+                "idle-continuation|{notice_id}|{grant_id}|{session_id}|{owner_principal}|{summary}"
+            )
+            .as_bytes()
+        )
+    )
+}
+
 #[derive(Default)]
 pub struct ContinuationService {
     grants: RwLock<HashMap<String, ContinuationGrant>>,
@@ -377,6 +441,46 @@ impl ContinuationService {
         Ok(grant)
     }
 
+    /// C005 (ADR-0031): create one host-approved grant from
+    /// server-resolved origin.
+    ///
+    /// The caller MUST supply [`HostGrantInput`] built from the transport
+    /// authority, the gate decision, and the owning session row — never
+    /// from the request payload. Storage is shared with [`Self::authorize`]
+    /// (same table, same clamps, same idempotency), but wake eligibility
+    /// additionally requires the stored `continuation_grant` origin
+    /// attribution row the grant handler writes in the same request: a
+    /// grant without attestable origin — every legacy row — stays
+    /// notify-only no matter what its strings claim.
+    pub async fn authorize_host_grant(
+        &self,
+        input: HostGrantInput,
+    ) -> Result<ContinuationGrant, ContinuationError> {
+        if input.notice_job_id.is_empty()
+            || input.session_id.is_empty()
+            || input.owner_principal.is_empty()
+        {
+            return Err(ContinuationError::Unauthorized(
+                "host grants require a server-resolved job, session, and owner".into(),
+            ));
+        }
+        self.authorize(NewGrant {
+            notice_job_id: input.notice_job_id,
+            session_id: input.session_id,
+            owner_principal: Some(input.owner_principal),
+            workspace_id: input.workspace_id,
+            origin_turn_id: input.origin_turn_id,
+            allowed_model: input.allowed_model,
+            allowed_connection: input.allowed_connection,
+            max_continuations: input.max_continuations,
+            max_tokens: input.max_tokens,
+            max_tool_calls: input.max_tool_calls,
+            max_duration_ms: input.max_duration_ms,
+            ttl_ms: input.ttl_ms,
+        })
+        .await
+    }
+
     pub async fn get_grant(
         &self,
         grant_id: &str,
@@ -406,12 +510,65 @@ impl ContinuationService {
                 if let Some(s) = status_row.as_deref().and_then(grant_status_from_str) {
                     grant.status = s;
                 }
+                // Never overwrite: a concurrent writer in this process
+                // may hold a newer entry (status/budget advanced after our
+                // read). Return the cached entry, which writers keep current.
                 let mut grants = self.grants.write().await;
-                grants.insert(grant_id.to_string(), grant.clone());
-                return Ok(Some(grant));
+                let entry = grants.entry(grant_id.to_owned()).or_insert(grant);
+                return Ok(Some(entry.clone()));
             }
         }
         Ok(None)
+    }
+
+    /// DB-first grant load for authority decisions (wake admission,
+    /// status reads). Process memory is only a hint: a revocation or
+    /// budget consumption committed by another daemon (stale `flock`,
+    /// divergent home) must be visible here even when this service cached
+    /// an older row. Refreshes the cache on a hit; evicts on an
+    /// authoritative miss. Also overlays `used_continuations`, which the
+    /// budget bump keeps in its column without rewriting `record_json`.
+    pub(crate) async fn get_grant_fresh(
+        &self,
+        grant_id: &str,
+    ) -> Result<Option<ContinuationGrant>, ContinuationError> {
+        if let Some(pool) = &self.pool {
+            if let Some(json) = sqlx::query_scalar::<_, String>(
+                "SELECT record_json FROM continuation_grant WHERE grant_id = ?",
+            )
+            .bind(grant_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| ContinuationError::Storage(e.to_string()))?
+            {
+                let mut grant: ContinuationGrant = serde_json::from_str(&json)?;
+                let status_row: Option<String> =
+                    sqlx::query_scalar("SELECT status FROM continuation_grant WHERE grant_id = ?")
+                        .bind(grant_id)
+                        .fetch_optional(pool)
+                        .await
+                        .map_err(|e| ContinuationError::Storage(e.to_string()))?;
+                if let Some(s) = status_row.as_deref().and_then(grant_status_from_str) {
+                    grant.status = s;
+                }
+                let used_row: Option<i64> = sqlx::query_scalar(
+                    "SELECT used_continuations FROM continuation_grant WHERE grant_id = ?",
+                )
+                .bind(grant_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| ContinuationError::Storage(e.to_string()))?;
+                if let Some(used) = used_row {
+                    grant.used_continuations = used.max(0) as u32;
+                }
+                let mut grants = self.grants.write().await;
+                grants.insert(grant_id.to_owned(), grant.clone());
+                return Ok(Some(grant));
+            }
+            self.grants.write().await.remove(grant_id);
+            return Ok(None);
+        }
+        self.get_grant(grant_id).await
     }
 
     /// Find the newest usable grant for one background job. Returns `None`
@@ -430,7 +587,7 @@ impl ContinuationService {
             .await
             .map_err(|e| ContinuationError::Storage(e.to_string()))?;
             for id in ids {
-                if let Some(g) = self.get_grant(&id).await? {
+                if let Some(g) = self.get_grant_fresh(&id).await? {
                     if self.grant_usable(&g) {
                         return Ok(Some(g));
                     }
@@ -534,7 +691,7 @@ impl ContinuationService {
         Ok(())
     }
 
-    async fn bump_grant_use(&self, grant_id: &str) -> Result<(), ContinuationError> {
+    pub(crate) async fn bump_grant_use(&self, grant_id: &str) -> Result<(), ContinuationError> {
         let now = chrono::Utc::now().timestamp_millis();
         if let Some(pool) = &self.pool {
             let _ = sqlx::query(
@@ -603,9 +760,12 @@ impl ContinuationService {
                 if let Some(s) = state_row.as_deref().and_then(intent_state_from_str) {
                     intent.state = s;
                 }
+                // Never overwrite (see get_grant above): the race loser
+                // who read before the winner's write must not clobber the
+                // winner's entry (e.g. a recorded turn id) with stale data.
                 let mut intents = self.intents.write().await;
-                intents.insert(id, intent.clone());
-                return Ok(Some(intent));
+                let entry = intents.entry(id.clone()).or_insert(intent);
+                return Ok(Some(entry.clone()));
             }
         }
         Ok(None)
@@ -648,9 +808,12 @@ impl ContinuationService {
                     if let Some(s) = state_row.as_deref().and_then(intent_state_from_str) {
                         intent.state = s;
                     }
+                    // Never overwrite (see get_grant above); report the
+                    // cached entry so a concurrent admission's recorded
+                    // turn id is never replaced by a stale read.
                     let mut intents = self.intents.write().await;
-                    intents.insert(id, intent.clone());
-                    out.push(intent);
+                    let entry = intents.entry(id.clone()).or_insert(intent);
+                    out.push(entry.clone());
                 }
             }
             return Ok(out);
@@ -663,7 +826,7 @@ impl ContinuationService {
             .collect())
     }
 
-    async fn insert_intent_pending(
+    pub(crate) async fn insert_intent_pending(
         &self,
         notice_id: &str,
         grant_id: &str,
@@ -714,7 +877,7 @@ impl ContinuationService {
         Ok(true)
     }
 
-    async fn transition_intent(
+    pub(crate) async fn transition_intent(
         &self,
         notice_id: &str,
         grant_id: &str,
@@ -757,7 +920,7 @@ impl ContinuationService {
         Ok(true)
     }
 
-    async fn set_intent_turn(
+    pub(crate) async fn set_intent_turn(
         &self,
         notice_id: &str,
         grant_id: &str,
@@ -784,7 +947,7 @@ impl ContinuationService {
         Ok(())
     }
 
-    async fn mark_intent(
+    pub(crate) async fn mark_intent(
         &self,
         notice_id: &str,
         grant_id: &str,

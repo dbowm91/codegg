@@ -1,6 +1,8 @@
 # ADR-0031: Authenticated Idle Continuation Grant and Delegated Turn Admission
 
-Status: proposed
+Status: accepted
+
+Accepted: 2026-10-14 (C005 implementation authorized on this contract; grant-family + delegated-entry slices landed under it)
 
 Date: 2026-10-14
 

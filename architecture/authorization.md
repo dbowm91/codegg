@@ -93,21 +93,23 @@ in-memory daemons without a pool decide under the same broad policy.
   availability, then CAS-claims exactly one `(notice, grant)` intent. An
   observer with a guessed job/watch id holds no grant and stays notify-only;
   revocation/expiry/budget exhaustion suppress before invocation.
-- `continuation-grant` (C004 delivery slice) — no authenticated production
-  grant workflow exists yet: `ContinuationService::authorize` still accepts
-  caller-supplied lineage strings and is therefore an unauthenticated
-  service boundary until wired through daemon request authority. The daemon
-  owns the store but wires no coordinator/executor and never invokes
-  `maybe_dispatch` in production, so existing grant rows are
-  non-autonomous and every completion stays notify-only (fail-closed).
-   A model `on_complete` flag or a fake `client_id` never substitutes for
-   grant verification; autonomous provider resume is explicitly blocked
-   pending a server-resolved principal/session/workspace grant path.
-   The delegated-admission design that would close this gap is recorded
-   as proposed ADR-0031 (grant as a new `CoreRequest` family through
-   this gate; dispatch as a daemon-internal delegated entry, never a
-   wire operation); until it is accepted and implemented, the block
-   stands.
+- `continuation-grant` (C005, ADR-0031 accepted) — authenticated grant
+  workflow plus daemon-internal delegated admission. Grant management is
+  three `CoreRequest` variants through this gate (`via_session` +
+  `agent.invoke` for create/revoke, `session.read` for status): the
+  handler re-resolves principal/session/workspace/model server-side,
+  captures immutable `continuation_grant` origin attribution
+  (first-write-wins, migration v78), and audits create/revoke as
+  `agent_delegate`. Dispatch is never a wire operation:
+  `submit_idle_continuation_turn` (exactly two callers — the post-commit
+  fanout wake and the bounded restart twin, enforced by
+  `check_idle_continuation_callsites.py`) revalidates the grant against
+  current team/session/provider state, CAS-claims the `(notice, grant)`
+  intent, and admits through the canonical `TurnSubmit` path attributed
+  to the reconstructed grant owner with an `idle:<grant_id>` client
+  marker (metadata only). Legacy rows without stored origin stay
+  non-autonomous; revocation/expiry/budget/mismatch suppress before
+  inference; ambiguity after admission becomes `needs_attention`.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed
@@ -425,6 +427,9 @@ not a Core operation):
 | `connection_rotate_cancel` | opaque | `project.configure` |
 | `connection_rotate_secret_stage` | opaque | `project.configure` |
 | `connection_rotate_status` | opaque | `project.read` |
+| `continuation_grant_create` | via_session | `agent.invoke` |
+| `continuation_grant_revoke` | via_session | `agent.invoke` |
+| `continuation_grant_status` | via_session | `session.read` |
 | `document_capabilities` | global | `none` |
 | `document_modify` | direct_project | `file.modify` |
 | `document_read` | direct_project | `file.read` |

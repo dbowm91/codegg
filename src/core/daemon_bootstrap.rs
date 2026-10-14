@@ -343,6 +343,15 @@ impl CoreDaemon {
         if hints > 0 {
             tracing::info!(hints, "idle completion hints republished during recovery");
         }
+        // C005 (ADR-0031) restart twin: re-evaluate delegated wakes for
+        // recent terminals that may have missed their fanout wake (crash
+        // between commit and fanout, forwarder abort). CAS-gated and
+        // bounded; missed wakes otherwise heal the same way on the next
+        // restart. Never fails daemon recovery.
+        let wakes = self.reconcile_idle_continuation_wakes().await;
+        if wakes > 0 {
+            tracing::info!(wakes, "idle-continuation wakes dispatched during recovery");
+        }
         if let Some(scheduler) = self.deps.scheduler.as_ref() {
             match scheduler
                 .recover_at_startup(&self.deps.recovery_policy)

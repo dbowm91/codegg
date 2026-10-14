@@ -30,7 +30,7 @@ fn turn_admission_receipt_response(
 /// Narrow domain error for daemon-side prompt composition. Protocol
 /// response construction belongs to the `SessionPromptSubmit` boundary.
 #[derive(Debug)]
-struct PromptCompositionError {
+pub(crate) struct PromptCompositionError {
     code: &'static str,
     message: String,
 }
@@ -1659,7 +1659,7 @@ impl CoreDaemon {
         }
     }
 
-    async fn resolve_prompt_submit_composition(
+    pub(crate) async fn resolve_prompt_submit_composition(
         &self,
         session_id: &str,
         text: &str,

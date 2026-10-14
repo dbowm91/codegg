@@ -253,6 +253,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 77 {
         migrate_and_record(pool, 77).await?;
     }
+    if current_version < 78 {
+        migrate_and_record(pool, 78).await?;
+    }
 
     Ok(())
 }
@@ -342,6 +345,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             75 => migrate_v75(&mut tx).await?,
             76 => migrate_v76(&mut tx).await?,
             77 => migrate_v77(&mut tx).await?,
+            78 => migrate_v78(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3177,6 +3181,79 @@ async fn migrate_v77(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "#,
         "CREATE INDEX IF NOT EXISTS idx_idle_continuation_notice ON idle_continuation(notice_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_idle_continuation_session ON idle_continuation(session_id, state)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Async Background Jobs C005 (ADR-0031): admit the `continuation_grant`
+/// origin-attribution scope.
+///
+/// Same rebuild pattern as v61 (`work_order`): the v53
+/// `origin_attribution` table pins its scope kinds in a SQL `CHECK`, so
+/// the store rebuilds the table with the extended kind set. Every
+/// existing row is copied verbatim (same columns, same primary key);
+/// fresh databases receive the new shape directly. The Rust-side scope
+/// allow-list already admits `continuation_grant`; this migration aligns
+/// the durable backstop so host-grant origin capture persists instead of
+/// failing closed (a grant without stored origin stays non-autonomous).
+async fn migrate_v78(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    const NEW_SCHEMA: &str = r#"
+        CREATE TABLE IF NOT EXISTS origin_attribution_new (
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('session','turn','run','job','worktree','provider','work_order','continuation_grant')),
+            scope_id TEXT NOT NULL,
+            origin_principal TEXT NOT NULL,
+            origin_kind TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            transport_class TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            membership_revision INTEGER,
+            decision_id TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            attribution_json TEXT NOT NULL,
+            PRIMARY KEY (scope_kind, scope_id)
+        )
+        "#;
+    sqlx::query(NEW_SCHEMA)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    let legacy_exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_attribution'",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    if legacy_exists.0 > 0 {
+        for statement in [
+            "INSERT OR IGNORE INTO origin_attribution_new \
+             (scope_kind, scope_id, origin_principal, origin_kind, auth_method, transport_class, \
+              policy, membership_revision, decision_id, correlation_id, time_created, \
+              attribution_json) \
+             SELECT scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+              transport_class, policy, membership_revision, decision_id, correlation_id, \
+              time_created, attribution_json FROM origin_attribution",
+            "DROP TABLE origin_attribution",
+            "ALTER TABLE origin_attribution_new RENAME TO origin_attribution",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Migration(e.to_string()))?;
+        }
+    } else {
+        sqlx::query("ALTER TABLE origin_attribution_new RENAME TO origin_attribution")
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_principal ON origin_attribution(origin_principal)",
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_decision ON origin_attribution(decision_id)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)
