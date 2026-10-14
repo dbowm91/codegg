@@ -133,6 +133,40 @@ fn make_bash_tool(store: Arc<MemRunStore>, workspace_root: &Path) -> BashTool {
         .with_workspace_root(workspace_root.to_path_buf())
         .with_run_store(store)
         .with_command_intent_config(active_config())
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
+}
+
+fn accepted_full_host_context() -> codegg::tool::backend::ToolExecutionContext {
+    let mut context = codegg::tool::backend::ToolExecutionContext::with_backend(
+        codegg::tool::backend::ToolBackendKind::Native,
+    );
+    context.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                Some("session".into()),
+                Some("agent".into()),
+                Some("policy".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "yolo",
+                Some("policy".into()),
+            ),
+            command_preflight: None,
+        });
+    context
+}
+
+async fn execute_active(
+    tool: &BashTool,
+    input: serde_json::Value,
+) -> Result<String, codegg::error::ToolError> {
+    tool.execute_structured(input, Some(accepted_full_host_context()))
+        .await
+        .map(|result| result.output)
 }
 
 // ── Row 1: native typed read ─────────────────────────────────────────────
@@ -487,7 +521,7 @@ async fn row_4_bash_simple_git_read() {
     assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
 
     // Execute via BashTool (active routing dispatches to Git backend).
-    let result = tool.execute(json!({"command": "git status"})).await;
+    let result = execute_active(&tool, json!({"command": "git status"})).await;
     assert!(
         result.is_ok(),
         "row 4: BashTool execution failed: {:?}",
@@ -571,7 +605,7 @@ async fn row_5_bash_simple_git_mutation() {
     // Use `git -C` to specify the repo directory since BashTool's raw shell
     // path doesn't set current_dir when allowed_paths is not configured.
     let git_cmd = format!("git -C {} add new_file.txt", repo.path().display());
-    let result = tool.execute(json!({"command": git_cmd})).await;
+    let result = execute_active(&tool, json!({"command": git_cmd})).await;
     assert!(
         result.is_ok(),
         "row 5: BashTool execution failed: {:?}",
@@ -679,7 +713,7 @@ async fn row_5b_bash_simple_git_mutation_active() {
     let test_file = "row_5b_unified_git_mutation.txt";
     fs_utils::write(&repo.path().join(test_file), "row 5b content\n");
     let git_cmd = format!("git -C {} add {}", repo.path().display(), test_file);
-    let result = tool.execute(json!({"command": git_cmd})).await;
+    let result = execute_active(&tool, json!({"command": git_cmd})).await;
     assert!(
         result.is_ok(),
         "row 5b: BashTool execution failed: {:?}",
@@ -806,12 +840,14 @@ async fn row_5c_bash_typed_git_mutation_active() {
     // Pure `git add <file>` invocation. The parser types this as
     // `Stage` (not ManagedGitArgv), so `dispatch_to_git` runs the
     // typed GitMutationExecutor path.
-    let result = tool
-        .execute(json!({
+    let result = execute_active(
+        &tool,
+        json!({
             "command": format!("git add {}", test_file),
             "workdir": repo_root.to_string_lossy(),
-        }))
-        .await;
+        }),
+    )
+    .await;
     assert!(
         result.is_err(),
         "row 5c: git add must require contained execution because repository clean filters can run"
