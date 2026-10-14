@@ -38,5 +38,10 @@
     "vite": "8.3.2",
     "vitest": "5.0.3",
     "webdriverio": "^9.32.0"
+  },
+  "//overrides": "Security pins for transitive dev-dependency advisories (Dependabot #35/#36 serialize-javascript, #37/#39 extract-zip via @puppeteer/browsers). Both bumps are API-compatible with the WebdriverIO 9 consumers below; drop them once a wdio release carrying them natively is adopted.",
+  "overrides": {
+    "serialize-javascript": "^7.1.2",
+    "@puppeteer/browsers": "^3.2.4"
   }
 }
