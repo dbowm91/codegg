@@ -878,6 +878,7 @@ impl ToolBroker {
                         ToolError::Io(_) => "io",
                         ToolError::Permission(_) => "permission",
                         ToolError::Disabled(_) => "disabled",
+                        ToolError::BackendUnavailable(_) => "backend_unavailable",
                         ToolError::NotFound(_) => "not_found",
                         ToolError::Format(_) => "validation",
                         ToolError::Execution(_) => "execution",
@@ -894,6 +895,9 @@ impl ToolBroker {
                             ToolError::Disabled(msg) => {
                                 ToolValue::infrastructure_error(format!("Tool is disabled: {msg}"))
                             }
+                            ToolError::BackendUnavailable(msg) => ToolValue::infrastructure_error(
+                                format!("Execution backend unavailable: {msg}"),
+                            ),
                             other => {
                                 ToolValue::infrastructure_error(format!("Tool error: {other}"))
                             }
@@ -990,6 +994,11 @@ impl ToolBroker {
                                 ToolError::Disabled(msg) => ToolValue::infrastructure_error(
                                     format!("Tool is disabled: {msg}"),
                                 ),
+                                ToolError::BackendUnavailable(msg) => {
+                                    ToolValue::infrastructure_error(format!(
+                                        "Execution backend unavailable: {msg}"
+                                    ))
+                                }
                                 other => {
                                     ToolValue::infrastructure_error(format!("Tool error: {other}"))
                                 }

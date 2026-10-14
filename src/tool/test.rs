@@ -140,6 +140,20 @@ impl Tool for TestTool {
         use crate::live_execution_audit as live;
         let start = Instant::now();
         let mut request = parse_test_request(&input)?;
+        crate::tool::authorization::admit_full_host_specialized_route(
+            ctx.as_ref()
+                .and_then(|context| context.execution_authorization.as_ref()),
+            crate::tool::authorization::SpecializedExecutionRoute::Test,
+        )
+        .map_err(|reason| match reason {
+            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
+                ToolError::BackendUnavailable(reason.to_string())
+            }
+            crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+            | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+                ToolError::Permission(reason.to_string())
+            }
+        })?;
         request.session_id = request
             .session_id
             .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
@@ -450,6 +464,42 @@ fn parse_positive_seconds(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn constrained_context() -> ToolExecutionContext {
+        let mut context = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+        let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot,
+                receipt: crate::permission::PermissionDecisionReceipt {
+                    decision_id: "decision-1".into(),
+                    outcome: crate::permission::PermissionLevel::Allow,
+                    source: "test".into(),
+                    issued_at: 1,
+                    policy_revision: Some("policy-r1".into()),
+                },
+                command_preflight: None,
+            });
+        context
+    }
+
+    #[tokio::test]
+    async fn constrained_test_route_refuses_before_scheduler_submission() {
+        let tool = TestTool::default();
+        let error = tool
+            .execute_structured(json!({"scope": "auto"}), Some(constrained_context()))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::BackendUnavailable(_)));
+    }
 
     #[tokio::test]
     async fn test_tool_rejects_missing_scope() {

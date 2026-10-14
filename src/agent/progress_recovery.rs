@@ -109,6 +109,7 @@ impl ToolExecutionOutcome {
             crate::error::ToolError::NotFound(_)
             | crate::error::ToolError::Execution(_)
             | crate::error::ToolError::Disabled(_)
+            | crate::error::ToolError::BackendUnavailable(_)
             | crate::error::ToolError::Io(_)
             | crate::error::ToolError::Network(_) => ToolExecutionStatus::ToolError,
         };

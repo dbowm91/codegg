@@ -504,6 +504,32 @@ impl Tool for PythonScriptTool {
             "Python execution requires scheduler admission; scheduler is disabled".into(),
         ))
     }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<crate::tool::backend::ToolExecutionContext>,
+    ) -> Result<crate::tool::backend::StructuredToolResult, ToolError> {
+        crate::tool::authorization::admit_full_host_specialized_route(
+            ctx.as_ref()
+                .and_then(|context| context.execution_authorization.as_ref()),
+            crate::tool::authorization::SpecializedExecutionRoute::Python,
+        )
+        .map_err(|reason| match reason {
+            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
+                ToolError::BackendUnavailable(reason.to_string())
+            }
+            crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+            | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+                ToolError::Permission(reason.to_string())
+            }
+        })?;
+        let output = self.execute(input).await?;
+        Ok(crate::tool::backend::StructuredToolResult::legacy(
+            self.name(),
+            output,
+        ))
+    }
 }
 
 /// Build a `PythonScriptRequest` from model-facing JSON input.
@@ -573,6 +599,34 @@ fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest
 mod tests {
     use super::*;
 
+    fn constrained_context() -> crate::tool::backend::ToolExecutionContext {
+        let mut context = crate::tool::backend::ToolExecutionContext::with_backend(
+            crate::tool::backend::ToolBackendKind::Native,
+        );
+        let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot,
+                receipt: crate::permission::PermissionDecisionReceipt {
+                    decision_id: "decision-1".into(),
+                    outcome: crate::permission::PermissionLevel::Allow,
+                    source: "test".into(),
+                    issued_at: 1,
+                    policy_revision: Some("policy-r1".into()),
+                },
+                command_preflight: None,
+            });
+        context
+    }
+
     #[test]
     fn tool_name_and_category() {
         let tool = PythonScriptTool::new();
@@ -590,5 +644,18 @@ mod tests {
         let required = params.get("required").unwrap().as_array().unwrap();
         assert!(required.contains(&json!("code")));
         assert!(!required.contains(&json!("mode")));
+    }
+
+    #[tokio::test]
+    async fn constrained_python_route_refuses_before_scheduler_submission() {
+        let tool = PythonScriptTool::new();
+        let error = tool
+            .execute_structured(
+                json!({"code": "print('must not run')"}),
+                Some(constrained_context()),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ToolError::BackendUnavailable(_)));
     }
 }

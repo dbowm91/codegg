@@ -1341,11 +1341,11 @@ impl BashTool {
         timeout: Duration,
         audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
     ) -> Result<DispatchOutcome, ToolError> {
-        if !active_route_matches_authorization(audit_ctx) {
-            return Err(ToolError::Permission(
-                "active command route cannot prove the accepted constrained sandbox; route refused"
-                    .into(),
-            ));
+        if let Err(reason) = crate::tool::authorization::admit_full_host_specialized_route(
+            audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
+            crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+        ) {
+            return Err(specialized_route_error(reason));
         }
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
@@ -1413,12 +1413,18 @@ impl BashTool {
     }
 }
 
-fn active_route_matches_authorization(
-    audit_ctx: Option<&crate::tool::backend::ToolExecutionContext>,
-) -> bool {
-    audit_ctx
-        .and_then(|ctx| ctx.execution_authorization.as_ref())
-        .is_none_or(|authorization| authorization.snapshot.sandbox_profile().is_full_host())
+fn specialized_route_error(
+    reason: crate::tool::authorization::SpecializedRouteUnavailable,
+) -> ToolError {
+    match reason {
+        crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable {
+            ..
+        } => ToolError::BackendUnavailable(reason.to_string()),
+        crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
+        | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
+            ToolError::Permission(reason.to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1426,7 +1432,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_routes_require_an_explicit_full_host_snapshot() {
+    fn active_routes_require_valid_explicit_full_host_authorization() {
         let mut context = crate::tool::backend::ToolExecutionContext::with_backend(
             crate::tool::backend::ToolBackendKind::Native,
         );
@@ -1444,7 +1450,13 @@ mod tests {
                 receipt: crate::permission::PermissionDecisionReceipt::allowed("yolo", None),
                 command_preflight: None,
             });
-        assert!(!active_route_matches_authorization(Some(&context)));
+        assert!(matches!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                context.execution_authorization.as_ref(),
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            ),
+            Err(crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. })
+        ));
 
         let mut full_host = context.clone();
         if let Some(authorization) = full_host.execution_authorization.as_mut() {
@@ -1458,8 +1470,20 @@ mod tests {
                 None,
             );
         }
-        assert!(active_route_matches_authorization(Some(&full_host)));
-        assert!(active_route_matches_authorization(None));
+        assert!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                full_host.execution_authorization.as_ref(),
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            crate::tool::authorization::admit_full_host_specialized_route(
+                None,
+                crate::tool::authorization::SpecializedExecutionRoute::BashIntent,
+            ),
+            Err(crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization)
+        ));
     }
 
     #[test]
