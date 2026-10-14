@@ -38,6 +38,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install Bubblewrap
         run: sudo apt-get update && sudo apt-get install --yes bubblewrap
@@ -48,6 +50,22 @@ jobs:
           bwrap --version
           id
           cat /proc/sys/user/max_user_namespaces
+          printf 'AppArmor profile: '
+          cat /proc/self/attr/current || true
+          printf 'Bubblewrap mode: '
+          stat -c '%a %u %n' "$(command -v bwrap)"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+
+      - name: Enable user namespaces for isolated native qualification
+        run: |
+          # GitHub-hosted Ubuntu 24.04 enables AppArmor's unprivileged-userns
+          # restriction. This runner is an ephemeral VM; relax only that
+          # host gate so the test can qualify Bubblewrap's mount setup. The
+          # tested CodeGG child remains unprivileged and confined by bwrap.
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
 
       - name: Build trusted sandbox helper
         run: cargo build --locked --bin codegg-sandbox-helper
