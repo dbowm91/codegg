@@ -362,6 +362,21 @@ Reconnect and daemon restart replay the identical notice id/status exactly
 once via `core_event_log`; the notice row (plus next-turn session event)
 remains the authority and the toast is never a second database.
 
+The hint adapts to the existing session job list for projection
+consumers (ADR-0031 slice): `projection_events_from_core` maps
+`BackgroundJobCompleted` to `ProjectionEvent::JobUpserted` (terminal
+state/summary, session-scoped; `workspace_id` empty by the same
+convention as the `JobStarted`/`JobCompleted` arms — the envelope
+carries no workspace and adapters must not fabricate one), so
+desktop/remote clients observe the terminal on their authorized
+`ProjectionSubscribe`/`Resume` stream with no new event type and no new
+authority. The native TUI renders the same event as a session-scoped
+info toast (`apply_core_event`; foreign sessions never toast). Crash
+between the notice commit and the hint publish heals by bounded startup
+reconciliation (`reconcile_idle_completion_hints`, deduped by notice
+id — never a second notice, never a turn); the forwarder skips hints
+already persisted (cross-instance duplicate absorption).
+
 ## Invariants & Gotchas
 
 1. **Derived, not authoritative**: The projection is never a second

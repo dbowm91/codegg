@@ -480,7 +480,16 @@ a second completion database). The event is persisted (`should_persist`,
 `core_event_type = background_job_completed`, `Safe` publication), so
 live subscribers and `Resume`/replay observe the identical notice
 id/status without starting an agent turn, and a restarted daemon over the
-same pool replays the same notice. No per-job poller, no second
+same pool replays the same notice. Crash between the notice commit and
+the hint publish heals by bounded startup reconciliation
+(`CoreDaemon::reconcile_idle_completion_hints`, wired into
+`recover_jobs`): durable notices missing from `core_event_log` get
+exactly their hint republished, deduped by notice id — never a second
+notice, never a turn. The forwarder checks
+`EventLog::has_persisted_background_completion` before publishing, so a
+second daemon over the same pool (stale `flock`, divergent
+`CODEGG_DAEMON_HOME`) absorbs rather than duplicates hints; the residual
+same-id race is benign (consumers dedupe by notice id). No per-job poller, no second
 scheduler, no model tokens spent by delivery. Autonomous provider resume
 stays explicitly blocked: no daemon path invokes `maybe_dispatch` with a
 real executor until an authenticated host-grant workflow exists (see

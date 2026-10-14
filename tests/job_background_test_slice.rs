@@ -100,6 +100,7 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
         decision_revoked_at: None,
         program_contract_snapshot: None,
         sandbox_profile: None,
+        execution_authorization: None,
     }
 }
 

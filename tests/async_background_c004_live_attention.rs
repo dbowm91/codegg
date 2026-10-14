@@ -501,3 +501,177 @@ async fn continuation_store_owned_but_idle_resume_stays_blocked() {
         "blocked resume must never admit a provider turn"
     );
 }
+
+/// Crash-gap healing (ADR-0031 §Decision.5): a terminal committed
+/// without any forwarder (crash between the notice commit and the hint
+/// publish) gains its persisted live hint from startup reconciliation —
+/// exactly once, with no turn, and a second reconciliation is a no-op.
+#[tokio::test(flavor = "current_thread")]
+async fn crash_between_commit_and_hint_heals_by_reconciliation() {
+    use codegg::scheduler::job_notifications::JobNotificationService;
+
+    let pool = common::pool::isolated_pool().await;
+    let session = "sess-c004-crash-gap";
+
+    // Commit the terminal through a bare service with no completion hook
+    // and no EventLog: the durable notice exists, but no live hint was
+    // ever published (the simulated crash window).
+    let bare = JobNotificationService::with_pool(pool.clone());
+    bare.subscribe(
+        &JobId::new_unchecked("job-c004-crash-1"),
+        "test",
+        session,
+        None,
+        "inv-c004-crash-1",
+    )
+    .await
+    .expect("subscribe");
+    let notice = bare
+        .record_terminal(
+            &job_record("job-c004-crash-1", Some(session), JobState::Completed),
+            "crash gap proof",
+            None,
+        )
+        .await
+        .expect("record")
+        .expect("notice durable");
+
+    // A fresh daemon over the same pool heals exactly one hint.
+    let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
+    let healed = daemon.reconcile_idle_completion_hints().await;
+    assert_eq!(healed, 1, "one missing hint must be republished");
+
+    let replay = daemon
+        .event_log
+        .replay_from(0, &owner_filter(session))
+        .await;
+    let matching: Vec<_> = replay
+        .iter()
+        .filter_map(|e| match &e.payload {
+            CoreEvent::BackgroundJobCompleted {
+                notice_id, status, ..
+            } if notice_id == &notice.notice_id => Some(status.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        matching,
+        vec!["completed".to_string()],
+        "healed hint carries the identical notice id/status exactly once"
+    );
+
+    // Healing is idempotent: a second pass republishes nothing.
+    let again = daemon.reconcile_idle_completion_hints().await;
+    assert_eq!(again, 0, "reconciliation must not duplicate hints");
+    let replay2 = daemon
+        .event_log
+        .replay_from(0, &owner_filter(session))
+        .await;
+    let matching2: Vec<_> = replay2
+        .iter()
+        .filter(|e| {
+            matches!(&e.payload, CoreEvent::BackgroundJobCompleted { notice_id, .. } if notice_id == &notice.notice_id)
+        })
+        .collect();
+    assert_eq!(
+        matching2.len(),
+        1,
+        "still exactly one hint after re-reconciliation"
+    );
+
+    // And no turn was admitted by the healing path.
+    assert!(
+        replay2.iter().all(|e| !matches!(
+            e.payload,
+            CoreEvent::TurnStarted { .. }
+                | CoreEvent::TurnCompleted { .. }
+                | CoreEvent::TurnFailed { .. }
+        )),
+        "hint healing must never admit a provider turn"
+    );
+}
+
+/// Cross-instance safety: a second daemon over the same pool observes
+/// the first daemon's persisted hint (shared pool truth), heals nothing
+/// new, and replays the identical notice — while the durable notice row
+/// stays single and no turn is admitted anywhere.
+#[tokio::test(flavor = "current_thread")]
+async fn second_daemon_over_same_pool_never_duplicates_hints_or_turns() {
+    let pool = common::pool::isolated_pool().await;
+    let session = "sess-c004-two-daemons";
+
+    let daemon_a = CoreDaemon::new(Some(pool.clone()), None, None);
+    let notifier_a = daemon_a
+        .deps
+        .job_notification_service
+        .clone()
+        .expect("daemon A notifier");
+    let mut rx_a = daemon_a.event_log.subscribe();
+    notifier_a
+        .subscribe(
+            &JobId::new_unchecked("job-c004-two-1"),
+            "test",
+            session,
+            None,
+            "inv-c004-two-1",
+        )
+        .await
+        .expect("subscribe");
+    let notice = notifier_a
+        .record_terminal(
+            &job_record("job-c004-two-1", Some(session), JobState::Completed),
+            "two-daemon proof",
+            None,
+        )
+        .await
+        .expect("record")
+        .expect("notice");
+    wait_for_background_event(&mut rx_a, &notice.notice_id, Duration::from_secs(10)).await;
+    assert!(
+        daemon_a
+            .event_log
+            .has_persisted_background_completion(&notice.notice_id)
+            .await,
+        "first daemon's hint is pool-visible truth"
+    );
+
+    // Second daemon instance over the same pool (stale-flock shape):
+    // recovery heals nothing, replay shows the identical hint once.
+    let daemon_b = CoreDaemon::new(Some(pool.clone()), None, None);
+    assert!(
+        daemon_b
+            .event_log
+            .has_persisted_background_completion(&notice.notice_id)
+            .await,
+        "pool truth is visible to the second instance"
+    );
+    let healed = daemon_b.reconcile_idle_completion_hints().await;
+    assert_eq!(healed, 0, "no missing hint, nothing republished");
+    let replay_b = daemon_b
+        .event_log
+        .replay_from(0, &owner_filter(session))
+        .await;
+    let matching: Vec<_> = replay_b
+        .iter()
+        .filter_map(|e| match &e.payload {
+            CoreEvent::BackgroundJobCompleted {
+                notice_id, status, ..
+            } if notice_id == &notice.notice_id => Some(status.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        matching,
+        vec!["completed".to_string()],
+        "second instance replays the identical hint exactly once"
+    );
+    assert!(
+        replay_b.iter().all(|e| !matches!(
+            e.payload,
+            CoreEvent::TurnStarted { .. }
+                | CoreEvent::TurnCompleted { .. }
+                | CoreEvent::TurnFailed { .. }
+        )),
+        "cross-instance replay must never admit a provider turn"
+    );
+}

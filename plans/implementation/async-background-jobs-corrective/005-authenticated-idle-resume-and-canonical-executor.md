@@ -1,6 +1,7 @@
 # Async Background Jobs Corrective C005 — Authenticated Idle Resume Grant and Canonical Executor
 
-Status: blocked — successor corrective, NOT implemented
+Status: active — design resolved in proposed ADR-0031; non-authority slices landed (reconciled mainline, crash-gap healing, cross-instance dedupe, TUI toast, projection adaptation); grant-family + delegated-executor implementation gated on ADR acceptance, NOT implemented
+Progress (2026-10-14, branch `work/async-background-jobs-production-wiring-c004-plans` post-main-merge): reconciled `origin/main` (merge `38ba7ce5`); recorded `plans/adrs/ADR-0031-authenticated-idle-continuation-delegated-turn-admission.md` (proposed); landed crash-gap healing (`reconcile_idle_completion_hints` in `recover_jobs`), forwarder persisted-hint dedupe, `BackgroundJobCompleted`→`JobUpserted` projection adaptation, TUI session-scoped toast; qualified by 181-case focused sweep + `verify.sh quick` + Clippy. Autonomous resume still fail-closed; no grant/executor wired.
 Source baseline: `fcbb915a7909a19f96be276b9ec3c12a52794604` on `work/async-background-jobs-production-wiring-c004-plans` (C004 delivery slice). Revalidate actual implementation HEAD before editing.
 Subsystem: `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md` (new C005 successor).
 Historical closures: C004 delivery record `plans/closure/async-background-jobs-corrective/004-status.md` (corrective pass required: delivery landed, resume blocked). M001–M004 and C001–C003 closures remain historical and unaltered.

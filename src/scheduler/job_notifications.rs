@@ -1083,6 +1083,42 @@ impl JobNotificationService {
         self.reconcile_terminals(terminals).await
     }
 
+    /// All durable terminal notices for startup idle-hint reconciliation
+    /// (crash-gap healing, ADR-0031 §Decision.5).
+    ///
+    /// Returns pool rows merged by notice id when pooled (bounded, newest
+    /// behavior matches `recover_from_store`'s 512-row ceiling), or the
+    /// in-memory set when pool-less. Notices without an owning session
+    /// are excluded: they never produce live hints. The rows are the
+    /// authority; callers republish only the *hint* for notices missing
+    /// from `core_event_log` — never a second notice, never a turn.
+    pub async fn durable_notices_for_hint_recovery(
+        &self,
+    ) -> Result<Vec<JobTerminalNotice>, JobNotificationError> {
+        if let Some(pool) = &self.pool {
+            let rows = sqlx::query_scalar::<_, String>(
+                "SELECT record_json FROM job_notification ORDER BY created_at ASC LIMIT 512",
+            )
+            .fetch_all(pool)
+            .await
+            .map_err(|e| JobNotificationError::Storage(e.to_string()))?;
+            let mut out = Vec::with_capacity(rows.len());
+            for json in rows {
+                let notice: JobTerminalNotice = serde_json::from_str(&json)?;
+                if !notice.session_id.is_empty() {
+                    out.push(notice);
+                }
+            }
+            return Ok(out);
+        }
+        let notices = self.notices.read().await;
+        Ok(notices
+            .values()
+            .filter(|n| !n.session_id.is_empty())
+            .cloned()
+            .collect())
+    }
+
     async fn record_notice(
         &self,
         notice: JobTerminalNotice,

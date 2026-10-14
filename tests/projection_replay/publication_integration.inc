@@ -235,3 +235,81 @@ async fn seam_rewrites_envelope_seq_to_stream_row_seq() {
         serde_json::from_str(&rows[0].payload_json).unwrap();
     assert_eq!(first.event_seq, 1);
 }
+
+/// Idle-delivery desktop path: a daemon-published
+/// `BackgroundJobCompleted` is `Safe`, so the projection seam stores it
+/// on the owning session stream — which is exactly what desktop/remote
+/// clients consume via `ProjectionSubscribe`/`Resume`. No new route, no
+/// new authority; the existing authorized stream carries the completion.
+#[tokio::test]
+async fn seam_publishes_background_job_completed_to_session_stream() {
+    let pool = common::projection_replay::test_pool().await;
+    let store = Arc::new(ProjectionReplayStore::new(pool));
+    let service = Arc::new(ProjectionReplayService::new(store.clone()));
+    let seam = Arc::new(ProjectionPublicationSeam::new(service.clone()));
+
+    let envelope = EventEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        event_seq: 7,
+        timestamp_ms: 1000,
+        session_id: Some("sess-bg".into()),
+        turn_id: None,
+        payload: CoreEvent::BackgroundJobCompleted {
+            session_id: "sess-bg".into(),
+            notice_id: "job-bg-seam-1".into(),
+            job_id: "job-bg-seam-1".into(),
+            kind: "test".into(),
+            status: "completed".into(),
+            summary: "build green".into(),
+        },
+    };
+
+    let ctx = ProjectionPublicationContext {
+        session_id: Some("sess-bg".into()),
+        project_id: Some("proj-bg".into()),
+        workspace_id: Some("ws-bg".into()),
+        binding_revision: 1,
+    };
+
+    let outcome = seam.publish(&envelope, ctx).await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            codegg_core::projection_replay::service::PublishOutcome::Published { .. }
+        ),
+        "completion must reach projection storage for desktop clients, got {outcome:?}"
+    );
+
+    let desc = store
+        .lookup_session_stream("sess-bg", "proj-bg")
+        .await
+        .unwrap()
+        .expect("session stream stored");
+    assert_eq!(desc.high_water_seq, 1);
+
+    let rows = store
+        .events_after(desc.stream_id.as_str(), 0, 16, 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1, "exactly one stored envelope");
+    assert!(
+        rows[0].payload_json.contains("job-bg-seam-1"),
+        "stored envelope must carry the completion identity"
+    );
+
+    // The parallel protocol adapter mapping agrees: the same envelope
+    // adapts to exactly one session-scoped `JobUpserted` (no `Unknown`,
+    // no dropped event), so every consumer of either mapping observes
+    // the terminal.
+    let adapted = codegg_protocol::projection::adapters::projection_events_from_core(&envelope);
+    assert_eq!(adapted.len(), 1, "exactly one projection event");
+    match &adapted[0] {
+        codegg_protocol::projection::event::ProjectionEvent::JobUpserted { job } => {
+            assert_eq!(job.job_id, "job-bg-seam-1");
+            assert_eq!(job.state, "completed");
+            assert_eq!(job.session_id.as_deref(), Some("sess-bg"));
+            assert!(job.summary.contains("build green"));
+        }
+        other => panic!("expected JobUpserted, got {other:?}"),
+    }
+}

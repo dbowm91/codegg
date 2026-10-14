@@ -100,9 +100,14 @@ in-memory daemons without a pool decide under the same broad policy.
   owns the store but wires no coordinator/executor and never invokes
   `maybe_dispatch` in production, so existing grant rows are
   non-autonomous and every completion stays notify-only (fail-closed).
-  A model `on_complete` flag or a fake `client_id` never substitutes for
-  grant verification; autonomous provider resume is explicitly blocked
-  pending a server-resolved principal/session/workspace grant path.
+   A model `on_complete` flag or a fake `client_id` never substitutes for
+   grant verification; autonomous provider resume is explicitly blocked
+   pending a server-resolved principal/session/workspace grant path.
+   The delegated-admission design that would close this gap is recorded
+   as proposed ADR-0031 (grant as a new `CoreRequest` family through
+   this gate; dispatch as a daemon-internal delegated entry, never a
+   wire operation); until it is accepted and implemented, the block
+   stands.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed

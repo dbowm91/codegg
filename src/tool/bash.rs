@@ -688,8 +688,17 @@ impl BashTool {
             };
             // Audit represents submission, not process completion.
             let digest = crate::live_execution_audit::command_digest_str(command);
-            self.emit_command_audit(audit_ctx, "bash", &digest, "submitted")
-                .await;
+            self.emit_command_audit(
+                audit_ctx,
+                "bash",
+                &digest,
+                "submitted",
+                Some("scheduler_background"),
+                None,
+                intent_risk_label(intent.as_ref()),
+                None,
+            )
+            .await;
             return Ok(serde_json::to_string_pretty(&handle_value).unwrap_or_default());
         }
 

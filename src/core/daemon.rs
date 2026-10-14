@@ -470,23 +470,71 @@ impl CoreDaemon {
         });
     }
 
-    /// C004 daemon-owned idle-completion fanout worker.
+    /// Publish one idle-completion hint for a durable terminal notice:
+    /// one persisted session-scoped `CoreEvent::BackgroundJobCompleted`
+    /// plus one ephemeral dedupe-keyed router toast.
     ///
-    /// Drains durable terminal notices (machine jobs and CI watches) that
-    /// the shared `JobNotificationService` committed before sending, and
-    /// publishes one owner-scoped live hint per logical terminal:
+    /// Shared by the live forwarder below and by startup hint
+    /// reconciliation (`reconcile_idle_completion_hints`). The durable
+    /// notice row is the authority; this transport is a hint.
+    /// Duplicates never arrive here from one daemon (`record_notice`
+    /// sends only on first-write); cross-daemon duplicates are absorbed
+    /// by the persisted-completion check in the forwarder and by the
+    /// router's `dedupe_key`. A closed receiver or a failed publish never
+    /// fails the terminal path. Never spends model tokens and never starts
+    /// a turn: autonomous provider resume stays blocked (fail-closed,
+    /// ADR-0031 governs the future delegated entry).
+    pub(crate) async fn publish_idle_completion_hint(
+        event_log: &Arc<super::event_log::EventLog>,
+        router: &Arc<super::notification::NotificationRouter>,
+        notice: &crate::scheduler::job_notifications::JobTerminalNotice,
+    ) {
+        use crate::protocol::core::CoreEvent;
+        let session_id = notice.session_id.clone();
+        if session_id.is_empty() {
+            return;
+        }
+        let payload = CoreEvent::BackgroundJobCompleted {
+            session_id: session_id.clone(),
+            notice_id: notice.notice_id.clone(),
+            job_id: notice.job_id.clone(),
+            kind: notice.kind.clone(),
+            status: notice.status.clone(),
+            summary: notice.summary.clone(),
+        };
+        event_log
+            .publish(Some(session_id.clone()), None, payload)
+            .await;
+        let priority = match notice.status.as_str() {
+            "completed" => super::notification::NotificationPriority::Normal,
+            _ => super::notification::NotificationPriority::High,
+        };
+        router
+            .emit(super::notification::NotificationEvent {
+                id: format!("bg-{}", notice.notice_id),
+                session_id: Some(session_id),
+                turn_id: notice.turn_id.clone(),
+                kind: super::notification::NotificationKind::BackgroundJobCompleted,
+                priority,
+                message: format!(
+                    "Background {} {}: {}",
+                    notice.kind, notice.status, notice.summary
+                ),
+                dedupe_key: Some(notice.notice_id.clone()),
+                created_at: chrono::Utc::now(),
+            })
+            .await;
+    }
+
+    /// Live forwarder: one task per daemon lifetime draining the
+    /// post-commit completion channel (see `daemon_construct.rs`).
     ///
-    /// - `EventLog::BackgroundJobCompleted` (persisted, session-scoped, so
-    ///   live subscribers and `Resume`/replay observe the identical
-    ///   notice id/status without starting an agent turn);
-    /// - an ephemeral `NotificationRouter` toast (dedupe-keyed by
-    ///   notice id, never a second completion database).
-    ///
-    /// The durable notice row is the authority; this transport is a hint.
-    /// Duplicates never arrive here (`record_notice` sends only on
-    /// first-write). A closed receiver or a failed publish never fails
-    /// the terminal path. Never spends model tokens and never starts a
-    /// turn: autonomous provider resume stays blocked (fail-closed).
+    /// Cross-instance/restart dedupe: before publishing, check the
+    /// persisted log for an existing hint with the same notice id. A
+    /// second daemon over the same pool (stale `flock`, divergent
+    /// `CODEGG_DAEMON_HOME`, pool-less construction) may forward the
+    /// same terminal; the check absorbs the common case and the
+    /// identical-id duplicate is benign in the residual race.
     pub(crate) async fn forward_idle_completions(
         mut rx: tokio::sync::mpsc::UnboundedReceiver<
             crate::scheduler::job_notifications::JobTerminalNotice,
@@ -494,42 +542,21 @@ impl CoreDaemon {
         event_log: Arc<super::event_log::EventLog>,
         router: Arc<super::notification::NotificationRouter>,
     ) {
-        use crate::protocol::core::CoreEvent;
         while let Some(notice) = rx.recv().await {
-            let session_id = notice.session_id.clone();
-            if session_id.is_empty() {
+            if notice.session_id.is_empty() {
                 continue;
             }
-            let payload = CoreEvent::BackgroundJobCompleted {
-                session_id: session_id.clone(),
-                notice_id: notice.notice_id.clone(),
-                job_id: notice.job_id.clone(),
-                kind: notice.kind.clone(),
-                status: notice.status.clone(),
-                summary: notice.summary.clone(),
-            };
-            event_log
-                .publish(Some(session_id.clone()), None, payload)
-                .await;
-            let priority = match notice.status.as_str() {
-                "completed" => super::notification::NotificationPriority::Normal,
-                _ => super::notification::NotificationPriority::High,
-            };
-            router
-                .emit(super::notification::NotificationEvent {
-                    id: format!("bg-{}", notice.notice_id),
-                    session_id: Some(session_id),
-                    turn_id: notice.turn_id.clone(),
-                    kind: super::notification::NotificationKind::BackgroundJobCompleted,
-                    priority,
-                    message: format!(
-                        "Background {} {}: {}",
-                        notice.kind, notice.status, notice.summary
-                    ),
-                    dedupe_key: Some(notice.notice_id.clone()),
-                    created_at: chrono::Utc::now(),
-                })
-                .await;
+            if event_log
+                .has_persisted_background_completion(&notice.notice_id)
+                .await
+            {
+                tracing::debug!(
+                    notice_id = %notice.notice_id,
+                    "skipping duplicate idle completion hint (already persisted)"
+                );
+                continue;
+            }
+            Self::publish_idle_completion_hint(&event_log, &router, &notice).await;
         }
     }
 
