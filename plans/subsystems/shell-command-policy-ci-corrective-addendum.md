@@ -1,6 +1,8 @@
 # Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
 
 Status: **closed** (C001 integrated and exact-head qualified; independent of Windows MXC admission).
+
+**Post-closure supersession notice (2026-10-14):** This C001 status is **historical**, not the current executable policy contract. Accepted ADR-0028 and command-authorization closure 005 established an empty default Bash blocklist and advisory built-in risk; C001's unconditional catastrophic text hard-deny expectation and direct destructive tests are contradicted. New successor C002 at `plans/subsystems/shell-command-policy-adr0028-post-closure-corrective-addendum.md` owns safe test replacement, docs, guard and independently verified closure. Preserve C001 records; never restore the built-in regex hard stop to satisfy its original tests.
 Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
 Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
 
