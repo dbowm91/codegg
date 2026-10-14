@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - planning/linux-execution-isolation
+      - planning/linux-execution-isolation-full
     paths:
       - '.github/workflows/command-authorization-macos-compile.yml'
       - 'Cargo.toml'
