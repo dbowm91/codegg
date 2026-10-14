@@ -1,6 +1,6 @@
 # Async Background Jobs — Idle Completion and Delivery Corrective Addendum
 
-Status: closed — C001/C002/C003 closed
+Status: active — historical C001/C002/C003 closed; successor C004 production-wiring corrective ready
 Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md`, C003 implementations `816c5054` + repair `f5c43f05` + closure `003-status.md` (2026-10-14). Qualified on branch; not merged. Both milestones of this corrective line are closed and its status text is reconciled to terminal truth; no further milestone is planned here.
 
 ## Authority, scope and history
@@ -16,6 +16,17 @@ Normative:
 - `architecture/jobs.md`, `architecture/scheduler.md`, `architecture/agent.md`, `architecture/authorization.md`, `architecture/projection.md`.
 
 The goal is to let the model submit a supervised build/test or GitHub Actions watch, return control, and **without further model polling or user turns** have the daemon observe completion and put one durable, actionable result in the owning session's attention stream. For workflows where the user/operator **explicitly authorizes** an additional model turn, optionally queue one bounded owner continuation when the result arrives. The default remains **notify_only**: zero autonomous inference spend and no silent tool execution.
+
+## Post-C003 production-wiring gap and successor C004 (2026-10-14)
+
+The historical C003 closure remains intact as a record of its 85/85 local fixture tests and **must not** be rewritten. A subsequent source audit of branch `716cfece6a78147e7f4684c1455ac3c558b2d761` found two unresolved **production** requirements that C003's injected fakes/manual harness call could not prove:
+
+- **Idle agent invocation is not wired.** `src/scheduler/idle_continuation.rs` defines a `ContinuationExecutor` and `IdleContinuationCoordinator`, but the production daemon currently installs only the CI-watch driver and not an authenticated continuation executor/coordinator, a host-grant request path or a terminal-to-dispatch wake. `tests/async_background_c003_idle_lifecycle.rs` explicitly invokes `coord.maybe_dispatch(...)` in the test after receiving a pending notice. This does not establish an autonomous production agent turn. Unverified host-trusted consent is a security gate, not an optional UX enhancement.
+- **Live completion attention is not qualified.** A durable `JobNotificationService` pending row is not equivalent to an immediate owner-scoped `CoreEvent` delivered to subscribed frontends. Existing `job_notification_recovery` appends a session event at *next agent turn* and previous tests looked up pending rows, not TUI/desktop/remote live subscription plus reconnect/snapshot. A user must be able to see the completed job without starting a new model turn.
+
+**Successor:** `plans/implementation/async-background-jobs-corrective/004-production-idle-dispatch-and-attention-delivery.md` (**C004 ready**). Production daemon integration of authenticated grant, canonical turn admission, automatic completion-to-dispatch trigger, typed live owner completion event and replay; strict daemon-level positive/negative tests and exact-head integration qualification. C004 is the only new active milestone in this successor line; C001–C003 remain historically closed, but **the end-to-end production-ready claim is suspended until C004 closes**. Do not mark original milestones reopened or revise original closure records.
+
+**Dependency:** all original M001–M004 and C001–C003 implementation work is available on the parent implementation branch. New test must not manually invoke the coordinator, mint a grant using test-trusted strings without host authentication, or treat `pending_for_session()` as frontend delivery. Default notify-only continues spending zero inference. If trusted consent/turn admission cannot be connected safely, fail closed and record an explicitly blocked idle-resume requirement; a delivery-only partial correction cannot qualify the full lifecycle.
 
 ## Findings and why the previous closure missed them
 
