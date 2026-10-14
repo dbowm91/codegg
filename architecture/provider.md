@@ -709,6 +709,30 @@ knows the wire surface it is decoding:
   canonical `ResponseComplete`. The accumulator treats the second terminal event
   as post-terminal corruption, so `SharedStreamDecoder::consume_events` folds
   the duplicate and keeps the first non-empty `finish_reason`.
+- **Chat identity repair** — the shared Chat decoder decides "this opens a tool
+  call" from the *presence* of `id` or `name`, but OpenCode Go's Chat surface
+  encodes an absent field as an **empty string**, not an omitted key: every
+  continuation fragment carries `"id": ""` and `"name": ""` beside its
+  arguments. Each continuation was therefore decoded as a second `ToolCallStart`
+  for a call that already existed, and the turn failed closed as
+  `tool call identity conflicts with an active call` or
+  `tool call has no stable identity` — a regression against the pre-shared-wire
+  parser, which keyed fragments by position in the frame's `tool_calls` array.
+  `SharedStreamDecoder::repair_chat_identity` is the Chat-only seam that closes
+  it, and it is deliberately narrow:
+  - An empty or whitespace-only `call_id`/`name` is read as absent.
+  - A `ToolCallStart` left with neither a name nor a call id is a continuation,
+    not an opening, and is dropped. Its sibling `ToolCallArgumentsDelta` still
+    carries the payload and resolves by `index`.
+  - A named opening that arrives with no `id` **and** no `index` gets one
+    synthetic identity, reproducing the old positional key without inventing a
+    position.
+  - A fragment with no identity is attributed to the single in-flight call, and
+    only then. With zero or several in flight it is left untouched, so an
+    ambiguous multi-call turn still fails closed instead of merging one call's
+    arguments into another.
+
+  Other surfaces are untouched and keep failing closed on a missing identity.
 
 **Decoder errors are never collapsed.** `SharedStreamDecoder::push` and the
 tool-call accumulation path embed the underlying `eggpool_wire` error in the
