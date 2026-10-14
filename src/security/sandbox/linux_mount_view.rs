@@ -233,6 +233,13 @@ pub fn compile(
 
     let mut hidden = BTreeSet::new();
     for path in &spec.deny_paths {
+        if !denial_may_overlap_grant(path, &read_roots, &write_roots) {
+            // The mount root is otherwise empty, so denies outside all
+            // granted roots need no host-path lookup. This also avoids
+            // probing unrelated credential paths that the daemon user may
+            // not be allowed to stat (for example /root/.ssh on CI).
+            continue;
+        }
         let path = canonical_or_future(path)?;
         if write_roots.iter().any(|write| write.starts_with(&path))
             || read_roots.iter().any(|read| read.starts_with(&path))
@@ -358,6 +365,9 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
     }
     let mut denied = BTreeSet::new();
     for deny in &spec.deny_paths {
+        if !denial_may_overlap_grant(deny, &reads, &writes) {
+            continue;
+        }
         let deny = canonical_or_future(deny)?;
         if reads
             .iter()
@@ -399,6 +409,28 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
         return Err("protected mount scope exceeds its reporting bound".into());
     }
     Ok(scope)
+}
+
+fn denial_may_overlap_grant(
+    deny: &Path,
+    read_roots: &BTreeSet<PathBuf>,
+    write_roots: &BTreeSet<PathBuf>,
+) -> bool {
+    let overlaps = |candidate: &Path| {
+        read_roots
+            .iter()
+            .chain(write_roots)
+            .any(|root| candidate.starts_with(root) || root.starts_with(candidate))
+    };
+
+    if overlaps(deny) {
+        return true;
+    }
+
+    // A trusted deny may use an existing symlink alias for a granted path.
+    // Resolve that case when possible, while leaving unrelated inaccessible
+    // host paths unprobed because they are absent from the fresh mount root.
+    std::fs::canonicalize(deny).is_ok_and(|canonical| overlaps(&canonical))
 }
 
 fn join_paths(paths: &BTreeSet<PathBuf>) -> String {
