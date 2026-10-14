@@ -22,9 +22,18 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
-The Linux execution-isolation and command-authority decisions use ADR-0027 and
-ADR-0028, respectively. These identities were assigned after the Windows
-records landed on main so no ADR number is reused.
+**Active identity collision warning (2026-10-13):** combined `main` currently contains
+two active ADR-0027 records (Windows bounded successor and proposed Linux
+composable execution) and two active ADR-0028 records (proposed Windows broad-read
+and accepted command authority). The earlier assertion of uniqueness is false.
+Do not disable the existing ADR integrity guard to make this pass.
+
+`plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
+is ready and proposes an identity-only migration of Linux/command decisions to
+unused ADR-0029/0030 after rechecking current reservations, with historical
+archives and exact scoped reference updates. **This plan has not executed the
+rename.** Existing decisions and statuses remain unchanged; no Linux backend,
+Windows production sandbox, or broad-read profile is admitted by this note.
 
 ## Status lifecycle
 

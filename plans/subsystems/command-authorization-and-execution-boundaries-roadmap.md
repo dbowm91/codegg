@@ -1,6 +1,6 @@
 # Command Authorization and Execution Boundaries Roadmap
 
-Status: active (planning; ADR-0028 accepted; M001–M003 closed)
+Status: active successor (M001–M003 closed; M004 constrained-route audit/test-only ready)
 
 Long-term references:
 - `plans/000-long-term-specification.md` §§4,17,27–29.
@@ -46,6 +46,14 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 
 ## 6. Dependency graph
 
+### M004 constrained-route successor
+
+`plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` is ready for a test-only route inventory/admission contract. Currently, accepted constrained Bash remains in the raw `ManagedProcessService` Landlock route while active Test/Python/Git/native routing requires an explicit `FullHost` snapshot. M004 can prove same-or-narrower scoped execution for selected tool routes, but must refuse (not auto-escalate) whenever that route cannot preserve actual obtained enforcement. Git executable/remote operations remain unavailable until independently qualified Linux containment/transport. This is not reopening M001–M003 closure.
+
+The accepted command ADR-0028 currently collides numerically with the Windows proposed ADR-0028; Linux C004 must migrate the ID with historical provenance. The decision's accepted content and permissions remain unchanged.
+
+### Completed M001–M003 dependency graph
+
 ### M001 internal handoff ordering — avoid a permissive-but-incorrect policy
 
 - **M001 C001** `plans/implementation/command-authorization-and-execution-boundaries/004-m001-permission-precedence-and-scope-corrective.md`: **closed** at `plans/closure/command-authorization-and-execution-boundaries/004-status.md`. Specific configured rules beat fallbacks; current Deny is evaluated before saved Allow; complex shell and wrapper/interpreter scopes cannot reuse a first-token family grant.
@@ -64,6 +72,10 @@ Keep two transparent distinctions: (1) **explicit user-configured text filter** 
 - Linux C002 contained Git workflow recovery hard-depends on real M002–M005 obtained containment for executable local filters/hooks; networked Git requires distinct M006/approved transport authority. Never treat an interface test as an actual containment proof.
 
 ## 7. Milestones
+
+| M004 | capability/invariant | `implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md` | **ready audit/test-only** | Same-or-narrower sandbox across native/test/Python/Git routes; no implicit FullHost, later production admission requires native proof |
+
+
 
 | ID | Class | Handoff | Status | Exit |
 |---|---|---|---|---|
@@ -107,4 +119,4 @@ No normative security claim relies on command-name/text patterns. Explicit Deny 
 
 ## 12. Status
 
-M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`; M002 is closed at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`. M003 is closed at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`: Linux filesystem effects, bounded audit outcomes, Windows GNU compilation, and the hosted macOS cross-target compile passed. Network/IPC remain unrestricted/unqualified; no native macOS runtime result is claimed. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim. No later command-authorization implementation plan is registered or newly unblocked.
+M001 is closed with C001–C003 evidence and aggregate closure at `plans/closure/command-authorization-and-execution-boundaries/001-status.md`; M002 is closed at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`. M003 is closed at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`: Linux filesystem effects, bounded audit outcomes, Windows GNU compilation, and the hosted macOS cross-target compile passed. Network/IPC remain unrestricted/unqualified; no native macOS runtime result is claimed. Linux Git C001 typed policy and Linux launcher M002 interface are already closed/conditionally closed on this branch. Linux full mount/process/network backend and Git C002/C003 remain separately gated; this command-policy planning pass makes no new containment claim. M004 constrained routing is now registered and ready for bounded audit and test-only work. This does not promote new specialized constrained execution, and M001–M003 remain closed. Linux C004 is the prerequisite metadata cleanup for unambiguous ADR references, not a new accepted security policy.
