@@ -1697,7 +1697,7 @@ async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> 
     Ok(bytes)
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 async fn read_bubblewrap_status_with_ack(
     mut reader: tokio::fs::File,
     ack_writer: OwnedFd,
