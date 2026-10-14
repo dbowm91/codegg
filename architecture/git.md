@@ -296,6 +296,13 @@ action regardless of routing mode.
    compatibility. Both root crate and `codegg-core::worktree` consume
    the same lists.
 
+For commit-producing operations, the process boundary preserves normal Git
+identity precedence without loading arbitrary global configuration. It reads
+only missing `user.name` and `user.email` values from the selected repository's
+local config and the user's global config, then passes those values as bounded
+command-scoped data. Global hooks, aliases, helpers, and other settings remain
+disabled. Identity values are data; they do not enable executable metadata.
+
 ## Invariants & Gotchas
 
 1. **egggit owns generic Git mechanics and reads, never CodeGG lifecycle.**
