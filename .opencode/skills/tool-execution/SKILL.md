@@ -41,6 +41,14 @@ never derive it from command input or human-shell context. Structured `read`
 and `write` only accept absolute paths beneath that session root. Current
 cleanup intentionally retains these resources until lease-aware reclamation
 is qualified.
+Specialized Test and Python tools currently admit only a valid accepted
+`FullHost` authorization. Their constrained snapshots return typed
+`BackendUnavailable` before scheduler submission because those executors do
+not yet consume the exact accepted profile. Do not automatically reroute a
+refusal; constrained test commands may use Bash only when the same invocation
+and accepted rights are preserved. Active Bash command-intent routes share
+the accepted-receipt check and remain explicit-FullHost-only. Typed Git
+filters/hooks/remotes remain unavailable behind their independent gates.
 On Linux, the protected Bubblewrap mount view is an explicit internal opt-in
 through `SandboxConfig::with_linux_protected_mount_view`; it must remain off
 by default until native qualification closes. The helper pins mount sources,

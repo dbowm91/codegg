@@ -116,6 +116,7 @@ impl ToolExecutionOutcome {
             crate::error::ToolError::NotFound(_)
             | crate::error::ToolError::Execution(_)
             | crate::error::ToolError::Disabled(_)
+            | crate::error::ToolError::BackendUnavailable(_)
             | crate::error::ToolError::Io(_)
             // A missing workspace root is deterministic: the call was refused
             // because it had no directory to act in, and re-running it cannot

@@ -600,15 +600,15 @@ network or IPC confinement.
 Command M004 route qualification is tracked in
 `research/command-authorization-m004-route-coverage.md`. The active
 command-intent routes dispatched from Bash remain explicit-FullHost-only;
-classifier labels do not grant authority. The separate typed `test` and
-`python_script` tools are not currently proven to preserve the accepted
-snapshot end to end: the test runner owns a domain-specific child launcher,
-and Python derives its OS policy from its script mode/content. Do not infer
-constrained parity from their scheduler ownership or from Python's separate
-Landlock policy. Git filters/hooks and remote operations remain behind Linux
-C002/C003 containment and transport gates. These routes are unqualified for
-constrained promotion until they consume the immutable accepted context and
-prove matching obtained effects.
+classifier labels do not grant authority. The typed `test` and `python_script`
+tools now check the immutable accepted authorization before scheduler
+submission. They admit only a valid receipt with an explicit `FullHost`
+snapshot; constrained or missing authority returns a typed denial/backend
+unavailable result before a job is created. Their executors still do not
+preserve constrained profiles, so no constrained parity is claimed. For test
+commands, use Bash when its managed route is equivalent and the same accepted
+profile is retained. Git filters/hooks and remote operations remain behind
+Linux C002/C003 containment and transport gates.
 
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`
