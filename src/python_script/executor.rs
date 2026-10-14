@@ -301,6 +301,7 @@ pub async fn execute_python_script_with_cancellation(
                 // The python path builds its own path set; it carries the
                 // same backend-neutral deny intent as the bash path.
                 deny_paths: crate::security::sandbox::policy::sensitive_deny_paths(),
+                linux_ipc_scoped: false,
             };
             spec
         });

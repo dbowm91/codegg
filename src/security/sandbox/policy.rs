@@ -904,6 +904,7 @@ mod tests {
             read_paths: vec![dir.path().to_path_buf()],
             write_paths: vec![dir.path().to_path_buf()],
             deny_paths: sensitive_deny_paths(),
+            linux_ipc_scoped: false,
         };
         let policy = BackendPolicy::for_spec(&spec);
         let canonical = dir.path().canonicalize().expect("canonical root");

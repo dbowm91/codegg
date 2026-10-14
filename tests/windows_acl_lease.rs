@@ -77,6 +77,7 @@ async fn assert_reparse_root_rejected(root: PathBuf, marker: PathBuf) {
         read_paths: Vec::new(),
         write_paths: vec![root],
         deny_paths: Vec::new(),
+        linux_ipc_scoped: false,
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_CHILD_MARKER", marker.as_os_str());
@@ -145,6 +146,7 @@ try {
         read_paths: Vec::new(),
         write_paths: vec![allowed.clone()],
         deny_paths: vec![outside.clone()],
+        linux_ipc_scoped: false,
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_LEASE_ALLOWED", allowed.as_os_str())
@@ -230,6 +232,7 @@ async fn windows_acl_lease_cancellation_restores_after_job_termination() {
         read_paths: Vec::new(),
         write_paths: vec![allowed.clone()],
         deny_paths: Vec::new(),
+        linux_ipc_scoped: false,
     });
     let cancellation = CancellationToken::new();
     request.cancellation = cancellation.clone();

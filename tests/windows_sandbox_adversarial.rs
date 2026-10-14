@@ -108,6 +108,7 @@ $written = [IO.File]::ReadAllText($newFile).Trim()
         read_paths: Vec::new(),
         write_paths: vec![workspace.clone()],
         deny_paths: vec![credentials.clone()],
+        linux_ipc_scoped: false,
     });
     request.environment_policy = codegg::managed_process::EnvironmentPolicy::sanitized()
         .with_var("CODEGG_ADV_ALLOWED", allowed_file.as_os_str())

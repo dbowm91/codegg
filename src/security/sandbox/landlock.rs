@@ -78,8 +78,16 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     let abi = ABI::V9;
     let read_access = AccessFs::from_read(abi);
     let write_access = AccessFs::from_all(abi);
-    let mut ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
+    let mut ruleset = Ruleset::default().set_compatibility(CompatLevel::HardRequirement);
+    if spec.linux_ipc_scoped {
+        use landlock::Scope;
+        ruleset = ruleset
+            .scope(Scope::AbstractUnixSocket | Scope::Signal)
+            .map_err(|error| {
+                format!("required Landlock ABI 6 IPC scope is unavailable: {error}")
+            })?;
+    }
+    let mut ruleset = ruleset
         .handle_access(AccessFs::from_all(ABI::V3))
         .map_err(|e| format!("Landlock ruleset access selection failed: {e}"))?
         .set_compatibility(CompatLevel::BestEffort)
@@ -130,11 +138,28 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
                     "Landlock effective ABI {effective_abi:?} is below required ABI V3"
                 ));
             }
-            Ok(BackendEnforcement::new(
+            let mut enforcement = BackendEnforcement::new(
                 Some(effective_abi as u32),
                 LANDLOCK_GUARANTEES,
                 LANDLOCK_LIMITS,
-            ))
+            );
+            if spec.linux_ipc_scoped {
+                if effective_abi < ABI::V6 {
+                    return Err(format!(
+                        "Landlock IPC scope requires ABI V6, effective ABI is {effective_abi:?}"
+                    ));
+                }
+                enforcement
+                    .guarantees
+                    .push("Landlock ABI 6+ signal and abstract Unix socket scope".to_string());
+                enforcement
+                    .limits
+                    .retain(|limit| limit != "no network isolation");
+                enforcement.limits.push(
+                    "does not isolate pathname Unix sockets, host proc, or network egress".into(),
+                );
+            }
+            Ok(enforcement)
         }
         other => Err(format!(
             "Landlock became unavailable during setup: {other:?}"

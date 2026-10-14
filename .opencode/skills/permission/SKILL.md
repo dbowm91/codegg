@@ -60,6 +60,10 @@ skill covers the ordering and isolation invariants that are easy to break.
   allowlist with `no_new_privs`; macOS Seatbelt confines writes but allows broad
   reads, network access, inherited descriptors, and Apple Events / Launch
   Services channels. Keep backend limits visible in `architecture/security.md`.
+- Linux has an explicit internal Landlock ABI 6+ option to scope signals and
+  abstract Unix sockets. It fails before target execution when unsupported and
+  does not provide PID/proc, pathname-socket, network, descriptor, or seccomp
+  isolation; do not label it as the enhanced namespace tier.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
 

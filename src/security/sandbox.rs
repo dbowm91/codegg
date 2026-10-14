@@ -348,6 +348,8 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
     pub deny_paths: Vec<String>,
+    /// Require Landlock ABI 6+ signal and abstract-socket scoping for the child.
+    pub linux_ipc_scoped: bool,
 }
 
 impl SandboxConfig {
@@ -357,6 +359,7 @@ impl SandboxConfig {
             mode: SandboxMode::default(),
             allowed_paths: Vec::new(),
             deny_paths: Vec::new(),
+            linux_ipc_scoped: false,
         }
     }
 
@@ -377,6 +380,14 @@ impl SandboxConfig {
 
     pub fn with_deny_paths(mut self, paths: Vec<String>) -> Self {
         self.deny_paths = paths;
+        self
+    }
+
+    /// Require the child to share a Landlock domain before it can signal or
+    /// connect to abstract Unix sockets owned by processes outside that
+    /// domain. Hosts without ABI 6 fail before target execution.
+    pub fn with_linux_ipc_scoped(mut self, enabled: bool) -> Self {
+        self.linux_ipc_scoped = enabled;
         self
     }
 
@@ -516,6 +527,7 @@ impl SandboxConfig {
             read_paths,
             write_paths,
             deny_paths,
+            linux_ipc_scoped: self.linux_ipc_scoped,
         })
     }
 }
@@ -523,9 +535,10 @@ impl SandboxConfig {
 /// Private, bounded launch description consumed by `codegg-sandbox-helper`.
 /// It is local process plumbing, not a daemon or public wire protocol.
 ///
-/// Paths only — which OS facility enforces them is chosen by [`backend`]
-/// at apply time, so the same spec serves Landlock and Seatbelt.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Filesystem paths and narrow backend-neutral launch intent. The helper
+/// selects the platform applier; Linux-only requests are rejected elsewhere
+/// when the current platform cannot enforce them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SandboxLaunchSpec {
     pub target: PathBuf,
     pub args: Vec<String>,
@@ -535,6 +548,10 @@ pub struct SandboxLaunchSpec {
     /// under a deny-first backend, load-bearing under an allow-default one.
     #[serde(default)]
     pub deny_paths: Vec<PathBuf>,
+    /// Require Landlock ABI 6+ signal and abstract Unix socket scoping on
+    /// Linux. Other platforms reject this request before target execution.
+    #[serde(default)]
+    pub linux_ipc_scoped: bool,
 }
 
 /// One-shot helper status. `Enforced` is a setup event; the other variants
@@ -1026,6 +1043,7 @@ mod tests {
         let config = SandboxConfig::new()
             .with_enabled(true)
             .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_ipc_scoped(true)
             .with_allowed_paths(vec![temp_dir.path().to_string_lossy().to_string()]);
         let spec = config
             .launch_spec(
@@ -1037,6 +1055,7 @@ mod tests {
         let canonical = temp_dir.path().canonicalize().expect("canonical temp dir");
         assert!(spec.read_paths.iter().any(|path| path == &canonical));
         assert!(spec.write_paths.iter().any(|path| path == &canonical));
+        assert!(spec.linux_ipc_scoped);
         assert!(spec.args.contains(&"-c".to_string()));
     }
 

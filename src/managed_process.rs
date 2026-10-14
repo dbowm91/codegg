@@ -1418,6 +1418,12 @@ fn prepare_launch_argv(
     match sandbox {
         SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
         SandboxRequest::Required(spec) => {
+            #[cfg(not(target_os = "linux"))]
+            if spec.linux_ipc_scoped {
+                return Err(ManagedProcessError::SandboxFailed(
+                    "Landlock IPC scope is only supported on Linux".to_string(),
+                ));
+            }
             #[cfg(not(unix))]
             {
                 let _ = spec;
@@ -1978,6 +1984,7 @@ mod tests {
             args: vec!["-c".to_string(), format!("touch {}", marker.display())],
             read_paths: Vec::new(),
             write_paths: Vec::new(),
+            linux_ipc_scoped: false,
         });
 
         let error = run_inner(request, None, Some(&helper))
@@ -2007,6 +2014,7 @@ mod tests {
             read_paths: vec![directory.path().to_path_buf()],
             write_paths: vec![directory.path().to_path_buf()],
             deny_paths: vec![denied],
+            linux_ipc_scoped: false,
         });
 
         let error = run(request)
@@ -2034,6 +2042,7 @@ mod tests {
                 args: vec!["-c".to_string(), "true".to_string()],
                 read_paths: Vec::new(),
                 write_paths: Vec::new(),
+                linux_ipc_scoped: false,
             }),
         );
         assert!(matches!(
@@ -2465,6 +2474,7 @@ mod tests {
                     .then(|| credentials.clone())
                     .into_iter()
                     .collect(),
+                linux_ipc_scoped: false,
             });
             request.environment_policy = EnvironmentPolicy::sanitized()
                 .with_var("C013_ALLOWED", allowed_file.as_os_str())

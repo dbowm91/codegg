@@ -353,6 +353,7 @@ async fn required_filesystem_sandbox_fails_before_launch_on_windows() {
             read_paths: vec![],
             write_paths: vec![],
             deny_paths: vec![],
+            linux_ipc_scoped: false,
         },
     );
 

@@ -13,9 +13,11 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
       - name: Probe Linux isolation mechanisms without executing untrusted code
         shell: bash
         run: |
@@ -104,3 +106,5 @@ jobs:
               print(f"overlay_mount_stderr={result.stderr.strip()}")
               print(f"overlay_upper_written={(upper / 'created').exists()}")
           PY
+      - name: Run the real-child Landlock IPC scope test
+        run: cargo test --locked -p codegg --test sandbox_landlock scoped_ipc_denies_host_abstract_sockets_and_signals_or_refuses_before_target -- --test-threads=1 --nocapture

@@ -1,6 +1,6 @@
 # Linux Execution Isolation M003 — Protected Writable Workspace Mount View
 
-Status: active
+Status: blocked (host mount-path side effect; OverlayFS unavailable on tested Linux hosts)
 Primary class: capability
 Repository baseline: `main` at `f7ac522801fd13ef88203c4590bf79b1c93d13ea` (2026-10-14). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0027, ADR-0028; C001 typed Git interface is required for integration but M001 Git closure is not. Target closure: `plans/closure/linux-execution-isolation/003-status.md`. No code or tests in this plan are represented as already implemented.
 

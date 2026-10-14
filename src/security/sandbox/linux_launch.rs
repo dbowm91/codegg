@@ -1,8 +1,9 @@
 //! Linux launch contract and read-only host feature probes.
 //!
 //! This module describes enhanced Linux launch dimensions, but deliberately
-//! registers no namespace backend. The only production plan accepted here is
-//! the existing private helper with its current filesystem backend.
+//! registers no namespace backend. The existing private helper can apply the
+//! opt-in Landlock ABI 6 signal/abstract-socket scope alongside its filesystem
+//! rules; namespace, network, syscall, and resource dimensions remain absent.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,12 @@ pub enum ProcessScope {
     Namespaced,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcScope {
+    Unrestricted,
+    LandlockScoped,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SyscallConstraints {
     pub seccomp_profile: Option<String>,
@@ -59,6 +66,7 @@ pub struct LinuxLaunchRequest {
     pub filesystem: Dimension<FilesystemView>,
     pub network: Dimension<NetworkIntent>,
     pub process: Dimension<ProcessScope>,
+    pub ipc: Dimension<IpcScope>,
     pub syscalls: Dimension<SyscallConstraints>,
     pub resources: Dimension<ResourceBudget>,
 }
@@ -73,6 +81,11 @@ impl LinuxLaunchRequest {
             readable_roots: spec.read_paths.clone(),
             writable_roots: spec.write_paths.clone(),
             protected_roots: spec.deny_paths.clone(),
+        };
+        let ipc_scope = if spec.linux_ipc_scoped {
+            IpcScope::LandlockScoped
+        } else {
+            IpcScope::Unrestricted
         };
         Self {
             filesystem: Dimension {
@@ -89,6 +102,15 @@ impl LinuxLaunchRequest {
                 demand: Demand::Disabled,
                 requested: ProcessScope::Legacy,
                 parent_ceiling: ProcessScope::Legacy,
+            },
+            ipc: Dimension {
+                demand: if spec.linux_ipc_scoped {
+                    Demand::Required
+                } else {
+                    Demand::Disabled
+                },
+                requested: ipc_scope,
+                parent_ceiling: ipc_scope,
             },
             syscalls: Dimension {
                 demand: Demand::Disabled,
@@ -114,6 +136,7 @@ impl LinuxLaunchRequest {
         }
         if !network_within_ceiling(self.network.requested, self.network.parent_ceiling)
             || !process_within_ceiling(self.process.requested, self.process.parent_ceiling)
+            || self.ipc.requested != self.ipc.parent_ceiling
         {
             return Err("Linux launch request exceeds parent ceiling".into());
         }
@@ -128,8 +151,7 @@ impl LinuxLaunchRequest {
     fn requires_enhanced_backend(&self) -> bool {
         self.network.demand == Demand::Required
             || self.network.requested != NetworkIntent::LegacyUnrestricted
-            || self.process.demand == Demand::Required
-            || self.process.requested != ProcessScope::Legacy
+            || self.process.requested == ProcessScope::Namespaced
             || self.syscalls.demand == Demand::Required
             || self.syscalls.requested.seccomp_profile.is_some()
             || self.resources.demand == Demand::Required
@@ -169,8 +191,9 @@ pub trait LinuxLaunchAdapter {
     fn plan(&self, request: &LinuxLaunchRequest) -> Result<LinuxLaunchPlan, String>;
 }
 
-/// Production adapter: only dispatch to the existing helper. New launch
-/// dimensions remain unavailable until their accepted ADR and native proof.
+/// Production adapter: only dispatch to the existing helper. The existing
+/// helper may apply the narrowly scoped Landlock IPC option; namespace,
+/// network, syscall, and resource dimensions remain unavailable.
 pub struct ProductionLinuxLaunchAdapter;
 
 impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
@@ -191,7 +214,9 @@ fn requested_enhanced_dimensions(request: &LinuxLaunchRequest) -> Vec<&'static s
         dimensions.push("network");
     }
     if request.process.requested != ProcessScope::Legacy {
-        dimensions.push("process");
+        if request.process.requested == ProcessScope::Namespaced {
+            dimensions.push("process");
+        }
     }
     if request.syscalls.requested.seccomp_profile.is_some() {
         dimensions.push("syscalls");
@@ -262,14 +287,15 @@ pub enum ObtainedState {
     Failed,
 }
 
-/// Internal obtained-facts projection from the helper's private status. It
-/// deliberately records only the existing filesystem backend; enhanced
-/// dimensions cannot be inferred from a generic helper success frame.
+/// Internal obtained-facts projection from the helper's private status. Each
+/// dimension is reported separately; enhanced dimensions cannot be inferred
+/// from a generic helper success frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxObtainedEnforcement {
     pub filesystem: ObtainedState,
     pub network: ObtainedState,
     pub process: ObtainedState,
+    pub ipc: ObtainedState,
     pub syscalls: ObtainedState,
     pub resources: ObtainedState,
     pub backend: Option<String>,
@@ -312,10 +338,23 @@ pub fn observe_legacy_outcome(
             vec![reason.clone()],
         ),
     };
+    let ipc = if request.ipc.requested == IpcScope::LandlockScoped {
+        if guarantees
+            .iter()
+            .any(|fact| fact == "Landlock ABI 6+ signal and abstract Unix socket scope")
+        {
+            ObtainedState::Applied
+        } else {
+            return Err("required Landlock IPC scope is absent from helper status".into());
+        }
+    } else {
+        ObtainedState::NotRequested
+    };
     Ok(LinuxObtainedEnforcement {
         filesystem,
         network: ObtainedState::NotRequested,
         process: ObtainedState::NotRequested,
+        ipc,
         syscalls: ObtainedState::NotRequested,
         resources: ObtainedState::NotRequested,
         backend,
@@ -520,6 +559,7 @@ mod tests {
             read_paths: vec![PathBuf::from("/workspace")],
             write_paths: vec![PathBuf::from("/workspace")],
             deny_paths: vec![PathBuf::from("/workspace/.git")],
+            linux_ipc_scoped: false,
         })
     }
 
@@ -542,6 +582,50 @@ mod tests {
             LinuxLaunchPlan::EnhancedUnavailable {
                 dimensions: vec!["process"]
             }
+        );
+    }
+
+    #[test]
+    fn ipc_scope_is_required_and_only_reported_from_private_helper_guarantee() {
+        let spec = super::super::SandboxLaunchSpec {
+            target: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            read_paths: vec![PathBuf::from("/workspace")],
+            write_paths: vec![PathBuf::from("/workspace")],
+            deny_paths: Vec::new(),
+            linux_ipc_scoped: true,
+        };
+        let request = LinuxLaunchRequest::legacy_filesystem(&spec);
+        assert_eq!(request.ipc.demand, Demand::Required);
+        assert_eq!(request.ipc.requested, IpcScope::LandlockScoped);
+        assert_eq!(
+            ProductionLinuxLaunchAdapter.plan(&request).unwrap(),
+            LinuxLaunchPlan::LegacyPrivateHelper
+        );
+
+        let missing_fact = super::super::SandboxLaunchOutcome::Enforced {
+            backend: super::super::BackendId::LANDLOCK,
+            abi: Some(7),
+            guarantees: vec!["filesystem path policy".into()],
+            limits: Vec::new(),
+        };
+        assert!(observe_legacy_outcome(&request, &missing_fact)
+            .unwrap_err()
+            .contains("IPC scope"));
+
+        let applied = super::super::SandboxLaunchOutcome::Enforced {
+            backend: super::super::BackendId::LANDLOCK,
+            abi: Some(7),
+            guarantees: vec!["Landlock ABI 6+ signal and abstract Unix socket scope".into()],
+            limits: Vec::new(),
+        };
+        assert_eq!(
+            observe_legacy_outcome(&request, &applied).unwrap().ipc,
+            ObtainedState::Applied
+        );
+        assert_eq!(
+            observe_legacy_outcome(&request, &applied).unwrap().process,
+            ObtainedState::NotRequested
         );
     }
 
@@ -616,6 +700,7 @@ mod tests {
         assert_eq!(obtained.filesystem, ObtainedState::Applied);
         assert_eq!(obtained.network, ObtainedState::NotRequested);
         assert_eq!(obtained.process, ObtainedState::NotRequested);
+        assert_eq!(obtained.ipc, ObtainedState::NotRequested);
         assert_eq!(obtained.syscalls, ObtainedState::NotRequested);
         assert_eq!(obtained.resources, ObtainedState::NotRequested);
         assert_eq!(obtained.backend.as_deref(), Some("landlock"));

@@ -195,6 +195,7 @@ try {{
         read_paths: Vec::new(),
         write_paths: vec![projection],
         deny_paths: Vec::new(),
+        linux_ipc_scoped: false,
     });
 
     let started = std::time::Instant::now();

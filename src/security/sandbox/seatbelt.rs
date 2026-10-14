@@ -157,6 +157,9 @@ fn push_subpath(profile: &mut String, op: &str, operation: &str, path: &Path) {
 /// uncontained there would silently launder a `Required` request.
 #[cfg(target_os = "macos")]
 pub fn apply_profile(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
+    if spec.linux_ipc_scoped {
+        return Err("Landlock IPC scope is only supported on Linux".to_string());
+    }
     let apply = apply_hook().ok_or_else(|| {
         "Seatbelt containment was requested outside the sandbox helper".to_string()
     })?;
@@ -356,6 +359,7 @@ mod tests {
             read_paths: vec![],
             write_paths: vec![],
             deny_paths: vec![],
+            linux_ipc_scoped: false,
         })
         .expect_err("Seatbelt must be unavailable off macOS");
         assert!(err.contains("Seatbelt"), "{err}");

@@ -1168,6 +1168,7 @@ mod tests {
                 read_paths: Vec::new(),
                 write_paths: Vec::new(),
                 deny_paths: Vec::new(),
+                linux_ipc_scoped: false,
             },
         );
         FAIL_NEXT_JOB_ASSIGNMENT.with(|fail| fail.set(true));

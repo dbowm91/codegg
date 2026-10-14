@@ -100,6 +100,7 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
             Vec::new()
         },
         deny_paths: Vec::new(),
+        linux_ipc_scoped: false,
     }
 }
 
@@ -181,6 +182,93 @@ fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
     );
     assert!(!outside_result.output.status.success());
     assert!(!outside_write.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_ipc_denies_host_abstract_sockets_and_signals_or_refuses_before_target() {
+    use std::io::{BufRead, BufReader};
+
+    if let Err(reason) = probe_landlock() {
+        eprintln!("skipped: {reason}");
+        return;
+    }
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("ipc-result");
+    let socket_name = format!(
+        "codegg-landlock-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    );
+    let server_script = "import signal,socket,sys; signal.signal(signal.SIGUSR1, lambda *_: print('signal_received',flush=True)); s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind('\\0'+sys.argv[1]); s.listen(1); print('ready',flush=True); s.settimeout(5);\ntry: s.accept(); print('accepted')\nexcept TimeoutError: print('timeout')";
+    let mut server = Command::new("python3")
+        .args(["-c", server_script, &socket_name])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("abstract socket fixture server");
+    let mut server_output = BufReader::new(server.stdout.take().expect("server stdout"));
+    let mut ready = String::new();
+    server_output
+        .read_line(&mut ready)
+        .expect("server ready line");
+    assert_eq!(ready.trim(), "ready");
+
+    let target = Path::new("/usr/bin/python3")
+        .canonicalize()
+        .expect("python3");
+    let mut spec = base_spec(workspace.path(), "", true);
+    spec.target = target.clone();
+    spec.read_paths.push(PathBuf::from("/usr"));
+    spec.read_paths.push(PathBuf::from("/etc"));
+    spec.args = vec![
+        "-c".into(),
+        "import errno,os,pathlib,signal,socket,sys; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);\ntry: s.connect('\\0'+sys.argv[1]); socket_result='allowed'; code=9\nexcept PermissionError as e: socket_result=f'denied:{e.errno}'; code=0 if e.errno in (errno.EPERM,errno.EACCES) else 8\ntry: os.kill(int(sys.argv[3]),signal.SIGUSR1); signal_result='allowed'; code=9\nexcept PermissionError as e: signal_result=f'denied:{e.errno}'; code=0 if e.errno in (errno.EPERM,errno.EACCES) else 8\npathlib.Path(sys.argv[2]).write_text(socket_result+';'+signal_result); raise SystemExit(code)".into(),
+        socket_name,
+        marker.to_string_lossy().into_owned(),
+        server.id().to_string(),
+    ];
+    spec.linux_ipc_scoped = true;
+    let result = run_helper(&spec, workspace.path());
+    let mut server_tail = String::new();
+    server_output
+        .read_to_string(&mut server_tail)
+        .expect("server result");
+    let server_status = server.wait().expect("wait for abstract socket fixture");
+    assert!(server_status.success());
+    assert_eq!(server_tail.trim(), "timeout");
+
+    match decode_sandbox_status(&result.status).expect("sandbox status") {
+        SandboxLaunchOutcome::Enforced { guarantees, .. } => {
+            assert!(result.output.status.success());
+            assert!(guarantees.iter().any(|guarantee| {
+                guarantee == "Landlock ABI 6+ signal and abstract Unix socket scope"
+            }));
+            let result = std::fs::read_to_string(marker).unwrap();
+            assert!(
+                matches!(
+                    result.as_str(),
+                    "denied:1;denied:1"
+                        | "denied:1;denied:13"
+                        | "denied:13;denied:1"
+                        | "denied:13;denied:13"
+                ),
+                "unexpected scoped IPC result: {result}"
+            );
+        }
+        SandboxLaunchOutcome::SetupError { reason }
+        | SandboxLaunchOutcome::Unavailable { reason } => {
+            assert!(
+                reason.contains("Landlock") && reason.contains("IPC scope"),
+                "{reason}"
+            );
+            assert!(
+                !marker.exists(),
+                "required scope failure executed target code"
+            );
+        }
+        other => panic!("unexpected scoped IPC result: {other:?}"),
+    }
 }
 
 #[cfg(target_os = "linux")]

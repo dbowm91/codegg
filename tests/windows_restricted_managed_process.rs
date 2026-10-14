@@ -49,6 +49,7 @@ fn restricted_request(args: Vec<OsString>) -> ManagedProcessRequest {
         read_paths: Vec::new(),
         write_paths: Vec::new(),
         deny_paths: Vec::new(),
+        linux_ipc_scoped: false,
     });
     request
 }

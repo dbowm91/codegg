@@ -79,10 +79,13 @@ Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
 
 On Linux, host feature discovery for user namespaces, other namespace types,
 seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
-It does not mean those dimensions were applied to a child. CodeGG currently
-uses its existing filesystem helper; network remains unrestricted under the
-legacy profile, and enhanced namespace/network/resource requests remain
-unavailable until their native enforcement gates close.
+It does not mean those dimensions were applied to a child. The existing helper
+supports an explicit internal opt-in to Landlock ABI 6+ signal and abstract
+Unix socket scoping; unsupported hosts refuse before target execution. This
+does not provide PID namespaces, private procfs, pathname socket isolation,
+network isolation, descriptor cleanup, or seccomp. Network remains unrestricted
+under the legacy profile, and enhanced namespace/network/resource requests
+remain unavailable until their native enforcement gates close.
 
 ### Tuning
 

@@ -116,6 +116,7 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
     pub deny_paths: Vec<String>,  // operator-declared; merged with policy::sensitive_deny_paths()
+    pub linux_ipc_scoped: bool,   // opt-in Landlock ABI 6+ signal/abstract-socket scope
 }
 
 pub struct SandboxLaunchSpec {
@@ -124,6 +125,7 @@ pub struct SandboxLaunchSpec {
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
+    pub linux_ipc_scoped: bool,    // required scope; unsupported hosts fail before target exec
 }
 ```
 
@@ -134,12 +136,17 @@ serves every backend.
 `src/security/sandbox/linux_launch.rs` models requested filesystem, network,
 process/IPC, syscall, and resource dimensions under an immutable parent
 ceiling. `ManagedProcessService` routes today's constrained Linux launches
-through that contract and selects only the existing private helper. Its
-read-only host probe reports namespace objects/limits, seccomp and proc
+through that contract and selects only the existing private helper. When
+explicitly requested, that helper also applies Landlock ABI 6+ signal and
+abstract Unix socket scoping; a host without the required ABI refuses before
+the target runs. This limited scope does not isolate pathname Unix sockets,
+host procfs, PID visibility, network egress, inherited descriptors, or syscalls.
+The read-only host probe reports namespace objects/limits, seccomp and proc
 kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
 cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
 do not prove a child obtained enforcement. No namespace backend is registered
-or promoted. Offline networking, protected mounts, seccomp, and resource
+or promoted. Offline networking, protected mounts, PID/process isolation,
+seccomp, and resource
 limits remain unavailable until their ADR and native evidence gates close.
 The existing Landlock-only default and unrestricted network behavior are
 unchanged.

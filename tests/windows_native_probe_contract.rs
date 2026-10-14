@@ -315,6 +315,7 @@ async fn execute(
             read_paths: Vec::new(),
             write_paths: vec![stage.to_path_buf()],
             deny_paths: Vec::new(),
+            linux_ipc_scoped: false,
         });
         Backend::TestOnlyAppContainer
     } else {

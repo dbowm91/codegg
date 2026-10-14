@@ -1,8 +1,8 @@
 # Linux Execution Isolation M004 — Process, IPC, Procfs and Syscall Isolation
 
-Status: blocked (hard: M002; interface: M003 protected view)
+Status: active (M002 interface closed; ABI 6 IPC-scope slice implemented; full acceptance remains open)
 Primary class: capability
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0027 for real Linux backend promotion; accepted ADR-0028 governs representation-independent command authorization. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0027, and ADR-0028. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. The Landlock ABI 6+ signal/abstract-socket scope is a partial implementation only; no PID namespace, private procfs, seccomp, general FD sanitation, or full process-isolation acceptance is represented as complete.
 
 ## 1. Objective
 
