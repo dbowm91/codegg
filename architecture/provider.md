@@ -687,7 +687,7 @@ a provider whose models resolve to Messages reuses one codec encoding instead of
 instantiating the dedicated Anthropic provider and inheriting its base-URL or
 `anthropic-version` assumptions.
 
-**Stream decoding bounds (`wire.rs`).** Three decoder invariants are owned by
+**Stream decoding bounds (`wire.rs`).** Four decoder invariants are owned by
 CodeGG at the call site rather than by the shared crate, because CodeGG is what
 knows the wire surface it is decoding:
 
@@ -702,13 +702,27 @@ knows the wire surface it is decoding:
   On a text-only reply they carry no `call_id` and no `index`, so the shared
   accumulator's `MissingIdentity` is expected rather than corruption. Those
   events are still forwarded (they flush completed tool calls) but a missing
-  identity is tolerated. Genuine `ToolCallStart`/`ArgumentsDelta`/`ToolCallStop`
-  keep failing closed on a missing identity.
+  identity is tolerated. Outside the Chat identity repair below, genuine
+  `ToolCallStart`/`ArgumentsDelta`/`ToolCallStop` keep failing closed on a
+  missing identity.
 - **Duplicate terminator** — an Anthropic upstream closes with `message_delta`
   and then `message_stop`, and the shared decoder decodes both to a single
   canonical `ResponseComplete`. The accumulator treats the second terminal event
   as post-terminal corruption, so `SharedStreamDecoder::consume_events` folds
   the duplicate and keeps the first non-empty `finish_reason`.
+- **Chat identity repair (OpenAI-Chat only)** — some OpenAI-compatible
+  upstreams (observed on mimo-v2.6-flash via OpenCode Go) omit both `index`
+  and `id`: the opening fragment carries only a function name and
+  continuations carry only arguments. The shared accumulator fails those
+  closed with `MissingIdentity`, which regressed single-tool turns the
+  pre-kernel parser accepted by keying on array position.
+  `SharedStreamDecoder` synthesizes a `call_id` plus the smallest unused
+  fallback `index` for identity-less `ToolCallStart` (and a fallback index
+  for id-only starts), and routes an identity-less `ArgumentsDelta`/`Stop`
+  to the single in-flight call when there is exactly one. Zero or several
+  in-flight calls still fail closed, so ambiguous multi-call turns never
+  misattribute arguments. Other surfaces keep failing closed on missing
+  identity.
 
 **Decoder errors are never collapsed.** `SharedStreamDecoder::push` and the
 tool-call accumulation path embed the underlying `eggpool_wire` error in the

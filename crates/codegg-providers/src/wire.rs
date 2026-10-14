@@ -598,6 +598,7 @@ const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 /// Per-stream adapter that keeps SSE framing, canonical decoding, and bounded
 /// completed-call accumulation in one request-owned value.
 pub struct SharedStreamDecoder {
+    adapter: eggpool_wire::codec::StreamAdapterKind,
     decoder: eggpool_wire::stream::StreamEventDecoder,
     calls: CanonicalToolCallAccumulator,
     terminal: bool,
@@ -610,11 +611,32 @@ pub struct SharedStreamDecoder {
     /// that opened a tool call describes a tool call, so the decoder records
     /// which indices actually opened one and routes only those.
     tool_call_indices: BTreeSet<usize>,
+    /// OpenAI-Chat fallback state for upstreams that omit `index`/`id`.
+    ///
+    /// The pre-shared-wire parser keyed tool fragments by their position in
+    /// the frame's `tool_calls` array when `index` was absent, so a single
+    /// call without any identity still accumulated. The shared kernel fails
+    /// those fragments closed with `MissingIdentity`, which regressed
+    /// models like mimo-v2.6-flash that omit both fields. The bridge repairs
+    /// only the unambiguous single-active-call case and keeps multi-call
+    /// ambiguity fail-closed.
+    chat_active: Vec<ChatActiveCall>,
+    chat_used_indices: BTreeSet<usize>,
+    chat_synthetic_counter: usize,
+}
+
+/// A Chat tool call the bridge has forwarded to the accumulator and not yet
+/// completed via `ToolCallStop`/`ResponseComplete`.
+#[derive(Debug, Clone)]
+struct ChatActiveCall {
+    call_id: Option<String>,
+    index: Option<usize>,
 }
 
 impl SharedStreamDecoder {
     pub fn new(adapter: eggpool_wire::codec::StreamAdapterKind) -> Self {
         Self {
+            adapter,
             decoder: eggpool_wire::stream::StreamEventDecoder::with_limit(
                 adapter,
                 MAX_SSE_FRAME_BYTES,
@@ -624,6 +646,9 @@ impl SharedStreamDecoder {
             finish_reason: None,
             usage: None,
             tool_call_indices: BTreeSet::new(),
+            chat_active: Vec::new(),
+            chat_used_indices: BTreeSet::new(),
+            chat_synthetic_counter: 0,
         }
     }
 
@@ -710,6 +735,12 @@ impl SharedStreamDecoder {
             // one, which is what flushes completed tool calls.
             let duplicate_terminator =
                 event.event_type == CanonicalEventType::ResponseComplete && self.terminal;
+            // Repair OpenAI-Chat fragments that omit `index`/`id` before they
+            // reach the accumulator. Scoped to Chat only; other surfaces keep
+            // failing closed on missing identity.
+            let mut owned = event.clone();
+            self.repair_chat_identity(&mut owned);
+            let event = &owned;
             if event.event_type == CanonicalEventType::ToolCallStart {
                 if let Some(index) = event.index {
                     self.tool_call_indices.insert(index);
@@ -734,18 +765,135 @@ impl SharedStreamDecoder {
                 _ => true,
             };
             if !duplicate_terminator && closes_a_tool_call {
-                output.extend(push_event(&mut self.calls, event)?);
+                let produced = push_event(&mut self.calls, event);
+                match produced {
+                    Ok(events) => {
+                        self.track_chat_completion(event);
+                        output.extend(events);
+                    }
+                    Err(error) => {
+                        // Keep bridge tracking in sync with the accumulator,
+                        // which latches terminal and drops in-flight calls on
+                        // any push error.
+                        self.chat_active.clear();
+                        return Err(error);
+                    }
+                }
             }
             if event.event_type == CanonicalEventType::ResponseComplete {
                 self.terminal = true;
+                self.chat_active.clear();
                 // Keep the first non-empty stop reason: the trailing
                 // `message_stop`-derived event carries none.
                 if event.finish_reason.is_some() {
                     self.finish_reason = event.finish_reason.clone();
                 }
             }
+            if matches!(
+                event.event_type,
+                CanonicalEventType::ResponseIncomplete | CanonicalEventType::Error
+            ) {
+                self.chat_active.clear();
+            }
         }
         Ok(output)
+    }
+
+    /// Repair OpenAI-Chat tool-call identity omissions.
+    ///
+    /// Some OpenAI-compatible upstreams (observed on mimo-v2.6-flash) omit
+    /// both `index` and `id`: the opening fragment carries only a function
+    /// name, and continuation fragments carry only arguments. The shared
+    /// accumulator fails those closed with `MissingIdentity`, which regressed
+    /// single-tool turns that the pre-kernel parser accepted by keying on
+    /// array position.
+    ///
+    /// The repair is deliberately narrow:
+    /// - `ToolCallStart` without any identity gets a synthetic `call_id` and
+    ///   the smallest unused fallback `index`, so later fragments can resolve.
+    /// - `ToolCallStart` with an id but no index gets a fallback index for
+    ///   the same reason.
+    /// - `ArgumentsDelta`/`Stop` without any identity is routed to the single
+    ///   in-flight call when there is exactly one; with zero or several
+    ///   in-flight calls it passes through unchanged and still fails closed,
+    ///   so ambiguous multi-call turns never misattribute arguments.
+    fn repair_chat_identity(&mut self, event: &mut CanonicalEvent) {
+        if self.adapter != eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse {
+            return;
+        }
+        match event.event_type {
+            CanonicalEventType::ToolCallStart => {
+                if event.call_id.is_none() && event.index.is_none() {
+                    let index = self.next_chat_index();
+                    let counter = self.chat_synthetic_counter;
+                    self.chat_synthetic_counter += 1;
+                    let call_id = format!("chat_fallback_{counter}");
+                    event.call_id = Some(call_id.clone());
+                    event.index = Some(index);
+                    self.chat_used_indices.insert(index);
+                    self.chat_active.push(ChatActiveCall {
+                        call_id: Some(call_id),
+                        index: Some(index),
+                    });
+                } else if event.index.is_none() {
+                    let index = self.next_chat_index();
+                    event.index = Some(index);
+                    self.chat_used_indices.insert(index);
+                    self.chat_active.push(ChatActiveCall {
+                        call_id: event.call_id.clone(),
+                        index: Some(index),
+                    });
+                } else {
+                    if let Some(index) = event.index {
+                        self.chat_used_indices.insert(index);
+                    }
+                    self.chat_active.push(ChatActiveCall {
+                        call_id: event.call_id.clone(),
+                        index: event.index,
+                    });
+                }
+            }
+            CanonicalEventType::ToolCallArgumentsDelta | CanonicalEventType::ToolCallStop => {
+                if event.call_id.is_none() && event.index.is_none() {
+                    if let [active] = self.chat_active.as_slice() {
+                        event.call_id = active.call_id.clone();
+                        event.index = active.index;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Smallest unused fallback tool-call index for this Chat stream.
+    fn next_chat_index(&self) -> usize {
+        let mut candidate = 0usize;
+        while self.chat_used_indices.contains(&candidate) {
+            candidate += 1;
+        }
+        candidate
+    }
+
+    /// Drop a completed call from Chat fallback tracking after a successful
+    /// accumulator push. `ResponseComplete` drains everything and is handled
+    /// by clearing at the terminal boundary instead.
+    fn track_chat_completion(&mut self, event: &CanonicalEvent) {
+        if self.adapter != eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse {
+            return;
+        }
+        if event.event_type != CanonicalEventType::ToolCallStop {
+            return;
+        }
+        if let Some(position) =
+            self.chat_active
+                .iter()
+                .position(|active| match (&active.call_id, &event.call_id) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => active.index == event.index,
+                })
+        {
+            self.chat_active.remove(position);
+        }
     }
 }
 
@@ -1495,6 +1643,117 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event.contains("TextDelta")));
+    }
+
+    /// Regression probe: OpenAI-Chat tool calls without an explicit `index`
+    /// or `id` (as observed on mimo-v2.6-flash via OpenCode Go) must not fail
+    /// the turn with "tool call has no stable identity".
+    const CHAT_NARRATE_THEN_TOOL_WITHOUT_IDENTITY: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"I'll check that.\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+        "{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    const CHAT_TOOL_ID_THEN_BARE_ARGS_DELTA: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call_1\",",
+        "\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+        "{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    #[test]
+    fn chat_tool_call_without_index_or_id_repro() {
+        for bytes in [
+            CHAT_NARRATE_THEN_TOOL_WITHOUT_IDENTITY.as_bytes(),
+            CHAT_TOOL_ID_THEN_BARE_ARGS_DELTA.as_bytes(),
+        ] {
+            let mut decoder =
+                SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+            let mut output = decoder.push(bytes).expect("push must succeed");
+            output.extend(decoder.finish().expect("finish must succeed"));
+            let call = output
+                .iter()
+                .find_map(|event| match event {
+                    ChatEvent::ToolCall(call) => Some(call),
+                    _ => None,
+                })
+                .expect("tool call must survive without explicit identity");
+            assert_eq!(call.name.as_str(), "get_weather");
+        }
+    }
+
+    #[test]
+    fn chat_identity_repair_is_chunk_boundary_independent() {
+        for bytes in [
+            CHAT_NARRATE_THEN_TOOL_WITHOUT_IDENTITY.as_bytes(),
+            CHAT_TOOL_ID_THEN_BARE_ARGS_DELTA.as_bytes(),
+        ] {
+            let mut expected: Option<Vec<String>> = None;
+            for split in eggpool_wire::sse_split_points(bytes.len()) {
+                let mut decoder =
+                    SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+                let mut output = decoder.push(&bytes[..split]).expect("first split");
+                output.extend(decoder.push(&bytes[split..]).expect("second split"));
+                output.extend(decoder.finish().expect("finish"));
+                let rendered: Vec<_> = output.iter().map(|event| format!("{event:?}")).collect();
+                if let Some(previous) = &expected {
+                    assert_eq!(previous, &rendered, "split {split}");
+                } else {
+                    expected = Some(rendered);
+                }
+            }
+            assert!(
+                expected
+                    .unwrap()
+                    .iter()
+                    .any(|event| event.contains("get_weather")),
+                "repaired call must survive every split"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_ambiguous_identity_less_fragments_still_fail_closed() {
+        // Two identity-less starts open two in-flight calls; a following
+        // identity-less delta cannot be attributed, so it must fail rather
+        // than merge arguments into the wrong call.
+        let ambiguous = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+            "{\"name\":\"one\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+            "{\"name\":\"two\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+            "{\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        assert!(
+            decoder.push(ambiguous.as_bytes()).is_err(),
+            "ambiguous identity-less delta must fail closed, not misattribute"
+        );
+    }
+
+    #[test]
+    fn chat_orphan_identity_less_delta_still_fails_closed() {
+        // No opening start: there is no single in-flight call to route to.
+        let bytes = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":",
+            "{\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        assert!(
+            decoder.push(bytes.as_bytes()).is_err(),
+            "orphan delta must still fail closed"
+        );
     }
 
     #[tokio::test]
