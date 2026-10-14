@@ -1303,7 +1303,8 @@ mod tests {
         }
         let restricting_sid = SidOwner(restricting_sid);
 
-        // Apply the grant only to the newly created synthetic stage root.
+        // Grant both required access-check identities only on this new stage:
+        // the ordinary account SID and the synthetic restricting SID.
         let trustee = TRUSTEE_W {
             pMultipleTrustee: ptr::null_mut(),
             MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
@@ -1526,9 +1527,8 @@ mod tests {
             TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
         };
         use windows_sys::Win32::System::Threading::{
-            CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
-            STARTUPINFOW,
+            CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
+            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
         };
 
         let temp = tempfile::tempdir()?;
@@ -1679,6 +1679,7 @@ mod tests {
         let parent_dacl_before =
             crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?;
         let executable = std::env::current_exe()?;
+        let executable_wide = super::wide_os(executable.as_os_str());
         let args = [
             OsString::from("--exact"),
             OsString::from("managed_process::windows::tests::write_restricted_child_probe"),
@@ -1762,12 +1763,14 @@ mod tests {
             let mut process_info = PROCESS_INFORMATION::default();
             let mut command_line = command_line.clone();
             if unsafe {
-                CreateProcessWithTokenW(
+                CreateProcessAsUserW(
                     child_token.as_raw_handle() as _,
-                    0,
-                    ptr::null(),
+                    executable_wide.as_ptr(),
                     command_line.as_mut_ptr(),
-                    CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                     environment_block.as_ptr().cast(),
                     cwd.as_ptr(),
                     &startup,
