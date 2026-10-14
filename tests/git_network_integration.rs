@@ -315,38 +315,81 @@ async fn config_unset_clears_allowlisted_key() {
 // ── Network fetch / pull / push (local bare remote) ─────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn fetch_from_local_bare_remote_succeeds() {
+async fn fetch_without_contained_remote_backend_returns_typed_unavailable() {
+    // C002 reconciliation (Linux C003 owns the positive path): remote Git
+    // requires a contained backend with mediated transport and scoped
+    // credentials. A local bare path remote is NOT a safety grant —
+    // repository-controlled remote helpers, URL rewrites, and credential
+    // helpers apply to local remotes too. The no-backend executor must
+    // return the typed `BackendUnavailable` refusal before any child is
+    // launched, leaving local HEAD and tracking refs untouched. This
+    // replaces the stale `fetch_from_local_bare_remote_succeeds` positive,
+    // which demanded that uncontained remote Git succeed.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
     }
     let (remote, local) = fresh_pair();
-    // Make a new commit on local and push to remote.
+    // Make a new commit on local and push to remote (raw git fixture
+    // setup, outside the executor under test).
     fs_utils::write(&local.path().join("b.txt"), "new\n");
     assert_status_success(&["add", "b.txt"], local.path());
     assert_status_success(&["commit", "-q", "-m", "second"], local.path());
     assert_status_success(&["push", "-q", "origin", "main"], local.path());
-    // Now reset local to before the push, then fetch.
+    // Now reset local to before the push, then attempt fetch.
     assert_status_success(&["reset", "--hard", "HEAD~1"], local.path());
-    let exec = executor();
-    let res = git_network_ops::fetch(&exec, local.path(), Some("origin"), vec![], false, false)
-        .await
-        .expect("fetch");
-    assert!(res.success, "fetch should succeed: {}", res.stderr);
-    // remote main should now have the pushed commit
-    let listed = run_git(&["log", "origin/main", "--oneline"], local.path())
+    let head_before = run_git(&["rev-parse", "HEAD"], local.path())
         .output()
-        .expect("log");
-    let s = String::from_utf8_lossy(&listed.stdout).to_string();
-    assert!(
-        s.contains("second"),
-        "missing second commit in origin/main: {s}"
+        .expect("rev-parse HEAD")
+        .stdout;
+    let tracking_before = run_git(&["rev-parse", "origin/main"], local.path())
+        .output()
+        .expect("rev-parse origin/main")
+        .stdout;
+    let exec = executor();
+    let err = git_network_ops::fetch(&exec, local.path(), Some("origin"), vec![], false, false)
+        .await
+        .expect_err("fetch without a contained remote backend must be unavailable");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities },
+        ) => {
+            for required in [
+                egggit::GitExecutionCapability::RemoteHelper,
+                egggit::GitExecutionCapability::Network,
+                egggit::GitExecutionCapability::Credential,
+            ] {
+                assert!(
+                    capabilities.contains(&required),
+                    "fetch unavailability must require {required:?}, got: {capabilities:?}"
+                );
+            }
+        }
+        other => {
+            panic!("fetch without backend must return typed BackendUnavailable, got: {other:?}")
+        }
+    }
+    // No dispatch: local HEAD and the tracking ref are byte-identical.
+    let head_after = run_git(&["rev-parse", "HEAD"], local.path())
+        .output()
+        .expect("rev-parse HEAD after")
+        .stdout;
+    assert_eq!(head_before, head_after, "denied fetch must not move HEAD");
+    let tracking_after = run_git(&["rev-parse", "origin/main"], local.path())
+        .output()
+        .expect("rev-parse origin/main after")
+        .stdout;
+    assert_eq!(
+        tracking_before, tracking_after,
+        "denied fetch must not move tracking refs"
     );
     drop(remote);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn push_to_local_bare_remote_succeeds() {
+async fn push_without_contained_remote_backend_returns_typed_unavailable() {
+    // C002 reconciliation: see the fetch fixture above for the ownership
+    // rationale. Replaces `push_to_local_bare_remote_succeeds`.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -356,6 +399,10 @@ async fn push_to_local_bare_remote_succeeds() {
     fs_utils::write(&local.path().join("c.txt"), "added\n");
     assert_status_success(&["add", "c.txt"], local.path());
     assert_status_success(&["commit", "-q", "-m", "third"], local.path());
+    let remote_before = run_git(&["rev-parse", "main"], remote.path())
+        .output()
+        .expect("rev-parse remote main")
+        .stdout;
     let req = PushRequest {
         remote: Some("origin".into()),
         branch: Some("main".into()),
@@ -365,10 +412,37 @@ async fn push_to_local_bare_remote_succeeds() {
         delete: false,
         dry_run: false,
     };
-    let res = git_network_ops::push(&exec, local.path(), req)
+    let err = git_network_ops::push(&exec, local.path(), req)
         .await
-        .expect("push");
-    assert!(res.success, "push should succeed: {}", res.stderr);
+        .expect_err("push without a contained remote backend must be unavailable");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities },
+        ) => {
+            for required in [
+                egggit::GitExecutionCapability::RemoteHelper,
+                egggit::GitExecutionCapability::Network,
+                egggit::GitExecutionCapability::Credential,
+            ] {
+                assert!(
+                    capabilities.contains(&required),
+                    "push unavailability must require {required:?}, got: {capabilities:?}"
+                );
+            }
+        }
+        other => {
+            panic!("push without backend must return typed BackendUnavailable, got: {other:?}")
+        }
+    }
+    // No dispatch: the bare remote's refs are byte-identical.
+    let remote_after = run_git(&["rev-parse", "main"], remote.path())
+        .output()
+        .expect("rev-parse remote main after")
+        .stdout;
+    assert_eq!(
+        remote_before, remote_after,
+        "denied push must not move remote refs"
+    );
     drop(remote);
 }
 
@@ -389,7 +463,9 @@ async fn push_force_is_marked_destructive() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn pull_from_local_bare_remote_succeeds() {
+async fn pull_without_contained_remote_backend_returns_typed_unavailable() {
+    // C002 reconciliation: see the fetch fixture above for the ownership
+    // rationale. Replaces `pull_from_local_bare_remote_succeeds`.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -399,10 +475,14 @@ async fn pull_from_local_bare_remote_succeeds() {
     assert_status_success(&["add", "d.txt"], local.path());
     assert_status_success(&["commit", "-q", "-m", "pull-target"], local.path());
     assert_status_success(&["push", "-q", "origin", "main"], local.path());
-    // Reset local to before push so pull has something to fetch
+    // Reset local to before push so a real pull would have something to fetch.
     assert_status_success(&["reset", "--hard", "HEAD~1"], local.path());
+    let head_before = run_git(&["rev-parse", "HEAD"], local.path())
+        .output()
+        .expect("rev-parse HEAD")
+        .stdout;
     let exec = executor();
-    let res = git_network_ops::pull(
+    let err = git_network_ops::pull(
         &exec,
         local.path(),
         Some("origin"),
@@ -411,15 +491,51 @@ async fn pull_from_local_bare_remote_succeeds() {
         false,
     )
     .await
-    .expect("pull");
-    assert!(res.success, "pull should succeed: {}", res.stderr);
+    .expect_err("pull without a contained remote backend must be unavailable");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities },
+        ) => {
+            for required in [
+                egggit::GitExecutionCapability::RemoteHelper,
+                egggit::GitExecutionCapability::Network,
+                egggit::GitExecutionCapability::Credential,
+            ] {
+                assert!(
+                    capabilities.contains(&required),
+                    "pull unavailability must require {required:?}, got: {capabilities:?}"
+                );
+            }
+        }
+        other => {
+            panic!("pull without backend must return typed BackendUnavailable, got: {other:?}")
+        }
+    }
+    // No dispatch: nothing fetched, nothing integrated, HEAD identical.
+    let head_after = run_git(&["rev-parse", "HEAD"], local.path())
+        .output()
+        .expect("rev-parse HEAD after")
+        .stdout;
+    assert_eq!(head_before, head_after, "denied pull must not move HEAD");
+    assert!(
+        !local.path().join("d.txt").exists(),
+        "denied pull must not restore the reset-away file"
+    );
     drop(remote);
 }
 
 // ── Reset / clean ───────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn reset_hard_moves_head_and_drops_changes() {
+async fn reset_hard_without_destructive_capability_returns_typed_denial() {
+    // C001 corrective (ADR-0028): a temporary directory is containment, not
+    // authorization. `reset --hard` discards committed state and has no
+    // dry-run mode, so it requires an explicit `DestructiveRepositoryChange`
+    // capability; the no-grant executor must return the typed policy refusal
+    // before any child is launched, leaving HEAD and the worktree untouched.
+    // This replaces the stale `reset_hard_moves_head_and_drops_changes`
+    // positive expectation, which demanded that an unauthenticated
+    // destructive reset succeed.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -428,27 +544,47 @@ async fn reset_hard_moves_head_and_drops_changes() {
     fs_utils::write(&dir.path().join("extra.txt"), "will be lost\n");
     assert_status_success(&["add", "extra.txt"], dir.path());
     assert_status_success(&["commit", "-q", "-m", "will be discarded"], dir.path());
-    // Capture HEAD before reset
+    // Capture HEAD before the denied reset.
     let before = run_git(&["rev-parse", "HEAD"], dir.path())
         .output()
         .expect("rev-parse");
     let before_sha = String::from_utf8_lossy(&before.stdout).trim().to_string();
     let exec = executor();
-    let res = git_network_ops::reset_hard(&exec, dir.path(), Some("HEAD~1"))
+    let err = git_network_ops::reset_hard(&exec, dir.path(), Some("HEAD~1"))
         .await
-        .expect("reset_hard");
-    assert!(res.success, "reset --hard should succeed: {}", res.stderr);
+        .expect_err("reset --hard without a destructive capability must be denied");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::RequiresAdditionalAuthorization { capabilities },
+        ) => {
+            assert!(
+                capabilities.contains(&egggit::GitExecutionCapability::DestructiveRepositoryChange),
+                "reset denial must require DestructiveRepositoryChange, got: {capabilities:?}"
+            );
+        }
+        other => panic!(
+            "reset without grant must return typed RequiresAdditionalAuthorization, got: {other:?}"
+        ),
+    }
+    // No child dispatch and no mutation: HEAD identical, the committed file
+    // still present.
     let after = run_git(&["rev-parse", "HEAD"], dir.path())
         .output()
         .expect("rev-parse");
     let after_sha = String::from_utf8_lossy(&after.stdout).trim().to_string();
-    assert_ne!(before_sha, after_sha);
-    // extra.txt should be gone
-    assert!(!dir.path().join("extra.txt").exists());
+    assert_eq!(before_sha, after_sha, "denied reset must not move HEAD");
+    assert!(
+        dir.path().join("extra.txt").exists(),
+        "denied reset must leave the committed fixture in place"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn reset_soft_keeps_working_tree() {
+async fn reset_soft_without_destructive_capability_returns_typed_denial() {
+    // C001 corrective: `reset --soft` keeps the worktree but still moves
+    // HEAD and rewrites the index, so it gates on the same explicit
+    // `DestructiveRepositoryChange` capability. Replaces the stale
+    // `reset_soft_keeps_working_tree` positive expectation.
     if !git_available() {
         eprintln!("git not available — skipping");
         return;
@@ -457,21 +593,42 @@ async fn reset_soft_keeps_working_tree() {
     fs_utils::write(&dir.path().join("kept.txt"), "staged-but-kept\n");
     assert_status_success(&["add", "kept.txt"], dir.path());
     assert_status_success(&["commit", "-q", "-m", "soft target"], dir.path());
+    let before = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse");
+    let before_sha = String::from_utf8_lossy(&before.stdout).trim().to_string();
     let exec = executor();
-    let res = git_network_ops::reset_soft(&exec, dir.path(), Some("HEAD~1"))
+    let err = git_network_ops::reset_soft(&exec, dir.path(), Some("HEAD~1"))
         .await
-        .expect("reset_soft");
-    assert!(res.success);
-    // File should still exist on disk
+        .expect_err("reset --soft without a destructive capability must be denied");
+    match err {
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::RequiresAdditionalAuthorization { capabilities },
+        ) => {
+            assert!(
+                capabilities.contains(&egggit::GitExecutionCapability::DestructiveRepositoryChange),
+                "reset denial must require DestructiveRepositoryChange, got: {capabilities:?}"
+            );
+        }
+        other => panic!(
+            "reset without grant must return typed RequiresAdditionalAuthorization, got: {other:?}"
+        ),
+    }
+    // No mutation: HEAD identical, the file still on disk, and — because
+    // HEAD never moved — nothing newly staged.
+    let after = run_git(&["rev-parse", "HEAD"], dir.path())
+        .output()
+        .expect("rev-parse");
+    let after_sha = String::from_utf8_lossy(&after.stdout).trim().to_string();
+    assert_eq!(before_sha, after_sha, "denied reset must not move HEAD");
     assert!(dir.path().join("kept.txt").exists());
-    // kept.txt should be in the staged set now
     let status = run_git(&["status", "--porcelain"], dir.path())
         .output()
         .expect("status");
     let s = String::from_utf8_lossy(&status.stdout).to_string();
     assert!(
-        s.contains("A  kept.txt") || s.starts_with("A"),
-        "kept.txt should be staged: {s}"
+        s.trim().is_empty(),
+        "denied soft reset must leave the tree clean (commit intact): {s}"
     );
 }
 

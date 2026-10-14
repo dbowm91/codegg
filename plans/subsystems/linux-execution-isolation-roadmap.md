@@ -2,7 +2,7 @@
 
 Status: active (ADR-0028 accepted; Linux mechanism ADR-0027 proposed; interface and typed Git corrective ready)
 
-**Independent CI test-contract note (2026-10-14):** `plans/subsystems/git-clean-authorization-ci-corrective-addendum.md` owns the stale `tests/git_network_integration.rs::clean_removes_untracked_files` expectation for unauthenticated destructive cleanup. This is a test-contract/CI corrective only: it does **not** unblock contained local Git C002, remote Git C003, ADR-0027 acceptance, or the M001 native backend. Preserve `DestructiveRepositoryChange` as a typed authorization requirement.
+**Independent CI test-contract note (2026-10-14):** `plans/subsystems/git-clean-authorization-ci-corrective-addendum.md` owns the stale `tests/git_network_integration.rs::clean_removes_untracked_files` expectation for unauthenticated destructive cleanup, and `plans/subsystems/git-reset-remote-test-contract-ci-corrective-addendum.md` owns the stale reset positives (`reset_hard_moves_head_and_drops_changes`, `reset_soft_keeps_working_tree` → typed `RequiresAdditionalAuthorization`) and the stale remote positives (`fetch/push/pull_from_local_bare_remote_succeeds` → typed `BackendUnavailable`, file remotes not yet qualified). All five are reconciled as typed-unavailable fixtures citing C002 (reset) / C003 (remote) as the positive-path owners. These are test-contract/CI correctives only: they do **not** unblock contained local Git C002, remote Git C003, ADR-0027 acceptance, or the M001 native backend. Preserve `DestructiveRepositoryChange` as a typed authorization requirement.
 
 Long-term references:
 - `plans/000-long-term-specification.md#4-architectural-principles`
