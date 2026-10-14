@@ -294,6 +294,9 @@ pub async fn execute_python_script_with_cancellation(
                 request.mode == PythonExecutionMode::Transform,
             );
             let spec = SandboxLaunchSpec {
+                linux_protected_mount_view: false,
+                protected_readonly_paths: Vec::new(),
+                path_identities: Vec::new(),
                 target,
                 args: vec![script_file.to_string_lossy().to_string()],
                 read_paths,

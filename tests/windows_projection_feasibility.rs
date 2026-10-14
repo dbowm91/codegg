@@ -187,6 +187,9 @@ try {{
             (inherited_candidate.as_raw_handle() as usize).to_string(),
         );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+        linux_protected_mount_view: false,
+        protected_readonly_paths: Vec::new(),
+        path_identities: Vec::new(),
         target: executable,
         args: args
             .iter()

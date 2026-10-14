@@ -351,6 +351,9 @@ mod tests {
         let reason = probe().expect_err("Seatbelt must be unavailable off macOS");
         assert!(reason.contains("Seatbelt"), "{reason}");
         let err = apply_profile(&SandboxLaunchSpec {
+            linux_protected_mount_view: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             target: PathBuf::from("/bin/sh"),
             args: vec![],
             read_paths: vec![],

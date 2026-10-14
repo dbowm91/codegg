@@ -28,6 +28,8 @@ pub mod guarantee;
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod linux_launch;
+#[cfg(target_os = "linux")]
+pub mod linux_mount_view;
 pub mod policy;
 pub mod seatbelt;
 
@@ -352,6 +354,9 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     pub allowed_paths: Vec<String>,
     pub deny_paths: Vec<String>,
+    /// Internal opt-in for native qualification. No persisted config or
+    /// default profile enables it yet.
+    pub linux_protected_mount_view: bool,
 }
 
 impl SandboxConfig {
@@ -361,6 +366,7 @@ impl SandboxConfig {
             mode: SandboxMode::default(),
             allowed_paths: Vec::new(),
             deny_paths: Vec::new(),
+            linux_protected_mount_view: false,
         }
     }
 
@@ -381,6 +387,11 @@ impl SandboxConfig {
 
     pub fn with_deny_paths(mut self, paths: Vec<String>) -> Self {
         self.deny_paths = paths;
+        self
+    }
+
+    pub fn with_linux_protected_mount_view(mut self, enabled: bool) -> Self {
+        self.linux_protected_mount_view = enabled;
         self
     }
 
@@ -514,7 +525,32 @@ impl SandboxConfig {
             })
             .collect();
         deny_paths.extend(policy::sensitive_deny_paths());
+        let (protected_readonly_paths, path_identities) = if self.linux_protected_mount_view {
+            #[cfg(target_os = "linux")]
+            {
+                let protected = linux_mount_view::git_metadata_paths(&write_paths)
+                    .map_err(ToolError::Permission)?;
+                let mut identities = Vec::new();
+                for path in read_paths.iter().chain(&write_paths).chain(&protected) {
+                    if path.exists() {
+                        identities.push(SandboxPathIdentity::capture(path)?);
+                    }
+                }
+                (protected, identities)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(ToolError::Permission(
+                    "protected mount view is available only on Linux".into(),
+                ));
+            }
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Ok(SandboxLaunchSpec {
+            linux_protected_mount_view: self.linux_protected_mount_view,
+            protected_readonly_paths,
+            path_identities,
             target,
             args: args.to_vec(),
             read_paths,
@@ -539,6 +575,48 @@ pub struct SandboxLaunchSpec {
     /// under a deny-first backend, load-bearing under an allow-default one.
     #[serde(default)]
     pub deny_paths: Vec<PathBuf>,
+    /// Opt in to the Linux namespace mount view. This is deliberately false
+    /// for every existing configuration until native qualification is closed.
+    #[serde(default)]
+    pub linux_protected_mount_view: bool,
+    /// Git metadata paths resolved while the launch lease was constructed.
+    /// The helper re-resolves and compares them before it builds mounts.
+    #[serde(default)]
+    pub protected_readonly_paths: Vec<PathBuf>,
+    /// Device/inode snapshots for required roots, used to reject replacement
+    /// between authorization and namespace construction.
+    #[serde(default)]
+    pub path_identities: Vec<SandboxPathIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxPathIdentity {
+    pub path: PathBuf,
+    pub device: u64,
+    pub inode: u64,
+}
+
+impl SandboxPathIdentity {
+    #[cfg(unix)]
+    fn capture(path: &Path) -> Result<Self, ToolError> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path).map_err(|error| {
+            ToolError::Permission(format!("cannot snapshot sandbox path identity: {error}"))
+        })?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn capture(path: &Path) -> Result<Self, ToolError> {
+        let _ = path;
+        Err(ToolError::Permission(
+            "path identity snapshots are unavailable on this platform".into(),
+        ))
+    }
 }
 
 /// One-shot helper status. `Enforced` is a setup event; the other variants
@@ -557,6 +635,10 @@ pub enum SandboxLaunchOutcome {
         guarantees: Vec<String>,
         limits: Vec<String>,
     },
+    /// Bubblewrap has completed mount setup and started only the trusted
+    /// in-sandbox gate. The gate waits for parent acknowledgment before it
+    /// execs the requested target.
+    BubblewrapReady,
     Unavailable {
         reason: String,
     },
@@ -596,6 +678,8 @@ pub const MAX_SANDBOX_SPEC_BYTES: usize = 64 * 1024;
 
 #[cfg(unix)]
 pub const SANDBOX_STATUS_FD: i32 = 3;
+#[cfg(unix)]
+pub const SANDBOX_ACK_FD: i32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxStatusFrame {
@@ -674,7 +758,7 @@ pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, Strin
         cursor = payload_end;
 
         match &frame.outcome {
-            SandboxLaunchOutcome::Enforced { .. } => {
+            SandboxLaunchOutcome::Enforced { .. } | SandboxLaunchOutcome::BubblewrapReady => {
                 if setup_seen.replace(()).is_some() || terminal.is_some() {
                     return Err("sandbox helper produced a duplicate setup status".to_string());
                 }

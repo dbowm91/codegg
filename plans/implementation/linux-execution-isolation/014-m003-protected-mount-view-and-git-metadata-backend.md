@@ -1,9 +1,38 @@
 # Linux Execution Isolation C006 — M003 Protected Mount View and Git Metadata Integration
 
-Status: **active** — ADR-0031 was accepted on 2026-10-14. Protected-mount and production-launch qualification remain implementation and closure gates. Prior blocked baseline: `plans/closure/linux-execution-isolation/014-status.md`.
+Status: **active** — ADR-0031 was accepted on 2026-10-14. An explicit internal Bubblewrap mount-view route is implemented, but remains unqualified and disabled by default. Native protected-mount and production-launch evidence are still closure gates. Prior blocked baseline: `plans/closure/linux-execution-isolation/014-status.md`.
 Class: capability / security invariant
 Closure target: `plans/closure/linux-execution-isolation/014-status.md`.
 Baseline: main @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13 EDT). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical identity reconciled under C004). Linux mechanism: accepted ADR-0031; this plan implements its protected-mount slice without enabling production defaults. Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of completed implementation or test execution.
+
+## Implementation progress (2026-10-14)
+
+The internal opt-in routes through `ManagedProcessService` and the trusted
+one-shot helper, compiles a fresh-root mount graph, pins bind sources with
+`openat2` and Bubblewrap fd binds, snapshots grant identities, protects
+existing Git metadata read-only, hides future root `.git` paths and denied
+descendants, and uses a trusted in-sandbox gate that waits for a private
+`ManagedProcessService` acknowledgment before executing the requested target.
+The helper clears close-on-exec on the setup and acknowledgment descriptors
+before starting Bubblewrap; the trusted gate consumes acknowledgment and marks
+the status descriptor close-on-exec before target exec. Setup receipts use the
+framed helper protocol rather than Bubblewrap JSON status.
+Existing configuration stays on Landlock. Native adversarial tests, tool
+compatibility, version qualification, descriptor-inheritance evidence, and the
+non-activated typed Git metadata transaction contract remain open. The
+protected-mount route has only passed a local compile check so far. Bubblewrap
+0.9.0 is installed here, but native execution evidence is required from the
+dedicated Ubuntu 24.04 CI runner and is still pending. A required native test
+and dedicated workflow now exercise the actual `ManagedProcessService`
+handoff, permitted workspace writes, protected Git config/hooks, existing and
+future denied secrets, outside paths/symlinks, and fail-closed metadata/lease
+identity checks. C006 stays active until the hosted runner executes that test
+and the remaining native compatibility matrix is covered.
+The compiler protects an absent workspace-root `.git` path and discovers
+existing nested submodule metadata at launch. It does not establish protection
+for a new nested repository created later inside a newly created writable
+directory; the native threat matrix must resolve that topology before this
+plan can close.
 
 ## 1. Objective
 

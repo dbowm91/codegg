@@ -91,6 +91,9 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
     let mut read_paths = vec![root.to_path_buf()];
     read_paths.extend(runtime_paths(&target));
     SandboxLaunchSpec {
+        linux_protected_mount_view: false,
+        protected_readonly_paths: Vec::new(),
+        path_identities: Vec::new(),
         target,
         args: vec!["-c".to_string(), script.to_string()],
         read_paths,
