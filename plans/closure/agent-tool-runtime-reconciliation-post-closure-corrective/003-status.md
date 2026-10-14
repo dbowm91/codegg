@@ -336,3 +336,86 @@ cross-workstream fixes that were blocking every hosted run, then re-qualified.
   to `main` is withheld until the evidence above turns green.
 - Unblock audit (same commit): nothing depends on this C003; blocked set
   unchanged. Nothing newly unblocked; no follow-up registered.
+
+## 16. Strict-closure gap research on `b3c0fef7` (document-and-escalate)
+
+Sections 1–15 stand. At the owner's direction this section records the exact
+remaining red list, its root cause, and the owner fix spec. No code or test
+change is made here; C003 REMAINS conditionally closed and the main merge
+stays withheld.
+
+- Baseline: branch head `b3c0fef7` (C002 code `85fc876d` + closure docs).
+  `origin/main` is still `ec43e495` — zero drift since merge `32098022`, so
+  no re-merge is needed and the §14 merge disposition stands.
+- Green since §15: the entire shell-policy family (C002 successor,
+  conditionally→scoped-closed; hosted CI `38614071155` green through Clippy
+  with no shell-policy failure). The §15 shell contract contradiction is
+  resolved on the advisory reading with no default blocklist.
+- Exact remaining red on `b3c0fef7`, default features, `--no-fail-fast`
+  (shell suites fully green in the same runs):
+  - `git_closure_matrix::clean_dry_run_returns_preview_only` — also the
+    hosted-`38614071155` fail-fast stop. Signature:
+    `clean_preview: Policy(RequiresAdditionalAuthorization { capabilities:
+    [DestructiveRepositoryChange] })` (`tests/git_closure_matrix.rs:587`).
+  - `git_network_integration` (7): `clean_preview_lists_untracked_files`,
+    `clean_removes_untracked_files`, `push/fetch/pull_to/from_local_bare_remote`,
+    `reset_hard_moves_head_and_drops_changes`, `reset_soft_keeps_working_tree`.
+    Representative signature:
+    `push: Policy(BackendUnavailable { capabilities: [RemoteHelper, Network,
+    Credential] })` — against a *local* bare remote
+    (`tests/git_network_integration.rs:370`).
+  - `git_recovery_integration` (4): `recovery_abort_in_progress_clears_state`,
+    `recovery_continue_after_resolution_succeeds`,
+    `recovery_continue_with_unresolved_conflicts_fails`,
+    `recovery_skip_during_rebase_skips_step`.
+  - `worktree::test_create_and_remove_worktree` (1),
+    `work_orders_m007::f_worktree_isolation_and_truthfulness` (1),
+    `work_orders_m002::concurrent_git_mutation_gets_distinct_managed_worktrees` (1).
+  - `identity_live_execution_audit::single_host_trajectory_is_ordered_correlated_and_secret_free` —
+    signature: `stage: Policy(BackendUnavailable { capabilities:
+    [CleanSmudgeFilter] })` (`tests/identity_live_execution_audit.rs:506`).
+  - Optional-feature suite (`server,plugins,lsp-test-support`, from §15,
+    not re-run here): `poolless_standalone_human_shell` (known §10 gap),
+    `eggpool` generic-cancellation (passes in isolation — load flake), plus
+    the known asset-refresh 120 s load flake.
+- Root cause (source-level, no clean-main rebuild required): main commit
+  `ae025ef3 feat(git): reconcile typed execution policy` introduced the
+  capability gates. `GitMutationExecutor::run_subprocess`
+  (`src/git_mutations.rs:704`) funnels every git argv — including read-only
+  `git clean -n -d` built by `clean_preview`
+  (`src/git_network_ops.rs:743`) — through `env.apply`, which keys on the
+  subcommand name without honoring dry-run/read-only flags, and demands
+  backends (`RemoteHelper/Network/Credential`, `CleanSmudgeFilter`) even
+  for local-bare and staging operations. The branch's only touches near
+  this code are the `6521560e` merge threading (`parent_tool_authority` /
+  `execution_authorization: None` in `src/core/daemon.rs`,
+  `tests/identity_live_execution_audit.rs`, tool-program initializers) —
+  all semantically-None struct-init additions that cannot produce a
+  `BackendUnavailable`/`RequiresAdditionalAuthorization` outcome. The
+  failures are upstream-owned by construction.
+- Escalation — git-policy contract contradiction (same shape as the §15
+  shell contradiction, now with a concrete fix spec for the owning
+  workstreams — command authorization + Linux Git):
+  1. Either the git execution policy becomes dry-run/read-only aware
+     (`-n`/`--dry-run` previews, `clean_preview`, local-bare transports,
+     and smudge staging do not demand destructive/network backends), or
+  2. the git/identity tests explicitly grant the new capabilities — but
+     that concedes previews require destructive authorization, which
+     destroys preview UX and should be an explicit owner decision, not a
+     C003 improvisation. Unilateral action by C003 on either side would
+     settle another workstream's decided trade-off, exactly as in §15.
+- Strict-closure checklist (unchanged owners, ordered):
+  1. Command-auth + Git owners resolve the contradiction above (all 16
+     default-feature reds hang off it).
+  2. `poolless_standalone_human_shell` owner fix (pre-existing §10 gap).
+  3. Confirm `eggpool`/asset-refresh flakes by isolated re-run at the
+     final SHA.
+  4. Local full workspace + optional-feature green on the final SHA.
+  5. Hosted `CI / verify` green on the exact final SHA (fail-fast: any
+     single red fails the run) plus Desktop E2E re-run (last green
+     `38521966606` predates the fix commits; renderer-affecting code is
+     untouched since, but the exact-SHA rule requires it).
+  6. C003 §17 strict-closure record, registry flip, then merge.
+- Unblock audit (head `b3c0fef7`): nothing depends on this C003; blocked
+  set unchanged. Nothing newly unblocked; the only new record is this
+  section and the C002 scoped closure it cites.
