@@ -4529,13 +4529,22 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
     ];
     let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
     let mut registry = ToolRegistry::new();
-    registry.register(codegg::tool::bash::BashTool::new());
+    // FullHost on both sides of the execution-authorization gate: this test
+    // pins the approval path (Ask -> AllowOnce -> dispatch), not sandbox
+    // containment, and the marker lives in a system tempdir outside any
+    // workspace root. A bare tool (no configured profile) is refused by the
+    // TOCTOU gate, and a constrained profile would contain the touch.
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
+    );
 
     let mut agent_loop = build_test_agent_loop_with_permissions(
         scripted_provider,
         registry,
         PermissionChecker::new(None, None),
     );
+    agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("shell-escalation-approval-gate");
 
     let perm_id = "call_shell_escalation-bash".to_string();
