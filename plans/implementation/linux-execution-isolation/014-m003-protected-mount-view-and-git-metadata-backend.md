@@ -17,27 +17,30 @@ Bubblewrap's `--block-fd` barrier. Bubblewrap consumes the acknowledgment only
 after mount setup and privilege drop, before it starts the requested target.
 The private status stream is drained and checked for Bubblewrap's terminal
 target-exec result. Framed helper errors remain distinct from Bubblewrap JSON
-status.
-Existing configuration stays on Landlock. Native adversarial tests, tool
-compatibility, version qualification, descriptor-inheritance evidence, and the
-non-activated typed Git metadata transaction contract remain open. The
-protected-mount route has only passed a local compile check so far. Bubblewrap
-0.9.0 is installed here, but native execution evidence is required from the
-dedicated Ubuntu 24.04 CI runner and is still pending. A required native test
-and dedicated workflow now exercise the actual `ManagedProcessService`
-handoff, permitted workspace writes, protected Git config/hooks, existing and
-future denied secrets, outside paths/symlinks, and fail-closed metadata/lease
-identity checks. C006 stays active until the hosted runner executes that test
-and the remaining native compatibility matrix is covered. The first four
-hosted native attempts confirmed Bubblewrap 0.9.0 availability and helper/test
-compilation, then exposed and fixed (1) a Git fixture assumption about the
-hooks directory, (2) a preflight probe of inaccessible global deny paths, and
-(3) descriptor loss when Bubblewrap closed arbitrary inherited descriptors.
-The third run failed at the actual handoff with no status frame. The fourth
-reached the Bubblewrap status/ack exchange, but the ack write failed with
-`EPIPE`. The helper now explicitly clears close-on-exec on the acknowledgment
-descriptor at the helper-to-Bubblewrap exec boundary; another hosted run is
-pending.
+status. Existing configuration stays on Landlock.
+
+Hosted native qualification is running on GitHub's Ubuntu 24.04 runner with
+Bubblewrap 0.9.0 (kernel `6.17.0-1022-azure`, UID 1001). The runner starts with
+`kernel.apparmor_restrict_unprivileged_userns=1`; the dedicated ephemeral job
+records this and temporarily sets it to `0` so unprivileged user namespaces
+can be qualified. The job's AppArmor profile is `unconfined`; Bubblewrap is
+mode 0755 and not setuid. Run `38529346419` reached Bubblewrap but failed during
+UID-map setup under the original host policy. Run `38530810345` passed helper
+build and namespace setup, then exposed that `/etc/gai.conf` is a directory on
+this runner. Run `38531874263` showed that the compiler also created file mount
+destinations as directories, so Bubblewrap still failed at that path. The
+compiler now binds allowlisted `/etc` entries only when they are regular files
+and creates only parent directories for file mounts. Exact-head run
+`38532957219` is pending. Earlier attempts exposed and corrected a Git fixture
+assumption about the hooks directory, inaccessible global deny-path probing,
+status-fd inheritance, and status/ack handling needed to report Bubblewrap's
+actual setup error.
+
+C006 remains unqualified: the hosted test is only the first positive/negative
+mount handoff slice. Native adversarial coverage, linked worktrees, race and
+descriptor-inheritance matrices, ordinary toolchain/LSP/PTY compatibility,
+startup measurements, and the non-activated typed Git metadata transaction
+contract remain open.
 The compiler protects an absent workspace-root `.git` path and discovers
 existing nested submodule metadata at launch. It does not establish protection
 for a new nested repository created later inside a newly created writable
