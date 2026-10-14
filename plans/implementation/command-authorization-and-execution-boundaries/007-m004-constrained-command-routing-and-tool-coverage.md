@@ -1,6 +1,6 @@
 # Command Authorization M004 — Constrained Command Routing and Tool Coverage Successor
 
-Status: **ready for owned-routing audit and test-only design**, production structured-route admission depends on verified sandbox and exact route enforcement
+Status: **conditionally closed for owned-routing audit and test-only design**; production structured-route admission depends on verified sandbox and exact route enforcement. Closure: `plans/closure/command-authorization-and-execution-boundaries/007-status.md`.
 Class: capability / invariant
 Closure target: `plans/closure/command-authorization-and-execution-boundaries/007-status.md`.
 Baseline: `main` @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13). Command authorization M001–M003 already closed; do **not** reopen their evidence. Normative accepted command-authorization ADR-0032 must be canonically renumbered without content change under Linux C004. `src/tool/authorization.rs` and `ExecutionPolicySnapshot` own accepted authority; `ManagedProcessService` owns actual child launch and obtained filesystem enforcement.
