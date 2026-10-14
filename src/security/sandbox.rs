@@ -679,7 +679,7 @@ pub const MAX_SANDBOX_SPEC_BYTES: usize = 64 * 1024;
 #[cfg(unix)]
 pub const SANDBOX_STATUS_FD: i32 = 3;
 #[cfg(unix)]
-pub const SANDBOX_ACK_FD: i32 = 4;
+pub const SANDBOX_ACK_FD: i32 = 198;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxStatusFrame {
