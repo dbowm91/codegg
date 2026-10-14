@@ -17,12 +17,26 @@ use codegg::security::sandbox::{
     SandboxConfig, SandboxLaunchOutcome, SandboxLaunchSpec, SandboxMode, SANDBOX_STATUS_FD,
 };
 use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::io::Write as _;
+#[cfg(target_os = "linux")]
+use std::net::TcpListener;
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "macos")]
 use std::os::fd::RawFd;
+#[cfg(target_os = "linux")]
+use std::os::linux::net::SocketAddrExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::net::{SocketAddr as UnixSocketAddr, UnixListener};
 use std::os::unix::process::CommandExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+#[cfg(target_os = "linux")]
+use std::thread;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn helper_path() -> PathBuf {
     std::env::current_exe()
@@ -1194,4 +1208,137 @@ fn a_malformed_spec_never_produces_an_enforced_status() {
         !matches!(outcome, SandboxLaunchOutcome::Enforced { .. }),
         "fail-closed: setup failure must not read as containment: {outcome:?}"
     );
+}
+
+/// Landlock is intentionally filesystem-only. This fixture connects a
+/// sandboxed child to same-UID host process, loopback TCP, and abstract UDS
+/// endpoints so later namespace work has real, deterministic baseline
+/// effects to deny.
+#[cfg(target_os = "linux")]
+#[test]
+fn legacy_landlock_leaves_host_process_tcp_and_abstract_uds_reachable() {
+    require_backend!();
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut host_process = Command::new("sleep")
+        .arg("30")
+        .env("CODEGG_C007_SENTINEL", "fixture-only")
+        .spawn()
+        .expect("controlled same-UID fixture process");
+    let host_pid = host_process.id();
+
+    let tcp = TcpListener::bind(("127.0.0.1", 0)).expect("loopback TCP fixture");
+    tcp.set_nonblocking(true).unwrap();
+    let tcp_addr = tcp.local_addr().unwrap();
+    let tcp_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match tcp.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "TCP fixture accept timed out");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("TCP fixture accept failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0; 1];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"T");
+        stream.write_all(b"A").unwrap();
+    });
+
+    let socket_name = format!(
+        "codegg-c007-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    );
+    let uds_addr =
+        UnixSocketAddr::from_abstract_name(socket_name.as_bytes()).expect("abstract UDS address");
+    let uds = UnixListener::bind_addr(&uds_addr).expect("abstract UDS fixture");
+    uds.set_nonblocking(true).unwrap();
+    let uds_server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match uds.accept() {
+                Ok(connection) => break connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "UDS fixture accept timed out");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("UDS fixture accept failed: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0; 1];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"U");
+        stream.write_all(b"B").unwrap();
+    });
+
+    let script = format!(
+        r#"import os, signal, socket
+try:
+    open('/proc/{host_pid}/environ', 'rb').read()
+    proc_result = 'HOST_PROC_READ'
+except PermissionError:
+    proc_result = 'HOST_PROC_DENIED_BY_HOST'
+os.kill({host_pid}, 0)
+os.kill({host_pid}, signal.SIGTERM)
+tcp = socket.create_connection(('127.0.0.1', {tcp_port}), timeout=3)
+tcp.sendall(b'T')
+assert tcp.recv(1) == b'A'
+uds = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+uds.settimeout(3)
+uds.connect('\0{socket_name}')
+uds.sendall(b'U')
+assert uds.recv(1) == b'B'
+print(proc_result, 'HOST_PID_VISIBLE HOST_SIGNAL_OK TCP_LOOPBACK_OK ABSTRACT_UDS_OK')"#,
+        tcp_port = tcp_addr.port()
+    );
+    let mut spec = spec_for(workspace.path(), SandboxMode::WorkspaceWrite, &[]);
+    spec.target = PathBuf::from("python3");
+    spec.args = vec!["-c".to_string(), script];
+    let run = run_helper(&spec);
+    let tcp_result = tcp_server.join();
+    let uds_result = uds_server.join();
+    let host_status = match host_process.try_wait().expect("poll fixture process") {
+        Some(status) => status,
+        None => {
+            host_process.kill().expect("clean up fixture process");
+            host_process.wait().expect("reap fixture process")
+        }
+    };
+
+    assert!(run.success, "legacy fixture failed: {}", run.stderr);
+    assert!(tcp_result.is_ok());
+    assert!(uds_result.is_ok());
+    assert!(
+        host_status.signal().is_some(),
+        "target did not signal fixture process"
+    );
+    assert!(
+        run.stdout
+            .contains("HOST_PROC_DENIED_BY_HOST HOST_PID_VISIBLE HOST_SIGNAL_OK TCP_LOOPBACK_OK ABSTRACT_UDS_OK"),
+        "legacy Landlock effects changed: {}",
+        run.stdout
+    );
+    match run.outcome().expect("helper status frame") {
+        SandboxLaunchOutcome::Enforced {
+            backend, limits, ..
+        } => {
+            assert_eq!(backend, BackendId::LANDLOCK);
+            assert!(limits
+                .iter()
+                .any(|limit| limit.contains("no network isolation")));
+        }
+        other => panic!("expected the legacy filesystem-only status, got {other:?}"),
+    }
 }
