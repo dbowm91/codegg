@@ -357,6 +357,9 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             if libc::fcntl(status_fd, libc::F_SETFD, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            if libc::fcntl(codegg::security::sandbox::SANDBOX_ACK_FD, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }
