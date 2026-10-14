@@ -2,6 +2,8 @@
 
 Status: active (ADR-0028 accepted; Linux mechanism ADR-0027 proposed; interface and typed Git corrective ready)
 
+**Independent CI test-contract note (2026-10-14):** `plans/subsystems/git-clean-authorization-ci-corrective-addendum.md` owns the stale `tests/git_network_integration.rs::clean_removes_untracked_files` expectation for unauthenticated destructive cleanup. This is a test-contract/CI corrective only: it does **not** unblock contained local Git C002, remote Git C003, ADR-0027 acceptance, or the M001 native backend. Preserve `DestructiveRepositoryChange` as a typed authorization requirement.
+
 Long-term references:
 - `plans/000-long-term-specification.md#4-architectural-principles`
 - `plans/000-long-term-specification.md#17-job-scheduling-and-execution-backends`
