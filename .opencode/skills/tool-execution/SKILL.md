@@ -24,12 +24,12 @@ preflight after approval or let an executor use a broader sandbox profile than
 the accepted snapshot; unavailable required containment is a typed refusal.
 
 `ManagedProcessService` remains the sole finite-process owner on every host.
-The specialized Test tool remains FullHost-only until its domain runner uses
-the canonical managed process owner. Python carries its validated accepted
-filesystem profile through the durable scheduler job into
-`ManagedProcessService`; ReadOnly transform is refused before submission, and
-the process owner rejects constrained execution when sandbox enforcement is
-disabled. Do not automatically reroute a refusal. Active Bash command-intent routes share
+Test and Python carry their validated accepted filesystem profile through the
+durable scheduler job into `ManagedProcessService`. Test uses bounded managed
+streaming while preserving its parser and report pipeline; ReadOnly is refused
+before submission because test commands write build and result artifacts.
+Python's ReadOnly transform is refused before submission, and the process
+owner rejects constrained execution when sandbox enforcement is disabled. Do not automatically reroute a refusal. Active Bash command-intent routes share
 the accepted-receipt check and remain explicit-FullHost-only. Typed Git
 filters/hooks/remotes remain unavailable behind their independent gates.
 On Linux, the protected Bubblewrap mount view is an explicit internal opt-in

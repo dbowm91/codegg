@@ -536,7 +536,14 @@ impl JobExecutor for ImmediateTestExecutor {
     ) -> Result<(), codegg::scheduler::executor::ExecutorValidationError> {
         Ok(())
     }
-    async fn execute(&self, _ctx: JobExecutionContext) -> ExecutorCompletion {
+    async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        assert!(matches!(
+            &ctx.job.payload,
+            codegg_core::jobs::JobPayload::Test {
+                sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+                ..
+            }
+        ));
         ExecutorCompletion {
             status: codegg::scheduler::executor::ExecutorStatus::Completed,
             summary: "immediate-test-ok".into(),
@@ -608,6 +615,24 @@ async fn scheduler_test_dispatch_emits_test_family_event() {
     let tool = codegg::tool::test::TestTool::new().with_submission(submission);
     let mut ctx = tool_ctx(&pool, "corr-testtool", "inv-testtool");
     ctx.session_id = Some("session-corr-testtool".to_owned());
+    let snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+        codegg_core::approval::ApprovalMode::Interactive,
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        Some("test-principal".into()),
+        Some("session-corr-testtool".into()),
+        None,
+        Some("test-policy-r1".into()),
+        None,
+    );
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot,
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "test",
+                Some("test-policy-r1".into()),
+            ),
+            command_preflight: None,
+        });
     let out = tool
         .execute_structured(
             serde_json::json!({

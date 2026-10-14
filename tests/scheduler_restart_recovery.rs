@@ -39,6 +39,7 @@ fn default_new_job(workspace_id: &WorkspaceId) -> NewJob {
             cwd: None,
             scope: None,
             parent_run_id: None,
+            sandbox_profile: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

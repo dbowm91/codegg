@@ -48,6 +48,13 @@ there is no inherited ambient or later-resolved goal identity. The label is
 durable job metadata used for evidence correlation only and grants no
 execution authority.
 
+Specialized executors may also pass owner-controlled metadata through
+`submit_with_labels`; those labels are size-checked and persisted with the
+job before enqueue. Python uses this for the canonical workspace root needed
+to validate its execution cwd after scheduler admission. Labels remain
+descriptive executor input and never carry permission receipts or grant
+authority.
+
 ## Key Types & APIs
 
 ### Typed Identifiers (`mod.rs:346-465`)

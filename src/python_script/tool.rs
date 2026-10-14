@@ -378,7 +378,7 @@ impl PythonScriptTool {
             .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
 
         let submitted = submission
-            .submit(Some(key), spec)
+            .submit_with_labels(Some(key), spec, labels)
             .await
             .map_err(|e| ToolError::Execution(format!("scheduler submission failed: {e}")))?;
 

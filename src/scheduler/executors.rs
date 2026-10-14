@@ -110,12 +110,13 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (argv, parent_run_id) = match &ctx.job.payload {
+        let (argv, parent_run_id, sandbox_profile) = match &ctx.job.payload {
             JobPayload::Test {
                 argv,
                 parent_run_id,
+                sandbox_profile,
                 ..
-            } => (argv.clone(), parent_run_id.clone()),
+            } => (argv.clone(), parent_run_id.clone(), *sandbox_profile),
             _ => {
                 return failure_completion(
                     started,
@@ -148,10 +149,11 @@ impl JobExecutor for TestJobExecutor {
             cancellation: Some(ctx.cancellation.clone()),
         };
 
-        let result = crate::test_runner::runner::resolve_and_run_test(
+        let result = crate::test_runner::runner::resolve_and_run_test_with_profile(
             request,
             self.sink.as_deref(),
             self.run_store.as_ref().or(ctx.run_store.as_ref()),
+            sandbox_profile,
         )
         .await;
 
@@ -1501,7 +1503,7 @@ impl JobExecutor for PythonJobExecutor {
         };
 
         // Build summary
-        let mut summary = result.summary();
+        let mut summary = crate::python_script::projection::project_python_run(&result);
         if let Some(rid) = &run_id {
             summary.push_str(&format!("\nrun_id: {rid}"));
         }
@@ -1660,6 +1662,7 @@ mod tests {
                 cwd,
                 scope: None,
                 parent_run_id: None,
+                sandbox_profile: None,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
