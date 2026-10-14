@@ -1076,6 +1076,44 @@ mod tests {
         assert_eq!(timeout.kind, TimeoutKind::NoOutput);
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resolve_and_run_cancellation_stops_child_before_followup_effect() {
+        let dir = temp_dir_with_files("cancel", &[]);
+        let marker = dir.path().join("after-cancel-marker");
+        let command = format!("sleep 10; touch '{}'", marker.display());
+        let resolved = ResolvedTestCommand {
+            language: crate::test_runner::types::TestLanguage::Generic,
+            argv: vec!["/bin/sh".into(), "-c".into(), command.into()],
+            cwd: dir.path().to_path_buf(),
+            scope_label: "test".into(),
+        };
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let cancel_after_start = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel_after_start.cancel();
+        });
+        let request = TestRunRequest {
+            scope: TestScope::Auto,
+            workdir: dir.path().to_path_buf(),
+            timeout_secs: Some(30),
+            stall_timeout_secs: None,
+            max_report_bytes: None,
+            session_id: None,
+            parent_run_id: None,
+            execution_cwd: None,
+            cancellation: Some(cancellation),
+        };
+
+        let report = run_resolved_test(&request, resolved, None, None)
+            .await
+            .unwrap()
+            .into_report();
+        assert_eq!(report.status, TestStatus::Cancelled);
+        assert!(!marker.exists(), "test child continued after cancellation");
+    }
+
     #[test]
     fn empty_command_returns_error() {
         let dir = temp_dir_with_files("empty", &[]);
