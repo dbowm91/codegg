@@ -1,6 +1,6 @@
 # Linux Execution Isolation M002 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -20,7 +20,7 @@ Implementation commits or pull requests:
 
 M002's internal interface/probe slice is implemented. `ManagedProcessService` now validates a typed Linux launch request and selects only the existing private helper. The request models filesystem, network, process, syscall, and resource dimensions under a parent ceiling. A read-only probe reports host/kernel facts. The obtained projection records filesystem enforcement only from the private helper's status; generic helper success cannot imply that network, namespaces, seccomp, or resource bounds were applied.
 
-No namespace backend is registered. Existing Landlock-only behavior, unrestricted legacy network behavior, and other platform paths remain unchanged. The closure is conditional on a macOS cross-target compile because the available Linux container lacks macOS SDK headers required by a dependency's C build. Windows GNU cross-compilation and Linux verification passed.
+No namespace backend is registered. Existing Landlock-only behavior, unrestricted legacy network behavior, and other platform paths remain unchanged. Linux verification and Windows GNU cross-compilation passed. The macOS cross-target compile initially lacked a local SDK, then passed on GitHub Actions runner `macos-15` for commit `f475e02eefddb2de495a3d14c3efde880a42d03f` (run [38500291456](https://github.com/dbowm91/codegg/actions/runs/38500291456)).
 
 ## 2. Requirement-to-evidence matrix
 
@@ -35,7 +35,7 @@ No namespace backend is registered. Existing Landlock-only behavior, unrestricte
 | Static sandbox/ownership wiring remains valid | sandbox contract, sandbox policy-wiring, execution-ownership guards | pass | All three guards passed. |
 | Repository quick verification | `scripts/verify.sh quick` | pass | All routine checks and workspace/all-targets check passed. |
 | Windows platform compile | `cargo check -p codegg --lib --target x86_64-pc-windows-gnu --locked` | pass | Used the installed MinGW compiler; emitted existing platform-specific unused/dead-code warnings, no errors. |
-| macOS platform compile | `cargo check -p codegg --lib --target x86_64-apple-darwin --locked` and retry with Clang target flags | blocked | Host `cc` does not accept Apple target flags; the Clang retry reaches `ring` but target SDK/sysroot headers are absent (`bits/libc-header-start.h`). No Rust diagnostic from this change was reported. |
+| macOS platform compile | GitHub Actions run [38500291456](https://github.com/dbowm91/codegg/actions/runs/38500291456), `macos-15`, `cargo check -p codegg --lib --target x86_64-apple-darwin --locked` | pass | Finished successfully on the Apple SDK; exact source revision `f475e02eefddb2de495a3d14c3efde880a42d03f`. |
 
 ## 3. Production implementation evidence
 
@@ -62,13 +62,15 @@ CARGO_TARGET_DIR=/tmp/codegg-linux-execution-isolation-target scripts/verify.sh 
 CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar CARGO_TARGET_DIR=/tmp/codegg-linux-execution-isolation-target CARGO_BUILD_JOBS=2 cargo check -p codegg --lib --target x86_64-pc-windows-gnu --locked
 CARGO_TARGET_DIR=/tmp/codegg-linux-execution-isolation-target CARGO_BUILD_JOBS=2 cargo check -p codegg --lib --target x86_64-apple-darwin --locked
 CC_x86_64_apple_darwin=clang CFLAGS_x86_64_apple_darwin="-target x86_64-apple-darwin" CARGO_TARGET_DIR=/tmp/codegg-linux-execution-isolation-target CARGO_BUILD_JOBS=2 cargo check -p codegg --lib --target x86_64-apple-darwin --locked
+GitHub Actions macOS target compile: run 38500291456, head f475e02eefddb2de495a3d14c3efde880a42d03f
+GitHub Actions Linux capability probe: run 38500815006, head 124be5251ffde1e75df3b355572072ee839e40d0
 ```
 
 ### Results
 
 Linux launch tests passed 7/7; full sandbox library tests passed 56/56; managed-process tests passed 19/19; containment integration passed 13/13; native Landlock passed 3/3. `scripts/verify.sh quick` passed. The Windows GNU library check passed. The macOS check was attempted with the host compiler and with Clang, but the target SDK headers are absent.
 
-The read-only host probe inputs observed on this Linux host: `user.max_user_namespaces=28633`; user/mount/pid/net/ipc namespace handles exist, while namespace creation remains unknown; seccomp lists the `filter` action; `/proc/filesystems` lists `proc`; `/usr/bin/bwrap` is root-owned mode 755; Landlock integration tests pass; cgroup v2 exposes controllers but delegated ownership is unproven; AppArmor is present and SELinux is absent. No probe result is represented as a child enforcement claim.
+The read-only host probe inputs observed on this Linux host: `user.max_user_namespaces=28633`; user/mount/pid/net/ipc namespace handles exist, while namespace creation remains unknown; seccomp lists the `filter` action; `/proc/filesystems` lists `proc`; `/usr/bin/bwrap` is root-owned mode 755; Landlock integration tests pass; cgroup v2 exposes controllers but delegated ownership is unproven; AppArmor is present and SELinux is absent. The hosted Linux feasibility probe (run [38500393838](https://github.com/dbowm91/codegg/actions/runs/38500393838), repeated as [38500815006](https://github.com/dbowm91/codegg/actions/runs/38500815006)) observed Linux 6.17, Landlock ABI 7, successful privileged Bubblewrap namespace setup, a read-only cgroup root, and an unsupported user-namespace OverlayFS mount. No probe result is represented as a child enforcement claim.
 
 ## 5. Invariant review
 
@@ -85,7 +87,7 @@ Malformed or over-ceiling requests fail before helper/target launch. Enhanced di
 
 ## 7. Migration and compatibility review
 
-No schema, protocol, CLI, config, or persisted policy changed. No migration is needed. The internal request is constructed from the existing `SandboxLaunchSpec`; public outcome meaning remains unchanged. Linux continues to use existing Landlock-only behavior; macOS Seatbelt and Windows paths retain their current implementations. macOS cross-compilation remains the named condition.
+No schema, protocol, CLI, config, or persisted policy changed. No migration is needed. The internal request is constructed from the existing `SandboxLaunchSpec`; public outcome meaning remains unchanged. Linux continues to use existing Landlock-only behavior; macOS Seatbelt and Windows paths retain their current implementations. macOS cross-compilation passed on the hosted Apple runner.
 
 ## 8. Security review
 
@@ -102,16 +104,15 @@ The production adapter does not execute Bubblewrap or use an untrusted PATH look
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | macOS cross-target compilation could not complete because the Linux environment lacks the SDK headers required by `ring`. | macOS compilation of unchanged paths is not evidenced on this host. | Run the macOS target check in a macOS or correctly provisioned cross-build environment; amend this record with the result. |
 | high | No production Linux namespace, protected mount, process/IPC, seccomp, network, or cgroup enforcement backend exists in this slice. | Enhanced Linux containment is unavailable. | Keep ADR-0027 proposed; complete M003–M007 with native proof before backend promotion. |
 
 ## 11. Roadmap disposition
 
-M002's interface/probe work is conditionally closed pending the macOS compile evidence above. This does not unblock M003: accepted ADR-0027 and native M003/M004 prerequisites remain outstanding. M007 and C002/C003 remain blocked on native dimensions and transport requirements. M001 remains blocked. No remaining implementation plan becomes eligible in this closure.
+M002's interface/probe work is closed. ADR-0027 is now accepted, so M003 is eligible for opt-in implementation; no enhanced backend is admitted until its mount and native adversarial evidence closes. M007 remains blocked on delegated cgroup evidence, and C002/C003 remain blocked on native dimensions and transport requirements. M001 remains blocked. This closure does not claim Linux containment.
 
 ## 12. Registry updates
 
-- Mark M002 conditionally closed and link this record in `plans/registry.md` and the Linux subsystem roadmap.
+- Mark M002 closed and link this record in `plans/registry.md` and the Linux subsystem roadmap.
 - Preserve M003–M008, C002/C003, and M001 blocked states.
-- Do not register or advertise Bubblewrap/namespace enforcement until ADR-0027 is accepted and native enforcement is proven.
-- The remaining condition is a macOS cross-target compile using a provisioned SDK/toolchain.
+- Do not register or advertise Bubblewrap/namespace enforcement until its native enforcement is proven.
+- The macOS cross-target condition was discharged by hosted run `38500291456`.
