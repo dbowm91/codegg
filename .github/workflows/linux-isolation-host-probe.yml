@@ -26,6 +26,7 @@ jobs:
           cat /proc/self/cgroup || true
           cat /sys/fs/cgroup/cgroup.controllers || true
           stat -c '%U %G %A %n' /sys/fs/cgroup 2>&1 || true
+          set -e
           python3 - <<'PY'
           import ctypes, os
           libc = ctypes.CDLL(None, use_errno=True)
@@ -49,7 +50,7 @@ jobs:
                   pass
           thread = threading.Thread(target=accept_once)
           thread.start()
-          script = r'''import ctypes, socket, sys
+          script = r'''import ctypes, errno, socket, sys
           class Attr(ctypes.Structure):
               _fields_ = [("handled_access_fs", ctypes.c_uint64), ("handled_access_net", ctypes.c_uint64), ("scoped", ctypes.c_uint64)]
           libc = ctypes.CDLL(None, use_errno=True)
@@ -62,6 +63,7 @@ jobs:
               socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).connect("\0" + sys.argv[1])
               raise SystemExit("abstract socket unexpectedly reachable")
           except PermissionError as error:
+              if error.errno not in (errno.EPERM, errno.EACCES): raise
               print(f"abstract_socket_denied_errno={error.errno}")
           '''
           result = subprocess.run([sys.executable, "-c", script, name], text=True, capture_output=True)
@@ -71,9 +73,10 @@ jobs:
           print(f"landlock_scope_child_stdout={result.stdout.strip()}")
           print(f"landlock_scope_child_stderr={result.stderr.strip()}")
           print(f"landlock_scope_host_listener_accepted={bool(accepted)}")
-          if result.returncode != 0 or "abstract_socket_denied_errno=13" not in result.stdout or accepted:
+          if result.returncode != 0 or "abstract_socket_denied_errno=" not in result.stdout or accepted:
               raise SystemExit("Landlock ABI 6 abstract socket scope did not deny the host fixture")
           PY
+          set +e
           if ! command -v bwrap >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
