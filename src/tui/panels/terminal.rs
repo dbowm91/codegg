@@ -15,11 +15,23 @@
 //! The box's `Viewing`/`Focused` pair is exactly the app's Normal/Insert
 //! split, and it is reused rather than re-invented:
 //!
-//! * **NOR** — the panel has the keyboard but the PTY does not. Arrow and
-//!   page keys scroll; `i` takes the PTY — or starts a shell when there is
-//!   none to take, since a terminal panel that refuses focus leaves nowhere
-//!   to type and nothing to fix it with. The directional gesture is claimed
-//!   by the host before it reaches here.
+//! * **NOR** — the panel has the keyboard but the PTY does not, and it is a
+//!   *reader*: `j/k/h/l` and arrows move the cursor and scroll at the edges,
+//!   `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character,
+//!   `x` selects the cursor's whole line and grows one line per press, `d`
+//!   deletes the selection, `space+y` yanks to the clipboard, and `C` clears.
+//!   `i` takes the PTY — or starts a shell when there is none to
+//!   take, since a terminal panel that refuses focus leaves nowhere to type
+//!   and nothing to fix it with. Esc drops a selection before it leaves. The
+//!   directional gesture is claimed by the host before it reaches here.
+//!   Selection needs a history buffer to select *from*, so the emulator keeps
+//!   `TERMINAL_SCROLLBACK_LINES` rows rather than only the live screen.
+//!
+//!   The `v`/`x` split is the shared state machine's rule, not this file's:
+//!   `x` is an *action* (repeat to add a line) and `v` is a *mode* (movement
+//!   extends). `d` is an *operator* and consumes what it acted on, so a bare
+//!   `d` is a no-op rather than a fallback. `C` rather than `d` for clear is
+//!   what frees `d` to mean delete.
 //! * **INS** — the PTY owns the keyboard. Every key is mapped by
 //!   [`map_key`] and gated by [`classify_key`]; `Ctrl-]` leaves.
 //!
@@ -28,12 +40,14 @@
 //!
 //! ## Width
 //!
-//! The box renders in a 60×50 centred rect; the column is about 30 wide.
-//! The emulator's own screen state is unchanged by that, and `Paragraph`
-//! clips what does not fit — so a narrow panel shows the left edge of the
-//! emulator screen, wrapped by the program rather than by us. Reflowing
-//! would mean re-feeding the parser at a different width and losing columns
-//! the program believes it has.
+//! The PTY is sized to the body rect this panel actually has, queued through
+//! `queue_resize` and drained by `flush_terminal_resize`. Sizing it from the
+//! outer terminal instead — which is what `terminal_viewport_size` does for the
+//! initial box — leaves the program wrapping to columns this column cannot
+//! show, so the reader sees the left edge of a much wider screen. Reflowing is
+//! the cost: a resize re-wraps what the program believes it has, which is the
+//! same trade every terminal makes and the only one that leaves the output
+//! legible.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -45,7 +59,7 @@ use ratatui::{
 };
 
 use crate::tui::app::TuiMsg;
-use crate::tui::commands::interactive_terminal::map_key;
+use crate::tui::commands::interactive_terminal::{apply_nav, map_key, NavOutcome};
 use crate::tui::input::InputAction;
 use crate::tui::interactive_terminal::{classify_key, TerminalKeyAction};
 use crate::tui::theme::Theme;
@@ -156,6 +170,27 @@ impl TerminalPanel {
     }
 }
 
+/// Queue a PTY resize matching the real body rect.
+///
+/// Last-wins and coalesced on the controller, so a column that resizes every
+/// frame while a drag settles costs one daemon round trip rather than one per
+/// frame. The queued size is drained by `flush_terminal_resize`, shared with
+/// the input flush — the render path has no `App`, so this cannot send it.
+///
+/// Skipped when the size already matches. Not-live terminals are rejected by
+/// `queue_resize`, whose typed error is deliberately discarded here: a panel
+/// showing an exited process must keep rendering rather than toast on every
+/// frame.
+fn queue_viewport_resize(ctx: &mut PanelCtx<'_>, handle: &str, cols: u16, rows: u16) {
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    if ctx.terminal.dimensions(handle) == Some((cols, rows)) {
+        return;
+    }
+    let _ = ctx.terminal.queue_resize(handle, cols, rows);
+}
+
 impl SidePanel for TerminalPanel {
     fn id(&self) -> SidePanelId {
         SidePanelId::Terminal
@@ -207,8 +242,21 @@ impl SidePanel for TerminalPanel {
         };
         Paragraph::new(self.header(ctx, &theme)).render(rows[0], buf);
 
+        // Match the PTY to the real body rect. The panel is typically far
+        // narrower than the outer terminal the viewport size was derived from,
+        // so without this the program wraps to columns nobody can see and the
+        // column shows the left edge of a much wider screen.
         let body_height = usize::from(rows[1].height);
-        match ctx.terminal.render_styled_lines(&handle, body_height) {
+        let body_width = rows[1].width;
+        queue_viewport_resize(
+            ctx,
+            &handle,
+            body_width,
+            u16::try_from(body_height).unwrap_or(1),
+        );
+
+        let highlight = Style::default().bg(theme.selection);
+        match ctx.terminal.render_view(&handle, body_height, highlight) {
             Some(lines) if !lines.is_empty() => Paragraph::new(lines).render(rows[1], buf),
             _ => Paragraph::new(Line::from(Span::styled(
                 " no output — press i to type",
@@ -240,15 +288,32 @@ impl SidePanel for TerminalPanel {
         if !focused {
             // NOR. `i` is the way in — to an existing PTY, or to a new one
             // when there is nothing live to type into. The directional
-            // gesture was already claimed by the host, so anything else here
-            // is inert rather than forwarded: a stray `q` must never become
-            // PTY input.
-            return match key.code {
+            // gesture was already claimed by the host.
+            match key.code {
                 KeyCode::Char('i') if key.modifiers == KeyModifiers::NONE => {
-                    PanelKey::Intent(self.type_intent())
+                    return PanelKey::Intent(self.type_intent());
                 }
-                KeyCode::Enter => PanelKey::Intent(self.type_intent()),
-                _ => PanelKey::Consumed,
+                KeyCode::Enter => return PanelKey::Intent(self.type_intent()),
+                _ => {}
+            }
+            // No `Esc` arm: the host claims `Esc`/`q` as panel exits before
+            // the panel is consulted, so an Esc arm here would be unreachable.
+            // The selection survives the blur anyway — it lives on the
+            // controller, not the panel — so stepping out and back keeps the
+            // text the reader was about to copy.
+            let Some(handle) = self.handle.clone() else {
+                return PanelKey::Consumed;
+            };
+            // Helix navigation, selection, and `space+y` yank, through the
+            // same seam the box uses. Unhandled keys stay consumed rather than
+            // falling through to the composer: a stray `q` must never be
+            // forwarded as PTY input, and the panel owns every key it shows.
+            return match apply_nav(ctx.terminal, &handle, key) {
+                NavOutcome::Unhandled => PanelKey::Consumed,
+                NavOutcome::Handled => PanelKey::Consumed,
+                NavOutcome::ClearRequested => {
+                    PanelKey::Intent(TuiMsg::TerminalPanelClear { handle })
+                }
             };
         }
         let Some(handle) = self.handle.clone() else {
@@ -269,13 +334,20 @@ impl SidePanel for TerminalPanel {
     }
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
-        if !hints.focused {
-            return None;
-        }
-        Some(if self.handle.is_none() {
-            "TERM · i start a shell · Shift+← back".to_string()
+        Some(if !hints.focused {
+            // Unfocused: navigation is still this panel's business, so the
+            // line is not empty — but `i` only works with the keyboard, and
+            // saying so is the difference between a dead key and a mode.
+            match self.handle {
+                None => "TERM · focus to start a shell".to_string(),
+                Some(_) => "TERM · focus to scroll, select and type".to_string(),
+            }
+        } else if self.handle.is_none() {
+            "TERM · i start a shell · v chars · x lines · d delete · space+y copy · C clear"
+                .to_string()
         } else {
-            "TERM · i type · ^-] stop · Shift+← back".to_string()
+            "TERM · i type · ^-] stop · v chars · x lines · d delete · space+y copy · C clear"
+                .to_string()
         })
     }
 

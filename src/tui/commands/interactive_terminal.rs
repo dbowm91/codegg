@@ -695,7 +695,13 @@ pub(crate) fn send_terminal_input(app: &mut App, handle: String, bytes: Vec<u8>)
 }
 
 /// Drain coalesced pending input into one bounded input operation.
+///
+/// Also drains any pending resize queued by a docked panel. Sharing the drain
+/// is deliberate: the panel sizes its PTY from the render path, which has no
+/// seam of its own, so the resize would otherwise sit in the queue until the
+/// user happened to type something.
 pub(crate) fn flush_terminal_input(app: &mut App, handle: String) {
+    flush_terminal_resize(app, &handle);
     let (Some(attachment_id), Some(pending)) = (
         app.interactive_terminals.attachment_id(&handle),
         app.interactive_terminals.take_pending_input(&handle),
@@ -774,6 +780,23 @@ pub(crate) fn flush_terminal_input(app: &mut App, handle: String) {
     );
 }
 
+/// Flush a resize already queued on the controller through one M002 resize
+/// operation.
+///
+/// Split from [`start_terminal_resize`] because the docked panel queues its
+/// own size from the render path and has no `App` to reach: the panel leaves
+/// the size on the controller and this drain, shared with the input flush,
+/// sends it.
+pub(crate) fn flush_terminal_resize(app: &mut App, handle: &str) {
+    let (Some(attachment_id), Some((cols, rows))) = (
+        app.interactive_terminals.attachment_id(handle),
+        app.interactive_terminals.take_pending_resize(handle),
+    ) else {
+        return;
+    };
+    send_terminal_resize(app, handle.to_string(), attachment_id, cols, rows);
+}
+
 /// Queue a resize from `/terminal-resize <cols> <rows>` and flush the
 /// coalesced (last-wins) size through one M002 resize operation.
 pub(crate) fn start_terminal_resize(app: &mut App, handle: String, cols: u16, rows: u16) {
@@ -781,12 +804,17 @@ pub(crate) fn start_terminal_resize(app: &mut App, handle: String, cols: u16, ro
         app.messages_state.toasts.warning(&error.to_string());
         return;
     }
-    let (Some(attachment_id), Some((cols, rows))) = (
-        app.interactive_terminals.attachment_id(&handle),
-        app.interactive_terminals.take_pending_resize(&handle),
-    ) else {
-        return;
-    };
+    flush_terminal_resize(app, &handle);
+}
+
+/// Issue one M002 resize for an already-resolved attachment and size.
+fn send_terminal_resize(
+    app: &mut App,
+    handle: String,
+    attachment_id: String,
+    cols: u16,
+    rows: u16,
+) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
             .toasts
@@ -1243,7 +1271,20 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
     };
     let mut lines = headers;
     lines.push(String::new());
-    lines.push("── output (newest, bounded) ──".to_string());
+    let offset = app
+        .interactive_terminals
+        .viewport_offset(handle)
+        .unwrap_or(0);
+    lines.push(if offset > 0 {
+        format!("── output ({offset} rows back) ──")
+    } else {
+        "── output (following) ──".to_string()
+    });
+    // The box has its own wrapped-row scroller on top of the controller's
+    // scrollback offset. When the terminal is following, keep that scroller
+    // pinned to the newest row; when the reader has scrolled back, leave it
+    // alone so the two offsets cannot fight each other.
+    let follow = offset == 0;
     let mut styled_content: Vec<ratatui::text::Line<'static>> = lines
         .iter()
         .map(|line| {
@@ -1253,23 +1294,36 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
             ))
         })
         .collect();
+    let selection_style = ratatui::style::Style::default().bg(app.ui_state.theme.selection);
     let output = app
         .interactive_terminals
-        .render_styled_lines(handle, 200)
+        .render_view(handle, 200, selection_style)
         .unwrap_or_default();
     if output.is_empty() {
         styled_content.push(ratatui::text::Line::from("(no output yet)"));
     } else {
         styled_content.extend(output);
     }
-    let footer =
-        "i focus  |  Ctrl-] unfocus  |  Esc to process  |  Esc closes when viewing  |  /terminal-resume refresh".to_string();
+    let footer = format!(
+        "j/k scroll  |  ^-u/^-d page  |  e/b word  |  v select chars  |  x select lines  |  d delete  |  space+y copy  |  C clear  |  i focus  |  ^-] unfocus  |  Esc closes{}",
+        if app.interactive_terminals.redaction_count(handle) > 0 {
+            format!(
+                "  |  {} deleted",
+                app.interactive_terminals.redaction_count(handle)
+            )
+        } else {
+            String::new()
+        },
+    );
     if let Some(dialog) = app
         .focus_manager
         .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
     {
         dialog.set_info_type(crate::tui::components::dialogs::info::InfoType::TerminalShow);
-        dialog.set_styled_content(styled_content);
+        dialog.set_styled_content_preserving_scroll(styled_content);
+        if follow {
+            dialog.scroll_to_end();
+        }
         dialog.set_theme(&app.ui_state.theme);
         dialog.set_custom_footer(footer);
     } else {
@@ -1418,10 +1472,22 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
             app.process_msg(crate::tui::app::TuiMsg::MoveDirection(dir));
             return true;
         }
-        // Esc closes (detach); navigation falls through to the
-        // dialog scroller (return false); everything else is ignored here
-        // and must not reach the prompt while the dialog is modal.
+        // Helm-style navigation and selection. The box answers these itself
+        // rather than letting the `InfoDialog` scroller move, because the
+        // scrollable content is the terminal viewport itself and the
+        // scrollback offset lives on the controller.
+        if handle_terminal_nav(app, &handle, key) {
+            return true;
+        }
+        // Esc closes (detach) — unless a selection is armed, in which case Esc
+        // drops it and keeps the view open. Closing a box the user was
+        // mid-copy in loses the selection with no way back.
         if matches!(key.code, KeyCode::Esc) {
+            if app.interactive_terminals.selection(&handle).is_some() {
+                app.interactive_terminals.cancel_selection(&handle);
+                refresh_terminal_dialog(app, &handle);
+                return true;
+            }
             close_terminal_view(app, false);
             app.close_dialog();
             return true;
@@ -1447,6 +1513,188 @@ pub(crate) fn handle_terminal_key(app: &mut App, key: crossterm::event::KeyEvent
             true
         }
         TerminalKeyAction::Ignored => true,
+    }
+}
+
+/// Helix-style navigation, selection, and clear for one terminal.
+///
+/// Shared verbatim by the box and the docked panel so the same key means the
+/// same thing on both surfaces — the failure mode this module already documents
+/// for [`map_key`], extended to the verbs that are not PTY input.
+///
+/// Keys here are claimed only while *viewing*. In focused (INS) mode the PTY
+/// owns the keyboard and everything goes through [`classify_key`], so a `v` or
+/// `d` typed at a running program stays program input.
+///
+/// Returns whether the key was consumed.
+pub(crate) fn handle_terminal_nav(
+    app: &mut App,
+    handle: &str,
+    key: crossterm::event::KeyEvent,
+) -> bool {
+    let outcome = apply_nav(&mut app.interactive_terminals, handle, key);
+    if outcome == NavOutcome::ClearRequested {
+        clear_terminal(app, handle);
+        return true;
+    }
+    if outcome == NavOutcome::Unhandled {
+        return false;
+    }
+    refresh_terminal_dialog(app, handle);
+    true
+}
+
+/// What [`apply_nav`] did, from the caller's point of view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavOutcome {
+    /// Navigation, selection, or a yank happened; redraw.
+    Handled,
+    /// The key was not a navigation key; route it normally.
+    Unhandled,
+    /// The clear verb fired and the caller must run it through the daemon.
+    ClearRequested,
+}
+
+/// Apply one navigation key to the controller.
+///
+/// Split from [`handle_terminal_nav`] because the docked panel has no `App`:
+/// it owns the same controller through `PanelCtx`, so the verbs live here and
+/// only the daemon-bound `clear` needs routing back through a command.
+pub(crate) fn apply_nav(
+    terminals: &mut crate::tui::interactive_terminal::InteractiveTerminalController,
+    handle: &str,
+    key: crossterm::event::KeyEvent,
+) -> NavOutcome {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    if terminals.view(handle).is_none() {
+        return NavOutcome::Unhandled;
+    }
+
+    // `space+y` arrives as two keys in legacy xterm encoding, so the prefix is
+    // state. Any second key other than `y` disarms it and is then resolved
+    // normally — which is why `y` must not also fall through to its own arm.
+    if terminals.prefix_pending(handle) {
+        terminals.set_prefix_pending(handle, false);
+        if matches!(key.code, KeyCode::Char('y')) && key.modifiers == KeyModifiers::NONE {
+            // A failed yank is deliberately not reported here: this seam has no
+            // `App` (the panel holds the same controller through `PanelCtx`),
+            // and the selection survives a failed copy, so the reader can
+            // retry `space+y` rather than having lost the text.
+            if let Some(text) = terminals.selected_text(handle) {
+                let _ = crate::util::clipboard::copy_to_clipboard(&text);
+            }
+            return NavOutcome::Handled;
+        }
+    }
+
+    match classify_nav_key(key) {
+        TerminalNavAction::Move(drow, dcol) => {
+            terminals.move_cursor(handle, drow, dcol);
+        }
+        TerminalNavAction::Page(direction) => {
+            terminals.page_by(handle, direction);
+        }
+        TerminalNavAction::Word(forward) => {
+            terminals.word_motion(handle, forward);
+        }
+        TerminalNavAction::SelectChar => {
+            terminals.toggle_char_selection(handle);
+        }
+        TerminalNavAction::SelectLine => {
+            terminals.toggle_line_selection(handle);
+        }
+        TerminalNavAction::DeleteSelection => {
+            // A bare `d` with nothing selected is a no-op, but it is *claimed*
+            // rather than passed through: the key is the delete operator here,
+            // and an unclaimed `d` in a focused panel would reach the global
+            // `OpenDiff` binding instead.
+            terminals.delete_selection(handle);
+        }
+        TerminalNavAction::YankPrefix => {
+            terminals.set_prefix_pending(handle, true);
+        }
+
+        TerminalNavAction::Clear => {
+            terminals.cancel_selection(handle);
+            terminals.set_prefix_pending(handle, false);
+            return NavOutcome::ClearRequested;
+        }
+        TerminalNavAction::Unhandled => return NavOutcome::Unhandled,
+    }
+    NavOutcome::Handled
+}
+
+/// One navigation verb resolved from a key event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalNavAction {
+    /// Move the cursor by rows and columns; scrolls at the edges.
+    Move(i32, i32),
+    /// Page the viewport; positive walks toward older output.
+    Page(i32),
+    /// Helix `e` / `b` — jump to the next/previous word boundary.
+    Word(bool),
+    /// Helix `v` — toggle character-granularity selection.
+    SelectChar,
+    /// Helix `x` — whole-line selection, growing one line per press.
+    SelectLine,
+    /// Helix `d` — delete the held selection from this view.
+    DeleteSelection,
+    /// Arm the `space` prefix awaiting `y`.
+    YankPrefix,
+    /// Helix `C` — clear scrollback and screen; the process keeps running.
+    Clear,
+    /// Not a navigation key; let the caller route it.
+    Unhandled,
+}
+
+/// Resolve a Normal-mode key event into a terminal navigation verb.
+///
+/// `d` and `C` are deliberately here rather than left to the global binding
+/// map: a focused panel is consulted *before* Normal-mode actions, so an
+/// unclaimed `d` would silently become `OpenDiff` and never delete anything.
+///
+/// Uppercase is bound with *and* without `SHIFT`, because terminals disagree on
+/// the encoding — the same rule the panel directionals already follow.
+pub(crate) fn classify_nav_key(key: crossterm::event::KeyEvent) -> TerminalNavAction {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    match (key.modifiers, key.code) {
+        // Page keys before the bare-char arms: ctrl+d is PageDown and ctrl+u is
+        // PageUp, while bare `d` deletes a selection. They are distinct
+        // events, not a shadowing pair — and both page a whole viewport at a
+        // time, which is the point of paging rather than stepping.
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => TerminalNavAction::Page(1),
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => TerminalNavAction::Page(-1),
+        (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
+            TerminalNavAction::Move(1, 0)
+        }
+        (KeyModifiers::NONE, KeyCode::Char('k')) | (KeyModifiers::NONE, KeyCode::Up) => {
+            TerminalNavAction::Move(-1, 0)
+        }
+        (KeyModifiers::NONE, KeyCode::Char('h')) | (KeyModifiers::NONE, KeyCode::Left) => {
+            TerminalNavAction::Move(0, -1)
+        }
+        (KeyModifiers::NONE, KeyCode::Char('l')) | (KeyModifiers::NONE, KeyCode::Right) => {
+            TerminalNavAction::Move(0, 1)
+        }
+        (KeyModifiers::NONE, KeyCode::Char('e')) => TerminalNavAction::Word(true),
+        (KeyModifiers::NONE, KeyCode::Char('b')) => TerminalNavAction::Word(false),
+        (KeyModifiers::NONE, KeyCode::Char('v')) => TerminalNavAction::SelectChar,
+        (KeyModifiers::NONE, KeyCode::Char('x')) => TerminalNavAction::SelectLine,
+        (KeyModifiers::NONE, KeyCode::Char(' ')) => TerminalNavAction::YankPrefix,
+        (KeyModifiers::NONE, KeyCode::Char('d')) => TerminalNavAction::DeleteSelection,
+        // Clear moved from `d` to `C` so `d` could become the delete operator.
+        // Clear moved from `d` to `C` so `d` could become the delete operator.
+        // All four spellings: terminals disagree about whether a shifted letter
+        // arrives as `Char('C')` with NONE, `Char('C')` with SHIFT, `Char('c')`
+        // with SHIFT, or `Char('c')` with NONE, and a clear key that works on
+        // one terminal is a dead key on another.
+        (KeyModifiers::NONE, KeyCode::Char('c'))
+        | (KeyModifiers::NONE, KeyCode::Char('C'))
+        | (KeyModifiers::SHIFT, KeyCode::Char('c'))
+        | (KeyModifiers::SHIFT, KeyCode::Char('C')) => TerminalNavAction::Clear,
+        _ => TerminalNavAction::Unhandled,
     }
 }
 
@@ -1505,6 +1753,7 @@ fn terminal_error_hint(code: &str, message: &str) -> String {
 mod tests {
     use super::*;
     use crate::tui::app::App;
+    use crate::tui::interactive_terminal::InteractiveTerminalController;
 
     fn test_chunk(text: &str) -> InteractiveOutputChunk {
         InteractiveOutputChunk {
@@ -1687,6 +1936,238 @@ mod tests {
         assert!(
             !argv[0].trim().is_empty(),
             "a blank $SHELL must fall through to the real default"
+        );
+    }
+
+    // ── Navigation keymap ──────────────────────────────────────────────
+
+    fn nav_key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        nav_key_mod(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    fn nav_key_mod(
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent {
+            code,
+            modifiers,
+            kind: crossterm::event::KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn nav_keymap_covers_the_documented_verbs() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Line movement, vim and arrows alike.
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('j'))),
+            TerminalNavAction::Move(1, 0)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('k'))),
+            TerminalNavAction::Move(-1, 0)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Down)),
+            TerminalNavAction::Move(1, 0)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Up)),
+            TerminalNavAction::Move(-1, 0)
+        );
+
+        // Character movement.
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('h'))),
+            TerminalNavAction::Move(0, -1)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('l'))),
+            TerminalNavAction::Move(0, 1)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Left)),
+            TerminalNavAction::Move(0, -1)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Right)),
+            TerminalNavAction::Move(0, 1)
+        );
+
+        // Paging. Ctrl+u must page toward older output and Ctrl+d toward newer,
+        // the same orientation as the global PageUp/PageDown map.
+        assert_eq!(
+            classify_nav_key(nav_key_mod(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            TerminalNavAction::Page(-1)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key_mod(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            TerminalNavAction::Page(1)
+        );
+
+        // Selection and clear.
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('v'))),
+            TerminalNavAction::SelectChar
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('x'))),
+            TerminalNavAction::SelectLine
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char(' '))),
+            TerminalNavAction::YankPrefix
+        );
+
+        // Word motions, the delete operator, and clear.
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('e'))),
+            TerminalNavAction::Word(true)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('b'))),
+            TerminalNavAction::Word(false)
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('d'))),
+            TerminalNavAction::DeleteSelection
+        );
+        assert_eq!(
+            classify_nav_key(nav_key(KeyCode::Char('c'))),
+            TerminalNavAction::Clear
+        );
+        // Uppercase is bound with and without SHIFT, because terminals disagree
+        // on which of the two a shifted letter arrives as.
+        for (code, modifiers) in [
+            (KeyCode::Char('C'), KeyModifiers::NONE),
+            (KeyCode::Char('C'), KeyModifiers::SHIFT),
+            (KeyCode::Char('c'), KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(
+                classify_nav_key(nav_key_mod(code, modifiers)),
+                TerminalNavAction::Clear,
+                "{code:?}/{modifiers:?} must clear"
+            );
+        }
+    }
+
+    #[test]
+    fn nav_keymap_claims_nothing_it_does_not_mean() {
+        use crossterm::event::KeyCode;
+
+        // `i` is focus, not navigation, and the directionals are the host's
+        // dock gesture — both are claimed elsewhere, so claiming them here
+        // would make docking unreachable.
+        for code in [
+            KeyCode::Char('i'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Char('H'),
+            KeyCode::Char('J'),
+            KeyCode::Char('K'),
+            KeyCode::Char('L'),
+            KeyCode::Tab,
+            KeyCode::Char('y'),
+        ] {
+            assert_eq!(
+                classify_nav_key(nav_key(code)),
+                TerminalNavAction::Unhandled,
+                "{code:?} must not be a navigation verb"
+            );
+        }
+    }
+
+    #[test]
+    fn space_y_copies_and_arms_only_while_the_prefix_is_pending() {
+        use crossterm::event::KeyCode;
+
+        let mut terminals = InteractiveTerminalController::new();
+        assert!(terminals.apply_created(
+            "h".to_string(),
+            "ws-1".to_string(),
+            "cat".to_string(),
+            40,
+            6
+        ));
+        let text = "alpha\r\nbravo\r\ncharlie\r\ndelta\r\necho\r\nfoxtrot";
+        let body = test_chunk(text);
+        assert!(terminals
+            .apply_attached("h", "a-1".to_string(), &body, None)
+            .expect("attach")
+            .is_none());
+
+        // A bare `y` with no armed prefix is not a yank.
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char('y'))),
+            NavOutcome::Unhandled
+        );
+
+        // `x` then `space` `y`: the prefix consumes the `y` and disarms.
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char('x'))),
+            NavOutcome::Handled
+        );
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char(' '))),
+            NavOutcome::Handled
+        );
+        assert!(terminals.prefix_pending("h"));
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char('y'))),
+            NavOutcome::Handled
+        );
+        assert!(
+            !terminals.prefix_pending("h"),
+            "the yank must disarm the prefix or the next `y` yanks again"
+        );
+
+        // A second key that is not `y` also disarms the prefix.
+        terminals.set_prefix_pending("h", true);
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char('v'))),
+            NavOutcome::Handled,
+            "an unarmed key after Space is handled normally"
+        );
+        assert!(!terminals.prefix_pending("h"));
+
+        // Unknown handles are refused rather than panicking.
+        assert_eq!(
+            apply_nav(&mut terminals, "nope", nav_key(KeyCode::Char('j'))),
+            NavOutcome::Unhandled
+        );
+    }
+
+    #[test]
+    fn clear_is_routed_to_the_daemon_not_applied_inline() {
+        use crossterm::event::KeyCode;
+
+        let mut terminals = InteractiveTerminalController::new();
+        assert!(terminals.apply_created(
+            "h".to_string(),
+            "ws-1".to_string(),
+            "cat".to_string(),
+            40,
+            6
+        ));
+        let body = test_chunk("alpha\r\nbravo");
+        assert!(terminals
+            .apply_attached("h", "a-1".to_string(), &body, None)
+            .expect("attach")
+            .is_none());
+        terminals.toggle_line_selection("h");
+
+        // The verb reports intent; only the command layer owns the clear, so a
+        // key press can never clear a view the user is not looking at.
+        assert_eq!(
+            apply_nav(&mut terminals, "h", nav_key(KeyCode::Char('C'))),
+            NavOutcome::ClearRequested
+        );
+        assert!(
+            terminals.selection("h").is_none(),
+            "clear drops the selection it was holding"
         );
     }
 
