@@ -1,6 +1,6 @@
 # Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
 
-Status: **closed** (C001 integrated and exact-head qualified; independent of Windows MXC admission).
+Status: **C001 closed; C002 active** (stale hard-deny test reconciliation under the accepted advisory contract; independent of Windows MXC admission).
 Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
 Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
 
@@ -21,3 +21,20 @@ C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny
 ## Acceptance
 
 Correct and regression-test the three separate outcomes (hard-deny, policy ask requiring a decision, explicit authorized execution) through their canonical owners. No new command-regex security barrier, no silent bypass of permission mode, and no false positive from a direct model-facing tool call without approval context. Record closure, hosted test result and update the registry.
+
+## C002 — Stale hard-deny test reconciliation under the advisory contract (active, 2026-10-14)
+
+The later command-authorization 005 corrective accepted an empty tool-layer
+default blocklist (ADR-0028), which C001-era tests still contradict — and two
+of them execute genuinely destructive commands through a live shell on every
+run, failing only on absent binaries. C002 rewrites the three affected
+`tests/tool_execution.rs` tests (destructive examples through pure
+classifiers with no shell; explicit hard-deny precedence through harmless
+sentinels plus temp-file markers, including deny-over-allowlist),
+reconciles the escalation-signals table to the verified current vocabulary,
+fixes the terminal `env`-prefix allowlist expectation, reconciles the stale
+`src/permission/mod.rs` hard-deny comment, and qualifies the managed path
+(explicit human deny blocks dispatch; approval respects the sandbox ceiling).
+No default blocklist is reintroduced. Plan:
+`plans/implementation/shell-command-policy-ci-corrective/002-stale-hard-deny-test-reconciliation-under-advisory-contract.md`.
+C001 evidence stays historical.

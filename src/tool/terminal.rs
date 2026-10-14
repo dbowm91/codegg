@@ -477,7 +477,8 @@ mod tests {
             .check_command_security_for_args("echo", &["ok".to_string()])
             .is_err());
         // Built-in patterns are advisory; explicit adapter restrictions and
-        // allowlists remain best-effort text filters.
+        // allowlists remain best-effort text filters. An `env` prefix does
+        // not escape the allowlist: `rm` is not listed, so this denies.
         assert!(allowlisted
             .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
             .is_ok());
@@ -486,7 +487,7 @@ mod tests {
                 "env",
                 &["rm".to_string(), "-rf".to_string(), "/".to_string()]
             )
-            .is_ok());
+            .is_err());
 
         let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
         assert!(shell_allowlisted

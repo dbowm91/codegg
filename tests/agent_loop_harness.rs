@@ -4796,6 +4796,164 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
 }
 
 #[tokio::test]
+async fn explicit_human_deny_prevents_shell_dispatch() {
+    // Managed-execution qualification: an explicit Deny must prevent dispatch
+    // entirely — no marker, with the denial recorded as the tool result.
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("shell-denied");
+    let command = format!("echo $(touch '{}')", marker.display());
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_shell_deny".to_string().into(),
+            name: "bash".to_string().into(),
+            arguments: serde_json::json!({"command": command}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Denied shell command recorded".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
+    );
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider.clone(),
+        registry,
+        PermissionChecker::new(None, None),
+    );
+    agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+    agent_loop.set_session_id("shell-deny-no-dispatch");
+
+    let perm_id = "call_shell_deny-bash".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+    let request = make_chat_request("Run the bounded shell probe");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+
+    wait_for_permission_pending(&perm_id, &mut rx, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(
+        !marker.exists(),
+        "denied shell command must not dispatch before the decision"
+    );
+
+    assert!(PermissionRegistry::respond_scoped(
+        "shell-deny-no-dispatch",
+        &perm_id,
+        PermissionDecision::DenyOnce,
+    ));
+    let result = handle.await.unwrap();
+    assert!(result.is_ok(), "denied turn should complete: {result:?}");
+    assert!(!marker.exists(), "explicit denial must prevent dispatch");
+
+    let requests = scripted_provider.get_requests().await;
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_shell_deny"))
+        })
+        .expect("expected a request containing the denial tool result");
+    assert_tool_result_with_id(&with_result.messages, "call_shell_deny", Some("denied"));
+}
+
+#[tokio::test]
+async fn approved_execution_respects_sandbox_ceiling() {
+    // Managed-execution qualification: an approval cannot widen the sandbox
+    // ceiling. The loop snapshots WorkspaceWrite while the tool is configured
+    // FullHost, so the drift gate must refuse before execution — no marker,
+    // with the ceiling mismatch recorded as the tool result.
+    use codegg::bus::{PermissionDecision, PermissionRegistry};
+
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("shell-ceiling");
+    let command = format!("echo $(touch '{}')", marker.display());
+    let response1 = vec![
+        ChatEvent::ToolCall(ToolCall {
+            id: "call_shell_ceiling".to_string().into(),
+            name: "bash".to_string().into(),
+            arguments: serde_json::json!({"command": command}),
+        }),
+        ChatEvent::Finish {
+            stop_reason: "tool_calls".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let response2 = vec![
+        ChatEvent::TextDelta("Ceiling turn complete".to_string().into()),
+        ChatEvent::Finish {
+            stop_reason: "stop".to_string().into(),
+            usage: TokenUsage::default(),
+        },
+    ];
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let mut registry = ToolRegistry::new();
+    registry.register(
+        codegg::tool::bash::BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
+    );
+
+    let mut agent_loop = build_test_agent_loop_with_permissions(
+        scripted_provider.clone(),
+        registry,
+        PermissionChecker::new(None, None),
+    );
+    // Default WorkspaceWrite snapshot against a FullHost-configured tool.
+    agent_loop.set_session_id("shell-ceiling-mismatch");
+
+    let perm_id = "call_shell_ceiling-bash".to_string();
+    let mut rx = GlobalEventBus::subscribe();
+    let request = make_chat_request("Run the bounded shell probe");
+    let handle = tokio::spawn(async move { agent_loop.run(request).await });
+
+    wait_for_permission_pending(&perm_id, &mut rx, std::time::Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(PermissionRegistry::respond_scoped(
+        "shell-ceiling-mismatch",
+        &perm_id,
+        PermissionDecision::AllowOnce,
+    ));
+    let result = handle.await.unwrap();
+    assert!(result.is_ok(), "ceiling turn should complete: {result:?}");
+    assert!(
+        !marker.exists(),
+        "approval must not widen the sandbox ceiling: no dispatch on profile drift"
+    );
+
+    let requests = scripted_provider.get_requests().await;
+    let with_result = requests
+        .iter()
+        .rev()
+        .find(|r| {
+            r.messages
+                .iter()
+                .any(|m| matches!(m, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "call_shell_ceiling"))
+        })
+        .expect("expected a request containing the ceiling tool result");
+    assert_tool_result_with_id(
+        &with_result.messages,
+        "call_shell_ceiling",
+        Some("sandbox policy changed"),
+    );
+}
+
+#[tokio::test]
 async fn m001_transient_503_retries_before_visible_output() {
     let provider_inner = M001StatusProvider::new(1, M001FailKind::Server503);
     let provider = Box::new(provider_inner.clone());

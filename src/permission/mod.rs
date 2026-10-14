@@ -1213,8 +1213,12 @@ impl PermissionChecker {
                 // *invocation* rather than the program — trivially bypassed,
                 // and it only taught callers to reword. They are reviewed
                 // here instead so the operator decides under the configured
-                // approval mode and sandbox. Genuinely catastrophic shapes
-                // stay hard-denied in the tool and are never reachable.
+                // approval mode and sandbox. Destructive shapes are classified
+                // (Medium risk with a named Ask signal) and gated at this
+                // approval layer and by sandbox containment — not by a
+                // tool-layer default blocklist, which is intentionally empty
+                // (ADR-0028, command-auth 005). Explicit configured
+                // restrictions still deny pre-spawn below this layer.
                 if let Some(pattern_name) = crate::tool::bash::policy::find_ask_pattern(cmd) {
                     return PermissionResult::Ask(PermissionRequest {
                         tool: tool.to_string(),
