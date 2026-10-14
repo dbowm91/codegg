@@ -1342,7 +1342,9 @@ mod tests {
             )
         };
         if error != 0 {
-            return Err(io::Error::from_raw_os_error(error as i32));
+            return Err(io::Error::other(format!(
+                "C050 SetEntriesInAclW failed with Win32 error {error}"
+            )));
         }
         struct DropAcl(*mut windows_sys::Win32::Security::ACL);
         impl Drop for DropAcl {
@@ -1366,11 +1368,18 @@ mod tests {
             )
         };
         if error != 0 {
-            return Err(io::Error::from_raw_os_error(error as i32));
+            return Err(io::Error::other(format!(
+                "C050 SetNamedSecurityInfoW(stage) failed with Win32 error {error}"
+            )));
         }
-        let stage_dacl_before = crate::managed_process::windows_acl_lease_dacl_snapshot(&stage)?;
-        let outside_dacl_before =
-            crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?;
+        let stage_dacl_before = crate::managed_process::windows_acl_lease_dacl_snapshot(&stage)
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("C050 stage snapshot: {error}"))
+            })?;
+        let outside_dacl_before = crate::managed_process::windows_acl_lease_dacl_snapshot(
+            temp.path(),
+        )
+        .map_err(|error| io::Error::new(error.kind(), format!("C050 parent snapshot: {error}")))?;
 
         let restriction = SID_AND_ATTRIBUTES {
             Sid: restricting_sid.0,
@@ -1391,7 +1400,11 @@ mod tests {
             )
         } == 0
         {
-            return Err(last_error());
+            let error = last_error();
+            return Err(io::Error::new(
+                error.kind(),
+                format!("C050 CreateRestrictedToken: {error}"),
+            ));
         }
         let child_token = unsafe { OwnedHandle::from_raw_handle(child_token as RawHandle) };
 
@@ -1460,7 +1473,11 @@ mod tests {
             )
         } == 0
         {
-            return Err(last_error());
+            let error = last_error();
+            return Err(io::Error::new(
+                error.kind(),
+                format!("C050 CreateProcessWithTokenW: {error}"),
+            ));
         }
         let process = unsafe { OwnedHandle::from_raw_handle(process_info.hProcess as RawHandle) };
         let thread = unsafe { OwnedHandle::from_raw_handle(process_info.hThread as RawHandle) };

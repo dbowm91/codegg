@@ -165,7 +165,7 @@ jobs:
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::write_restricted_token_confines_new_synthetic_root_without_original_path_mutation -- --nocapture --test-threads=1
 
       - name: C044 WRITE_RESTRICTED token-flag differential
-        if: github.event_name == 'workflow_dispatch' && inputs.run_bounded_successor_probes
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::c052_restricted_token_flag_differential_is_bounded_and_job_owned -- --nocapture --test-threads=1
 
       - name: Managed environment block control test
