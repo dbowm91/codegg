@@ -203,8 +203,11 @@ jobs:
 
       # Constrained Linux integration tests resolve this managed sidecar from
       # the target profile directory shared with their Cargo `deps` binaries.
-      - name: Build sandbox helper for integration tests
-        run: cargo build --locked --bin codegg-sandbox-helper
+      # Product builds still resolve only their installation-owned sibling.
+      - name: Build trusted sandbox helper for integration tests
+        run: |
+          cargo build --locked --bin codegg-sandbox-helper
+          cp target/debug/codegg-sandbox-helper target/debug/deps/codegg-sandbox-helper
 
       - name: Workspace tests
         run: |
