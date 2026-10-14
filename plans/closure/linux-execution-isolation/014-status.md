@@ -57,4 +57,8 @@ C006 remains in the blocked dependency register. ADR-0031 acceptance cleared the
 
 ## 7. Status update — 2026-10-14
 
-The maintainer accepted ADR-0031. This supersedes only the pending-decision statements above; the reviewed-baseline findings and implementation evidence remain unchanged. C006 is still blocked until the protected mount graph, production launch integration, Git metadata lease, strict-positive real-child denial matrix, and required compatibility evidence are implemented and verified. Acceptance does not select, register, or enable the Bubblewrap backend or change defaults.
+The maintainer accepted ADR-0031. This supersedes only the pending-decision statements above; the reviewed-baseline findings and implementation evidence remain unchanged. At that point C006 remained blocked until the protected mount graph, production launch integration, Git metadata lease, strict-positive real-child denial matrix, and required compatibility evidence were implemented and verified. Acceptance did not select, register, or enable the Bubblewrap backend or change defaults.
+
+## 8. Implementation-start update — 2026-10-14
+
+C006 moved to active implementation after ADR-0031 acceptance. The first source change rejects fixed-path Bubblewrap candidates with setuid or setgid mode bits. This narrows trusted-helper eligibility only; no mount backend was registered, no constrained launch routing changed, and no C006 enforcement or native denial evidence is claimed.

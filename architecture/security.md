@@ -141,8 +141,11 @@ cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
 do not prove a child obtained enforcement. No namespace backend is registered
 or promoted. Offline networking, protected mounts, seccomp, and resource
 limits remain unavailable until their ADR and native evidence gates close.
-The existing Landlock-only default and unrestricted network behavior are
-unchanged.
+ADR-0031 now accepts Bubblewrap-based Linux namespace/mount composition as the
+selected architecture. The existing Landlock-only default and unrestricted
+network behavior are unchanged; no production namespace backend is registered
+until its protected-mount, launcher-status, and native qualification gates
+close.
 
 Ordinary command syntax is not an additional authority boundary: once the
 workspace and requested action are authorized, quotes, wrappers, environment
