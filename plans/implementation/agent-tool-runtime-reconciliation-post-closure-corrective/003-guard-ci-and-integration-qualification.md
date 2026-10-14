@@ -1,6 +1,6 @@
 # Agent Tool Runtime Post-Closure Corrective C003 — Guard, CI and Integration Qualification
 
-Status: conditionally closed — accepted at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md` (including §13 re-qualification on merge `6521560e` and §14 on merge `32098022`); TUI-4 and Desktop M004 transcript gaps closed on `32098022` (hosted E2E `38521966606` green); remaining upstream gaps are the ADR-0027/0028 collision (hosted CI `38521963856` red before guard steps), Clippy `too_many_arguments`, and `shell_escalation_ask`
+Status: conditionally closed — accepted at `plans/closure/agent-tool-runtime-reconciliation-post-closure-corrective/003-status.md` (including §13 re-qualification on merge `6521560e`, §14 on merge `32098022`, and §15 remediation round `d2a5d8e7`); TUI-4 and Desktop M004 transcript gaps closed (hosted E2E `38521966606` green); ADR collision, Clippy, and `shell_escalation_ask` remediated in `d2a5d8e7` (quick/Clippy/173/173 green; CI `38602010489` through Clippy); remaining green-blockers are the shell-policy contract contradiction plus git/worktree/identity-audit failures dispositioned in §15 — main merge withheld until green
 
 Repository baseline: `a54d18c7e7b92d1c9ac4971d7cdb8cc916418a5d` implementation audit; current `main` at audit `b9ba494c1b21638c2e2f660301ba207ce8859682`; final integration base `667005a66e491efae6a28fca43931e05e94214f8`.
 

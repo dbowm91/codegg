@@ -262,3 +262,68 @@ exact-SHA hosted evidence on a merge head.
 - Unblock audit (same commit): no registered plan depends on this C003; the
   blocked set is unchanged (Linux, search, tool-advisor gates). Nothing newly
   unblocked; no follow-up registered.
+
+## 15. Upstream-gate remediation round (fix commit `d2a5d8e7`, CI `38602010489`)
+
+Sections 1–14 stand. At the owner's direction, C003 carried three narrow
+cross-workstream fixes that were blocking every hosted run, then re-qualified.
+
+- Fix commit `d2a5d8e7` (branch `planning/agent-tool-runtime-reconciliation`):
+  - ADR collision: Windows-successor ADRs filed as 0027/0028 (PR #115) renamed
+    to ADR-0029/ADR-0030 via `git mv`; Linux keeps 0027, command-syntax keeps
+    0028. Titles, internal cross-refs, the Windows roadmap authority section,
+    the ADRs README (with dated collision record), and living registry rows
+    updated. Historical closures and closed implementation plans untouched.
+    `check_adr_integrity` passes.
+  - Clippy: `#[allow(clippy::too_many_arguments)]` on `emit_command_execute`,
+    `emit_command_execute_with_result`, and `BashTool::emit_command_audit`
+    (one argument per event field by design; matches seven existing sites).
+    Workspace Clippy `-D warnings` is clean.
+  - `shell_escalation_ask`: root cause was the loop snapshotting WorkspaceWrite
+    while the harness registers a bare `BashTool::new()` — the new
+    containment/drift gates correctly refuse. The test exercises approval
+    gating, not containment, so it now runs FullHost on both loop snapshot
+    (`set_sandbox_profile`) and tool (`with_sandbox_profile`). Companion
+    narrowing: the BashTool drift/availability gates apply only to configured
+    executors (comparing against a never-made claim was fail-always, not
+    fail-closed); the managed-process boundary still fails closed, and
+    production registry behavior (always configured) is unchanged.
+- Local evidence on `d2a5d8e7`: `verify.sh quick` passes (incl. ADR
+  integrity), workspace Clippy clean, focused seven binaries **173/173**,
+  TUI panel 4/4.
+- Hosted [CI `38602010489`](https://github.com/dbowm91/codegg/actions/runs/38602010489)
+  on exact SHA `d2a5d8e7`: past ADR identity, all guards (incl. the five
+  tool-runtime guards + fixtures), format, and Clippy — then workspace tests
+  fail (fail-fast) at
+  `tool::terminal::tests::terminal_custom_restrictions_only_narrow_canonical_policy`
+  (4147 passed before the stop). The allowlist/`env rm -rf /` expectation no
+  longer matches the emptied default blocklist.
+- Local optional-feature suite (`server,plugins,lsp-test-support`,
+  `--no-fail-fast`) on `d2a5d8e7`: 10,600 passed, 22 failed, 1 timed out,
+  5 skipped. Failing families: `tool_execution` hard-deny tier (2),
+  denied-pattern (1), escalation signals (2); `tool::terminal` allowlist (1);
+  `git_network_integration` (7), `git_recovery_integration` (4),
+  `git_closure_matrix` (1); `work_orders` worktree isolation (2);
+  `worktree` create/remove (1); `identity_live_execution_audit`
+  single-host trajectory (1); `poolless_standalone_human_shell` (1, known
+  §10 gap); `eggpool` generic-cancellation (1 — passes in isolation, load
+  flake). The single timeout did not reproduce on re-run and matches the
+  known asset-refresh 120 s load flake recorded in §4.
+- Attribution (provable non-involvement of this round's diff): the
+  `tool.execute()` path passes no authorization context, so the narrowed
+  bash gate cannot fire there; the live-audit edit is comment-only; git,
+  worktree, poolless, and eggpool paths execute none of the changed code.
+- Escalation required before strict closure — shell-policy contract
+  contradiction: closed shell-policy C001 requires tool-layer hard-deny to
+  stay authoritative (`default_blocked_commands` non-empty), while closed
+  command-authorization 005 explicitly records "the default blocked literal
+  set is empty" as accepted design. Updating the stale tests and restoring
+  enforcement are each a unilateral settlement of another workstream's
+  decided trade-off, so neither was attempted here. The git/worktree
+  cluster sits in the Linux Git M001 blocked area; the identity-audit
+  trajectory needs command-auth triage. These need owner decisions, not a
+  C003 improvisation.
+- Disposition: C003 REMAINS conditionally closed. Per instruction, the merge
+  to `main` is withheld until the evidence above turns green.
+- Unblock audit (same commit): nothing depends on this C003; blocked set
+  unchanged. Nothing newly unblocked; no follow-up registered.
