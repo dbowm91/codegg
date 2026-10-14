@@ -1,6 +1,6 @@
 # Windows Native Sandbox C053 — MXC API delta and strict re-entry gate
 
-Status: ready for source/ABI comparison only; native retry blocked unless documented capability change passes gate
+Status: implemented — source/ABI gate closed negative; native re-probe not authorized
 Class: infrastructure (bounded feasibility disposition)
 Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (refresh exact head).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).

@@ -4,7 +4,7 @@ Status: closed (decision-ready dossier only)
 Source implementation plan: `plans/implementation/windows-native-sandbox/049-broad-read-compatibility-decision-dossier.md`
 Source subsystem roadmap: `plans/subsystems/windows-native-sandbox-roadmap.md`
 Repository baseline reviewed: `39f149a15ef529d66787d1d11551872ea22ec384`
-Implementation commits: pending commit for this closure
+Implementation commits: `dc856e0b` — close C049 decision dossier
 
 ## 1. Executive finding
 
