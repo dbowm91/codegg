@@ -2322,7 +2322,6 @@ mod tests {
             configured.success(),
             "Git config fixture failed: {configured}"
         );
-        std::fs::create_dir(workspace.path().join(".git/hooks")).expect("Git hooks directory");
         std::fs::write(
             workspace.path().join(".git/hooks/pre-commit"),
             "protected hook",
