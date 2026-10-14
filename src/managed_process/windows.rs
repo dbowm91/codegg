@@ -1454,6 +1454,281 @@ mod tests {
     }
 
     #[cfg(feature = "windows-sandbox-test-support")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn c052_restricted_token_flag_differential_is_bounded_and_job_owned() -> io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{LocalFree, GENERIC_ALL, WAIT_TIMEOUT};
+        use windows_sys::Win32::Security::Authorization::{
+            SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
+            NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+        };
+        use windows_sys::Win32::Security::{
+            AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, OpenProcessToken,
+            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+            SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_QUERY,
+            WRITE_RESTRICTED,
+        };
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+            STARTUPINFOW,
+        };
+
+        let temp = tempfile::tempdir()?;
+        let stage = temp.path().join("stage");
+        let outside = temp.path().join("outside-canary.txt");
+        let report = stage.join("child-report.txt");
+        std::fs::create_dir(&stage)?;
+        std::fs::write(&outside, b"outside-original")?;
+
+        let authority = SID_IDENTIFIER_AUTHORITY {
+            Value: [0, 0, 0, 0, 0, 5],
+        };
+        let mut raw_sid = ptr::null_mut();
+        if unsafe {
+            AllocateAndInitializeSid(
+                &authority,
+                3,
+                21,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                &mut raw_sid,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        struct SidOwner(windows_sys::Win32::Security::PSID);
+        impl Drop for SidOwner {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = FreeSid(self.0);
+                }
+            }
+        }
+        let restricting_sid = SidOwner(raw_sid);
+        let trustee = TRUSTEE_W {
+            pMultipleTrustee: ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: restricting_sid.0.cast(),
+        };
+        let entry = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: GENERIC_ALL,
+            grfAccessMode: GRANT_ACCESS,
+            grfInheritance: OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+            Trustee: trustee,
+        };
+        let mut acl = ptr::null_mut();
+        let error = unsafe { SetEntriesInAclW(1, &entry, ptr::null(), &mut acl) };
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        struct DropAcl(*mut windows_sys::Win32::Security::ACL);
+        impl Drop for DropAcl {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = LocalFree(self.0.cast());
+                }
+            }
+        }
+        let _acl_owner = DropAcl(acl);
+        let stage_wide = super::wide_os(stage.as_os_str());
+        let error = unsafe {
+            SetNamedSecurityInfoW(
+                stage_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                acl,
+                ptr::null_mut(),
+            )
+        };
+        if error != 0 {
+            return Err(io::Error::from_raw_os_error(error as i32));
+        }
+        let stage_dacl_before = crate::managed_process::windows_acl_lease_dacl_snapshot(&stage)?;
+        let parent_dacl_before =
+            crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?;
+
+        let mut raw_current_token = ptr::null_mut();
+        if unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut raw_current_token,
+            )
+        } == 0
+        {
+            return Err(last_error());
+        }
+        let current_token = unsafe { OwnedHandle::from_raw_handle(raw_current_token as RawHandle) };
+        let executable = std::env::current_exe()?;
+        let args = [
+            OsString::from("--exact"),
+            OsString::from("managed_process::windows::tests::write_restricted_child_probe"),
+            OsString::from("--nocapture"),
+        ];
+        let command_line = crate::managed_process::windows_command_line(&executable, &args)?;
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
+        let mut environment = vec![
+            (OsString::from("CODEGG_C050_CHILD"), OsString::from("1")),
+            (
+                OsString::from("CODEGG_C050_STAGE"),
+                stage.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("CODEGG_C050_OUTSIDE"),
+                outside.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from("CODEGG_C050_REPORT"),
+                report.as_os_str().to_owned(),
+            ),
+            (OsString::from("SystemRoot"), system_root.clone()),
+            (
+                OsString::from("PATH"),
+                std::env::var_os("PATH").unwrap_or_default(),
+            ),
+        ];
+        environment.sort_by(|left, right| {
+            left.0
+                .to_string_lossy()
+                .to_lowercase()
+                .cmp(&right.0.to_string_lossy().to_lowercase())
+        });
+        let mut environment_block = Vec::new();
+        for (name, value) in environment {
+            environment_block.extend(name.encode_wide());
+            environment_block.push(b'=' as u16);
+            environment_block.extend(value.encode_wide());
+            environment_block.push(0);
+        }
+        environment_block.push(0);
+        let cwd = super::wide_os(PathBuf::from(system_root).join("System32").as_os_str());
+
+        // C044 used CreateRestrictedToken flags=0. Change only this flag for
+        // the second child; both attempts share the same host, source token,
+        // SID, image, environment, stage and Job-before-resume path.
+        for (label, flags) in [
+            ("c044_flags_zero", 0),
+            ("write_restricted", WRITE_RESTRICTED),
+        ] {
+            let _ = std::fs::remove_file(&report);
+            let mut restriction = SID_AND_ATTRIBUTES {
+                Sid: restricting_sid.0,
+                Attributes: 0,
+            };
+            let mut raw_child_token = ptr::null_mut();
+            if unsafe {
+                CreateRestrictedToken(
+                    current_token.as_raw_handle() as _,
+                    flags,
+                    0,
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    1,
+                    &mut restriction,
+                    &mut raw_child_token,
+                )
+            } == 0
+            {
+                println!(
+                    "C052_VARIANT {label} token_creation=failed error={}",
+                    last_error()
+                );
+                continue;
+            }
+            let child_token = unsafe { OwnedHandle::from_raw_handle(raw_child_token as RawHandle) };
+            let mut job = WindowsJob::create()?;
+            let mut startup = STARTUPINFOW::default();
+            startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+            let mut process_info = PROCESS_INFORMATION::default();
+            let mut command_line = command_line.clone();
+            if unsafe {
+                CreateProcessWithTokenW(
+                    child_token.as_raw_handle() as _,
+                    0,
+                    ptr::null(),
+                    command_line.as_mut_ptr(),
+                    CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                    environment_block.as_ptr().cast(),
+                    cwd.as_ptr(),
+                    &startup,
+                    &mut process_info,
+                )
+            } == 0
+            {
+                println!(
+                    "C052_VARIANT {label} process_creation=failed error={}",
+                    last_error()
+                );
+                continue;
+            }
+            let process =
+                unsafe { OwnedHandle::from_raw_handle(process_info.hProcess as RawHandle) };
+            let thread = unsafe { OwnedHandle::from_raw_handle(process_info.hThread as RawHandle) };
+            if let Err(error) = job.assign_raw_and_resume(
+                process.as_raw_handle() as _,
+                thread.as_raw_handle() as _,
+                |handle| verify_restricted_token(handle, restricting_sid.0),
+            ) {
+                unsafe {
+                    let _ = TerminateProcess(process.as_raw_handle() as _, 1);
+                    let _ = WaitForSingleObject(process.as_raw_handle() as _, u32::MAX);
+                }
+                println!("C052_VARIANT {label} pre_resume=failed error={error}");
+                continue;
+            }
+            let wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 30_000) };
+            if wait == WAIT_TIMEOUT {
+                let _ = job.terminate(1);
+                let _ = unsafe { WaitForSingleObject(process.as_raw_handle() as _, u32::MAX) };
+                println!("C052_VARIANT {label} outcome=alive_without_child_report");
+            } else if wait != WAIT_OBJECT_0 {
+                println!("C052_VARIANT {label} wait=failed error={}", last_error());
+            } else {
+                let mut exit_code = u32::MAX;
+                if unsafe { GetExitCodeProcess(process.as_raw_handle() as _, &mut exit_code) } == 0
+                {
+                    println!(
+                        "C052_VARIANT {label} exit_query=failed error={}",
+                        last_error()
+                    );
+                } else if report.exists() {
+                    println!(
+                        "C052_VARIANT {label} outcome=child_report exit_code={exit_code} report={}",
+                        std::fs::read_to_string(&report)?
+                    );
+                } else {
+                    println!("C052_VARIANT {label} outcome=exited_without_child_report exit_code={exit_code}");
+                }
+            }
+            assert_eq!(std::fs::read(&outside)?, b"outside-original");
+        }
+        assert_eq!(
+            crate::managed_process::windows_acl_lease_dacl_snapshot(&stage)?,
+            stage_dacl_before
+        );
+        assert_eq!(
+            crate::managed_process::windows_acl_lease_dacl_snapshot(temp.path())?,
+            parent_dacl_before
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "windows-sandbox-test-support")]
     #[test]
     fn restricted_pipe_setup_failure_is_closed_before_process_creation() {
         FAIL_NEXT_PIPE_CREATION.set(true);
