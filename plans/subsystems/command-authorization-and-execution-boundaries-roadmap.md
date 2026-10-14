@@ -8,7 +8,7 @@ Long-term references:
 - `plans/002-long-term-roadmap.md`.
 - `plans/003-planning-process.md`.
 
-ADRs: accepted ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0032; proposed ADR-0031 for Linux stronger enforcement.
+ADRs: accepted ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031, ADR-0032. Linux production enforcement remains gated by native qualification in the Linux roadmap.
 Related: `plans/subsystems/linux-execution-isolation-roadmap.md`, `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md` (historical closure not reopened).
 
 ## 1. Purpose and ownership boundary
@@ -68,7 +68,7 @@ C004 moved the accepted command authority to ADR-0032 with exact archived proven
 - M002 Reviewer/preflight/permission/route convergence: **closed** at `plans/closure/command-authorization-and-execution-boundaries/002-status.md`; one accepted snapshot/receipt survives broker attempts, duplicate preflight is removed, and constrained route widening fails closed.
 - M003 Cross-tool effect-equivalence/observability qualification: **closed** at `plans/closure/command-authorization-and-execution-boundaries/003-status.md`; Linux filesystem effects, Windows GNU compile, and GitHub Actions macOS cross-target compile passed. Network/IPC claims remain explicitly unavailable without an enforcing backend.
 - Linux C001 typed Git denial/routing uses M001's written policy interface (**interface** dependency); implementation may proceed in parallel and must not pretend this closes executable Git compatibility.
-- Linux M002 composable contract depends on existing accepted ADR-0016 and ADR-0032, *not* M001 Git closure; proposed ADR-0031 gates concrete Bubblewrap backend promotion, not non-executable interface work.
+- Linux M002 composable contract depends on existing accepted ADR-0016 and ADR-0032, *not* M001 Git closure; accepted ADR-0031 selects the concrete architecture, while native qualification gates Bubblewrap backend promotion, not non-executable interface work.
 - Linux C002 contained Git workflow recovery hard-depends on real M002–M005 obtained containment for executable local filters/hooks; networked Git requires distinct M006/approved transport authority. Never treat an interface test as an actual containment proof.
 
 ## 7. Milestones

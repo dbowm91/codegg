@@ -41,4 +41,4 @@ Success here is **real evidence for or against feasibility**, plus zero producti
 
 Stop if an unprivileged helper cannot create the required namespace on the documented supported host; if making it work requires setuid/root/host-wide AppArmor relaxation; if setup status can be forged by child; if a target marker appears after failed required setup; or if parent/namespace descendants cannot be cancelled/reaped correctly. Record a minimal negative reproducer and architecture issue, not a permission workaround.
 
-No persisted schema or public DTO changes. Linux ADR remains *proposed* until a separate accepted review; C004 identity cleanup is closed; ADR-0031 remains proposed until a separate maintainer decision.
+No persisted schema or public DTO changes. ADR-0031 was proposed when this plan was written and was accepted separately on 2026-10-14; C004 identity cleanup is closed. Acceptance does not qualify or register a production backend.
