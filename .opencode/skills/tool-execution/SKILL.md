@@ -34,6 +34,7 @@ tool arguments. Preserve local-required failure semantics so missing or
 unmatched local scope cannot silently route to remote providers.
 
 `ManagedProcessService` remains the sole finite-process owner on every host.
+
 For model-owned work, a host-stamped session identity may carry the process
 through a persistent private session scratch root. The service injects its
 path after environment sanitization and adds it to Required sandbox grants;
@@ -41,12 +42,13 @@ never derive it from command input or human-shell context. Structured `read`
 and `write` only accept absolute paths beneath that session root. Current
 cleanup intentionally retains these resources until lease-aware reclamation
 is qualified.
-Specialized Test and Python tools currently admit only a valid accepted
-`FullHost` authorization. Their constrained snapshots return typed
-`BackendUnavailable` before scheduler submission because those executors do
-not yet consume the exact accepted profile. Do not automatically reroute a
-refusal; constrained test commands may use Bash only when the same invocation
-and accepted rights are preserved. Active Bash command-intent routes share
+
+The specialized Test tool remains FullHost-only until its domain runner uses
+the canonical managed process owner. Python carries its validated accepted
+filesystem profile through the durable scheduler job into
+`ManagedProcessService`; ReadOnly transform is refused before submission, and
+the process owner rejects constrained execution when sandbox enforcement is
+disabled. Do not automatically reroute a refusal. Active Bash command-intent routes share
 the accepted-receipt check and remain explicit-FullHost-only. Typed Git
 filters/hooks/remotes remain unavailable behind their independent gates.
 On Linux, the protected Bubblewrap mount view is an explicit internal opt-in

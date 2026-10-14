@@ -1131,6 +1131,11 @@ pub enum JobPayload {
         /// Effective timeout in seconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_secs: Option<u64>,
+        /// Accepted filesystem profile captured at the model tool boundary.
+        /// The executor uses it as a ceiling and refuses a constrained job
+        /// if its sandbox request is absent. Legacy/operator jobs omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sandbox_profile: Option<crate::approval::SandboxProfile>,
     },
     Git {
         argv: Vec<String>,

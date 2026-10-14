@@ -315,6 +315,7 @@ impl PythonScriptTool {
         &self,
         request: &PythonScriptRequest,
         submission: &Arc<JobSubmissionService>,
+        sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     ) -> Result<String, ToolError> {
         use codegg_core::jobs::{
             ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
@@ -324,7 +325,7 @@ impl PythonScriptTool {
         let workspace_root = request
             .workspace_root
             .clone()
-            .or_else(|| std::env::current_dir().ok())
+            .or_else(|| request.cwd.canonicalize().ok())
             .unwrap_or_else(|| request.cwd.clone());
 
         let workspace_id = submission
@@ -352,6 +353,7 @@ impl PythonScriptTool {
             source_hash: Some(source_hash.clone()),
             cwd: Some(request.cwd.to_string_lossy().to_string()),
             timeout_secs: request.timeout_secs,
+            sandbox_profile,
         };
 
         let mut labels = std::collections::HashMap::new();
@@ -513,7 +515,7 @@ impl Tool for PythonScriptTool {
 
         // Scheduler-owned path: submit through JobSubmissionService
         if let Some(ref submission) = self.submission_service {
-            return self.execute_via_scheduler(&request, submission).await;
+            return self.execute_via_scheduler(&request, submission, None).await;
         }
 
         // No fallback: scheduler admission is required for production Python execution
@@ -527,21 +529,36 @@ impl Tool for PythonScriptTool {
         input: serde_json::Value,
         ctx: Option<crate::tool::backend::ToolExecutionContext>,
     ) -> Result<crate::tool::backend::StructuredToolResult, ToolError> {
-        crate::tool::authorization::admit_full_host_specialized_route(
+        let request = build_python_request(&input)?;
+        let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
                 .and_then(|context| context.execution_authorization.as_ref()),
-            crate::tool::authorization::SpecializedExecutionRoute::Python,
         )
         .map_err(|reason| match reason {
-            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
-                ToolError::BackendUnavailable(reason.to_string())
-            }
             crate::tool::authorization::SpecializedRouteUnavailable::MissingAuthorization
             | crate::tool::authorization::SpecializedRouteUnavailable::InvalidAuthorization => {
                 ToolError::Permission(reason.to_string())
             }
+            crate::tool::authorization::SpecializedRouteUnavailable::ConstrainedBackendUnavailable { .. } => {
+                ToolError::BackendUnavailable(reason.to_string())
+            }
         })?;
-        let output = self.execute(input).await?;
+        let profile = snapshot.sandbox_profile();
+        if profile == codegg_core::approval::SandboxProfile::ReadOnly
+            && request.mode == super::types::PythonExecutionMode::Transform
+        {
+            return Err(ToolError::BackendUnavailable(
+                "Python transform requires the accepted WorkspaceWrite profile; select it before running this script".into(),
+            ));
+        }
+        let Some(submission) = self.submission_service.as_ref() else {
+            return Err(ToolError::BackendUnavailable(
+                "Python execution requires scheduler admission".into(),
+            ));
+        };
+        let output = self
+            .execute_via_scheduler(&request, submission, Some(profile))
+            .await?;
         Ok(crate::tool::backend::StructuredToolResult::legacy(
             self.name(),
             output,
@@ -698,6 +715,33 @@ mod tests {
             )
             .await
             .unwrap_err();
+        assert!(matches!(error, ToolError::BackendUnavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn readonly_python_transform_is_refused_before_scheduler_submission() {
+        let tool = PythonScriptTool::new();
+        let mut context = constrained_context();
+        let authorization = context
+            .execution_authorization
+            .as_mut()
+            .expect("accepted fixture authority");
+        authorization.snapshot = codegg_core::approval::ExecutionPolicySnapshot::capture(
+            codegg_core::approval::ApprovalMode::Interactive,
+            codegg_core::approval::SandboxProfile::ReadOnly,
+            Some("principal".into()),
+            Some("session".into()),
+            None,
+            Some("policy-r1".into()),
+            None,
+        );
+        let error = tool
+            .execute_structured(
+                json!({"code": "open('output', 'w').write('x')", "mode": "transform"}),
+                Some(context),
+            )
+            .await
+            .expect_err("read-only authority must not submit a transform");
         assert!(matches!(error, ToolError::BackendUnavailable(_)));
     }
 }

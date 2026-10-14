@@ -911,6 +911,7 @@ mod tests {
             source_hash: Some(source_hash.clone()),
             cwd: Some("/tmp".into()),
             timeout_secs: None,
+            sandbox_profile: None,
         };
 
         let key = SubmissionKey::new(format!("python:{source_hash}")).expect("key");

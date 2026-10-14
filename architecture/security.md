@@ -86,11 +86,15 @@ Linux enforcement uses the maintained `landlock` crate.
 
 The trusted CodeGG Git subprocess policy is a separate boundary: it pins
 repository-configured hooks/fsmonitor/external diff/textconv/credential helper
-and signing behavior, then returns a typed capability outcome before spawn.
+and signing behavior, binds Git to the canonical worktree selected by the
+daemon, disables system/global config, then returns a typed capability outcome before spawn.
 Requests needing repository-controlled filters, merge drivers, executable
 aliases, or remote transport require a contained/mediated backend and do not
 fall through to a raw Git command. This does not make writable `.git`
-metadata immutable and does not establish network isolation. See
+metadata immutable and does not establish network isolation. Future nested
+repositories are permitted as workspace content; they must not redirect a
+trusted operation outside its selected worktree or introduce executable Git
+metadata on a trusted route. See
 `architecture/git.md` and the Linux execution-isolation corrective closure
 records for current evidence and open items.
 

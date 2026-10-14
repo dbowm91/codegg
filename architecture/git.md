@@ -279,7 +279,9 @@ action regardless of routing mode.
    vars), pins `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`,
    `GIT_SEQUENCE_EDITOR=true`, strips `EDITOR`/`VISUAL`, sets
    `GIT_PAGER=cat`, `PAGER=cat`, `GPG_TTY=""`; adds fixed Git config
-   overrides for executable repository settings; returns typed outcomes for
+   overrides for executable repository settings; pins `--work-tree` to the
+   canonical root supplied by the daemon, caps upward repository discovery at
+   its parent, and disables system/global Git configuration; returns typed outcomes for
    caller-supplied global config/repository redirects and capability needs
    before spawn. An unknown Git subcommand is classified as a contained
    repository-alias capability rather than sent to Git.

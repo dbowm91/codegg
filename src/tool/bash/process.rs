@@ -824,6 +824,7 @@ impl BashTool {
             source_hash: Some(source_hash.clone()),
             cwd: Some(request.cwd.to_string_lossy().to_string()),
             timeout_secs: request.timeout_secs,
+            sandbox_profile: None,
         };
 
         let mut labels = std::collections::HashMap::new();

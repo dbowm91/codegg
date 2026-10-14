@@ -173,10 +173,11 @@ impl GitEnvPolicy {
     /// Construct an async command from a complete argv (`git` included).
     pub fn apply(&self, argv: &[String], cwd: &Path) -> Result<Command, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
+        let worktree = canonical_worktree(cwd)?;
         let mut cmd = Command::new("git");
-        add_trusted_git_overrides(&mut cmd, argv);
+        add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
-        apply_environment(&mut cmd, self);
+        apply_environment(&mut cmd, self, &worktree);
         cmd.kill_on_drop(true);
         Ok(cmd)
     }
@@ -188,11 +189,12 @@ impl GitEnvPolicy {
         cwd: &Path,
     ) -> Result<StdCommand, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
+        let worktree = canonical_worktree(cwd)?;
         let mut cmd = StdCommand::new("git");
-        add_trusted_git_overrides(&mut cmd, argv);
+        add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
         isolate_child_process_group(&mut cmd);
-        apply_environment(&mut cmd, self);
+        apply_environment(&mut cmd, self, &worktree);
         Ok(cmd)
     }
 }
@@ -353,7 +355,7 @@ fn ensure_trusted_git_request(argv: &[String]) -> Result<(), GitExecutionPolicyO
     }
 }
 
-fn add_trusted_git_overrides<C>(cmd: &mut C, argv: &[String])
+fn add_trusted_git_overrides<C>(cmd: &mut C, argv: &[String], worktree: &Path)
 where
     C: CommandArguments,
 {
@@ -376,6 +378,12 @@ where
         cmd.arg("-c");
         cmd.arg(format!("{key}={value}"));
     }
+    // The daemon supplies the repository root as cwd. Pin Git's worktree to
+    // that selected root so repository-local `core.worktree` cannot redirect
+    // a trusted read into an arbitrary host path. A newly created nested
+    // repository is consequently data inside this root; it cannot retarget
+    // an operation that was admitted for the root repository.
+    cmd.arg(format!("--work-tree={}", worktree.display()));
     cmd.arg("--no-pager");
     if argv.get(1).is_some_and(|arg| {
         matches!(
@@ -444,7 +452,7 @@ fn isolate_child_process_group(cmd: &mut StdCommand) {
     let _ = cmd;
 }
 
-fn apply_environment<C>(cmd: &mut C, policy: &GitEnvPolicy)
+fn apply_environment<C>(cmd: &mut C, policy: &GitEnvPolicy, worktree: &Path)
 where
     C: CommandEnvironment,
 {
@@ -458,6 +466,14 @@ where
         for key in ALWAYS_STRIPPED_ENV_VARS {
             cmd.env_remove(key);
         }
+    }
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1".into());
+    cmd.env("GIT_CONFIG_GLOBAL", null_config_path().into());
+    // Git normally walks parent directories to discover a repository. The
+    // typed service has already selected `worktree`; do not let a missing
+    // or newly replaced root marker silently select an enclosing repository.
+    if let Some(parent) = worktree.parent() {
+        cmd.env("GIT_CEILING_DIRECTORIES", parent.as_os_str().to_owned());
     }
     if policy.terminal_prompt_disabled {
         cmd.env("GIT_TERMINAL_PROMPT", "0".into());
@@ -473,6 +489,30 @@ where
     cmd.env("GPG_TTY", "".into());
     cmd.env("GIT_PAGER", "cat".into());
     cmd.env("PAGER", "cat".into());
+}
+
+fn canonical_worktree(cwd: &Path) -> Result<std::path::PathBuf, GitExecutionPolicyOutcome> {
+    let worktree = cwd
+        .canonicalize()
+        .map_err(|_| GitExecutionPolicyOutcome::InvalidRequest {
+            reason: "trusted Git worktree could not be canonicalized".into(),
+        })?;
+    if !worktree.is_dir() || worktree.to_str().is_none() {
+        return Err(GitExecutionPolicyOutcome::InvalidRequest {
+            reason: "trusted Git worktree must be an existing UTF-8 directory".into(),
+        });
+    }
+    Ok(worktree)
+}
+
+#[cfg(windows)]
+fn null_config_path() -> &'static str {
+    "NUL"
+}
+
+#[cfg(not(windows))]
+fn null_config_path() -> &'static str {
+    "/dev/null"
 }
 
 trait CommandEnvironment {
@@ -796,6 +836,7 @@ mod tests {
                 "missing {required:?}"
             );
         }
+        assert!(args.iter().any(|arg| arg.starts_with("--work-tree=")));
     }
 
     #[test]
@@ -1030,6 +1071,39 @@ mod tests {
             .expect("trusted status");
         assert!(status.status.success());
         assert!(!marker.exists(), "repository fsmonitor must not execute");
+    }
+
+    #[tokio::test]
+    async fn trusted_git_status_cannot_be_redirected_by_local_core_worktree() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("repo");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&root).expect("repo root");
+        std::fs::create_dir(&outside).expect("outside root");
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&root)
+            .output()
+            .expect("git init");
+        assert!(init.status.success());
+        std::fs::write(outside.join("host-secret-name.txt"), "outside\n").expect("outside marker");
+        let config = StdCommand::new("git")
+            .args(["config", "core.worktree"])
+            .arg(&outside)
+            .current_dir(&root)
+            .status()
+            .expect("set hostile worktree");
+        assert!(config.success());
+
+        let status = run(&["status".to_string()], &root)
+            .await
+            .expect("trusted status");
+        assert!(status.status.success());
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            !stdout.contains("host-secret-name.txt"),
+            "trusted Git must stay bound to the daemon-selected worktree: {stdout}"
+        );
     }
 
     #[cfg(unix)]

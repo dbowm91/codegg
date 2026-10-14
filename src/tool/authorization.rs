@@ -44,6 +44,22 @@ pub fn admit_full_host_specialized_route(
     authorization: Option<&ExecutionAuthorizationContext>,
     route: SpecializedExecutionRoute,
 ) -> Result<(), SpecializedRouteUnavailable> {
+    let snapshot = accepted_execution_snapshot(authorization)?;
+    if snapshot.sandbox_profile() != SandboxProfile::FullHost {
+        return Err(SpecializedRouteUnavailable::ConstrainedBackendUnavailable {
+            route,
+            profile: snapshot.sandbox_profile(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate the accepted receipt and return its immutable policy snapshot.
+/// Specialized routes may then apply a narrower, route-specific profile
+/// ceiling before passing this snapshot to the scheduler and process owner.
+pub fn accepted_execution_snapshot(
+    authorization: Option<&ExecutionAuthorizationContext>,
+) -> Result<&ExecutionPolicySnapshot, SpecializedRouteUnavailable> {
     let Some(authorization) = authorization else {
         return Err(SpecializedRouteUnavailable::MissingAuthorization);
     };
@@ -55,13 +71,7 @@ pub fn admit_full_host_specialized_route(
     {
         return Err(SpecializedRouteUnavailable::InvalidAuthorization);
     }
-    if snapshot.sandbox_profile() != SandboxProfile::FullHost {
-        return Err(SpecializedRouteUnavailable::ConstrainedBackendUnavailable {
-            route,
-            profile: snapshot.sandbox_profile(),
-        });
-    }
-    Ok(())
+    Ok(snapshot)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
