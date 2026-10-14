@@ -1,6 +1,6 @@
 # Linux Execution Isolation Roadmap
 
-Status: active (ADR-0028 accepted; Linux mechanism ADR-0027 proposed; interface and typed Git corrective ready)
+Status: active (command policy M001–M003 closed; M002 launch contract conditional; next C004–C008; production M003–M008 blocked)
 
 Long-term references:
 - `plans/000-long-term-specification.md#4-architectural-principles`
@@ -45,9 +45,33 @@ Trusted Git commands require a distinct reviewed execution route. Ordinary Bash 
 
 ## 6. Dependency graph
 
+### Next handoffs — explicit test-only vs production gates (2026-10-13)
+
+- **C004 ADR identifier corrective: ready.** `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`. `main` contains *two* ADR-0027 and *two* ADR-0028 active records. Before production design acceptance or M003 promotion, reconcile canonical numbering, archived provenance and check_adr_integrity; do **not** change decision content. The plan proposes renumbering proposed Linux/accepted command ADRs to unused 0029/0030, subject to exact-head reservations.
+- **C005 native test-only Bubblewrap first hop: ready.** `plans/implementation/linux-execution-isolation/013-m003-bubblewrap-test-only-first-hop-and-feature-proof.md`. Real unprivileged user/mount namespace, helper identity, private status and no-target-on-setup-failure evidence; no production backend selection. Can run concurrently with C004.
+- **C006 M003 mount backend strengthening: blocked.** `plans/implementation/linux-execution-isolation/014-m003-protected-mount-view-and-git-metadata-backend.md`. Requires C004 closure, *separate explicit acceptance* of canonical proposed Linux ADR, M002 interface and strict-positive C005 native launch evidence. Protected nested Git/config/credential descendants and leased workspace writes need actual mount evidence.
+- **C007 M004/M005 native denial oracle: ready for fixture design only.** `plans/implementation/linux-execution-isolation/015-m004-m005-process-ipc-offline-fixture-and-denial-matrix.md`. Host proc, signals, pathname/abstract Unix sockets, inherited FD, IPv4/IPv6 TCP/UDP/DNS and required no-userns failures; actual claims blocked until real M003/M004/M005 enforcement.
+- **C008 M007 cgroup v2 feasibility: ready test-only.** `plans/implementation/linux-execution-isolation/016-m007-resource-delegation-and-bounded-scheduler-feasibility.md`. Test rootless delegated subtree and pre-exec attach under M002's typed budget; no required resource guarantee until native membership/kill/cleanup proof.
+- **Command authorization M004 constrained tool routing: ready audit/test-only.** `plans/implementation/command-authorization-and-execution-boundaries/007-m004-constrained-command-routing-and-tool-coverage.md`. Inventory and qualify route equivalence; constrained typed Git/other tools cannot silently become FullHost.
+- **Git C002/C003 remain blocked** until qualified local filesystem/process/offline and separately mediated remote transport. Historical M001 closure and successful C001 typed Git policy remain unchanged. M002 Linux launcher is conditionally closed for internal interface/probes only. Command authorization M001–M003 remain strictly closed.
+
+### Existing dependency graph
+
 The M001 initial strict-Git implementation is **blocked** by legitimate command compatibility (9/12 historical Git mutation cases failed). **C001** (typed Git disposition, no fabricated spawn error) is **ready** using accepted ADR-0028 and may proceed in parallel with command-policy M001 once its written interface is stable. **M002** (internal composable launch contract) is **ready** under accepted ADR-0016 and ADR-0028; M001 Git closure is **not** a hard prerequisite. Only *production promotion of the new Bubblewrap/Linux namespace backend* requires acceptance of proposed ADR-0027. **M003** (protected mount view) hard-depends on M002 + accepted ADR-0027 and consumes C001's **interface** contract, not M001's strict closure. **M004** (process/IPC/seccomp) hard-depends on M002 + accepted ADR-0027 and has M003 as an **interface** dependency. **M005** (offline network) hard-depends on M004/M002, M006 (mediated egress) on M005, and M007 (cgroups) on M002 (independent of M003–M006). **C002** (legitimate executable *local* Git recovery) hard-depends on C001 and native-verified M002–M005; **C003** (remote Git authorization/transport) hard-depends on C001, M005 and M006 plus explicit credential/transport authority, and consumes C002 state as an interface. M001 can strictly close only after C001–C003 resolve its original required workflows, or a separate explicit scoped limitation is approved and recorded; no hidden change to original closure record. **M008** full qualification hard-depends on M001/C001–C003 and M002–M007. Qualified no-proxy or HTTPS-only subsets can be recorded independently but do not close the full roadmap. Native kernel feature availability is an **operational** closure condition, never permission for uncontained fallback.
 
 ## 7. Milestones
+
+### Registered successor packages
+
+| Package | Status | Plan | Required proof |
+|---|---|---|---|
+| C004 | ready | `implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md` | Unique canonical ADR IDs, real archive provenance, guard passing, no decision change |
+| C005 | ready test-only | `implementation/linux-execution-isolation/013-m003-bubblewrap-test-only-first-hop-and-feature-proof.md` | Native first-hop positive/negative evidence, not production |
+| C006 | blocked | `implementation/linux-execution-isolation/014-m003-protected-mount-view-and-git-metadata-backend.md` | Accepted Linux ADR + qualifying C005 + real nested protection |
+| C007 | ready fixtures only | `implementation/linux-execution-isolation/015-m004-m005-process-ipc-offline-fixture-and-denial-matrix.md` | Real effect denial only when M004/M005 backend qualified |
+| C008 | ready test-only | `implementation/linux-execution-isolation/016-m007-resource-delegation-and-bounded-scheduler-feasibility.md` | Real delegated/pre-exec cgroup proof before production quotas |
+
+
 
 | Milestone | Class | Implementation | Status | User/operator exit |
 |---|---|---|---|---|
@@ -94,4 +118,4 @@ The roadmap closes only when M001–M008 and C001–C003 have accepted, exact-re
 
 ## 12. Milestone status
 
-M001's initial policy and native probes are implemented but historical closure remains **blocked** (legitimate Git mutation tests fail). C001 typed Git policy reconciliation is active; M002 **internal launch contract** remains independently ready without a hard dependency on M001 closure. C002/C003 local/remote Git restoration and new Linux backend deployment remain blocked by the named native enforcement/authorization gates. ADR-0027 is proposed and must be accepted before real Bubblewrap backend promotion; ADR-0028 governs representation-independent command authorization now. M003–M008 remain dependency-gated. No enhanced Linux isolation capability is claimed as implemented or verified.
+M001 historical Git closure is **blocked** (original legitimate Git mutation failures); C001 typed Git policy is **closed**, but C002/C003 remain gated on real contained local/remote execution. M002 launch-contract/probe is **conditionally closed** for legacy only. C004 ADR collision corrective and C005 test-only native first-hop are immediate next steps, with C007 denial-fixture design and C008 bounded cgroup tests eligible in parallel. C006 and production M003–M008 await explicit accepted, unambiguously identified Linux ADR plus real native containment. Command authorization M001–M003 are closed, with an M004 route audit/test-only successor newly registered. No enhanced Linux isolation enforcement is claimed.
