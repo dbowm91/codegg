@@ -148,6 +148,37 @@ pub fn ellipsize_to_width(s: &str, width: usize) -> String {
     out
 }
 
+/// Collapse embedded newlines into a visible separator so multi-line input (a
+/// shell command, a tool argument) renders as one wrappable line without
+/// silently losing content.
+pub fn normalize_inline(s: &str) -> String {
+    s.replace("\r\n", "\n").replace(['\n', '\r'], " ↵ ")
+}
+
+/// Truncate to `max_width` display columns and report how many characters were
+/// dropped.
+///
+/// [`ellipsize_to_width`] alone is not enough on surfaces where the string *is*
+/// the diagnostic — an approval dialog or an in-flight tool header. A silently
+/// shortened command reads as the whole command, so the caller cannot tell what
+/// they are authorizing or what is running.
+pub fn elide_marked(s: &str, max_width: usize) -> String {
+    if max_width == 0 || s.is_empty() {
+        return s.to_string();
+    }
+    let out = ellipsize_to_width(s, max_width);
+    if out == s {
+        return s.to_string();
+    }
+    let kept = out.trim_end_matches('\u{2026}').chars().count();
+    let dropped = s.chars().count().saturating_sub(kept);
+    if dropped == 0 {
+        out
+    } else {
+        format!("{out} (+{dropped} chars)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

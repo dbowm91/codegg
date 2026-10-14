@@ -10,8 +10,16 @@
 //!
 //! These drive the real key path — `/`, the characters, Enter — because the
 //! recursion started at submit time, not at open time.
+//!
+//! Bare `/agents` opens the "Send agents to panel" picker rather than jumping
+//! straight into the column, so the path continues through the box: the picker
+//! opens on the active panel, `j` walks the registry to Agents, and Enter
+//! commits. The picker cursor addresses `SidePanelId::ALL` (filtering never
+//! re-aims it), so the walk below is computed from the registry, not
+//! hand-numbered.
 
 use codegg::tui::app::App;
+use codegg::tui::components::component::DialogType;
 use codegg::tui::panels::SidePanelId;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
@@ -31,12 +39,35 @@ fn type_command(app: &mut App, command: &str) {
     app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
 }
 
-/// The crash itself. A stack overflow aborts the process, so "this test
-/// finishes" is the assertion.
+/// Drive the picker bare `/agents` opens and commit the Agents panel.
+///
+/// Asserts the picker itself opens: a `/agents` that selects nothing and
+/// opens nothing is the "routed nowhere" regression wearing a passing
+/// select assertion.
+fn pick_agents_panel(app: &mut App) {
+    type_command(app, "/agents");
+    assert_eq!(
+        app.focus_manager.active_dialog_type(),
+        DialogType::PanelPicker,
+        "bare /agents opens the panel picker"
+    );
+    let steps = SidePanelId::Agents
+        .index()
+        .saturating_sub(app.panel_host.active().index());
+    for _ in 0..steps {
+        app.on_key(key(KeyCode::Char('j'), KeyModifiers::NONE));
+    }
+    app.on_key(key(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+/// The crash itself, through the picker. A stack overflow aborts the process,
+/// so "this test finishes with the management panel selected" is the
+/// assertion: the picker commit must land on Agents, not recurse through a
+/// hosted placeholder and not strand the selection on the previous panel.
 #[test]
 fn the_agents_command_loads_its_panel_instead_of_recursing() {
     let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    type_command(&mut app, "/agents");
+    pick_agents_panel(&mut app);
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Agents,
@@ -50,7 +81,7 @@ fn the_agents_command_loads_its_panel_instead_of_recursing() {
 #[test]
 fn the_agents_panel_takes_the_keyboard() {
     let mut app = App::new_for_testing(std::env::temp_dir().to_string_lossy().to_string());
-    type_command(&mut app, "/agents");
+    pick_agents_panel(&mut app);
     assert!(
         app.panel_host.is_focused(),
         "the panel the user just opened should have the keyboard"

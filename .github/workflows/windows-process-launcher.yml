@@ -2,7 +2,30 @@ name: Windows process launcher
 
 on:
   push:
-    branches: [work/windows-native-sandbox-foundation]
+    branches: [main, work/windows-native-sandbox-foundation]
+    paths:
+      - '.github/workflows/windows-process-launcher.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/managed_process.rs'
+      - 'src/managed_process/**'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'src/tool/bash/process.rs'
+      - 'src/tool/mod.rs'
+      - 'src/tool/factory.rs'
+      - 'src/scheduler/executors.rs'
+      - 'crates/codegg-config/src/schema.rs'
+      - 'crates/codegg-config/src/paths.rs'
+      - 'crates/egggit/Cargo.toml'
+      - 'crates/egggit/src/**'
+      - 'tests/windows_process_launcher.rs'
+      - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_projection_feasibility.rs'
+      - 'tests/windows_acl_lease.rs'
+      - 'tests/windows_sandbox_adversarial.rs'
+      - 'research/windows-native-sandbox/**'
+  pull_request:
     paths:
       - '.github/workflows/windows-process-launcher.yml'
       - 'Cargo.toml'
@@ -35,6 +58,15 @@ on:
 
 permissions:
   contents: read
+
+# Ordinary Windows-affecting PRs and mainline pushes share one launcher job.
+# Costly MXC/eligibility research workflows stay manual or path-scoped and
+# never run as part of this gate. Hosted Windows Server coverage and
+# Windows 11 ARM MXC eligibility remain separate jobs with no cross-host
+# security inference.
+concurrency:
+  group: windows-process-launcher-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   process-launcher:

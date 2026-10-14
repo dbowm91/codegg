@@ -11610,14 +11610,20 @@ impl App {
         // why its own keys were undiscoverable: the one surface where a turn
         // runs long, and the one surface with nothing written above the input.
         // Only during a turn — an idle buffer has nothing to stop.
-        let agent_keys = self.llm_buffer_key_hints()?;
-        if let Some(panel) = self
+        //
+        // The turn keys come first but never gate the panel's own hints: a
+        // focused panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all.
+        let agent_keys = self.llm_buffer_key_hints();
+        let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref())
-        {
-            return Some(format!("{agent_keys} · {panel}"));
+            .composer_hints(self.chat_panel_project.as_deref());
+        match (agent_keys, panel) {
+            (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
+            (Some(agent_keys), None) => Some(agent_keys),
+            (None, Some(panel)) => Some(panel),
+            (None, None) => None,
         }
-        Some(agent_keys)
     }
 
     /// The stop/resume keys for the main buffer, or `None` when idle.

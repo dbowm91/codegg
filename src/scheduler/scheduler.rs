@@ -36,7 +36,7 @@ use codegg_core::jobs::{
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
 use futures_util::FutureExt;
-use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tokio::sync::{mpsc, watch, Mutex as AsyncMutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -56,6 +56,21 @@ use crate::scheduler::types::QueueRemovalReason;
 
 const EXECUTOR_CLEANUP_GRACE: Duration = Duration::from_secs(5);
 const SHUTDOWN_CLEANUP_GRACE: Duration = Duration::from_secs(5);
+/// Backstop recheck interval for `wait_for_completion`.
+///
+/// Completion and cancellation are delivered through the per-job broadcast
+/// signal in `completion_signals`, so this tick is NOT the primary delivery
+/// path and normally never fires. It remains as a durable-state backstop for
+/// transitions that bypass the scheduler's own publish helpers (for example a
+/// terminal job state written by startup recovery or an external
+/// `JobStore` writer), which would otherwise cost a waiter its entire bound.
+/// See `wait_for_completion`.
+const COMPLETION_RECHECK_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Upper bound on retained per-job completion signals. Entries with live
+/// receivers are never evicted, so the effective ceiling is the number of
+/// concurrently waiting callers rather than this value.
+const COMPLETION_SIGNAL_CAPACITY: usize = 1024;
 
 /// Wake signal sent to the scheduler's main loop. Cheap; the loop
 /// uses a `Notify` to coalesce wakes and avoid spinning.
@@ -134,6 +149,97 @@ impl CompletionCache {
     }
 }
 
+/// Bounded registry of per-job completion broadcast signals.
+///
+/// Each `JobId` gets its own `watch` generation counter. Publishing a terminal
+/// outcome for job X advances X's counter, which wakes **every** receiver
+/// registered for X and leaves waiters on other jobs parked. This is why the
+/// scheduler does not use its shared `Notify` for completion: `Notify` holds a
+/// single permit and `notify_one` wakes one arbitrary waiter, so with several
+/// jobs in flight the waiter whose job actually finished could be the one left
+/// asleep for the whole bound.
+///
+/// A `watch` receiver also replays the "value changed" fact to a receiver that
+/// subscribes later, which is what makes the ordering in `wait_for_completion`
+/// safe: the receiver is created *before* the first completion-cache read, so a
+/// publish that lands between that read and the park is still delivered.
+struct CompletionSignals {
+    entries: HashMap<JobId, watch::Sender<u64>>,
+    /// Insertion order for oldest-first eviction, mirroring `CompletionCache`.
+    order: BTreeMap<u64, JobId>,
+    seq: u64,
+    capacity: usize,
+}
+
+impl CompletionSignals {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: BTreeMap::new(),
+            seq: 0,
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Get the sender for `job_id`, creating the entry if needed. Waiters call
+    /// this exactly once, before their first completion-cache read.
+    fn subscribe(&mut self, job_id: &JobId) -> watch::Receiver<u64> {
+        let seq = self.seq;
+        self.seq = self.seq.wrapping_add(1);
+        let sender = self.entries.entry(job_id.clone()).or_insert_with(|| {
+            let (tx, _rx) = watch::channel(0u64);
+            self.order.insert(seq, job_id.clone());
+            tx
+        });
+        sender.subscribe()
+    }
+
+    /// Advance `job_id`'s generation, waking all of its receivers.
+    ///
+    /// Deliberately does **not** create an entry for a job nobody is waiting on:
+    /// a completion published before any waiter subscribed is already covered by
+    /// the completion-cache read at the top of `wait_for_completion`, so
+    /// allocating here would only leak registry entries for every job the
+    /// daemon has ever run.
+    fn advance(&mut self, job_id: &JobId) {
+        if let Some(sender) = self.entries.get(job_id) {
+            sender.send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
+    }
+
+    /// Drop oldest-first entries over capacity, skipping any that still has a
+    /// live receiver. Evicting a receiver's sender makes its `changed()` return
+    /// `Err`, which the waiter treats as "signal gone" and falls back to the
+    /// durable-state tick — safe, and unreachable for a waiting job in practice
+    /// because live receivers are skipped.
+    ///
+    /// `order` is walked rather than blindly popped so a pinned entry keeps its
+    /// ordering key and stays a candidate for a later eviction attempt.
+    fn evict_over_capacity(&mut self) {
+        if self.entries.len() <= self.capacity {
+            return;
+        }
+        let mut excess = self.entries.len() - self.capacity;
+        let candidates: Vec<u64> = self
+            .order
+            .iter()
+            .filter(|(_, job_id)| {
+                self.entries
+                    .get(job_id)
+                    .is_some_and(|sender| sender.receiver_count() == 0)
+            })
+            .map(|(seq, _)| *seq)
+            .take(excess)
+            .collect();
+        for seq in candidates {
+            if let Some(job_id) = self.order.remove(&seq) {
+                self.entries.remove(&job_id);
+                excess = excess.saturating_sub(1);
+            }
+        }
+    }
+}
+
 pub struct JobScheduler {
     store: Arc<dyn JobStore>,
     workspaces: Arc<WorkspaceServiceRegistry>,
@@ -151,6 +257,10 @@ pub struct JobScheduler {
     completions: Arc<AsyncMutex<CompletionCache>>,
     /// Monotonic insertion counter for `completions`.
     completions_seq: Arc<AtomicU64>,
+    /// Per-job completion broadcast signals backing `wait_for_completion`.
+    /// Completion delivery uses this map, never the shared `notify`, so a
+    /// terminal outcome for one job cannot consume another job's wakeup.
+    completion_signals: Arc<AsyncMutex<CompletionSignals>>,
     /// Per-workspace running attempts (denormalized for snapshot).
     running_per_workspace: Arc<AsyncMutex<HashMap<WorkspaceId, usize>>>,
     /// Per-priority ready-window counts (denormalized).
@@ -170,6 +280,10 @@ pub struct JobScheduler {
     queue_overflows: Arc<AtomicU64>,
     /// Oldest queued age in seconds (refreshed on wake).
     oldest_queued_age_secs: Arc<AsyncMutex<Option<u64>>>,
+    /// Reconciliation wake signal for the main run loop only. Coalescing here
+    /// is correct because the loop is a single consumer that re-reads all state
+    /// on every iteration. `wait_for_completion` deliberately does NOT park on
+    /// this — it uses `completion_signals` instead.
     notify: Arc<Notify>,
     shutdown: CancellationToken,
     config: Arc<ResolvedSchedulerConfig>,
@@ -221,6 +335,9 @@ impl JobScheduler {
             running_tasks,
             completions: Arc::new(AsyncMutex::new(CompletionCache::new())),
             completions_seq: Arc::new(AtomicU64::new(0)),
+            completion_signals: Arc::new(AsyncMutex::new(CompletionSignals::new(
+                COMPLETION_SIGNAL_CAPACITY,
+            ))),
             running_per_workspace,
             ready_counts,
             job_kind_counts,
@@ -414,7 +531,8 @@ impl JobScheduler {
         worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
-            AgentTurnExecutor, ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
+            AgentTurnExecutor, ManagedArgvExecutor, PythonJobExecutor, SubagentJobExecutor,
+            TestJobExecutor,
         };
         let mut registry = crate::scheduler::executor::ExecutorRegistry::new();
         registry.register(Arc::new(TestJobExecutor::new(
@@ -429,6 +547,14 @@ impl JobScheduler {
         // The coordinator submits through JobSubmissionService; this
         // executor records admission without constructing an AgentLoop.
         registry.register(Arc::new(AgentTurnExecutor))?;
+        // `JobKind::Python` is submitted by the model-facing `python_script`
+        // tool and by BashTool's python routing. This registration was
+        // missing, so every Python job was marked unschedulable ("no executor
+        // registered for job kind") and the submitting tool blocked for its
+        // entire `timeout + 30s` wait bound before failing. `None` here is
+        // correct: the executor resolves the scheduler-owned workspace
+        // RunStore from `JobExecutionContext::run_store`.
+        registry.register(Arc::new(PythonJobExecutor::new(None)))?;
         if let Some(pool) = subagent_pool {
             let executor = match agent_runs {
                 Some(store) => match worktree_service {
@@ -471,6 +597,16 @@ impl JobScheduler {
         g.kinds()
     }
 
+    /// Construction-time variant of [`Self::executor_kinds`] for synchronous
+    /// callers such as the daemon's registration path. Returns an empty list if
+    /// the registry is momentarily locked rather than blocking a sync caller.
+    pub fn executor_kinds_sync(&self) -> Vec<ExecutorKind> {
+        match self.executors.try_lock() {
+            Ok(g) => g.kinds(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Wake the scheduler. The next reconciliation tick will run.
     pub fn wake(&self, reason: WokeReason) {
         self.notify.notify_one();
@@ -502,6 +638,19 @@ impl JobScheduler {
         };
         // Detach the spawned future; it self-completes.
         drop(tx_clone);
+    }
+
+    /// Wake every caller currently waiting on `job_id`'s terminal outcome.
+    ///
+    /// This is the completion-delivery primitive: unlike `wake` it is scoped to
+    /// one job, so it never competes with unrelated waiters and never gets
+    /// consumed by the run loop. Call it after publishing a terminal completion
+    /// into `completions`, or after terminalizing a job without one (cancel,
+    /// unschedulable).
+    async fn signal_job(&self, job_id: &JobId) {
+        let mut signals = self.completion_signals.lock().await;
+        signals.advance(job_id);
+        signals.evict_over_capacity();
     }
 
     /// Submit a new job to the underlying `JobStore` and wake the
@@ -554,8 +703,18 @@ impl JobScheduler {
         wait_timeout: Duration,
     ) -> Result<ExecutorCompletion, JobSchedulerError> {
         let deadline = Instant::now() + wait_timeout;
+        // Subscribe BEFORE the first completion-cache read. A publish that lands
+        // after the read is delivered by `changed()`; a publish that landed
+        // before the read is caught by the cache check itself. This ordering is
+        // what makes the wait race-free without a timeout-based fallback.
+        let mut completion_signal = {
+            let mut signals = self.completion_signals.lock().await;
+            signals.subscribe(job_id)
+        };
+        // Cleared if the registry evicts this job's sender, which downgrades the
+        // wait to the durable-state tick instead of spinning on a closed channel.
+        let mut signal_open = true;
         loop {
-            let notified = self.notify.notified();
             if let Some(completion) = self
                 .completions
                 .lock()
@@ -599,7 +758,30 @@ impl JobScheduler {
                 )));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if tokio::time::timeout(remaining, notified).await.is_err() {
+            // Park on this job's own signal. It is a broadcast, so concurrent
+            // waiters on the same job all wake, and waiters on other jobs are
+            // untouched — the run loop's coalescing `Notify` is no longer a
+            // participant here at all.
+            //
+            // The tick is a durable-state backstop, not the delivery path: it
+            // covers terminal transitions that never publish a completion or
+            // call `signal_job` (startup recovery, external `JobStore` writers).
+            let tick = tokio::time::sleep(remaining.min(COMPLETION_RECHECK_INTERVAL));
+            tokio::pin!(tick);
+            if signal_open {
+                tokio::select! {
+                    changed = completion_signal.changed() => {
+                        if changed.is_err() {
+                            // Sender evicted; fall back to the tick below.
+                            signal_open = false;
+                        }
+                    }
+                    _ = &mut tick => {}
+                }
+            } else {
+                (&mut tick).await;
+            }
+            if Instant::now() >= deadline {
                 return Err(JobSchedulerError::Internal(format!(
                     "timed out waiting for job {}",
                     job_id
@@ -1148,7 +1330,6 @@ impl JobScheduler {
             let completions = self.completions.clone();
             let completions_seq = self.completions_seq.clone();
             let event_tx = self.event_tx.clone();
-            let notify = self.notify.clone();
             let executor_stats = executor_stats.clone();
             let task = tokio::spawn(async move {
                 let completion = if ctx.cancellation.is_cancelled() {
@@ -1397,7 +1578,10 @@ impl JobScheduler {
                 // in-flight task for fully cleaned-up work.
                 running_total.fetch_sub(1, Ordering::SeqCst);
                 me.wake(WokeReason::ExecutorCompleted);
-                notify.notify_one();
+                // Delivery path for `wait_for_completion`: wake every waiter on
+                // THIS job. `wake` above only nudges the run loop's
+                // reconciliation, which is coalesced and single-consumer.
+                me.signal_job(&job_id_for_task).await;
                 running_tasks.lock().await.remove(&attempt_id);
             });
             self.running_tasks
@@ -1653,6 +1837,25 @@ impl JobScheduler {
             )
             .await;
         }
+        // Publish the terminal outcome to in-process waiters. `wait_for_completion`
+        // re-reads the completion cache each time it is woken, and `signal_job`
+        // below wakes exactly the waiters on this job, so without this a job that
+        // can never run (for example, a kind with no registered executor) makes
+        // its submitter block for the whole wait bound before reporting a failure
+        // it already knows about.
+        {
+            let completion = ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: reason.to_string(),
+                run_id: None,
+                metrics: ExecutorMetrics::default(),
+            };
+            let mut completions = self.completions.lock().await;
+            let seq = self.completions_seq.fetch_add(1, Ordering::SeqCst);
+            completions.insert(job.job_id.clone(), seq, completion);
+        }
+        self.wake(WokeReason::ExecutorCompleted);
+        self.signal_job(&job.job_id).await;
         Ok(())
     }
 
@@ -1725,6 +1928,13 @@ impl JobScheduler {
                     .await;
                 }
             }
+        }
+        // A queued job reaches its terminal state here without any executor
+        // ever running, so it never publishes a completion. Wake its waiters
+        // explicitly, otherwise they only learn about the cancel from the
+        // durable-state backstop tick.
+        if matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled) {
+            self.signal_job(job_id).await;
         }
         // Remove from in-memory queue if present.
         let mut q = self.queue.lock().await;

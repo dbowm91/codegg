@@ -100,6 +100,21 @@ impl ExecutorKind {
     }
 }
 
+/// Executor kinds that a local daemon is expected to always cover.
+///
+/// `ToolProgram` and `Eggwork` are registered by the daemon's own setup rather
+/// than by `register_default_executors*`, and `Subagent` is conditional on a
+/// subagent pool, so they are not listed here. Everything else is a job kind a
+/// model-facing tool can submit on any turn; if one is unregistered, the
+/// scheduler marks the job unschedulable and the submitting tool burns its whole
+/// wait bound before failing with a timeout that says nothing about the cause.
+pub const REQUIRED_EXECUTOR_KINDS: &[ExecutorKind] = &[
+    ExecutorKind::Test,
+    ExecutorKind::ManagedArgv,
+    ExecutorKind::Python,
+    ExecutorKind::AgentTurn,
+];
+
 /// Final result of an executor invocation. The scheduler persists this
 /// as the attempt + job terminal state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
