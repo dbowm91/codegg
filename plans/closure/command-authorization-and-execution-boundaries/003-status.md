@@ -1,6 +1,6 @@
 # Command Authorization M003 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -16,11 +16,12 @@ Implementation commits:
 
 - `43562c68` — qualify equivalent filesystem effects and add bounded command outcome audit metadata.
 - `0f0296be` — assert output truncation and completed process metadata in the live audit fixture.
+- `ee2af674` — add a branch-scoped hosted macOS target-compile workflow.
 
 ## 1. Executive finding
 
-M003 is conditionally closed for the Linux filesystem-only scope qualified on
-this host. A single `WorkspaceWrite` launch policy denies an outside-root
+M003 is closed for its planned Linux filesystem-only scope and platform compile
+qualification. A single `WorkspaceWrite` launch policy denies an outside-root
 write attempted through direct shell text, a nested shell, a generated script,
 Python, a compiled native executable, and a planted Git hook. The same backend
 continues to permit an allowed workspace write. A live accepted Bash call
@@ -29,12 +30,13 @@ risk and route labels, obtained filesystem/network outcome, process exit code,
 output-truncation status, cleanup status, helper identity, and command digest.
 The audit stores no command text, argv, script content, output, or secret path.
 
-Strict closure remains conditional on a successful macOS cross-target compile.
-The host has no Apple SDK/sysroot: the normal target check failed when the host
-compiler rejected Apple flags, and the Clang retry stopped in native C
-dependencies at missing `bits/libc-header-start.h`. The installed Windows GNU
-target compiled successfully. No native macOS or Windows execution result is
-claimed.
+The previously missing macOS cross-target compile passed on GitHub Actions run
+[38487083151](https://github.com/dbowm91/codegg/actions/runs/38487083151), job
+`macos-target-compile`, at commit `ee2af674ed4041277421d2b230139d8e48ffb509`.
+It ran on `macos-15-arm64` with an Apple SDK and Rust `1.99.0`; the exact
+`cargo check -p codegg --lib --target x86_64-apple-darwin --locked` command
+passed. The installed Windows GNU target also compiled successfully. No native
+macOS or Windows execution result is claimed.
 
 Landlock still leaves networking, Unix IPC, and host process visibility
 unrestricted. No outbound TCP/UDP or IPC denial is claimed. Those dimensions
@@ -56,7 +58,7 @@ represented as completed capabilities here.
 | Static policy, sandbox, authorization, ownership, and audit contracts | `check_policy_surface.py`, `check_sandbox_contract.py`, `check_authorization_matrix.py`, `check_approval_router.py`, `check_sandbox_policy_wiring.py`, `check_execution_ownership.py`, `check_audit_coverage.py` | pass | All listed guards passed. |
 | Routine repository verification | `scripts/verify.sh quick` | pass | Includes workspace all-target check. |
 | Windows platform compile | `cargo check -p codegg --lib --target x86_64-pc-windows-gnu --locked` | pass | Used installed MinGW compiler; emitted platform-specific warnings, no errors. |
-| macOS platform compile | `cargo check -p codegg --lib --target x86_64-apple-darwin --locked`; Clang retry with target flags | conditional | Both stop in native C dependencies because the Apple SDK/sysroot is absent; no Rust diagnostic in changed CodeGG sources was reported. Must be repeated in an Apple-capable environment before strict closure. |
+| macOS platform compile | `cargo check -p codegg --lib --target x86_64-apple-darwin --locked` | pass | GitHub Actions run [38487083151](https://github.com/dbowm91/codegg/actions/runs/38487083151), job `macos-target-compile`, exact source SHA `ee2af674ed4041277421d2b230139d8e48ffb509`; runner image `macos-15-arm64`, Apple SDK available, Rust `1.99.0`. |
 | Network and IPC isolation | No enforcing backend is registered for this tier | unavailable | Landlock reports unrestricted networking; no denial claim or mock-only substitute is accepted. |
 
 ## 3. Production implementation evidence
@@ -102,6 +104,8 @@ python3 scripts/check_audit_coverage.py
 cargo check -p codegg --lib --target x86_64-pc-windows-gnu --locked
 cargo check -p codegg --lib --target x86_64-apple-darwin --locked
 CC_x86_64_apple_darwin=clang CFLAGS_x86_64_apple_darwin="-target x86_64-apple-darwin" cargo check -p codegg --lib --target x86_64-apple-darwin --locked
+# GitHub Actions on macos-15-arm64, commit ee2af674ed4041277421d2b230139d8e48ffb509:
+cargo check -p codegg --lib --target x86_64-apple-darwin --locked
 scripts/verify.sh quick
 git diff --check
 ```
@@ -116,8 +120,11 @@ git diff --check
   truncation metadata and passed.
 - All listed static guards passed. `scripts/verify.sh quick` passed, including
   workspace/all-target checking. `git diff --check` passed.
-- Host: `Linux deadpool 6.8.0-146-generic`, `x86_64`, Rust `1.99.0`, Landlock
-  ABI 4. Verification was local; no hosted CI result is claimed.
+- Linux host: `Linux deadpool 6.8.0-146-generic`, `x86_64`, Rust `1.99.0`,
+  Landlock ABI 4. Hosted macOS target compile: GitHub Actions run 38487083151
+  at exact source SHA `ee2af674ed4041277421d2b230139d8e48ffb509`, on
+  `macos-15-arm64`; the required target check passed. The job qualified
+  compilation only, not native macOS execution.
 
 ## 5. Invariant and limitation review
 
@@ -129,15 +136,14 @@ git diff --check
 - Audit values are bounded labels and digests. Output content is excluded;
   output and cleanup are summarized as status fields. Route provenance does
   not claim to capture every nested process or syscall.
-- macOS Seatbelt behavior was not exercised here. The macOS compile is the
-  single named condition preventing strict closure; the failure is an
-  unavailable host SDK/sysroot, not a Rust source diagnostic.
+- macOS Seatbelt behavior was not exercised. The hosted macOS evidence is a
+  cross-target compile only and does not qualify runtime behavior.
 
 ## 6. Downstream audit
 
 No later implementation plan is registered in
 `plans/implementation/command-authorization-and-execution-boundaries/` beyond
 M003 and the already closed M001 corrective plans. No plan was unblocked by
-this conditional closure. The separate Linux execution-isolation roadmap
+this closure. The separate Linux execution-isolation roadmap
 remains independently gated for network/process containment and contained Git
 workflows.
