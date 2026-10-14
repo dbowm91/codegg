@@ -476,17 +476,21 @@ mod tests {
         assert!(allowlisted
             .check_command_security_for_args("echo", &["ok".to_string()])
             .is_err());
-        // Built-in patterns are advisory; explicit adapter restrictions and
-        // allowlists remain best-effort text filters.
+        // Built-in patterns are advisory; command substitution on an
+        // allowlisted command is a review signal, not a refusal.
         assert!(allowlisted
             .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
             .is_ok());
+        // Built-in patterns are advisory, but an explicit allowlist still
+        // restricts: `rm` is not allowlisted, so the env-wrapped destructive
+        // command is refused by the adapter's own filter, not by any
+        // canonical pattern.
         assert!(allowlisted
             .check_command_security_for_args(
                 "env",
                 &["rm".to_string(), "-rf".to_string(), "/".to_string()]
             )
-            .is_ok());
+            .is_err());
 
         let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
         assert!(shell_allowlisted

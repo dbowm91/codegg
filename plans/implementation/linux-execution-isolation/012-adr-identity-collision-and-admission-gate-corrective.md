@@ -9,11 +9,11 @@ Baseline: implementation branch @ `eb2ca664d8e8aebe51fddeed8ac06d63f15f555b` (20
 ## 1. Defect confirmed
 
 The pre-migration checked-out tree had two active decisions named ADR-0027:
-- `plans/adrs/ADR-0027-windows-sandbox-capability-successors.md` (accepted for **bounded test-only Windows work**, not production);
+- the Windows decision now at `plans/adrs/ADR-0029-windows-sandbox-capability-successors.md` (accepted for **bounded test-only Windows work**, not production);
 - `plans/adrs/ADR-0031-composable-linux-execution-isolation.md` (**proposed**; no production backend authorization).
 
 It also had two active ADR-0028 decisions:
-- `plans/adrs/ADR-0028-windows-broad-read-compatibility-profile.md` (**proposed**; not approved);
+- the Windows decision now at `plans/adrs/ADR-0030-windows-broad-read-compatibility-profile.md` (**proposed**; not approved);
 - `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (**accepted**; existing low-friction command-policy authority).
 
 The existing `scripts/check_adr_integrity.py` checks unique active IDs and local ADR links; therefore the exact current tree is statically inconsistent with its own required guard, irrespective of otherwise passing historical CI. Cross-branch authorship: Windows decisions were committed at `2fe3cab5` (2026-10-13 18:56 UTC), Linux/command ADR path allocations at `f7ac5228` (2026-10-14 02:00 UTC). The open Windows identity migration branch reserves IDs 0029/0030, so this branch assigns the Linux mechanism ADR to 0031 and accepted command ADR to 0032. This is a path/identity reconciliation only; it does not change either decision or disposition.

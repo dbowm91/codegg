@@ -148,8 +148,16 @@ The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-da
 
 ## Windows successor decisions after PR #111 (2026-10-13)
 
-- ADR-0027 — accepted for **bounded Windows research and test-only successor work** only; no production backend is selected.
-- ADR-0028 — **proposed** Windows broad-read profile; no production authorization.
+Renumbered 2026-10-14: the Windows successor decisions first landed as
+ADR-0027/ADR-0028 on their planning branch. The Linux/command identity
+migration assigned those numbers to ADR-0031/ADR-0032 before branch
+reconciliation. The Windows records are ADR-0029/ADR-0030 below; the old
+numbers were never active as Windows ADRs and must not be reused for Windows
+references. Linux/command historical aliases and fingerprints are recorded in
+`plans/archive/linux-command-adr-id-aliases/`.
+
+- ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
+- ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
 - ADR-0031 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
 - ADR-0032 — **accepted** command syntax is advisory and execution authority is enforced; identity migration did not reaccept or alter this decision.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

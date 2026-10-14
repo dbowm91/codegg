@@ -1,7 +1,7 @@
 # C044 — Compiled native two-hop launch diagnostic (test only)
 
 Status: research harness landed; Windows execution not run on this host.
-Authority: ADR-0027 bounded test-only (one bounded helper-startup
+Authority: ADR-0029 bounded test-only (one bounded helper-startup
 correction permitted, then honest positive/negative/blocked closure).
 C032 is the historical negative predecessor: PowerShell as the inner
 restricted child was created/suspended/Job-assigned/resumed but never
@@ -11,7 +11,7 @@ first-instruction probe so token/identity, loader startup, and the
 read-boundary result are independent test outcomes.
 
 No production backend, no persistent account, no original-host ACL
-mutation, no `SandboxRequest::Required` activation. ADR-0028 remains
+mutation, no `SandboxRequest::Required` activation. ADR-0030 remains
 proposed; a write-only outcome must never be promoted to strict
 `ReadOnly`/`WorkspaceWrite`.
 
