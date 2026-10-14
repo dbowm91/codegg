@@ -1,6 +1,6 @@
 # Windows Native Sandbox C049 — Broad-read compatibility decision dossier
 
-Status: ready — design/evidence only; ADR-0030 remains proposed, not ratified
+Status: implemented — design/evidence only; ADR-0030 remains proposed, not ratified
 Class: invariant (policy boundary)
 Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (2026-10-14); refresh exact head at execution.
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).
