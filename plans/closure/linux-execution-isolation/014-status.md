@@ -147,6 +147,26 @@ races, Cargo/rustup, LSP/PTY, startup timing, descriptor-inheritance, or the
 remaining native compatibility matrix. C006 therefore remains closed with a
 negative strict-M003 disposition, and M003 remains blocked.
 
+## 12. Final implementation-head hosted rerun — 2026-10-14
+
+After the Windows-only managed-request destructuring fix and the Test-runner
+cancellation regression, final branch head
+`4c00d5b58e6bb2421163271192b0773c66eba11e` passed hosted run
+[38618460206](https://github.com/dbowm91/codegg/actions/runs/38618460206).
+The runner was Ubuntu 24.04.5 x86_64, kernel `6.17.0-1022-azure`, UID 1001,
+Bubblewrap 0.9.0 at `/usr/bin/bwrap` with mode 0755, and AppArmor profile
+`unconfined`. The runner initially reported
+`kernel.apparmor_restrict_unprivileged_userns=1`; the workflow set it to `0`
+on the ephemeral host for the qualification. The helper built successfully;
+`managed_process::tests::protected_mount_view_real_managed_process_handoff`
+passed 1/1 in 0.56 seconds (6094 filtered out).
+
+This is exact-final-head C006 evidence for the bounded opt-in candidate only.
+It does not register the Bubblewrap production backend, change Landlock as the
+canonical default, close M003's linked-worktree/common-dir, concurrent-rename,
+toolchain/rustup, LSP/PTY, startup-time, descriptor-inheritance, or broader
+compatibility gates, or unblock downstream Git enforcement.
+
 Registry disposition: C006 is closed as a bounded negative qualification;
 M003 remains blocked, and nothing is unblocked. C007 and C008 retain their
 prior closure records unchanged.

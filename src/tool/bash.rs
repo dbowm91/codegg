@@ -990,6 +990,40 @@ mod tests {
         tool
     }
 
+    fn accepted_full_host_context() -> ToolExecutionContext {
+        let mut context =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::FullHost,
+                    None,
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "yolo",
+                    Some("policy".into()),
+                ),
+                command_preflight: None,
+            });
+        context
+    }
+
+    async fn execute_with_accepted_full_host(
+        tool: &BashTool,
+        input: serde_json::Value,
+    ) -> Result<String, ToolError> {
+        let context = accepted_full_host_context();
+        let tool = tool
+            .clone()
+            .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
+        tool.execute_inner(input, Some(&context)).await
+    }
+
     #[test]
     fn builder_defaults_match_documented_contract() {
         let tool = rooted_bash();
@@ -1388,7 +1422,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
-        let result = tool.execute(input).await.unwrap();
+        let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(
             result.contains("[exit code:"),
             "command must produce exit code in output: {}",
@@ -1411,8 +1445,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo test --help"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("active test routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
@@ -1474,8 +1507,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "cargo check"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("build routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
@@ -1491,8 +1523,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(42)'"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("python routing must not bypass the scheduler");
         assert!(
@@ -1512,8 +1543,7 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'import sys; print(sys.version)'"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("scheduler unavailability must not panic");
         let msg = error.to_string();
@@ -1534,15 +1564,14 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "rg --version"});
-        let error = tool
-            .execute(input)
+        let error = execute_with_accepted_full_host(&tool, input)
             .await
             .expect_err("search routing must not bypass the scheduler");
         assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
     #[tokio::test]
-    async fn route_mode_still_falls_back_to_observe() {
+    async fn route_mode_alias_uses_active_git_route_with_accepted_authority() {
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Active);
@@ -1550,11 +1579,11 @@ mod tests {
 
         let tool = rooted_bash().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
-        let result = tool.execute(input).await.unwrap();
+        let result = execute_with_accepted_full_host(&tool, input).await.unwrap();
         assert!(result.contains("[exit code:"));
         assert!(
-            result.contains("mode: route (fallback: observe)"),
-            "metadata must show route mode"
+            result.contains("backend: git"),
+            "deprecated route mode must use the active Git route"
         );
     }
 
