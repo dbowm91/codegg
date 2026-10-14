@@ -61,6 +61,23 @@ impl InfoDialog {
 
     /// Set trusted, already interpreted presentation lines such as the local
     /// VT screen. This accepts ratatui styles, never raw terminal escapes.
+    /// Replace the content without discarding the reader's position.
+    ///
+    /// The scroll offset is deliberately preserved and re-clamped rather than
+    /// reset. This dialog is refreshed on every completion and on every
+    /// forwarded keystroke, so a reset here means any scrolling a reader did
+    /// is silently undone by whatever arrives next — the offset the reader set
+    /// never survives to be used.
+    pub fn set_styled_content_preserving_scroll(&mut self, lines: Vec<Line<'static>>) {
+        let scroll = self.scroll;
+        self.set_styled_content(lines);
+        // No clamp here: `max_scroll` depends on the render width, which this
+        // widget cannot see, and the render pass already clamps `scroll` to
+        // the true maximum. Preserving the raw offset keeps `usize::MAX`, the
+        // "as far down as possible" sentinel, meaningful.
+        self.scroll = scroll;
+    }
+
     pub fn set_styled_content(&mut self, lines: Vec<Line<'static>>) {
         self.lines.clear();
         self.styled_lines = Some(lines);

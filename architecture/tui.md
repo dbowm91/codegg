@@ -733,6 +733,92 @@ through the TUI `CoreClient`.
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
   constants). Rapid input coalesces; rapid resize is last-wins.
+
+**The VT screen retains a bounded history, and the viewport is a controller
+concern.** `TerminalScreen::new` passes `TERMINAL_SCROLLBACK_LINES` (5,000) to
+`vt100::Parser::new`. A zero-length history is not a tuning choice: it destroys
+every row the moment it scrolls off the top, which makes scrolling, selection,
+and copying output impossible — the reader can only ever address the current
+screen, which is precisely the text that is about to scroll away. Bounded rather
+than unbounded because a terminal view is long-lived and daemon-backed.
+
+`viewport_offset` (0 = following the tail) and the Helix cursor live on
+`InteractiveTerminalView`, not on either surface, because box and panel share one
+controller. Selection is an anchor/head pair in **viewport** coordinates rather
+than absolute buffer coordinates: scrolling shifts the viewport by `delta`, so
+stored points shift by the same `delta` through `SelectionState::translate`,
+which keeps a selection on the same text while the bounded history evicts rows
+underneath it. `sync_viewport` runs at the head of every read and clamps the
+offset first — `Grid::visible_rows` computes `scrollback.len() - offset`
+unguarded, so a stale offset is a panic rather than a clamp, and
+`clear_scrollback` is exactly how one arises (it rebuilds the emulator, so it
+also resets the cursor, offset, selection, and scrub overlay; a held selection
+would otherwise silently re-point at whatever lands on those cells).
+
+**The Helix selection rules live in one coordinate-agnostic module.**
+`src/tui/helix_selection.rs` owns `SelectionState<P>` and nothing else: it does
+not know what a point *is*. The terminal instantiates `P = (u16, u16)` viewport
+cells; the editor would instantiate it with byte offsets, which is why the two
+surfaces can share the rules without sharing coordinates. Three consequences are
+load-bearing, and all three are rules rather than drawing details:
+
+- **`v` is a mode, `x` is an action.** Character selection stores a head that
+  follows the cursor, so a bare movement extends it. Line selection pins its
+  head at arm time, so a bare movement only relocates the cursor and disarms
+  growth. That is what lets "press `x` again for the next line" and "press `x`
+  on the line I moved to" be the same key — the `growing` flag distinguishes
+  them, and comparing the cursor to the anchor cannot, because after one growth
+  the cursor is legitimately no longer on the anchor.
+- **The head is stored, not read from the cursor.** Storing it is what lets
+  line mode refuse to follow the cursor at all.
+- **Re-pinning after a scroll is a separate verb.** `translate` moves the anchor
+  and head with the content, then `repin_cursor` puts the cursor back on the
+  edge it walked off — following the head only in character mode, or walking
+  past the top edge would quietly select rows the reader never crossed.
+
+**Selection and navigation are claimed by the panel before the global map.**
+`classify_nav_key` answers `j/k/h/l` and arrows, `Ctrl+u`/`Ctrl+d`, `e`/`b`,
+`v`, `x`, `d`, `space+y`, and `C`. `d` and `C` are deliberately in that table
+rather than left to the global bindings: a focused panel is consulted *before*
+Normal-mode actions, so an unclaimed `d` would fall through to `OpenDiff`. `d`
+is the **delete operator** and `C` took over the clear it used to be, because a
+key that means "clear the whole view" and a key that means "remove what I
+selected" cannot be the same key. A bare `d` with nothing selected is a no-op
+that is still *consumed*, for exactly the precedence reason above. `C` is bound
+with and without `SHIFT` because terminals disagree on the encoding. Paging
+matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
+newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
+and `y` as separate events, so `prefix_pending` remembers the first key and any
+second key other than `y` disarms it and is then handled normally.
+
+**`d` deletes locally, and the overlay is keyed on text.** `vt100::Screen` is
+read-only — there is no API to remove a row — so deletion means the selected
+cells stop being rendered *and* stop being copyable. `Redactions` remembers each
+scrubbed range against the **row's text**, not its position, because a bounded
+scrollback has no stable row identity: output arriving shifts every row below it
+and eviction removes rows from the top, so a position-keyed overlay would drift
+onto whatever scrolls into the same cells. Resolving entries against the current
+viewport on every read keeps a deletion attached to the line it was applied to,
+so scrolling away and back does not silently un-delete it. Entries claim
+distinct rows in order, so deleting two identical lines blanks the two of them.
+The overlay is bounded (`MAX_TERMINAL_REDACTIONS`), and `clear_scrollback` drops
+it: the text it was keyed on is gone, and carrying it forward would hide
+whichever new output reuses that wording.
+
+The verbs live on the controller and are applied through `apply_nav`, which
+returns `ClearRequested` rather than clearing: only the command layer can issue
+the daemon operation, so a key press can never clear a view the user is not
+looking at. Esc drops a selection before it leaves either surface.
+
+**A docked terminal matches the PTY to the column.** `terminal_viewport_size`
+derives the initial size from the *outer* terminal, which is far wider than a
+side panel; without a resize the program wraps to columns nobody can see and the
+column shows the left edge of a much wider screen. The panel queues the real body
+rect through `queue_resize` (coalesced last-wins, so a drag costs one round trip)
+and the size is drained by `flush_terminal_resize`, shared with the input flush —
+the render path has no `App`, so it cannot send it itself. `queue_resize`'s typed
+error is discarded there: a panel showing an exited process must keep rendering
+rather than toast every frame.
 - **Reconnect/exit**: transport reconnect marks live views
   reconnecting with scrollback retained (`on_projection_reconnect`);
   re-attach resumes from the last cursor. Process exit renders the
@@ -955,6 +1041,57 @@ the right column comes back to whatever it was — the session panel if that was
 up, collapsed if the user had put it away. Re-docking a panel to the edge it is
 already on is a no-op rather than a self-push, or the next swap would "restore"
 a panel that never left.
+
+#### Resize mode: outward only, and the chord that arms it
+
+`Ctrl+N` arms a yazi-style resize mode. `Esc`, `Ctrl+N` again, or `Enter` leave
+it; it stays armed across repeated keys, because the gesture is "drag several
+borders in one visit" rather than "press a key, get one step". Normal mode only,
+like the panel manager — `h/j/k/l` are ordinary letters while composing, and a
+frame-level mode that could be armed mid-sentence would swallow the next four.
+
+`Ctrl+N` was `NewSession`; it is now the bare `n`, which the binding map already
+carried, so the remap costs nothing. The chord is deliberately **not** an
+`InputAction`: the frame is not a composable action, and a configurable binding
+would let it be pinned to a key a panel already owns.
+
+While armed, `h`/`j`/`k`/`l` name the focused surface's *own* border in that
+direction, and drag it **outward only**:
+
+| subject | `h` | `j` | `k` | `l` |
+|---|---|---|---|---|
+| right-docked panel | left border out → grows | frame edge | frame edge | frame edge |
+| left-docked panel | frame edge | frame edge | frame edge | right border out → grows |
+| bottom-docked panel | frame edge | frame edge | top border up → grows | frame edge |
+| main buffer (`LLM`) | left panel shrinks | bottom panel shrinks | nothing is above it | right panel shrinks |
+
+Two rules make this one rule rather than four cases. **Only shared borders
+move**: a column already owns its left edge to the frame, so a right-docked
+panel grows with `h` and *not* with `l` — the mirror of a left-docked panel
+growing with `l`. **Growth is relative**: the border belongs to both surfaces,
+so growing one shrinks the other. `resolve_resize` answers "which panel's size
+changes, and in which direction", so the same key cannot mean two things
+depending on which side the reader was standing on.
+
+The geometry is `src/tui/panel_resize.rs`, which knows nothing about `App`, and
+it is resolved **ahead of the focused panel** in `App::on_key`. Both orderings
+are forced: a focused panel consumes every key it is shown, so `h/j/k/l` would
+otherwise move the terminal cursor instead of a border; and the main buffer is
+the other half of the gesture, so `Ctrl+N` has to work with the keyboard *out*
+of a panel too. A resize key naming a frame edge is consumed and ignored rather
+than passed through — letting `l` resize on some rows and navigate on others is
+what makes a mode feel haunted.
+
+Column widths are **per edge** (`LayoutConfig::{left,right}_panel_width`,
+falling back to the shared `sidebar_width`), because "make the right column
+wider" and "make the left column wider" are different requests and one number
+can only satisfy one at a time. The bottom panel keeps `bottom_panel_ratio` as
+its *default* shape and records an exact `bottom_panel_rows` the first time its
+edge is dragged: the ratio is integer-divided against the frame height, so a
+one-point change is 0 rows on a short frame and 2 on a tall one — a key that
+appears dead for no stated reason. `TuiLayout::observe_frame` records the last
+rendered height purely so that conversion has a denominator. Sizes are
+runtime-only for this pass; only `ui.panel_placement` is persisted.
 
 `select(id)` goes through `slot.occupy`, so displacing a panel by selecting
 another one is remembered exactly as docking is. A user who walks to Chat in
@@ -2657,6 +2794,8 @@ tui/
 │   └── session.rs          # Session panel (delegates to SidebarWidget)
 ├── route.rs                # Route/RouteManager (Home, Session, Workspace, Editor)
 ├── selection.rs            # Terminal text selection over the rendered frame buffer
+├── helix_selection.rs      # Helix selection state machine (coordinate-agnostic)
+├── panel_resize.rs         # Outward-only panel resize rules + key→border geometry
 ├── theme.rs                # TUI-local Theme (ratatui projection)
 ├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
 ├── editor.rs               # M006-A editor presentation record/state

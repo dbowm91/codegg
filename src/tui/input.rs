@@ -22,7 +22,8 @@
 //! | Shift+Tab | TogglePermissionMode |
 //! | Ctrl+L | SelectModel |
 //! | Ctrl+K | ClearSession |
-//! | Ctrl+N | NewSession |
+//! | n | NewSession (Normal only) |
+//! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTodoList |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
@@ -637,10 +638,19 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('k')),
         InputAction::ClearSession,
     );
-    map.insert(
-        (KeyModifiers::CONTROL, KeyCode::Char('n')),
-        InputAction::NewSession,
-    );
+    // `Ctrl+N` is deliberately NOT bound to NewSession. New session is the bare
+    // `n` below — bare, so Insert mode still types the letter — and `Ctrl+N`
+    // is the chord that arms yazi-style panel resize mode
+    // (`commands::panels::handle_panel_resize_key`). A chord is the right
+    // spelling for a modal frame gesture: it cannot collide with a panel verb
+    // the way a bare letter would, and it stays out of the composer.
+    //
+    // It is deliberately absent from `default_help_entries` too, and that list
+    // is *auditable* — `documented_keys_resolve_in_the_active_map` asserts
+    // every advertised key resolves to an `InputAction`. Resize mode is a frame
+    // gesture rather than a composable action, so it names itself on the
+    // composer line when armed (and in `docs/tui.md`) instead of pretending to
+    // be a binding.
     // Ctrl+T expands the todo list above the input; the sidebar moved to
     // Ctrl+B so both panels stay independently reachable.
     map.insert(
@@ -1116,12 +1126,6 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+K",
             action: "Clear session",
-            condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Insert,
-            key: "Ctrl+N",
-            action: "New session",
             condition: None,
         },
         HelpEntry {

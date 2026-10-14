@@ -3349,6 +3349,19 @@ impl App {
         let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
             && self.ui_state.input_mode == InputMode::Normal;
+        // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
+        // ahead of the focused panel, and ahead of the binding map. It has to
+        // be ahead of the panel because `h/j/k/l` are the panel's own cursor
+        // movements, and ahead of the map because `Ctrl+N` is deliberately no
+        // longer an `InputAction`: the frame is not a composable action, and
+        // giving it a configurable binding would let someone bind it to a key
+        // a panel already owns. Normal mode only, so a chord typed into the
+        // composer stays text.
+        if self.ui_state.input_mode == InputMode::Normal
+            && crate::tui::commands::panels::handle_panel_resize_key(self, key)
+        {
+            return;
+        }
         // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
         // panel, because a panel that swallows it would trap the user in
         // whichever panel they last selected — the only key that leaves is
@@ -11600,6 +11613,20 @@ impl App {
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
     pub fn composer_hint_text(&self) -> Option<String> {
+        // Resize mode owns the frame, so it outranks every surface hint: the
+        // keys that just changed meaning are `h/j/k/l`, and a reader who sees
+        // "j/k scroll" while resize mode is armed has been told something
+        // false. A modal layer has to name itself on the line that exists to
+        // describe the modal layer.
+        if self.panel_host.is_resizing() {
+            let subject = match self.panel_host.resize_subject() {
+                crate::tui::panel_resize::ResizeSubject::Main => "LLM",
+                crate::tui::panel_resize::ResizeSubject::Panel(placement) => placement.label(),
+            };
+            return Some(format!(
+                "RESIZE {subject} · h/j/k/l drag its own borders out · Esc/Enter exit"
+            ));
+        }
         if let Some(seed) = self.prompt_state.chat_seed.as_ref() {
             return Some(format!(
                 "CHAT · {}",
