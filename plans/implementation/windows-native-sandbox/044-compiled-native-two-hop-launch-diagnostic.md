@@ -3,9 +3,9 @@
 Status: implemented (negative bounded native feasibility) — hosted run 38468468249 at `76e9e9c9`: topology fully verified, static native child alive 30 s without entry (STILL_ACTIVE); no read-denial claimed (closure `plans/closure/windows-native-sandbox/044-status.md`)
 Class: infrastructure (test-only candidate)
 Baseline: main a7b116af3243623099b80cc200b843a36b0ce3d2 (refresh exact SHA before implementation).
-Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (ADR-0027 successor addendum).
-Authority: ADR-0004, ADR-0016, ADR-0027 (bounded test-only), proposed ADR-0028 is NOT product authorization.
-Dependencies: C032 historical negative; ADR-0027 bounded test-only; C042 interface/soft
+Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (ADR-0029 successor addendum).
+Authority: ADR-0004, ADR-0016, ADR-0029 (bounded test-only), proposed ADR-0030 is NOT product authorization.
+Dependencies: C032 historical negative; ADR-0029 bounded test-only; C042 interface/soft
 Closure target: plans/closure/windows-native-sandbox/044-status.md.
 General verification: git diff --check; python3 scripts/check_adr_integrity.py; python3 scripts/check_sandbox_contract.py; python3 scripts/check_execution_ownership.py; bash scripts/verify.sh quick. Use exact-SHA native Windows runs for all platform/security claims and record unrun limitations.
 
@@ -22,4 +22,4 @@ D. After native helper entry proves positive, run PowerShell/cmd, Git, native to
 
 ## Acceptance / stop
 
-Strict-positive test-only requires same-file ordinary-read allowed/restricted-read denied with actual token proof, developer-tool compatibility, independent allowed stage writes, no host descriptor drift and deterministic Job cleanup. Alternative closure may demonstrate **write-only** confinement but must not be promoted to existing strict ReadOnly/WorkspaceWrite; ADR-0028 acceptance would still be required to discuss a weaker explicit profile. One bounded helper startup correction permitted, then issue honest positive/negative/blocked closure. Never install persistent sandbox account or enable production Required.
+Strict-positive test-only requires same-file ordinary-read allowed/restricted-read denied with actual token proof, developer-tool compatibility, independent allowed stage writes, no host descriptor drift and deterministic Job cleanup. Alternative closure may demonstrate **write-only** confinement but must not be promoted to existing strict ReadOnly/WorkspaceWrite; ADR-0030 acceptance would still be required to discuss a weaker explicit profile. One bounded helper startup correction permitted, then issue honest positive/negative/blocked closure. Never install persistent sandbox account or enable production Required.
