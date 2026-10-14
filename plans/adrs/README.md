@@ -22,18 +22,21 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
-**Active identity collision warning (2026-10-13):** combined `main` currently contains
-two active ADR-0027 records (Windows bounded successor and proposed Linux
-composable execution) and two active ADR-0028 records (proposed Windows broad-read
-and accepted command authority). The earlier assertion of uniqueness is false.
-Do not disable the existing ADR integrity guard to make this pass.
+## Linux/command identity migration (2026-10-14)
+
+C004 archived the exact pre-migration Linux and command ADR records under
+`plans/archive/linux-command-adr-id-aliases/` and recorded source Git blob IDs,
+SHA-256 digests, and the identity mapping in
+`plans/archive/linux-command-adr-id-aliases/migration.json`. Linux execution
+isolation is ADR-0031 (proposed); command syntax authority is ADR-0032
+(accepted, unchanged). The concurrent Windows identity migration reserves
+ADR-0029/ADR-0030; Windows ADR-0027 and ADR-0028 retain their separate meanings
+in this branch. A number-only reference must be interpreted by subsystem and
+path. Renumbering did not accept Linux backend design or alter Windows status.
 
 `plans/implementation/linux-execution-isolation/012-adr-identity-collision-and-admission-gate-corrective.md`
-is ready and proposes an identity-only migration of Linux/command decisions to
-unused ADR-0029/0030 after rechecking current reservations, with historical
-archives and exact scoped reference updates. **This plan has not executed the
-rename.** Existing decisions and statuses remain unchanged; no Linux backend,
-Windows production sandbox, or broad-read profile is admitted by this note.
+records the migration contract and
+`plans/closure/linux-execution-isolation/012-status.md` records its evidence.
 
 ## Status lifecycle
 
@@ -142,6 +145,8 @@ The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-da
 
 ## Windows successor decisions after PR #111 (2026-10-13)
 
-- ADR-0027 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
-- ADR-0028 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- ADR-0027 — accepted for **bounded Windows research and test-only successor work** only; no production backend is selected.
+- ADR-0028 — **proposed** Windows broad-read profile; no production authorization.
+- ADR-0031 — **proposed** composable Linux execution isolation; no production backend authorization.
+- ADR-0032 — **accepted** command syntax is advisory and execution authority is enforced; identity migration did not reaccept or alter this decision.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

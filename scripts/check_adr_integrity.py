@@ -67,23 +67,44 @@ def self_test() -> list[str]:
             "ADR-0024-windows-two-stage-native-launch-and-mxc-requalification.md",
             "ADR-0025-windows-mxc-helper-diagnostic-corrective.md",
             "ADR-0026-windows-mxc-capture-and-handle-semantics-review.md",
+            "ADR-0027-windows-sandbox-capability-successors.md",
+            "ADR-0028-windows-broad-read-compatibility-profile.md",
+            "ADR-0029-windows-sandbox-capability-successors-renumbered.md",
+            "ADR-0030-windows-broad-read-profile-renumbered.md",
+            "ADR-0031-composable-linux-execution-isolation.md",
+            "ADR-0032-command-syntax-and-execution-authority.md",
         ]
         for name in merged_names:
             (adrs / name).write_text(f"# {name}\n", encoding="utf-8")
         (root / "plans/active.md").write_text(
-            "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md`.\n",
+            "See `plans/adrs/ADR-0021-native-editor-completion-read-and-local-edit.md` and "
+            "`plans/adrs/ADR-0031-composable-linux-execution-isolation.md`.\n",
             encoding="utf-8",
         )
         (root / "plans/archive/windows-adr-id-aliases").mkdir(parents=True)
         (root / "plans/archive/windows-adr-id-aliases/ADR-0001-alias.md").write_text(
             "Historical `plans/adrs/ADR-9999-not-an-active-link.md`.\n", encoding="utf-8"
         )
+        (root / "plans/archive/linux-command-adr-id-aliases/ADR-0027-alias.md").parent.mkdir(
+            parents=True, exist_ok=True
+        )
+        (root / "plans/archive/linux-command-adr-id-aliases/ADR-0027-alias.md").write_text(
+            "Archived alias; see migration manifest.\n", encoding="utf-8"
+        )
         if check(root):
             failures.append("valid active ADR plus archived alias should pass")
+        active, active_errors = active_adrs(root)
+        expected = {"0027", "0028", "0029", "0030", "0031", "0032"}
+        if active_errors or not expected.issubset(active):
+            failures.append("merged Windows/Linux/command ADR fixture should have unique identities")
         (adrs / "ADR-0023-second.md").write_text("# duplicate\n", encoding="utf-8")
         if not any("duplicate active ADR-0023" in error for error in check(root)):
             failures.append("duplicate active ADR number should fail")
         (adrs / "ADR-0023-second.md").unlink()
+        (adrs / "ADR-0032-second.md").write_text("# duplicate command ID\n", encoding="utf-8")
+        if not any("duplicate active ADR-0032" in error for error in check(root)):
+            failures.append("duplicate command ADR identity should fail")
+        (adrs / "ADR-0032-second.md").unlink()
         (root / "plans/active.md").write_text(
             "See `plans/adrs/ADR-0027-missing.md`.\n", encoding="utf-8"
         )
