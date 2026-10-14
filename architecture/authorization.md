@@ -86,6 +86,13 @@ in-memory daemons without a pool decide under the same broad policy.
   principal/workspace/repo lineage, and the persisted CAS lease
   (`claim_owner` = daemon service identity, never a user principal) confers
   no read rights — cross-session notification stays forbidden.
+- `continuation-grant` (C002) — idle resume never follows a model-supplied
+  flag alone. `ContinuationService::authorize` requires host-resolved
+  job/session ids; dispatch re-validates session/principal/workspace lineage,
+  expiry, budgets, resumable terminal status, owner-idle, and provider
+  availability, then CAS-claims exactly one `(notice, grant)` intent. An
+  observer with a guessed job/watch id holds no grant and stays notify-only;
+  revocation/expiry/budget exhaustion suppress before invocation.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed

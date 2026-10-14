@@ -58,7 +58,7 @@ impl Tool for JobTool {
     }
 
     fn description(&self) -> &str {
-        "Inspect and control your own background jobs. Actions: status|wait|cancel|output. wait timeout means still-running, not failure; wait is a bounded manual observation, not a wakeup. Only jobs owned by your session are visible; other sessions' jobs are denied without data leakage. Do not poll in a loop; background completion arrives as one terminal notification automatically. A resume_owner wait additionally authorizes exactly one bounded continuation at the next safe turn boundary; without that opt-in, completion is notify-only and never spends model tokens by itself."
+        "Inspect and control your own background jobs. Actions: status|wait|cancel|output. wait timeout means still-running, not failure; wait is a bounded manual observation, not a wakeup. Only jobs owned by your session are visible; other sessions' jobs are denied without data leakage. Do not poll in a loop; background completion arrives as one terminal notification automatically. A resume_owner wait records a next-turn continuation marker and, only with an explicit host-trusted continuation grant, may start one bounded idle owner turn; without that opt-in, completion is notify-only and never spends model tokens by itself."
     }
 
     fn parameters(&self) -> serde_json::Value {

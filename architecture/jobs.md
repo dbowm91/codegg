@@ -431,16 +431,35 @@ Background submission accepts `on_complete: notify_only|resume_owner`
 lease (`job_continuation_lease`, migration v74) bound to the host-resolved
 session/turn/principal/workspace ancestry with a bounded TTL (default 30m,
 max 4h) and exactly one wake. Delivery consumes the lease once per logical
-terminal at the next safe, user-authorized turn boundary — never an
-autonomous idle wake, never a second continuation under duplicates or
-concurrent frontends. Cancel/expiry/revocation/foreign-owner suppresses the
-lease before any invocation. Delivery states (`Pending →
-SessionEventCommitted → AvailableToOwner/ResumeQueued →
-Consumed/Expired/Suppressed`) are queryable; crash at each boundary
-reconstructs without duplicate inference. Ended turns spend no tokens; the
-durable notice remains visible on reconnect/restart/next turn. See
-`architecture/agent.md` "Background job continuation" and
+terminal at the next safe, user-authorized turn boundary — never a second
+continuation under duplicates or concurrent frontends. Cancel/expiry/
+revocation/foreign-owner suppresses the lease before any invocation.
+Delivery states (`Pending → SessionEventCommitted →
+AvailableToOwner/ResumeQueued → Consumed/Expired/Suppressed`) are queryable;
+crash at each boundary reconstructs without duplicate inference. Ended turns
+spend no tokens; the durable notice remains visible on reconnect/restart/
+next turn. See `architecture/agent.md` "Background job continuation" and
 `architecture/projection.md` "Background job visibility".
+
+### Explicit idle owner continuation (C002)
+
+C002 adds the opt-in idle leg on top of M003 without changing its next-turn
+marker: a host-trusted `ContinuationGrant` (`continuation_grant`, migration
+v77) authorizes at most one bounded owner turn for one background wait
+(`notice_job_id` = scheduler `job_id` or `ciwatch:<watch_id>`), bound to
+principal/session/workspace/origin-turn, allowed model/connection, budgets,
+expiry, and max continuations (default 1). A model setting `resume_owner`
+without a grant stays notify-only for idle (explicit denial); legacy leases
+without a grant never auto-resume. Dispatch is exactly-once per
+`(notice, grant)` via `idle_continuation` intents (`Pending → Eligible →
+Claimed → TurnAccepted → Started → Completed`, plus
+`Suppressed/Expired/NeedsAttention`, `UNIQUE(notice_id, grant_id)`):
+the accepted turn id + cause `completed_background_job` persist before
+provider dispatch, and ambiguity after provider submission becomes
+`needs_attention` (never blind replay). Only host-authored compact
+status/result refs enter authorized prompt context. Grant/queued/resumed/
+declined/expired status is visible through existing session/attention
+projections (no TUI polling); user cancel always wins before invocation.
 
 ### Boundary Enforcement
 

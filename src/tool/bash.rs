@@ -350,7 +350,7 @@ impl Tool for BashTool {
                 "on_complete": {
                     "type": "string",
                     "enum": ["notify_only", "resume_owner"],
-                    "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally authorizes exactly one bounded continuation for this wait at the next safe turn boundary; user cancel, expiry, or revocation wins before any invocation. Applies to background only."
+                    "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally records a next-turn continuation marker and, only with an explicit host-trusted continuation grant, may start one bounded idle owner turn; without a grant idle dispatch stays notify-only. User cancel, expiry, or revocation wins before any invocation. Applies to background only."
                 }
             },
             "required": ["command"]

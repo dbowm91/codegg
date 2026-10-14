@@ -733,14 +733,24 @@ concurrent frontends, within TTL and wake budget), `suppress`
 session/turn/principal/workspace ancestry plus the authorized mode; user
 cancel, expiry, revocation, or owner mismatch suppresses it before any
 invocation. No recursive `AgentLoop::run()` from scheduler callbacks and no
-competing inference queue: consumption only authorizes one bounded
-continuation at the next user-authorized turn; the daemon never auto-spends
-inference on an idle turn. Delivery states
+competing inference queue: M003 consumption only authorizes one bounded
+continuation at the next user-authorized turn; without C002 it never
+auto-spends inference on an idle turn. Delivery states
 `Pending → SessionEventCommitted → AvailableToOwner/ResumeQueued →
 Consumed/Expired/Suppressed` are queryable via
 `JobNotificationService::delivery_state`. Crash at persist/append/ack/claim
 boundaries reconstructs without duplicate inference (confirm-then-mark,
 mark-then-consume, consume-then-ack are separate durable steps).
+
+C002 adds the opt-in idle leg without changing the marker above: a
+host-trusted `ContinuationGrant` (migration v77) plus an exactly-once
+`idle_continuation` intent (`UNIQUE(notice_id, grant_id)`) authorizes at most
+one bounded owner turn while idle. A model `resume_owner` without a grant
+stays notify-only for idle (legacy leases never auto-resume); the accepted
+turn id + cause persist before dispatch, and ambiguity after provider start
+becomes `needs_attention` (never replayed). Only host-authored compact
+refs enter authorized context; `on_complete` copy in tool descriptions names
+the grant requirement.
 
 ## Invariants & Gotchas
 

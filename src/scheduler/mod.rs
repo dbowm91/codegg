@@ -37,6 +37,7 @@ pub mod events;
 pub mod executor;
 pub mod executors;
 pub mod fair_queue;
+pub mod idle_continuation;
 pub mod job_complete_audit;
 pub mod job_notifications;
 pub mod permit;

@@ -1,7 +1,7 @@
 # Async Background Jobs Corrective C002 — Explicitly Authorized Idle Owner Continuation
 
-Status: ready for handoff
-Baseline: `21b35c79abca665f353b1a744073c6a17f7a9c6e` (C001 closed; revalidate latest corrective head before editing).
+Status: implemented
+Baseline: `21b35c79abca665f353b1a744073c6a17f7a9c6e` (C001 closed; corrective head `9978e9b5` at handoff).
 Roadmap: `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md`
 Predecessor milestone/closure: M003 `plans/closure/async-background-jobs/003-status.md`; consumes M001/2/4 and C001 daemon completion publisher.
 Class: capability + security invariant. Hard dependency C001; interface dependency canonical `CoreDaemon` turn runtime/session request and principal authorization contract.

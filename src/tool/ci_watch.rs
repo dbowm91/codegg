@@ -88,7 +88,7 @@ impl Tool for CiWatchTool {
                 "on_complete": {
                     "type": "string",
                     "enum": ["notify_only", "resume_owner"],
-                    "description": "Background completion disposition for create (default notify_only)."
+                    "description": "Background completion disposition for create (default notify_only; notify_only never spends model tokens. resume_owner additionally requires an explicit host-trusted continuation grant and may autonomously spend bounded tokens once; without a grant it is notify-only)."
                 }
             },
             "required": ["action"]
