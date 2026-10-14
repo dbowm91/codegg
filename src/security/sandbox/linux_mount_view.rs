@@ -228,6 +228,33 @@ pub fn compile(
             access: MountAccess::ReadOnly,
         });
     }
+    // Several Linux toolchains are exposed through symlinks such as
+    // /lib64 -> /usr/lib64. Canonical grant paths alone omit those names,
+    // which can make an otherwise visible ELF binary fail to find its
+    // interpreter. Recreate only aliases whose resolved source is already
+    // covered by an explicit read-only runtime grant.
+    for alias in ["/bin", "/sbin", "/lib", "/lib64"] {
+        let alias = PathBuf::from(alias);
+        let is_symlink = match std::fs::symlink_metadata(&alias) {
+            Ok(metadata) => metadata.file_type().is_symlink(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(format!("cannot inspect runtime path alias: {error}")),
+        };
+        if !is_symlink {
+            continue;
+        }
+        let source = canonical_existing(&alias)?;
+        if !read_roots.iter().any(|root| source.starts_with(root)) {
+            continue;
+        }
+        if !mounts.iter().any(|mount| mount.destination == alias) {
+            mounts.push(BindMount {
+                source,
+                destination: alias,
+                access: MountAccess::ReadOnly,
+            });
+        }
+    }
     mounts.sort_by(|left, right| {
         left.destination
             .components()
@@ -410,10 +437,25 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
     .filter(|path| Path::new(path).exists())
     .map(|path| PathBuf::from(path))
     .collect::<BTreeSet<_>>();
+    let runtime_aliases = ["/bin", "/sbin", "/lib", "/lib64"]
+        .iter()
+        .filter_map(|path| {
+            let alias = Path::new(path);
+            let is_symlink = std::fs::symlink_metadata(alias)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
+            let source = alias.canonicalize().ok()?;
+            (is_symlink && reads.iter().any(|root| source.starts_with(root)))
+                .then(|| alias.to_path_buf())
+        })
+        .collect::<BTreeSet<_>>();
 
     let scope = vec![
         "fresh mount root; no host-root bind; host /proc, /run, and /sys omitted".into(),
         format!("read-only grant roots: {}", join_paths(&reads)),
+        format!(
+            "runtime compatibility aliases: {}",
+            join_paths(&runtime_aliases)
+        ),
         format!("writable grant roots: {}", join_paths(&writes)),
         format!("read-only Git metadata roots: {}", join_paths(&protected)),
         format!("hidden denied descendants: {}", join_paths(&denied)),
