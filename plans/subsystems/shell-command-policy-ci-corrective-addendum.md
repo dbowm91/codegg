@@ -1,6 +1,6 @@
 # Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
 
-Status: **C001 closed; C002 active** (stale hard-deny test reconciliation under the accepted advisory contract; independent of Windows MXC admission).
+Status: **C001 closed; C002 closed (scoped)** (stale hard-deny test reconciliation under the accepted advisory contract; independent of Windows MXC admission).
 Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
 Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
 

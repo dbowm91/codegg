@@ -323,6 +323,15 @@ cross-workstream fixes that were blocking every hosted run, then re-qualified.
   cluster sits in the Linux Git M001 blocked area; the identity-audit
   trajectory needs command-auth triage. These need owner decisions, not a
   C003 improvisation.
+- Follow-up (successor corrective C002, closed scoped): the shell-policy
+  family above is now green via
+  `plans/closure/shell-command-policy-ci-corrective/002-status.md`
+  (unsafe destructive invocations removed, explicit-deny markers,
+  current-vocabulary escalation table, managed-execution deny/ceiling
+  tests; hosted CI `38614071155` green through Clippy with no shell-policy
+  failure). Remaining workspace-red families for C003 strict closure are
+  git/worktree (Linux Git owners), the identity-audit trajectory
+  (command-auth owners), and the known poolless gap.
 - Disposition: C003 REMAINS conditionally closed. Per instruction, the merge
   to `main` is withheld until the evidence above turns green.
 - Unblock audit (same commit): nothing depends on this C003; blocked set
