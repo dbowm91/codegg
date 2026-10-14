@@ -30,11 +30,15 @@ build and namespace setup, then exposed that `/etc/gai.conf` is a directory on
 this runner. Run `38531874263` showed that the compiler also created file mount
 destinations as directories, so Bubblewrap still failed at that path. The
 compiler now binds allowlisted `/etc` entries only when they are regular files
-and creates only parent directories for file mounts. Exact-head run
-`38532957219` is pending. Earlier attempts exposed and corrected a Git fixture
-assumption about the hooks directory, inaccessible global deny-path probing,
-status-fd inheritance, and status/ack handling needed to report Bubblewrap's
-actual setup error.
+and creates only parent directories for file mounts. Run `38532957219` passed
+mount setup but the target's ELF loader could not resolve `/lib64`; the
+canonical runtime grants had omitted the host's `/lib64 -> /usr/lib64`
+compatibility alias. The compiler now recreates standard `/bin`, `/sbin`,
+`/lib`, and `/lib64` aliases only when their resolved sources are inside an
+already-granted read-only runtime root. Exact-head run `38534083804` is pending.
+Earlier attempts exposed and corrected a Git fixture assumption about the
+hooks directory, inaccessible global deny-path probing, status-fd inheritance,
+and status/ack handling needed to report Bubblewrap's actual setup error.
 
 C006 remains unqualified: the hosted test is only the first positive/negative
 mount handoff slice. Native adversarial coverage, linked worktrees, race and
