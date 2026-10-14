@@ -434,7 +434,7 @@ pub fn enforcement_scope(spec: &SandboxLaunchSpec) -> Result<Vec<String>, String
         "/etc/pki/tls/certs/ca-bundle.crt",
     ]
     .iter()
-    .filter(|path| Path::new(path).exists())
+    .filter(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
     .map(|path| PathBuf::from(path))
     .collect::<BTreeSet<_>>();
     let runtime_aliases = ["/bin", "/sbin", "/lib", "/lib64"]
