@@ -1210,13 +1210,14 @@ mod tests {
         };
         use windows_sys::Win32::Security::{
             AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, GetTokenInformation,
-            OpenProcessToken, TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-            DISABLE_MAX_PRIVILEGE, OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES,
-            SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
+            TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
+            OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE,
+            TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
         };
         use windows_sys::Win32::System::Threading::{
-            CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, CREATE_NO_WINDOW,
-            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+            CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+            STARTUPINFOW,
         };
 
         let temp = tempfile::tempdir()?;
@@ -1278,10 +1279,10 @@ mod tests {
                 3,
                 21,
                 std::process::id(),
-                (std::time::SystemTime::now()
+                std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .subsec_nanos()),
+                    .subsec_nanos(),
                 0,
                 0,
                 0,
@@ -1400,7 +1401,7 @@ mod tests {
             OsString::from("managed_process::windows::tests::write_restricted_child_probe"),
             OsString::from("--nocapture"),
         ];
-        let mut command_line = crate::managed_process::windows_command_line(&executable, &args)?;
+        let mut command_line = super::windows_command_line(&executable, &args)?;
         let mut environment = vec![
             (OsString::from("CODEGG_C050_CHILD"), OsString::from("1")),
             (
@@ -1444,6 +1445,7 @@ mod tests {
         let mut process_info = PROCESS_INFORMATION::default();
         let system_root = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"));
         let cwd = super::wide_os(system_root.join("System32").as_os_str());
+        let mut job = WindowsJob::create()?;
         if unsafe {
             CreateProcessWithTokenW(
                 child_token.as_raw_handle() as _,
@@ -1462,12 +1464,24 @@ mod tests {
         }
         let process = unsafe { OwnedHandle::from_raw_handle(process_info.hProcess as RawHandle) };
         let thread = unsafe { OwnedHandle::from_raw_handle(process_info.hThread as RawHandle) };
-        let mut job = WindowsJob::create()?;
-        job.assign_raw_and_resume(
+        if let Err(error) = job.assign_raw_and_resume(
             process.as_raw_handle() as _,
             thread.as_raw_handle() as _,
             |handle| verify_restricted_token(handle, restricting_sid.0),
-        )?;
+        ) {
+            unsafe {
+                let _ = TerminateProcess(process.as_raw_handle() as _, 1);
+            }
+            if unsafe { WaitForSingleObject(process.as_raw_handle() as _, 5_000) }
+                != windows_sys::Win32::Foundation::WAIT_OBJECT_0
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "WRITE_RESTRICTED pre-resume child could not be reaped",
+                ));
+            }
+            return Err(error);
+        }
         let wait = unsafe { WaitForSingleObject(process.as_raw_handle() as _, 30_000) };
         if wait == WAIT_TIMEOUT {
             job.terminate(1)?;
@@ -1522,13 +1536,14 @@ mod tests {
         };
         use windows_sys::Win32::Security::{
             AllocateAndInitializeSid, CreateRestrictedToken, FreeSid, GetTokenInformation,
-            OpenProcessToken, TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-            OBJECT_INHERIT_ACE, SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE,
-            TOKEN_QUERY, TOKEN_USER, WRITE_RESTRICTED,
+            TokenUser, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+            SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER,
+            WRITE_RESTRICTED,
         };
         use windows_sys::Win32::System::Threading::{
-            CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, TerminateProcess,
-            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+            CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken,
+            TerminateProcess, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION,
+            STARTUPINFOW,
         };
 
         let temp = tempfile::tempdir()?;
@@ -1685,7 +1700,7 @@ mod tests {
             OsString::from("managed_process::windows::tests::write_restricted_child_probe"),
             OsString::from("--nocapture"),
         ];
-        let command_line = crate::managed_process::windows_command_line(&executable, &args)?;
+        let command_line = super::windows_command_line(&executable, &args)?;
         let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
         let mut environment = vec![
             (OsString::from("CODEGG_C050_CHILD"), OsString::from("1")),
@@ -1721,7 +1736,7 @@ mod tests {
             environment_block.push(0);
         }
         environment_block.push(0);
-        let cwd = super::wide_os(PathBuf::from(system_root).join("System32").as_os_str());
+        let cwd = super::wide_os(stage.as_os_str());
 
         // C044 used CreateRestrictedToken flags=0. Change only this flag for
         // the second child; both attempts share the same host, source token,

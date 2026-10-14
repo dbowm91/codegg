@@ -1,6 +1,6 @@
 # Windows Native Sandbox C051 — Disposable-stage toolchain and promotion-contract feasibility
 
-Status: blocked — C050 must close with a real restricted-child/write-denial positive before stage experiments
+Status: closed blocked — C050 strict-positive qualification gate was not met; see `plans/closure/windows-native-sandbox/051-status.md`
 Class: infrastructure (test-only integration, not production staging)
 Baseline: main aa6cbcb1e154a2676325fb654c5b68dc068edfc3 (refresh at execution).
 Source roadmap: plans/subsystems/windows-native-sandbox-roadmap.md (post-C043/C044 successor).

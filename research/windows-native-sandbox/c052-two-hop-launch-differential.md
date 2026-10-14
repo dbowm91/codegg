@@ -42,21 +42,27 @@ result was produced. This remains `blocked-before-entry`, not a read denial.
 The pinned sources show multiple launch-context differences at once. None of
 the captured C044 evidence identifies a single changed variable as the cause,
 and the existing C044 run is not a same-host paired control for either pinned
-upstream implementation. The bounded differential therefore did not select or
-run a corrective variant. No broad-read, strict-read, tool compatibility,
-network, or production claim follows. A future experiment needs one
-consented disposable Windows job that runs both variants under the same
-account, host image and marker binary, after selecting a falsifiable single
-variable and instrumenting token groups, desktop, handles, mitigation policy
-and process start state.
+upstream implementation. C044's `CreateRestrictedToken` flags (`0`) and the
+probe image DACL make one variable falsifiable: change only the flags to
+`WRITE_RESTRICTED`, so reads use the ordinary account check while writes also
+require the synthetic restricting SID. The C052 test runs those two flag
+variants on one disposable Windows host, with the same source token, account,
+test executable, environment, cwd, stage ACL, Job-before-resume path and token
+SID verification. It uses `CreateProcessAsUserW` and no inherited handles in
+both variants. The exact hosted result is recorded in the C052 closure.
 
-C044's fixture makes one candidate especially concrete: the probe image's
+This is a token-flag differential using the hosted runner account, not a
+reproduction under C044's separately provisioned standard account. Its marker
+is emitted by the Rust test harness entry function, not by a raw/no-CRT first
+instruction. Those limits are retained in the result; no strict-read,
+toolchain, network, or production claim follows.
+
+C044's fixture makes the candidate especially concrete: the probe image's
 explicit file DACL grants read/execute to the temporary account but not the
 restricting SID, while the token is created with flags `0`. A paired
-`WRITE_RESTRICTED` run would preserve the restricting SID's write check while
-allowing normal-token reads needed for image/runtime loading. This is a
-falsifiable single-variable hypothesis; the paired launch has not been run in
-this closure, so it remains unverified and does not explain the C044 result.
+`WRITE_RESTRICTED` run preserves the restricting SID's write check while
+allowing normal-token reads needed for image/runtime loading. Whether it
+explains C044 depends on the paired output and is stated only in the closure.
 
 ## Source references
 
