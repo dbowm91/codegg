@@ -14,7 +14,7 @@
 //!
 //! Responsibility owners:
 //!
-//! - policy/classification glue: [`policy`] (blocked patterns, allowlist,
+//! - policy/classification glue: [`policy`] (advisory risk patterns, allowlist,
 //!   child-workspace ceiling, kill switches, intent-family adapters).
 //! - supervised execution: [`process`] (raw-shell spawn, native/managed
 //!   dispatch, scheduler submission, [`process::DispatchOutcome`]).
@@ -69,6 +69,7 @@ pub struct BashTool {
     pub(crate) deny_all: bool,
     pub(crate) allowlist: Option<HashSet<&'static str>>,
     pub(crate) landlock_sandbox: Option<SandboxConfig>,
+    configured_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
     pub(crate) preflight: Option<Arc<PreflightService>>,
     pub(crate) command_intent_config: Option<CommandIntentConfig>,
     pub(crate) run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
@@ -91,6 +92,7 @@ impl BashTool {
             deny_all: false,
             allowlist: None,
             landlock_sandbox: None,
+            configured_sandbox_profile: None,
             preflight: None,
             command_intent_config: None,
             run_store: None,
@@ -177,6 +179,14 @@ impl BashTool {
         self
     }
 
+    pub(crate) fn with_configured_sandbox_profile(
+        mut self,
+        profile: codegg_core::approval::SandboxProfile,
+    ) -> Self {
+        self.configured_sandbox_profile = Some(profile);
+        self
+    }
+
     pub fn with_preflight(mut self, service: PreflightService) -> Self {
         self.preflight = Some(Arc::new(service));
         self
@@ -226,6 +236,7 @@ impl BashTool {
                 self.landlock_sandbox = None;
             }
         }
+        self.configured_sandbox_profile = Some(profile);
         self
     }
 
@@ -274,6 +285,10 @@ impl BashTool {
         family: &str,
         digest_hex: &str,
         outcome: &str,
+        route: Option<&str>,
+        filesystem_enforcement: Option<&str>,
+        risk_level: Option<&str>,
+        result_metadata: Option<crate::live_execution_audit::CommandExecutionResultMetadata>,
     ) {
         let Some(ctx) = audit_ctx else { return };
         let Some((audit, emitter)) = ctx.live_audit_hook() else {
@@ -284,11 +299,59 @@ impl BashTool {
             digest_hex,
             outcome,
         );
-        crate::live_execution_audit::emit_command_execute(
-            emitter, audit, digest_hex, family, outcome, &scope,
+        crate::live_execution_audit::emit_command_execute_with_result(
+            emitter,
+            audit,
+            digest_hex,
+            family,
+            outcome,
+            &scope,
+            ctx.execution_authorization.as_ref(),
+            route,
+            filesystem_enforcement,
+            ctx.execution_authorization.as_ref().map(|_| "unrestricted"),
+            risk_level,
+            result_metadata,
         )
         .await;
     }
+}
+
+fn sandbox_outcome_label(
+    outcome: &crate::managed_process::SandboxExecutionOutcome,
+    authorization: Option<&crate::tool::authorization::ExecutionAuthorizationContext>,
+) -> String {
+    match outcome {
+        crate::managed_process::SandboxExecutionOutcome::Disabled
+            if authorization.is_some_and(|auth| auth.snapshot.sandbox_profile().is_full_host()) =>
+        {
+            "full_host".into()
+        }
+        crate::managed_process::SandboxExecutionOutcome::Disabled => "disabled".into(),
+        crate::managed_process::SandboxExecutionOutcome::Enforced { backend, abi, .. } => {
+            format!(
+                "enforced:{backend}:abi={}",
+                abi.map_or_else(|| "none".into(), |v| v.to_string())
+            )
+        }
+        #[cfg(all(windows, feature = "windows-sandbox-test-support"))]
+        crate::managed_process::SandboxExecutionOutcome::TestOnlyAppContainer { .. } => {
+            "test_only_appcontainer_no_filesystem_claim".into()
+        }
+    }
+}
+
+fn intent_risk_label(
+    intent: Option<&crate::command_intent::CommandIntent>,
+) -> Option<&'static str> {
+    use crate::command_intent::RiskLevel;
+    Some(match intent?.risk.level {
+        RiskLevel::Safe => "safe",
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+        RiskLevel::Critical => "critical",
+    })
 }
 
 impl Default for BashTool {
@@ -384,10 +447,40 @@ impl BashTool {
             )));
         }
 
+        if let Some(authorization) = audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref())
+        {
+            let requested = authorization.snapshot.sandbox_profile();
+            if self.configured_sandbox_profile != Some(requested) {
+                return Err(ToolError::Permission(format!(
+                    "sandbox policy changed before execution: accepted {}, executor configured {:?}",
+                    requested.as_str(),
+                    self.configured_sandbox_profile.map(|profile| profile.as_str())
+                )));
+            }
+            if requested.requires_filesystem_containment()
+                && !self.sandbox_enforcement(requested).filesystem.is_enforced()
+            {
+                return Err(ToolError::Permission(format!(
+                    "required filesystem sandbox for {} is unavailable; command was not launched",
+                    requested.as_str()
+                )));
+            }
+        }
+
         let parts: Vec<&str> = command.split_whitespace().collect();
         self.check_command_security(command, &parts)?;
 
-        let preflight_warning = if let Some(ref svc) = self.preflight {
+        let preflight_warning = if let Some(authorization) =
+            audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref())
+        {
+            // The agent boundary already evaluated command preflight before
+            // approval. Reuse its bounded result; never run a second scan
+            // that could produce a contradictory decision after approval.
+            authorization
+                .command_preflight
+                .as_ref()
+                .and_then(|result| result.summary.clone())
+        } else if let Some(ref svc) = self.preflight {
             match svc.check_command(command).await {
                 PreflightDecision::Block { findings } => {
                     return Err(ToolError::Execution(format!(
@@ -495,7 +588,10 @@ impl BashTool {
             )
         };
 
-        tracing::info!("Running: {command}");
+        tracing::info!(
+            command_digest = %crate::live_execution_audit::command_digest_str(command),
+            "dispatching command"
+        );
         let start = std::time::Instant::now();
 
         // 3. route to scheduler or local supervised process.
@@ -582,8 +678,21 @@ impl BashTool {
                     if let Some((family, digest)) =
                         crate::live_execution_audit::audit_shape_for_executor(&outcome.executor)
                     {
-                        self.emit_command_audit(audit_ctx, family, &digest, terminal)
-                            .await;
+                        self.emit_command_audit(
+                            audit_ctx,
+                            family,
+                            &digest,
+                            terminal,
+                            Some(crate::live_execution_audit::route_label_for_executor(
+                                &outcome.executor,
+                            )),
+                            audit_ctx
+                                .and_then(|ctx| ctx.execution_authorization.as_ref())
+                                .map(|_| "full_host"),
+                            intent_risk_label(intent.as_ref()),
+                            None,
+                        )
+                        .await;
                     }
                     let exec_outcome =
                         ExecutionOutcome::identity(planned_backend, outcome.executor.clone());
@@ -620,6 +729,10 @@ impl BashTool {
                                 family,
                                 &digest,
                                 crate::live_execution_audit::OUTCOME_TIMEOUT,
+                                Some("active_route"),
+                                Some("full_host"),
+                                intent_risk_label(intent.as_ref()),
+                                None,
                             )
                             .await;
                         }
@@ -630,8 +743,13 @@ impl BashTool {
         } else {
             // OBSERVE MODE: run via raw shell (existing behavior)
             let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-            let (result, output) = match self
-                .execute_via_raw_shell(command, canonical_workdir.as_deref(), execution_timeout)
+            let (result, output, sandbox_outcome, result_metadata) = match self
+                .execute_via_raw_shell_with_authorization(
+                    command,
+                    canonical_workdir.as_deref(),
+                    execution_timeout,
+                    audit_ctx.and_then(|ctx| ctx.execution_authorization.clone()),
+                )
                 .await
             {
                 Ok(pair) => pair,
@@ -643,6 +761,10 @@ impl BashTool {
                         "shell",
                         &crate::live_execution_audit::command_digest_str(command),
                         crate::live_execution_audit::OUTCOME_TIMEOUT,
+                        Some("raw_shell"),
+                        Some("timeout_outcome_not_reported"),
+                        intent_risk_label(intent.as_ref()),
+                        None,
                     )
                     .await;
                     return Err(ToolError::Timeout(message));
@@ -661,6 +783,20 @@ impl BashTool {
                 "shell",
                 &crate::live_execution_audit::command_digest_str(command),
                 terminal,
+                Some("raw_shell"),
+                Some(&sandbox_outcome_label(
+                    &sandbox_outcome,
+                    audit_ctx.and_then(|ctx| ctx.execution_authorization.as_ref()),
+                )),
+                intent_risk_label(intent.as_ref()),
+                Some(
+                    crate::live_execution_audit::CommandExecutionResultMetadata {
+                        exit_code: result_metadata.exit_code,
+                        output_truncated: result_metadata.output_truncated,
+                        cleanup: result_metadata.cleanup,
+                        helper: result_metadata.helper,
+                    },
+                ),
             )
             .await;
             let planned = plan_to_planned_backend(plan.as_ref().map(|p| &p.backend));
@@ -733,6 +869,43 @@ mod tests {
         assert!(tool.submission.is_none());
         assert_eq!(tool.name(), "bash");
         assert_eq!(tool.category(), ToolCategory::ShellExec);
+    }
+
+    #[tokio::test]
+    async fn accepted_constrained_profile_refuses_full_host_bash_configuration() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let marker = root.path().join("must-not-exist");
+        let tool = BashTool::new()
+            .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, root.path());
+        let mut context =
+            ToolExecutionContext::with_backend(crate::tool::backend::ToolBackendKind::Native);
+        context.execution_authorization =
+            Some(crate::tool::authorization::ExecutionAuthorizationContext {
+                snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                    codegg_core::approval::ApprovalMode::Yolo,
+                    codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                    None,
+                    Some("session".into()),
+                    Some("agent".into()),
+                    Some("policy".into()),
+                    None,
+                ),
+                receipt: crate::permission::PermissionDecisionReceipt::allowed(
+                    "yolo",
+                    Some("policy".into()),
+                ),
+                command_preflight: None,
+            });
+
+        let result = tool
+            .execute_inner(
+                serde_json::json!({"command": format!("touch {}", marker.display())}),
+                Some(&context),
+            )
+            .await;
+
+        assert!(matches!(result, Err(ToolError::Permission(_))));
+        assert!(!marker.exists());
     }
 
     #[test]
@@ -1265,24 +1438,13 @@ mod tests {
     }
 
     #[test]
-    fn pre_spawn_order_rejects_hard_denied_command_before_any_dispatch() {
-        // Regression guard for the extraction: policy checks must precede
-        // any process construction. A hard-denied command fails in the
-        // policy layer even when scheduler submission is configured.
-        //
-        // `rm -rf /` is now caught by the hard-deny *pattern* tier, which is
-        // checked before the literal blocked-command list, so the message is
-        // "blocked pattern" rather than "blocked list".
+    fn built_in_risk_pattern_does_not_terminally_reject() {
+        // Built-in risk classifiers inform review but do not reject in the
+        // tool-side text policy.
         let tool = BashTool::new();
         let parts: Vec<&str> = "rm -rf /".split_whitespace().collect();
-        let err = tool
-            .check_command_security("rm -rf /", &parts)
-            .expect_err("hard-denied command must not reach spawn");
-        let message = err.to_string();
-        assert!(
-            message.contains("blocked pattern") || message.contains("blocked list"),
-            "expected a policy rejection, got: {message}"
-        );
+        assert!(tool.check_command_security("rm -rf /", &parts).is_ok());
+        assert!(policy::find_ask_pattern("rm -rf /").is_some());
     }
 
     #[test]

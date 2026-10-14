@@ -203,7 +203,9 @@ async fn origin3_managed_argv_fallback_redacts_credential() {
         "origin3".to_string(),
         url.clone(),
     ];
-    let mut cmd = GitEnvPolicy::default().apply(&argv, dir.path());
+    let mut cmd = GitEnvPolicy::default()
+        .apply(&argv, dir.path())
+        .expect("local remote configuration does not execute repository code");
     let output = cmd.output().await.expect("output");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -261,7 +263,9 @@ async fn origin4_raw_subcommand_compat_redacts_credential() {
         "origin4".to_string(),
         format!("https://u:{sentinel}@host.example.com/r.git"),
     ];
-    let mut cmd = GitEnvPolicy::default().apply(&argv, dir.path());
+    let mut cmd = GitEnvPolicy::default()
+        .apply(&argv, dir.path())
+        .expect("local remote configuration does not execute repository code");
     let output = cmd.output().await.expect("output");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

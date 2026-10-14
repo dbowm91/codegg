@@ -181,7 +181,9 @@ async fn row_1_native_typed_read() {
     );
 
     // Execute via GitEnvPolicy::apply_sync — verify env policy was applied.
-    let mut cmd = GitEnvPolicy::default().apply_sync(&argv, repo.path());
+    let mut cmd = GitEnvPolicy::default()
+        .apply_sync(&argv, repo.path())
+        .expect("trusted non-executable status");
     let output = cmd.output().expect("git status via GitEnvPolicy");
     assert!(output.status.success(), "git status failed");
 
@@ -276,6 +278,7 @@ async fn row_2_native_typed_mutation() {
     ];
     let output = GitEnvPolicy::default()
         .apply_sync(&check_argv, repo.path())
+        .expect("trusted non-executable config read")
         .output()
         .expect("git config check");
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -390,6 +393,7 @@ async fn row_3_native_raw_git_subcommand() {
     ];
     let output = GitEnvPolicy::default()
         .apply_sync(&argv, repo.path())
+        .expect("trusted non-executable log")
         .output()
         .expect("git log");
     assert!(output.status.success());
@@ -408,6 +412,7 @@ async fn row_3_native_raw_git_subcommand() {
     ];
     let env_out = GitEnvPolicy::default()
         .apply_sync(&env_argv, repo.path())
+        .expect("trusted non-executable config read")
         .output()
         .expect("git config user.name");
     let name = String::from_utf8_lossy(&env_out.stdout).trim().to_string();
@@ -807,39 +812,21 @@ async fn row_5c_bash_typed_git_mutation_active() {
         }))
         .await;
     assert!(
-        result.is_ok(),
-        "row 5c: BashTool execution failed: {:?}",
-        result.err()
+        result.is_err(),
+        "row 5c: git add must require contained execution because repository clean filters can run"
     );
 
     let manifests = all_manifests(&store).await;
-    // Exactly one record: `git_run_store::persist_mutation` wrote the
-    // DelegatedBackend record; BashTool must not have duplicated.
+    // A request requiring the unavailable contained backend must not be
+    // recorded as an executed mutation.
     assert_eq!(
         manifests.len(),
-        1,
-        "row 5c: must persist exactly one record (no-double-execution), got {}",
+        0,
+        "row 5c: unavailable contained request must not claim execution, got {} records",
         manifests.len()
     );
-
-    let m = &manifests[0];
-    assert_eq!(m.kind, RunKind::GitMutation);
-    assert_eq!(m.planned_backend, Some(PlannedBackend::Git));
-    assert_eq!(m.actual_backend, Some(ActualBackend::Git));
-    assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
-    assert!(
-        m.fallback.is_none(),
-        "row 5c: no fallback expected (typed dispatch succeeded)"
-    );
-    // backend_detail distinguishes bash-translated from native-tool runs.
-    assert_eq!(
-        m.backend.detail.as_deref(),
-        Some("bash_translation"),
-        "row 5c: backend.detail must mark origin as bash_translation"
-    );
-    assert_eq!(m.backend.family, "git_bash_translation");
-
-    // Verify the file was actually staged via GitMutationExecutor.
+    // Verify the unavailable policy did not stage the file or fall back to
+    // raw Git execution.
     let staged = Command::new("git")
         .args(["diff", "--cached", "--name-only"])
         .current_dir(&repo_root)
@@ -847,19 +834,9 @@ async fn row_5c_bash_typed_git_mutation_active() {
         .expect("git diff cached");
     let names = String::from_utf8_lossy(&staged.stdout);
     assert!(
-        names.contains(test_file),
-        "row 5c: {} must be staged",
+        !names.contains(test_file),
+        "row 5c: {} must remain unstaged when contained execution is unavailable",
         test_file
-    );
-
-    // argv reflects the actual git invocation dispatched by
-    // GitMutationExecutor::execute (no sh -c wrapping).
-    let argv = m.invocation.argv.as_ref().expect("argv present");
-    assert_eq!(argv[0], "git");
-    assert!(
-        argv.iter().any(|s| s == "add"),
-        "row 5c: argv must include 'add', got {:?}",
-        argv
     );
 }
 
@@ -905,14 +882,10 @@ async fn row_6_managed_git_argv_fallback() {
         "show".to_string(),
         "origin".to_string(),
     ];
-    let output = GitEnvPolicy::default()
-        .apply_sync(&argv, repo.path())
-        .output()
-        .expect("git remote show origin");
-    // This may fail if no remote is configured; that's fine for the classification test.
-    // The important thing is the env policy was applied to the subprocess.
-    // Check exit status — if remote doesn't exist, git exits non-zero but still uses the env.
-    let _ = output.status;
+    assert!(matches!(
+        GitEnvPolicy::default().apply_sync(&argv, repo.path()),
+        Err(egggit::GitExecutionPolicyOutcome::BackendUnavailable { .. })
+    ));
 
     // Redaction: sanitize argv (no URL credentials here).
     let sanitized = sanitize_argv_for_run_store(argv.clone());
@@ -1054,7 +1027,9 @@ async fn row_8_tui_git_action() {
 
     // Execute via apply_sync (the TUI synchronous path).
     let argv = vec!["git".to_string(), "status".to_string()];
-    let mut cmd = GitEnvPolicy::default().apply_sync(&argv, repo.path());
+    let mut cmd = GitEnvPolicy::default()
+        .apply_sync(&argv, repo.path())
+        .expect("trusted non-executable status");
     let output = cmd.output().expect("git status via apply_sync");
     assert!(output.status.success());
 
@@ -1072,6 +1047,7 @@ async fn row_8_tui_git_action() {
     ];
     let env_output = GitEnvPolicy::default()
         .apply_sync(&env_argv, repo.path())
+        .expect("trusted non-executable config read")
         .output()
         .expect("git config via apply_sync");
     let name = String::from_utf8_lossy(&env_output.stdout)
@@ -1156,6 +1132,7 @@ async fn row_9_daemon_git_action() {
     ];
     let output = GitEnvPolicy::default()
         .apply_sync(&argv, repo.path())
+        .expect("trusted non-executable log")
         .output()
         .expect("git log via daemon path");
     assert!(output.status.success());

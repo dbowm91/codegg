@@ -161,6 +161,7 @@ impl CommitTool {
     /// Map a `GitMutationError` to a `ToolError`.
     fn map_mutation_err(e: GitMutationError) -> ToolError {
         match e {
+            GitMutationError::Policy(outcome) => ToolError::Execution(outcome.to_string()),
             GitMutationError::Precondition(s) => ToolError::Execution(format!("precondition: {s}")),
             GitMutationError::Path(s) => ToolError::Execution(format!("path error: {s}")),
             GitMutationError::Ref(s) => ToolError::Execution(format!("ref error: {s}")),
@@ -419,7 +420,9 @@ async fn fetch_head_message(workdir: &std::path::Path) -> Result<String, ToolErr
         "-1".into(),
         "--format=%B".into(),
     ];
-    let mut cmd = GitEnvPolicy::default().apply(&argv, workdir);
+    let mut cmd = GitEnvPolicy::default()
+        .apply(&argv, workdir)
+        .map_err(|outcome| ToolError::Execution(outcome.to_string()))?;
     let output = cmd
         .output()
         .await

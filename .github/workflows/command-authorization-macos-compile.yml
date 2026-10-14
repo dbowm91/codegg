@@ -1,0 +1,39 @@
+name: Command authorization macOS target compile (one-shot)
+
+on:
+  push:
+    branches:
+      - planning/linux-execution-isolation
+    paths:
+      - '.github/workflows/command-authorization-macos-compile.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'crates/**'
+
+permissions:
+  contents: read
+
+jobs:
+  macos-target-compile:
+    # M003 requires an Apple SDK/sysroot for the x86_64 Apple target check.
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Record Apple runner and SDK
+        run: |
+          sw_vers
+          uname -a
+          uname -m
+          xcrun --show-sdk-path
+          rustc --version --verbose
+      - name: Compile CodeGG for x86_64 macOS
+        run: cargo check -p codegg --lib --target x86_64-apple-darwin --locked

@@ -247,14 +247,21 @@ fn scope_normalization_is_deterministic_and_bounded() {
         Some("cmd:cargo".to_string())
     );
     assert_eq!(
-        decision_scope_for_shell_command("FOO=1 sudo /usr/bin/cargo test"),
+        decision_scope_for_shell_command("env FOO=1 /usr/bin/cargo test"),
         Some("cmd:cargo".to_string())
+    );
+    assert!(
+        decision_scope_for_shell_command("cargo test && curl example.test")
+            .unwrap()
+            .starts_with("cmd:exact:")
     );
     assert_eq!(
         decision_scope_for_git_subcommand("push origin main"),
         Some("git:push".to_string())
     );
-    assert_eq!(decision_scope_for_shell_command(""), None);
+    assert!(decision_scope_for_shell_command("")
+        .unwrap()
+        .starts_with("cmd:exact:"));
 }
 
 #[test]

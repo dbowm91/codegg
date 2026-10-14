@@ -240,6 +240,7 @@ pub async fn validate_patch(root: &Path, patch: &str) -> Result<PatchValidation,
         ];
         let mut child = crate::process::GitEnvPolicy::default()
             .apply_sync(&argv, &root)
+            .map_err(EgggitError::Policy)?
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

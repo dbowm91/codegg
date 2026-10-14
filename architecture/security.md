@@ -84,6 +84,16 @@ read backend identity out of the registry, so none of them change.
 
 Linux enforcement uses the maintained `landlock` crate.
 
+The trusted CodeGG Git subprocess policy is a separate boundary: it pins
+repository-configured hooks/fsmonitor/external diff/textconv/credential helper
+and signing behavior, then returns a typed capability outcome before spawn.
+Requests needing repository-controlled filters, merge drivers, executable
+aliases, or remote transport require a contained/mediated backend and do not
+fall through to a raw Git command. This does not make writable `.git`
+metadata immutable and does not establish network isolation. See
+`architecture/git.md` and the Linux execution-isolation corrective closure
+records for current evidence and open items.
+
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the
   running binary (inherited env/PATH/cwd cannot select it)
@@ -119,6 +129,40 @@ pub struct SandboxLaunchSpec {
 
 `SandboxLaunchSpec` names **paths, not a mechanism**, so the same spec
 serves every backend.
+
+**Linux launch contract (M002 interface slice):**
+`src/security/sandbox/linux_launch.rs` models requested filesystem, network,
+process/IPC, syscall, and resource dimensions under an immutable parent
+ceiling. `ManagedProcessService` routes today's constrained Linux launches
+through that contract and selects only the existing private helper. Its
+read-only host probe reports namespace objects/limits, seccomp and proc
+kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
+cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
+do not prove a child obtained enforcement. No namespace backend is registered
+or promoted. Offline networking, protected mounts, seccomp, and resource
+limits remain unavailable until their ADR and native evidence gates close.
+The existing Landlock-only default and unrestricted network behavior are
+unchanged.
+
+Ordinary command syntax is not an additional authority boundary: once the
+workspace and requested action are authorized, quotes, wrappers, environment
+assignments, pipes, and substitutions alone do not trigger review. Explicit
+operator policy and concrete risk signals remain on the normal approval path;
+neither risk review nor approval mode changes the filesystem/network guarantees
+actually obtained from the backend.
+
+Command audit events retain the accepted permission receipt/source and policy
+revision, requested sandbox profile, safe execution-route label, advisory risk
+level, and the obtained filesystem/network result. For raw shell, the filesystem
+value comes from the completed managed-process result (for example,
+`enforced:landlock:abi=4`); a timeout is marked as unavailable rather than
+reported as an enforcement result. Network remains explicitly `unrestricted`
+for Landlock-only launches. The event records the dispatched command digest and
+bounded labels, not command text, arguments, output, or generated script
+contents. Completed raw-shell events also record exit code, output-truncation
+status, cleanup status, and the fixed helper identity when the helper ran.
+Route provenance does not claim a complete trace of nested syscalls.
+See `architecture/audit.md` and the M003 validation record.
 
 `SandboxConfig::enforce()` refuses to restrict the calling process —
 callers must use the child launch path.
@@ -266,13 +310,17 @@ pub struct SecurityDecisionHint {
 1. Disabled/off → `Observe`
 2. Explicit deny list match → `Deny`
 3. Review mode: Critical/High risk → `Ask` (never Deny); else `Observe`
-4. Critical + `deny_critical_commands` → `Deny`
+4. Critical + explicitly configured `deny_critical_commands = true` → best-effort `Deny`; omitted defaults to advisory behavior
 5. Critical + `ask_on_high_risk_command` → `Ask`
 6. Network exfiltration category → `Ask`
 7. Secret exposure category → `Ask`
 8. High risk + `ask_on_high_risk_command` → `Ask`
 9. Strict mode + Medium risk → `Ask`
 10. Otherwise → `Observe`
+
+`denied_commands` and an explicitly enabled `deny_critical_commands` are
+operator-selected invocation-text filters. They deny matching text but cannot
+guarantee that equivalent behavior is absent or provide OS containment.
 
 `action_for_findings` uses the worst-severity finding with similar
 logic. Review mode always observes (reports findings but never denies).
@@ -436,7 +484,7 @@ max_findings_in_prompt = 5
 denied_commands = []       # explicit deny list
 
 [security.gates]
-deny_critical_commands = true
+deny_critical_commands = true # explicit opt-in best-effort text denial; omitted defaults to advisory
 ask_on_high_risk_command = true
 ask_on_network_exfiltration = true
 ask_on_secret_exposure = true
@@ -444,9 +492,9 @@ ask_on_secret_exposure = true
 
 **Security modes:**
 - `Off` — all checks return Observe
-- `Ambient` — the default. High-risk commands Ask; Critical commands are
-  **denied** because `gates.deny_critical_commands` defaults to `true`. Set that
-  gate to `false` to make Ambient observation-only.
+- `Ambient` — the default. High-risk and Critical commands Ask when the ask
+  gate is enabled. Set `gates.deny_critical_commands = true` to explicitly opt
+  into best-effort text denial.
 - `Strict` — Medium-risk commands also Ask
 - `Review` — Critical/High Ask (never Deny); everything else Observe
 

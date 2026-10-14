@@ -512,6 +512,11 @@ async fn emit_interactive_create_audit(
         "interactive",
         crate::live_execution_audit::OUTCOME_SUCCESS,
         &scope,
+        None,
+        Some("interactive"),
+        None,
+        None,
+        None,
     )
     .await;
 }
