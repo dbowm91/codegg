@@ -32,6 +32,48 @@ jobs:
           abi = libc.syscall(444, ctypes.c_void_p(), 0, 1)
           print(f"landlock_abi={abi} errno={ctypes.get_errno()}")
           PY
+          python3 - <<'PY'
+          import socket, subprocess, sys, threading, uuid
+          name = "codegg-landlock-scope-" + uuid.uuid4().hex
+          listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          listener.bind("\0" + name)
+          listener.listen(1)
+          listener.settimeout(1)
+          accepted = []
+          def accept_once():
+              try:
+                  connection, _ = listener.accept()
+                  accepted.append(True)
+                  connection.close()
+              except TimeoutError:
+                  pass
+          thread = threading.Thread(target=accept_once)
+          thread.start()
+          script = r'''import ctypes, socket, sys
+          class Attr(ctypes.Structure):
+              _fields_ = [("handled_access_fs", ctypes.c_uint64), ("handled_access_net", ctypes.c_uint64), ("scoped", ctypes.c_uint64)]
+          libc = ctypes.CDLL(None, use_errno=True)
+          attr = Attr(0, 0, 3)
+          fd = libc.syscall(444, ctypes.byref(attr), ctypes.sizeof(attr), 0)
+          if fd < 0: raise OSError(ctypes.get_errno(), "landlock_create_ruleset")
+          if libc.prctl(38, 1, 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), "PR_SET_NO_NEW_PRIVS")
+          if libc.syscall(446, fd, 0) != 0: raise OSError(ctypes.get_errno(), "landlock_restrict_self")
+          try:
+              socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).connect("\0" + sys.argv[1])
+              raise SystemExit("abstract socket unexpectedly reachable")
+          except PermissionError as error:
+              print(f"abstract_socket_denied_errno={error.errno}")
+          '''
+          result = subprocess.run([sys.executable, "-c", script, name], text=True, capture_output=True)
+          thread.join()
+          listener.close()
+          print(f"landlock_scope_child_status={result.returncode}")
+          print(f"landlock_scope_child_stdout={result.stdout.strip()}")
+          print(f"landlock_scope_child_stderr={result.stderr.strip()}")
+          print(f"landlock_scope_host_listener_accepted={bool(accepted)}")
+          if result.returncode != 0 or "abstract_socket_denied_errno=13" not in result.stdout or accepted:
+              raise SystemExit("Landlock ABI 6 abstract socket scope did not deny the host fixture")
+          PY
           if ! command -v bwrap >/dev/null 2>&1; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
