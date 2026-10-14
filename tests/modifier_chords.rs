@@ -47,7 +47,6 @@ const BARE_CTRL_TWINS: &[(char, InputAction, &str)] = &[
     ('y', InputAction::ToggleTts, "ToggleTts"),
     ('f', InputAction::Search, "Search"),
     ('k', InputAction::ClearSession, "ClearSession"),
-    ('n', InputAction::NewSession, "NewSession"),
     ('s', InputAction::StashPrompt, "StashPrompt"),
     ('b', InputAction::ToggleSidebar, "ToggleSidebar"),
 ];
@@ -148,6 +147,15 @@ fn chords_are_disjoint_from_their_bare_ctrl_twin() {
             "Ctrl+Alt+{letter} ({what}) must not alias its bare-Ctrl twin {twin_name}"
         );
     }
+}
+
+#[test]
+fn ctrl_n_remains_unbound_to_new_session() {
+    // Ctrl+N arms the panel-resize frame gesture in the app layer. It is
+    // intentionally absent from the input-action map; NewSession is bare `n`.
+    let ctrl_n = (KeyModifiers::CONTROL, KeyCode::Char('n'));
+    assert_eq!(default_bindings().get(&ctrl_n), None);
+    assert_eq!(press(ctrl_n.1, ctrl_n.0, InputMode::Insert), None);
 }
 
 #[test]
