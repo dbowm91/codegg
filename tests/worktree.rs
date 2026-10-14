@@ -112,7 +112,7 @@ async fn test_list_worktrees_parses_current_and_detached() {
 }
 
 #[tokio::test]
-async fn test_create_and_remove_worktree() {
+async fn test_create_and_remove_worktree_require_contained_git_backend() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let repo_dir = temp_dir.path().join("repo");
     let wt_dir = temp_dir.path().join("wt-create-remove");
@@ -125,29 +125,23 @@ async fn test_create_and_remove_worktree() {
     git(&["add", "README.md"], &repo_dir);
     git(&["commit", "-m", "initial"], &repo_dir);
 
-    create_worktree(&repo_dir, &wt_dir, "feature/create-remove", true)
-        .expect("create_worktree failed");
+    let create_error = create_worktree(&repo_dir, &wt_dir, "feature/create-remove", true)
+        .expect_err("worktree creation requires a contained Git backend");
+    assert!(create_error.to_string().contains("Git backend unavailable"));
+    assert!(create_error.to_string().contains("CleanSmudgeFilter"));
+    assert!(!wt_dir.exists());
 
-    let trees_after_create = list_worktrees(&repo_dir)
-        .await
-        .expect("list_worktrees after create failed");
-    assert!(
-        trees_after_create
-            .iter()
-            .any(|t| t.path.ends_with("/wt-create-remove")),
-        "created worktree not found in list"
-    );
+    let remove_error = remove_worktree(&repo_dir, &wt_dir, false)
+        .expect_err("worktree removal requires a contained Git backend");
+    assert!(remove_error.to_string().contains("Git backend unavailable"));
+    assert!(remove_error.to_string().contains("CleanSmudgeFilter"));
+    assert!(!wt_dir.exists());
 
-    remove_worktree(&repo_dir, &wt_dir, false).expect("remove_worktree failed");
-    let trees_after_remove = list_worktrees(&repo_dir)
+    let trees_after_denial = list_worktrees(&repo_dir)
         .await
-        .expect("list_worktrees after remove failed");
-    assert!(
-        !trees_after_remove
-            .iter()
-            .any(|t| t.path.ends_with("/wt-create-remove")),
-        "removed worktree still present in list"
-    );
+        .expect("list_worktrees after denied mutations failed");
+    assert_eq!(trees_after_denial.len(), 1);
+    assert!(trees_after_denial[0].is_current);
 }
 
 #[test]
