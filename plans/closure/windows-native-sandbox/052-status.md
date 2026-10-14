@@ -20,6 +20,7 @@ runner, not as a candidate pass or a C044 requalification.
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | Pin Anthropic and Codex source revisions/licenses | `research/windows-native-sandbox/c052-two-hop-launch-differential.md` | pass | Exact repository heads and Apache-2.0 licenses recorded |
+| Compare C044 with srt-win desktop/window-station, logon SIDs, token privileges, and process creation | Same source comparison | pass, source-only | Exact source contracts are contrasted; no controlled runtime side-by-side or causal finding is claimed |
 | Same-host paired `flags=0` / `WRITE_RESTRICTED` launch | Run `38615233054`, C052 step | blocked | Both `CreateProcessAsUserW` calls returned Win32 error 5 |
 | Child first-instruction marker and process/Job evidence | Same | not run | No process handle was created |
 | Identify a single launch-context cause | Same | not established | Both variants failed identically before child creation |
@@ -89,7 +90,10 @@ host-secret confidentiality remain unqualified.
 
 The source comparison and exact run outcome are recorded in
 `research/windows-native-sandbox/c052-two-hop-launch-differential.md`, this
-closure, the implementation plan, registry, and subsystem roadmap. ADR,
+closure, the implementation plan, registry, and subsystem roadmap. The source
+comparison contrasts srt-win's private desktop, logon-SID handling, privilege
+deletion and suspended child setup with C044's corresponding harness behavior;
+it does not claim a disposable-VM runtime comparison or identify a cause. ADR,
 sandbox, execution ownership, release-boundary, formatting, and whitespace
 checks passed.
 
