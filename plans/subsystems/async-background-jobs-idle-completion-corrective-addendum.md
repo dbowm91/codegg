@@ -1,7 +1,7 @@
 # Async Background Jobs — Idle Completion and Delivery Corrective Addendum
 
 Status: active — historical C001/C002/C003 closed; successor C004 production-wiring corrective ready
-Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md`, C003 implementations `816c5054` + repair `f5c43f05` + closure `003-status.md` (2026-10-14). Qualified on branch; not merged. Both milestones of this corrective line are closed and its status text is reconciled to terminal truth; no further milestone is planned here.
+Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md`, C003 implementations `816c5054` + repair `f5c43f05` + closure `003-status.md` (2026-10-14). Prior C001–C003 milestones were marked closed on this branch (85/85 local fixture tests); not merged. Subsequent audit found production wiring and frontend-delivery gaps, now registered as C004. This addendum is active; previous closure records remain historical.
 
 ## Authority, scope and history
 
@@ -59,15 +59,18 @@ M001–M004 implementation and historical closures (available)
          +-- C002 opt-in idle owner turn queue / exact-once claim        [blocked C001]
                 |
                 +-- C003 full trajectory, security, CI/merge qualification [blocked C001+C002]
+                       |
+                       +-- C004 production idle-dispatch / frontend-delivery corrective [ready]
 ```
 
-C001 must first make terminal observation and notify-only delivery effective without an agent turn; C002 consumes that canonical terminal event and adds only the authorized resume leg. C003 must verify both in a single daemon lifecycle. C001's design must expose a minimal event/subscription interface for C002 but must not start model turns.
+C001 must first make terminal observation and notify-only delivery effective without an agent turn; C002 consumes that canonical terminal event and adds only the authorized resume leg. C003 must verify both in a single daemon lifecycle. C001's design must expose a minimal event/subscription interface for C002 but must not start model turns. These were the predecessor plan gates, historically closed as fixture-tested. C004 supersedes C003's production-lifecycle claim and has no blocker other than the available predecessor code; it must use real daemon dispatch and subscribed frontend delivery, not manual fake coordinator calls.
 
 | Milestone | Status | Handoff plan | Strict result |
 |---|---|---|---|
 | C001 idle CI watch driver, service lifetime, durable creation | closed | `plans/implementation/async-background-jobs-corrective/001-daemon-watch-admission-and-reconciliation.md` | A sleeping session's CI run is observed and terminal notice persisted; no other turn/status needed (closure `plans/closure/async-background-jobs-corrective/001-status.md`, implementation `21b35c79`) |
 | C002 authorized idle resume and single-turn queue | closed | `plans/implementation/async-background-jobs-corrective/002-explicit-idle-owner-continuation.md` | Notify-only never spends tokens; explicitly approved resume triggers at most one normal owner turn while idle (closure `plans/closure/async-background-jobs-corrective/002-status.md`, implementation `8e155498`) |
 | C003 end-to-end verification and closure disposition | closed | `plans/implementation/async-background-jobs-corrective/003-idle-lifecycle-qualification-and-closure.md` | Required deterministic real-daemon trajectory and exact-head CI; all claims/registry reconciled (closure `plans/closure/async-background-jobs-corrective/003-status.md`, implementations `816c5054` + repair `f5c43f05`; qualified on branch, not merged) |
+| C004 production idle dispatch and frontend attention | **ready** | `plans/implementation/async-background-jobs-corrective/004-production-idle-dispatch-and-attention-delivery.md` | Authenticated host-granted real turn, automatic daemon terminal wake, typed pushed/replayed completion for owning clients; strict real CoreDaemon test and exact-head hosted CI before closure |
 
 ## End-state use cases and negative guarantees
 
