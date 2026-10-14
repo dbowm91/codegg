@@ -4,7 +4,8 @@
 //! Exactly-once claim/materialization through the existing global scheduler
 //! boundary: one occurrence creates at most one canonical session and one
 //! canonical initial `AgentTurn` submission; restart/duplicate wakes cannot
-//! duplicate side effects; managed worktrees isolate concurrent Git mutation;
+//! duplicate side effects; concurrent managed-worktree creation respects the
+//! contained Git backend gate;
 //! model/policy resolution never silently falls back or widens.
 
 use std::collections::{HashMap, HashSet};
@@ -454,7 +455,7 @@ async fn canonical_session_creation_uses_the_deterministic_key() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn concurrent_git_mutation_gets_distinct_managed_worktrees() {
+async fn concurrent_git_mutation_refuses_uncontained_managed_worktrees() {
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -507,16 +508,24 @@ async fn concurrent_git_mutation_gets_distinct_managed_worktrees() {
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
-    let (record_a, _) = service.create(&request_a).await.expect("worktree a");
-    let (record_b, _) = service.create(&request_b).await.expect("worktree b");
-    assert_ne!(record_a.worktree_id, record_b.worktree_id);
-    assert_ne!(record_a.path, record_b.path);
-    let canonical_managed = managed_root
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|_| managed_root.path().to_path_buf());
-    assert!(record_a.path.starts_with(&canonical_managed));
-    assert!(record_b.path.starts_with(&canonical_managed));
+    let (result_a, result_b) = tokio::join!(service.create(&request_a), service.create(&request_b));
+    for (workspace, result) in [("a", result_a), ("b", result_b)] {
+        let Err(codegg_core::worktree_service::WorktreeServiceError::Git(message)) = result else {
+            panic!("worktree {workspace} must be refused without the contained Git backend");
+        };
+        assert!(
+            message.contains("Git backend unavailable for [CleanSmudgeFilter]"),
+            "worktree {workspace} should report the missing filter backend, got: {message}"
+        );
+    }
+    let listed = codegg_core::worktree::list_worktrees(repo_dir.path())
+        .await
+        .expect("list worktrees after refusals");
+    assert_eq!(
+        listed.len(),
+        1,
+        "refused managed creation must not materialize either worktree"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
