@@ -1,7 +1,7 @@
 # Async Background Jobs — Idle Completion and Delivery Corrective Addendum
 
-Status: active — C001 closed; C002 closed; C003 ready
-Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md` (2026-10-14). Handoff branch is a descendant; revalidate exact HEAD before code changes.
+Status: closed — C001/C002/C003 closed
+Reviewed implementation branch: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (`work/async-background-jobs-and-ci-watch-plans`, 2026-10-13). C001 implementation `21b35c79` + closure `001-status.md`, C002 implementation `8e155498` + closure `002-status.md`, C003 implementations `816c5054` + repair `f5c43f05` + closure `003-status.md` (2026-10-14). Qualified on branch; not merged. Both milestones of this corrective line are closed and its status text is reconciled to terminal truth; no further milestone is planned here.
 
 ## Authority, scope and history
 
@@ -56,7 +56,7 @@ C001 must first make terminal observation and notify-only delivery effective wit
 |---|---|---|---|
 | C001 idle CI watch driver, service lifetime, durable creation | closed | `plans/implementation/async-background-jobs-corrective/001-daemon-watch-admission-and-reconciliation.md` | A sleeping session's CI run is observed and terminal notice persisted; no other turn/status needed (closure `plans/closure/async-background-jobs-corrective/001-status.md`, implementation `21b35c79`) |
 | C002 authorized idle resume and single-turn queue | closed | `plans/implementation/async-background-jobs-corrective/002-explicit-idle-owner-continuation.md` | Notify-only never spends tokens; explicitly approved resume triggers at most one normal owner turn while idle (closure `plans/closure/async-background-jobs-corrective/002-status.md`, implementation `8e155498`) |
-| C003 end-to-end verification and closure disposition | ready | `plans/implementation/async-background-jobs-corrective/003-idle-lifecycle-qualification-and-closure.md` | Required deterministic real-daemon trajectory and exact-head CI; all claims/registry reconciled |
+| C003 end-to-end verification and closure disposition | closed | `plans/implementation/async-background-jobs-corrective/003-idle-lifecycle-qualification-and-closure.md` | Required deterministic real-daemon trajectory and exact-head CI; all claims/registry reconciled (closure `plans/closure/async-background-jobs-corrective/003-status.md`, implementations `816c5054` + repair `f5c43f05`; qualified on branch, not merged) |
 
 ## End-state use cases and negative guarantees
 
