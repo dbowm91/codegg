@@ -1086,7 +1086,7 @@ mod tests {
         let command = format!("sleep 10; touch '{}'", marker.display());
         let resolved = ResolvedTestCommand {
             language: crate::test_runner::types::TestLanguage::Generic,
-            argv: vec!["/bin/sh".into(), "-c".into(), command.into()],
+            argv: vec!["/bin/sh".into(), "-c".into(), command],
             cwd: dir.path().to_path_buf(),
             scope_label: "test".into(),
         };
