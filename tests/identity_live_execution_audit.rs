@@ -492,7 +492,9 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         .expect("broker bash succeeds");
     assert!(result.value.display.contains("m004-trajectory"));
 
-    // 3. Git mutation (single stage transition).
+    // 3. Git mutation (single trusted commit transition). Stage the fixture
+    // with raw Git setup so the audited CodeGG operation exercises the
+    // trusted commit path; staging remains gated until filters are contained.
     let repo = tempfile::tempdir().expect("git repo");
     init_repo(repo.path());
     std::fs::write(repo.path().join("m004.txt"), "m004\n").expect("write");
@@ -500,11 +502,18 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         .with_timeout(Duration::from_secs(30))
         .with_execution_audit(audit_ctx.clone())
         .with_audit_emitter(emitter.clone());
-    let staged =
-        codegg::git_mutations_ops::stage_paths(&git_exec, repo.path(), vec!["m004.txt".to_owned()])
-            .await
-            .expect("stage");
-    assert!(staged.success);
+    run_git(repo.path(), &["add", "m004.txt"]);
+    let committed = codegg::git_mutations_ops::commit_with_selection(
+        &git_exec,
+        repo.path(),
+        codegg::git_mutations::CommitSelection::AlreadyStaged,
+        "m004-trajectory commit",
+        false,
+        false,
+    )
+    .await
+    .expect("commit");
+    assert!(committed.mutation.success);
 
     // 4. Interactive process create (input stays out of audit).
     let admission = {
@@ -620,7 +629,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
     let git = &rows[1];
     assert_eq!(
         git.metadata.get("git.op").map(String::as_str),
-        Some("stage")
+        Some("commit")
     );
     assert_eq!(git.session_id.as_deref(), Some(session));
     let interactive = &rows[2];
