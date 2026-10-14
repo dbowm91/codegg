@@ -4508,7 +4508,23 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
 
     let temp = tempfile::tempdir().unwrap();
     let marker = temp.path().join("shell-dispatched");
-    let command = format!("echo $(touch '{}')", marker.display());
+    // ADR-0028: plain `$(...)` substitution alone is ordinary shell
+    // programming and no longer raises an advisory Ask signal, so this
+    // approval-path regression uses a benign sentinel plus an explicitly
+    // configured `bash_ask_patterns` rule. The command writes only inside
+    // the fresh TempDir and cannot affect host-global resources.
+    let command = format!("printf probe-sentinel > '{}'", marker.display());
+    let ask_ruleset = PermissionRuleset {
+        default: PermissionLevel::Ask,
+        tool_rules: vec![codegg::permission::ToolRule {
+            tool: "bash".to_string(),
+            level: PermissionLevel::Ask,
+            paths: None,
+            bash_patterns: Some(vec!["*shell-dispatched*".to_string()]),
+        }],
+        path_rules: Vec::new(),
+    };
+    let checker = PermissionChecker::new(None, None).with_session_rules(ask_ruleset);
     let response1 = vec![
         ChatEvent::ToolCall(ToolCall {
             id: "call_shell_escalation".to_string().into(),
@@ -4539,11 +4555,8 @@ async fn shell_escalation_ask_waits_for_explicit_approval_before_dispatch() {
             .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, temp.path()),
     );
 
-    let mut agent_loop = build_test_agent_loop_with_permissions(
-        scripted_provider,
-        registry,
-        PermissionChecker::new(None, None),
-    );
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(scripted_provider, registry, checker);
     agent_loop.set_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     agent_loop.set_session_id("shell-escalation-approval-gate");
 

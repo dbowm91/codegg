@@ -986,6 +986,106 @@ mod tests {
     }
 
     #[test]
+    fn git_clean_preview_is_allowed_but_real_clean_requires_destructive_authorization() {
+        // C001 corrective: changing this classification is a policy change,
+        // not a test update. Dry-run preview (`-n`/`--dry-run`) is read-only
+        // and stays allowed; any real clean gates on an explicit
+        // `DestructiveRepositoryChange` capability even inside a temp repo.
+        let argv = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            classify_git_request(&argv(&["git", "clean", "-n"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "clean", "-n", "-d"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        assert_eq!(
+            classify_git_request(&argv(&["git", "clean", "--dry-run"])),
+            GitExecutionPolicyOutcome::AllowedTrustedNonExecutable
+        );
+        for real in [
+            argv(&["git", "clean", "-f"]),
+            argv(&["git", "clean", "-f", "-d"]),
+            argv(&["git", "clean", "-f", "-d", "--", "garbage-no-grant.txt"]),
+        ] {
+            assert_eq!(
+                classify_git_request(&real),
+                GitExecutionPolicyOutcome::RequiresAdditionalAuthorization {
+                    capabilities: vec![GitExecutionCapability::DestructiveRepositoryChange]
+                },
+                "real clean must gate on DestructiveRepositoryChange: {real:?}"
+            );
+            assert!(matches!(
+                GitEnvPolicy::default().apply_sync(&real, Path::new(".")),
+                Err(GitExecutionPolicyOutcome::RequiresAdditionalAuthorization { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn git_reset_modes_require_destructive_authorization() {
+        // Reset/remote-test-contract C001: changing reset gating is a policy
+        // change, not a test update. Reset has no dry-run mode: every real
+        // reset gates on an explicit `DestructiveRepositoryChange`
+        // capability even inside a temp repo.
+        let argv = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        for reset in [
+            argv(&["git", "reset", "--hard", "HEAD~1"]),
+            argv(&["git", "reset", "--soft", "HEAD~1"]),
+            argv(&["git", "reset", "--mixed", "HEAD~1"]),
+            argv(&["git", "reset", "--merge", "HEAD"]),
+            argv(&["git", "reset", "--keep", "HEAD"]),
+            argv(&["git", "reset", "HEAD"]),
+        ] {
+            assert_eq!(
+                classify_git_request(&reset),
+                GitExecutionPolicyOutcome::RequiresAdditionalAuthorization {
+                    capabilities: vec![GitExecutionCapability::DestructiveRepositoryChange]
+                },
+                "reset must gate on DestructiveRepositoryChange: {reset:?}"
+            );
+            assert!(matches!(
+                GitEnvPolicy::default().apply_sync(&reset, Path::new(".")),
+                Err(GitExecutionPolicyOutcome::RequiresAdditionalAuthorization { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn git_push_and_pull_require_contained_remote_backend() {
+        // Reset/remote-test-contract C002: remote gating covers every
+        // transport, including local paths — a `file://` remote is not a
+        // safety grant. Changing this classification is a policy change
+        // owned by Linux C003, not a test update. (`fetch` is already
+        // pinned in the execution-classes fixture above.)
+        let argv = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        for remote in [
+            argv(&["git", "push", "origin", "main"]),
+            argv(&["git", "push", "--force-with-lease", "origin", "main"]),
+            argv(&["git", "pull", "origin", "main"]),
+            argv(&["git", "pull", "--ff-only", "origin", "main"]),
+            argv(&["git", "clone", "/tmp/some-local-remote"]),
+        ] {
+            assert_eq!(
+                classify_git_request(&remote),
+                GitExecutionPolicyOutcome::RequiresContainedExecution {
+                    capabilities: vec![
+                        GitExecutionCapability::RemoteHelper,
+                        GitExecutionCapability::Network,
+                        GitExecutionCapability::Credential,
+                    ]
+                },
+                "remote Git must require the contained backend: {remote:?}"
+            );
+            assert!(matches!(
+                GitEnvPolicy::default().apply_sync(&remote, Path::new(".")),
+                Err(GitExecutionPolicyOutcome::BackendUnavailable { .. })
+            ));
+        }
+    }
+
+    #[test]
     fn trusted_git_policy_denies_caller_config_and_repository_redirects() {
         let cwd = Path::new(".");
         for extra in [

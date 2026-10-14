@@ -129,6 +129,12 @@ jobs:
       - name: No hardcoded model catalog guard
         run: python3 scripts/check_no_hardcoded_models.py
 
+      - name: Shell policy test-safety guard
+        run: python3 scripts/check_shell_policy_test_safety.py
+
+      - name: Shell policy test-safety fixtures
+        run: python3 scripts/test_shell_policy_test_safety.py
+
       - name: Formatting
         run: cargo fmt --check --all
 
