@@ -57,6 +57,9 @@ pub struct ResourceBudget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxLaunchRequest {
     pub filesystem: Dimension<FilesystemView>,
+    /// The protected mount view is a separate, explicit opt-in. Existing
+    /// callers continue to select the legacy Landlock helper.
+    pub protected_mount_view: bool,
     pub network: Dimension<NetworkIntent>,
     pub process: Dimension<ProcessScope>,
     pub syscalls: Dimension<SyscallConstraints>,
@@ -80,6 +83,7 @@ impl LinuxLaunchRequest {
                 requested: filesystem.clone(),
                 parent_ceiling: filesystem,
             },
+            protected_mount_view: spec.linux_protected_mount_view,
             network: Dimension {
                 demand: Demand::Disabled,
                 requested: NetworkIntent::LegacyUnrestricted,
@@ -162,6 +166,7 @@ fn process_within_ceiling(requested: ProcessScope, ceiling: ProcessScope) -> boo
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinuxLaunchPlan {
     LegacyPrivateHelper,
+    ProtectedMountView,
     EnhancedUnavailable { dimensions: Vec<&'static str> },
 }
 
@@ -176,6 +181,19 @@ pub struct ProductionLinuxLaunchAdapter;
 impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
     fn plan(&self, request: &LinuxLaunchRequest) -> Result<LinuxLaunchPlan, String> {
         request.validate_parent_ceiling()?;
+        if request.protected_mount_view {
+            if request.requires_enhanced_backend() {
+                return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                    dimensions: requested_enhanced_dimensions(request),
+                });
+            }
+            if probe_trusted_bubblewrap().state == ProbeState::Available {
+                return Ok(LinuxLaunchPlan::ProtectedMountView);
+            }
+            return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                dimensions: vec!["protected-filesystem-mount-view"],
+            });
+        }
         if request.requires_enhanced_backend() {
             return Ok(LinuxLaunchPlan::EnhancedUnavailable {
                 dimensions: requested_enhanced_dimensions(request),
@@ -311,6 +329,13 @@ pub fn observe_legacy_outcome(
             Vec::new(),
             vec![reason.clone()],
         ),
+        super::SandboxLaunchOutcome::BubblewrapReady => (
+            ObtainedState::Failed,
+            None,
+            None,
+            Vec::new(),
+            vec!["unexpected Bubblewrap gate receipt on the legacy launch route".into()],
+        ),
     };
     Ok(LinuxObtainedEnforcement {
         filesystem,
@@ -402,6 +427,18 @@ fn probe_proc_mount_inputs() -> ProbeFact {
 }
 
 fn probe_trusted_bubblewrap() -> ProbeFact {
+    match trusted_bubblewrap_path() {
+        Ok(path) => ProbeFact::available(format!(
+            "trusted system executable candidate at {}; Bubblewrap version and required option support are unqualified",
+            path.display()
+        )),
+        Err(reason) => ProbeFact::unavailable(reason),
+    }
+}
+
+/// Resolve Bubblewrap independently of PATH and caller-controlled cwd. The
+/// candidate is revalidated immediately before every protected launch.
+pub fn trusted_bubblewrap_path() -> Result<PathBuf, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -432,21 +469,18 @@ fn probe_trusted_bubblewrap() -> ProbeFact {
                 && mode & 0o111 != 0
                 && secure_ancestors
             {
-                return ProbeFact::available(format!(
-                    "trusted system executable candidate at {} (version not invoked)",
-                    canonical.display()
-                ));
+                return Ok(canonical);
             }
-            return ProbeFact::unavailable(format!(
+            return Err(format!(
                 "{} or one of its parent directories is not root-owned, non-writable, free of setuid/setgid bits, and executable",
                 canonical.display()
             ));
         }
-        ProbeFact::unavailable("no trusted bubblewrap executable in fixed system locations")
+        Err("no trusted bubblewrap executable in fixed system locations".into())
     }
     #[cfg(not(unix))]
     {
-        ProbeFact::unavailable("bubblewrap is Linux-only")
+        Err("bubblewrap is Linux-only".into())
     }
 }
 
@@ -519,6 +553,9 @@ mod tests {
 
     fn legacy_request() -> LinuxLaunchRequest {
         LinuxLaunchRequest::legacy_filesystem(&super::super::SandboxLaunchSpec {
+            linux_protected_mount_view: false,
+            protected_readonly_paths: Vec::new(),
+            path_identities: Vec::new(),
             target: PathBuf::from("/bin/true"),
             args: Vec::new(),
             read_paths: vec![PathBuf::from("/workspace")],

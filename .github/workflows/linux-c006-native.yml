@@ -1,0 +1,56 @@
+name: Linux C006 protected mount qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-c006-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/managed_process.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/linux_bubblewrap_first_hop.rs'
+  push:
+    paths:
+      - '.github/workflows/linux-c006-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/managed_process.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/linux_bubblewrap_first_hop.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-c006-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protected-mount:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_BUILD_JOBS: 4
+      CODEGG_RUN_C006_BWRAP_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Record native runner capabilities
+        run: |
+          uname -a
+          bwrap --version
+          id
+          cat /proc/sys/user/max_user_namespaces
+
+      - name: Build trusted sandbox helper
+        run: cargo build --locked --bin codegg-sandbox-helper
+
+      - name: ManagedProcessService protected-mount qualification
+        run: cargo test --locked --lib protected_mount_view_real_managed_process_handoff -- --nocapture

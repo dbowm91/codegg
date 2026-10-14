@@ -41,6 +41,12 @@ never derive it from command input or human-shell context. Structured `read`
 and `write` only accept absolute paths beneath that session root. Current
 cleanup intentionally retains these resources until lease-aware reclamation
 is qualified.
+On Linux, the protected Bubblewrap mount view is an explicit internal opt-in
+through `SandboxConfig::with_linux_protected_mount_view`; it must remain off
+by default until native qualification closes. The helper pins mount sources,
+owns Bubblewrap setup, and returns its private status through the same managed
+process result. Do not launch Bubblewrap from a tool executor or infer
+network, process, IPC, seccomp, or resource enforcement from a mount result.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows

@@ -19,6 +19,7 @@ review that never mutates files.
 | Containment policy + allowance sets | `src/security/sandbox/policy.rs` |
 | Backend registry (`BackendId`, `SandboxBackend`, `BACKENDS`) | `src/security/sandbox/backend.rs` |
 | Landlock backend (Linux) | `src/security/sandbox/landlock.rs` |
+| Opt-in Linux mount-view compiler | `src/security/sandbox/linux_mount_view.rs` |
 | Seatbelt backend (macOS) | `src/security/sandbox/seatbelt.rs` |
 | `SandboxConfig`, `SandboxLaunchSpec`, capability, status protocol | `src/security/sandbox.rs` |
 | Security policy (`action_for_command`, `action_for_findings`) | `src/security/policy.rs` |
@@ -132,19 +133,37 @@ serves every backend.
 **Linux launch contract (M002 interface slice):**
 `src/security/sandbox/linux_launch.rs` models requested filesystem, network,
 process/IPC, syscall, and resource dimensions under an immutable parent
-ceiling. `ManagedProcessService` routes today's constrained Linux launches
-through that contract and selects only the existing private helper. Its
+ceiling. `ManagedProcessService` routes constrained Linux launches through
+that contract. Existing requests select the private Landlock helper. An
+explicit internal `SandboxConfig::with_linux_protected_mount_view(true)`
+request selects the Bubblewrap protected-mount path; the option defaults off
+and is not a persisted user setting. Its
 read-only host probe reports namespace objects/limits, seccomp and proc
 kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
 cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
-do not prove a child obtained enforcement. No namespace backend is registered
-or promoted. Offline networking, protected mounts, seccomp, and resource
-limits remain unavailable until their ADR and native evidence gates close.
-ADR-0031 now accepts Bubblewrap-based Linux namespace/mount composition as the
+do not prove a child obtained enforcement. The mount path builds a fresh root
+from explicit read/write grants, opens bind sources without following links,
+checks captured device/inode identities, overlays Git metadata read-only, and
+hides denied descendants. It omits host `/proc`, `/run`, and `/sys` and rejects
+nested mounts beneath granted roots. Bubblewrap's private JSON status is
+not used as proof that the requested command has not already started. The
+trusted in-sandbox gate reports a framed setup receipt over the private status
+pipe and waits for an acknowledgment from `ManagedProcessService` before it
+execs the requested command. The helper clears close-on-exec on both protocol
+descriptors before starting Bubblewrap; the in-sandbox gate consumes the
+acknowledgment descriptor and marks the status descriptor close-on-exec before
+the requested exec. Missing receipts, malformed status, unsupported options,
+or setup failure refuse the launch. The obtained result records the exact path
+scope. Network, PID/IPC, seccomp, and resource limits are not inferred from
+mount setup.
+
+ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
-network behavior are unchanged; no production namespace backend is registered
-until its protected-mount, launcher-status, and native qualification gates
-close.
+network behavior are unchanged. The opt-in mount path is implemented but
+remains unqualified until the native protected-mount, descriptor, race,
+cancellation, and tool-compatibility matrix passes on supported Linux hosts.
+No default backend selection or rollout is authorized by this internal
+opt-in.
 
 Ordinary command syntax is not an additional authority boundary: once the
 workspace and requested action are authorized, quotes, wrappers, environment
