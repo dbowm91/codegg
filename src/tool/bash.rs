@@ -279,6 +279,7 @@ impl BashTool {
     /// never enters audit metadata. Retries of one logical invocation
     /// reuse the deterministic event id via the invocation key so the
     /// store returns the stored row instead of duplicating it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn emit_command_audit(
         &self,
         audit_ctx: Option<&ToolExecutionContext>,
