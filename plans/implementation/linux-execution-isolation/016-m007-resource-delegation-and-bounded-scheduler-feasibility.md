@@ -1,6 +1,6 @@
 # Linux Execution Isolation C008 — M007 Rootless Resource Delegation Feasibility
 
-Status: **implemented as an unavailable-host feasibility probe**; production required budgets remain blocked on writable delegation and pre-exec attachment proof
+Status: **closed (test-only feasibility: unavailable on this host)**; production required budgets remain blocked on writable delegation and pre-exec attachment proof
 Class: infrastructure / invariant
 Closure target: `plans/closure/linux-execution-isolation/016-status.md`.
 Baseline: main @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13 EDT). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
