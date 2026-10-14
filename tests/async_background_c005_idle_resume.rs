@@ -1162,11 +1162,11 @@ async fn restart_with_claimed_intent_reports_replay_without_readmitting() {
     let (daemon_a, stub_a) = stub_daemon(pool.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed_context(&daemon_a, dir.path()).await;
-    let session_id =
-        create_session(&daemon_a, dir.path(), &project_id, &workspace_id).await;
+    let session_id = create_session(&daemon_a, dir.path(), &project_id, &workspace_id).await;
     seed_selection(&daemon_a, &pool, &session_id).await;
-    let grant_id =
-        grant_id_of(&grant_create(&daemon_a, "req-grant-claim", &session_id, "job-c005-claim").await);
+    let grant_id = grant_id_of(
+        &grant_create(&daemon_a, "req-grant-claim", &session_id, "job-c005-claim").await,
+    );
     // Unattached daemon A: terminal commits, hint publishes, no wake.
     let notice = record_completed(&daemon_a, "job-c005-claim", &session_id, "build green").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
