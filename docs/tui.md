@@ -333,6 +333,33 @@ The `[human_shell]` settings `enabled`, `default_timeout_secs`,
 Human output sent to model context is ANSI-stripped, redacted, and capped at
 32 KiB even when shell-output redaction is configured off.
 
+### Resizing a panel
+
+`Ctrl+N` arms resize mode. `h`, `j`, `k` and `l` then drag **the surface your
+keyboard is on** — each key its own border, and **outward only**:
+
+| Keyboard is on | `h` | `l` | `j` / `k` |
+|---|---|---|---|
+| a panel in the **right** column | widens it | — | — |
+| a panel in the **left** column | — | widens it | — |
+| a panel in the **bottom** row | — | — | `k` makes it taller |
+| the **main buffer** (`LLM`) | narrows a left column | narrows a right column | `j` narrows a bottom row |
+
+A dash means that border is the frame's own edge, so there is nothing to drag —
+`l` inside a right-hand column does nothing rather than shrinking it. Every
+border belongs to two surfaces, so growing one shrinks the other: `h` from
+inside the chat column widens it, and `l` from the transcript beside it narrows
+the same column. That is why resize works from both sides.
+
+`Esc`, `Enter`, or `Ctrl+N` again leaves. The mode stays armed while you drag
+several borders in one go. Sizes are per-edge and last for the session; the
+first time you drag the bottom row it switches from a percentage to exact rows,
+so one press is always one row.
+
+`Ctrl+N` used to start a new session. **New session is now the bare `n`** —
+in Normal mode. It is still safe to type: bare letters go to the prompt in
+Insert mode.
+
 ## Interactive terminal
 
 `/terminal` opens a daemon-owned PTY. With nothing live behind it, it starts

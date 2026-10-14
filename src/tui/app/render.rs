@@ -68,6 +68,10 @@ impl App {
             .copied()
             .filter(|placement| self.panel_host.is_visible_at(*placement))
             .collect();
+        // Recorded so a resize can convert the bottom panel's percentage into
+        // an exact row count the first time a reader drags that edge; a
+        // percentage cannot express a one-row step on its own.
+        self.ui_state.layout.observe_frame(area);
         let regions = self.ui_state.layout.split(area, &occupied);
         let main_chunks = [regions.main];
         let main_area = main_chunks[0];
