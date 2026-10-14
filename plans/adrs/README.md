@@ -22,6 +22,10 @@ SHA, content fingerprints, and disposition recorded in
 `plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
 not active ADR allocations.
 
+The Linux execution-isolation and command-authority decisions use ADR-0027 and
+ADR-0028, respectively. These identities were assigned after the Windows
+records landed on main so no ADR number is reused.
+
 ## Status lifecycle
 
 ```text

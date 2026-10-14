@@ -1,9 +1,9 @@
 # Linux Execution Isolation M001 Corrective C002 — Contained Local Git Workflow Recovery
 
-Status: blocked (hard: C001; M002 launch foundation, M003 protected mounts, M004 process/IPC and M005 offline network fully verified on native Linux; proposed ADR-0023 must be accepted before Linux backend production use)
+Status: blocked (hard: C001; M002 launch foundation, M003 protected mounts, M004 process/IPC and M005 offline network fully verified on native Linux; proposed ADR-0027 must be accepted before Linux backend production use)
 Primary class: capability
 Target closure: `plans/closure/linux-execution-isolation/010-status.md`
-Repository baseline: Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8` (M001 partial implementation), as compared with `main` on 2026-10-13. Source: `plans/subsystems/linux-execution-isolation-roadmap.md` and accepted ADR-0024; Linux mechanism ADR-0023 remains proposed. Corrects M001 `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` and historical blocked `plans/closure/linux-execution-isolation/001-status.md` without revising its evidence. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. New corrective closure must be independent and preserve original historical M001 findings.
+Repository baseline: Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8` (M001 partial implementation), as compared with `main` on 2026-10-13. Source: `plans/subsystems/linux-execution-isolation-roadmap.md` and accepted ADR-0028; Linux mechanism ADR-0027 remains proposed. Corrects M001 `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` and historical blocked `plans/closure/linux-execution-isolation/001-status.md` without revising its evidence. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. New corrective closure must be independent and preserve original historical M001 findings.
 
 ## 1. Objective
 

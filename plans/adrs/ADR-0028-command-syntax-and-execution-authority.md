@@ -1,4 +1,4 @@
-# ADR-0024: Command Syntax Is Advisory; Execution Authority Is Enforced
+# ADR-0028: Command Syntax Is Advisory; Execution Authority Is Enforced
 
 Status: accepted
 
@@ -16,7 +16,7 @@ Affected subsystem roadmaps:
 - `plans/subsystems/linux-execution-isolation-roadmap.md`
 - `plans/subsystems/execution-reliability-approval-autonomy-roadmap.md` (cross-reference; do not reopen historical closure).
 
-Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016 and proposed ADR-0023 (Linux composable isolation). This ADR **refines** ADR-0004's separation of approval from obtained sandbox enforcement; it does not supersede its history or weaken immutable authority ceilings.
+Related ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016 and proposed ADR-0027 (Linux composable isolation). This ADR **refines** ADR-0004's separation of approval from obtained sandbox enforcement; it does not supersede its history or weaken immutable authority ceilings.
 
 ## Context
 
@@ -83,4 +83,4 @@ Native effect-equivalence fixtures: workspace vs outside-root mutations, credent
 
 ## Supersession
 
-None. This ADR refines ADR-0004 and the proposed Linux ADR-0023; previously accepted ADRs remain historical.
+None. This ADR refines ADR-0004 and the proposed Linux ADR-0027; previously accepted ADRs remain historical.

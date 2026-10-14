@@ -95,13 +95,13 @@ Global caller config/repository redirection is denied. Repository hooks, fsmonit
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| medium | Filter-, merge-driver-, and hook-capable local Git is unavailable without a real contained launcher and protected repository view. | Some ordinary local Git mutations and recovery operations remain unavailable. | C002 remains blocked on M002–M005 native proof and accepted ADR-0023. |
+| medium | Filter-, merge-driver-, and hook-capable local Git is unavailable without a real contained launcher and protected repository view. | Some ordinary local Git mutations and recovery operations remain unavailable. | C002 remains blocked on M002–M005 native proof and accepted ADR-0027. |
 | medium | Remote Git is unavailable without mediated transport, egress, and credential authority. | Fetch/pull/push/clone and remote helpers cannot execute through CodeGG's trusted route. | C003 remains blocked on C002, M005/M006, and transport/credential policy. |
 | low | M001's historical compatibility failures are not reclassified as passing tests. | The original M001 capability is not complete. | Preserve `001-status.md`; complete the separately registered C002/C003 correctives before reconsidering M001. |
 
 ## 11. Roadmap disposition
 
-C001 is closed. M002 was already independently ready under accepted ADR-0016 and ADR-0024; it is moved to active in this closure commit and may implement only the typed launch contract, feature probe, and test adapter. Production namespace/backend promotion remains blocked on proposed ADR-0023. C002 and C003 remain blocked on their native containment and transport dependencies. M001 remains blocked. No other plan is unblocked by this closure.
+C001 is closed. M002 was already independently ready under accepted ADR-0016 and ADR-0028; it is moved to active in this closure commit and may implement only the typed launch contract, feature probe, and test adapter. Production namespace/backend promotion remains blocked on proposed ADR-0027. C002 and C003 remain blocked on their native containment and transport dependencies. M001 remains blocked. No other plan is unblocked by this closure.
 
 ## 12. Registry updates
 

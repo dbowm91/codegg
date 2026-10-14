@@ -1,4 +1,4 @@
-# ADR-0023: Composable Linux Execution Isolation and Obtained-Capability Authority
+# ADR-0027: Composable Linux Execution Isolation and Obtained-Capability Authority
 
 Status: proposed
 
@@ -90,10 +90,10 @@ Native Linux real-child probes on supported kernels and at least one negative/no
 References: https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/README.md ; https://github.com/containers/bubblewrap/blob/main/README.md ; https://docs.kernel.org/userspace-api/landlock.html ; https://git-scm.com/docs/git-config .
 
 
-## Command syntax / policy layering (ADR-0024)
+## Command syntax / policy layering (ADR-0028)
 
-ADR-0024 is accepted and defines the cross-platform authorization semantics above this proposed Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. This ADR's proposed Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under already accepted ADR-0016/ADR-0024; adoption of the new concrete Linux backend remains subject to accepting this proposed ADR and native qualification. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
+ADR-0028 is accepted and defines the cross-platform authorization semantics above this proposed Linux mechanism. `ManagedProcessService` must carry the same immutable capability ceiling whether a request originates in Bash, typed Git, a script, Python, or a native tool. This ADR's proposed Bubblewrap/seccomp implementation may not assume that a blocked Git subcommand, known command prefix or risk-classifier match is a security barrier. M002 can implement the backend-neutral internal launch/obtained-capability interface under already accepted ADR-0016/ADR-0028; adoption of the new concrete Linux backend remains subject to accepting this proposed ADR and native qualification. Git M001 C001/C002/C003 are parallel/consumer correctives, not a hard dependency cycle on M002.
 
 ## Supersession
 
-None. ADR-0024 governs command authorization and representation-independent enforcement semantics; this proposed ADR selects the Linux mechanisms implementing those semantics. M002's typed interface work does not imply acceptance of Bubblewrap backend promotion. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.
+None. ADR-0028 governs command authorization and representation-independent enforcement semantics; this proposed ADR selects the Linux mechanisms implementing those semantics. M002's typed interface work does not imply acceptance of Bubblewrap backend promotion. Proposed ADR requires maintainer acceptance before new default authority or backend selection is implemented.

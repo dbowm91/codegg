@@ -103,15 +103,15 @@ The production adapter does not execute Bubblewrap or use an untrusted PATH look
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | macOS cross-target compilation could not complete because the Linux environment lacks the SDK headers required by `ring`. | macOS compilation of unchanged paths is not evidenced on this host. | Run the macOS target check in a macOS or correctly provisioned cross-build environment; amend this record with the result. |
-| high | No production Linux namespace, protected mount, process/IPC, seccomp, network, or cgroup enforcement backend exists in this slice. | Enhanced Linux containment is unavailable. | Keep ADR-0023 proposed; complete M003–M007 with native proof before backend promotion. |
+| high | No production Linux namespace, protected mount, process/IPC, seccomp, network, or cgroup enforcement backend exists in this slice. | Enhanced Linux containment is unavailable. | Keep ADR-0027 proposed; complete M003–M007 with native proof before backend promotion. |
 
 ## 11. Roadmap disposition
 
-M002's interface/probe work is conditionally closed pending the macOS compile evidence above. This does not unblock M003: accepted ADR-0023 and native M003/M004 prerequisites remain outstanding. M007 and C002/C003 remain blocked on native dimensions and transport requirements. M001 remains blocked. No remaining implementation plan becomes eligible in this closure.
+M002's interface/probe work is conditionally closed pending the macOS compile evidence above. This does not unblock M003: accepted ADR-0027 and native M003/M004 prerequisites remain outstanding. M007 and C002/C003 remain blocked on native dimensions and transport requirements. M001 remains blocked. No remaining implementation plan becomes eligible in this closure.
 
 ## 12. Registry updates
 
 - Mark M002 conditionally closed and link this record in `plans/registry.md` and the Linux subsystem roadmap.
 - Preserve M003–M008, C002/C003, and M001 blocked states.
-- Do not register or advertise Bubblewrap/namespace enforcement until ADR-0023 is accepted and native enforcement is proven.
+- Do not register or advertise Bubblewrap/namespace enforcement until ADR-0027 is accepted and native enforcement is proven.
 - The remaining condition is a macOS cross-target compile using a provisioned SDK/toolchain.
