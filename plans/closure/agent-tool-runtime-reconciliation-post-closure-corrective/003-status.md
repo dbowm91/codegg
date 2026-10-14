@@ -199,3 +199,66 @@ remain the evidence for that base.
   or interface dependency. The blocked items (Linux M001/C002/C003/M003–M008,
   search M001/M002, tool-advisor M004/M005) wait on unrelated native/backend
   gates. Nothing is newly unblocked; no corrective follow-up was registered.
+
+## 14. Second re-qualification on main tip `ec43e495` (merge `32098022`)
+
+Sections 1–13 stand. This section records the follow-up merge and the first
+exact-SHA hosted evidence on a merge head.
+
+- Merge parents: docs head `669dc74d` + `origin/main` `ec43e495` (21 commits
+  since `f7ac5228`: Windows C041–C048 successor line incl. PR #115, TUI
+  focused-panel/picker fixes, scheduler completion-signal broadcast, desktop
+  dependency pins). Clean auto-merge, no conflict resolution; the standing
+  `6521560e` disposition (both authorities threaded, no `mcp__` broker bypass,
+  both registry rows) carries forward untouched. Merge commit `32098022`,
+  pushed to `planning/agent-tool-runtime-reconciliation`.
+- Verification on the merged tree (macOS arm64, Rust 1.89):
+  - All five tool-runtime guards + all five negative mutation fixtures — pass.
+  - `cargo fmt --all -- --check` — passes.
+  - `cargo check --workspace --all-targets --locked` — passes.
+  - Focused seven binaries, `--no-fail-fast` — 172 passed, 1 failed: the known
+    upstream `shell_escalation_ask` AllowOnce gap (command-authorization owner).
+  - The four TUI panel tests blocking §4/§10 — now **4/4 pass** in isolation.
+    Fixed upstream by `d68608c1` (focused-panel key advertisement) and
+    `a9897f8b` (`/agents` picker regression-test update), both absorbed here.
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings` — still
+    fails on the same three upstream `too_many_arguments` sites
+    (`src/live_execution_audit.rs:104,135`, `src/tool/bash.rs:282`).
+  - `python3 scripts/check_adr_integrity.py` — fails on the upstream
+    ADR-0027/ADR-0028 duplication (Linux/command-authorization vs new
+    Windows-successor ADRs) plus two dangling windows-sandbox roadmap paths.
+    This also reds `verify.sh quick` at that step and all hosted CI, on main
+    itself as well as here. Out of C003 scope; no unrelated fix attempted.
+- Hosted evidence on exact merge SHA
+  `32098022b5198ef7644efff7cb5f15775557b23c`:
+  - [CI / verify `38521963856`](https://github.com/dbowm91/codegg/actions/runs/38521963856)
+    (`workflow_dispatch` on the branch ref) — **failure at the ADR identity
+    and link guard** with the byte-identical upstream collision quoted above.
+    Earlier steps (agent schema, core boundary, sandbox contract) passed; the
+    tool-runtime guard steps, format, Clippy and workspace tests show
+    `skipped` because the ADR step precedes them in workflow order. No green
+    is claimed; the tool-runtime guards remain locally green (above) but are
+    still unrun on any hosted green-CI SHA.
+  - [Desktop E2E `38521966606`](https://github.com/dbowm91/codegg/actions/runs/38521966606)
+    (`workflow_dispatch` on the branch ref) — **success**: all steps green
+    including `Built-app WebDriver trajectory`, the step that failed on run
+    `38482058408`. The M004 deterministic live-turn transcript assertion
+    (`Examining your request.` + `E2E deterministic turn complete.`) passes
+    with this branch's code on the new base, so the §10 transcript gap is
+    **closed**. (WebdriverIO fails the step on any spec failure; the
+    per-spec logs were inspected and the run conclusion is success.)
+- Gap ledger update: of the §13 blockers, the TUI-4 and Desktop-transcript gaps
+  are closed; remaining for strict closure are (1) the ADR-0027/0028 collision
+  (Windows-sandbox owners — gates all hosted CI), (2) the three Clippy sites
+  (command-authorization owners), (3) `shell_escalation_ask` (same owner),
+  (4) full workspace + `server,plugins,lsp-test-support` nextest green on a
+  final SHA, and (5) a green hosted CI run covering the tool-runtime guard
+  steps. The §11 ledger table's `667005a6` column remains the last full
+  replay; C001/C002 code is byte-preserved through `6521560e` and `32098022`
+  (no replay SHAs — nothing to replay).
+- Disposition: C003 REMAINS conditionally closed at `32098022`. Merging this
+  branch still does not worsen `main`: every remaining merged-tree failure
+  reproduces on clean `origin/main`.
+- Unblock audit (same commit): no registered plan depends on this C003; the
+  blocked set is unchanged (Linux, search, tool-advisor gates). Nothing newly
+  unblocked; no follow-up registered.
