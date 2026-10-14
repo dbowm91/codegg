@@ -1,6 +1,6 @@
 # Shell Policy ADR-0028 Post-Closure C002 — Safe Advisory and Explicit-Deny Contract Tests
 
-Status: ready for handoff
+Status: implemented; closed (implementation `b0392431`; closure `plans/closure/shell-command-policy-adr0028-post-closure-corrective/002-status.md`)
 
 Baseline: `39f149a15ef529d66787d1d11551872ea22ec384` (`main`; 2026-10-14).
 

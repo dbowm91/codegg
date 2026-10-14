@@ -1,6 +1,6 @@
 # Git Clean Authorization CI — Test Contract Corrective Addendum
 
-Status: active — C001 ready (independent of shell C002)
+Status: closed — C001 closed (implementation `b0392431`; closure `plans/closure/git-clean-authorization-ci-corrective/001-status.md`; Linux contained/remote Git stays separately blocked)
 
 Planning baseline: `39f149a15ef529d66787d1d11551872ea22ec384` (`main`, 2026-10-14).
 

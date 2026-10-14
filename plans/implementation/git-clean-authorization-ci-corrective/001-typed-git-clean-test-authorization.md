@@ -1,6 +1,6 @@
 # Git Clean Authorization CI C001 — Correct Typed Permission Test Contract
 
-Status: ready for handoff
+Status: implemented; closed (implementation `b0392431`; closure `plans/closure/git-clean-authorization-ci-corrective/001-status.md`)
 
 Baseline: `39f149a15ef529d66787d1d11551872ea22ec384` (`main`, 2026-10-14).
 

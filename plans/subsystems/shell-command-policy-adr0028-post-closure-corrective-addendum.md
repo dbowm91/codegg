@@ -1,6 +1,6 @@
 # Shell Command Policy — ADR-0028 Post-Closure Corrective Addendum
 
-Status: active — C002 ready (C001 closed historically)
+Status: closed — C002 closed (implementation `b0392431`; closure `plans/closure/shell-command-policy-adr0028-post-closure-corrective/002-status.md`)
 
 Planning baseline: `39f149a15ef529d66787d1d11551872ea22ec384` (main, 2026-10-14).
 
