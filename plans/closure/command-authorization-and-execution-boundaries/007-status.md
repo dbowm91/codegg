@@ -59,6 +59,24 @@ scripts/verify.sh quick
 
 All commands passed. Counts: command routing 142/142, permission-filtered lib suite 124/124, approval router 17/17, sandbox containment 15/15, managed-process-filtered lib suite 20/20. `verify.sh quick` passed, including workspace all-targets checking. Hosted CI was not run.
 
+### Current verification refresh (2026-10-14)
+
+The M004 verification set was rerun after the C006 implementation changes, against the source tree at `e9f0c2b` (the current branch subsequently added the documentation-only C006 closure commit `03d2c9c`). All commands below passed:
+
+```bash
+cargo test --locked --test command_routing_adversarial
+cargo test --locked -p codegg --lib permission
+cargo test --locked --test approval_router -- --test-threads=1
+cargo test --locked --test sandbox_containment -- --test-threads=1
+cargo test --locked -p codegg --lib managed_process
+python3 scripts/check_execution_ownership.py
+python3 scripts/check_authorization_matrix.py
+cargo fmt --all -- --check
+scripts/verify.sh quick
+```
+
+Counts: command routing 142/142, permission-filtered lib suite 124/124, approval router 17/17, sandbox containment 15/15, and managed-process-filtered lib suite 21/21. Quick verification passed, including workspace all-targets checking. This refresh confirms the existing audit and test-only model still pass after C006; it does not establish constrained Test/Python/Git route parity. C006's hosted native result is a bounded negative disposition for strict Linux M003 acceptance, not route-parity evidence.
+
 ## 5. Security and compatibility disposition
 
 - No parent approval behavior, permission ceiling, explicit Deny, FullHost default, scheduler, or production dispatcher changed.
@@ -80,4 +98,4 @@ All commands passed. Counts: command routing 142/142, permission-filtered lib su
 
 M004 is conditionally closed for its independently actionable route inventory and test-only admission design. Production constrained special-route promotion remains blocked on end-to-end accepted-context propagation and native positive/negative route evidence. This closure does not reopen M001–M003 or discharge Linux C002/C003.
 
-Unblock audit: nothing newly unblocked. Linux C006 remains separately blocked on explicit ADR-0031 disposition and qualifying mount evidence; no downstream route became production-ready.
+Unblock audit: nothing newly unblocked. Linux C006 is closed negative for strict M003 acceptance; M003 remains blocked on enforceable protection for future nested Git metadata and the incomplete native compatibility matrix. No downstream route became production-ready. The bounded C006 native run does not qualify typed Test/Python/Git routes or change this M004 disposition.
