@@ -109,7 +109,7 @@ authority.
 
 - Workflow header comment documents the gate's scope vs research.
 - Guard script usage documents all six checks.
-- Roadmap §ADR-0027 handoff and registry C041 row to be updated to
+- Roadmap §ADR-0029 handoff and registry C041 row to be updated to
   closed in the closure commit (see §12).
 
 ## 10. Unresolved findings

@@ -246,7 +246,7 @@ capability or complete existing-tree policy. See
 the backend id. Those lists are the honest boundary of each mechanism and
 are asserted in `tests/sandbox_containment.rs`, so a backend can never be
 read as stronger than it is. Capability-stratified successor negotiation
-(C042, ADR-0027 bounded test-only) lives in
+(C042, ADR-0029 bounded test-only) lives in
 `src/security/sandbox/guarantee.rs`: the pure `negotiate()` function takes
 an immutable `RequestedGuarantees` plus attested `AttestedCapabilities`
 and either returns an exact `SatisfiedContract` or refuses before any
@@ -255,7 +255,7 @@ satisfied by broad host reads, `Unrestricted` network never satisfies
 offline, unknown/downgraded tiers never satisfy the no-host-mutation
 prohibition, test-only candidates never report production `Enforced`,
 and a child broader than its parent ceiling is refused. No public
-profile is added; ADR-0028 remains proposed, not authorized:
+profile is added; ADR-0030 remains proposed, not authorized:
 
 | Backend | Guarantees | Limits |
 |---|---|---|

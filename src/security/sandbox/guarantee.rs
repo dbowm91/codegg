@@ -6,7 +6,7 @@
 //! refuses with a typed reason rather than degrading to `FullHost` or
 //! broadening a child beyond its parent ceiling.
 //!
-//! ADR-0027 authority is bounded test-only preparation. Proposed ADR-0028
+//! ADR-0029 authority is bounded test-only preparation. Proposed ADR-0030
 //! (broad-read compatibility profile) is NOT authorization: this module
 //! never invents a broad-read public profile and never reinterprets
 //! strict `ReadOnly`/`WorkspaceWrite` as broad-read.

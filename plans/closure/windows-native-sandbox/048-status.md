@@ -29,7 +29,7 @@ no-admission rather than another unbounded corrective cycle.
 |---|---|---|---|
 | C042 + C047 hard deps | C042 closed, C047 audit closed at `edde2bebe` | pass (predecessors) | Only satisfied gates |
 | Strict-positive real-child backend | none — C043 + C044 closed negative this revision | blocked | Both candidate lines exhausted on hosted evidence; C029/C034/C038 no-admission intact |
-| New production-admission ADR | none | blocked | ADR-0027 is test-only by design; ADR-0028 proposed only |
+| New production-admission ADR | none | blocked | ADR-0029 is test-only by design; ADR-0030 proposed only |
 | Host matrix + lifecycle + network qualification | not run | blocked | No eligible host run |
 | Independent security review | not requested | blocked (correct) | No candidate warrants review |
 | C045/C046 only-if-claimed | unclaimed | n/a | No network/stage mode advertised |
