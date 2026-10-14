@@ -2620,6 +2620,33 @@ mod tests {
             "outside secret"
         );
 
+        let child_hardlink_alias = workspace.path().join("child-git-config-alias");
+        let mut hardlink_spec = spec.clone();
+        hardlink_spec.args = vec![
+            "-c".into(),
+            format!(
+                "if ln {} {}; then exit 78; fi",
+                shell_quote(&workspace.path().join(".git/config")),
+                shell_quote(&child_hardlink_alias),
+            ),
+        ];
+        let mut hardlink_argv = vec![hardlink_spec.target.as_os_str().to_owned()];
+        hardlink_argv.extend(hardlink_spec.args.iter().map(OsString::from));
+        let mut hardlink_request = ManagedProcessRequest::new(
+            hardlink_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c006-native", "child-hardlink-alias"),
+        );
+        hardlink_request.sandbox = SandboxRequest::Required(hardlink_spec);
+        let hardlink_result = ManagedProcessService::run(hardlink_request)
+            .await
+            .expect("child hardlink probe launch succeeds");
+        assert!(hardlink_result.exit_status.success());
+        assert!(
+            !child_hardlink_alias.exists(),
+            "child linked protected Git metadata into writable workspace"
+        );
+
         let hardlink_marker = workspace.path().join("hardlink-must-not-run");
         let hardlink_alias = workspace.path().join("git-config-alias");
         std::fs::hard_link(workspace.path().join(".git/config"), &hardlink_alias)

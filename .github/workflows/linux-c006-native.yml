@@ -29,6 +29,7 @@ concurrency:
 jobs:
   protected-mount:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_C006_BWRAP_NATIVE: '1'
