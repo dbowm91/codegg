@@ -380,6 +380,16 @@ the panel has exited, `i` starts a fresh shell instead — the panel never leave
 you staring at a dead one. `/terminal-clear` wipes the local scrollback and
 screen while the process keeps running.
 
+The box opens with one header line — the command, the link state, and whether
+it is taking your keys. Press `D` while viewing to fold in the full diagnostics
+dump (handle, workspace, attachment id, size and sequence cursors); that is the
+view to paste into a bug report. A resync, a degraded screen, or an exit stays
+visible either way, because those change what the rows on screen mean.
+
+Opening the box takes an async create-and-attach round trip against the daemon.
+Until it completes there is no box, so keystrokes keep going to the composer —
+type the command again once the box is up rather than assuming `i` was eaten.
+
 ## Approval and sandbox
 
 Two independent dimensions. Approval decides *who answers an escalation*;

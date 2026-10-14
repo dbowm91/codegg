@@ -778,18 +778,30 @@ load-bearing, and all three are rules rather than drawing details:
 
 **Selection and navigation are claimed by the panel before the global map.**
 `classify_nav_key` answers `j/k/h/l` and arrows, `Ctrl+u`/`Ctrl+d`, `e`/`b`,
-`v`, `x`, `d`, `space+y`, and `C`. `d` and `C` are deliberately in that table
+`v`, `x`, `d`, `space+y`, `C`, and `D`. `d` and `C` are deliberately in that table
 rather than left to the global bindings: a focused panel is consulted *before*
 Normal-mode actions, so an unclaimed `d` would fall through to `OpenDiff`. `d`
 is the **delete operator** and `C` took over the clear it used to be, because a
 key that means "clear the whole view" and a key that means "remove what I
 selected" cannot be the same key. A bare `d` with nothing selected is a no-op
 that is still *consumed*, for exactly the precedence reason above. `C` is bound
-with and without `SHIFT` because terminals disagree on the encoding. Paging
+with and without `SHIFT` because terminals disagree on the encoding, and `D`
+follows the same four-spelling rule for the same reason. Paging
 matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
 newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
 and `y` as separate events, so `prefix_pending` remembers the first key and any
 second key other than `y` disarms it and is then handled normally.
+
+**The box header is compact by default; `D` is the diagnostics dump.**
+`header_lines` leads with one line — command, link state, and whether the
+terminal is taking keys — because the dump it used to print unconditionally
+(handle, workspace, attachment id, size, sequence cursors) is six lines of
+exactly what a bug report needs and almost nothing a reader who just asked for
+a shell needs, and on a short dialog it pushed the terminal rows off the end.
+`full_header_lines` keeps every field and `D` folds it in or out per view.
+Anything that changes what the visible rows *mean* — a resync, a degraded VT
+screen, an exit — stays on screen in both forms; hiding "exited, input is
+rejected" behind a toggle is exactly how a dead terminal reads as a live one.
 
 **`d` deletes locally, and the overlay is keyed on text.** `vt100::Screen` is
 read-only — there is no API to remove a row — so deletion means the selected

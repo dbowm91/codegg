@@ -442,6 +442,16 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   *different surface* than the usual one (the side panel), carry the route as
   explicit app state — `App::terminal_panel_spawn` — and clear it on **every**
   failure path, or a failed create diverts the next unrelated terminal.
+- **A diagnostic dump is not a header.** `header_lines` leads with one line —
+  command, link state, whether the terminal is taking keys. The full dump
+  (handle, workspace, attachment id, size, cursors) is `D` away via
+  `full_header_lines`, because six lines of bug-report fields pushed the actual
+  terminal rows off a short dialog and left the box reading as a handle list
+  rather than a shell. Anything that changes what the visible rows *mean* — a
+  resync, a degraded VT screen, an exit — stays on screen in **both** forms;
+  hiding "exited, input rejected" behind a toggle is how a dead terminal reads
+  as a live one. Opening the box is an async create-and-attach round trip, so
+  keystrokes before it completes belong to the composer, not the terminal.
 - **Viewport click and viewport drag share one press.** Inside the message
   viewport, `Down` arms a selection, `Drag` extends it, and `Up` decides:
   release on the anchor cell is a *click* and reaches `on_click` (whose

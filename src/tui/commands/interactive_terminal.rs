@@ -1305,7 +1305,7 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
         styled_content.extend(output);
     }
     let footer = format!(
-        "j/k scroll  |  ^-u/^-d page  |  e/b word  |  v select chars  |  x select lines  |  d delete  |  space+y copy  |  C clear  |  i focus  |  ^-] unfocus  |  Esc closes{}",
+        "j/k scroll  |  ^-u/^-d page  |  e/b word  |  v select chars  |  x select lines  |  d delete  |  space+y copy  |  C clear  |  i focus  |  ^-] unfocus  |  D diagnostics  |  Esc closes{}",
         if app.interactive_terminals.redaction_count(handle) > 0 {
             format!(
                 "  |  {} deleted",
@@ -1620,6 +1620,9 @@ pub(crate) fn apply_nav(
             terminals.set_prefix_pending(handle, false);
             return NavOutcome::ClearRequested;
         }
+        TerminalNavAction::ToggleDiagnostics => {
+            terminals.toggle_diagnostics(handle);
+        }
         TerminalNavAction::Unhandled => return NavOutcome::Unhandled,
     }
     NavOutcome::Handled
@@ -1644,6 +1647,8 @@ pub(crate) enum TerminalNavAction {
     YankPrefix,
     /// Helix `C` — clear scrollback and screen; the process keeps running.
     Clear,
+    /// Helix `D` — fold the full diagnostics dump in or out of the box.
+    ToggleDiagnostics,
     /// Not a navigation key; let the caller route it.
     Unhandled,
 }
@@ -1694,6 +1699,11 @@ pub(crate) fn classify_nav_key(key: crossterm::event::KeyEvent) -> TerminalNavAc
         | (KeyModifiers::NONE, KeyCode::Char('C'))
         | (KeyModifiers::SHIFT, KeyCode::Char('c'))
         | (KeyModifiers::SHIFT, KeyCode::Char('C')) => TerminalNavAction::Clear,
+        // Same four-spelling rule as `C`: a diagnostics toggle that works on
+        // one terminal and is a dead key on another is not a toggle.
+        (KeyModifiers::NONE, KeyCode::Char('D'))
+        | (KeyModifiers::SHIFT, KeyCode::Char('d'))
+        | (KeyModifiers::SHIFT, KeyCode::Char('D')) => TerminalNavAction::ToggleDiagnostics,
         _ => TerminalNavAction::Unhandled,
     }
 }
@@ -1853,6 +1863,42 @@ mod tests {
             Some("h-test")
         );
         assert!(!app.dialog_state.terminal_request.is_loading());
+    }
+
+    /// A live, attached terminal is exactly the state `/terminal` leaves the
+    /// box in, and `i` is the only advertised route into INS mode. Every
+    /// failure this guards is silent in the field: the box opens, shows
+    /// output, docks, and simply never takes the keyboard.
+    #[test]
+    fn pressing_i_on_the_open_box_enters_focused_input() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = test_app();
+        let request_id = app.dialog_state.terminal_request.begin();
+        apply_terminal_attach_finished(
+            &mut app,
+            request_id,
+            "h-test".to_string(),
+            Some("a-1".to_string()),
+            Some(test_chunk("$ ")),
+            None,
+            None,
+        );
+        assert_eq!(
+            app.ui_state.dialog,
+            crate::tui::Dialog::Terminal,
+            "the box must be open before the keystroke is meaningful"
+        );
+        assert!(
+            !app.interactive_terminals.is_focused("h-test"),
+            "a freshly opened box starts viewing, never focused"
+        );
+
+        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+        assert!(
+            app.interactive_terminals.is_focused("h-test"),
+            "`i` is the documented INS-mode entry; a live attached terminal must take the keyboard"
+        );
     }
 
     #[test]

@@ -503,6 +503,13 @@ pub struct InteractiveTerminalView {
     /// Legacy xterm encoding delivers `Space` and `y` as two separate key
     /// events rather than one chord, so the prefix has to be remembered.
     pending_prefix: bool,
+    /// Whether the box prints the full diagnostics dump above the output.
+    ///
+    /// Off by default. The dump is six lines of handle, workspace, attachment
+    /// id and sequence cursors, which is what a bug report needs but is the
+    /// first thing on screen for someone who just asked for a shell — and it
+    /// pushed the actual terminal rows off a small dialog. `D` restores it.
+    diagnostics: bool,
 }
 
 impl InteractiveTerminalView {
@@ -525,6 +532,7 @@ impl InteractiveTerminalView {
             nav: SelectionState::new((rows.saturating_sub(1), 0)),
             redactions: Redactions::default(),
             pending_prefix: false,
+            diagnostics: false,
         }
     }
 
@@ -1840,10 +1848,79 @@ impl InteractiveTerminalController {
         self.render_view(handle, max_lines, ratatui::style::Style::default())
     }
 
-    /// Header lines describing one terminal for the dialog view,
-    /// including link/focus state, cursors, and any resync/exit detail.
-    /// Never includes raw terminal output.
+    /// Header lines describing one terminal for the dialog view, never
+    /// including raw terminal output.
+    ///
+    /// The compact form is the default: one line naming the command and the
+    /// thing a reader actually needs to know (is it live, is it taking my
+    /// keys). The full diagnostics dump stays one `D` away because it is what
+    /// a bug report needs, not what an everyday shell needs.
     pub fn header_lines(&self, handle: &str) -> Option<Vec<String>> {
+        let view = self.views.get(handle)?;
+        if view.diagnostics {
+            return self.full_header_lines(handle);
+        }
+        let mut lines = vec![format!(
+            "{} · {}{}",
+            view.command,
+            view.link.label(),
+            match view.focus {
+                TerminalFocus::Focused => " · FOCUSED (Ctrl-] leaves)",
+                TerminalFocus::Viewing => " · i to type",
+                TerminalFocus::Hidden => "",
+            }
+        )];
+        // Anything the reader must not miss stays visible even when the dump
+        // is folded away: a degraded screen, a resync, or an exit all change
+        // what the rows on screen mean.
+        if view.screen_degraded {
+            lines.push(
+                "VT display reset after an output gap; current screen may be incomplete"
+                    .to_string(),
+            );
+        }
+        match &view.link {
+            TerminalLinkState::ResyncRequired(resync) => lines.push(format!(
+                "resync needed ({}) — use /terminal-resume to follow live output",
+                resync_reason_label(&resync.reason)
+            )),
+            TerminalLinkState::Exited {
+                exit_code,
+                exit_signal,
+            } => lines.push(format!(
+                "exited (code={} signal={}); scrollback is readable, input is rejected",
+                exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                exit_signal
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "-".into())
+            )),
+            TerminalLinkState::Gone { reason } => lines.push(format!("gone: {reason}")),
+            TerminalLinkState::Live | TerminalLinkState::Reconnecting => {}
+        }
+        Some(lines)
+    }
+
+    /// Toggle the diagnostics dump for one terminal (`D`).
+    pub fn toggle_diagnostics(&mut self, handle: &str) -> bool {
+        match self.views.get_mut(handle) {
+            Some(view) => {
+                view.diagnostics = !view.diagnostics;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether one terminal is currently printing its full diagnostics dump.
+    pub fn diagnostics_visible(&self, handle: &str) -> bool {
+        self.views.get(handle).is_some_and(|v| v.diagnostics)
+    }
+
+    /// The full six-line diagnostics dump: handles, cursors, and every
+    /// resync/exit detail. Reachable with `D`; never the default.
+    fn full_header_lines(&self, handle: &str) -> Option<Vec<String>> {
         let view = self.views.get(handle)?;
         let mut lines = vec![
             format!("handle:      {}", view.handle),
@@ -2190,6 +2267,60 @@ mod tests {
         // Escaping twice is harmless.
         controller.escape("h");
         assert!(!controller.is_focused("h"));
+    }
+
+    #[test]
+    fn the_box_leads_with_the_command_not_a_handle_dump() {
+        let controller = live_attached();
+        let header = controller.header_lines("h").expect("header");
+
+        assert!(
+            !header[0].contains("handle:"),
+            "the default header is what a reader sees first; the UUID dump is not it: {header:?}"
+        );
+        assert!(
+            header[0].contains("cat"),
+            "the command is what identifies the terminal to a human: {header:?}"
+        );
+        assert!(
+            header[0].contains("live"),
+            "link state stays visible without the dump: {header:?}"
+        );
+        assert!(
+            header.len() <= 2,
+            "the compact header is one line plus at most a warning: {header:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_stay_one_key_away_and_are_lossless() {
+        let mut controller = live_attached();
+        assert!(!controller.diagnostics_visible("h"));
+        assert!(controller.toggle_diagnostics("h"));
+        assert!(controller.diagnostics_visible("h"));
+
+        let full = controller.header_lines("h").expect("header");
+        assert!(
+            full.iter().any(|line| line.contains("handle:")),
+            "the dump is what a bug report needs, so it must still carry the handle"
+        );
+        assert!(full.iter().any(|line| line.contains("workspace:")));
+        assert!(full.iter().any(|line| line.contains("focus:")));
+
+        assert!(controller.toggle_diagnostics("h"));
+        assert!(!controller.diagnostics_visible("h"));
+        assert!(!controller.toggle_diagnostics("missing"));
+    }
+
+    #[test]
+    fn an_exited_terminal_says_so_even_with_the_dump_folded() {
+        let mut controller = live_attached();
+        controller.apply_terminated("h", Some(0), None);
+        let header = controller.header_lines("h").expect("header");
+        assert!(
+            header.iter().any(|line| line.contains("exited")),
+            "input is rejected after exit; hiding that behind a toggle is how a dead terminal reads as live: {header:?}"
+        );
     }
 
     #[test]
