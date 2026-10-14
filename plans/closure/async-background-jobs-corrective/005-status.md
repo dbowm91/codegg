@@ -141,8 +141,7 @@ Local (all on the implementation lineage; post-merge `quick` on
   scheduler-bypass, execution-ownership, core-boundary, shell-policy
   test-safety (main's), no-hardcoded-models, provider
   wire/catalog/resilience, OpenAI endpoint, eggwork routing.
-- Hosted: draft PR #119 updated to the implementation head; exact-head
-  `CI / verify` + Desktop E2E runs pending (see §10).
+- Hosted on exact head `4f2581f9` (draft PR #119, unmerged): Desktop E2E run `38648633553` SUCCESS (renderer + host + built-app WebDriver), Windows launcher run `38648633435` SUCCESS, CI run `38648633509` reached Workspace tests with exactly one failure — the pre-existing unrelated tool-advisor receipt drift (see §10). Formatting, static guards, Clippy, and all in-scope suites green on the hosted run.
 
 ## 5. Invariant review
 
@@ -220,13 +219,7 @@ Local (all on the implementation lineage; post-merge `quick` on
 
 ## 10. Unresolved findings
 
-- None blocking. One operational low: exact-head hosted `CI / verify` +
-  Desktop E2E evidence for the implementation head is pending (draft PR
-  #119 updated; runs to be recorded in the plan). The pre-existing,
-  unrelated tool-advisor receipt drift (`m003_checked_in_receipt_matches_
-  recomputation`, deterministic, owned by that workstream) and the
-  toolchain-infra red on the prior `main` head are recorded in the plan
-  and may color the hosted result; they are out of scope here.
+- None blocking. Operational low, now evidenced: exact-head hosted runs on `4f2581f9` give Desktop E2E SUCCESS (`38648633553`), Windows launcher SUCCESS (`38648633435`), and CI green except one failure — the pre-existing unrelated tool-advisor receipt drift (`m003_checked_in_receipt_matches_recomputation`: deterministic, byte-identical locally and hosted, code+receipt untouched by this workstream and identical to `main` by merge diff, owned by the tool-advisor line, not fixed here). No in-scope hosted failure remains.
 - Medium (accepted residual, by design): suppression is sticky per
   `(notice, grant)` — a parked attempt requires a fresh grant to retry.
   The notice stands as attention, so no wake is ever silent.
