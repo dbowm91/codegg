@@ -91,6 +91,26 @@ fn tool_ctx(
     ctx
 }
 
+fn authorize_full_host(ctx: &mut ToolExecutionContext) {
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                ctx.session_id.clone(),
+                Some("agent".into()),
+                Some("policy-m002".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "reviewer_allow",
+                Some("policy-m002".into()),
+            ),
+            command_preflight: None,
+        });
+}
+
 async fn events_for(
     pool: &sqlx::SqlitePool,
     action: &str,
@@ -751,7 +771,8 @@ async fn scheduler_test_cancel_and_interrupt_stay_distinguishable() {
         );
         let tool = codegg::tool::test::TestTool::new().with_submission(submission);
         let correlation = format!("corr-testtool-{outcome}");
-        let ctx = tool_ctx(&pool, &correlation, &format!("inv-testtool-{outcome}"));
+        let mut ctx = tool_ctx(&pool, &correlation, &format!("inv-testtool-{outcome}"));
+        authorize_full_host(&mut ctx);
         tool.execute_structured(
             serde_json::json!({
                 "scope": "custom",
@@ -1127,9 +1148,11 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
-    let ctx = tool_ctx(&pool, "corr-git-routed", "inv-git-routed");
+    let mut ctx = tool_ctx(&pool, "corr-git-routed", "inv-git-routed");
+    authorize_full_host(&mut ctx);
     let out = tool
         .execute_structured(
             serde_json::json!({
@@ -1198,9 +1221,11 @@ async fn bash_managed_git_plumbing_emits_single_shell_event() {
         ..Default::default()
     };
     let tool = codegg::tool::bash::BashTool::new()
+        .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost)
         .with_routing_disabled_env(false)
         .with_command_intent_config(cic);
-    let ctx = tool_ctx(&pool, "corr-git-plumbing", "inv-git-plumbing");
+    let mut ctx = tool_ctx(&pool, "corr-git-plumbing", "inv-git-plumbing");
+    authorize_full_host(&mut ctx);
     let command = format!("git -C {} add plumbing.txt", repo.path().to_string_lossy());
     let out = tool
         .execute_structured(
