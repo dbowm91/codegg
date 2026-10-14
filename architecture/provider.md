@@ -328,6 +328,21 @@ credential validity that catalog discovery never established.
 Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
 (tombstone) -> restore -> purge.
 
+**Every lifecycle verb is bound *and* printed.** `/connections` binds
+`e` enable/disable, `d` delete (confirm), `R` rotate, `r` refresh, `u` restore,
+and `p` purge, and the dialog renders all of them on a legend row. Enter selects
+the highlighted connection/model pair for the session and nothing else, so a
+dialog that hid its verbs read as model-picking with no way to repair a bad
+credential — the exact situation a user reaches *because* their key stopped
+working.
+
+**Rotation names the connection being rotated.** `App::open_connection_rotation_dialog`
+derives its `ProviderInfo` from the target connection's `provider_kind`
+(stripping the `other:` prefix, which is how `other:opencode_go` is stored) and
+its `display_name`. It used to construct a fixed `eggpool`/`Eggpool` row, so
+rotating an OpenCode Go credential prompted for an Eggpool one — the correct
+action against the wrong subject, with nothing on screen to contradict it.
+
 ### Provider-Neutral `/connect` TUI (M003)
 
 `/connect` is the provider onboarding surface. It opens in a short loading

@@ -15,6 +15,7 @@ use crate::tui::components::component::{Component, DialogType};
 use crate::tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
@@ -340,19 +341,44 @@ impl Component for ConnectionSelectionDialog {
             let footer_para = Paragraph::new(footer).block(Block::default().borders(Borders::TOP));
             let footer_area = Rect {
                 x: inner.x,
-                y: inner.y + inner.height.saturating_sub(3),
+                y: inner.y + inner.height.saturating_sub(4),
                 width: inner.width,
                 height: 3,
             };
             frame.render_widget(footer_para, footer_area);
         }
 
+        // The lifecycle verbs are the whole reason to open this dialog on a
+        // connection you cannot use, and an unlabelled dialog cannot tell the
+        // user they exist — pressing Enter on a row refreshes models, which
+        // reads as "this dialog only picks models". Printed here so `e`, `d`,
+        // `R`, `u` and `p` are discoverable without reading the source.
+        let legend = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "↑↓ conn · ←→ model · Enter use · ",
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                "e enable/disable · d delete · R rotate key · r refresh · u restore · p purge",
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+        let legend_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(legend, legend_area);
+
         if let Some(err) = &self.last_error {
             let error_para = Paragraph::new(err.as_str())
                 .style(ratatui::style::Style::default().fg(theme.error));
+            // Sits directly above the legend, not on top of it: an error the
+            // user cannot read is the same dead end as a key they cannot find.
             let err_area = Rect {
                 x: inner.x,
-                y: inner.y + inner.height.saturating_sub(1),
+                y: inner.y + inner.height.saturating_sub(2),
                 width: inner.width,
                 height: 1,
             };

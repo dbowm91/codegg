@@ -10591,10 +10591,36 @@ impl App {
     fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
         use crate::tui::components::dialogs::connect::ProviderInfo;
 
+        // The dialog is built from the connection being rotated, not from a
+        // hardcoded provider. `other:opencode_go` is the canonical
+        // provider_kind for OpenCode Go, so a fixed "eggpool" entry left the
+        // dialog asking an OpenCode Go user to rotate an Eggpool credential —
+        // right action, wrong subject, and no way to tell from the prompt.
+        let (provider_id, provider_name) = self
+            .dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let id = kind.strip_prefix("other:").unwrap_or(kind);
+                (id.to_string(), connection.display_name.clone())
+            })
+            .unwrap_or_else(|| {
+                // No summary to name it from (a rotation opened before the list
+                // loaded). The id is what the probe path uses, so falling back
+                // to the built-in alias still routes; only the label is generic.
+                ("eggpool".to_string(), "provider".to_string())
+            });
         let providers = vec![ProviderInfo::api_key(
-            "eggpool",
-            "Eggpool",
-            "Rotate the stored Eggpool credential",
+            provider_id.clone(),
+            provider_name.clone(),
+            format!("Rotate the stored {provider_name} credential"),
             None,
         )];
         let mut dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
@@ -17576,5 +17602,78 @@ mod policy_selector_route_tests {
         );
         app.on_key(key(crossterm::event::KeyCode::Char('0')));
         assert!(app.dialog_state.permission_dialog.is_some());
+    }
+}
+
+#[cfg(test)]
+mod connection_rotation_tests {
+    use super::*;
+    use crate::protocol::provider::ProviderConnectionSummaryDto;
+
+    fn summary(id: &str, kind: &str, name: &str) -> ProviderConnectionSummaryDto {
+        ProviderConnectionSummaryDto {
+            id: id.to_string(),
+            provider_kind: kind.to_string(),
+            display_name: name.to_string(),
+            endpoint: "https://example.invalid/v1".to_string(),
+            tls_policy: "required".to_string(),
+            scope: "personal".to_string(),
+            state: "active".to_string(),
+            revision: 1,
+            model_count: 0,
+            catalog_revision: None,
+            health: None,
+        }
+    }
+
+    /// Regression: rotation built a fixed `eggpool`/`Eggpool` row, so rotating
+    /// an OpenCode Go credential asked for an Eggpool one. The dialog has to
+    /// name the connection it is about to replace, and `other:` is how
+    /// third-party providers are stored.
+    #[test]
+    fn rotation_names_the_provider_being_rotated() {
+        let mut app = App::new_for_testing("rotation-test".to_string());
+        let mut dialog =
+            crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![summary("conn-1", "other:opencode_go", "eggstackmain")];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        app.open_connection_rotation_dialog("conn-1".to_string(), 1);
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation opens the connect dialog");
+        let provider = &connect.providers[0];
+        assert_eq!(
+            provider.id, "opencode_go",
+            "the `other:` prefix is storage naming, not the provider id"
+        );
+        assert_eq!(
+            provider.name, "eggstackmain",
+            "the prompt must name the credential being replaced"
+        );
+        assert!(
+            provider.description.contains("eggstackmain"),
+            "description follows the connection, not a hardcoded provider"
+        );
+    }
+
+    /// A rotation opened before the connection list has loaded must still
+    /// produce a usable dialog rather than panic on a missing summary.
+    #[test]
+    fn rotation_without_a_loaded_list_still_opens() {
+        let mut app = App::new_for_testing("rotation-empty".to_string());
+        app.open_connection_rotation_dialog("conn-missing".to_string(), 1);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation always opens a dialog");
+        assert_eq!(connect.providers.len(), 1);
     }
 }
