@@ -12,10 +12,12 @@
 //! - Not a remote process execution job and not a CPU/process permit held
 //!   for the CI duration. A dormant watcher holds no task, no permit, no
 //!   interval: only a durable row with `next_check_at`.
-//! - Not a second scheduler or timer loop. Observations advance only at
-//!   existing daemon-owned activity points (explicit `ci_watch` tool calls
-//!   and turn-boundary advancement, both bounded) plus the test harness's
-//!   direct `observe_once` drive.
+//! - Not a second scheduler or per-watch timer loop. Since C001 the canonical
+//!   idle trigger is one daemon-lifecycle-owned `CiWatchIdleDriver`
+//!   (earliest-due wake, bounded global advancement); explicit `ci_watch`
+//!   tool calls and turn-boundary advancement (both bounded) remain as
+//!   safe-boundary views. The test harness drives `observe_once` only for
+//!   unit isolation — idle qualification uses the spawned driver.
 //! - Not a webhook listener, cron/DAG engine, or multi-provider CI
 //!   platform. GitHub Actions only; anything else fails closed as
 //!   unsupported.
@@ -272,6 +274,19 @@ pub struct CiWatchRecord {
     pub on_complete: JobCompletionDisposition,
     pub created_at: i64,
     pub updated_at: i64,
+    /// C001 persisted cross-service observation lease. `None` when unclaimed;
+    /// an expired `claim_until` is recoverable by any live service. The DB
+    /// columns are the cross-service authority; the in-memory `in_flight`
+    /// mutex remains a fast-path optimization only.
+    #[serde(default)]
+    pub claim_owner: Option<String>,
+    #[serde(default)]
+    pub claim_until: Option<i64>,
+    /// C001 claim epoch. Bumped on every successful CAS claim; a slow old
+    /// holder whose generation no longer matches the durable row must not
+    /// overwrite a newer terminal state.
+    #[serde(default)]
+    pub generation: u32,
 }
 
 /// Bounded operator view of one watch. No secrets, no unbounded text.
@@ -361,13 +376,19 @@ impl CiWatchConfig {
 
 pub struct CiWatchService {
     watches: RwLock<HashMap<String, CiWatchRecord>>,
-    /// Per-watch mutex: exactly one active observation per watch. Concurrent
-    /// callers observe `Busy` semantics (skip) rather than duplicate polls.
+    /// Per-watch mutex: process-local fast path. Concurrent callers on this
+    /// instance observe `Busy` semantics (skip) rather than duplicate polls.
+    /// Cross-service authority is the persisted `claim_owner/claim_until`
+    /// lease (C001); this map remains an optimization only.
     in_flight: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     notifier: Arc<JobNotificationService>,
     pub config: CiWatchConfig,
     pool: Option<SqlitePool>,
     http: eggfetch_core::Client,
+    /// C001 stable per-handle identity used as `claim_owner`. Two independent
+    /// `CiWatchService` handles (two turns, two daemons, restart) never share
+    /// this value, so the DB lease distinguishes holders.
+    service_id: String,
 }
 
 impl CiWatchService {
@@ -383,6 +404,7 @@ impl CiWatchService {
             config,
             pool: None,
             http,
+            service_id: format!("svc-{}", &uuid::Uuid::new_v4().to_string()[..8]),
         }
     }
 
@@ -402,7 +424,18 @@ impl CiWatchService {
             config,
             pool: Some(pool),
             http,
+            service_id: format!("svc-{}", &uuid::Uuid::new_v4().to_string()[..8]),
         }
+    }
+
+    /// C001 per-handle identity (the `claim_owner` value this handle writes).
+    pub fn service_id(&self) -> &str {
+        &self.service_id
+    }
+
+    /// Borrow the M001 notifier (the daemon-owned singleton shares one).
+    pub fn notifier(&self) -> &Arc<JobNotificationService> {
+        &self.notifier
     }
 
     /// Effective base URL: the first allowlisted entry. Single-host fleets
@@ -514,6 +547,9 @@ impl CiWatchService {
             on_complete,
             created_at: now,
             updated_at: now,
+            claim_owner: None,
+            claim_until: None,
+            generation: 0,
         };
         self.persist(&record).await?;
         {
@@ -665,6 +701,334 @@ impl CiWatchService {
         done
     }
 
+    // ── C001 daemon-owned idle observation ─────────────────────────────
+    //
+    // The turn-boundary `advance_due_watches(session)` above stays as the
+    // safe-boundary view; the daemon-owned idle driver below is the new
+    // canonical wake path. It queries persisted due rows *globally* (any
+    // session), claims each with a persisted CAS lease, and performs the
+    // same finite `observe_once` work. No per-watch timer, no second
+    // scheduler, no model polling.
+
+    /// C001 persisted CAS claim for one due observation.
+    ///
+    /// Returns `Ok(true)` when this handle now owns the lease (the DB row
+    /// was atomically claimed and the in-memory copy refreshed), `Ok(false)`
+    /// when another holder owns a live lease (caller observes `Busy`).
+    /// Expired claims are recoverable by any live service. Process-local
+    /// `in_flight` remains a fast-path only; this row is the authority.
+    pub async fn try_claim_due_lease(
+        &self,
+        watch_id: &str,
+        lease_ms: i64,
+    ) -> Result<bool, CiWatchError> {
+        let Some(pool) = &self.pool else {
+            return Ok(true);
+        };
+        let now = chrono::Utc::now().timestamp_millis();
+        let until = now.saturating_add(lease_ms.max(1));
+        let result = sqlx::query(
+            "UPDATE ci_watch SET claim_owner = ?2, claim_until = ?3, generation = generation + 1, updated_at = ?4 \
+             WHERE watch_id = ?1 AND state IN ('pending', 'observing') \
+             AND (claim_until IS NULL OR claim_until <= ?5)",
+        )
+        .bind(watch_id)
+        .bind(self.service_id.clone())
+        .bind(until)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            // Refresh so a stale in-memory copy cannot mask a terminal win.
+            let _ = self.load_one(watch_id).await;
+            return Ok(false);
+        }
+        // Refresh the in-memory copy with the new lease + generation.
+        let _ = self.load_one(watch_id).await;
+        Ok(true)
+    }
+
+    /// C001 release a held lease without changing watch state. Best-effort:
+    /// only the current owner may release; expiry recovers anything else.
+    pub async fn release_due_lease(&self, watch_id: &str) -> Result<(), CiWatchError> {
+        if let Some(pool) = &self.pool {
+            let now = chrono::Utc::now().timestamp_millis();
+            let _ = sqlx::query(
+                "UPDATE ci_watch SET claim_owner = NULL, claim_until = NULL, updated_at = ?2 \
+                 WHERE watch_id = ?1 AND claim_owner = ?3",
+            )
+            .bind(watch_id)
+            .bind(now)
+            .bind(self.service_id.clone())
+            .execute(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            let _ = self.load_one(watch_id).await;
+        } else {
+            let mut watches = self.watches.write().await;
+            if let Some(w) = watches.get_mut(watch_id) {
+                w.claim_owner = None;
+                w.claim_until = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// C001 globally due watch ids, fair-ordered: earliest `next_check_at`
+    /// first, `watch_id` as a stable tie-break, bounded `LIMIT`. Sessions
+    /// share the queue in due order so two projects cannot starve one
+    /// another indefinitely; per-session caps stay at creation/listing time.
+    pub async fn due_watch_ids_global(&self, limit: usize) -> Result<Vec<String>, CiWatchError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(pool) = &self.pool {
+            let rows: Vec<String> = sqlx::query_scalar(
+                "SELECT watch_id FROM ci_watch \
+                 WHERE state IN ('pending', 'observing') AND next_check_at <= ? \
+                 ORDER BY next_check_at ASC, watch_id ASC LIMIT ?",
+            )
+            .bind(now)
+            .bind(limit.min(64) as i64)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            return Ok(rows);
+        }
+        let watches = self.watches.read().await;
+        let mut due: Vec<&CiWatchRecord> = watches
+            .values()
+            .filter(|w| {
+                matches!(w.state, CiWatchState::Pending | CiWatchState::Observing)
+                    && w.next_check_at <= now
+            })
+            .collect();
+        due.sort_by(|a, b| {
+            a.next_check_at
+                .cmp(&b.next_check_at)
+                .then_with(|| a.watch_id.cmp(&b.watch_id))
+        });
+        Ok(due
+            .into_iter()
+            .take(limit.min(64))
+            .map(|w| w.watch_id.clone())
+            .collect())
+    }
+
+    /// C001 daemon-owned global advancement: query due rows globally and
+    /// observe each (each observation CAS-claims its own lease). Bounded so
+    /// an idle scan never stalls: at most `limit` observations per call.
+    /// Returns the number of watches that reached a durable outcome
+    /// (terminal, nonterminal, or transient — not `Busy`/terminal-skip).
+    pub async fn advance_due_watches_global(&self, limit: usize) -> usize {
+        let ids = self.due_watch_ids_global(limit).await.unwrap_or_default();
+        self.observe_many(&ids).await
+    }
+
+    /// C001 earliest due horizon (ms) for timer scheduling. `None` when no
+    /// nonterminal watch exists; the driver sleeps without busy polling.
+    pub async fn earliest_due_ms(&self) -> Result<Option<i64>, CiWatchError> {
+        if let Some(pool) = &self.pool {
+            let row: Option<Option<i64>> = sqlx::query_scalar(
+                "SELECT MIN(next_check_at) FROM ci_watch WHERE state IN ('pending', 'observing')",
+            )
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            return Ok(row.flatten());
+        }
+        let watches = self.watches.read().await;
+        Ok(watches
+            .values()
+            .filter(|w| matches!(w.state, CiWatchState::Pending | CiWatchState::Observing))
+            .map(|w| w.next_check_at)
+            .min())
+    }
+
+    /// C001 operator counts: active / overdue / leased / expired-attention.
+    /// No secrets, no unbounded text; backed by columns, not the map.
+    pub async fn watch_counts(&self) -> Result<WatchCounts, CiWatchError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Some(pool) = &self.pool {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM ci_watch WHERE state IN ('pending', 'observing')",
+            )
+            .fetch_one(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            let overdue: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM ci_watch WHERE state IN ('pending', 'observing') AND next_check_at <= ?",
+            )
+            .bind(now)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            let leased: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM ci_watch WHERE state IN ('pending', 'observing') AND claim_until IS NOT NULL AND claim_until > ?",
+            )
+            .bind(now)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            let expired: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM ci_watch WHERE state = 'expired'")
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            let attention: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM ci_watch WHERE state = 'needs_attention'")
+                    .fetch_one(pool)
+                    .await
+                    .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+            // Last-observed is the freshest durable update across watches.
+            let last_observed: Option<i64> =
+                sqlx::query_scalar("SELECT MAX(updated_at) FROM ci_watch")
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| CiWatchError::Storage(e.to_string()))?
+                    .flatten();
+            return Ok(WatchCounts {
+                active: active as u64,
+                overdue: overdue as u64,
+                leased: leased as u64,
+                expired: expired as u64,
+                attention: attention as u64,
+                last_observed_ms: last_observed,
+            });
+        }
+        let watches = self.watches.read().await;
+        let mut out = WatchCounts::default();
+        for w in watches.values() {
+            match w.state {
+                CiWatchState::Pending | CiWatchState::Observing => {
+                    out.active += 1;
+                    if w.next_check_at <= now {
+                        out.overdue += 1;
+                    }
+                    if w.claim_until.is_some_and(|u| u > now) {
+                        out.leased += 1;
+                    }
+                    out.last_observed_ms = Some(
+                        out.last_observed_ms
+                            .map_or(w.updated_at, |m| m.max(w.updated_at)),
+                    );
+                }
+                CiWatchState::Expired => out.expired += 1,
+                CiWatchState::NeedsAttention => out.attention += 1,
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// C001 crash repair: reconcile watches persisted without their matching
+    /// M001 subscription (crash between row write and `subscribe_with_options`,
+    /// subscription failure on create, restart during terminal-before-notice).
+    ///
+    /// For every nonterminal watch, ensure `job_background_subscription` row
+    /// `ciwatch:<watch_id>` exists with the same owner; a conflicting owner
+    /// fails the watch closed to `needs_attention` (no orphan forever in
+    /// `Pending`). Returns `(repaired, attentioned)`.
+    pub async fn repair_registrations(&self) -> Result<(usize, usize), CiWatchError> {
+        let mut repaired = 0usize;
+        let mut attentioned = 0usize;
+        // Collect the nonterminal slice without holding the map across I/O.
+        let snapshot: Vec<CiWatchRecord> = {
+            if self.pool.is_some() {
+                // Load all nonterminal rows directly so watches never held
+                // only in memory on a fresh handle are still repaired.
+                let pool = self.pool.as_ref().expect("checked");
+                let ids: Vec<String> = sqlx::query_scalar(
+                    "SELECT watch_id FROM ci_watch WHERE state IN ('pending', 'observing') LIMIT 256",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+                let mut out = Vec::with_capacity(ids.len());
+                for id in ids {
+                    // `load_one` refreshes the map; a missing row is skipped.
+                    if let Some(rec) = self.load_one(&id).await? {
+                        if !is_terminal_state(rec.state) {
+                            out.push(rec);
+                        }
+                    }
+                }
+                out
+            } else {
+                let watches = self.watches.read().await;
+                watches
+                    .values()
+                    .filter(|w| !is_terminal_state(w.state))
+                    .cloned()
+                    .collect()
+            }
+        };
+        for rec in snapshot {
+            let notice_job_id =
+                codegg_core::jobs::JobId::new_unchecked(format!("ciwatch:{}", rec.watch_id));
+            match self.notifier.get_subscription(notice_job_id.as_str()).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    let ttl = (rec.expiry_ms - chrono::Utc::now().timestamp_millis()).max(1);
+                    match self
+                        .notifier
+                        .subscribe_with_options(
+                            &notice_job_id,
+                            "ci_watch",
+                            &rec.session_id,
+                            rec.turn_id.as_deref(),
+                            &rec.invocation_key,
+                            rec.on_complete,
+                            rec.owner_principal.as_deref(),
+                            rec.workspace_id.as_deref(),
+                            Some(ttl),
+                        )
+                        .await
+                    {
+                        Ok(_) => repaired += 1,
+                        Err(_) => {
+                            // Conflicting owner or store failure: fail the
+                            // watch closed rather than leaving it orphaned.
+                            let mut detail = rec.clone();
+                            detail.conclusion_detail = Some(
+                                "watch registration could not be reconciled with its notice subscription; held for operator review".to_string(),
+                            );
+                            let from = rec.state;
+                            let _ = self
+                                .transition(
+                                    &rec.watch_id,
+                                    from,
+                                    CiWatchState::NeedsAttention,
+                                    Some(&detail),
+                                )
+                                .await;
+                            let _ = self.emit_terminal_notice(&rec.watch_id).await;
+                            attentioned += 1;
+                        }
+                    }
+                }
+                Err(_) => {
+                    let mut detail = rec.clone();
+                    detail.conclusion_detail = Some(
+                        "watch registration could not be reconciled with its notice subscription; held for operator review".to_string(),
+                    );
+                    let from = rec.state;
+                    let _ = self
+                        .transition(
+                            &rec.watch_id,
+                            from,
+                            CiWatchState::NeedsAttention,
+                            Some(&detail),
+                        )
+                        .await;
+                    let _ = self.emit_terminal_notice(&rec.watch_id).await;
+                    attentioned += 1;
+                }
+            }
+        }
+        Ok((repaired, attentioned))
+    }
+
     /// Perform one finite scheduled observation for a watch: a single
     /// bounded GitHub API read (plus, at most, one follow-up jobs-page read
     /// when terminally failed), then durable state advancement. Never holds
@@ -672,6 +1036,27 @@ impl CiWatchService {
     pub async fn observe_once(&self, watch_id: &str) -> Result<ObserveOutcome, CiWatchError> {
         let guard = self.claim_in_flight(watch_id).await?;
         let _held = guard;
+        // Terminal fast-path before the cross-service claim so a late
+        // duplicate reports `AlreadyTerminal` (never re-polled) rather than
+        // `Busy`. The probe is DB-authoritative when pooled: the in-memory
+        // map may hold a stale nonterminal copy from a lost lease race, and
+        // must not mask a terminal win. Nonterminal watches then CAS-claim
+        // the persisted lease: at most one admitted remote read per due.
+        let probe = if self.pool.is_some() {
+            self.load_one(watch_id)
+                .await?
+                .ok_or(CiWatchError::NotFound)?
+        } else {
+            self.get_by_id(watch_id)
+                .await?
+                .ok_or(CiWatchError::NotFound)?
+        };
+        if is_terminal_state(probe.state) {
+            return Err(CiWatchError::AlreadyTerminal);
+        }
+        if self.pool.is_some() && !self.try_claim_due_lease(watch_id, 60_000).await? {
+            return Err(CiWatchError::Busy);
+        }
         let mut record = self
             .get_by_id(watch_id)
             .await?
@@ -736,8 +1121,11 @@ impl CiWatchService {
             Ok(fetched) => self.apply_run_observation(&mut record, fetched).await,
             Err(FetchError::NotModified) => {
                 // ETag revalidation: nothing changed. Advance the schedule
-                // without treating it as a state transition.
+                // without treating it as a state transition. The per-observation
+                // lease is released so the next due occurrence can be claimed.
                 self.advance_schedule(&mut record, false).await?;
+                record.claim_owner = None;
+                record.claim_until = None;
                 self.update_row(&record).await?;
                 Ok(ObserveOutcome::Nonterminal)
             }
@@ -855,8 +1243,11 @@ impl CiWatchService {
         if status != "completed" {
             // Nonterminal updates projections only — never model wakeups.
             // (The watch row is the projection; M003 wakes only on terminal.)
+            // Release the per-observation lease so the next due can be claimed.
             record.state = CiWatchState::Observing;
             self.advance_schedule(record, false).await?;
+            record.claim_owner = None;
+            record.claim_until = None;
             self.update_row(record).await?;
             return Ok(ObserveOutcome::Nonterminal);
         }
@@ -999,6 +1390,10 @@ impl CiWatchService {
         if record.state == CiWatchState::Pending {
             record.state = CiWatchState::Observing;
         }
+        // Release the per-observation lease; the Retry-After horizon governs
+        // the next due occurrence.
+        record.claim_owner = None;
+        record.claim_until = None;
         self.update_row(record).await?;
         Ok(ObserveOutcome::TransientError)
     }
@@ -1026,6 +1421,10 @@ impl CiWatchService {
             return Ok(ObserveOutcome::BudgetExhausted);
         }
         self.advance_schedule(record, true).await?;
+        // Release the per-observation lease so the backed-off due can be
+        // claimed by the next driver tick.
+        record.claim_owner = None;
+        record.claim_until = None;
         self.update_row(record).await?;
         Ok(ObserveOutcome::TransientError)
     }
@@ -1273,8 +1672,11 @@ impl CiWatchService {
             serde_json::to_string(&snap).unwrap_or_default()
         });
         if let Some(pool) = &self.pool {
+            // Terminal transitions release the observation lease so an expired
+            // claim can never block a terminal row. Generation is preserved
+            // (monotonic) so a slow old holder cannot overwrite a newer state.
             let result = sqlx::query(
-                "UPDATE ci_watch SET state = ?2, updated_at = ?3, conclusion = COALESCE(?4, conclusion), conclusion_detail = COALESCE(?5, conclusion_detail), last_etag = COALESCE(?6, last_etag), next_check_at = COALESCE(?7, next_check_at), attempt_count = COALESCE(?8, attempt_count), last_observed_sha = COALESCE(?9, last_observed_sha), last_run_status = COALESCE(?10, last_run_status), final_url = COALESCE(?11, final_url), failure_summary = COALESCE(?12, failure_summary), run_id = COALESCE(?13, run_id), record_json = COALESCE(?14, record_json) WHERE watch_id = ?1 AND state = ?15",
+                "UPDATE ci_watch SET state = ?2, updated_at = ?3, conclusion = COALESCE(?4, conclusion), conclusion_detail = COALESCE(?5, conclusion_detail), last_etag = COALESCE(?6, last_etag), next_check_at = COALESCE(?7, next_check_at), attempt_count = COALESCE(?8, attempt_count), last_observed_sha = COALESCE(?9, last_observed_sha), last_run_status = COALESCE(?10, last_run_status), final_url = COALESCE(?11, final_url), failure_summary = COALESCE(?12, failure_summary), run_id = COALESCE(?13, run_id), record_json = COALESCE(?14, record_json), claim_owner = NULL, claim_until = NULL WHERE watch_id = ?1 AND state = ?15",
             )
             .bind(watch_id)
             .bind(ci_watch_state_to_str(to))
@@ -1299,6 +1701,8 @@ impl CiWatchService {
                 if let Some(w) = watches.get_mut(watch_id) {
                     w.state = to;
                     w.updated_at = now;
+                    w.claim_owner = None;
+                    w.claim_until = None;
                     if let Some(u) = updated {
                         w.conclusion = u.conclusion.clone();
                         w.conclusion_detail = u.conclusion_detail.clone();
@@ -1310,6 +1714,7 @@ impl CiWatchService {
                         w.final_url = u.final_url.clone();
                         w.failure_summary = u.failure_summary.clone();
                         w.run_id = u.run_id;
+                        w.generation = u.generation;
                     }
                 }
                 return Ok(());
@@ -1327,6 +1732,8 @@ impl CiWatchService {
         }
         w.state = to;
         w.updated_at = now;
+        w.claim_owner = None;
+        w.claim_until = None;
         if let Some(u) = updated {
             w.conclusion = u.conclusion.clone();
             w.conclusion_detail = u.conclusion_detail.clone();
@@ -1338,6 +1745,7 @@ impl CiWatchService {
             w.final_url = u.final_url.clone();
             w.failure_summary = u.failure_summary.clone();
             w.run_id = u.run_id;
+            w.generation = u.generation;
         }
         Ok(())
     }
@@ -1357,9 +1765,9 @@ impl CiWatchService {
         };
         let record_json = serde_json::to_string(record)?;
         sqlx::query(
-            "INSERT INTO ci_watch (watch_id, provider, owner, repo, run_id, commit_sha, check_selector, session_id, turn_id, invocation_key, state, conclusion, conclusion_detail, last_etag, next_check_at, attempt_count, attempt_budget, expiry_ms, owner_principal, workspace_id, credential_ref, api_base_url, last_observed_sha, last_run_status, final_url, failure_summary, on_complete, created_at, updated_at, record_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-             ON CONFLICT(watch_id) DO UPDATE SET state = excluded.state, conclusion = excluded.conclusion, conclusion_detail = excluded.conclusion_detail, last_etag = excluded.last_etag, next_check_at = excluded.next_check_at, attempt_count = excluded.attempt_count, last_observed_sha = excluded.last_observed_sha, last_run_status = excluded.last_run_status, final_url = excluded.final_url, failure_summary = excluded.failure_summary, run_id = excluded.run_id, updated_at = excluded.updated_at, record_json = excluded.record_json",
+            "INSERT INTO ci_watch (watch_id, provider, owner, repo, run_id, commit_sha, check_selector, session_id, turn_id, invocation_key, state, conclusion, conclusion_detail, last_etag, next_check_at, attempt_count, attempt_budget, expiry_ms, owner_principal, workspace_id, credential_ref, api_base_url, last_observed_sha, last_run_status, final_url, failure_summary, on_complete, created_at, updated_at, record_json, claim_owner, claim_until, generation) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(watch_id) DO UPDATE SET state = excluded.state, conclusion = excluded.conclusion, conclusion_detail = excluded.conclusion_detail, last_etag = excluded.last_etag, next_check_at = excluded.next_check_at, attempt_count = excluded.attempt_count, last_observed_sha = excluded.last_observed_sha, last_run_status = excluded.last_run_status, final_url = excluded.final_url, failure_summary = excluded.failure_summary, run_id = excluded.run_id, updated_at = excluded.updated_at, record_json = excluded.record_json, claim_owner = excluded.claim_owner, claim_until = excluded.claim_until, generation = excluded.generation",
         )
         .bind(&record.watch_id)
         .bind(&record.provider)
@@ -1391,6 +1799,9 @@ impl CiWatchService {
         .bind(record.created_at)
         .bind(record.updated_at)
         .bind(record_json)
+        .bind(&record.claim_owner)
+        .bind(record.claim_until)
+        .bind(record.generation as i64)
         .execute(pool)
         .await
         .map_err(|e| CiWatchError::Storage(e.to_string()))?;
@@ -1411,14 +1822,25 @@ impl CiWatchService {
             return Ok(None);
         };
         let mut record: CiWatchRecord = serde_json::from_str(&json)?;
-        let state_row: Option<String> =
-            sqlx::query_scalar("SELECT state FROM ci_watch WHERE watch_id = ?")
-                .bind(watch_id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| CiWatchError::Storage(e.to_string()))?;
-        if let Some(s) = state_row.as_deref().and_then(ci_watch_state_from_str) {
-            record.state = s;
+        // Prefer the column authorities (state + C001 lease) over a possibly
+        // stale JSON snapshot. Column reads use a tolerant row decode so
+        // pre-v76 databases (no lease columns) still load.
+        let auth: Option<CiWatchAuthRow> = sqlx::query_as(
+            "SELECT state, claim_owner, claim_until, generation FROM ci_watch WHERE watch_id = ?",
+        )
+        .bind(watch_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| CiWatchError::Storage(e.to_string()))?;
+        if let Some((state_s, claim_owner, claim_until, generation)) = auth {
+            if let Some(s) = ci_watch_state_from_str(&state_s) {
+                record.state = s;
+            }
+            record.claim_owner = claim_owner;
+            record.claim_until = claim_until;
+            if let Some(g) = generation {
+                record.generation = g as u32;
+            }
         }
         let mut watches = self.watches.write().await;
         watches.insert(watch_id.to_string(), record.clone());
@@ -1440,18 +1862,25 @@ impl CiWatchService {
         for json in rows {
             parsed.push(serde_json::from_str(&json)?);
         }
-        // Prefer the state column (transition authority) over a possibly
+        // Prefer the column authorities (state + C001 lease) over a possibly
         // stale JSON snapshot, mirroring `load_one`. Resolved before taking
         // the map lock so no guard is held across pool awaits.
         for record in &mut parsed {
-            let state_row: Option<String> =
-                sqlx::query_scalar("SELECT state FROM ci_watch WHERE watch_id = ?")
+            let auth: Option<CiWatchAuthRow> =
+                sqlx::query_as("SELECT state, claim_owner, claim_until, generation FROM ci_watch WHERE watch_id = ?")
                     .bind(&record.watch_id)
                     .fetch_optional(pool)
                     .await
                     .map_err(|e| CiWatchError::Storage(e.to_string()))?;
-            if let Some(s) = state_row.as_deref().and_then(ci_watch_state_from_str) {
-                record.state = s;
+            if let Some((state_s, claim_owner, claim_until, generation)) = auth {
+                if let Some(s) = ci_watch_state_from_str(&state_s) {
+                    record.state = s;
+                }
+                record.claim_owner = claim_owner;
+                record.claim_until = claim_until;
+                if let Some(g) = generation {
+                    record.generation = g as u32;
+                }
             }
         }
         let mut watches = self.watches.write().await;
@@ -1473,6 +1902,22 @@ pub enum ObserveOutcome {
     Expired,
     BudgetExhausted,
 }
+
+/// C001 bounded operator counts for daemon diagnostics. No secrets, no
+/// unbounded text. `last_observed_ms` is the freshest durable `updated_at`
+/// across watches (None when no watch exists).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WatchCounts {
+    pub active: u64,
+    pub overdue: u64,
+    pub leased: u64,
+    pub expired: u64,
+    pub attention: u64,
+    pub last_observed_ms: Option<i64>,
+}
+
+/// C001 DB authority row for a watch: `(state, claim_owner, claim_until, generation)`.
+type CiWatchAuthRow = (String, Option<String>, Option<i64>, Option<i64>);
 
 #[derive(Debug, Clone, Deserialize)]
 struct RunResponse {

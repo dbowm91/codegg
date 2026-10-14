@@ -118,6 +118,12 @@ pub struct CoreDaemon {
     /// Handle for the background projection replay maintenance task.
     /// `None` when no pool is available. Held to keep the task alive.
     pub(crate) _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
+    /// C001 daemon-owned idle CI-watch coordinator (earliest-due wake loop).
+    /// `None` when idle watch support is unavailable (pool-less) or when
+    /// constructed without a Tokio runtime (e.g. bare struct tests). Exactly
+    /// one loop per daemon when present; held to keep the task alive.
+    pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
+    pub(crate) _ci_watch_driver_handle: Option<tokio::task::JoinHandle<()>>,
     /// Total events the event bridge was forced to drop because the
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.

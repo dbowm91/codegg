@@ -481,22 +481,44 @@ same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
 mechanics as Tool Program M017, with a separate `job_notification` /
 `job_background_subscription` table pair (migration v73).
 
-### CI watch observation authority (M004)
+### CI watch observation authority (M004, C001)
 
 CI polls are sub-second network reads, not process executions: admitting
 them as scheduler jobs would occupy process permits and queue capacity for
 the wrong resource class. The durable/timer authority for watches is the
 narrow `ci_watch` record adapter itself (`next_check_at`, backoff, ETag,
-attempt budget, expiry), advanced only at existing daemon-owned activity
-points (explicit tool calls, turn boundaries capped at 2). The durable
-completion path reuses the scheduler-owned notification authority
-(persist final, then exactly one M001 notice, then M003 delivery). Routing
-finite adaptive watch sequences through `ScheduleStore` recurring
-schedules was deliberately rejected (namespace clutter, overlap
-mis-semantics); see `src/scheduler/ci_watch.rs` header. Watch rows live in
-`ci_watch` (migration v75); single-use resume leases reuse the M003
-`job_continuation_lease` table via matching M001 subscriptions
+attempt budget, expiry) plus — since C001 — one daemon-lifecycle-owned
+cancellable idle coordinator (`src/scheduler/ci_watch_idle.rs`).
+
+C001 freezes the timer/admission decision: the canonical idle wake is the
+earliest-due persisted row driving `CiWatchIdleDriver` (a single `Notify` +
+timer loop, bounded `IDLE_DRIVER_BATCH = 8` observations per tick, empty
+queue sleeps without busy polling). Turn-boundary `advance_due_watches`
+(cap 2) and explicit `ci_watch status` remain as safe-boundary views, not
+the idle authority. No per-watch timer, no second scheduler, no new jobs
+queue; the remote wait holds no process/CPU permit. The durable completion
+path reuses the scheduler-owned notification authority (persist final, then
+exactly one M001 notice, then M003 delivery). Routing finite adaptive watch
+sequences through `ScheduleStore` recurring schedules was deliberately
+rejected (namespace clutter, overlap mis-semantics); see
+`src/scheduler/ci_watch.rs` header and `ci_watch_idle.rs` ownership notes.
+Watch rows live in `ci_watch` (migration v75, C001 lease columns
+`claim_owner/claim_until/generation` in v76); single-use resume leases reuse
+the M003 `job_continuation_lease` table via matching M001 subscriptions
 (`ciwatch:<watch_id>`).
+
+C001 cross-service safety is the persisted CAS lease: each due observation
+atomically claims `(claim_owner, claim_until, generation+1)`; a live lease
+reports `Busy`, an expired lease is recoverable, and terminal transitions
+release the lease. Process-local `in_flight` mutexes are a fast-path
+optimization only. Watch acceptance and M001 subscription are reconciled by
+`repair_registrations()` (startup + driver): a watch without its
+`ciwatch:<watch_id>` subscription is re-subscribed, or failed closed to
+`needs_attention` on conflict — never an orphan forever in `Pending`.
+One daemon-scoped `Arc<JobNotificationService>` + `Arc<CiWatchService>`
+(created in `CoreRuntimeDeps`/`CoreDaemon` startup, injected into
+`TurnRunInput`) is the lifetime authority; per-turn construction is the
+legacy fallback only.
 
 ### Shutdown (`scheduler.rs:1503`)
 

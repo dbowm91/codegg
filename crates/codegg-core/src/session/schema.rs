@@ -247,6 +247,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 75 {
         migrate_and_record(pool, 75).await?;
     }
+    if current_version < 76 {
+        migrate_and_record(pool, 76).await?;
+    }
 
     Ok(())
 }
@@ -334,6 +337,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             73 => migrate_v73(&mut tx).await?,
             74 => migrate_v74(&mut tx).await?,
             75 => migrate_v75(&mut tx).await?,
+            76 => migrate_v76(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3068,6 +3072,38 @@ async fn migrate_v75(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "#,
         "CREATE INDEX IF NOT EXISTS idx_ci_watch_session ON ci_watch(session_id, state, next_check_at)",
         "CREATE INDEX IF NOT EXISTS idx_ci_watch_due ON ci_watch(state, next_check_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs corrective C001: persisted cross-service observation
+/// lease for `ci_watch`.
+///
+/// Three additive columns, no backfill beyond safe defaults:
+///
+/// - `claim_owner` — opaque daemon/service identity holding the current
+///   observation lease (NULL when unclaimed).
+/// - `claim_until` — wall-clock expiry (ms) of that lease (NULL when
+///   unclaimed). Expired claims are recoverable by any live service.
+/// - `generation` — monotonically increasing claim epoch. Each successful
+///   CAS claim bumps it; a slow old holder whose generation no longer
+///   matches the durable row must fail its stale final update instead of
+///   overwriting a newer terminal state.
+///
+/// Existing rows keep `NULL, NULL, 0` (unclaimed, generation zero), which
+/// is exactly the pre-C001 behavior. `record_json` continues to carry the
+/// full snapshot; the new columns are the cross-service CAS authority.
+async fn migrate_v76(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE ci_watch ADD COLUMN claim_owner TEXT",
+        "ALTER TABLE ci_watch ADD COLUMN claim_until INTEGER",
+        "ALTER TABLE ci_watch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_claim ON ci_watch(state, next_check_at, claim_until)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

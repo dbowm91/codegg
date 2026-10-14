@@ -44,6 +44,14 @@ impl CoreDaemon {
         if let Some(handle) = self._worktree_reconcile_handle.take() {
             handle.abort();
         }
+        // C001 idle driver: request cooperative shutdown first so the loop
+        // finishes its current bounded tick, then abort the handle.
+        if let Some(driver) = self.ci_watch_driver.take() {
+            driver.request_shutdown();
+        }
+        if let Some(handle) = self._ci_watch_driver_handle.take() {
+            handle.abort();
+        }
     }
 
     /// Canonical shutdown phase names in execution order.

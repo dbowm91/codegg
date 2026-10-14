@@ -1,7 +1,7 @@
 # Async Background Jobs Corrective C001 — Daemon-Owned CI Watch Advancement and Recovery
 
-Status: ready for handoff
-Baseline: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (implementation line; use newest corrective branch HEAD, preserve user changes).
+Status: implemented
+Baseline: `3b4f517938380c5aceb714c20c6f04edc5e6b39f` (implementation line; corrective branch HEAD `7c91e581` at handoff).
 Roadmap: `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md#dependency-and-execution-sequence`
 Original milestones/closure: M001 `plans/closure/async-background-jobs/001-status.md`; M004 `plans/closure/async-background-jobs/004-status.md`.
 Class: capability/invariant; hard dependencies satisfied by M001–M004. Downstream: C002.

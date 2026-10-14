@@ -273,6 +273,32 @@ impl JobScheduler {
         *self.job_notifications.lock().await = Some(service);
     }
 
+    /// Synchronous install for daemon construction (which runs before the
+    /// scheduler loop is spawned). A failed `try_lock` is a wiring error.
+    pub fn set_job_notification_service_sync(
+        &self,
+        service: std::sync::Arc<super::job_notifications::JobNotificationService>,
+    ) {
+        match self.job_notifications.try_lock() {
+            Ok(mut slot) => {
+                *slot = Some(service);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "scheduler notification-service install contended during construction; retrying via blocking task"
+                );
+                let slot = self.job_notifications.clone();
+                // Construction may run without a Tokio runtime in bare struct
+                // tests; fall back to a best-effort spawn when possible.
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        *slot.lock().await = Some(service);
+                    });
+                }
+            }
+        }
+    }
+
     /// Snapshot the installed job notification service, if any.
     pub async fn job_notification_service_snapshot(
         &self,

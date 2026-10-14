@@ -400,10 +400,15 @@ owner rule.
 exactly one run) and returns a stable `ciw-<digest>` handle. Observations
 are short bounded GETs (15s timeout, 256KiB cap, ETag revalidation,
 Retry-After honored, exponential backoff + deterministic jitter, attempt
-budget, TTL) advanced only at daemon-owned points — explicit `ci_watch`
-tool calls and turn-boundary advancement (max 2 per boundary). No
-per-watch interval, no background task, no process/CPU permit held across
-polls; a dormant watcher is one durable row (`ci_watch`, migration v75).
+budget, TTL) advanced at daemon-owned points — explicit `ci_watch` tool
+calls, turn-boundary advancement (max 2 per boundary), and since C001 the
+canonical idle coordinator (`CiWatchIdleDriver`: earliest-due wake, bounded
+global advancement, empty queue sleeps). No per-watch interval, no
+per-watch worker, no process/CPU permit held across polls; a dormant
+watcher is one durable row (`ci_watch`, migration v75, C001 lease columns
+in v76) plus at most one persisted CAS lease per due occurrence. Two
+service handles never double-poll the same due lease; expired leases are
+recoverable; terminal transitions release the lease and never re-poll.
 Terminal `completed` maps every GitHub conclusion explicitly (`success` →
 pass; `failure/cancelled/timed_out/action_required/startup_failure` →
 typed failure with a bounded failing-step summary; `neutral/skipped/stale/

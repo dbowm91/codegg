@@ -30,6 +30,7 @@
 
 pub mod admission;
 pub mod ci_watch;
+pub mod ci_watch_idle;
 pub mod config;
 pub mod eggwork;
 pub mod events;

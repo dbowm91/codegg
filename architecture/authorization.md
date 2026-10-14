@@ -76,12 +76,16 @@ in-memory daemons without a pool decide under the same broad policy.
   access return the same denied message as not-found without leaking
   existence. Authorized callers cannot choose untrusted session/turn ids;
   background lineage is host-resolved, never model-supplied.
-- `ci_watch exact-owner` (M004) — same rule for watches: caller session
+- `ci_watch exact-owner` (M004, C001) — same rule for watches: caller session
   must equal the watch's owning session for status/cancel/list; stolen
   handles read as not-found. Watch targets carry no credential or URL
   authority (base URLs from daemon configuration, tokens resolved per poll
   from process env and never stored); GitHub output is data, and external
-  event URLs render as inert links, never instructions.
+  event URLs render as inert links, never instructions. C001 adds no new
+  principal: the idle driver observes with the watch's frozen session/
+  principal/workspace/repo lineage, and the persisted CAS lease
+  (`claim_owner` = daemon service identity, never a user principal) confers
+  no read rights — cross-session notification stays forbidden.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed

@@ -301,6 +301,31 @@ impl CoreDaemon {
             ),
         };
         deps.submission = Some(submission.clone());
+        // C001 daemon-scoped singletons: one notifier + one watcher for the
+        // daemon lifetime, injected into every turn. Per-turn construction
+        // remains only for legacy/test paths that never asked for the shared
+        // handle. The scheduler's notification pointer is installed here (not
+        // per turn) so turns cannot race it.
+        let shared_notifier = deps.shared_job_notification_service();
+        let shared_watches = deps.shared_ci_watch_service();
+        scheduler.set_job_notification_service_sync(shared_notifier.clone());
+        // C001 idle driver: one earliest-due wake loop per pooled daemon.
+        // Pool-less (in-memory/headless) daemons explicitly have no idle
+        // persistence: `ci_watch_driver` stays `None` and idle advancement is
+        // unavailable rather than falsely claimed.
+        let (ci_watch_driver, ci_watch_driver_handle) = match deps.pool.clone() {
+            Some(_) => {
+                let driver = Arc::new(crate::scheduler::ci_watch_idle::CiWatchIdleDriver::new(
+                    shared_watches.clone(),
+                ));
+                let handle = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|_| driver.spawn());
+                deps.ci_watch_driver = Some(driver.clone());
+                (Some(driver), handle)
+            }
+            None => (None, None),
+        };
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
             pool.configure_durable_delegation(
                 submission.clone(),
@@ -438,6 +463,8 @@ impl CoreDaemon {
             presence: Arc::new(codegg_core::presence::PresenceService::default()),
             projection_seam,
             _projection_maintenance_handle: projection_maintenance_handle,
+            ci_watch_driver,
+            _ci_watch_driver_handle: ci_watch_driver_handle,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
             // M002: share the scheduler's admission controller so
             // interactive spawns draw from the same process-slot

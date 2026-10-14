@@ -651,6 +651,10 @@ impl CoreDaemon {
                     approval_mode,
                     sandbox_profile,
                     credential_observer,
+                    // C001 daemon singletons: every turn shares one notifier
+                    // + one watcher; closing a turn leaves watchers live.
+                    shared_job_notification_service: self.deps.job_notification_service.clone(),
+                    shared_ci_watch_service: self.deps.ci_watch_service.clone(),
                 };
                 let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
                     Ok(output) => output,
