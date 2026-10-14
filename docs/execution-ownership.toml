@@ -126,7 +126,7 @@ reason = "ManagedProcessService is invoked only by ManagedArgvExecutor"
 [[site]]
 path = "src/test_runner/runner.rs"
 owner = "definition_or_adapter"
-reason = "resolve_and_run_test is invoked only by TestJobExecutor; explicit finite lifecycle exemption because line-oriented parser logs and stall-timeout supervision are domain-owned"
+reason = "resolve_and_run_test is invoked only by TestJobExecutor; domain owns line-oriented parser logs and stall-timeout supervision, but this child launch does not carry accepted sandbox-profile evidence and is not qualified for constrained-route parity (command M004)"
 
 [[site]]
 path = "src/job_dispatcher.rs"

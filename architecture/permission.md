@@ -552,6 +552,13 @@ a constrained snapshot. Typed Git mutation executors also retain the accepted
 context while their own Git policy remains the capability authority. The
 context records authorization inputs; it does not claim every downstream
 effect was observed or contained.
+The command M004 route audit at
+`research/command-authorization-m004-route-coverage.md` records the current
+specialized-tool gap: the typed test route does not receive the accepted
+sandbox profile, while Python derives a separate mode/content policy. Neither
+is constrained-route equivalent merely because it is scheduler-owned or uses
+ManagedProcessService. Active command-intent routes remain FullHost-only;
+Git filter/hook and remote authority remain gated by Linux C002/C003.
 **M003 command outcome observability.** The command execution event correlates
 the permission receipt and decision source with the requested profile, safe
 route label, advisory risk level, and actual obtained filesystem/network
