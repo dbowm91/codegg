@@ -33,4 +33,3 @@ The oracle is intentionally stricter than a command classifier and models no pro
 - Git typed authority does not make workspace Git metadata, hooks, filters, or network transport contained. Linux C002/C003 remain prerequisites.
 - No production route was promoted. No new fallback to FullHost, raw Git, or inherited credentials was added. No accepted Deny is rerouted.
 - Outside-root secret denial, helper/status substitution, and no-target setup failure are covered by the existing sandbox helper real-child suite; these are helper/filesystem facts, not cross-route parity results. The route fixture does not claim stale-receipt revocation, agent child lease behavior, or enhanced proc/network/IPC guarantees.
-
