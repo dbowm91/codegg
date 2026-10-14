@@ -804,7 +804,9 @@ async fn run_inner(
         (Some(reader), Some(ack_writer), SandboxRequest::Required(spec))
             if spec.linux_protected_mount_view =>
         {
-            Some(tokio::spawn(read_status_with_ack(reader, ack_writer)))
+            Some(tokio::spawn(read_bubblewrap_status_with_ack(
+                reader, ack_writer,
+            )))
         }
         (Some(reader), _, _) => Some(tokio::spawn(read_status(reader))),
         (None, _, _) => None,
@@ -866,7 +868,8 @@ async fn run_inner(
     } else {
         None
     };
-    let sandbox = interpret_sandbox_status(sandbox_status.as_deref(), &sandbox)?;
+    let sandbox =
+        interpret_sandbox_status_for_termination(sandbox_status.as_deref(), &sandbox, termination)?;
     drop(sandbox_scratch);
 
     Ok(ManagedProcessResult {
@@ -1619,51 +1622,10 @@ fn configure_status_fds(command: &mut Command, source_status_fd: i32, source_ack
     }
 }
 
-#[cfg(unix)]
-async fn read_status_with_ack(
-    mut reader: tokio::fs::File,
-    ack_writer: OwnedFd,
-) -> Result<Vec<u8>, io::Error> {
+async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> {
     let mut bytes = Vec::new();
-    let mut prefix = [0_u8; 4];
-    let mut prefix_len = 0;
-    while prefix_len < prefix.len() {
-        let read = reader.read(&mut prefix[prefix_len..]).await?;
-        if read == 0 {
-            return Ok(bytes);
-        }
-        prefix_len += read;
-    }
-    bytes.extend_from_slice(&prefix);
-    let payload_len = u32::from_be_bytes(prefix) as usize;
-    if payload_len == 0 || payload_len > MAX_SANDBOX_STATUS_BYTES - 4 {
-        drop(ack_writer);
-        return Ok(bytes);
-    }
-    let mut payload = vec![0_u8; payload_len];
-    if let Err(error) = reader.read_exact(&mut payload).await {
-        drop(ack_writer);
-        bytes.extend_from_slice(&payload);
-        return if error.kind() == io::ErrorKind::UnexpectedEof {
-            Ok(bytes)
-        } else {
-            Err(error)
-        };
-    }
-    bytes.extend_from_slice(&payload);
-    let ready = decode_sandbox_status(&bytes)
-        .is_ok_and(|outcome| matches!(outcome, SandboxLaunchOutcome::BubblewrapReady));
-    if ready {
-        let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
-        tokio::io::AsyncWriteExt::write_all(&mut writer, &[0xA5]).await?;
-        tokio::io::AsyncWriteExt::flush(&mut writer).await?;
-    } else {
-        drop(ack_writer);
-    }
-    let remaining = (MAX_SANDBOX_STATUS_BYTES + 1).saturating_sub(bytes.len());
-    let mut tail = Vec::new();
-    reader.take(remaining as u64).read_to_end(&mut tail).await?;
-    bytes.extend_from_slice(&tail);
+    let mut limited = (&mut reader).take((MAX_SANDBOX_STATUS_BYTES + 1) as u64);
+    limited.read_to_end(&mut bytes).await?;
     if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1673,10 +1635,50 @@ async fn read_status_with_ack(
     Ok(bytes)
 }
 
-async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> {
+#[cfg(unix)]
+async fn read_bubblewrap_status_with_ack(
+    mut reader: tokio::fs::File,
+    ack_writer: OwnedFd,
+) -> Result<Vec<u8>, io::Error> {
     let mut bytes = Vec::new();
-    let mut limited = (&mut reader).take((MAX_SANDBOX_STATUS_BYTES + 1) as u64);
-    limited.read_to_end(&mut bytes).await?;
+    let mut first = [0_u8; 1];
+    if reader.read(&mut first).await? == 0 {
+        drop(ack_writer);
+        return Ok(bytes);
+    }
+    bytes.push(first[0]);
+
+    if first[0] == b'{' {
+        while bytes.last() != Some(&b'\n') {
+            if bytes.len() >= MAX_SANDBOX_STATUS_BYTES {
+                drop(ack_writer);
+                return Ok(bytes);
+            }
+            let mut byte = [0_u8; 1];
+            if reader.read(&mut byte).await? == 0 {
+                drop(ack_writer);
+                return Ok(bytes);
+            }
+            bytes.push(byte[0]);
+        }
+        let ready = decode_bubblewrap_json_status(&bytes).is_ok_and(|_| {
+            bytes
+                .windows(b"\"child-pid\"".len())
+                .any(|window| window == b"\"child-pid\"")
+        });
+        if ready {
+            let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
+            writer.write_all(&[0xA5]).await?;
+            writer.flush().await?;
+        }
+    } else {
+        drop(ack_writer);
+    }
+
+    let remaining = (MAX_SANDBOX_STATUS_BYTES + 1).saturating_sub(bytes.len());
+    let mut tail = Vec::new();
+    reader.take(remaining as u64).read_to_end(&mut tail).await?;
+    bytes.extend_from_slice(&tail);
     if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1946,9 +1948,18 @@ async fn terminate_child(
     child.wait().await.map(|status| (status, cleanup))
 }
 
+#[cfg(test)]
 fn interpret_sandbox_status(
     status_bytes: Option<&[u8]>,
     sandbox: &SandboxRequest,
+) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
+    interpret_sandbox_status_for_termination(status_bytes, sandbox, TerminationReason::Exited)
+}
+
+fn interpret_sandbox_status_for_termination(
+    status_bytes: Option<&[u8]>,
+    sandbox: &SandboxRequest,
+    termination: TerminationReason,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
     if matches!(sandbox, SandboxRequest::Disabled) {
         return Ok(SandboxExecutionOutcome::Disabled);
@@ -1959,7 +1970,7 @@ fn interpret_sandbox_status(
     #[cfg(target_os = "linux")]
     if let SandboxRequest::Required(spec) = sandbox {
         if spec.linux_protected_mount_view {
-            return interpret_bubblewrap_status(status, spec);
+            return interpret_bubblewrap_status(status, spec, termination);
         }
     }
     let decoded = decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)?;
@@ -2004,24 +2015,34 @@ fn interpret_sandbox_status(
 fn interpret_bubblewrap_status(
     status: &[u8],
     spec: &SandboxLaunchSpec,
+    termination: TerminationReason,
 ) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
-    match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
-        SandboxLaunchOutcome::BubblewrapReady => {}
-        SandboxLaunchOutcome::ExecError { reason } => {
-            return Err(ManagedProcessError::SandboxFailed(format!(
-                "sandbox target exec failed: {reason}"
-            )));
-        }
-        SandboxLaunchOutcome::Unavailable { reason }
-        | SandboxLaunchOutcome::SetupError { reason } => {
-            return Err(ManagedProcessError::SandboxFailed(format!(
-                "Bubblewrap setup failed: {reason}"
-            )));
-        }
-        SandboxLaunchOutcome::Enforced { .. } => {
+    if status
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'{')
+    {
+        let has_exit_status =
+            decode_bubblewrap_json_status(status).map_err(ManagedProcessError::SandboxFailed)?;
+        if !has_exit_status && termination == TerminationReason::Exited {
             return Err(ManagedProcessError::SandboxFailed(
-                "Bubblewrap gate returned an unexpected legacy enforcement frame".into(),
+                "Bubblewrap exited without confirming successful target execution".into(),
             ));
+        }
+    } else {
+        match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
+            SandboxLaunchOutcome::Unavailable { reason }
+            | SandboxLaunchOutcome::SetupError { reason } => {
+                return Err(ManagedProcessError::SandboxFailed(format!(
+                    "Bubblewrap setup failed: {reason}"
+                )));
+            }
+            outcome => {
+                return Err(ManagedProcessError::SandboxFailed(format!(
+                    "Bubblewrap helper returned an unexpected setup outcome: {outcome:?}"
+                )));
+            }
         }
     }
 
@@ -2029,7 +2050,7 @@ fn interpret_bubblewrap_status(
         .map_err(ManagedProcessError::SandboxFailed)?;
     guarantees.insert(
         0,
-        "Bubblewrap mount namespace setup completed; parent acknowledged the gate before target exec".into(),
+        "Bubblewrap block-fd barrier releases the target only after mount setup".into(),
     );
     Ok(SandboxExecutionOutcome::Enforced {
         backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
@@ -2041,6 +2062,45 @@ fn interpret_bubblewrap_status(
             "resource limits are not claimed by this launch".into(),
         ],
     })
+}
+
+#[cfg(target_os = "linux")]
+fn decode_bubblewrap_json_status(bytes: &[u8]) -> Result<bool, String> {
+    if bytes.is_empty() {
+        return Err("Bubblewrap produced no JSON status".into());
+    }
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err("Bubblewrap status stream exceeds 16 KiB".into());
+    }
+
+    let mut child_pid_seen = false;
+    let mut exit_code_seen = false;
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let value: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|error| format!("Bubblewrap status JSON is malformed: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| "Bubblewrap status record is not a JSON object".to_string())?;
+        if let Some(pid) = object.get("child-pid") {
+            if child_pid_seen || exit_code_seen || pid.as_u64().is_none_or(|pid| pid == 0) {
+                return Err("Bubblewrap child PID status is invalid or duplicated".into());
+            }
+            child_pid_seen = true;
+        }
+        if let Some(exit_code) = object.get("exit-code") {
+            if !child_pid_seen || exit_code_seen || exit_code.as_i64().is_none() {
+                return Err("Bubblewrap exit status is invalid or out of order".into());
+            }
+            exit_code_seen = true;
+        }
+    }
+    if !child_pid_seen {
+        return Err("Bubblewrap did not report its sandbox child".into());
+    }
+    Ok(exit_code_seen)
 }
 
 #[cfg(test)]

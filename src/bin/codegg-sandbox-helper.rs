@@ -167,11 +167,6 @@ fn main() {
     #[cfg(target_os = "macos")]
     codegg::security::sandbox::seatbelt::install_apply_hook(apply_seatbelt);
 
-    #[cfg(target_os = "linux")]
-    if run_inner_bubblewrap_gate_if_requested() {
-        unreachable!("the in-sandbox gate always execs or exits");
-    }
-
     let (spec_path, status_fd) = parse_args().unwrap_or_else(|reason| {
         // There is no trustworthy channel until the fd argument itself has
         // been parsed. The parent treats this as a missing status frame.
@@ -279,131 +274,12 @@ fn main() {
     );
 }
 
-/// The first child inside the mount namespace is this trusted gate, never
-/// user code. It reports the setup receipt, waits for the managed-process
-/// owner's acknowledgment, then execs the requested command.
-#[cfg(target_os = "linux")]
-fn run_inner_bubblewrap_gate_if_requested() -> bool {
-    use std::ffi::OsString;
-    use std::os::fd::RawFd;
-    use std::path::PathBuf;
-
-    let mut args = env::args_os();
-    let _program = args.next();
-    if args.next().as_deref() != Some(std::ffi::OsStr::new("--inner-bubblewrap")) {
-        return false;
-    }
-    let mut status_fd = None;
-    let mut ack_fd = None;
-    let mut target = None;
-    let mut target_args = Vec::<OsString>::new();
-    let mut target_section = false;
-    while let Some(arg) = args.next() {
-        if target_section {
-            target_args.push(arg);
-            continue;
-        }
-        match arg.to_string_lossy().as_ref() {
-            "--status-fd" => {
-                status_fd = args
-                    .next()
-                    .and_then(|value| value.to_string_lossy().parse::<RawFd>().ok());
-            }
-            "--ack-fd" => {
-                ack_fd = args
-                    .next()
-                    .and_then(|value| value.to_string_lossy().parse::<RawFd>().ok());
-            }
-            "--target" => target = args.next().map(PathBuf::from),
-            "--" => target_section = true,
-            other => inner_gate_fail(
-                status_fd.unwrap_or(codegg::security::sandbox::SANDBOX_STATUS_FD),
-                format!("unexpected in-sandbox gate argument {other}"),
-            ),
-        }
-    }
-    let status_fd = status_fd.unwrap_or_else(|| {
-        eprintln!("sandbox helper protocol failure: missing setup-status descriptor");
-        std::process::exit(125);
-    });
-    let ack_fd = ack_fd
-        .unwrap_or_else(|| inner_gate_fail(status_fd, "missing parent-acknowledgment descriptor"));
-    let target = target.unwrap_or_else(|| inner_gate_fail(status_fd, "missing target executable"));
-    if status_fd != codegg::security::sandbox::SANDBOX_STATUS_FD
-        || ack_fd != codegg::security::sandbox::SANDBOX_ACK_FD
-        || !target.is_absolute()
-    {
-        inner_gate_fail(status_fd, "invalid in-sandbox gate descriptor or target");
-    }
-
-    if let Err(error) = write_status(status_fd, SandboxLaunchOutcome::BubblewrapReady) {
-        eprintln!("sandbox helper setup receipt failed: {error}");
-        std::process::exit(125);
-    }
-    wait_for_parent_ack(ack_fd).unwrap_or_else(|reason| inner_gate_fail(status_fd, reason));
-    unsafe {
-        libc::close(ack_fd);
-    }
-
-    let mut command = std::process::Command::new(target);
-    command.args(target_args);
-    let error = command.exec();
-    fail(
-        status_fd,
-        SandboxLaunchOutcome::ExecError {
-            reason: String::new(),
-        },
-        error,
-    )
-}
-
-#[cfg(target_os = "linux")]
-fn wait_for_parent_ack(fd: RawFd) -> Result<(), String> {
-    let mut descriptor = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        let result = unsafe { libc::poll(&mut descriptor, 1, 5_000) };
-        if result < 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(format!("wait for setup acknowledgment: {error}"));
-        }
-        if result == 0 {
-            return Err("timed out waiting for setup acknowledgment".into());
-        }
-        let mut byte = 0_u8;
-        let read = unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) };
-        if read != 1 || byte != 0xA5 {
-            return Err("setup acknowledgment was missing or invalid".into());
-        }
-        return Ok(());
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn inner_gate_fail(status_fd: RawFd, reason: impl std::fmt::Display) -> ! {
-    fail(
-        status_fd,
-        SandboxLaunchOutcome::SetupError {
-            reason: String::new(),
-        },
-        reason,
-    )
-}
-
 /// Replace the helper with Bubblewrap after compiling and pinning every
-/// source mount by descriptor. Bubblewrap's JSON status is emitted only
-/// after it has started the child inside the completed mount namespace; a
-/// missing or malformed status is rejected by ManagedProcessService.
+/// source mount by descriptor. Bubblewrap's block-fd barrier prevents target
+/// execution until the daemon acknowledges its child identity; Bubblewrap
+/// reads that byte only after completing mount setup.
 #[cfg(target_os = "linux")]
 fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -> ! {
-    use std::ffi::OsString;
-
     let bubblewrap = codegg::security::sandbox::linux_launch::trusted_bubblewrap_path()
         .unwrap_or_else(|reason| {
             fail(
@@ -424,7 +300,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         )
     });
     let mut pinned_sources = Vec::<File>::new();
-    let (mut mount_args, mut inherited_fds) =
+    let (mount_args, inherited_fds) =
         codegg::security::sandbox::linux_mount_view::compile(spec, &cwd, |path| {
             let fd = open_mount_source(path, &spec.path_identities)?;
             let raw = fd.as_raw_fd();
@@ -440,39 +316,6 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
                 reason,
             )
         });
-
-    let helper_fd = open_self_executable().unwrap_or_else(|reason| {
-        fail(
-            status_fd,
-            SandboxLaunchOutcome::SetupError {
-                reason: String::new(),
-            },
-            reason,
-        )
-    });
-    let helper_raw_fd = helper_fd.as_raw_fd();
-    pinned_sources.push(helper_fd);
-    inherited_fds.push(helper_raw_fd);
-
-    // /run is a fresh, empty directory in this mount root. Install the gate
-    // there so it never depends on host helper paths being granted to user
-    // code, and so the status/ack descriptors remain available only to it.
-    let helper_mount_index = mount_args
-        .iter()
-        .position(|arg| arg == "--ro-bind-fd" || arg == "--bind-fd")
-        .unwrap_or_else(|| mount_args.len().saturating_sub(2));
-    mount_args.splice(
-        helper_mount_index..helper_mount_index,
-        [
-            "--dir".to_string(),
-            "/run".to_string(),
-            "--dir".to_string(),
-            "/run/codegg".to_string(),
-            "--ro-bind-fd".to_string(),
-            helper_raw_fd.to_string(),
-            "/run/codegg/sandbox-helper".to_string(),
-        ],
-    );
 
     let mut command = Command::new(bubblewrap);
     command
@@ -497,17 +340,13 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         .arg("GIT_CONFIG_SYSTEM")
         .arg("/dev/null")
         .args(mount_args)
-        .arg("--")
-        .arg("/run/codegg/sandbox-helper")
-        .arg("--inner-bubblewrap")
-        .arg("--status-fd")
-        .arg(status_fd.to_string())
-        .arg("--ack-fd")
+        .arg("--block-fd")
         .arg(codegg::security::sandbox::SANDBOX_ACK_FD.to_string())
-        .arg("--target")
-        .arg(spec.target.as_os_str())
-        .arg("--");
-    command.args(spec.args.iter().map(OsString::from));
+        .arg("--json-status-fd")
+        .arg(status_fd.to_string())
+        .arg("--")
+        .arg(spec.target.as_os_str());
+    command.args(&spec.args);
     unsafe {
         command.pre_exec(move || {
             for fd in &inherited_fds {
@@ -588,22 +427,6 @@ fn open_mount_source(
         }
     }
     Ok(file)
-}
-
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-fn open_self_executable() -> Result<File, String> {
-    use std::ffi::CString;
-
-    let path = CString::new("/proc/self/exe").expect("static path has no NUL");
-    let fd = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(format!(
-            "cannot pin running sandbox helper identity: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 #[cfg(not(unix))]

@@ -10,13 +10,14 @@ Baseline: main @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13 EDT). Lo
 The internal opt-in routes through `ManagedProcessService` and the trusted
 one-shot helper, compiles a fresh-root mount graph, pins bind sources with
 `openat2` and Bubblewrap fd binds, snapshots grant identities, protects
-existing Git metadata read-only, hides future root `.git` paths and denied
-descendants, and uses a trusted in-sandbox gate that waits for a private
-`ManagedProcessService` acknowledgment before executing the requested target.
-The helper clears close-on-exec on the setup and acknowledgment descriptors
-before starting Bubblewrap; the trusted gate consumes acknowledgment and marks
-the status descriptor close-on-exec before target exec. Setup receipts use the
-framed helper protocol rather than Bubblewrap JSON status.
+existing Git metadata read-only, and hides future root `.git` paths and denied
+descendants. Bubblewrap's `--json-status-fd` reports its sandbox child before
+setup finishes; the managed-process owner validates that record and releases
+Bubblewrap's `--block-fd` barrier. Bubblewrap consumes the acknowledgment only
+after mount setup and privilege drop, before it starts the requested target.
+The private status stream is drained and checked for Bubblewrap's terminal
+target-exec result. Framed helper errors remain distinct from Bubblewrap JSON
+status.
 Existing configuration stays on Landlock. Native adversarial tests, tool
 compatibility, version qualification, descriptor-inheritance evidence, and the
 non-activated typed Git metadata transaction contract remain open. The
@@ -27,7 +28,14 @@ and dedicated workflow now exercise the actual `ManagedProcessService`
 handoff, permitted workspace writes, protected Git config/hooks, existing and
 future denied secrets, outside paths/symlinks, and fail-closed metadata/lease
 identity checks. C006 stays active until the hosted runner executes that test
-and the remaining native compatibility matrix is covered.
+and the remaining native compatibility matrix is covered. The first three
+hosted native attempts confirmed Bubblewrap 0.9.0 availability and helper/test
+compilation, then exposed and fixed (1) a Git fixture assumption about the
+hooks directory, (2) a preflight probe of inaccessible global deny paths, and
+(3) descriptor loss when Bubblewrap closed arbitrary inherited descriptors.
+The third run failed at the actual handoff with no status frame; the current
+implementation uses Bubblewrap's supported status/barrier descriptors and is
+awaiting another hosted run.
 The compiler protects an absent workspace-root `.git` path and discovers
 existing nested submodule metadata at launch. It does not establish protection
 for a new nested repository created later inside a newly created writable
