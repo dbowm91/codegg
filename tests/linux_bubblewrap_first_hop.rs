@@ -12,6 +12,12 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use codegg::security::sandbox::linux_launch::{
+    Demand, LinuxLaunchAdapter, LinuxLaunchPlan, LinuxLaunchRequest, NetworkIntent, ProcessScope,
+    ProductionLinuxLaunchAdapter,
+};
+use codegg::security::sandbox::SandboxLaunchSpec;
+
 const OPT_IN: &str = "CODEGG_RUN_LINUX_BWRAP_FIRST_HOP";
 
 fn trusted_bubblewrap() -> Result<PathBuf, String> {
@@ -61,11 +67,14 @@ fn launcher(helper: &Path, scratch: &Path, status_fd: i32) -> Command {
         .arg(scratch)
         .arg("/fixture")
         .args(["--chdir", "/fixture", "--"])
+        .arg("/usr/bin/setpriv")
+        .args(["--no-new-privs", "--"])
         .arg("/usr/bin/dash")
         .arg("-c")
         .arg(format!(
             "for n in user mnt pid net ipc; do /usr/bin/stat -Lc '%i' /proc/self/ns/$n; done > /fixture/namespaces; \\
              if test -e /proc/self/fd/{status_fd}; then printf present > /fixture/status-fd; else printf absent > /fixture/status-fd; fi; \\
+             /usr/bin/grep '^NoNewPrivs:' /proc/self/status > /fixture/no-new-privs; \\
              printf ran > /fixture/target.marker"
         ));
     command
@@ -89,6 +98,28 @@ fn opt_in_real_child_namespaces_and_fail_closed_setup() {
     let helper = trusted_bubblewrap().expect("trusted fixed-path Bubblewrap helper");
     let scratch = tempfile::tempdir().expect("private fixture scratch");
     let marker = scratch.path().join("target.marker");
+    let spec = SandboxLaunchSpec {
+        target: PathBuf::from("/usr/bin/dash"),
+        args: Vec::new(),
+        read_paths: vec![PathBuf::from("/usr/bin"), PathBuf::from("/usr/lib")],
+        write_paths: vec![scratch.path().to_owned()],
+        deny_paths: vec![scratch.path().join("protected")],
+    };
+    let mut request = LinuxLaunchRequest::legacy_filesystem(&spec);
+    request.network.demand = Demand::Required;
+    request.network.requested = NetworkIntent::OfflineRequired;
+    request.network.parent_ceiling = NetworkIntent::OfflineRequired;
+    request.process.demand = Demand::Required;
+    request.process.requested = ProcessScope::Namespaced;
+    request.process.parent_ceiling = ProcessScope::Namespaced;
+    request.validate_parent_ceiling().unwrap();
+    assert_eq!(
+        ProductionLinuxLaunchAdapter.plan(&request).unwrap(),
+        LinuxLaunchPlan::EnhancedUnavailable {
+            dimensions: vec!["network", "process"]
+        },
+        "production must not select the test-only Bubblewrap fixture"
+    );
 
     // The private pipe belongs to the test parent and is deliberately not
     // passed through std::process::Command. The child checks that the chosen
@@ -134,6 +165,10 @@ fn opt_in_real_child_namespaces_and_fail_closed_setup() {
         fs::read_to_string(scratch.path().join("status-fd")).unwrap(),
         "absent"
     );
+    assert!(fs::read_to_string(scratch.path().join("no-new-privs"))
+        .unwrap()
+        .trim_end()
+        .ends_with("1"));
     let actual = namespace_ids(&scratch.path().join("namespaces")).unwrap();
     let names = ["user", "mnt", "pid", "net", "ipc"];
     assert_eq!(actual.len(), names.len());
