@@ -27,6 +27,14 @@ configuration, and retains the existing command-bearing local-config
 overrides. Native regression tests cover a hostile local `core.worktree` and
 the existing fsmonitor/hook execution probes.
 
+The process boundary also preserves ordinary commit author identity without
+re-enabling global executable configuration: only missing `user.name` and
+`user.email` values are copied from local/global config into bounded
+command-scoped data for commit-producing operations. A Git mutation regression
+had shown that disabling all global config also discarded the user's commit
+identity; this data-only handoff restores commits while global hooks remain
+disabled.
+
 Git operations that can invoke clean/smudge filters, merge drivers, hooks,
 external diff/textconv, remote helpers, credentials, or network remain
 classified as requiring contained execution or separate authorization. They
@@ -60,6 +68,7 @@ backend promotion follows from this finding.
 - `cargo test -p egggit --locked process::tests::trusted_git_status_cannot_be_redirected_by_local_core_worktree`
 - `cargo test -p egggit --locked process::tests::trusted_git_status_does_not_run_repository_fsmonitor`
 - `python3 scripts/check_git_forbidden_patterns.py`
-- Final merge branch native and cross-platform CI qualification is recorded in
-  `plans/closure/linux-execution-isolation/014-status.md` and the CI run link
-  added after the reconciled head is pushed.
+- Exact reconciled-head Linux C006 evidence is recorded in
+  `plans/closure/linux-execution-isolation/014-status.md` (run
+  `38633625863`); the remaining cross-platform suite evidence is recorded
+  there after its exact-head workflows complete.

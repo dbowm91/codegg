@@ -177,7 +177,7 @@ impl GitEnvPolicy {
         let mut cmd = Command::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
-        apply_environment(&mut cmd, self, &worktree);
+        apply_environment(&mut cmd, self, &worktree, argv);
         cmd.kill_on_drop(true);
         Ok(cmd)
     }
@@ -194,7 +194,7 @@ impl GitEnvPolicy {
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
         isolate_child_process_group(&mut cmd);
-        apply_environment(&mut cmd, self, &worktree);
+        apply_environment(&mut cmd, self, &worktree, argv);
         Ok(cmd)
     }
 }
@@ -452,7 +452,7 @@ fn isolate_child_process_group(cmd: &mut StdCommand) {
     let _ = cmd;
 }
 
-fn apply_environment<C>(cmd: &mut C, policy: &GitEnvPolicy, worktree: &Path)
+fn apply_environment<C>(cmd: &mut C, policy: &GitEnvPolicy, worktree: &Path, argv: &[String])
 where
     C: CommandEnvironment,
 {
@@ -489,6 +489,94 @@ where
     cmd.env("GPG_TTY", "".into());
     cmd.env("GIT_PAGER", "cat".into());
     cmd.env("PAGER", "cat".into());
+
+    apply_commit_identity(cmd, argv, worktree);
+}
+
+/// Preserve Git's user identity preference without loading arbitrary global
+/// configuration into the trusted operation. Local values retain normal Git
+/// precedence; only missing `user.name`/`user.email` values are copied from
+/// global config into command-scoped configuration data. Helpers, hooks,
+/// aliases, and other global settings remain disabled.
+fn apply_commit_identity<C>(cmd: &mut C, argv: &[String], worktree: &Path)
+where
+    C: CommandEnvironment,
+{
+    if !needs_commit_identity(argv) {
+        return;
+    }
+
+    let mut config = Vec::new();
+    for key in ["user.name", "user.email"] {
+        let value = read_config_value(worktree, "--local", key)
+            .or_else(|| read_config_value(worktree, "--global", key));
+        let Some(value) = value.filter(|value| valid_identity_value(value)) else {
+            continue;
+        };
+        config.push((key, value));
+    }
+
+    if config.is_empty() {
+        return;
+    }
+    cmd.env("GIT_CONFIG_COUNT", config.len().to_string().into());
+    for (index, (key, value)) in config.into_iter().enumerate() {
+        let key_env = format!("GIT_CONFIG_KEY_{index}");
+        let value_env = format!("GIT_CONFIG_VALUE_{index}");
+        cmd.env(&key_env, key.to_owned().into());
+        cmd.env(&value_env, value.into());
+    }
+}
+
+fn needs_commit_identity(argv: &[String]) -> bool {
+    match argv.get(1).map(String::as_str) {
+        Some("commit" | "merge" | "cherry-pick" | "revert" | "rebase" | "am") => true,
+        Some("tag") => argv
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-a" | "--annotate")),
+        _ => false,
+    }
+}
+
+fn valid_identity_value(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 4096
+        && !value
+            .chars()
+            .any(|character| character == '\0' || character == '\n' || character == '\r')
+}
+
+fn read_config_value(worktree: &Path, scope: &str, key: &str) -> Option<String> {
+    let mut command = StdCommand::new("git");
+    command
+        .env_clear()
+        .current_dir(worktree)
+        .args(["config", scope, "--null", "--get", key])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("PAGER", "cat");
+    for name in ["PATH", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let mut output = Vec::with_capacity(4097);
+    let stdout = child.stdout.take()?;
+    stdout.take(4097).read_to_end(&mut output).ok()?;
+    if output.len() > 4096 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+    if !child.wait().ok()?.success() {
+        return None;
+    }
+    let value = std::str::from_utf8(&output).ok()?;
+    let value = value.strip_suffix('\0').unwrap_or(value);
+    valid_identity_value(value).then(|| value.to_owned())
 }
 
 fn canonical_worktree(cwd: &Path) -> Result<std::path::PathBuf, GitExecutionPolicyOutcome> {
@@ -1150,6 +1238,90 @@ mod tests {
             !marker.exists(),
             "repository post-commit hook must not execute"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_commit_uses_global_identity_without_loading_global_hooks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("repo");
+        let global = dir.path().join("user.gitconfig");
+        let hooks = dir.path().join("global-hooks");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        let marker = dir.path().join("global-hook-ran");
+        let hook = hooks.join("post-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))
+            .expect("write global post-commit hook");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("make global hook executable");
+        std::fs::write(
+            &global,
+            format!(
+                "[user]\n\tname = Safe Test User\n\temail = safe@example.invalid\n[core]\n\thooksPath = {}\n",
+                hooks.display()
+            ),
+        )
+        .expect("write isolated global config");
+
+        let previous_global = std::env::var_os("GIT_CONFIG_GLOBAL");
+        // The repository's nextest profile isolates environment-mutating
+        // tests by process. Restore the setting even if an assertion fails.
+        std::env::set_var("GIT_CONFIG_GLOBAL", &global);
+        let _restore_global = RestoreEnvVar::new("GIT_CONFIG_GLOBAL", previous_global);
+
+        let run = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git command")
+        };
+        assert!(run(&["init", "--initial-branch=main"]).status.success());
+        std::fs::write(root.join("tracked.txt"), "content\n").expect("write tracked file");
+        assert!(run(&["add", "tracked.txt"]).status.success());
+
+        let output = super::run(&["commit".into(), "-m".into(), "initial".into()], &root)
+            .await
+            .expect("trusted commit with global identity");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!marker.exists(), "global hooks must remain disabled");
+
+        let log = super::run(
+            &["log".into(), "-1".into(), "--format=%an <%ae>".into()],
+            &root,
+        )
+        .await
+        .expect("read committed identity");
+        assert_eq!(
+            String::from_utf8_lossy(&log.stdout).trim(),
+            "Safe Test User <safe@example.invalid>"
+        );
+    }
+
+    struct RestoreEnvVar {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl RestoreEnvVar {
+        fn new(name: &'static str, previous: Option<std::ffi::OsString>) -> Self {
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for RestoreEnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
     }
 
     /// Drive a command through `run_command` with a short deadline.
