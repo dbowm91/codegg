@@ -934,10 +934,9 @@ impl CiWatchService {
         let mut attentioned = 0usize;
         // Collect the nonterminal slice without holding the map across I/O.
         let snapshot: Vec<CiWatchRecord> = {
-            if self.pool.is_some() {
+            if let Some(pool) = self.pool.as_ref() {
                 // Load all nonterminal rows directly so watches never held
                 // only in memory on a fresh handle are still repaired.
-                let pool = self.pool.as_ref().expect("checked");
                 let ids: Vec<String> = sqlx::query_scalar(
                     "SELECT watch_id FROM ci_watch WHERE state IN ('pending', 'observing') LIMIT 256",
                 )
@@ -1892,8 +1891,9 @@ impl CiWatchService {
 }
 
 /// Outcome of one finite observation (test and operator introspection).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ObserveOutcome {
+    #[default]
     Nonterminal,
     TerminalSuccess,
     TerminalFailure,
@@ -2192,10 +2192,4 @@ fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("127.0.0.1")
         || host.eq_ignore_ascii_case("localhost")
         || host == "::1"
-}
-
-impl Default for ObserveOutcome {
-    fn default() -> Self {
-        Self::Nonterminal
-    }
 }

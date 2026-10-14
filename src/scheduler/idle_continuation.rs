@@ -221,6 +221,7 @@ pub enum DispatchOutcome {
 /// Pluggable turn-submission boundary. Production routes through the
 /// canonical turn runtime; tests inject a fake that records invocation
 /// without spending inference.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ContinuationExecutor: Send + Sync {
     async fn execute_turn(&self, ctx: ContinuationContext) -> Result<String, String>;
