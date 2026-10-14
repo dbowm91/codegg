@@ -69,8 +69,17 @@ pub fn compile(
         "pki/tls/certs/ca-bundle.crt",
     ] {
         let path = PathBuf::from("/etc").join(name);
-        if path.exists() {
-            explicit_etc.push((canonical_existing(&path)?, path));
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                explicit_etc.push((canonical_existing(&path)?, path));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect explicit runtime config file: {error}"
+                ));
+            }
         }
     }
 
