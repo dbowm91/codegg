@@ -2569,9 +2569,20 @@ mod tests {
             helper.display()
         );
 
-        let result = ManagedProcessService::run(request)
-            .await
-            .expect("real Bubblewrap protected mount child");
+        let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(64);
+        let result = ManagedProcessService::run_streaming(request, output_tx).await;
+        let mut setup_stderr = Vec::new();
+        while let Ok(chunk) = output_rx.try_recv() {
+            if chunk.stream == OutputStream::Stderr {
+                setup_stderr.extend_from_slice(&chunk.bytes);
+            }
+        }
+        let result = result.unwrap_or_else(|error| {
+            panic!(
+                "real Bubblewrap protected mount launch failed: {error}; child stderr: {}",
+                String::from_utf8_lossy(&setup_stderr)
+            )
+        });
         assert!(
             result.exit_status.success(),
             "child stderr: {}",
