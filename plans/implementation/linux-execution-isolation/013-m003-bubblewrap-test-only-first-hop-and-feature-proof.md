@@ -1,9 +1,9 @@
 # Linux Execution Isolation C005 — M003 Test-Only Bubblewrap First-Hop and Native Feature Proof
 
-Status: **ready, bounded test-only**; full production adapter remains blocked on Linux ADR acceptance and C004 identity reconciliation
+Status: **implemented, bounded test-only**; full production adapter remains blocked on ADR-0031 disposition and later enforcement evidence
 Class: infrastructure / feasibility
 Closure target: `plans/closure/linux-execution-isolation/013-status.md`.
-Baseline: main @ `ec43e495c3619966ac33d0acccf7904812dd37bc` (2026-10-13 EDT). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
+Baseline: after C004 closure @ `5ff248d` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
 
 ## 1. Purpose and factual baseline
 
@@ -41,4 +41,4 @@ Success here is **real evidence for or against feasibility**, plus zero producti
 
 Stop if an unprivileged helper cannot create the required namespace on the documented supported host; if making it work requires setuid/root/host-wide AppArmor relaxation; if setup status can be forged by child; if a target marker appears after failed required setup; or if parent/namespace descendants cannot be cancelled/reaped correctly. Record a minimal negative reproducer and architecture issue, not a permission workaround.
 
-No persisted schema or public DTO changes. Linux ADR remains *proposed* until a separate accepted review; C004 identity cleanup must close before treating that decision as an unambiguous admission gate.
+No persisted schema or public DTO changes. Linux ADR remains *proposed* until a separate accepted review; C004 identity cleanup is closed; ADR-0031 remains proposed until a separate maintainer decision.
