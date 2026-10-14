@@ -1213,8 +1213,12 @@ impl PermissionChecker {
                 // *invocation* rather than the program — trivially bypassed,
                 // and it only taught callers to reword. They are reviewed
                 // here instead so the operator decides under the configured
-                // approval mode and sandbox. Genuinely catastrophic shapes
-                // stay hard-denied in the tool and are never reachable.
+                // approval mode and sandbox. Under ADR-0028 even genuinely
+                // catastrophic shapes are advisory here: the default
+                // blocked-command set is empty by design, so built-in
+                // syntax/risk never implies host safety. Terminal authority
+                // is explicit configured deny/allowlist, obtained permission,
+                // and sandbox enforcement; FullHost leaves host-global risk.
                 if let Some(pattern_name) = crate::tool::bash::policy::find_ask_pattern(cmd) {
                     return PermissionResult::Ask(PermissionRequest {
                         tool: tool.to_string(),
