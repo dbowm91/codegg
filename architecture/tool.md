@@ -597,6 +597,19 @@ for executable Git capabilities. Direct legacy tool calls without an accepted
 context retain tool-local preflight behavior. This check does not establish
 network or IPC confinement.
 
+Command M004 route qualification is tracked in
+`research/command-authorization-m004-route-coverage.md`. The active
+command-intent routes dispatched from Bash remain explicit-FullHost-only;
+classifier labels do not grant authority. The separate typed `test` and
+`python_script` tools are not currently proven to preserve the accepted
+snapshot end to end: the test runner owns a domain-specific child launcher,
+and Python derives its OS policy from its script mode/content. Do not infer
+constrained parity from their scheduler ownership or from Python's separate
+Landlock policy. Git filters/hooks and remote operations remain behind Linux
+C002/C003 containment and transport gates. These routes are unqualified for
+constrained promotion until they consume the immutable accepted context and
+prove matching obtained effects.
+
 The `evidence_config`, `deterministic_config`, and `preflight_config`
 fields are resolved by `integrated_config::resolve_integrated_config()`
 and passed through from `with_config()`, `with_session_config_defaults()`,
