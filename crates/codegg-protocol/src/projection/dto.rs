@@ -483,6 +483,14 @@ pub enum AgentTreeStatus {
 pub struct AgentRunSummary {
     pub run_id: String,
     pub task_id: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
     pub parent_run_id: Option<String>,
     pub agent: String,
     pub status: String,
@@ -507,6 +515,17 @@ impl AgentRunSummary {
     pub fn normalise(&mut self) {
         self.run_id = truncate_str(&self.run_id, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.task_id = truncate_str(&self.task_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.project_id = truncate_str(&self.project_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.repository_id = self
+            .repository_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.workspace_id =
+            truncate_str(&self.workspace_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.job_id = self
+            .job_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
         self.parent_run_id = self
             .parent_run_id
             .as_deref()

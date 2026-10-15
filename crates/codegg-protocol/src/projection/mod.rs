@@ -12,6 +12,7 @@
 //! * [`event`] — additive projection event variants carried in the
 //!   existing protocol envelope.
 //! * [`snapshot`] — one bounded session projection snapshot.
+//! * [`workstream`] — a bounded read-only join over one authorized snapshot.
 //! * [`reducer`] — a deterministic reducer that converts a snapshot
 //!   plus an ordered event stream into the equivalent state.
 //! * [`adapters`] — adapters that build projection snapshots and
@@ -47,6 +48,7 @@ pub mod limits;
 pub mod reducer;
 pub mod replay;
 pub mod snapshot;
+pub mod workstream;
 
 pub use caps::{
     ProjectionCapabilities, PROJECTION_CAPABILITY, PROJECTION_PROTOCOL_VERSION,
@@ -99,3 +101,7 @@ pub use replay::{
     ProjectionSubscriptionStatus, ReplaySubscriptionError,
 };
 pub use snapshot::SessionProjectionSnapshot;
+pub use workstream::{
+    project_workstream, AgentWorkstreamMember, AgentWorkstreamSnapshot, WorkstreamJobFact,
+    WorkstreamProjectionError, WorkstreamWorktreeFact, MAX_WORKSTREAM_MEMBERS,
+};

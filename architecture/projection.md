@@ -282,6 +282,18 @@ the persisted turn owner or the owner run's originating task. Terminal live
 follow-up delivery is separately claim-gated by durable group notification
 state, so replay can refresh projections without duplicating user messages.
 
+### Bounded workstream view (agent-workstream-blackboard M002)
+
+`projection::workstream::project_workstream` derives an `AgentWorkstreamSnapshot`
+from one already authorized `SessionProjectionSnapshot`. Its revision is the
+source snapshot's `event_seq`, so reconnect and restart use the existing
+snapshot/replay cursor and do not introduce another journal or polling loop.
+The pure adapter joins a run group to at most 16 run, job, and worktree facts;
+missing or mismatched run facts are listed as unavailable, and linked jobs or
+worktrees distinguish unavailable records from observed state. The response
+omits task descriptions, job summaries, terminal prose, paths, prompts, and
+logs. It grants no control authority and performs no storage access.
+
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events
 and `task get` remain compatibility adapters for the migration window; new
