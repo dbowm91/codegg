@@ -606,9 +606,11 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
         // installed Rust toolchain and Cargo caches so rustup and Cargo do not
         // look for an empty /tmp/.rustup.
         let mut launch_script = format!(
-            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; export {}={}; export PATH={}:$PATH; ",
+            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; export CC={}; export HOST_CC={}; export {}={}; export PATH={}:$PATH; ",
             shell_quote(&rustup_home.to_string_lossy()),
             shell_quote(&cargo_home.to_string_lossy()),
+            shell_quote(&linker.to_string_lossy()),
+            shell_quote(&linker.to_string_lossy()),
             linker_env,
             shell_quote(&linker.to_string_lossy()),
             shell_quote(
