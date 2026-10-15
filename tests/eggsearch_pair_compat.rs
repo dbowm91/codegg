@@ -782,6 +782,10 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
         )
         .await
         .expect("repo_search: package/security context should retain local-only result");
+    assert!(
+        package_selection.success,
+        "repo_search: package/security request was not a completed local query"
+    );
     let package_value = package_selection
         .value
         .expect("repo_search: package structured value");
@@ -794,11 +798,18 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
             && providers
                 .iter()
                 .all(|provider| provider == "local_workspace")));
-    assert_eq!(
+    assert_ne!(
         package_value
             .pointer("/package_resolution/verified")
             .and_then(Value::as_bool),
-        Some(false)
+        Some(true),
+        "repo_search: package registry coordinate was falsely verified"
+    );
+    assert_eq!(
+        package_value
+            .pointer("/package_resolution/coordinate/ecosystem")
+            .and_then(Value::as_str),
+        Some("crates_io")
     );
     assert!(package_value
         .pointer("/package_resolution/warnings")
@@ -809,6 +820,13 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     assert!(package_value
         .get("security_context")
         .is_none_or(Value::is_null));
+    assert!(package_value
+        .get("warnings")
+        .and_then(Value::as_array)
+        .is_some_and(|warnings| warnings.iter().any(|warning| warning
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("package_security_skipped")))));
     println!(
         "wrapper_request native=repo_search package_and_security_context remote_resolution=skipped"
     );
@@ -834,7 +852,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     tokio::time::timeout(
         Duration::from_secs(10),
         disabled_service.connect_stdio(
-            "eggsearch-disabled-local",
+            "eggsearch",
             &binary.to_string_lossy(),
             &disabled_config
                 .search
