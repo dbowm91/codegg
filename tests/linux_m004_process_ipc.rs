@@ -2,7 +2,8 @@
 
 use std::ffi::OsString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -350,6 +351,108 @@ async fn process_tier_cancellation_kills_namespace_descendants() {
     assert!(
         !marker.exists(),
         "M004 cancellation left a namespace descendant running"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces() {
+    if std::env::var(OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {OPT_IN}=1 to run the native M004 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        eprintln!("M004 positive probes unavailable on this host: {reason}");
+        return;
+    }
+
+    let first_workspace = tempfile::tempdir().expect("first workspace");
+    let second_workspace = tempfile::tempdir().expect("second workspace");
+    let request = |workspace: &Path, operation: &str| {
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec(
+                "python3",
+                &[
+                    "-c".into(),
+                    "import os; print(os.stat('/proc/self/ns/pid').st_ino); print(os.stat('/proc/self/ns/ipc').st_ino)".into(),
+                ],
+                Some(workspace),
+            )
+            .expect("M004 launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.to_path_buf(),
+            ProcessProvenance::new("linux-m004", operation),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+        request
+    };
+
+    let (first, second) = tokio::join!(
+        ManagedProcessService::run(request(first_workspace.path(), "concurrent-first")),
+        ManagedProcessService::run(request(second_workspace.path(), "concurrent-second")),
+    );
+    let first = first.expect("first concurrent M004 launch");
+    let second = second.expect("second concurrent M004 launch");
+    assert!(
+        first.exit_status.success(),
+        "first stderr: {}",
+        first.stderr.to_string_lossy()
+    );
+    assert!(
+        second.exit_status.success(),
+        "second stderr: {}",
+        second.stderr.to_string_lossy()
+    );
+    let namespace_ids = |stdout: &str| {
+        let ids = stdout
+            .lines()
+            .map(|line| line.trim().parse::<u64>().expect("namespace inode"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids.len(),
+            2,
+            "expected PID and IPC namespace inodes: {stdout}"
+        );
+        [ids[0], ids[1]]
+    };
+    let first_ids = namespace_ids(&first.stdout.to_string_lossy());
+    let second_ids = namespace_ids(&second.stdout.to_string_lossy());
+    assert_ne!(
+        first_ids[0], second_ids[0],
+        "concurrent jobs shared a PID namespace"
+    );
+    assert_ne!(
+        first_ids[1], second_ids[1],
+        "concurrent jobs shared an IPC namespace"
+    );
+    let host_pid = std::fs::metadata("/proc/self/ns/pid")
+        .expect("host PID namespace")
+        .ino();
+    let host_ipc = std::fs::metadata("/proc/self/ns/ipc")
+        .expect("host IPC namespace")
+        .ino();
+    assert_ne!(
+        first_ids[0], host_pid,
+        "first job retained the host PID namespace"
+    );
+    assert_ne!(
+        second_ids[0], host_pid,
+        "second job retained the host PID namespace"
+    );
+    assert_ne!(
+        first_ids[1], host_ipc,
+        "first job retained the host IPC namespace"
+    );
+    assert_ne!(
+        second_ids[1], host_ipc,
+        "second job retained the host IPC namespace"
     );
 }
 
