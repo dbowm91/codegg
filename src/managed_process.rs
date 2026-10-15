@@ -3161,12 +3161,9 @@ mod tests {
                 Some(&workspace),
             )
             .expect("protected mount lease");
-        let error = crate::security::sandbox::linux_mount_view::compile(
-            &spec,
-            &workspace,
-            |_| Ok(256),
-        )
-        .expect_err("denied descendants of writable roots must refuse setup");
+        let error =
+            crate::security::sandbox::linux_mount_view::compile(&spec, &workspace, |_| Ok(256))
+                .expect_err("denied descendants of writable roots must refuse setup");
         assert!(
             error.contains("cannot isolate a denied path inside a writable grant"),
             "unexpected denial disposition: {error:?}"
