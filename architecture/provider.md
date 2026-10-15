@@ -164,6 +164,18 @@ explicitly:
   the store count reached two, and *every* turn for that provider died with
   `provider_credential_ambiguous` while the connection holding the working key
   sat `active` in the database.
+- **Process-wide paths carry the same authority.** `codegg exec`, `codegg
+  models`, `/models`, and the model pickers have no session and no turn, so they
+  used to fall straight through to the store fallback and refused any provider
+  with more than one stored record — which is exactly what a rotation leaves
+  behind. `connection_credential_locators` applies the identical rule to every
+  provider at once (same `Active`-only, exactly-one, secret-binding-required
+  exclusions) and `register_builtin_with_config_connections` pins them all, so
+  those surfaces resolve the same provider set a turn does. The turn-scoped
+  `register_builtin_with_config_for_turn` binds one provider because a turn names
+  one; both share `TurnCredentialPin` and the same before-config/env/store
+  ordering. When no locator can be read the call degrades to the pre-existing
+  unbound order rather than registering nothing.
 - The turn calls `register_builtin_with_config_for_turn(registry, config,
   provider_id, locator, store)`, which reads the bound record by **exact**
   `(provider_ref, account_ref)`, pins it for that provider's registration, and
@@ -421,6 +433,36 @@ Operator-visible messaging must state the two axes separately
 (`connect_success_message`); a single unqualified "connected" message asserts
 credential validity that catalog discovery never established.
 `scripts/check_provider_qualification.py` guards the contract.
+
+**Every persisted catalog is wire-qualified.** Provision and refresh/rotate
+discover through *different* probes and both must apply the same filter:
+
+- Provision goes through `probe_provider_catalog` → `build_durable_provider` →
+  `Provider::models()`, which already drops every id the shared profile has no
+  reviewed wire mapping for (`qualify_models`).
+- Refresh and rotate go through `probe_with_options` → the provider-neutral
+  `CompatibleProbe`, which is a pure `GET /models` availability read.
+  `qualify_routable_models` applies the filter there.
+
+The filter is scoped to providers the shared profile adapts
+(`shared_provider_id` is `Some`); every other upstream keeps all its models,
+because there is no reviewed contract to qualify against and inventing one would
+strip models from generic OpenAI-compatible providers.
+
+The observable consequence of getting this wrong is severe and quiet: an
+unqualified catalog advertises models that fail closed at `wire_unresolved`
+before any request is built, and alphabetical order puts the worst offenders
+first. Measured on OpenCode Go: upstream advertises 37 models, the profile
+routes 30, and `cat-jam-free` sorts first while having no mapping — so the very
+first row a user lands on could never work. Qualification that empties a
+non-empty upstream catalog fails the probe with `ProbeReason::EmptyCatalog`
+rather than committing an empty catalog, which would strand the connection at a
+revision with no rows and report zero models.
+
+The catalog revision digests the **stored (qualified)** rows on both paths, so
+"catalog changed" means what a user can actually select changed, and a refresh
+against a freshly provisioned connection does not bump the revision for a
+difference nobody can observe.
 - Built-in endpoint dispositions (C002, first-party review 2026-10-02):
   OpenCode Go corrected to `https://opencode.ai/zen/go/v1` (chat,
   responses, messages, and `/models` under that prefix per

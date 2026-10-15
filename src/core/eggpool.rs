@@ -2360,7 +2360,7 @@ async fn probe_with_options(
         }
         result = probe.probe(&provider_cancel) => result.map_err(|error| map_probe_reason(error.reason_code()))?
     };
-    let models: Vec<ProbedModel> = summary
+    let discovered: Vec<ProbedModel> = summary
         .models
         .into_iter()
         .map(|model| ProbedModel {
@@ -2372,6 +2372,24 @@ async fn probe_with_options(
             supports_vision: false,
         })
         .collect();
+    if discovered.is_empty() {
+        return Err(ProbeReason::EmptyCatalog);
+    }
+    let models = qualify_routable_models(provider_id, discovered)?;
+    // A catalog revision identifies the rows this connection actually stores,
+    // so it is computed *after* qualification. Provision already digests the
+    // qualified list; digesting the raw discovery here would make every
+    // refresh report "catalog changed" against a freshly provisioned
+    // connection and bump its revision for no change a user can observe.
+    let catalog_revision = codegg_providers::eggpool::digest_models(
+        &models
+            .iter()
+            .map(|model| codegg_providers::EggpoolModelSummary {
+                id: model.id.clone(),
+                name: model.name.clone(),
+            })
+            .collect::<Vec<_>>(),
+    );
     // A `/models` 2xx is a **catalog** fact. It is not credential evidence:
     // several real endpoints answer an unauthenticated reader with 200, and a
     // key with no active entitlement sails through the catalog only to fail
@@ -2388,10 +2406,54 @@ async fn probe_with_options(
     .await?;
     Ok(ProbeResult {
         models,
-        catalog_revision: summary.digest,
+        catalog_revision,
         duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
         credential,
     })
+}
+
+/// Keep only the models the shared wire profile can actually route.
+///
+/// Refresh and rotate discover through the provider-neutral `CompatibleProbe`,
+/// which reads `/models` and nothing else. That is the right *availability*
+/// source and the wrong *selectability* one: the shared profile has a reviewed
+/// wire mapping for only some of the ids an upstream advertises, and a model
+/// with no mapping fails closed at `wire_unresolved` before a request is ever
+/// built. Provision already filters — it goes through `Provider::models()` —
+/// but refresh and rotate did not, so the first refresh replaced a correctly
+/// qualified catalog with an unqualified one and promoted a never-dispatchable
+/// entry to the top of the picker. Measured on OpenCode Go: `cat-jam-free`
+/// sorts first, has no reviewed wire mapping, and every turn bound to it fails
+/// without reaching the network.
+///
+/// Providers the shared profile does not adapt are returned untouched: there is
+/// no reviewed contract to qualify against, and inventing one here would
+/// silently strip models from every generic OpenAI-compatible upstream.
+fn qualify_routable_models(
+    provider_id: Option<&str>,
+    models: Vec<ProbedModel>,
+) -> Result<Vec<ProbedModel>, ProbeReason> {
+    let Some(provider_id) = provider_id else {
+        return Ok(models);
+    };
+    if codegg_providers::provider_profile::shared_provider_id(provider_id).is_none() {
+        return Ok(models);
+    }
+    let routable: Vec<ProbedModel> = models
+        .into_iter()
+        .filter(|model| {
+            codegg_providers::provider_profile::resolve_route(provider_id, &model.id).is_ok()
+        })
+        .collect();
+    // Qualification emptied a non-empty upstream catalog: every model this
+    // provider offers is unroutable. Committing that as an empty catalog would
+    // strand the connection at a revision with no rows and leave `/connections`
+    // reporting zero models — a silent lie that is harder to diagnose than the
+    // failure. Fail the probe and keep the catalog the connection already holds.
+    if routable.is_empty() {
+        return Err(ProbeReason::EmptyCatalog);
+    }
+    Ok(routable)
 }
 
 /// Run the bounded credential-verification completion for one probed catalog.
@@ -3836,6 +3898,80 @@ mod tests {
             Some("verified".to_string()),
             "cancellation must leave the credential axis exactly as it was"
         );
+    }
+
+    fn probed(ids: &[&str]) -> Vec<ProbedModel> {
+        ids.iter()
+            .map(|id| ProbedModel {
+                id: (*id).to_string(),
+                name: (*id).to_string(),
+                context_window: 128_000,
+                max_output_tokens: None,
+                supports_tools: true,
+                supports_vision: false,
+            })
+            .collect()
+    }
+
+    fn kept(result: Result<Vec<ProbedModel>, ProbeReason>) -> Vec<String> {
+        result
+            .expect("qualification keeps at least one model")
+            .into_iter()
+            .map(|model| model.id)
+            .collect()
+    }
+
+    /// A refresh must not advertise a model the agent loop cannot dispatch.
+    ///
+    /// Provision discovers through `Provider::models()`, which drops every id
+    /// the shared wire profile has no reviewed mapping for. Refresh and rotate
+    /// discovered through the provider-neutral `CompatibleProbe`, which kept
+    /// them all — so the first refresh a connection ever ran replaced a correct
+    /// 30-model catalog with an unqualified 37-model one. Observed live on
+    /// OpenCode Go: `/connections` then offered 9 models that can only ever
+    /// fail closed at `wire_unresolved`, with `cat-jam-free` — alphabetically
+    /// first, and therefore the row a user lands on first — among them.
+    #[test]
+    fn refresh_qualification_drops_models_with_no_reviewed_wire_mapping() {
+        let qualified = kept(qualify_routable_models(
+            Some("opencode_go"),
+            probed(&["cat-jam-free", "mimo-v2.6-flash", "omen-alpha"]),
+        ));
+        assert_eq!(qualified, vec!["mimo-v2.6-flash".to_string()]);
+    }
+
+    /// Qualification is scoped to providers the shared profile adapts.
+    ///
+    /// For every other upstream there is no reviewed contract to qualify
+    /// against. Filtering there would strip models from generic
+    /// OpenAI-compatible providers that dispatch perfectly well.
+    #[test]
+    fn unadapted_providers_keep_every_discovered_model() {
+        let models = probed(&["some-model", "another-model"]);
+        assert_eq!(
+            kept(qualify_routable_models(
+                Some("generalcompute"),
+                models.clone()
+            )),
+            vec!["some-model".to_string(), "another-model".to_string()]
+        );
+        assert_eq!(
+            kept(qualify_routable_models(None, models)),
+            vec!["some-model".to_string(), "another-model".to_string()]
+        );
+    }
+
+    /// A provider whose entire catalog is unroutable fails instead of stranding.
+    ///
+    /// Committing an empty catalog would bump the revision, write zero rows,
+    /// and leave `/connections` reporting zero models — indistinguishable from
+    /// the stranded-catalog defect. Refusing keeps the rows already held.
+    #[test]
+    fn a_catalog_with_nothing_routable_is_refused_not_committed_as_empty() {
+        assert!(matches!(
+            qualify_routable_models(Some("opencode_go"), probed(&["cat-jam-free"])),
+            Err(ProbeReason::EmptyCatalog)
+        ));
     }
 
     /// A catalog stranded behind a revision bump must be rebuildable.
