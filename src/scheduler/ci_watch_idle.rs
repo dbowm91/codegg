@@ -69,9 +69,10 @@ pub struct CiWatchIdleDriver {
 
 impl CiWatchIdleDriver {
     pub fn new(watches: Arc<CiWatchService>) -> Self {
+        let notify = watches.idle_driver_notify();
         Self {
             watches,
-            notify: Arc::new(Notify::new()),
+            notify,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -191,5 +192,40 @@ mod tests {
         const _: () =
             assert!(IDLE_DRIVER_MIN_SLEEP.as_millis() < IDLE_DRIVER_MAX_SLEEP.as_millis());
         assert!(IDLE_DRIVER_MAX_SLEEP.as_secs() >= 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn newly_accepted_watch_interrupts_empty_queue_sleep() {
+        let notifier = Arc::new(super::super::job_notifications::JobNotificationService::new());
+        let service = Arc::new(CiWatchService::new(
+            notifier,
+            super::super::ci_watch::CiWatchConfig::default(),
+        ));
+        let driver = CiWatchIdleDriver::new(service.clone());
+
+        service
+            .create_watch(
+                super::super::ci_watch::CiWatchTarget {
+                    provider: super::super::ci_watch::PROVIDER_GITHUB_ACTIONS.to_string(),
+                    owner: "owner".to_string(),
+                    repo: "repo".to_string(),
+                    run_id: Some(42),
+                    commit_sha: None,
+                    check_selector: None,
+                },
+                "session",
+                None,
+                "invocation",
+                None,
+                None,
+                super::super::job_notifications::JobCompletionDisposition::NotifyOnly,
+                None,
+            )
+            .await
+            .expect("watch accepted and subscribed");
+
+        tokio::time::timeout(Duration::from_secs(1), driver.notify.notified())
+            .await
+            .expect("accepted watch wakes the idle driver");
     }
 }

@@ -45,7 +45,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
-use tokio::sync::{Mutex as AsyncMutex, RwLock};
+use tokio::sync::{Mutex as AsyncMutex, Notify, RwLock};
 
 use crate::scheduler::job_notifications::{JobCompletionDisposition, JobNotificationService};
 
@@ -385,6 +385,10 @@ pub struct CiWatchService {
     pub config: CiWatchConfig,
     pool: Option<SqlitePool>,
     http: eggfetch_core::Client,
+    /// Shared wake signal with the daemon-owned idle driver. Creating a
+    /// durable watch must interrupt an empty-queue sleep so its first due
+    /// observation does not wait for the driver's bounded 60s backstop.
+    idle_driver_notify: Arc<Notify>,
     /// C001 stable per-handle identity used as `claim_owner`. Two independent
     /// `CiWatchService` handles (two turns, two daemons, restart) never share
     /// this value, so the DB lease distinguishes holders.
@@ -404,6 +408,7 @@ impl CiWatchService {
             config,
             pool: None,
             http,
+            idle_driver_notify: Arc::new(Notify::new()),
             service_id: format!("svc-{}", &uuid::Uuid::new_v4().to_string()[..8]),
         }
     }
@@ -424,6 +429,7 @@ impl CiWatchService {
             config,
             pool: Some(pool),
             http,
+            idle_driver_notify: Arc::new(Notify::new()),
             service_id: format!("svc-{}", &uuid::Uuid::new_v4().to_string()[..8]),
         }
     }
@@ -431,6 +437,12 @@ impl CiWatchService {
     /// C001 per-handle identity (the `claim_owner` value this handle writes).
     pub fn service_id(&self) -> &str {
         &self.service_id
+    }
+
+    /// Shared single-consumer wake signal used only by this service's
+    /// daemon-owned idle driver.
+    pub(crate) fn idle_driver_notify(&self) -> Arc<Notify> {
+        self.idle_driver_notify.clone()
     }
 
     /// Borrow the M001 notifier (the daemon-owned singleton shares one).
@@ -500,12 +512,14 @@ impl CiWatchService {
         {
             let watches = self.watches.read().await;
             if let Some(existing) = watches.get(&watch_id) {
+                self.idle_driver_notify.notify_one();
                 return Ok(existing.clone());
             }
         }
         if let Some(existing) = self.load_one(&watch_id).await? {
             let mut watches = self.watches.write().await;
             watches.insert(watch_id.clone(), existing.clone());
+            self.idle_driver_notify.notify_one();
             return Ok(existing);
         }
         // Session quota: bounded watches per session.
@@ -580,6 +594,9 @@ impl CiWatchService {
             )
             .await
             .map_err(|e| CiWatchError::Storage(format!("watch subscribe failed: {e}")))?;
+        // Wake after both the durable watch and its exactly-once terminal
+        // subscription are committed. The driver owns all remote polling.
+        self.idle_driver_notify.notify_one();
         Ok(record)
     }
 

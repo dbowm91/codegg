@@ -510,9 +510,12 @@ attempt budget, expiry) plus — since C001 — one daemon-lifecycle-owned
 cancellable idle coordinator (`src/scheduler/ci_watch_idle.rs`).
 
 C001 freezes the timer/admission decision: the canonical idle wake is the
-earliest-due persisted row driving `CiWatchIdleDriver` (a single `Notify` +
-timer loop, bounded `IDLE_DRIVER_BATCH = 8` observations per tick, empty
-queue sleeps without busy polling). Turn-boundary `advance_due_watches`
+earliest-due persisted row driving `CiWatchIdleDriver` (a service-shared
+`Notify` + timer loop, bounded `IDLE_DRIVER_BATCH = 8` observations per tick,
+empty queue sleeps without busy polling). Accepting a watch wakes the idle
+driver after its durable row and terminal subscription are committed, so a
+watch created while the empty queue is asleep is observed promptly.
+Turn-boundary `advance_due_watches`
 (cap 2) and explicit `ci_watch status` remain as safe-boundary views, not
 the idle authority. No per-watch timer, no second scheduler, no new jobs
 queue; the remote wait holds no process/CPU permit. The durable completion

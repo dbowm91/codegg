@@ -1,6 +1,6 @@
 # Async Background Jobs — Post-C005 Integration and Qualification Corrective Addendum
 
-Status: **active** — C006 tool-to-idle-resume lifecycle **ready**; C007 PR #119 hosted integration **blocked** on C006 and independent tool-advisor receipt corrective C001.
+Status: **active** — C006 tool-to-idle-resume lifecycle **active**; C007 PR #119 hosted integration **blocked** on C006 and independent tool-advisor receipt corrective C001.
 Opened: 2026-10-15; planning baseline: `247edec5f37851ca3f67db5943675c896d19e9d9`, `work/async-background-jobs-production-wiring-c004-plans`, PR #119. Latest reviewed `main`: `90ab44775a36ebe30466a0d6e340f584324de114`. Revalidate on execution.
 Historical roadmaps: `plans/subsystems/async-background-jobs-and-ci-watch-roadmap.md` (M001–M004 historically closed) and `plans/subsystems/async-background-jobs-idle-completion-corrective-addendum.md` (C001–C005 history; C004 delivery partially closed, C005 accepted ADR-0031 implemented and closed). **Do not rewrite closed milestones or reopen original scope without evidence.**
 
@@ -29,7 +29,7 @@ Original async M001–M004 -> C001–C005 [historical code and closure]
 
 | Work | Status | Handoff document | Strict acceptance |
 |---|---|---|---|
-| C006 real tool -> idle notice / authorized turn | **ready** | `plans/implementation/async-background-jobs-corrective/006-model-facing-tool-to-idle-resume-lifecycle-qualification.md` | Actual model-facing `ci_watch` / background Bash-Test reaches autonomous daemon terminal and approved normal owner turn (plus default zero-inference), without harness `record_completed` or `maybe_dispatch`. Owner event/subscriber and fail-closed cases tested. |
+| C006 real tool -> idle notice / authorized turn | **active** | `plans/implementation/async-background-jobs-corrective/006-model-facing-tool-to-idle-resume-lifecycle-qualification.md` | Actual model-facing `ci_watch` / background Bash-Test reaches autonomous daemon terminal and approved normal owner turn (plus default zero-inference), without harness `record_completed` or `maybe_dispatch`. Owner event/subscriber and fail-closed cases tested. |
 | Tool-advisor M003 receipt CI C001 | **ready, independent** | `plans/implementation/tool-advisor-m003-receipt-ci-corrective/001-receipt-identity-reproduction-and-hosted-gate-restoration.md` | Diagnose stored `94ef4d...` vs fresh `a9c5af...` effect fingerprint; preserve historical negative disposition D and M002 selected; substantive repair and exact-head root CI green. |
 | C007 mainline integration and qualification | **blocked** | `plans/implementation/async-background-jobs-corrective/007-mainline-pr119-hosted-qualification-and-merge-readiness.md` | C006 strict closure, tool-advisor C001 verified CI fix, review latest-main merge, exact-SHA entire `CI / verify` + Desktop E2E green, security/migration/ownership diff, updated PR body, explicit maintainer merge decision. |
 
