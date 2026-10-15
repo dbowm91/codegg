@@ -74,3 +74,6 @@ jobs:
 
       - name: ManagedProcessService protected-mount qualification
         run: cargo test --locked --lib protected_mount_view -- --nocapture
+
+      - name: Trusted Git repository-config qualification
+        run: cargo test -p egggit --locked trusted_git -- --test-threads=1
