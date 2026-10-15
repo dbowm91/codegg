@@ -66,7 +66,17 @@ pub(crate) fn start_connection_lifecycle(
                 Ok(CoreResponse::Ack) => Some(TuiCommand::ConnectionLifecycleFinished {
                     action,
                     connection_id,
-                    message: Some(format!("Provider connection {action:?} completed")),
+                    // `Delete` acks only when the daemon actually removed the
+                    // row; a blocked delete comes back as
+                    // `CoreResponse::Error` naming the references. Say
+                    // "deleted", not "Delete completed" — the old wording
+                    // described a tombstone the user could still see.
+                    message: Some(match action {
+                        ConnectionLifecycleAction::Delete => {
+                            "Provider connection deleted".to_string()
+                        }
+                        other => format!("Provider connection {other:?} completed"),
+                    }),
                     error: None,
                 }),
                 Ok(CoreResponse::ConnectionRefreshResult { result }) => {

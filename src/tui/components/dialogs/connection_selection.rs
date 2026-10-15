@@ -359,7 +359,7 @@ impl Component for ConnectionSelectionDialog {
                 Style::default().fg(theme.muted),
             ),
             Span::styled(
-                "e enable/disable · d delete · R rotate key · r refresh · u restore · p purge",
+                "e enable/disable · d delete · R rotate key · r refresh · u restore · p purge (blocked delete)",
                 Style::default().fg(theme.muted),
             ),
         ]));

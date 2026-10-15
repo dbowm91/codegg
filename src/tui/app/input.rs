@@ -506,7 +506,7 @@ impl App {
                     let (title, message) = match action {
                         ConnectionLifecycleAction::Delete => (
                             "Delete Provider Connection",
-                            "Tombstone this connection? It will stop being selectable.",
+                            "Delete this connection and its history? A row still in use is kept.",
                         ),
                         ConnectionLifecycleAction::Purge => (
                             "Purge Provider Connection",

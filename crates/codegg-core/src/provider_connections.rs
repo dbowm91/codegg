@@ -1114,6 +1114,28 @@ impl ProviderConnectionStore {
             .map(|_| current.state != ProviderConnectionState::Tombstoned)
     }
 
+    /// One-step hard delete: tombstone the row, then purge it.
+    ///
+    /// The tombstone transition is kept as the first step so the compatibility
+    /// projection in `provider_connections` never holds a state its CHECK
+    /// rejects, and so anything racing the delete observes a tombstoned row
+    /// rather than a vanished one. [`PurgeOutcome::Blocked`] leaves that
+    /// tombstone in place: the caller reports the concrete blockers and the
+    /// operator finishes with [`Self::purge`] once they clear.
+    ///
+    /// [`Self::delete`] keeps its tombstone-only contract for callers that
+    /// want the intermediate state.
+    pub async fn delete_permanently(
+        &self,
+        id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<PurgeOutcome, ProviderConnectionError> {
+        let tombstone = self
+            .transition(id, expected_revision, ProviderConnectionState::Tombstoned)
+            .await?;
+        self.purge(id, tombstone.revision).await
+    }
+
     pub async fn add_reference(
         &self,
         connection_id: &ProviderConnectionId,
@@ -1721,6 +1743,161 @@ mod tests {
         assert!(matches!(
             store
                 .purge(&created.id, tombstone_again.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(store.get(&created.id).await.unwrap().is_none());
+    }
+
+    /// `d` must actually remove the row. Tombstone-only deletion left the
+    /// connection listed in `/connections` forever, which reads to the operator
+    /// as a delete that did nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_permanently_removes_an_unreferenced_row() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let project = ProjectId::new();
+        let created = store
+            .create(input(ProviderScope::project(project.clone())))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, created.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(
+            store.get(&created.id).await.unwrap().is_none(),
+            "the connection row must be gone, not left tombstoned"
+        );
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(store.references(&created.id).await.unwrap().is_empty());
+
+        // The scope + binding uniqueness guard is scoped to live rows, so a
+        // tombstone left behind would still block re-adding the same provider.
+        let readded = store
+            .create(input(ProviderScope::project(project)))
+            .await
+            .expect("a deleted connection must not hold its own slot hostage");
+        assert_eq!(readded.state, ProviderConnectionState::Active);
+    }
+
+    /// A referenced connection cannot be removed, so the delete must report
+    /// the blockers and keep the tombstone that `purge` finishes from. Silently
+    /// stopping at "tombstoned" is what this replaces.
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocked_delete_keeps_the_tombstone_and_reports_the_blockers() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        for (kind, reference_id) in [
+            (
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            ),
+            (ProviderConnectionReferenceKind::ActiveRuntime, "runtime-1"),
+        ] {
+            store
+                .add_reference(&created.id, kind, reference_id)
+                .await
+                .unwrap();
+        }
+
+        let outcome = store
+            .delete_permanently(&created.id, created.revision)
+            .await
+            .unwrap();
+        let PurgeOutcome::Blocked(blockers) = outcome else {
+            panic!("referenced connections must not be removed");
+        };
+        assert!(
+            blockers.contains(&PurgeBlocker::SelectedSessions { count: 1 }),
+            "the session holding the connection must be named: {blockers:?}"
+        );
+        assert!(
+            blockers.contains(&PurgeBlocker::ActiveRuntime {
+                reference_id: "runtime-1".to_owned()
+            }),
+            "the live runtime must be named: {blockers:?}"
+        );
+
+        let tombstone = store
+            .get(&created.id)
+            .await
+            .unwrap()
+            .expect("a blocked delete keeps the row for the operator to finish");
+        assert_eq!(tombstone.state, ProviderConnectionState::Tombstoned);
+        assert!(
+            !tombstone.state.is_selectable(),
+            "a tombstoned row must not become selectable again"
+        );
+
+        for (kind, reference_id) in [
+            (
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            ),
+            (ProviderConnectionReferenceKind::ActiveRuntime, "runtime-1"),
+        ] {
+            store
+                .remove_reference(&created.id, kind, reference_id)
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            store.purge(&created.id, tombstone.revision).await.unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(store.get(&created.id).await.unwrap().is_none());
+    }
+
+    /// A blocked delete leaves the row tombstoned; pressing `d` again must
+    /// finish the removal once the references clear rather than fail on the
+    /// `tombstoned -> tombstoned` no-op transition.
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_permanently_retries_a_blocked_tombstone() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        store
+            .add_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::ProvisioningOperation,
+                "op-1",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, created.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Blocked(_)
+        ));
+        let tombstone = store.get(&created.id).await.unwrap().unwrap();
+        store
+            .remove_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::ProvisioningOperation,
+                "op-1",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, tombstone.revision)
                 .await
                 .unwrap(),
             PurgeOutcome::Purged

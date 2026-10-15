@@ -459,6 +459,96 @@ fn connections_dialog_actions_are_live_once_loaded() {
 }
 
 // ---------------------------------------------------------------------------
+// 6. `d` removes the connection, and the dialog says so
+// ---------------------------------------------------------------------------
+
+#[test]
+fn connections_delete_confirm_says_it_removes_the_connection() {
+    use codegg::tui::app::{ConnectionLifecycleAction, TuiMsg};
+    use codegg::tui::components::component::DialogType;
+    use codegg::tui::components::dialogs::confirm::ConfirmDialog;
+
+    let mut app = test_app();
+    app.process_msg(TuiMsg::ConnectionLifecycle {
+        action: ConnectionLifecycleAction::Delete,
+        connection_id: "conn-1".to_string(),
+        expected_revision: 3,
+    });
+
+    // Still destructive: the request is held until the operator confirms.
+    let (action, connection_id, revision) = app
+        .dialog_state
+        .pending_connection_lifecycle
+        .clone()
+        .expect("delete must ask for confirmation");
+    assert_eq!(action, ConnectionLifecycleAction::Delete);
+    assert_eq!(connection_id, "conn-1");
+    assert_eq!(revision, 3);
+
+    let message = app
+        .focus_manager
+        .with_dialog::<ConfirmDialog, _>(DialogType::Confirm, |live| live.message.clone())
+        .expect("a confirm dialog is open");
+    assert_eq!(
+        message, "Delete this connection and its history? A row still in use is kept.",
+        "the confirm copy must describe removal — it used to promise a \
+         tombstone, which is not what the verb does"
+    );
+    assert!(
+        !message.to_lowercase().contains("tombstone"),
+        "tombstone-only wording is exactly the wrong promise here: {message}"
+    );
+}
+
+#[test]
+fn connections_legend_documents_delete_and_the_blocked_purge_finish() {
+    let theme = Arc::new(test_app().ui_state.theme.as_ref().clone());
+    let mut dialog = ConnectionSelectionDialog::new("session-1".to_string(), theme.clone());
+    dialog.connections = vec![connection_summary("conn-1")];
+    dialog.finish_loading();
+    dialog.set_error("Connection was not removed; it stays tombstoned".to_string());
+
+    let backend = TestBackend::new(200, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            dialog.render(frame, frame.area(), &theme);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect();
+
+    // The dialog's outer bottom border owns the final row, so the legend is
+    // the row above it and the error row the one above that.
+    let legend = &rows[rows.len() - 2];
+    assert!(
+        legend.contains("d delete"),
+        "`d` must stay discoverable: {legend}"
+    );
+    assert!(
+        legend.contains("p purge (blocked delete)"),
+        "`p` is how a delete that could not finish gets completed, so the \
+         legend has to say so: {legend}"
+    );
+
+    let error_row = &rows[rows.len() - 3];
+    assert!(
+        error_row.contains("Connection was not removed"),
+        "the error row must render above the legend: {error_row}"
+    );
+    assert!(
+        !error_row.contains("p purge"),
+        "the error row and legend must not overlap: {error_row}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 4. The bottom edge ate the status line.
 //
 // The main pane's bottom border was anchored on the footer's last row. The

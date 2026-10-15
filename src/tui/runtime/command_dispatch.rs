@@ -1137,10 +1137,29 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.messages_state
                         .toasts
                         .error(&format!("Provider credential rotation failed: {error}"));
+                    // Clearing the secret is required — the failed attempt's
+                    // credential must not stay in memory — but it used to
+                    // leave the dialog on `EnterApiKey` with an empty masked
+                    // field and no explanation, which reads as a silent
+                    // re-prompt for the same key. Say what failed and that the
+                    // field is now empty on purpose.
+                    let message = format!(
+                        "Rotation failed: {error}. The credential field is now empty — enter it again."
+                    );
                     if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
                         dialog.operation_id = None;
                         dialog.clear_secret();
+                        dialog.set_error(message.clone());
                     }
+                    app.focus_manager
+                        .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                            crate::tui::components::component::DialogType::Connect,
+                            |live| {
+                                live.operation_id = None;
+                                live.clear_secret();
+                                live.set_error(message);
+                            },
+                        );
                 }
             }
         }

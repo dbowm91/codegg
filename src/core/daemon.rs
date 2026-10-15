@@ -4348,6 +4348,33 @@ pub(crate) fn connection_detail_dto(
     }
 }
 
+/// Concrete, user-readable blocker text for a blocked delete/purge.
+///
+/// `Debug` on the blocker enums reads as `ActiveRuntime { reference_id: "…" }`,
+/// which tells an operator nothing about what to go and detach. The ids and
+/// counts are the actionable part, so they lead.
+pub(crate) fn purge_blocker_summary(
+    blockers: &[codegg_core::provider_connections::PurgeBlocker],
+) -> String {
+    let mut parts = Vec::with_capacity(blockers.len());
+    for blocker in blockers {
+        parts.push(match blocker {
+            codegg_core::provider_connections::PurgeBlocker::SelectedSessions { count } => {
+                format!("{count} selected session(s)")
+            }
+            codegg_core::provider_connections::PurgeBlocker::ProvisioningOperation {
+                operation_id,
+            } => {
+                format!("provisioning operation {operation_id}")
+            }
+            codegg_core::provider_connections::PurgeBlocker::ActiveRuntime { reference_id } => {
+                format!("active runtime {reference_id}")
+            }
+        });
+    }
+    parts.join(", ")
+}
+
 pub(crate) fn purge_blocker_dto(
     blocker: codegg_core::provider_connections::PurgeBlocker,
 ) -> crate::protocol::provider::PurgeBlocker {
@@ -4364,6 +4391,12 @@ pub(crate) fn purge_blocker_dto(
     }
 }
 
+/// Uniform state-only lifecycle verbs (enable/disable/restore).
+///
+/// Delete and purge are deliberately absent: both physically remove a
+/// connection, so they need the provisioner (credential cleanup) and report
+/// their own blockers. See `CoreRequest::ConnectionDelete` in
+/// `src/core/daemon_providers.rs`.
 pub(crate) async fn connection_lifecycle_response(
     pool: Option<sqlx::SqlitePool>,
     connection_id: String,
@@ -4386,7 +4419,6 @@ pub(crate) async fn connection_lifecycle_response(
     let result = match action {
         "enable" => store.enable(&id, expected_revision).await.map(|_| ()),
         "disable" => store.disable(&id, expected_revision).await.map(|_| ()),
-        "delete" => store.delete(&id, expected_revision).await.map(|_| ()),
         "restore" => store.restore(&id, expected_revision).await.map(|_| ()),
         _ => Err(
             codegg_core::provider_connections::ProviderConnectionError::Invalid(

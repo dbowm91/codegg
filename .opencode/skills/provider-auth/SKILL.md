@@ -73,6 +73,15 @@ to violate.
 6. **Semantic routing validates against the selected connection.** See the
    `agent` skill; provider selection itself is durable
    session/connection state, not a routing decision.
+6b. **Deletion removes the row, through the provisioner.** `d` in
+   `/connections` is `ProviderConnectionStore::delete_permanently` via
+   `ProviderConnectionProvisioner::delete`: tombstone, then purge, then drop
+   the credential binding. Never implement a new removal path directly on the
+   store — the provisioner is where credential cleanup lives, and a
+   store-only delete orphans the credential with no row left to reference it.
+   A `Blocked` outcome must be reported with its concrete blockers and must
+   leave the tombstone so `p` can finish; `purge` stays revision-checked and
+   transactional.
 7. **Catalog discovery is never credential verification.** A successful
    `Provider::models()` call proves only that the catalog is usable — several
    built-ins return local/static arrays with no network I/O, generic

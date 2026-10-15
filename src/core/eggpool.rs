@@ -1445,27 +1445,83 @@ impl ProviderConnectionProvisioner {
     > {
         let store =
             codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        self.purge_with_store(&store, connection_id, expected_revision)
+            .await
+    }
+
+    /// One-step delete for the operator's `d` verb: tombstone, then purge.
+    ///
+    /// Sharing [`Self::purge`] keeps the two verbs on one removal boundary —
+    /// a deleted connection drops its credential binding exactly like a purged
+    /// one, and a `Blocked` outcome leaves the tombstone for `p` to finish.
+    pub async fn delete(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<
+        codegg_core::provider_connections::PurgeOutcome,
+        codegg_core::provider_connections::ProviderConnectionError,
+    > {
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        // Read the binding before the row goes away: purge removes the row,
+        // and the credential it referenced has to be dropped with it or it is
+        // orphaned with nothing left referencing it.
+        let binding = store
+            .get(connection_id)
+            .await?
+            .and_then(|connection| connection.secret_binding);
+        let outcome = store
+            .delete_permanently(connection_id, expected_revision)
+            .await?;
+        self.drop_credential_if_purged(binding, &outcome);
+        Ok(outcome)
+    }
+
+    async fn purge_with_store(
+        &self,
+        store: &codegg_core::provider_connections::ProviderConnectionStore,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<
+        codegg_core::provider_connections::PurgeOutcome,
+        codegg_core::provider_connections::ProviderConnectionError,
+    > {
         let binding = store
             .get(connection_id)
             .await?
             .and_then(|connection| connection.secret_binding);
         let outcome = store.purge(connection_id, expected_revision).await?;
-        if matches!(
+        self.drop_credential_if_purged(binding, &outcome);
+        Ok(outcome)
+    }
+
+    /// Drop the credential a removed connection pointed at.
+    ///
+    /// Only on `Purged`: a `Blocked` outcome leaves the tombstone in place,
+    /// and a tombstoned row still needs its binding to be diagnosable and to
+    /// be purgeable once the references clear.
+    fn drop_credential_if_purged(
+        &self,
+        binding: Option<codegg_core::provider_connections::SecretBindingLocator>,
+        outcome: &codegg_core::provider_connections::PurgeOutcome,
+    ) {
+        if !matches!(
             outcome,
             codegg_core::provider_connections::PurgeOutcome::Purged
         ) {
-            if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
-                if let Err(error) =
-                    credentials.remove(&binding.provider_ref, Some(&binding.account_ref))
-                {
-                    tracing::warn!(
-                        ?error,
-                        "eggpool purge credential cleanup failed; reconciliation will retry"
-                    );
-                }
+            return;
+        }
+        if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
+            if let Err(error) =
+                credentials.remove(&binding.provider_ref, Some(&binding.account_ref))
+            {
+                tracing::warn!(
+                    ?error,
+                    "eggpool purge credential cleanup failed; reconciliation will retry"
+                );
             }
         }
-        Ok(outcome)
     }
 
     async fn refresh_inner(

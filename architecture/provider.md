@@ -138,8 +138,9 @@ path has been removed.
 
 Durable connections use states: `active`, `disabled`,
 `credential_missing`, `provisioning_rotating`, `tombstoned`, `error`,
-`stale`. Only `active` is selectable. Tombstones preserve identity until
-purge succeeds with no references.
+`stale`. Only `active` is selectable. Delete removes the row outright; a
+tombstone survives only while references still block removal, and purge
+finishes it once they clear.
 
 Rotation stages a new credential binding, validates the endpoint, runs
 the bounded compatible model probe, and commits metadata in one SQLite
@@ -326,11 +327,23 @@ credential validity that catalog discovery never established.
   factory.
 
 Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
-(tombstone) -> restore -> purge.
+(removes the row) -> purge (finishes a delete that references blocked).
+
+**Delete is one action, not two.** `d` tombstones and immediately purges
+(`ProviderConnectionStore::delete_permanently`, reached through
+`ProviderConnectionProvisioner::delete` so the credential binding is dropped
+exactly as `p` drops it). The tombstone stays the first step because the
+compatibility projection in `provider_connections` may not hold a state its
+CHECK rejects, and because a racing reader must see a tombstoned row rather
+than a vanished one. `Blocked` is reported with the concrete blockers
+(session counts, provisioning operation ids, active runtime ids) and leaves
+the tombstone for `p`; the previous tombstone-only behaviour reported nothing
+and left the user with a row that looked deleted.
 
 **Every lifecycle verb is bound *and* printed.** `/connections` binds
 `e` enable/disable, `d` delete (confirm), `R` rotate, `r` refresh, `u` restore,
-and `p` purge, and the dialog renders all of them on a legend row. Enter selects
+and `p` purge (finishing a delete that references blocked), and the dialog
+renders all of them on a legend row. Enter selects
 the highlighted connection/model pair for the session and nothing else, so a
 dialog that hid its verbs read as model-picking with no way to repair a bad
 credential — the exact situation a user reaches *because* their key stopped
@@ -342,6 +355,14 @@ derives its `ProviderInfo` from the target connection's `provider_kind`
 its `display_name`. It used to construct a fixed `eggpool`/`Eggpool` row, so
 rotating an OpenCode Go credential prompted for an Eggpool one — the correct
 action against the wrong subject, with nothing on screen to contradict it.
+`App::rotation_provider_label` applies the same derivation to the "Rotating
+`<provider>` credential (probe in progress)…" toast, which was left hardcoded to
+Eggpool after the dialog label was fixed.
+
+**A failed rotation says so.** The completion arm clears the failed credential
+(out of memory hygiene) and sets a dialog error naming the failure and the now
+empty field. Clearing alone left the masked input blank on `EnterApiKey` with no
+message, which read as a silent re-prompt for the same key.
 
 ### Provider-Neutral `/connect` TUI (M003)
 

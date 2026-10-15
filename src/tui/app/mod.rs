@@ -10588,6 +10588,38 @@ impl App {
         );
     }
 
+    /// Provider name for a connection being rotated, derived the same way
+    /// [`Self::open_connection_rotation_dialog`] derives it: the target's
+    /// `provider_kind` with the `other:` storage prefix stripped, falling back
+    /// to the connection's `display_name`, then to a generic word when the
+    /// connection list has not loaded.
+    ///
+    /// The rotation toast used to say "Eggpool" unconditionally, so rotating
+    /// an `other:opencode_go` credential announced the wrong provider in the
+    /// one message the user sees while the probe runs.
+    fn rotation_provider_label(&self, connection_id: &str) -> String {
+        self.dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let stripped = kind.strip_prefix("other:").unwrap_or(kind).trim();
+                if stripped.is_empty() {
+                    connection.display_name.clone()
+                } else {
+                    stripped.to_string()
+                }
+            })
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| "provider".to_string())
+    }
+
     fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
         use crate::tui::components::dialogs::connect::ProviderInfo;
 
@@ -10797,6 +10829,7 @@ impl App {
         }
         // Rotation keeps the existing masked-credential editor path.
         if let Some((connection_id, expected_revision)) = rotation_target.clone() {
+            let rotation_label = self.rotation_provider_label(&connection_id);
             let Ok(api_key) = SecretInput::new(api_key_text.clone()) else {
                 let message = "Credential is invalid".to_string();
                 if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
@@ -10885,9 +10918,9 @@ impl App {
                     })
                 },
             );
-            self.messages_state
-                .toasts
-                .info("Rotating Eggpool credential (probe in progress)…");
+            self.messages_state.toasts.info(&format!(
+                "Rotating {rotation_label} credential (probe in progress)…"
+            ));
             return;
         }
 
@@ -17675,5 +17708,81 @@ mod connection_rotation_tests {
             .as_ref()
             .expect("rotation always opens a dialog");
         assert_eq!(connect.providers.len(), 1);
+    }
+
+    /// The rotation toast named Eggpool for every provider. It is the only
+    /// feedback between pressing Enter and the probe returning, so it has to
+    /// name the connection actually being rotated.
+    #[test]
+    fn rotation_provider_label_follows_the_rotation_target() {
+        let mut app = App::new_for_testing("rotation-label".to_string());
+        let mut dialog =
+            crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![
+            summary("conn-go", "other:opencode_go", "eggstackmain"),
+            summary("conn-eggpool", "eggpool", "Eggpool"),
+        ];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        assert_eq!(app.rotation_provider_label("conn-go"), "opencode_go");
+        assert_eq!(app.rotation_provider_label("conn-eggpool"), "eggpool");
+        assert_eq!(
+            app.rotation_provider_label("conn-missing"),
+            "provider",
+            "an unknown target must not be labelled Eggpool"
+        );
+    }
+
+    /// A failed rotation used to clear the secret and nothing else: the dialog
+    /// stayed on `EnterApiKey` with an empty masked field and no message, so
+    /// the user was silently asked for the same API key again with no idea
+    /// the first attempt failed.
+    #[tokio::test]
+    async fn failed_rotation_leaves_a_visible_error_and_an_empty_field() {
+        let mut app = App::new_for_testing("rotation-failure".to_string());
+        app.open_connection_rotation_dialog("conn-1".to_string(), 3);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_mut()
+            .expect("rotation opens the connect dialog");
+        connect.operation_id = Some("rot-1".to_string());
+        connect.api_key_input = "sk-rejected".to_string();
+        app.ensure_tui_cmd_channel();
+
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(
+            &mut app,
+            TuiCommand::ConnectionRotationFinished {
+                operation_id: "rot-1".to_string(),
+                result: Err("probe rejected the credential".to_string()),
+            },
+        )
+        .await;
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("a failed rotation must stay open for a retry");
+        assert!(
+            connect.api_key_input.is_empty(),
+            "the failed credential must not stay in memory"
+        );
+        assert_eq!(connect.operation_id, None, "the attempt is finished");
+        let error = connect
+            .error_message
+            .as_deref()
+            .expect("a failed rotation must say so on the dialog");
+        assert!(
+            error.contains("probe rejected the credential"),
+            "the dialog must name the failure, got: {error}"
+        );
+        assert!(
+            error.contains("empty"),
+            "the dialog must make the blank field deliberate, got: {error}"
+        );
     }
 }
