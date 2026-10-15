@@ -437,3 +437,56 @@ fn main() {
     eprintln!("codegg-sandbox-helper is unavailable on this platform");
     std::process::exit(125);
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_mount_source_tests {
+    use super::open_mount_source;
+    use codegg::security::sandbox::SandboxPathIdentity;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn open_mount_source_rejects_replacement_after_lease_snapshot() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("leased-root");
+        std::fs::create_dir(&path).expect("leased directory");
+        let original = std::fs::metadata(&path).expect("leased metadata");
+        let identity = SandboxPathIdentity {
+            path: path.clone(),
+            device: original.dev(),
+            inode: original.ino(),
+        };
+
+        let displaced = directory.path().join("displaced-root");
+        std::fs::rename(&path, &displaced).expect("replace lease path");
+        std::fs::create_dir(&path).expect("replacement directory");
+
+        let error = open_mount_source(&path, &[identity])
+            .expect_err("replacement must not be accepted as the leased mount source");
+        assert!(
+            error.contains("mount source changed"),
+            "unexpected identity failure: {error}"
+        );
+    }
+
+    #[test]
+    fn open_mount_source_keeps_original_inode_pinned_after_rename() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("leased-root");
+        std::fs::create_dir(&path).expect("leased directory");
+        let original = std::fs::metadata(&path).expect("leased metadata");
+        let identity = SandboxPathIdentity {
+            path: path.clone(),
+            device: original.dev(),
+            inode: original.ino(),
+        };
+        let pinned = open_mount_source(&path, &[identity]).expect("pin leased directory");
+
+        let displaced = directory.path().join("displaced-root");
+        std::fs::rename(&path, &displaced).expect("rename leased directory");
+        std::fs::create_dir(&path).expect("replacement directory");
+
+        let metadata = pinned.metadata().expect("pinned handle metadata");
+        assert_eq!(metadata.dev(), original.dev());
+        assert_eq!(metadata.ino(), original.ino());
+    }
+}
