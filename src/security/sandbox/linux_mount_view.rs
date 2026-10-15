@@ -40,6 +40,9 @@ pub fn compile(
     if !spec.linux_protected_mount_view {
         return Err("protected mount view was not requested".into());
     }
+    if spec.linux_offline_network && !spec.linux_process_isolation {
+        return Err("offline network requires the M004 process/IPC boundary".into());
+    }
     verify_path_identities(spec)?;
 
     let mut read_roots = BTreeSet::new();
@@ -326,6 +329,11 @@ pub fn compile(
         "--tmpfs".to_string(),
         "/tmp".to_string(),
     ];
+    if spec.linux_offline_network {
+        // A new network namespace starts without host interfaces or routes.
+        // Bubblewrap setup failure is fatal before the target command runs.
+        args.push("--unshare-net".to_string());
+    }
     if spec.linux_process_isolation {
         // PID namespaces require a procfs mounted from inside that namespace.
         // Landlock ABI 6 scopes signals and abstract sockets independently,

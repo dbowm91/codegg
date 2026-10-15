@@ -136,7 +136,13 @@ async fn attach_resume_full_lifecycle_over_cat() {
 
     // Create returns a handle with no attachment yet.
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, metadata } => {
@@ -244,7 +250,13 @@ async fn spoofed_attachment_ids_match_unknown_ids() {
     let protocol = protocol();
 
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -336,7 +348,13 @@ async fn remote_terminate_requires_the_semantic_capability() {
     let protocol = protocol();
 
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -394,7 +412,16 @@ async fn two_clients_share_a_process_with_independent_cursors() {
         "-c".to_string(),
         "echo shared-marker; sleep 30".to_string(),
     ];
-    let handle = match protocol.create("client-a", &ctx, &create, None).await {
+    let handle = match protocol
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create,
+            None,
+        )
+        .await
+    {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
         other => panic!("expected created, got {other:?}"),
     };
@@ -459,7 +486,13 @@ async fn disconnect_drops_attachments_without_killing() {
     let protocol = protocol();
 
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -535,7 +568,16 @@ async fn saturation_reports_typed_resync_with_cursors() {
         rows: Some(24),
         scrollback_bytes: Some(4096),
     };
-    let handle = match protocol.create("client-a", &ctx, &create, None).await {
+    let handle = match protocol
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create,
+            None,
+        )
+        .await
+    {
         CoreResponse::InteractiveProcessCreated { handle, metadata } => {
             assert!(metadata.truncated || metadata.total_bytes < 30000);
             handle
@@ -614,7 +656,13 @@ async fn chunk_and_input_bounds_are_rejected_before_side_effects() {
     let protocol = protocol();
 
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -683,7 +731,16 @@ async fn writer_failure_after_exit_is_typed() {
 
     let mut create = create_cat(&workspace_id);
     create.argv = vec!["true".to_string()];
-    let handle = match protocol.create("client-a", &ctx, &create, None).await {
+    let handle = match protocol
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create,
+            None,
+        )
+        .await
+    {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
         other => panic!("expected created, got {other:?}"),
     };
@@ -731,7 +788,13 @@ async fn removed_handles_resume_as_typed_gone() {
     let protocol = protocol();
 
     let handle = match protocol
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -773,7 +836,13 @@ async fn restart_invalidates_ephemeral_handles() {
     let before = protocol();
 
     let handle = match before
-        .create("client-a", &ctx, &create_cat(&workspace_id), None)
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &create_cat(&workspace_id),
+            None,
+        )
         .await
     {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
@@ -831,7 +900,13 @@ async fn shutdown_rejects_new_spawns_with_typed_error() {
     assert_eq!(
         expect_error_code(
             protocol
-                .create("client-a", &ctx, &create_cat(&workspace_id), None)
+                .create(
+                    "client-a",
+                    &ctx,
+                    codegg_core::approval::SandboxProfile::FullHost,
+                    &create_cat(&workspace_id),
+                    None,
+                )
                 .await
         ),
         "interactive_shutting_down"
@@ -901,8 +976,42 @@ async fn invalid_create_never_consumes_admission_or_handles() {
     let mut bad = create_cat(&workspace_id);
     bad.argv.clear();
     assert_eq!(
-        expect_error_code(protocol.create("client-a", &ctx, &bad, None).await),
+        expect_error_code(
+            protocol
+                .create(
+                    "client-a",
+                    &ctx,
+                    codegg_core::approval::SandboxProfile::FullHost,
+                    &bad,
+                    None,
+                )
+                .await
+        ),
         "interactive_invalid_request"
+    );
+    assert_eq!(protocol.service().session_count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn constrained_profile_refuses_before_pty_spawn() {
+    let dir = tempfile::tempdir().expect("workspace");
+    let ctx = test_context(dir.path()).await;
+    let request = create_cat(ctx.workspace_id.as_str());
+    let protocol = protocol();
+
+    let response = protocol
+        .create(
+            "client-a",
+            &ctx,
+            codegg_core::approval::SandboxProfile::WorkspaceWrite,
+            &request,
+            None,
+        )
+        .await;
+
+    assert_eq!(
+        expect_error_code(response),
+        "interactive_constrained_backend_unavailable"
     );
     assert_eq!(protocol.service().session_count(), 0);
 }

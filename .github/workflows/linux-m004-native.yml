@@ -34,6 +34,8 @@ jobs:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_M004_BWRAP_NATIVE: '1'
       CODEGG_RUN_C009_BWRAP_NATIVE: '1'
+      CODEGG_RUN_M004_CARGO_NATIVE: '1'
+      CODEGG_RUN_M005_OFFLINE_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
 

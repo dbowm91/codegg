@@ -3928,6 +3928,7 @@ impl CoreDaemon {
         if Self::is_interactive_process_request(&request.payload) {
             let protocol = self.interactive_processes.clone();
             let workspaces = self.workspaces.clone();
+            let pool = self.pool.clone();
             let event_log = self.event_log.clone();
             let authority = self.interactive_authority_for(trusted_client_id);
             let owned_client = trusted_client_id.to_string();
@@ -3939,6 +3940,7 @@ impl CoreDaemon {
                 let out = Self::run_interactive_request(
                     protocol,
                     workspaces,
+                    pool,
                     event_log,
                     authority,
                     owned_client,
@@ -4115,6 +4117,7 @@ impl CoreDaemon {
     async fn run_interactive_request(
         protocol: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
         workspaces: Arc<codegg_core::workspace::WorkspaceRegistry>,
+        pool: Option<sqlx::SqlitePool>,
         event_log: Arc<super::event_log::EventLog>,
         authority: crate::interactive_process_attach::InteractiveAuthority,
         client_id: String,
@@ -4129,6 +4132,55 @@ impl CoreDaemon {
                 Ok(protocol.capabilities(&current))
             }
             CoreRequest::InteractiveProcessCreate { request } => {
+                // PTY creation is a production execution owner. Resolve the
+                // requested profile from daemon-owned principal preferences;
+                // the request DTO cannot select FullHost or a constrained
+                // profile. Until PTY launches are owned by the qualified M004
+                // helper, constrained profiles refuse before target execution.
+                let principal_id = audit_hook
+                    .as_ref()
+                    .map(|hook| hook.context.principal().principal_id().as_str().to_owned());
+                let profile = match (pool, principal_id) {
+                    (Some(pool), Some(principal_id)) => {
+                        match codegg_core::approval::RuntimePreferenceStore::new(pool)
+                            .get(&principal_id)
+                            .await
+                        {
+                            // An absent preference is not a request to
+                            // constrain an independent human PTY. Preserve
+                            // the legacy FullHost terminal path unless the
+                            // principal explicitly stored a profile.
+                            Ok(Some(preference)) => preference
+                                .sandbox_profile
+                                .unwrap_or(codegg_core::approval::SandboxProfile::FullHost),
+                            Ok(None) => codegg_core::approval::SandboxProfile::FullHost,
+                            Err(error) => {
+                                return Ok(CoreResponse::Error {
+                                    code: "interactive_policy_unavailable".into(),
+                                    message: format!(
+                                        "cannot resolve PTY execution policy: {error}"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    (None, _) => codegg_core::approval::SandboxProfile::FullHost,
+                    (_, None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "interactive_policy_unavailable".into(),
+                            message: "cannot resolve PTY execution principal".into(),
+                        });
+                    }
+                };
+                if profile != codegg_core::approval::SandboxProfile::FullHost {
+                    return Ok(CoreResponse::Error {
+                        code: "interactive_constrained_backend_unavailable".into(),
+                        message: format!(
+                            "PTY launch for profile '{}' is unavailable until the M004 contained launch owner is qualified",
+                            profile.as_str()
+                        ),
+                    });
+                }
                 let ctx =
                     match Self::interactive_execution_context(&workspaces, &request.workspace_id)
                         .await
@@ -4137,7 +4189,7 @@ impl CoreDaemon {
                         Err(response) => return Ok(*response),
                     };
                 Ok(protocol
-                    .create(trusted_client_id, &ctx, &request, audit_hook)
+                    .create(trusted_client_id, &ctx, profile, &request, audit_hook)
                     .await)
             }
             CoreRequest::InteractiveProcessList {

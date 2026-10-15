@@ -82,9 +82,12 @@ does not collect LSP prompt context. This prevents a constrained turn from
 creating or reusing a FullHost LSP process. FullHost turns preserve the current
 shared service behavior. Profile selection is daemon-owned; it must never be
 added as a client-controlled LSP request field. Positive constrained LSP
-support requires an M004 launch owner that preserves JSON-RPC pipes and
-supervision plus process-pool identity/lifecycle that prevents cross-profile
-client reuse. Until then, the constrained denial is an explicit compatibility
+support requires a separate daemon-owned `LspService` instance keyed by
+immutable profile, workspace, server identity, and generation. That owner must
+supervise every launch, restart, cancellation, and shutdown while preserving
+JSON-RPC pipes; it cannot borrow or restart a FullHost process. The current
+launcher cannot provide this duplex M004 contract. Until that owner is
+implemented and qualified, the constrained denial is an explicit compatibility
 limit, not containment evidence for the LSP child.
 
 ### Tier 1 vs Tier 2 compatibility

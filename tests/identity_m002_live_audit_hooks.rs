@@ -843,7 +843,15 @@ async fn interactive_create_emits_without_input_retention() {
         rows: Some(24),
         scrollback_bytes: None,
     };
-    let response = protocol.create("client-m002", &ctx, &dto, Some(hook)).await;
+    let response = protocol
+        .create(
+            "client-m002",
+            &ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
+        .await;
     let handle = match response {
         codegg::protocol::core::CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
         other => panic!("expected created, got {other:?}"),

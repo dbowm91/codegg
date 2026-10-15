@@ -100,38 +100,40 @@ target execution. The request payload must not gain a client-controlled
 unconstrained launch remains compatible and a requested constrained launch
 cannot escape through a specialized protocol owner.
 
-Source review on the reconciled branch sharpens the missing authority path.
-`InteractiveProcessCreateRequest` identifies a workspace but has no session
-binding, and its daemon handler currently constructs an `ExecutionContext`
-without a session policy. Production PTY creates therefore remain FullHost;
-there is no trusted constrained-profile selection to route yet. Do not add a
-profile field to that client DTO. A future constrained PTY request needs a
-daemon-owned policy association (or an explicitly configured daemon policy)
-before the PTY launch owner can select M004.
+PTY policy association is daemon-owned and principal-scoped. At create time,
+the daemon resolves the transport-bound principal's `RuntimePreference` and
+passes the resulting `SandboxProfile` to `InteractiveProcessProtocol`; no
+client DTO field selects or widens the profile. The protocol refuses
+`ReadOnly` and `WorkspaceWrite` requests before scheduler admission or target
+spawn until PTY creation is owned by the qualified M004 launcher. `FullHost`
+retains the existing PTY path. A preference-store failure refuses creation.
+This association does not claim constrained PTY support and does not attach a
+client-selected profile to a process.
 
-Agent turns do carry a daemon-resolved sandbox profile, but `LspTool` and the
-shared daemon `LspService` do not. The LSP service is shared across turns and
-owns clients/restarts by server/workspace identity, so a profile must not be
-attached to a client request or retrofitted onto a process that another turn
-may already be using. Constrained LSP support needs a trusted launch-policy
-handoff, process-pool identity/lifecycle that prevents cross-profile reuse,
-and an injected launch owner that preserves JSON-RPC stdin/stdout and stderr
-supervision while applying the qualified M004 boundary. Until M003 has an
-admitted filesystem backend and this per-profile LSP ownership exists, any
-constrained LSP process request must refuse before spawn; FullHost LSP behavior
-continues unchanged. End-to-end tests must verify that a FullHost client still
-starts/restarts normally and that a constrained turn cannot create, reuse, or
-restart a FullHost LSP process.
+Agent turns carry a daemon-resolved sandbox profile. `LspTool` and the shared
+daemon `LspService` are available only to FullHost turns; constrained turns
+receive disabled LSP tools and no shared service or preview adapter. The
+ownership decision is that a future contained LSP runtime must be a distinct
+daemon-owned service instance whose immutable launch scope includes profile,
+workspace, server identity, and generation. That service must own launch,
+restart, cancellation, and shutdown for every LSP child; it must not look up
+or restart a FullHost process. Its launch adapter must preserve supervised
+JSON-RPC stdin/stdout and stderr while applying the qualified M004 boundary.
+The current LSP launcher does not support this duplex contained-process
+contract, so constrained LSP process creation remains refused before spawn.
+End-to-end tests must pin FullHost start/restart compatibility and prove a
+constrained turn cannot create, reuse, or restart a FullHost LSP process.
 
 The current corrective refuses constrained LSP at session-tool construction:
 it registers unavailable `lsp`/`lsp_read` tools, does not bind the shared LSP
 service or preview adapter, and omits LSP prompt-context collection. FullHost
 turns keep the existing service. This closes the cross-profile reuse path by
 refusing before a specialized launch, but it is a fail-closed compatibility
-state, not positive M004 LSP qualification. Production PTY remains FullHost
-because its request is not associated with a session policy. M004 stays active
-until a contained LSP launch path is qualified and PTY policy binding is
-resolved for any constrained PTY use.
+state, not positive M004 LSP qualification. Production PTY now resolves the
+principal's daemon-owned profile and refuses constrained creates before spawn;
+FullHost behavior remains compatible. M004 stays active until a contained
+duplex LSP owner and contained PTY route are qualified on supported and
+restricted-userns host configurations.
 
 ## 9. Acceptance criteria
 

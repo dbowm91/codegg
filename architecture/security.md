@@ -252,6 +252,22 @@ constructed for new execution. Child sandboxes narrow via
 `resolve_child_sandbox()` and a worktree child's writable root is its
 leased worktree. Guard: `scripts/check_sandbox_policy_wiring.py`.
 
+Interactive PTY creation resolves the transport-bound principal's persisted
+sandbox preference in the daemon; the create DTO cannot select a profile.
+`FullHost` keeps the established PTY route. `ReadOnly` and `WorkspaceWrite`
+refuse before scheduler admission and spawn until PTY launch is owned by the
+qualified M004 helper. Preference lookup failure also refuses. This records
+the requested authority at the PTY boundary without claiming that the current
+PTY child is contained.
+
+The Linux offline-network candidate is internal and explicit: it composes
+M004 process/IPC isolation with Bubblewrap `--unshare-net` before target exec.
+It is not selected by persisted profiles and does not change the default
+`NetworkEnforcement::Unrestricted` report. Native loopback denial is one
+qualification fixture; no `OfflineRequired` production claim is available
+until UDP, IPv6, DNS, inherited descriptors, and every launch owner are
+qualified on supported and restricted hosts.
+
 **Scheduler-owned Tool Program binding:** `ToolProgramExecutor` is registered
 during `CoreDaemon` construction, which routinely happens before any frontend
 connects, so no session workspace root exists at that point. It therefore holds

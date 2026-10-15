@@ -31,20 +31,63 @@ An ignored, reproducible manual harness now collects repeated end-to-end samples
 
 This is exploratory evidence, not an accepted latency qualification: the checkout is a mixed object store, the host was not isolated from background load, cache state was not controlled, and 20 samples cannot establish a stable production p95. The bimodal spread demonstrates that the earlier 325 ms single warm sample is not representative enough to set an admission budget. No host profile is admitted; production admission still needs a stated user-facing budget and controlled cold/warm runs on each candidate storage profile.
 
+### Controlled packed/fragmented follow-up (2026-10-15)
+
+The repeated harness was extended to support an explicit warm pass and a
+file-scoped cold pass using `posix_fadvise(POSIX_FADV_DONTNEED)` over each
+object-store file. No global cache drop or host mutation was used. Both clones
+contained the same 45,618 Git objects and ran paired preparation, protected
+`git status`, and plain `git status` measurements. The packed fixture had one
+27.49 MiB pack and no loose objects; the fragmented fixture had 45,618 loose
+objects totaling 359.95 MiB and no packs. Each cell ran five repeated samples.
+
+| Repository shape / cache | Private-view preparation ms | Protected status ms | Baseline status ms |
+|---|---|---|---|
+| Packed / warm | 488.377, 426.956, 550.686, 17.546, 507.132 | 563.383, 560.345, 536.129, 558.525, 574.542 | 11.868, 12.520, 11.647, 8.176, 12.158 |
+| Packed / cold-advised | 678.229, 524.991, 545.210, 702.630, 623.493 | 706.368, 599.952, 556.243, 535.434, 610.084 | 11.277, 12.623, 8.469, 19.609, 12.149 |
+| Fragmented / warm | 8802.986, 9007.093, 8011.941, 8904.007, 8564.619 | 9545.200, 9152.125, 9513.566, 9209.544, 7209.960 | 7.496, 7.598, 7.666, 7.433, 7.519 |
+| Fragmented / cold-advised | 18685.705, 17837.412, 18775.857, 19196.370, 19433.033 | 9731.363, 8940.549, 9396.649, 8410.129, 9249.242 | 7.583, 7.893, 7.640, 7.451, 7.543 |
+
+The five fragmented samples in each cache state all exceeded the plan's hard
+3,000 ms maximum for a single preparation (warm: 8.01–9.01 s; cold-advised:
+17.84–19.43 s). Protected fragmented status took 7.21–9.55 s against a
+roughly 7–8 ms baseline. This is a decisive failure of the hard latency gate;
+the larger 100-warm/30-cold distribution was stopped early rather than
+spending more time on a candidate that had already breached its absolute cap
+in all five repeats. Packed preparation also misses the 250 ms warm p95 budget
+in four of five samples, and packed protected-status overhead exceeds the
+500 ms warm budget in every sample. Packed cold observations remain below the
+1,000/1,500 ms limits, but do not offset the warm failures.
+
+**Performance disposition:** the current full-copy private object view is not
+practical for routine agent Git reads on either tested shape, especially a
+fragmented object store. C010's no-production-admission decision remains in
+force. These measurements do not change Landlock selection, claim a supported
+Bubblewrap host, or qualify a different snapshot mechanism. Any optimized
+snapshot strategy requires a new security review and the same paired gate.
+
 ## Toolchain and interface gaps
 
 - C009 qualified Cargo check/test, direct rustc, Python, shell, selected trusted Git reads, PTY first-hop, cancellation and concurrency.
 - The M003-only filesystem view still omits `/proc/self/exe`; Rustup is not qualified in that mode. With M004's namespaced proc view, hosted `rustup toolchain list` and `rustup run stable rustc --version` passed on `c528ebff`. This is a positive toolchain fix for the M004 composition, not general Cargo/compiler or M003-only support.
-- A general LSP child-path result and service-level PTY sandbox routing are not established.
+- PTY policy association is implemented at the production daemon boundary: the
+  transport-bound principal's stored profile is resolved, explicit constrained
+  requests refuse before spawn, and the DTO cannot select a profile. FullHost
+  behavior remains available when no constrained preference is selected. This
+  is authority routing, not contained PTY evidence. Constrained LSP remains
+  unavailable; its required owner is a separate daemon service keyed by
+  immutable profile/workspace/server/generation and owning launch, restart,
+  cancellation, and shutdown. The current launcher cannot preserve the required
+  supervised JSON-RPC duplex channel through M004.
 - `linux_launch::ProductionLinuxLaunchAdapter` still rejects process, network, seccomp and resource dimensions. The protected mount view is a candidate opt-in, not a generally admitted execution profile.
-- M004 installs private proc after PID namespace setup, composes Landlock ABI 6 signal/abstract-socket scopes with PID/IPC namespaces, closes ambient descriptors, and installs the architecture-checked seccomp filter through Bubblewrap. Hosted denial/cancellation, proc-content/ptrace, detached-descendant and Rustup probes pass on the adjusted Ubuntu runner. A separate concurrent-session namespace-identity test is awaiting exact-head hosted evidence. Broader Cargo/compiler use and service-level PTY routing remain open. The internal M004 composition does not unshare the network namespace; M005 remains a separate authority and status dimension.
+- M004 installs private proc after PID namespace setup, composes Landlock ABI 6 signal/abstract-socket scopes with PID/IPC namespaces, closes ambient descriptors, and installs the architecture-checked seccomp filter through Bubblewrap. Hosted denial/cancellation, proc-content/ptrace, detached-descendant and Rustup probes pass on the adjusted Ubuntu runner. Subsequent exact-head hosted evidence also passed concurrent namespace identity and Cargo check/managed-process probes. The remaining production gaps include contained PTY/LSP execution, broader supported-host qualification, and compiler/test workflow coverage. The internal M004 composition does not unshare the network namespace; M005 remains a separate authority and status dimension.
 - M005 must separately express operator-owned `OfflineRequired`, prove TCP/UDP/DNS/host-local denial and inherited socket refusal, and retain explicit `LegacyUnrestricted` behavior. No agent text, profile alias, environment variable or automatic retry may widen network authority.
 - Cgroup-v2 resource enforcement is independent and remains gated on actual writable delegation; it is not required to begin M004/M005.
 
 ## Required next actions
 
-1. Keep the exact-head hosted protected-mount and trusted-Git result as candidate evidence; qualify another supported host profile without changing its user-namespace policy before any admission.
-2. Use the repeatable harness to collect controlled packed/fragmented and cold-start distributions, then set a user-facing latency budget before any M003 admission. The current 20-sample mixed-store distribution is high-variance exploratory evidence only.
-3. Extend the M004 Rustup pass to Cargo checks/tests and compiler subprocess trees; qualify LSP and service-level PTY routing.
-4. Keep M003 production admission disabled until those gates pass. Continue M004 process/IPC qualification, then implement and qualify operator-owned M005 `OfflineRequired`; local Git mutations (C002) follow actual M003–M005 containment, and remote mediation (C003) follows local Git recovery.
+1. Keep hosted protected-mount/trusted-Git as candidate evidence; qualify exact supported feature profiles without changing their user-namespace policy. The restricted-userns CI job must first prove its test setup actually disables user namespaces.
+2. Use the repeatable harness for paired packed/fragmented and controlled cold/warm distributions against the fixed thresholds above. Meeting the threshold clears only the performance gate, not general host admission or C002.
+3. Expand M004 Cargo/compiler compatibility and supported-host qualification. Keep explicit constrained PTY refusal until the process owner can apply the qualified helper. Keep constrained LSP tools unavailable until a separately owned, supervised duplex service can prove launch, restart, cancellation, and shutdown under M004.
+4. Keep M003 production admission disabled until all gates pass. Continue M004 process/IPC qualification, then implement and qualify operator-owned M005 `OfflineRequired`; local Git mutations (C002) follow actual M003–M005 containment, and remote mediation (C003) follows local Git recovery.
 

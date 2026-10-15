@@ -85,9 +85,21 @@ impl LinuxLaunchRequest {
             },
             protected_mount_view: spec.linux_protected_mount_view,
             network: Dimension {
-                demand: Demand::Disabled,
-                requested: NetworkIntent::LegacyUnrestricted,
-                parent_ceiling: NetworkIntent::LegacyUnrestricted,
+                demand: if spec.linux_offline_network {
+                    Demand::Required
+                } else {
+                    Demand::Disabled
+                },
+                requested: if spec.linux_offline_network {
+                    NetworkIntent::OfflineRequired
+                } else {
+                    NetworkIntent::LegacyUnrestricted
+                },
+                parent_ceiling: if spec.linux_offline_network {
+                    NetworkIntent::OfflineRequired
+                } else {
+                    NetworkIntent::LegacyUnrestricted
+                },
             },
             process: Dimension {
                 demand: if spec.linux_process_isolation {
@@ -196,9 +208,11 @@ impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
         request.validate_parent_ceiling()?;
         if request.protected_mount_view {
             if request.process.requested == ProcessScope::Namespaced {
-                if request.network.demand != Demand::Disabled
-                    || request.network.requested != NetworkIntent::LegacyUnrestricted
-                    || request.syscalls.demand != Demand::Disabled
+                if !matches!(
+                    (request.network.demand, request.network.requested),
+                    (Demand::Disabled, NetworkIntent::LegacyUnrestricted)
+                        | (Demand::Required, NetworkIntent::OfflineRequired)
+                ) || request.syscalls.demand != Demand::Disabled
                     || request.syscalls.requested != SyscallConstraints::default()
                     || request.resources.demand != Demand::Disabled
                     || request.resources.requested != ResourceBudget::default()
@@ -602,6 +616,7 @@ mod tests {
         LinuxLaunchRequest::legacy_filesystem(&super::super::SandboxLaunchSpec {
             linux_protected_mount_view: false,
             linux_process_isolation: false,
+            linux_offline_network: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             target: PathBuf::from("/bin/true"),
