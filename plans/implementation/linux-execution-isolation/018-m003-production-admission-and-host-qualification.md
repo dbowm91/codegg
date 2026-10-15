@@ -85,6 +85,31 @@ If either store shape or filesystem exceeds a limit, that host profile remains
 unadmitted. Optimization may not weaken object immutability, path identity,
 race handling, or trusted-Git isolation to meet the budget.
 
+### Tool compatibility admission threshold
+
+The compatibility gate is a finite all-pass matrix for every host profile
+proposed for admission. Each workflow must complete with its expected exit or
+protocol result, within the stated bound, and through the selected contained
+launch route; an unavailable feature, fallback launch, or unexplained
+permission failure is a matrix failure:
+
+| Workflow | Required observable result | Maximum time |
+|---|---|---:|
+| Rustup toolchain resolution | Selects the pinned toolchain and reports its compiler | 60 s |
+| Rust compiler | Compiles and executes a small workspace-local program | 60 s |
+| Cargo | `cargo check --locked --workspace` succeeds | 15 min |
+| Test runner | The managed-process regression filter succeeds | 15 min |
+| Python and shell | A workspace-local script/command reads and writes only its granted workspace and exits successfully | 60 s each |
+| Trusted Git | A representative read command succeeds and returns the expected result | 60 s |
+| Production PTY | Input/echo, resize, output read, and termination complete through the contained route | 30 s |
+| Production LSP | Initialize, open one workspace file, receive a response, and shutdown through the contained route | 60 s |
+
+Admission requires every row to pass on the same exact host profile, with no
+skipped rows. M004 process isolation is part of the route for PTY and LSP; a
+standalone helper smoke does not count. The restricted-user-namespace host
+must instead demonstrate refusal before target execution. These are binary
+compatibility gates, separate from the object-view latency budgets above.
+
 ## 7. Failure and recovery semantics
 
 Missing namespaces, rejected Bubblewrap setup, status-channel failure, unsupported mount topology, identity change, or an incomplete required capability must fail before target execution. Benchmark failure or unavailable host/filesystem evidence is an unqualified result, never a pass. No admission decision may silently fall back to Landlock while retaining the stronger requested label.
