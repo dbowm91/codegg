@@ -357,6 +357,9 @@ pub struct SandboxConfig {
     /// Internal opt-in for native qualification. No persisted config or
     /// default profile enables it yet.
     pub linux_protected_mount_view: bool,
+    /// Internal opt-in for the M004 process/IPC tier. This composes with the
+    /// protected mount helper and remains disabled by every persisted profile.
+    pub linux_process_isolation: bool,
 }
 
 impl SandboxConfig {
@@ -367,6 +370,7 @@ impl SandboxConfig {
             allowed_paths: Vec::new(),
             deny_paths: Vec::new(),
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
         }
     }
 
@@ -392,6 +396,15 @@ impl SandboxConfig {
 
     pub fn with_linux_protected_mount_view(mut self, enabled: bool) -> Self {
         self.linux_protected_mount_view = enabled;
+        self
+    }
+
+    /// Enable the opt-in M004 process/IPC tier. The tier depends on the
+    /// protected Bubblewrap mount helper for PID/IPC namespaces and private
+    /// procfs; no public or persisted profile enables it.
+    pub fn with_linux_process_isolation(mut self, enabled: bool) -> Self {
+        self.linux_process_isolation = enabled;
+        self.linux_protected_mount_view |= enabled;
         self
     }
 
@@ -549,6 +562,7 @@ impl SandboxConfig {
         };
         Ok(SandboxLaunchSpec {
             linux_protected_mount_view: self.linux_protected_mount_view,
+            linux_process_isolation: self.linux_process_isolation,
             protected_readonly_paths,
             path_identities,
             target,
@@ -579,6 +593,10 @@ pub struct SandboxLaunchSpec {
     /// for every existing configuration until native qualification is closed.
     #[serde(default)]
     pub linux_protected_mount_view: bool,
+    /// Opt in to PID/IPC namespaces, private procfs, and Landlock ABI 6
+    /// signal/abstract-socket scopes. Does not request offline networking.
+    #[serde(default)]
+    pub linux_process_isolation: bool,
     /// Git metadata paths resolved while the launch lease was constructed.
     /// The helper re-resolves and compares them before it builds mounts.
     #[serde(default)]

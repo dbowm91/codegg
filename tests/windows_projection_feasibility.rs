@@ -188,6 +188,7 @@ try {{
         );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
         linux_protected_mount_view: false,
+        linux_process_isolation: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
         target: executable,

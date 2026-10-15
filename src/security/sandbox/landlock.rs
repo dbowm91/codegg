@@ -142,6 +142,66 @@ pub fn apply(spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     }
 }
 
+/// Apply the M004 Landlock ABI 6 IPC scopes without adding filesystem or
+/// network restrictions. Called by the trusted helper immediately before it
+/// executes Bubblewrap so the namespace launcher and target inherit the same
+/// signal and abstract-socket domain.
+#[cfg(target_os = "linux")]
+pub fn apply_process_scopes() -> Result<u32, String> {
+    use landlock::{
+        Access, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus, Scope, ABI,
+    };
+
+    let ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .scope(Scope::from_all(ABI::V6))
+        .map_err(|error| format!("Landlock process scope selection failed: {error}"))?
+        .create()
+        .map_err(|error| format!("Landlock process scope setup failed: {error}"))?;
+    let status = ruleset
+        .restrict_self()
+        .map_err(|error| format!("Landlock process scope enforcement failed: {error}"))?;
+    if status.ruleset == RulesetStatus::NotEnforced || !status.no_new_privs {
+        return Err(format!(
+            "Landlock process scope was not enforced (ruleset={:?}, no_new_privs={})",
+            status.ruleset, status.no_new_privs
+        ));
+    }
+    match status.landlock {
+        landlock::LandlockStatus::Available { effective_abi, .. } if effective_abi >= ABI::V6 => {
+            Ok(effective_abi as u32)
+        }
+        other => Err(format!(
+            "Landlock ABI 6 process scopes unavailable after setup: {other:?}"
+        )),
+    }
+}
+
+/// Read-only qualification check for the exact signal and abstract-socket
+/// scopes required by M004.
+#[cfg(target_os = "linux")]
+pub fn probe_process_scopes() -> Result<(), String> {
+    use landlock::{Access, CompatLevel, Compatible, Ruleset, RulesetAttr, Scope, ABI};
+
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .scope(Scope::from_all(ABI::V6))
+        .map_err(|error| format!("Landlock ABI 6 scope request failed: {error}"))?
+        .create()
+        .map(|_| ())
+        .map_err(|error| format!("Landlock ABI 6 scope probe failed: {error}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn probe_process_scopes() -> Result<(), String> {
+    Err("Landlock process scopes are available only on Linux".into())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn apply_process_scopes() -> Result<u32, String> {
+    Err("Landlock process scopes are available only on Linux".into())
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn apply(_spec: &SandboxLaunchSpec) -> Result<BackendEnforcement, String> {
     Err("Landlock is a Linux LSM and is not available on this platform".to_string())

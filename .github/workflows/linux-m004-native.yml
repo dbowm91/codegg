@@ -1,0 +1,79 @@
+name: Linux M004 process and IPC qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-m004-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/managed_process.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/linux_m004_process_ipc.rs'
+  push:
+    paths:
+      - '.github/workflows/linux-m004-native.yml'
+      - 'src/bin/codegg-sandbox-helper.rs'
+      - 'src/managed_process.rs'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'tests/linux_m004_process_ipc.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-m004-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  process-ipc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
+      CODEGG_RUN_M004_BWRAP_NATIVE: '1'
+      CODEGG_RUN_C009_BWRAP_NATIVE: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Record native runner capabilities
+        run: |
+          uname -a
+          bwrap --version
+          id
+          cat /proc/sys/user/max_user_namespaces
+          printf 'AppArmor profile: '
+          cat /proc/self/attr/current || true
+          printf 'Bubblewrap mode: '
+          stat -c '%a %u %n' "$(command -v bwrap)"
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+
+      - name: Enable user namespaces for isolated native qualification
+        run: |
+          # GitHub-hosted Ubuntu 24.04 enables AppArmor's unprivileged-userns
+          # restriction. Relax only this ephemeral VM gate for Bubblewrap tests.
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+
+      - name: Build trusted sandbox helper
+        run: cargo build --locked --bin codegg-sandbox-helper
+
+      - name: M004 managed-process host PID and IPC denial probes
+        run: cargo test --locked --test linux_m004_process_ipc -- --nocapture
+
+      - name: Protected mount and Git regressions
+        run: |
+          cargo test --locked --lib protected_mount_ -- --nocapture
+          cargo test -p egggit --locked trusted_git -- --test-threads=1

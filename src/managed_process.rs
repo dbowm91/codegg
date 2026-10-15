@@ -747,10 +747,16 @@ async fn run_inner(
     configure_process_session(&mut command);
     #[cfg(unix)]
     if let Some(writer) = status_writer.as_ref() {
+        #[cfg(not(target_os = "linux"))]
+        let close_unapproved_fds = false;
+        #[cfg(target_os = "linux")]
+        let close_unapproved_fds =
+            matches!(&sandbox, SandboxRequest::Required(spec) if spec.linux_process_isolation);
         configure_status_fds(
             &mut command,
             writer.as_raw_fd(),
             status_ack_reader.as_ref().map(AsRawFd::as_raw_fd),
+            close_unapproved_fds,
         );
     }
 
@@ -1479,7 +1485,8 @@ fn prepare_launch_argv(
                             ))
                         })? {
                         LinuxLaunchPlan::LegacyPrivateHelper
-                        | LinuxLaunchPlan::ProtectedMountView => {}
+                        | LinuxLaunchPlan::ProtectedMountView
+                        | LinuxLaunchPlan::ProtectedProcessIsolation => {}
                         LinuxLaunchPlan::EnhancedUnavailable { dimensions } => {
                             return Err(ManagedProcessError::SandboxFailed(format!(
                                 "Linux launch dimensions unavailable: {}",
@@ -1578,7 +1585,12 @@ fn create_status_pipe(
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn configure_status_fds(command: &mut Command, source_status_fd: i32, source_ack_fd: Option<i32>) {
+fn configure_status_fds(
+    command: &mut Command,
+    source_status_fd: i32,
+    source_ack_fd: Option<i32>,
+    close_unapproved_fds: bool,
+) {
     unsafe {
         command.pre_exec(move || {
             // Duplicate to temporary descriptors first so source fds 3 or 4
@@ -1623,9 +1635,28 @@ fn configure_status_fds(command: &mut Command, source_status_fd: i32, source_ack
             {
                 return Err(io::Error::last_os_error());
             }
+            #[cfg(target_os = "linux")]
+            if close_unapproved_fds {
+                close_unapproved_linux_fds()?;
+            }
             Ok(())
         });
     }
+}
+
+/// Keep only stdio plus the private sandbox status and acknowledgment
+/// descriptors in an M004 helper. `close_range` is available well before the
+/// Landlock ABI 6 floor required by this mode; failure aborts before exec.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn close_unapproved_linux_fds() -> io::Result<()> {
+    for (first, last) in [(4_u32, 197_u32), (199_u32, u32::MAX)] {
+        let result = unsafe { libc::syscall(libc::SYS_close_range, first, last, 0_u32) };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> {
@@ -2073,15 +2104,31 @@ fn interpret_bubblewrap_status(
         0,
         "Bubblewrap block-fd barrier releases the target only after mount setup".into(),
     );
+    let limits = if spec.linux_process_isolation {
+        guarantees.extend([
+            "PID namespace with a private procfs mounted after namespace creation".into(),
+            "IPC namespace isolates System V IPC objects".into(),
+            "Landlock ABI 6 scopes outgoing signals and abstract Unix socket connections to the sandbox domain".into(),
+        ]);
+        vec![
+            "network isolation not requested; outbound networking retains its existing policy"
+                .into(),
+            "seccomp syscall filtering is not claimed by this launch".into(),
+            "resource limits are not claimed by this launch".into(),
+            "pathname Unix socket access is not qualified and must not be treated as denied".into(),
+        ]
+    } else {
+        vec![
+            "network isolation not requested".into(),
+            "PID/IPC isolation and seccomp are not claimed by this launch".into(),
+            "resource limits are not claimed by this launch".into(),
+        ]
+    };
     Ok(SandboxExecutionOutcome::Enforced {
         backend: crate::security::sandbox::BackendId::BUBBLEWRAP,
         abi: None,
         guarantees,
-        limits: vec![
-            "network isolation not requested".into(),
-            "PID/IPC isolation and seccomp are not claimed by this launch".into(),
-            "resource limits are not claimed by this launch".into(),
-        ],
+        limits,
     })
 }
 
@@ -2249,6 +2296,7 @@ mod tests {
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             deny_paths: Vec::new(),
@@ -2526,6 +2574,7 @@ mod tests {
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             target: PathBuf::from("/bin/sh"),
@@ -2556,6 +2605,7 @@ mod tests {
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {
                 linux_protected_mount_view: false,
+                linux_process_isolation: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
                 deny_paths: Vec::new(),
@@ -3837,6 +3887,7 @@ mod tests {
             request.timeout = Some(Duration::from_secs(15));
             request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
                 linux_protected_mount_view: false,
+                linux_process_isolation: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
                 target: executable.clone(),

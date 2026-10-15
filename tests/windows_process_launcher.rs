@@ -349,6 +349,7 @@ async fn required_filesystem_sandbox_fails_before_launch_on_windows() {
     process.sandbox = codegg::managed_process::SandboxRequest::Required(
         codegg::security::sandbox::SandboxLaunchSpec {
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             target: powershell(),

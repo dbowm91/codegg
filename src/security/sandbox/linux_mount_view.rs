@@ -326,6 +326,12 @@ pub fn compile(
         "--tmpfs".to_string(),
         "/tmp".to_string(),
     ];
+    if spec.linux_process_isolation {
+        // PID namespaces require a procfs mounted from inside that namespace.
+        // Landlock ABI 6 scopes signals and abstract sockets independently,
+        // preserving the operator's existing network intent.
+        args.extend(["--unshare-pid".to_string(), "--unshare-ipc".to_string()]);
+    }
 
     let mut directories = BTreeSet::new();
     for mount in &mounts {
@@ -345,6 +351,10 @@ pub fn compile(
     }
     add_parent_directories(cwd, &mut directories)?;
     directories.insert(cwd.to_path_buf());
+    if spec.linux_process_isolation {
+        add_parent_directories(Path::new("/proc"), &mut directories)?;
+        directories.insert(PathBuf::from("/proc"));
+    }
     if directories.len() > 4096 {
         return Err("protected mount view exceeds its directory-creation bound".into());
     }
@@ -354,6 +364,10 @@ pub fn compile(
     for directory in directories {
         args.push("--dir".into());
         args.push(path_arg(&directory)?);
+    }
+    if spec.linux_process_isolation {
+        args.push("--proc".into());
+        args.push("/proc".into());
     }
 
     let mut fds = Vec::new();

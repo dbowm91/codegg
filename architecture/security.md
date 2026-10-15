@@ -184,6 +184,17 @@ or setup failure refuse the launch. The obtained result records the exact path
 scope. Network, PID/IPC, seccomp, and resource limits are not inferred from
 mount setup.
 
+An additional internal `SandboxConfig::with_linux_process_isolation(true)` opt-in
+composes the mount view with Bubblewrap's PID and IPC namespaces and a private
+`/proc` mount. It requires Landlock ABI 6 signal and abstract-Unix-socket scopes
+before starting Bubblewrap, which keeps the existing outbound-network policy
+separate from M005's offline intent. This scoped path is intentionally
+fail-closed on hosts without those ABI features. A native managed-child probe
+now covers host-PID invisibility, same-UID signal denial, and abstract-socket
+denial; its positive hosted run is pending. It does not claim seccomp,
+inherited-FD closure, pathname-socket denial, or resource enforcement. The
+process tier is not production-admitted while those M004 gates remain open.
+
 ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
 network behavior are unchanged. The opt-in mount path is implemented but
