@@ -70,6 +70,11 @@ skill covers the ordering and isolation invariants that are easy to break.
   beneath a writable grant. A mask attached to a file or directory in a
   host-backed writable mount can be detached by renaming that entry after
   setup; do not claim that nested deny is stable there.
+- Trusted `egggit` preflight refuses a repository that already has an object
+  alternate in its Git directory or linked-worktree common directory. Since
+  repository metadata remains writable, this snapshot check does not prevent
+  an alternate from being replaced after preflight; it is not a race-safe
+  boundary or evidence that trusted Git cannot read outside the worktree.
 - **`Automatic` is never silent Yolo.** With no reviewer model configured,
   `Automatic` defers to the human.
 - **Scratch recovery is advisory.** A structured write to a known host temp

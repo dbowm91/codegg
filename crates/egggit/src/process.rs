@@ -173,6 +173,7 @@ impl GitEnvPolicy {
     /// Construct an async command from a complete argv (`git` included).
     pub fn apply(&self, argv: &[String], cwd: &Path) -> Result<Command, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
+        ensure_trusted_object_store(cwd)?;
         let worktree = canonical_worktree(cwd)?;
         let mut cmd = Command::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
@@ -189,6 +190,7 @@ impl GitEnvPolicy {
         cwd: &Path,
     ) -> Result<StdCommand, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
+        ensure_trusted_object_store(cwd)?;
         let worktree = canonical_worktree(cwd)?;
         let mut cmd = StdCommand::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
@@ -591,6 +593,77 @@ fn canonical_worktree(cwd: &Path) -> Result<std::path::PathBuf, GitExecutionPoli
         });
     }
     Ok(worktree)
+}
+
+/// Reject repository object stores that already declare an alternate object
+/// directory when trusted Git is admitted. Git's alternates file is data, not
+/// configuration, so environment and `-c` overrides cannot disable it. This
+/// check is a preflight compatibility guard; it does not make mutable Git
+/// metadata race-safe after the check.
+fn ensure_trusted_object_store(cwd: &Path) -> Result<(), GitExecutionPolicyOutcome> {
+    let Some(worktree) = crate::worktree::find_git_root(cwd) else {
+        return Ok(());
+    };
+    let unavailable = || GitExecutionPolicyOutcome::BackendUnavailable {
+        capabilities: vec![GitExecutionCapability::RepositoryAlias],
+    };
+    let dot_git = worktree.join(".git");
+    let metadata = std::fs::symlink_metadata(&dot_git).map_err(|_| unavailable())?;
+    let git_dir = if metadata.file_type().is_symlink() {
+        return Err(unavailable());
+    } else if metadata.is_dir() {
+        dot_git.canonicalize().map_err(|_| unavailable())?
+    } else if metadata.is_file() && metadata.len() <= 8 * 1024 {
+        let pointer = std::fs::read_to_string(&dot_git).map_err(|_| unavailable())?;
+        let mut lines = pointer.lines();
+        let Some(target) = lines.next().and_then(|line| line.strip_prefix("gitdir: ")) else {
+            return Err(unavailable());
+        };
+        if lines.next().is_some() || target.trim().is_empty() {
+            return Err(unavailable());
+        }
+        let target = Path::new(target.trim());
+        let target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            worktree.join(target)
+        };
+        target.canonicalize().map_err(|_| unavailable())?
+    } else {
+        return Err(unavailable());
+    };
+
+    let mut git_dirs = vec![git_dir.clone()];
+    let common_dir_file = git_dir.join("commondir");
+    match std::fs::symlink_metadata(&common_dir_file) {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= 4 * 1024 => {
+            let common = std::fs::read_to_string(&common_dir_file).map_err(|_| unavailable())?;
+            let common = common.trim();
+            if common.is_empty() || common.lines().count() != 1 {
+                return Err(unavailable());
+            }
+            let common = Path::new(common);
+            let common = if common.is_absolute() {
+                common.to_path_buf()
+            } else {
+                git_dir.join(common)
+            };
+            git_dirs.push(common.canonicalize().map_err(|_| unavailable())?);
+        }
+        Ok(_) => return Err(unavailable()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(unavailable()),
+    }
+
+    for git_dir in git_dirs {
+        let alternates = git_dir.join("objects/info/alternates");
+        match std::fs::symlink_metadata(&alternates) {
+            Ok(_) => return Err(unavailable()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(unavailable()),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1366,6 +1439,123 @@ mod tests {
             !marker.exists(),
             "nested repository fsmonitor must not execute on the trusted outer route"
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_git_refuses_repository_object_alternates() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let selected = fixture.path().join("selected-repository");
+        let alternate = fixture.path().join("alternate-repository");
+        std::fs::create_dir(&selected).expect("selected repository");
+        std::fs::create_dir(&alternate).expect("alternate repository");
+        let raw_git = |cwd: &Path, args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&selected, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        assert!(raw_git(&alternate, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        std::fs::write(alternate.join("outside.txt"), "alternate object content\n")
+            .expect("alternate object content");
+        assert!(raw_git(&alternate, &["add", "outside.txt"])
+            .status
+            .success());
+        assert!(raw_git(
+            &alternate,
+            &[
+                "-c",
+                "user.name=C009",
+                "-c",
+                "user.email=c009@example.invalid",
+                "commit",
+                "-m",
+                "alternate"
+            ]
+        )
+        .status
+        .success());
+        let object = raw_git(&alternate, &["rev-parse", "HEAD:outside.txt"]);
+        assert!(object.status.success());
+        let object = String::from_utf8_lossy(&object.stdout).trim().to_owned();
+        let alternates = selected.join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alternates.parent().unwrap()).expect("alternate metadata root");
+        std::fs::write(
+            &alternates,
+            format!("{}\n", alternate.join(".git/objects").display()),
+        )
+        .expect("write repository alternate object directory");
+
+        assert!(matches!(
+            run(&["cat-file".into(), "blob".into(), object], &selected).await,
+            Err(EgggitError::Policy(
+                GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
+            )) if capabilities == vec![GitExecutionCapability::RepositoryAlias]
+        ));
+    }
+
+    #[tokio::test]
+    async fn trusted_git_refuses_common_dir_object_alternates() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("main-worktree");
+        let linked = fixture.path().join("linked-worktree");
+        std::fs::create_dir(&root).expect("main worktree");
+        let raw_git = |cwd: &Path, args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&root, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        std::fs::write(root.join("tracked.txt"), "selected worktree\n").expect("tracked file");
+        assert!(raw_git(&root, &["add", "tracked.txt"]).status.success());
+        assert!(raw_git(
+            &root,
+            &[
+                "-c",
+                "user.name=C009",
+                "-c",
+                "user.email=c009@example.invalid",
+                "commit",
+                "-m",
+                "initial"
+            ]
+        )
+        .status
+        .success());
+        let linked_arg = linked.to_str().expect("UTF-8 linked worktree path");
+        assert!(
+            raw_git(&root, &["worktree", "add", "--detach", linked_arg, "HEAD"])
+                .status
+                .success()
+        );
+        let common_dir = raw_git(&linked, &["rev-parse", "--git-common-dir"]);
+        assert!(common_dir.status.success());
+        let common_dir = String::from_utf8_lossy(&common_dir.stdout);
+        let common_dir = linked
+            .join(common_dir.trim())
+            .canonicalize()
+            .expect("common dir");
+        let alternates = common_dir.join("objects/info/alternates");
+        std::fs::create_dir_all(alternates.parent().expect("objects info directory"))
+            .expect("create object metadata directory");
+        std::fs::write(&alternates, "/outside/trusted/object-store\n")
+            .expect("write common-dir object alternate");
+
+        assert!(matches!(
+            run(&["status".into()], &linked).await,
+            Err(EgggitError::Policy(
+                GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
+            )) if capabilities == vec![GitExecutionCapability::RepositoryAlias]
+        ));
     }
 
     #[cfg(unix)]
