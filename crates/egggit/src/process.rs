@@ -832,7 +832,7 @@ fn argv_reads_objects(argv: &[String]) -> bool {
 fn copy_object_files(source: &Path, destination: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        return copy_object_files_descriptor_relative(source, destination);
+        copy_object_files_descriptor_relative(source, destination)
     }
     #[cfg(not(unix))]
     {
