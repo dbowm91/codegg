@@ -315,7 +315,27 @@ impl CoreDaemon {
                 // intentionally duplicated for backward-compatible error handling.
                 let mut registry = crate::provider::ProviderRegistry::new();
                 let config = super::load_config_or_default();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                // This pre-check must resolve providers with the *same*
+                // authority the turn runtime uses. Built without connection
+                // authority it falls through to the credential-store
+                // fallback, which refuses any provider a rotation has left an
+                // orphan record for — so `registry.get` came back empty and
+                // this returned `provider_not_found` for a provider the daemon
+                // was perfectly able to serve, aborting the turn before the
+                // runtime ever ran.
+                let locators = match self.pool.clone() {
+                    Some(pool) => {
+                        crate::core::session_selection::pool_connection_credential_locators(&pool)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let semantic_router =
                     match crate::agent::semantic_router::SemanticRouter::from_config(&config) {
                         Ok(router) => router,
