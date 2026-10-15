@@ -5800,6 +5800,79 @@ mod tests {
         let registry = effect_binding_registry();
         let mut historical_schemas = BTreeMap::new();
 
+        // Workstream peer observation and claims extended TaskTool after the
+        // M003 receipt was frozen. Reconstruct the original action set and
+        // remove only those added input fields; the receipt remains immutable.
+        let mut historical_task_schema = registry
+            .get("task")
+            .expect("task tool remains registered")
+            .parameters();
+        let task_properties = historical_task_schema["properties"]
+            .as_object_mut()
+            .expect("task input schema properties");
+        let task_action = task_properties
+            .get_mut("action")
+            .expect("task action schema");
+        assert_eq!(
+            task_action["enum"],
+            serde_json::json!([
+                "spawn",
+                "converge",
+                "convergence_status",
+                "convergence_decide",
+                "convergence_cancel",
+                "spawn_many",
+                "create_group",
+                "status",
+                "get",
+                "message",
+                "interrupt",
+                "wait",
+                "cancel",
+                "status_group",
+                "wait_group",
+                "cancel_group",
+                "board",
+                "claim",
+                "release_claim",
+                "request_handoff"
+            ]),
+            "unexpected post-M003 task action schema"
+        );
+        task_action["description"] = serde_json::json!("Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group");
+        task_action["enum"] = serde_json::json!([
+            "spawn",
+            "converge",
+            "convergence_status",
+            "convergence_decide",
+            "convergence_cancel",
+            "spawn_many",
+            "create_group",
+            "status",
+            "get",
+            "message",
+            "interrupt",
+            "wait",
+            "cancel",
+            "status_group",
+            "wait_group",
+            "cancel_group"
+        ]);
+        for field in [
+            "claim_id",
+            "expected_version",
+            "expected_lease_generation",
+            "target_kind",
+            "target",
+            "claim_idempotency_key",
+        ] {
+            assert!(
+                task_properties.remove(field).is_some(),
+                "expected post-M003 task input field {field}"
+            );
+        }
+        historical_schemas.insert("task".to_string(), historical_task_schema);
+
         // Reconstruct the frozen test-tool schema. These two fields were
         // added after M003 and must not rewrite its immutable receipt.
         let mut historical_test_schema = registry
