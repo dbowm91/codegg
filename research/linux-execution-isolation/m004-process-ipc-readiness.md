@@ -45,8 +45,13 @@ not filter mode. The incorrect check rejected the otherwise capable host
 before target execution, so no positive M004 result was obtained. The probe
 now requires the `allow` and `errno` actions needed by this fixed policy, with
 a unit test for the action-list contract. The hosted workflow records the
-action list. Its native tests will also exercise a pathname socket under
-`/tmp`, a Git subprocess smoke check, and descendant cancellation.
+action list. The following run (`38759579735`, source SHA `8d1df77`) passed the
+main M004 managed-child probe, including the live host socket, Git subprocess,
+FD closure, seccomp namespace denial and seccomp mount denial assertions. Its
+separate descendant-cancellation fixture failed before launch because the
+generated Python source nested shell single quotes incorrectly. That fixture's
+quoting is corrected; the exact-head rerun remains required before lifecycle
+evidence can be counted.
 
 ## Remaining M004 production work
 
