@@ -598,6 +598,13 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
                 "codegg",
                 "--lib",
                 "managed_process",
+                // Protected-mount tests require probing and starting the host
+                // Bubblewrap binary. The M004 child intentionally cannot see
+                // that host launch dependency; the hosted workflow runs those
+                // regressions separately on the host after this probe.
+                "--",
+                "--skip",
+                "protected_mount_",
             ],
         ),
     ] {
