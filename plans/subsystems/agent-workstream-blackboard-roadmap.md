@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001 active, M002 ready, M003–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
+Status: active; M001 closed, M002 active, M003–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -57,9 +57,9 @@ Hypothesis: bounded peer observations and atomic task claims improve correctness
 ~~~
 existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
   |
-  +-- M001 work-order shared/serialized authority corrective   [ready]
+  +-- M001 work-order shared/serialized authority corrective   [closed]
   |
-  +-- M002 read-only durable workstream snapshot and evidence   [ready; parallel to M001]
+  +-- M002 read-only durable workstream snapshot and evidence   [active; sequential next]
        |
        +-- M003 atomic task claims, dependencies, handoff       [blocked: M002]
             |
@@ -78,13 +78,15 @@ M001 is an independently eligible safety corrective on already-closed WorkOrders
 
 ## Milestones / deliverables
 
-### M001 — WorkOrder workspace-policy correctness corrective (ready)
+### M001 — WorkOrder workspace-policy correctness corrective (closed)
 
 Repair the Shared classification so mutation capability is derived from effective agent/tool authority, not selected placement. Ensure Shared mutation is deliberately serialized or explicitly denied; scope scheduler exclusivity keys by canonical workspace/repository identity, and ensure all admission variants use identical keys. Test cross-workspace parallelism, same-workspace seriality, permission narrowing, non-Git behavior and plan/agent-run compatibility. Reference prior WorkOrders M002/M007 closures; preserve them as historical evidence. No blackboard schema.
 
 Plan: plans/implementation/agent-workstream-blackboard/001-work-order-workspace-policy-corrective.md
 
-### M002 — Durable read-only workstream projections (ready)
+Closure: plans/closure/agent-workstream-blackboard/001-status.md. Shared and Serialized mutations now fail closed because an ordinary AgentTurn can bypass the former global scheduler key. M005 owns the common reservation follow-up, still gated on M004 and ADR-0032 acceptance.
+
+### M002 — Durable read-only workstream projections (active)
 
 Derive a group-scoped peer board from existing run, task, group, worktree and job stores. Add a bounded, monotonic snapshot/journal and small persistence only for user/agent-authored intent absent from canonical stores; no duplication of status truth. Support reconnection/restart/visibility semantics using one daemon authority. No mutation permissions, model integration, or shared worktree.
 

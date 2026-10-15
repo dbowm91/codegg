@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M001 — WorkOrder Workspace-Policy Authority Corrective
 
-Status: active — safety corrective
+Status: implemented
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md#milestones--deliverables, M001
