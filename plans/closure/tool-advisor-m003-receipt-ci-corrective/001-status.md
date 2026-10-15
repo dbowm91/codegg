@@ -12,7 +12,7 @@ Implementation commits:
 
 - `7d56935340710268bb533f5d9e3a3ae84fecc723` — reconstruct the historical test-tool schema identity for frozen M003 receipt verification and pin fail-closed fallback behavior.
 - `9de8a5452dbf4070b15aa78801bb0e703eec2447` — merged repair PR #121 into `main`.
-- `5540644` — same focused repair patch integrated on the PR #119 qualification branch; C007 reconciles it with merged latest main.
+- `5540644` — initial focused repair attempt on the PR #119 qualification branch. During C007's merge of latest main, the `causal_frontier.rs` conflict was resolved with main's more complete version of the same historical-schema repair (including compatibility with schemas that contain neither or both approved fields). The final integrated implementation therefore comes from `9de8a545`, not the superseded file contents of `5540644`.
 
 ## 1. Executive finding
 
@@ -30,7 +30,7 @@ The checked-in M003 result asset was not rewritten. Its disposition remains nega
 | Preserve M003 disposition and receipt | Frozen-receipt regression and unchanged result asset | Pass | Disposition remains D; M002 remains selected. The asset was not modified. |
 | Targeted repair-branch verification | Receipt regression; causal-frontier suite | Pass | Receipt test passed; suite: 78 passed, 0 failed, 2 ignored; formatting and `git diff --check` passed. |
 | Hosted exact-head root CI | [Run 38676411915](https://github.com/dbowm91/codegg/actions/runs/38676411915), head `7d569353` | Pass | `CI / verify` and GitGuardian succeeded. Nextest ran 13,637 tests: 13,637 passed, 0 failed, 5 configured skips. Repaired test passed at 4,251/13,637. |
-| Integration into current PR candidate | Patch `5540644`; C007 latest-main reconciliation | Pass for dependency; C007 active | Repair patch is present on the PR #119 qualification branch and merged in main; C007 must qualify the final integrated SHA. |
+| Integration into current PR candidate | Merge commit `5b9f761`; final `causal_frontier.rs` matches main's repair | Pass for dependency; C007 active | The initial `5540644` patch remains in history, but its file contents were superseded by the mainline conflict resolution. C007 must qualify the final integrated SHA. |
 
 ## 3. Production implementation evidence
 
@@ -77,7 +77,7 @@ No authority, credential, sandbox, network, or model-selection privilege changes
 
 - The corrective regression now names the two post-M003 schema fields and pins stale-catalog behavior.
 - The historical M003 closure and frozen result asset remain intact.
-- Repair PR #121 merged to main. PR #119 carries the same focused patch and will be qualified against latest main under C007.
+- Repair PR #121 merged to main. C007 merged latest main and retained its more complete historical-schema regression implementation; the exact integrated head remains subject to C007 qualification.
 
 ## 10. Unresolved findings
 
@@ -89,7 +89,7 @@ No C001 high or medium finding remains.
 
 ## 11. Roadmap disposition
 
-C001 is closed. The independent blocker on async C007 is resolved: C006 has closed, and the receipt repair merged to main with a green full hosted CI. The repair patch is present on the PR #119 qualification branch. C007 is now eligible and has started latest-main reconciliation and final hosted qualification.
+C001 is closed. The independent blocker on async C007 is resolved: C006 has closed, and the receipt repair merged to main with a green full hosted CI. The initial repair commit remains in PR #119 history; the final implementation comes from the already-green mainline repair. C007 is now eligible and has completed latest-main reconciliation, with final hosted qualification in progress.
 
 ## 12. Registry updates
 

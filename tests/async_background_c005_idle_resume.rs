@@ -38,6 +38,69 @@ use codegg_core::workspace::WorkspaceId;
 
 mod common;
 
+static PROCESS_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct EnvGuard(Vec<(&'static str, Option<String>)>);
+
+impl EnvGuard {
+    fn install(values: &[(&'static str, String)]) -> Self {
+        let prior = values
+            .iter()
+            .map(|(key, _)| (*key, std::env::var(key).ok()))
+            .collect();
+        for (key, value) in values {
+            std::env::set_var(key, value);
+        }
+        Self(prior)
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.0.drain(..) {
+            if let Some(value) = value {
+                std::env::set_var(key, value);
+            } else {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
+
+struct IsolatedProviderConfig {
+    _config_dir: tempfile::TempDir,
+    _env: EnvGuard,
+}
+
+impl IsolatedProviderConfig {
+    fn install() -> Self {
+        let config_dir = tempfile::tempdir().expect("provider config tempdir");
+        let config_path = config_dir.path().join("codegg.json");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "provider": {"openai": {
+                    "auth": {"type": "api_key", "env": "OPENAI_API_KEY"},
+                    "base_url": "http://127.0.0.1:9/v1"
+                }}
+            })
+            .to_string(),
+        )
+        .expect("write isolated provider config");
+        let env = EnvGuard::install(&[
+            (
+                "CODEGG_TUI_CONFIG",
+                config_path.to_string_lossy().into_owned(),
+            ),
+            ("OPENAI_API_KEY", "c005-test-credential".to_string()),
+        ]);
+        Self {
+            _config_dir: config_dir,
+            _env: env,
+        }
+    }
+}
+
 // ── Stub provider boundary ─────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -738,6 +801,8 @@ async fn grant_create_rejects_unknown_and_archived_sessions() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn prod_resume_admits_exactly_one_owner_turn_through_fanout() {
+    let _env_lock = PROCESS_ENV_LOCK.lock().await;
+    let _provider_config = IsolatedProviderConfig::install();
     let pool = common::pool::isolated_pool().await;
     let (daemon, stub) = stub_daemon(pool.clone()).await;
     let daemon = Arc::new(daemon);
@@ -1035,6 +1100,8 @@ async fn binding_mismatches_and_legacy_rows_stay_notify_only() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn fifty_way_wake_race_admits_exactly_one_turn() {
+    let _env_lock = PROCESS_ENV_LOCK.lock().await;
+    let _provider_config = IsolatedProviderConfig::install();
     let pool = race_pool().await;
     let (daemon, stub) = stub_daemon(pool.clone()).await;
     let daemon = Arc::new(daemon);
@@ -1093,6 +1160,8 @@ async fn fifty_way_wake_race_admits_exactly_one_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ambiguous_provider_start_becomes_needs_attention_without_replay() {
+    let _env_lock = PROCESS_ENV_LOCK.lock().await;
+    let _provider_config = IsolatedProviderConfig::install();
     let pool = common::pool::isolated_pool().await;
     let (daemon, stub) = stub_daemon(pool.clone()).await;
     let daemon = Arc::new(daemon);
@@ -1126,6 +1195,8 @@ async fn ambiguous_provider_start_becomes_needs_attention_without_replay() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn restart_twin_heals_a_missed_wake_exactly_once() {
+    let _env_lock = PROCESS_ENV_LOCK.lock().await;
+    let _provider_config = IsolatedProviderConfig::install();
     let pool = common::pool::isolated_pool().await;
     let (daemon_a, stub_a) = stub_daemon(pool.clone()).await;
     let dir = tempfile::tempdir().unwrap();
