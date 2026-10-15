@@ -772,17 +772,26 @@ impl TurnRuntime for DefaultTurnRuntime {
             ));
         }
 
-        if let Some(ref svc) = lsp_service {
-            let root = execution.workspace_root.clone();
-            if let Some(lsp_ctx) =
-                assemble_lsp_context_for_turn(svc, lsp_context_input, &model_profile.family, root)
-                    .await
-            {
-                runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
-                    crate::agent::prompt::PromptBlockKind::LspContext,
-                    "lsp:turn-context",
-                    &lsp_ctx,
-                ));
+        if sandbox_profile
+            .unwrap_or(codegg_core::approval::SandboxProfile::WorkspaceWrite)
+            .is_full_host()
+        {
+            if let Some(ref svc) = lsp_service {
+                let root = execution.workspace_root.clone();
+                if let Some(lsp_ctx) = assemble_lsp_context_for_turn(
+                    svc,
+                    lsp_context_input,
+                    &model_profile.family,
+                    root,
+                )
+                .await
+                {
+                    runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                        crate::agent::prompt::PromptBlockKind::LspContext,
+                        "lsp:turn-context",
+                        &lsp_ctx,
+                    ));
+                }
             }
         }
         let git_ctx = build_git_context_for_path(&execution.workspace_root).await;
