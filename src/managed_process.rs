@@ -2528,6 +2528,7 @@ mod tests {
              export LD_LIBRARY_PATH={}/lib\n\\
              export RUSTC={}\n\\
              {} check --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\"\n\\
+             WORKSPACE=\"$workspace\" python3 -c 'import os,pathlib; pathlib.Path(os.environ[\"WORKSPACE\"],\"python-output.txt\").write_text(\"python-ok\\n\")'\n\\
              printf target-ran > {}",
             shell_quote(&workspace),
             shell_quote(&common_config),
@@ -2580,6 +2581,10 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
             "allowed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("python-output.txt")).unwrap(),
+            "python-ok\n"
         );
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "target-ran");
     }
