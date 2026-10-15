@@ -105,6 +105,15 @@ to violate.
    A `Blocked` outcome must be reported with its concrete blockers and must
    leave the tombstone so `p` can finish; `purge` stays revision-checked and
    transactional.
+6b-1. **Session references never block a delete.** `delete_permanently` calls
+   `detach_sessions` first, clearing `session.provider_connection_id` and the
+   matching `selected_session` reference rows in one transaction. A session
+   pinned to a connection is history, not a live handle, and treating it as a
+   blocker makes a connection permanently undeletable with no operator action
+   that can clear it. Only `active_runtime` and `provisioning_operation`
+   describe in-flight work and must still block; do not widen detachment to
+   those. `purge_eligibility` still reports session counts for callers that ask
+   before deleting.
 6c. **Rotation prunes only what it can prove is dead.**
    `prune_superseded_credential` removes a rotation's own superseded record,
    and only when no other `provider_connections` row shares its

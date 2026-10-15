@@ -432,9 +432,23 @@ exactly as `p` drops it). The tombstone stays the first step because the
 compatibility projection in `provider_connections` may not hold a state its
 CHECK rejects, and because a racing reader must see a tombstoned row rather
 than a vanished one. `Blocked` is reported with the concrete blockers
-(session counts, provisioning operation ids, active runtime ids) and leaves
+(provisioning operation ids, active runtime ids) and leaves
 the tombstone for `p`; the previous tombstone-only behaviour reported nothing
 and left the user with a row that looked deleted.
+
+**A delete detaches its sessions; only in-flight work blocks it.** A
+`selected_session` reference is bookkeeping, not a live handle: nothing is
+executing and the session outlives the connection it was pinned to. Counting it
+as a hard blocker made a connection permanently undeletable as soon as any
+session had ever selected it, with no operator action that could clear it — one
+`eggstackmain` row accumulated 43 genuine references and became unreachable in
+the UI while still listed. `detach_sessions` therefore clears
+`session.provider_connection_id` and drops the matching
+`provider_connection_references` rows in one transaction, so the session comes
+back unbound and may re-select any other connection. `active_runtime` and
+`provisioning_operation` describe work that is still running, so `purge` keeps
+blocking on those, and `purge_eligibility` still reports session counts for
+callers that ask before deleting.
 
 **Every lifecycle verb is bound *and* printed.** `/connections` binds
 `e` enable/disable, `d` delete (confirm), `R` rotate, `r` refresh, `u` restore,
