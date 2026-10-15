@@ -2875,12 +2875,23 @@ fn effect_binding_registry() -> crate::tool::ToolRegistry {
 /// gap is visible in the fingerprint rather than silently skipped.
 pub fn effect_catalog_fingerprint() -> String {
     let registry = effect_binding_registry();
+    effect_catalog_fingerprint_with_schema_overrides(&registry, &BTreeMap::new())
+}
+
+fn effect_catalog_fingerprint_with_schema_overrides(
+    registry: &crate::tool::ToolRegistry,
+    schema_overrides: &BTreeMap<String, serde_json::Value>,
+) -> String {
     let catalog = causal_catalog();
     let mut entries = Vec::with_capacity(catalog.len());
     for (name, contract) in catalog.iter() {
         let bound = match registry.get(name) {
             Some(tool) => {
-                let live = tool.contract(name, tool.parameters());
+                let input_schema = schema_overrides
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| tool.parameters());
+                let live = tool.contract(name, input_schema);
                 bind_causal_contract(
                     name,
                     contract,
@@ -5768,6 +5779,8 @@ mod tests {
             serde_json::from_str(RECEIPT_JSON).expect("stored receipt parses");
         let fresh = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
             .expect("m003 requalifies");
+        assert_eq!(stored.disposition, CausalM003Disposition::Negative.code());
+        assert_eq!(fresh.disposition, CausalM003Disposition::Negative.code());
         assert_eq!(stored.schema_version, fresh.schema_version);
         assert_eq!(stored.protocol, fresh.protocol);
         assert_eq!(stored.ontology_version, fresh.ontology_version);
@@ -5784,10 +5797,61 @@ mod tests {
             stored.contract_catalog_fingerprint,
             fresh.contract_catalog_fingerprint
         );
+        let registry = effect_binding_registry();
+        let mut historical_test_schema = registry
+            .get("test")
+            .expect("test tool remains registered")
+            .parameters();
+        let properties = historical_test_schema["properties"]
+            .as_object_mut()
+            .expect("test input schema properties");
+        assert!(properties.remove("execution_mode").is_some());
+        assert!(properties.remove("on_complete").is_some());
+        let historical_effect_fingerprint = effect_catalog_fingerprint_with_schema_overrides(
+            &registry,
+            &BTreeMap::from([("test".to_string(), historical_test_schema)]),
+        );
         assert_eq!(
             stored.effect_catalog_fingerprint,
-            fresh.effect_catalog_fingerprint
+            historical_effect_fingerprint,
+            "M003 receipt is bound to its historical test schema; the exact post-M003 schema additions are test.properties.execution_mode and test.properties.on_complete"
         );
+        assert_ne!(
+            fresh.effect_catalog_fingerprint, stored.effect_catalog_fingerprint,
+            "live catalog correctly identifies the post-M003 test schema drift"
+        );
+        let case = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("frozen benchmark contains a structured case");
+        let (status, m002_frontier) = evaluate_effect_path(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+            &fresh.effect_catalog_fingerprint,
+            &stored.effect_catalog_fingerprint,
+        )
+        .expect("schema drift falls back rather than failing benchmark scoring");
+        assert_eq!(status.code(), "stale_catalog_fallback");
+        let direct_m002 = evaluate_benchmark_case(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+        )
+        .expect("current M002 frontier evaluates");
+        assert_eq!(
+            m002_frontier, direct_m002,
+            "stale M003 identity must select the directly evaluated M002 frontier"
+        );
+        let m002_visible: BTreeSet<String> = m002_frontier
+            .admissible_contracted
+            .iter()
+            .chain(m002_frontier.uncontracted_fallback.iter())
+            .chain(m002_frontier.required_visible.iter())
+            .cloned()
+            .collect();
+        assert_eq!(m002_visible, m002_frontier.visible_union());
+        assert_eq!(status.used_size(m002_visible.len()), m002_visible.len());
         assert_eq!(
             stored.catalog_binding_complete,
             fresh.catalog_binding_complete
