@@ -780,6 +780,17 @@ async fn model_facing_background_bash_completes_via_scheduler_without_autonomous
         ),
         ("OPENAI_API_KEY", "loopback-test".to_string()),
     ]);
+    codegg::provider::CredentialStore::at_default_location()
+        .expect("open isolated credential store")
+        .put(
+            "c006-provider",
+            Some("acct-c006"),
+            codegg::provider::CredentialKind::ApiKey,
+            "loopback-test",
+            None,
+            vec![],
+        )
+        .expect("seed connection-bound loopback credential");
     let (provider_tx, mut provider_rx) = tokio::sync::mpsc::unbounded_channel();
     let provider_handle = spawn_scripted_job_model(
         provider_listener,
