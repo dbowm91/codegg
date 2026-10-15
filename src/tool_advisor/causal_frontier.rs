@@ -2875,12 +2875,23 @@ fn effect_binding_registry() -> crate::tool::ToolRegistry {
 /// gap is visible in the fingerprint rather than silently skipped.
 pub fn effect_catalog_fingerprint() -> String {
     let registry = effect_binding_registry();
+    effect_catalog_fingerprint_with_schema_overrides(&registry, &BTreeMap::new())
+}
+
+fn effect_catalog_fingerprint_with_schema_overrides(
+    registry: &crate::tool::ToolRegistry,
+    schema_overrides: &BTreeMap<String, serde_json::Value>,
+) -> String {
     let catalog = causal_catalog();
     let mut entries = Vec::with_capacity(catalog.len());
     for (name, contract) in catalog.iter() {
         let bound = match registry.get(name) {
             Some(tool) => {
-                let live = tool.contract(name, tool.parameters());
+                let input_schema = schema_overrides
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| tool.parameters());
+                let live = tool.contract(name, input_schema);
                 bind_causal_contract(
                     name,
                     contract,
@@ -5768,6 +5779,8 @@ mod tests {
             serde_json::from_str(RECEIPT_JSON).expect("stored receipt parses");
         let fresh = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
             .expect("m003 requalifies");
+        assert_eq!(stored.disposition, CausalM003Disposition::Negative.code());
+        assert_eq!(fresh.disposition, CausalM003Disposition::Negative.code());
         assert_eq!(stored.schema_version, fresh.schema_version);
         assert_eq!(stored.protocol, fresh.protocol);
         assert_eq!(stored.ontology_version, fresh.ontology_version);
@@ -5784,10 +5797,100 @@ mod tests {
             stored.contract_catalog_fingerprint,
             fresh.contract_catalog_fingerprint
         );
+        let registry = effect_binding_registry();
+        let mut historical_test_schema = registry
+            .get("test")
+            .expect("test tool remains registered")
+            .parameters();
+        let properties = historical_test_schema["properties"]
+            .as_object_mut()
+            .expect("test input schema properties");
+        let mut observed_post_m003_fields = Vec::new();
+        for field in ["execution_mode", "on_complete"] {
+            if properties.remove(field).is_some() {
+                observed_post_m003_fields.push(field);
+            }
+        }
+        assert!(
+            observed_post_m003_fields.is_empty()
+                || observed_post_m003_fields == ["execution_mode", "on_complete"],
+            "unexpected test-tool input-schema changes: {observed_post_m003_fields:?}"
+        );
+        let historical_effect_fingerprint = effect_catalog_fingerprint_with_schema_overrides(
+            &registry,
+            &BTreeMap::from([("test".to_string(), historical_test_schema)]),
+        );
         assert_eq!(
             stored.effect_catalog_fingerprint,
-            fresh.effect_catalog_fingerprint
+            historical_effect_fingerprint,
+            "M003 receipt is bound to its historical test schema; the only approved post-M003 test-schema additions are execution_mode and on_complete"
         );
+        let mut post_m003_test_schema = registry
+            .get("test")
+            .expect("test tool remains registered")
+            .parameters();
+        let post_m003_properties = post_m003_test_schema["properties"]
+            .as_object_mut()
+            .expect("test input schema properties");
+        post_m003_properties
+            .entry("execution_mode")
+            .or_insert_with(|| serde_json::json!({
+                "type": "string",
+                "enum": ["foreground", "background"],
+                "description": "Execution mode. 'foreground' (default) blocks until completion and returns the compact report. 'background' returns a stable JobHandle immediately; one terminal notification is delivered when the job finishes. No polling is needed."
+            }));
+        post_m003_properties
+            .entry("on_complete")
+            .or_insert_with(|| serde_json::json!({
+                "type": "string",
+                "enum": ["notify_only", "resume_owner"],
+                "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally records a next-turn continuation marker and, only with an explicit host-trusted continuation grant, may start one bounded idle owner turn; without a grant idle dispatch stays notify-only. User cancel, expiry, or revocation wins before any invocation. Applies to background only."
+            }));
+        let post_m003_effect_fingerprint = effect_catalog_fingerprint_with_schema_overrides(
+            &registry,
+            &BTreeMap::from([("test".to_string(), post_m003_test_schema)]),
+        );
+        assert_ne!(
+            post_m003_effect_fingerprint,
+            stored.effect_catalog_fingerprint
+        );
+        assert!(
+            fresh.effect_catalog_fingerprint == stored.effect_catalog_fingerprint
+                || fresh.effect_catalog_fingerprint == post_m003_effect_fingerprint,
+            "live catalog differs from frozen M003 solely when the background schema fields are present"
+        );
+        let case = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("frozen benchmark contains a structured case");
+        let (status, m002_frontier) = evaluate_effect_path(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+            &post_m003_effect_fingerprint,
+            &stored.effect_catalog_fingerprint,
+        )
+        .expect("schema drift falls back rather than failing benchmark scoring");
+        assert_eq!(status.code(), "stale_catalog_fallback");
+        let direct_m002 = evaluate_benchmark_case(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+        )
+        .expect("current M002 frontier evaluates");
+        assert_eq!(
+            m002_frontier, direct_m002,
+            "stale M003 identity must select the directly evaluated M002 frontier"
+        );
+        let m002_visible: BTreeSet<String> = m002_frontier
+            .admissible_contracted
+            .iter()
+            .chain(m002_frontier.uncontracted_fallback.iter())
+            .chain(m002_frontier.required_visible.iter())
+            .cloned()
+            .collect();
+        assert_eq!(m002_visible, m002_frontier.visible_union());
+        assert_eq!(status.used_size(m002_visible.len()), m002_visible.len());
         assert_eq!(
             stored.catalog_binding_complete,
             fresh.catalog_binding_complete
