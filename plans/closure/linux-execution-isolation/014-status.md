@@ -231,3 +231,20 @@ canonical. Linked-worktree/common-directory aliases, rename races, Cargo/rustup,
 LSP/PTY, startup timing, descriptor inheritance, and the broader compatibility
 matrix remain unresolved. M003 stays blocked; no downstream Git plan is
 unblocked.
+
+## 16. Current-head reconciliation rerun — 2026-10-15
+
+After reconciling the feature branch with current `origin/main`, exact head
+`5f1f998616f8727e4a84aea37ff6125884da4d19` passed hosted C006 run
+[38795627184](https://github.com/dbowm91/codegg/actions/runs/38795627184).
+The Ubuntu 24.04 runner used Bubblewrap 0.9.0 at `/usr/bin/bwrap` (mode 0755,
+root-owned). The ephemeral runner began with
+`kernel.apparmor_restrict_unprivileged_userns=1`; the workflow relaxed that
+host-only gate to `0` for qualification. The trusted helper built, protected
+mount qualification passed 11/11, and trusted-Git repository-config tests
+passed 18/18.
+
+This is current-head evidence for the bounded test candidate only. It does not
+admit Bubblewrap for production or change Landlock as canonical. The explicit
+C010 no-admission decision remains in force; M003 perf/compatibility gates and
+production LSP/PTY routing remain open.
