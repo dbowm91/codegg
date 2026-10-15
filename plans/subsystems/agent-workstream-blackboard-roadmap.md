@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M003 closed; M004 conditionally closed; M005–M008 remain gated as listed. ADR-0032 is proposed, NOT accepted.
+Status: active; M001–M003 closed; M004 strict-closure corrective M009 active; M005–M008 remain gated as listed. ADR-0032 remains proposed until M004 strict closure.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -107,6 +107,20 @@ Host-computed, redactable observations from commits/status/test jobs/changed pat
 Plan: plans/implementation/agent-workstream-blackboard/004-peer-observation-and-tools.md
 Closure: `plans/closure/agent-workstream-blackboard/004-status.md`. Bounded result/claim peer hints, model actions, and read-only TUI display are implemented; strict before-next-mutation timing and the full fake-provider/Git acceptance harness remain unproven.
 
+### Corrective M009 — Peer evidence before mutation (active)
+
+Close M004's named timing and qualification findings without changing the
+in-flight provider transcript or adding mutation/control authority. Recheck
+bounded same-group peer observations after a provider response and before
+dispatching the returned tool batch; fence the batch if new evidence or a
+continuity gap must be shown to the model. Add scripted two-worktree/provider
+acceptance coverage for event timing, relevance, recovery, isolation, bounds,
+and the single-agent path. The original 004 closure remains immutable
+historical evidence; strict status is controlled by corrective closure 009.
+
+Plan: `plans/implementation/agent-workstream-blackboard/009-peer-observation-before-mutation-corrective.md`.
+Closure: `plans/closure/agent-workstream-blackboard/009-status.md`.
+
 ### M005 — Explicit group-owned worktree placement (blocked: M001, strict M004, accepted ADR-0032, writer-path containment)
 
 Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers.
@@ -148,4 +162,4 @@ Stop and create a new corrective plan if acceptance needs a second admission aut
 
 ## Registry/unblock responsibility
 
-After M001 closure M005 remains blocked on M004 and ADR-0032. After M002 closure M003 becomes ready; after M003, M004 becomes ready. After M004, M005 remains blocked until M001 closure and ADR acceptance. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
+After M001 closure M005 remains blocked on M004 and ADR-0032. After M002 closure M003 becomes ready; after M003, M004 becomes ready. M004 strict closure through M009 still leaves M005 blocked until ADR-0032 acceptance and verified writer-path containment. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.

@@ -824,9 +824,13 @@ validation kind/status pairs from `AgentRunResult`; it is delivered only when
 the paths overlap another member's active path claim. Unsupported path and
 standalone test-job sources are marked unavailable. At each provider boundary
 the loop emits at most 16 allowlisted same-session/same-group facts (8 KiB) in
-a user message explicitly marked as untrusted data. The loop never wakes an
-idle session. A broadcast gap or new process marks continuity unavailable;
-the model can re-read the canonical board. Raw tool output, terminal prose,
+a user message explicitly marked as untrusted data. Before dispatching a
+provider-returned tool batch, the loop drains peer events again; if a new fact
+or continuity gap arrived while the provider was in flight, it refuses the
+whole batch and gives the model the observation before another action can be
+chosen. This fence does not wake an idle session or serialize filesystem
+writers. A broadcast gap or new process marks continuity unavailable; the
+model can re-read the canonical board. Raw tool output, terminal prose,
 prompts, and credentials are never promoted into system/developer instructions.
 
 - **Singleton daemon**: Exactly one daemon per OS user. `AgentLoop` runs

@@ -1643,9 +1643,21 @@ impl AgentLoop {
             }
             self.observe_tool_palette_starvation(&tool_calls);
             self.lifecycle.set_phase(TurnPhase::ToolExecution);
-            let tool_results = crate::agent::tool_batch::ToolBatchExecutor::new(self)
-                .execute(&tool_calls)
-                .await?;
+            // A peer event can arrive after the provider request was built
+            // and while the provider is returning this tool batch. Keep the
+            // in-flight request immutable, but drain once more before any
+            // action from that response is dispatched. If new group state or
+            // a continuity gap arrived, retain it after the assistant/tool
+            // result pair and require a fresh provider decision.
+            let (deferred_peer_observations, fenced_results) =
+                self.fence_tool_batch_on_peer_update(&tool_calls);
+            let tool_results = if let Some(results) = fenced_results {
+                results
+            } else {
+                crate::agent::tool_batch::ToolBatchExecutor::new(self)
+                    .execute(&tool_calls)
+                    .await?
+            };
             self.lifecycle.set_phase(TurnPhase::Recovery);
             just_executed_tools = !tool_results.is_empty();
             self.record_habit_tool_results(&tool_calls, &tool_results);
@@ -1932,6 +1944,14 @@ impl AgentLoop {
                 };
                 self.services.context_tracker.add_message(&msg);
                 request.messages.push(msg);
+            }
+
+            // Append the newly observed peer state only after the assistant's
+            // tool call and its refusal results, preserving provider transcript
+            // ordering while making the fact available on the next request.
+            for message in deferred_peer_observations {
+                self.services.context_tracker.add_message(&message);
+                request.messages.push(message);
             }
 
             // Track tool calls for todo reminder cadence

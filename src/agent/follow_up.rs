@@ -14,7 +14,7 @@ use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::AutonomyState;
 use crate::bus::events::AppEvent;
 use crate::provider::text_tool_parser::repair_text_as_tool_calls;
-use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message};
+use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 use crate::tool::plan::detect_plan_mode_change;
 use tokio::sync::mpsc;
 
@@ -282,7 +282,7 @@ impl AgentLoop {
             self.peer_observation_seen.clear();
             gap = true;
         }
-        if observations.is_empty() && !gap {
+        if observations.is_empty() && !gap && !self.peer_observation_gap {
             return;
         }
         let continuity = if gap || self.peer_observation_gap {
@@ -301,6 +301,48 @@ impl AgentLoop {
         if was_truncated {
             tracing::debug!(run_id, "peer observation block was bounded");
         }
+    }
+
+    /// Recheck push-only peer state after a complete provider response and
+    /// before dispatching any action from it. The event may have arrived while
+    /// the provider was streaming; in that case the whole returned action batch
+    /// is refused and the caller appends these messages after its matching
+    /// assistant/tool-result transcript pair.
+    pub(super) fn fence_tool_batch_on_peer_update(
+        &mut self,
+        tool_calls: &[ToolCall],
+    ) -> (
+        Vec<Message>,
+        Option<
+            Vec<(
+                String,
+                crate::agent::progress_recovery::ToolExecutionOutcome,
+            )>,
+        >,
+    ) {
+        if self.peer_group_members.is_empty() {
+            return (Vec::new(), None);
+        }
+        let mut observations = Vec::new();
+        self.inject_peer_observations(&mut observations);
+        if observations.is_empty() {
+            return (observations, None);
+        }
+
+        let reason = "Error: a peer observation arrived while this response was in flight. No action from this response was executed. Review the observation and refresh task action=board before choosing the next action.";
+        let results = tool_calls
+            .iter()
+            .map(|call| {
+                (
+                    call.id.to_string(),
+                    crate::agent::progress_recovery::ToolExecutionOutcome {
+                        status: crate::agent::progress_recovery::ToolExecutionStatus::Denied,
+                        model_text: reason.to_owned(),
+                    },
+                )
+            })
+            .collect();
+        (observations, Some(results))
     }
 
     /// Check for pending background tool program notifications and
@@ -528,16 +570,21 @@ impl AgentLoop {
                 }
                 self.observe_tool_palette_starvation(&tool_calls);
                 self.lifecycle.set_phase(TurnPhase::ToolExecution);
-                let tool_results = match crate::agent::tool_batch::ToolBatchExecutor::new(self)
-                    .execute(&tool_calls)
-                    .await
-                {
-                    Ok(results) => results,
-                    Err(e) => {
-                        tracing::error!("Tool execution error: {}", e);
-                        processor.reset();
-                        return;
-                    }
+                let (deferred_peer_observations, fenced_results) =
+                    self.fence_tool_batch_on_peer_update(&tool_calls);
+                let tool_results = match fenced_results {
+                    Some(results) => results,
+                    None => match crate::agent::tool_batch::ToolBatchExecutor::new(self)
+                        .execute(&tool_calls)
+                        .await
+                    {
+                        Ok(results) => results,
+                        Err(e) => {
+                            tracing::error!("Tool execution error: {}", e);
+                            processor.reset();
+                            return;
+                        }
+                    },
                 };
                 self.lifecycle.set_phase(TurnPhase::Recovery);
                 just_executed_tools = !tool_results.is_empty();
@@ -669,6 +716,11 @@ impl AgentLoop {
                     };
                     request.messages.push(msg);
                 }
+
+                // Preserve transcript causality: first record the completed
+                // assistant/tool-result pair, then append the peer event that
+                // caused this response's actions to be refused.
+                request.messages.extend(deferred_peer_observations);
 
                 processor.reset();
             }
