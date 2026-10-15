@@ -79,8 +79,9 @@ Hosted CI, non-macOS targets, and live-provider tests were not run.
 - **M006 session/worktree launch ergonomics:** remains blocked on M005.
 - **M007 build-resource coordination:** production implementation remains
   blocked on M005. Its plan explicitly allows the scheduler/build resource
-  interface design to proceed earlier; this eligible design-only work will be
-  audited separately and does not authorize cache sharing or placement.
+  interface design to proceed earlier; the candidate interface is recorded in
+  the M007 implementation plan and does not authorize cache sharing or
+  placement.
 - **M008 trajectory/economics:** remains blocked on M004/M006/M007.
 - No other implementation plan in this roadmap became ready.
 

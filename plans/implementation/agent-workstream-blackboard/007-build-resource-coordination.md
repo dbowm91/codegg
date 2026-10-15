@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M007 — Build-Resource Coordination Across Agent Workspaces
 
-Status: blocked — hard dependency M005 closure; design interface may proceed earlier
+Status: blocked — production changes require M005 closure; bounded interface research is recorded below
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M007
@@ -43,3 +43,58 @@ Stop and retain existing build/test behavior if the scheduler cannot prove sourc
 - Verify with deterministic fake executor and one manual realistic development-host Rust workspace fixture; no SBC build/startup requirement and no benchmark CI performance threshold.
 
 Run focused scheduler/test/background-job/resource-admission and process-security suites, fmt, scripts/verify.sh quick, Clippy and relevant guards. No global hardcoded Cargo target policy. Record data and limitations in plans/closure/agent-workstream-blackboard/007-status.md; close only after production JobId consumer and opt-in resource policy work end to end.
+
+## M007 interface research disposition (design-only; no production change)
+
+This subsection is eligible before M005 under the roadmap's explicit interface
+exception. It does not unblock production resource policy, shared target
+placement, build coalescing, cache reuse, or group shared checkout.
+
+### Current scheduler boundary
+
+- `JobRecord` already carries canonical `workspace_id`; job payloads and
+  executor routing remain scheduler-owned.
+- `ResourceRequest` persists scalar CPU/memory/process/I/O/network requests
+  and string exclusivity keys. `ResourceRequest::for_kind(Build)` currently
+  requests the unscoped `exclusive:workspace-mutation` key.
+- `PermitDimensions` and `AdmissionController` atomically reserve global
+  scalar budgets plus binary exclusivity keys. They do not implement a
+  per-key weighted quota. `max_per_workspace` is a queue cap, not a running
+  build concurrency limit; `running_per_workspace` is an observation counter.
+- `JobSubmissionService` derives default resource policy from typed `JobKind`
+  and normalizes legacy key spellings. Model-authored descriptions cannot
+  establish build identity or resource class.
+
+### Candidate interface for a later implementation plan
+
+1. Keep a build's scheduler identity as its durable `JobId`. Reuse the
+   existing durable job/attempt lifecycle, cancellation, permits, completion
+   and notification path; do not create a build scheduler or cache daemon.
+2. Add a typed, serde-defaulted keyed quota request to `ResourceRequest`,
+   initially scoped by canonical `WorkspaceId` and a fixed build resource
+   class. Admission acquires/relinquishes weighted slots atomically with the
+   existing permit dimensions. A config-owned per-workspace slot limit must
+   leave unrelated workspaces independent. Queue caps must not be reused as
+   execution quotas.
+3. Derive build classification only from supported typed job kinds and the
+   canonical inspected command route. Unsupported shell/argv routes retain
+   existing conservative admission and do not gain compiler-cache reuse.
+4. Keep deduplication separate from admission. Any future observer of an
+   existing `JobId` requires an exact host-computed fingerprint over argv,
+   toolchain, canonical workspace/repository, HEAD and dirty inputs,
+   features/target/profile, relevant environment, sandbox and authorization.
+   Missing or unmeasurable inputs mean a separate execution. A related job's
+   success never proves the caller's current build succeeded.
+5. Isolated target directories remain the default. Optional compiler-unit
+   cache reuse is a separate opt-in strategy with principal/trust partitioning
+   and measurement; never point arbitrary worktrees at one shared Cargo target
+   directory. Cargo retains its native locking.
+6. Publish only coarse job-owned status through existing authorized job/run
+   projections and same-group subscriptions. Never expose command lines,
+   environment values, logs, cache contents, or artifact paths through a
+   group-wide event.
+
+This is an interface candidate, not a contract: the M005 writer boundary,
+accepted ADR-0032, scheduler owner review, and resource-admission tests must
+confirm or replace it before implementation. No cache strategy has positive
+performance evidence yet.

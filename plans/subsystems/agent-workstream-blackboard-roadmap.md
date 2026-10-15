@@ -119,11 +119,12 @@ Native daemon operation for 'new session in new/existing worktree' and 'fork ses
 
 Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
 
-### M007 — Build-aware coordination on shared/isolated workstreams (blocked: M005)
+### M007 — Build-aware coordination on shared/isolated workstreams (production blocked: M005; interface candidate recorded)
 
 Use canonical scheduler resources to deduplicate or serialize compatible long-running builds; bounded per-workspace concurrent build policy, safe process supervision, optional Rust hints/sccache/Cargo target compatibility checks, protected cache reuse and disk accounting. Does not introduce a compiler service or require third-party cache.
 
 Plan: plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md
+The pre-M005 design-only interface candidate is recorded in the plan; it does not authorize production quota, cache, or target-directory changes.
 
 ### M008 — Comparative validation and closure (blocked: M004, M006, M007)
 
