@@ -145,6 +145,7 @@ The candidate is currently internal and opt-in through `SandboxConfig::with_linu
 - The linked-worktree native fixture runs `python3` to write a file inside the selected workspace; the assertion passed locally and on the exact hosted head. This qualifies one normal Python write path, not general Python package installation or subprocess compatibility.
 - Commit `9ba0ba7dfbf9526cbceab867ed5421ffec42c102` was tested by hosted run [`38675043602`](https://github.com/dbowm91/codegg/actions/runs/38675043602), job `116226619752`; conclusion: success. It passed 2/2 native protected-mount tests and 10/10 trusted-Git config tests.
 - A direct trust-boundary regression creates a nested repository after the outer repository has been selected, gives its local config an outside `core.worktree` and executable fsmonitor, then runs trusted outer `git status`. Local and exact-head hosted results pass: Git reports the nested repository as ordinary untracked content, does not reveal the outside marker, and does not execute the nested fsmonitor.
+- The final workflow-filter/docs head `d3e6cb8c76d8647747f9a627bd6148b9ab1e5291` was also tested by hosted run [`38675775638`](https://github.com/dbowm91/codegg/actions/runs/38675775638), job `116228913415`; conclusion: success. It passed the same 2/2 native and 10/10 trusted-Git tests, including the nested-repository regression.
 
 ### Remaining acceptance work
 
