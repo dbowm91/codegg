@@ -16,6 +16,42 @@ Allow explicit, authorized workspace placement for task spawn and spawn_many wit
 
 SubAgentPool::requires_isolation in src/agent/worker.rs identifies write-capable tool surfaces; src/scheduler/executors.rs allocates WorktreeService::CreateWorktreeRequest and replaces child workspace_root/allowed_paths with owned checkout. WorktreeService currently creates an owner_run_id lease with one active owner. src/tool/task.rs spawn_many permits at most 16 children and has no placement choice. WorkOrders have a distinct WorkspacePolicy corrected in M001. Nested allocation uses canonical common Git root and explicitly selected parent/base state.
 
+### Writer-path gate audit (2026-10-15)
+
+M001 and strict M004 are closed and ADR-0032 is accepted, but the required
+common writer reservation is not present:
+
+- `ToolBatchExecutor` is the model-facing native file-mutation boundary. Its
+  affected-path checkpoint/overlap serialization applies within one batch;
+  it does not coordinate separate `AgentTurn` jobs or other writer surfaces.
+- `ResourceRequest::for_kind` gives a global `exclusive:workspace-mutation`
+  key to selected Build/Format work and a global
+  `exclusive:worktree-mutation` key to Git mutation. These are not keyed by a
+  `WorktreeId`, and `AgentTurn` has no writer exclusivity key. The WorkOrder
+  M001 corrective therefore correctly keeps shared mutation fail-closed.
+- `src/interactive_process.rs` explicitly admits PTYs without workspace
+  mutation exclusivity; a persistent terminal can outlive the request that
+  created it. Human shell, scheduled shell/Python, Git subprocesses, Tool
+  Programs, and process plugins each have different owners/lifetimes in
+  `docs/execution-ownership.toml` and
+  `architecture/process-tool-execution-ownership.md`.
+- LSP/MCP servers have protocol-specialized persistent process lifecycles.
+  A broker-call lock alone cannot cover work that continues after a request or
+  escapes the managed process lifetime. File/path claims and command parsing
+  do not prove the write extent of arbitrary code.
+
+Until a typed `WorktreeId`/lease-generation writer permit has one owner and is
+carried through direct ToolBroker calls, scheduled executors, Git mutations,
+and persistent process lifetimes (or unsupported paths fail closed), the
+serialized placement contract is not enforceable. The design must also prove
+restart/cancellation release, approval/lock ordering, platform-specific process
+containment, and denial of unmediated mutation surfaces. Do not call the
+existing scheduler keys a substitute: they are global and omit ordinary turns.
+
+Disposition: remain `blocked`. This audit does not authorize a code path that
+places group members in a shared checkout. M006 and M007 production remain
+blocked; M007 interface-only research is already recorded separately.
+
 ## Work packages
 
 A. Consolidate placement resolution. Define one core domain policy (avoid duplicating WorkOrder WorkspacePolicy and task-spawn policy semantics): Auto, IsolatedNew, InheritReadOnly, and SerializedShared (group or exact worktree ID). Separate selected placement from effective mutation capability and sandbox/approval ceiling. Auto remains existing M004-era isolated default for write-capable delegated runs. Group placement is an explicit field on spawn_many and inherited by nested children only within authorized ceilings; single spawn may opt in if supported. Reject unsupported placement with typed diagnostic, never silently share or weaken capabilities.
