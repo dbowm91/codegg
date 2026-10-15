@@ -1,7 +1,7 @@
 # M004 process and IPC implementation readiness
 
 Status: implementation in progress; first exact-hosted positive denial matrix passed, broader compatibility/lifecycle gates remain open
-Reviewed source baseline: `c528ebff` (2026-10-15)
+Reviewed source baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); earlier hosted M004 implementation evidence remains pinned to its exact SHAs below.
 Related plan: `plans/implementation/linux-execution-isolation/004-process-ipc-seccomp.md`
 Related decision: accepted `plans/adrs/ADR-0031-composable-linux-execution-isolation.md`
 

@@ -1,11 +1,11 @@
 # Linux Execution Isolation C010 — M003 Production Admission and Host Qualification
 
 Status: implemented
-Repository baseline: merge of current `origin/main` into the Linux isolation branch (`611f6bee`)
+Repository baseline: merge commit `188edb371759f40b291052f25598bdb8ab57702d` (includes `origin/main` at `de49884f3fdc6d528620f2a2645694b9b19fc087`)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable ADRs: accepted ADR-0031 and ADR-0032; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
+Applicable ADRs: accepted ADR-0033 and ADR-0032; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
 Primary class: capability / security invariant
 
 ## 1. Objective
@@ -16,8 +16,8 @@ This corrective is bounded to the M003 admission decision. It does not claim M00
 
 ## 2. Why this milestone is ready
 
-- ADR-0031 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
-- The merge with current `origin/main` is committed at `611f6bee`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
+- ADR-0033 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
+- The merge with current `origin/main` is committed at `188edb371759f40b291052f25598bdb8ab57702d`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
 - C009 names the remaining blockers: object-view performance, packed-store evidence, rustup's `/proc/self/exe` requirement, and the absence of a production backend route.
 
 ## 3. Current implementation evidence
@@ -28,7 +28,7 @@ The protected mount view intentionally omits host `/proc`; the C009 record docum
 
 ## 4. Invariants
 
-- Preserve accepted ADR-0031 and unique canonical ADR identifiers.
+- Preserve accepted ADR-0033 and unique canonical ADR identifiers.
 - No protected-mount production backend registration, default change, or automatic fallback is permitted from this qualification alone.
 - Required enhanced launch fails before target execution when Bubblewrap, user/mount namespaces, or the necessary host policy are unavailable.
 - Requested and obtained filesystem scope remain distinct from process, IPC, seccomp, network, and resource guarantees.
@@ -60,6 +60,31 @@ The protected mount view intentionally omits host `/proc`; the C009 record docum
 5. Decide admission per tested host configuration. If any security, compatibility, performance or host-policy gate remains unqualified, keep production admission disabled and record the exact next gate.
 6. Audit M004/M005 dependencies and register M004 as the next implementation target only if the M002 contract and M003 interface are stable; preserve M005's dependency on M004.
 
+### M003 performance acceptance budget
+
+Use paired baseline/candidate samples on the same host and filesystem, with a
+recorded commit, kernel, storage type, repository object counts, loose/packed
+bytes, and cache state. Measure the private object-view preparation separately
+from Git's own command time, then also report end-to-end `git status` latency.
+Use at least 100 warm samples and 30 cold samples per repository shape; report
+median, p95, and max. If cold-cache control is unavailable, label that result
+unqualified rather than infer it from a warm run.
+
+Admission requires both a fragmented store (at least 4,000 loose objects and
+100 MiB total object data) and a packed store of equivalent object content to
+meet all of these budgets:
+
+- private-view preparation: warm p95 <= 250 ms and cold p95 <= 1,000 ms;
+- end-to-end `git status` overhead attributable to the protected view versus
+  the paired unwrapped baseline: warm p95 <= 500 ms and cold p95 <= 1,500 ms;
+- no individual view preparation may exceed 3 seconds, and the candidate must
+  not increase the paired baseline's warm p95 by more than 2x.
+
+These are production-admission limits, not claims that current samples pass.
+If either store shape or filesystem exceeds a limit, that host profile remains
+unadmitted. Optimization may not weaken object immutability, path identity,
+race handling, or trusted-Git isolation to meet the budget.
+
 ## 7. Failure and recovery semantics
 
 Missing namespaces, rejected Bubblewrap setup, status-channel failure, unsupported mount topology, identity change, or an incomplete required capability must fail before target execution. Benchmark failure or unavailable host/filesystem evidence is an unqualified result, never a pass. No admission decision may silently fall back to Landlock while retaining the stronger requested label.
@@ -89,9 +114,9 @@ The hosted native job must run the exact same protected-mount/trusted-Git test f
 
 - Current main is merged without losing the accepted ADR or reusing a canonical ADR ID.
 - Exact-head native hosted evidence passes for the protected-mount and trusted-Git suites.
-- Packed and fragmented object-view costs are reported with sample conditions and an explicit acceptable budget or a no-admission outcome.
+- Packed and fragmented object-view costs use the paired 100-warm/30-cold protocol and meet the explicit latency budgets above, or produce a no-admission outcome.
 - Toolchain and procfs limitations are explicit and tested.
-- Each tested host configuration has a clear admission status, and no configuration is called production-supported based only on compile or fixture evidence.
+- Each tested host configuration is identified by kernel/Landlock ABI, Bubblewrap version/trust result, AppArmor/SELinux state, unprivileged-userns result, and filesystem. Every configuration has a clear admission status; no configuration is called production-supported based only on compile or fixture evidence.
 - Registry and roadmap identify M004/M005 sequencing and remaining blockers.
 
 ## 11. Stop conditions
