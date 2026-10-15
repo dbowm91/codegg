@@ -270,7 +270,7 @@ async fn process_tier_cancellation_kills_namespace_descendants() {
     let started = workspace.path().join("descendant-started");
     let marker = workspace.path().join("descendant-survived-cancel");
     let child_script = format!(
-        "import subprocess,time; subprocess.Popen(['/bin/sh','-c','touch {}; sleep 1; touch {}']); time.sleep(30)",
+        "import subprocess,time; subprocess.Popen(['/bin/sh','-c',\"touch {}; sleep 1; touch {}\"]); time.sleep(30)",
         shell_quote(&started.to_string_lossy()),
         shell_quote(&marker.to_string_lossy()),
     );
