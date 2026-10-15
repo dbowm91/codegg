@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M002 closed, M003 ready, M004–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
+Status: active; M001–M003 closed; M004 conditionally closed; M005–M008 remain gated as listed. ADR-0032 is proposed, NOT accepted.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -61,11 +61,11 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
   |
   +-- M002 read-only durable workstream snapshot and evidence   [closed]
        |
-       +-- M003 atomic task claims, dependencies, handoff       [ready]
+       +-- M003 atomic task claims, dependencies, handoff       [closed]
             |
-            +-- M004 peer observation and model-facing tools    [blocked: M003]
+            +-- M004 peer observation and model-facing tools    [conditionally closed]
                  |
-                 +-- M005 explicit group checkout placement     [blocked: M001, M004, ADR-0032 accepted]
+                 +-- M005 explicit group checkout placement     [blocked: strict M004, ADR-0032 accepted, writer containment]
                       |
                       +-- M006 session / worktree launch ergonomics [blocked: M005]
                       |
@@ -100,13 +100,14 @@ Implement typed task/path claims with revision-CAS, overlap and dependency check
 Plan: plans/implementation/agent-workstream-blackboard/003-task-claims-and-dependencies.md
 Closure: plans/closure/agent-workstream-blackboard/003-status.md. Migration v79 adds bounded durable claims, dependencies and provenance; M002 now has an authorized storage-backed consumer. Claims remain advisory and do not grant shared-write access.
 
-### M004 — Peer action observations and bounded agent integration (active)
+### M004 — Peer action observations and bounded agent integration (conditionally closed)
 
 Host-computed, redactable observations from commits/status/test jobs/changed paths at safe loop boundaries; explicit read/claim/request-handoff tool actions and push-on-meaningful-change without per-agent polling. Bounded incremental state, relevance filtering, project/group privacy, hostile tool output tests. Preserve existing direct-parent control authorization.
 
 Plan: plans/implementation/agent-workstream-blackboard/004-peer-observation-and-tools.md
+Closure: `plans/closure/agent-workstream-blackboard/004-status.md`. Bounded result/claim peer hints, model actions, and read-only TUI display are implemented; strict before-next-mutation timing and the full fake-provider/Git acceptance harness remain unproven.
 
-### M005 — Explicit group-owned worktree placement (blocked: M001, M004, accepted ADR-0032)
+### M005 — Explicit group-owned worktree placement (blocked: M001, strict M004, accepted ADR-0032, writer-path containment)
 
 Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers.
 

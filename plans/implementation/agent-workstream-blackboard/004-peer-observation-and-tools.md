@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M004 — Peer Activity Feed and Model-Facing Coordination
 
-Status: closing — implementation complete; closure evidence is being recorded in `plans/closure/agent-workstream-blackboard/004-status.md`
+Status: conditionally closed — see `plans/closure/agent-workstream-blackboard/004-status.md`
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M004

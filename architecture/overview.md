@@ -276,7 +276,7 @@ after reconciling the search-backend retirement with current `main`.
 | Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
-| `AppEvent` variants | 58 | `crates/codegg-core/src/bus/events.rs` |
+| `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
