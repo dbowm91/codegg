@@ -1,6 +1,6 @@
 # Async Background Jobs Corrective C007 — Mainline Reconciliation, PR #119 Qualification and Merge-Readiness Decision
 
-Status: **conditionally closed** — integration and exact-head qualification are complete. Independent review and an SBC-class startup benchmark remain outstanding, so merge-ready status is deferred. No merge is authorized by this plan.
+Status: **conditionally closed** — implementation, mainline integration, migration, and exact-head hosted qualification are complete. Independent security/concurrency code review and any required branch-protection approvals remain before a merge-ready decision. SBC benchmarking is explicitly out of scope, not deferred (owner direction 2026-10-15). No merge is authorized by this plan.
 Planning baseline: PR #119 `247edec5f37851ca3f67db5943675c896d19e9d9`; final reviewed `main` base `f5e70435888a5c4d6e2541f25af5bbf4235ee65c`; exact qualified PR head `0ff0158c5b8d7fa69fe0072a68af7e2c8c5f4eab`.
 Integration addendum (conditionally closed): `plans/subsystems/async-background-jobs-integration-qualification-corrective-addendum.md`.
 Historical closure: C005 `plans/closure/async-background-jobs-corrective/005-status.md`, accepted ADR-0031, C004 delivery closure and M001–M004/C001–C003 closures retained unchanged.
@@ -20,7 +20,7 @@ PR [#119](https://github.com/dbowm91/codegg/pull/119) is **open, draft and unmer
 
 The original receipt mismatch was corrected under `plans/implementation/tool-advisor-m003-receipt-ci-corrective/001-receipt-identity-reproduction-and-hosted-gate-restoration.md` without weakening the historical M003 negative result. Final root CI is green on the integrated head. Earlier exact-head failures in test fixtures and the race stress test were corrected before this final evidence.
 
-The async component's model-facing tool lifecycle is covered by C006 and its closure. C007 integrated the qualification and bounded corrections before final CI. Review and SBC startup evidence remain conditions for a merge-readiness decision.
+The async component's model-facing tool lifecycle is covered by C006 and its closure. C007 integrated the qualification and bounded corrections before final CI. Independent review and applicable approval requirements remain conditions for merge readiness; SBC startup evidence does not.
 
 ## 2. Strict dependency graph and ownership
 
@@ -49,7 +49,7 @@ Completed: a dedicated integration commit merged latest main after C006 and the 
 
 Audited accepted ADR-0031 delegated admission at the exact merge head: `CoreRequest::ContinuationGrantCreate/Revoke/Status` uses the canonical authenticated gate; no arbitrary model-issued grants; `submit_idle_continuation_turn` has only the two attested daemon callers (guard `scripts/check_idle_continuation_callsites.py`); server-resolved principal and current team capability, model/connection/sandbox and approval ceilings, no fabricated client transport, exact job/notice ownership, one controller lease/receipt, and one SQLite CAS are retained. The intentionally `pub` test API has no transport or plugin route. Ambiguous provider admissions remain actionable `NeedsAttention`; no default token spend is introduced.
 
-Validated schema/migration **72 -> 78** on a file-backed prior-version fixture, restart/idempotence, and rollback after failed v78 migration. Legacy remigration coverage also exercises marker repair. Opening a v78 database with v72 code is not a supported rollback strategy. An SBC-class daemon startup benchmark was unavailable and remains an explicit condition. C001 watch bounds, permit ownership, event compatibility and origin-scoped hints are covered by existing guards and qualification suites.
+Validated schema/migration **72 -> 78** on a file-backed prior-version fixture, restart/idempotence, and rollback after failed v78 migration. Legacy remigration coverage also exercises marker repair. Opening a v78 database with v72 code is not a supported rollback strategy. SBC-class startup benchmarking is explicitly outside C007 acceptance. No Raspberry Pi build, precompiled binary, release-architecture setup, or SBC runtime measurement is required for this PR. C001 watch bounds, permit ownership, event compatibility and origin-scoped hints are covered by existing guards and qualification suites.
 
 ### WP-C — CI/evidence gate and PR metadata
 
@@ -72,18 +72,18 @@ cargo test --test async_background_c006_tool_to_job
 
 Completed on exact head `0ff0158c5b8d7fa69fe0072a68af7e2c8c5f4eab`: hosted `CI / verify` executed and passed the full 13,791-test workspace suite with six configured skips; Desktop E2E, the Windows native-probe contract, and process-launcher workflow completed successfully with the explicit skips recorded above. No prior-head result is counted as final evidence. Exact run IDs are linked in the evidence table.
 
-PR #119 title/body now identify accepted ADR-0031, historical C005 closure, C004 details, C006 lifecycle evidence, current mainline baseline, exact hosted run links, fail-closed guarantees and nonclaims. Preserve draft until independent review and startup evidence are resolved; do **not** merge or relabel as release-ready.
+PR #119 title/body now identify accepted ADR-0031, historical C005 closure, C004 details, C006 lifecycle evidence, current mainline baseline, exact hosted run links, fail-closed guarantees and nonclaims. Preserve draft until independent security/concurrency review and applicable branch-protection requirements are resolved; do **not** merge or relabel as release-ready.
 
 ### WP-D — Review, sign-off and closure
 
-Independent review was not requested because no reviewer was specified or authorized for outreach. PR review state is empty and branch-protection approval requirements remain unresolved. No auto-merge or merge action is authorized. C007 is conditionally closed for implementation/integration qualification, but is **not marked merge-ready**. A maintainer can decide merge readiness only after an independent review and SBC-class startup evidence are recorded and all checks remain green on the reviewed SHA.
+Independent review was not requested because no reviewer was specified or authorized for outreach. PR review state is empty and branch-protection approval requirements remain unresolved. No auto-merge or merge action is authorized. C007 is conditionally closed for implementation/integration qualification, but is **not marked merge-ready**. A maintainer can decide merge readiness only after an independent security/concurrency review, any required approvals, and confirmation that all checks remain green on the reviewed SHA. No SBC benchmark is necessary.
 
 Closure: `plans/closure/async-background-jobs-corrective/007-status.md` records exact base and tested head, integration commits, C006 and tool-advisor C001 closures, local/hosted matrix, PR #119 state, executed and unrun evidence, residuals and unblock audit. Earlier C004/C005 closure records remain unchanged.
 
 ## 4. Pass/fail acceptance (strict)
 
 - **Blocked until:** C006 demonstrates non-synthetic tool-to-continuation E2E (or transparently reports an uncovered seam; a partial C006 is not enough), **and** tool-advisor receipt C001 has a substantive fix with a green root CI on the repaired integration SHA.
-- **Pass merge qualification:** current-main integration clean, correct storage upgrade, async/security/authorization/ownership guards green, root CI/verify green, Desktop E2E green on the same SHA, no open high/critical issue, accurate PR description, explicit review state, and startup benchmark recorded. Review and startup evidence remain outstanding, so this criterion is not met.
+- **Pass merge qualification:** current-main integration clean, correct storage upgrade, async/security/authorization/ownership guards green, root CI/verify green, Desktop E2E green on the same SHA, no open high/critical issue, accurate PR description, explicit independent review and applicable approvals recorded. Review remains outstanding, so this criterion is not met; SBC startup data is not an acceptance criterion.
 - **Failure:** red or incomplete root CI, unreviewed integration divergence, manual coordinator/test-only injection masquerading as full trajectory, weakened frozen benchmark test, grant identity spoofing, notification cross-session leakage, or unqualified sandbox assertion. Keep draft; write corrective with new evidence. Never claim tests not run.
 - **Scope:** qualified feature **merge candidate**, not end-user product release. A green merge still does not prove native Windows sandbox enforcement, live paid provider, genuine public GitHub API SLA, or universal macOS portability. Those need separate evidence if later required.
 
@@ -91,4 +91,8 @@ Closure: `plans/closure/async-background-jobs-corrective/007-status.md` records 
 
 ## 5. Final disposition (2026-10-15)
 
-The exact-head implementation and hosted qualification gates are complete. PR #119 remains draft, unmerged and mergeable against current main. Closure is **conditional** because independent review and an SBC-class startup benchmark remain outstanding; these are external evidence requirements, not known correctness defects. No registered downstream async plan depends on C007, and no plan became newly eligible or unblocked.
+The exact-head implementation and hosted qualification gates are complete. PR #119 remains draft, unmerged and mergeable against current main. Closure is **conditional** because an independent security/concurrency review and applicable approval state remain outstanding; these are review requirements, not known correctness defects. SBC benchmarking is out of scope by project-owner decision and not a blocker. No registered downstream async plan depends on C007, and no plan became newly eligible or unblocked.
+
+## 6. Owner-directed scope correction (2026-10-15)
+
+The previous C007 draft incorrectly imposed an SBC-class startup benchmark as an external merge-readiness gate. The project owner explicitly removed that requirement: SBCs are not the primary benchmark target for Codegg, compiling on Raspberry Pi hardware is expensive and may exceed available memory, and precompiled SBC releases or release architecture are not warranted for this feature. **Do not schedule, demand, or treat SBC build/startup performance as missing C007 qualification.** Preserve the existing hosted CI, migration, tool-to-idle, and authorization proof. Independent security/concurrency review and applicable branch-protection approvals are the only outstanding merge-readiness gates; maintainers make the final merge decision.
