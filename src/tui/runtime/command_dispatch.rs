@@ -1101,7 +1101,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     // rather than maintaining a second TUI-only provider
                     // list. No-ops unless the management surface is open.
                     if let Some(tx) = app.tui_cmd_tx.clone() {
-                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
                     }
                 }
                 Err(error) => {
@@ -1130,7 +1135,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.dialog_state.connect_dialog = None;
                     app.close_dialog();
                     if let Some(tx) = app.tui_cmd_tx.clone() {
-                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
                     }
                 }
                 Err(error) => {
@@ -1163,7 +1173,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
-        TuiCommand::SessionSelectionRefresh => {
+        TuiCommand::SessionSelectionRefresh {
+            focus_connection_id,
+        } => {
             // The dialog was opened (or the user requested a refresh).
             // Drive a fresh selection fetch through the daemon.
             if app.dialog_state.connection_selection_dialog.is_some() {
@@ -1174,12 +1186,25 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|d| d.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id,
+                        },
+                    );
                 }
             }
         }
-        TuiCommand::SessionSelectionLoad { session_id } => {
-            crate::tui::commands::session_selection::start_selection_refresh(app, session_id);
+        TuiCommand::SessionSelectionLoad {
+            session_id,
+            focus_connection_id,
+        } => {
+            crate::tui::commands::session_selection::start_selection_refresh(
+                app,
+                session_id,
+                focus_connection_id,
+            );
         }
         TuiCommand::ModelSelectPersist { session_id, model } => {
             crate::tui::commands::session_selection::start_model_select_persist(
@@ -1214,7 +1239,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|dialog| dialog.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id: None,
+                        },
+                    );
                 }
             }
         }

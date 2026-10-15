@@ -10689,7 +10689,12 @@ impl App {
         // current state.
         let tx = self.tui_cmd_tx.clone();
         if let Some(tx) = tx {
-            let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+            let _ = send_tui(
+                &tx,
+                TuiCommand::SessionSelectionRefresh {
+                    focus_connection_id: None,
+                },
+            );
         }
     }
 
@@ -11509,6 +11514,7 @@ impl App {
                 tx,
                 TuiCommand::SessionSelectionLoad {
                     session_id: sess_id.clone(),
+                    focus_connection_id: None,
                 },
             );
             // Adopt a model chosen *before* this session existed.
@@ -11843,7 +11849,9 @@ impl App {
         // *not* `adopt_persisted_tab_model`: that re-reads local tab state,
         // which is exactly the value just rejected.
         if let Some(session_id) = self.active_session_id().map(str::to_owned) {
-            crate::tui::commands::session_selection::start_selection_refresh(self, session_id);
+            crate::tui::commands::session_selection::start_selection_refresh(
+                self, session_id, None,
+            );
         }
         self.messages_state
             .toasts

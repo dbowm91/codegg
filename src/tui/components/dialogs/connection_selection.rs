@@ -85,6 +85,20 @@ impl ConnectionSelectionDialog {
         self.model_idx = 0;
     }
 
+    /// The model pane is per-connection, so moving the highlight must
+    /// trigger a refetch for the newly highlighted row. Returning `None`
+    /// here left the previous connection's models on screen under a
+    /// different highlighted row, and `pending_update` pairs that list with
+    /// the highlighted connection — so Enter could bind one connection's
+    /// model to another connection.
+    fn focus_changed(&self) -> Option<crate::tui::app::TuiMsg> {
+        self.connections.get(self.connection_idx).map(|connection| {
+            crate::tui::app::TuiMsg::ConnectionFocusChanged {
+                connection_id: connection.id.clone(),
+            }
+        })
+    }
+
     fn move_model(&mut self, delta: i64) {
         if self.models.is_empty() {
             return;
@@ -201,11 +215,11 @@ impl Component for ConnectionSelectionDialog {
             KeyCode::Esc | KeyCode::Char('q') => Some(crate::tui::app::TuiMsg::CloseDialog),
             KeyCode::Down | KeyCode::Char('j') => {
                 self.move_connection(1);
-                None
+                self.focus_changed()
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.move_connection(-1);
-                None
+                self.focus_changed()
             }
             KeyCode::Tab => {
                 self.move_model(1);

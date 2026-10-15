@@ -3424,3 +3424,23 @@ to `unavailable` (then a bounded `Error`), never an oversize payload. The
 enforcer binary-searches the longest fitting prefix in `O(log n)` full
 serializations, never `O(n)` pops. ADR-0022 Option B is unchanged; its
 acceptance-date provenance is marked unverified (see its C006 note).
+
+### The connection dialog's model pane is per-connection
+
+`/connections` fetches a catalog for exactly one connection at a time, so
+which connection the pane belongs to is part of the contract, not a detail.
+
+`start_selection_refresh` resolved the focus only from an existing
+`SessionSelectionDto::Selected`. A session with nothing bound therefore
+rendered an empty model pane — and because the pane is the only way to bind
+one, that is a closed loop: no models to pick, so nothing to bind, so still
+no models. Focus now falls back to an `active` connection, then to the first
+row, and `SessionSelectionRefresh { focus_connection_id }` carries the
+user's highlight across the fetch.
+
+The highlight arm matters for correctness, not just freshness. `Up`/`Down`
+emit `TuiMsg::ConnectionFocusChanged`, which re-drives the refresh for the
+newly highlighted row; without it the dialog kept the previous connection's
+models on screen while `pending_update` paired them with the newly
+highlighted connection, so Enter would have bound one connection's model to
+another connection.

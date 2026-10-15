@@ -20,7 +20,11 @@ use crate::tui::task_lifecycle::TuiTaskKind;
 /// Calls `SessionSelectionGet`, then `SessionSelectionList`, then (if a
 /// connection is selected) `SessionSelectionModels`, and finally posts a
 /// `SessionSelectionLoaded` command back to the TUI event loop.
-pub(crate) fn start_selection_refresh(app: &mut App, session_id: String) {
+pub(crate) fn start_selection_refresh(
+    app: &mut App,
+    session_id: String,
+    focus_connection_id: Option<String>,
+) {
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
@@ -120,28 +124,44 @@ pub(crate) fn start_selection_refresh(app: &mut App, session_id: String) {
                 }
             };
 
-            // 3. If a connection is already selected, fetch its catalog.
-            let (focused_connection_id, models) = match selection.as_ref() {
-                Some(codegg_protocol::provider::SessionSelectionDto::Selected {
-                    connection,
-                    ..
-                }) => {
-                    let cid = connection.id.clone();
-                    match fetch_models(&client, &session_id, &cid).await {
-                        Ok(models) => (Some(cid), models),
-                        Err(err) => {
-                            return Some(TuiCommand::SessionSelectionLoaded {
-                                session_id,
-                                selection,
-                                connections,
-                                models: Vec::new(),
-                                focused_connection_id: Some(cid),
-                                error: Some(err),
-                            });
-                        }
+            // 3. Resolve which connection's catalog to show, then fetch it.
+            //
+            // The model pane is the only way to bind a session to a
+            // connection, so it has to populate when nothing is bound yet.
+            // Deriving the focus only from an existing selection made an
+            // unbound session show a permanently empty model list — with no
+            // model to pick, there was no way to bind one, which is the
+            // deadlock this dialog is meant to resolve. Prefer an active
+            // connection when the session is unbound, since a disabled row
+            // cannot be selected anyway.
+            let focused_connection_id = focus_connection_id
+                .filter(|focused| connections.iter().any(|c| &c.id == focused))
+                .or_else(|| match selection.as_ref() {
+                    Some(codegg_protocol::provider::SessionSelectionDto::Selected {
+                        connection,
+                        ..
+                    }) => Some(connection.id.clone()),
+                    _ => connections
+                        .iter()
+                        .find(|connection| connection.state == "active")
+                        .or_else(|| connections.first())
+                        .map(|connection| connection.id.clone()),
+                });
+            let models = match focused_connection_id.as_deref() {
+                Some(cid) => match fetch_models(&client, &session_id, cid).await {
+                    Ok(models) => models,
+                    Err(err) => {
+                        return Some(TuiCommand::SessionSelectionLoaded {
+                            session_id,
+                            selection,
+                            connections,
+                            models: Vec::new(),
+                            focused_connection_id: Some(cid.to_string()),
+                            error: Some(err),
+                        });
                     }
-                }
-                _ => (None, Vec::new()),
+                },
+                None => Vec::new(),
             };
 
             Some(TuiCommand::SessionSelectionLoaded {

@@ -127,6 +127,17 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `ui_state.dialog` is a derived compatibility discriminator, while
   `active_dialog_type()` controls modal lifecycle.
 
+## Connection dialog model pane
+
+The model pane is scoped to one connection. `start_selection_refresh` must
+resolve a focus for the fetch — an unbound session falls back to an `active`
+connection, then to the first row — or the pane stays empty and the session
+can never bind itself. `Up`/`Down` emit `TuiMsg::ConnectionFocusChanged`,
+which re-drives `SessionSelectionRefresh { focus_connection_id }`; never let
+the highlight move without refetching, because `pending_update` pairs the
+rendered models with the highlighted connection and would bind the wrong
+model to the wrong connection.
+
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
