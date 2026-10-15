@@ -159,6 +159,11 @@ jobs:
           echo "CODEGG_EGGWORK_TEST_NODE=$PWD/crates/eggwork-test-node/target/debug/codegg-eggwork-test-node" >> "$GITHUB_ENV"
           echo "CODEGG_EGGWORK_FIXTURES_PREBUILT=1" >> "$GITHUB_ENV"
 
+      # Constrained Linux integration tests resolve this managed sidecar from
+      # the target profile directory shared with their Cargo `deps` binaries.
+      - name: Build sandbox helper for integration tests
+        run: cargo build --locked --bin codegg-sandbox-helper
+
       - name: Workspace tests
         run: |
           if [ "${{ steps.live.outputs.live_required }}" = "true" ]; then

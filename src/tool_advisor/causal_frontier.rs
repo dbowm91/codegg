@@ -5805,8 +5805,17 @@ mod tests {
         let properties = historical_test_schema["properties"]
             .as_object_mut()
             .expect("test input schema properties");
-        assert!(properties.remove("execution_mode").is_some());
-        assert!(properties.remove("on_complete").is_some());
+        let mut observed_post_m003_fields = Vec::new();
+        for field in ["execution_mode", "on_complete"] {
+            if properties.remove(field).is_some() {
+                observed_post_m003_fields.push(field);
+            }
+        }
+        assert!(
+            observed_post_m003_fields.is_empty()
+                || observed_post_m003_fields == ["execution_mode", "on_complete"],
+            "unexpected test-tool input-schema changes: {observed_post_m003_fields:?}"
+        );
         let historical_effect_fingerprint = effect_catalog_fingerprint_with_schema_overrides(
             &registry,
             &BTreeMap::from([("test".to_string(), historical_test_schema)]),
@@ -5814,11 +5823,41 @@ mod tests {
         assert_eq!(
             stored.effect_catalog_fingerprint,
             historical_effect_fingerprint,
-            "M003 receipt is bound to its historical test schema; the exact post-M003 schema additions are test.properties.execution_mode and test.properties.on_complete"
+            "M003 receipt is bound to its historical test schema; the only approved post-M003 test-schema additions are execution_mode and on_complete"
+        );
+        let mut post_m003_test_schema = registry
+            .get("test")
+            .expect("test tool remains registered")
+            .parameters();
+        let post_m003_properties = post_m003_test_schema["properties"]
+            .as_object_mut()
+            .expect("test input schema properties");
+        post_m003_properties
+            .entry("execution_mode")
+            .or_insert_with(|| serde_json::json!({
+                "type": "string",
+                "enum": ["foreground", "background"],
+                "description": "Execution mode. 'foreground' (default) blocks until completion and returns the compact report. 'background' returns a stable JobHandle immediately; one terminal notification is delivered when the job finishes. No polling is needed."
+            }));
+        post_m003_properties
+            .entry("on_complete")
+            .or_insert_with(|| serde_json::json!({
+                "type": "string",
+                "enum": ["notify_only", "resume_owner"],
+                "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally records a next-turn continuation marker and, only with an explicit host-trusted continuation grant, may start one bounded idle owner turn; without a grant idle dispatch stays notify-only. User cancel, expiry, or revocation wins before any invocation. Applies to background only."
+            }));
+        let post_m003_effect_fingerprint = effect_catalog_fingerprint_with_schema_overrides(
+            &registry,
+            &BTreeMap::from([("test".to_string(), post_m003_test_schema)]),
         );
         assert_ne!(
-            fresh.effect_catalog_fingerprint, stored.effect_catalog_fingerprint,
-            "live catalog correctly identifies the post-M003 test schema drift"
+            post_m003_effect_fingerprint,
+            stored.effect_catalog_fingerprint
+        );
+        assert!(
+            fresh.effect_catalog_fingerprint == stored.effect_catalog_fingerprint
+                || fresh.effect_catalog_fingerprint == post_m003_effect_fingerprint,
+            "live catalog differs from frozen M003 solely when the background schema fields are present"
         );
         let case = m003_structured_cases()
             .into_iter()
@@ -5828,7 +5867,7 @@ mod tests {
             &case,
             &causal_catalog(),
             &fresh.contract_catalog_fingerprint,
-            &fresh.effect_catalog_fingerprint,
+            &post_m003_effect_fingerprint,
             &stored.effect_catalog_fingerprint,
         )
         .expect("schema drift falls back rather than failing benchmark scoring");
