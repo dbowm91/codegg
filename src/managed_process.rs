@@ -2452,6 +2452,27 @@ mod tests {
             format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
         }
 
+        fn detach_hardlinked_files(root: &Path) {
+            use std::os::unix::fs::MetadataExt;
+
+            let mut pending = vec![root.to_path_buf()];
+            while let Some(directory) = pending.pop() {
+                for entry in std::fs::read_dir(&directory).expect("read fixture metadata") {
+                    let entry = entry.expect("read fixture metadata entry");
+                    let path = entry.path();
+                    let metadata = std::fs::symlink_metadata(&path).expect("stat fixture entry");
+                    if metadata.is_dir() {
+                        pending.push(path);
+                    } else if metadata.is_file() && metadata.nlink() > 1 {
+                        let temporary = path.with_extension("c009-independent-copy");
+                        std::fs::copy(&path, &temporary).expect("copy hardlinked fixture file");
+                        std::fs::rename(&temporary, &path)
+                            .expect("replace hardlinked fixture file");
+                    }
+                }
+            }
+        }
+
         fn tool_on_path(name: &str) -> PathBuf {
             std::env::split_paths(&std::env::var_os("PATH").expect("host PATH"))
                 .map(|directory| directory.join(name))
@@ -2461,8 +2482,24 @@ mod tests {
 
         let fixture = tempfile::tempdir().expect("linked-worktree fixture");
         let repository = fixture.path().join("repository");
+        let submodule_source = fixture.path().join("submodule-source");
         let workspace = fixture.path().join("worktree");
         std::fs::create_dir(&repository).expect("repository root");
+        std::fs::create_dir(&submodule_source).expect("submodule source root");
+        let submodule_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&submodule_source)
+                .status()
+                .expect("run submodule source Git command")
+        };
+        assert!(submodule_git(&["init", "--quiet", "--initial-branch=main"]).success());
+        assert!(submodule_git(&["config", "user.name", "C009 Submodule"]).success());
+        assert!(submodule_git(&["config", "user.email", "submodule@example.invalid"]).success());
+        std::fs::write(submodule_source.join("submodule.txt"), "nested content\n")
+            .expect("write nested submodule fixture");
+        assert!(submodule_git(&["add", "submodule.txt"]).success());
+        assert!(submodule_git(&["commit", "--quiet", "-m", "submodule seed"]).success());
         let git = |args: &[&str]| {
             std::process::Command::new("git")
                 .args(["-C"])
@@ -2477,6 +2514,17 @@ mod tests {
         assert!(git(&["config", "--local", "c009.fixture", "common config"]).success());
         std::fs::write(repository.join("tracked.txt"), "seed\n").expect("seed file");
         assert!(git(&["add", "tracked.txt"]).success());
+        let add_submodule = std::process::Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "-C"])
+            .arg(&repository)
+            .args(["submodule", "add", "--quiet"])
+            .arg(&submodule_source)
+            .arg("nested-submodule")
+            .status()
+            .expect("add nested submodule");
+        assert!(add_submodule.success(), "nested submodule setup failed");
+        detach_hardlinked_files(&repository.join(".git"));
+        assert!(git(&["add", ".gitmodules", "nested-submodule"]).success());
         assert!(git(&["commit", "--quiet", "-m", "seed"]).success());
         let linked = std::process::Command::new("git")
             .args(["-C"])
@@ -2487,9 +2535,31 @@ mod tests {
             .status()
             .expect("create linked worktree");
         assert!(linked.success(), "linked worktree setup failed: {linked}");
+        let initialize_submodule = std::process::Command::new("git")
+            .args(["-c", "protocol.file.allow=always", "-C"])
+            .arg(&workspace)
+            .args(["submodule", "update", "--init", "--recursive"])
+            .status()
+            .expect("initialize linked-worktree submodule");
+        assert!(
+            initialize_submodule.success(),
+            "linked-worktree submodule initialization failed"
+        );
+        detach_hardlinked_files(&repository.join(".git"));
 
         let common_config = repository.join(".git/config");
         let common_hook = repository.join(".git/hooks/pre-commit");
+        let submodule_git_dir = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(workspace.join("nested-submodule"))
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .expect("resolve nested submodule gitdir");
+        assert!(submodule_git_dir.status.success());
+        let submodule_config =
+            PathBuf::from(String::from_utf8_lossy(&submodule_git_dir.stdout).trim()).join("config");
+        let submodule_config_before =
+            std::fs::read(&submodule_config).expect("read nested submodule config");
         std::fs::write(&common_hook, "protected hook\n").expect("write common hook");
         let config_before = std::fs::read(&common_config).expect("read common config");
         let hook_before = std::fs::read(&common_hook).expect("read common hook");
@@ -2520,9 +2590,12 @@ mod tests {
         let script = format!(
             "set -eu\nworkspace={}\nprintf allowed > \"$workspace/allowed.txt\"\n\\
              git -C \"$workspace\" --no-optional-locks status --porcelain >/dev/null\n\\
+             git -C \"$workspace/nested-submodule\" --no-optional-locks status --porcelain >/dev/null\n\\
              test \"$(git -C \"$workspace\" config --local c009.fixture)\" = 'common config'\n\\
              if printf changed > {}; then exit 81; fi\n\\
              if printf changed > {}; then exit 82; fi\n\\
+             if printf changed >> {}; then exit 83; fi\n\\
+             test \"$(cat \"$workspace/nested-submodule/submodule.txt\")\" = 'nested content'\n\\
              export PATH={}/bin:/usr/bin:/bin\n\\
              export CARGO_HOME=\"$workspace/cargo-home\"\n\\
              export LD_LIBRARY_PATH={}/lib\n\\
@@ -2533,6 +2606,7 @@ mod tests {
             shell_quote(&workspace),
             shell_quote(&common_config),
             shell_quote(&common_hook),
+            shell_quote(&submodule_config),
             shell_quote(&sysroot),
             shell_quote(&sysroot),
             shell_quote(&rustc),
@@ -2578,6 +2652,10 @@ mod tests {
         );
         assert_eq!(std::fs::read(&common_config).unwrap(), config_before);
         assert_eq!(std::fs::read(&common_hook).unwrap(), hook_before);
+        assert_eq!(
+            std::fs::read(&submodule_config).unwrap(),
+            submodule_config_before
+        );
         assert_eq!(
             std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
             "allowed"
@@ -2818,6 +2896,33 @@ mod tests {
         );
         std::fs::remove_file(nested_repo.join(".git")).expect("remove symlink fixture");
         std::fs::remove_dir(nested_repo).expect("remove nested repository fixture");
+
+        for (name, pointer) in [
+            ("malformed", "not a Git pointer\n".to_string()),
+            ("oversized", format!("gitdir: {}\n", "x".repeat(5000))),
+        ] {
+            let nested = workspace.path().join(format!("nested-{name}"));
+            std::fs::create_dir(&nested).expect("create malformed Git metadata fixture");
+            std::fs::write(nested.join(".git"), pointer).expect("write malformed Git pointer");
+            let marker = workspace.path().join(format!("{name}-must-not-run"));
+            let mut invalid_spec = spec.clone();
+            invalid_spec.args = vec!["-c".into(), format!("touch {}", shell_quote(&marker))];
+            let mut invalid_argv = vec![invalid_spec.target.as_os_str().to_owned()];
+            invalid_argv.extend(invalid_spec.args.iter().map(OsString::from));
+            let mut invalid_request = ManagedProcessRequest::new(
+                invalid_argv,
+                workspace.path().to_owned(),
+                ProcessProvenance::new("c009-native", format!("{name}-git-pointer-refusal")),
+            );
+            invalid_request.sandbox = SandboxRequest::Required(invalid_spec);
+            assert!(
+                ManagedProcessService::run(invalid_request).await.is_err(),
+                "{name} linked-worktree pointer must refuse setup"
+            );
+            assert!(!marker.exists(), "target ran with {name} Git pointer");
+            std::fs::remove_file(nested.join(".git")).expect("remove malformed Git pointer");
+            std::fs::remove_dir(nested).expect("remove malformed Git metadata fixture");
+        }
 
         let marker = workspace.path().join("must-not-run");
         let mut invalid_spec = spec;

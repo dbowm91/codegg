@@ -1438,6 +1438,112 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn trusted_git_filter_routes_require_contained_execution_before_helper_launch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let marker = root.join("filter-helper-ran");
+        let helper = root.join("filter-helper.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'; cat\n", marker.display()),
+        )
+        .expect("write hostile filter helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make filter helper executable");
+
+        let raw_git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&["init", "--initial-branch=main"]).status.success());
+        assert!(
+            raw_git(&["config", "filter.hostile.clean", helper.to_str().unwrap()])
+                .status
+                .success()
+        );
+        std::fs::write(root.join(".gitattributes"), "*.txt filter=hostile\n")
+            .expect("write hostile filter attributes");
+        std::fs::write(root.join("tracked.txt"), "untrusted content\n")
+            .expect("write filter input");
+
+        let outcome = run(&["add".to_string(), "tracked.txt".to_string()], root)
+            .await
+            .expect_err("filter use must require contained Git execution");
+        assert!(
+            matches!(
+                outcome,
+                EgggitError::Policy(GitExecutionPolicyOutcome::BackendUnavailable {
+                    ref capabilities
+                }) if capabilities == &vec![GitExecutionCapability::CleanSmudgeFilter]
+            ),
+            "unexpected filter disposition: {outcome:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "repository clean filter must not execute on the trusted route"
+        );
+        assert!(
+            !root.join(".git/index").exists(),
+            "refused filter operation must not create or mutate the Git index"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_git_executable_alias_requires_containment_before_helper_launch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let marker = root.join("alias-helper-ran");
+        let helper = root.join("alias-helper.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .expect("write hostile alias helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make alias helper executable");
+
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        assert!(init.status.success());
+        let alias = StdCommand::new("git")
+            .args(["config", "alias.c009-hostile"])
+            .arg(format!("!{}", helper.display()))
+            .current_dir(root)
+            .status()
+            .expect("configure executable alias");
+        assert!(alias.success());
+
+        let outcome = run(&["c009-hostile".to_string()], root)
+            .await
+            .expect_err("repository executable alias must require containment");
+        assert!(
+            matches!(
+                outcome,
+                EgggitError::Policy(GitExecutionPolicyOutcome::BackendUnavailable {
+                    ref capabilities
+                }) if capabilities == &vec![GitExecutionCapability::RepositoryAlias]
+            ),
+            "unexpected alias disposition: {outcome:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "repository executable alias must not execute on the trusted route"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn trusted_git_commit_does_not_run_repository_hooks() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
