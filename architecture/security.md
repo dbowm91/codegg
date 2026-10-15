@@ -98,16 +98,24 @@ metadata on a trusted route. See
 `architecture/git.md` and the Linux execution-isolation corrective closure
 records for current evidence and open items.
 
-Trusted `egggit` preflight also rejects a repository whose `.git/objects` or
+Trusted `egggit` preflight rejects a repository whose `.git/objects` or
 linked-worktree common object store already contains `objects/info/alternates`.
-Git follows this data file independently of environment and config overrides,
-so trusted reads can otherwise resolve objects from outside the selected
-repository. The check happens before process launch while repository metadata
-remains writable; it does not prevent an alternate file or object-store path
-from being replaced after preflight. Treat it as a fail-closed compatibility
-guard, not race-safe isolation. A complete M003 trust-boundary claim still
-requires enforcement that prevents trusted Git from reading through a mutable
-external object-store alias for the full process lifetime.
+For the exact trusted read allowlist, it also creates a command-scoped private
+object directory containing copies of regular loose and packed object files,
+then sets `GIT_OBJECT_DIRECTORY` to that directory. The private view omits
+`objects/info`; Git therefore cannot follow an alternate created in the
+repository after admission. Copying object bytes (rather than hard-linking
+them) also prevents later writes to a source object from changing the child's
+view. The temporary view is removed when the command exits or is cancelled.
+Unsupported object-store entries and setup failures return typed
+`BackendUnavailable[RepositoryAlias]` before spawn. This contract applies only
+to the explicit trusted read allowlist; object-writing mutations such as
+commit/tag creation remain on the separate C002 contained-Git path and are not
+qualified by this snapshot. A local measurement on a 105 MiB, 3,945-file
+object store on ext4 without reflink support took 2.95 seconds for view setup
+plus trusted `git status`; this is a material performance limit for fragmented
+repositories, and no production Git routing is enabled. The view does not make
+the repository's `.git` metadata immutable or establish network isolation.
 
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the

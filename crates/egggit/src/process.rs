@@ -7,6 +7,7 @@
 
 use crate::EgggitError;
 use std::io::Read;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::process::{Command as StdCommand, Output as StdOutput, Stdio};
 use std::time::{Duration, Instant};
@@ -158,6 +159,61 @@ pub struct GitEnvPolicy {
     pub strip_command_bearers: bool,
 }
 
+/// A trusted Git command plus any private read-only object view it needs.
+/// Keeping the view beside the command ties its lifetime to spawn/wait and
+/// prevents repository alternates created after admission from affecting the
+/// command.
+#[derive(Debug)]
+pub struct GitAsyncCommand {
+    command: Command,
+    _object_view: Option<PrivateObjectView>,
+}
+
+impl Deref for GitAsyncCommand {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl DerefMut for GitAsyncCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
+#[derive(Debug)]
+pub struct GitSyncCommand {
+    command: StdCommand,
+    _object_view: Option<PrivateObjectView>,
+}
+
+impl Deref for GitSyncCommand {
+    type Target = StdCommand;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl DerefMut for GitSyncCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
+#[derive(Debug)]
+struct PrivateObjectView {
+    directory: tempfile::TempDir,
+}
+
+impl PrivateObjectView {
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
 impl Default for GitEnvPolicy {
     fn default() -> Self {
         Self {
@@ -171,16 +227,27 @@ impl Default for GitEnvPolicy {
 
 impl GitEnvPolicy {
     /// Construct an async command from a complete argv (`git` included).
-    pub fn apply(&self, argv: &[String], cwd: &Path) -> Result<Command, GitExecutionPolicyOutcome> {
+    pub fn apply(
+        &self,
+        argv: &[String],
+        cwd: &Path,
+    ) -> Result<GitAsyncCommand, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
-        ensure_trusted_object_store(cwd)?;
+        let object_view = prepare_private_object_view(argv, cwd)?;
         let worktree = canonical_worktree(cwd)?;
         let mut cmd = Command::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
         apply_environment(&mut cmd, self, &worktree, argv);
+        if let Some(view) = &object_view {
+            cmd.env("GIT_OBJECT_DIRECTORY", view.path());
+            cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        }
         cmd.kill_on_drop(true);
-        Ok(cmd)
+        Ok(GitAsyncCommand {
+            command: cmd,
+            _object_view: object_view,
+        })
     }
 
     /// Construct a synchronous command from a complete argv (`git` included).
@@ -188,16 +255,23 @@ impl GitEnvPolicy {
         &self,
         argv: &[String],
         cwd: &Path,
-    ) -> Result<StdCommand, GitExecutionPolicyOutcome> {
+    ) -> Result<GitSyncCommand, GitExecutionPolicyOutcome> {
         ensure_trusted_git_request(argv)?;
-        ensure_trusted_object_store(cwd)?;
+        let object_view = prepare_private_object_view(argv, cwd)?;
         let worktree = canonical_worktree(cwd)?;
         let mut cmd = StdCommand::new("git");
         add_trusted_git_overrides(&mut cmd, argv, &worktree);
         cmd.current_dir(cwd);
         isolate_child_process_group(&mut cmd);
         apply_environment(&mut cmd, self, &worktree, argv);
-        Ok(cmd)
+        if let Some(view) = &object_view {
+            cmd.env("GIT_OBJECT_DIRECTORY", view.path());
+            cmd.env("GIT_OPTIONAL_LOCKS", "0");
+        }
+        Ok(GitSyncCommand {
+            command: cmd,
+            _object_view: object_view,
+        })
     }
 }
 
@@ -595,14 +669,15 @@ fn canonical_worktree(cwd: &Path) -> Result<std::path::PathBuf, GitExecutionPoli
     Ok(worktree)
 }
 
-/// Reject repository object stores that already declare an alternate object
-/// directory when trusted Git is admitted. Git's alternates file is data, not
-/// configuration, so environment and `-c` overrides cannot disable it. This
-/// check is a preflight compatibility guard; it does not make mutable Git
-/// metadata race-safe after the check.
-fn ensure_trusted_object_store(cwd: &Path) -> Result<(), GitExecutionPolicyOutcome> {
+/// Resolve the selected repository object directory and reject unsupported
+/// aliases. Static alternates are refused for compatibility; read commands
+/// additionally receive a private object view that has no alternates file, so
+/// creating one after this check cannot redirect the running Git process.
+fn trusted_object_directory(
+    cwd: &Path,
+) -> Result<Option<std::path::PathBuf>, GitExecutionPolicyOutcome> {
     let Some(worktree) = crate::worktree::find_git_root(cwd) else {
-        return Ok(());
+        return Ok(None);
     };
     let unavailable = || GitExecutionPolicyOutcome::BackendUnavailable {
         capabilities: vec![GitExecutionCapability::RepositoryAlias],
@@ -655,12 +730,321 @@ fn ensure_trusted_object_store(cwd: &Path) -> Result<(), GitExecutionPolicyOutco
         Err(_) => return Err(unavailable()),
     }
 
+    let expected_object_dir = git_dirs
+        .last()
+        .expect("selected git directory is always present")
+        .join("objects");
     for git_dir in git_dirs {
         let alternates = git_dir.join("objects/info/alternates");
         match std::fs::symlink_metadata(&alternates) {
             Ok(_) => return Err(unavailable()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(unavailable()),
+        }
+    }
+    let object_metadata =
+        std::fs::symlink_metadata(&expected_object_dir).map_err(|_| unavailable())?;
+    if object_metadata.file_type().is_symlink() || !object_metadata.is_dir() {
+        return Err(unavailable());
+    }
+    let object_dir = expected_object_dir
+        .canonicalize()
+        .map_err(|_| unavailable())?;
+    Ok(Some(object_dir))
+}
+
+fn prepare_private_object_view(
+    argv: &[String],
+    cwd: &Path,
+) -> Result<Option<PrivateObjectView>, GitExecutionPolicyOutcome> {
+    let object_dir = trusted_object_directory(cwd)?;
+    if !argv_reads_objects(argv) {
+        return Ok(None);
+    }
+    let Some(object_dir) = object_dir else {
+        return Ok(None);
+    };
+    let unavailable = || GitExecutionPolicyOutcome::BackendUnavailable {
+        capabilities: vec![GitExecutionCapability::RepositoryAlias],
+    };
+    let parent = object_dir.parent().ok_or_else(unavailable)?;
+    let view = tempfile::Builder::new()
+        .prefix("codegg-git-object-view-")
+        .tempdir_in(parent)
+        .map_err(|_| unavailable())?;
+    copy_object_files(&object_dir, view.path()).map_err(|_| unavailable())?;
+    Ok(Some(PrivateObjectView { directory: view }))
+}
+
+/// The trusted read surface is deliberately an exact allowlist. Mutating and
+/// potentially executable Git routes do not receive this read-only view.
+fn argv_reads_objects(argv: &[String]) -> bool {
+    let Some(subcommand) = argv.get(1).map(String::as_str) else {
+        return false;
+    };
+    match subcommand {
+        "apply" => argv.iter().any(|arg| arg == "--3way"),
+        "check-attr" => argv
+            .iter()
+            .any(|arg| arg == "--source" || arg.starts_with("--source=")),
+        "config" => argv
+            .iter()
+            .any(|arg| arg == "--blob" || arg.starts_with("--blob=")),
+        "notes" => matches!(argv.get(2).map(String::as_str), Some("list" | "show")),
+        "remote" => argv.get(2).is_some_and(|operation| operation == "show"),
+        "stash" | "worktree" => argv.get(2).is_some_and(|operation| operation == "list"),
+        "tag" => {
+            argv.len() == 2
+                || argv
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "-l" | "--list"))
+        }
+        _ => matches!(
+            subcommand,
+            "blame"
+                | "branch"
+                | "cat-file"
+                | "diff"
+                | "diff-tree"
+                | "for-each-ref"
+                | "grep"
+                | "log"
+                | "ls-files"
+                | "ls-tree"
+                | "merge-base"
+                | "reflog"
+                | "rev-list"
+                | "rev-parse"
+                | "show"
+                | "status"
+                | "update-ref"
+        ),
+    }
+}
+
+/// Construct a private Git object directory without the repository's
+/// `objects/info` metadata. Only regular files in Git's loose-object fanout
+/// and pack directories are admitted. The directory is a sibling of the
+/// selected object store. Object contents are copied rather than hard-linked:
+/// a hard link would let a concurrent workspace writer alter the command's
+/// supposedly private view in place. The guard removes it after the command
+/// exits or is cancelled.
+fn copy_object_files(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        return copy_object_files_descriptor_relative(source, destination);
+    }
+    #[cfg(not(unix))]
+    {
+        copy_object_files_path_based(source, destination)
+    }
+}
+
+#[cfg(unix)]
+fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use rustix::fs::{open, openat, Dir, FileType, Mode, OFlags};
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let before = std::fs::symlink_metadata(source)?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git object directory changed type",
+        ));
+    }
+    let source_fd = open(
+        source,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(rustix_io_error)?;
+    let source_file = std::fs::File::from(source_fd);
+    let opened = source_file.metadata()?;
+    if before.dev() != opened.dev() || before.ino() != opened.ino() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git object directory identity changed during snapshot setup",
+        ));
+    }
+
+    let mut copied = 0usize;
+    let mut directories = Dir::read_from(&source_file).map_err(rustix_io_error)?;
+    for entry in &mut directories {
+        let entry = entry.map_err(rustix_io_error)?;
+        let raw_name = entry.file_name().to_bytes();
+        if raw_name == b"." || raw_name == b".." || raw_name == b"info" {
+            continue;
+        }
+        let name = OsStr::from_bytes(raw_name);
+        let name_text = name.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "non-UTF-8 Git object entry",
+            )
+        })?;
+        let is_fanout =
+            name_text.len() == 2 && name_text.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if name_text != "pack" && !is_fanout {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported Git object directory entry",
+            ));
+        }
+        let source_subdir = openat(
+            &source_file,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(rustix_io_error)?;
+        let target_dir = destination.join(name);
+        std::fs::create_dir(&target_dir)?;
+        let mut objects = Dir::read_from(&source_subdir).map_err(rustix_io_error)?;
+        for object in &mut objects {
+            let object = object.map_err(rustix_io_error)?;
+            let raw_object_name = object.file_name().to_bytes();
+            if raw_object_name == b"." || raw_object_name == b".." {
+                continue;
+            }
+            let object_name = OsStr::from_bytes(raw_object_name);
+            if is_fanout {
+                let suffix = object_name.to_str().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-UTF-8 loose Git object name",
+                    )
+                })?;
+                if !((suffix.len() == 38 || suffix.len() == 62)
+                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported loose Git object name",
+                    ));
+                }
+            }
+            let object_fd = openat(
+                &source_subdir,
+                object_name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(rustix_io_error)?;
+            let object_file = std::fs::File::from(object_fd);
+            if FileType::from_raw_mode(
+                rustix::fs::fstat(&object_file)
+                    .map_err(rustix_io_error)?
+                    .st_mode,
+            ) != FileType::RegularFile
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported entry in Git object fanout",
+                ));
+            }
+            copied = copied.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
+            })?;
+            if copied > 1_000_000 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Git object snapshot exceeds entry bound",
+                ));
+            }
+            let target = destination.join(name).join(object_name);
+            let mut snapshot = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)?;
+            copy_object_snapshot(&object_file, &mut snapshot)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_object_snapshot(
+    source: &std::fs::File,
+    destination: &mut std::fs::File,
+) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        if rustix::fs::ioctl_ficlone(&*destination, source).is_ok() {
+            return Ok(());
+        }
+        destination.set_len(0)?;
+        std::io::Seek::seek(destination, std::io::SeekFrom::Start(0))?;
+    }
+    std::io::copy(&mut &*source, destination)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn rustix_io_error(error: rustix::io::Errno) -> std::io::Error {
+    std::io::Error::from_raw_os_error(error.raw_os_error())
+}
+
+#[cfg(not(unix))]
+fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut copied = 0usize;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "info" {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported entry in Git object directory",
+            ));
+        }
+        let name_text = name.to_string_lossy();
+        let is_fanout =
+            name_text.len() == 2 && name_text.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if name_text != "pack" && !is_fanout {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported Git object directory entry",
+            ));
+        }
+        let target_dir = destination.join(&name);
+        std::fs::create_dir(&target_dir)?;
+        for object in std::fs::read_dir(entry.path())? {
+            let object = object?;
+            let object_name = object.file_name();
+            let object_metadata = std::fs::symlink_metadata(object.path())?;
+            if !object_metadata.is_file() || object_metadata.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported entry in Git object fanout",
+                ));
+            }
+            if is_fanout {
+                let suffix = object_name.to_string_lossy();
+                if !((suffix.len() == 38 || suffix.len() == 62)
+                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported loose Git object name",
+                    ));
+                }
+            }
+            copied = copied.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
+            })?;
+            if copied > 1_000_000 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Git object snapshot exceeds entry bound",
+                ));
+            }
+            let target = target_dir.join(object.file_name());
+            std::fs::copy(object.path(), &target)?;
         }
     }
     Ok(())
@@ -740,7 +1124,11 @@ pub async fn run_with_timeout(
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        run_command(cmd, timeout, &rendered)
+        let GitSyncCommand {
+            command,
+            _object_view,
+        } = cmd;
+        run_command_with_view(command, _object_view, timeout, &rendered)
     })
     .await
     .map_err(|error| EgggitError::Join(error.to_string()))?
@@ -754,8 +1142,18 @@ pub async fn run_with_timeout(
 /// join: a blocking task is not cancellable, so an outer
 /// `tokio::time::timeout` would return to the caller while the Git process
 /// kept running and kept holding a blocking-pool thread.
+#[cfg(test)]
 fn run_command(
+    cmd: StdCommand,
+    timeout: Duration,
+    rendered: &str,
+) -> Result<StdOutput, EgggitError> {
+    run_command_with_view(cmd, None, timeout, rendered)
+}
+
+fn run_command_with_view(
     mut cmd: StdCommand,
+    _object_view: Option<PrivateObjectView>,
     timeout: Duration,
     rendered: &str,
 ) -> Result<StdOutput, EgggitError> {
@@ -948,6 +1346,7 @@ pub async fn run_bounded_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use std::path::PathBuf;
 
     #[test]
@@ -973,9 +1372,11 @@ mod tests {
 
     #[test]
     fn trusted_git_policy_overrides_execution_bearing_repository_config() {
-        let cwd = Path::new(".");
+        let cwd = tempfile::tempdir().expect("non-repository working directory");
         let argv = vec!["git".to_string(), "diff".to_string()];
-        let cmd = GitEnvPolicy::default().apply_sync(&argv, cwd).unwrap();
+        let cmd = GitEnvPolicy::default()
+            .apply_sync(&argv, cwd.path())
+            .unwrap();
         let args = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1039,8 +1440,9 @@ mod tests {
             GitEnvPolicy::default().apply_sync(&argv(&["git", "add", "file"]), Path::new(".")),
             Err(GitExecutionPolicyOutcome::BackendUnavailable { .. })
         ));
+        let cwd = tempfile::tempdir().expect("non-repository working directory");
         assert!(GitEnvPolicy::default()
-            .apply_sync(&argv(&["git", "status"]), Path::new("."))
+            .apply_sync(&argv(&["git", "status"]), cwd.path())
             .is_ok());
         assert!(matches!(
             classify_git_request(&argv(&["git", "show", "--textconv"])),
@@ -1056,6 +1458,30 @@ mod tests {
             classify_git_request(&argv(&["not-git", "status"])),
             GitExecutionPolicyOutcome::InvalidRequest { .. }
         ));
+    }
+
+    #[test]
+    fn trusted_git_object_read_routes_require_private_view() {
+        let argv = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        for read in [
+            argv(&["git", "cat-file", "-p", "HEAD"]),
+            argv(&["git", "config", "--blob=HEAD:.gitconfig", "user.name"]),
+            argv(&["git", "check-attr", "--source=HEAD", "filter", "--", "file"]),
+            argv(&["git", "reflog", "-n", "1"]),
+            argv(&["git", "tag", "--list"]),
+            argv(&["git", "notes", "show", "HEAD"]),
+            argv(&["git", "apply", "--3way", "patch.diff"]),
+            argv(&["git", "branch", "--verbose"]),
+            argv(&["git", "remote", "show", "--no-fetch", "origin"]),
+            argv(&["git", "stash", "list"]),
+            argv(&["git", "worktree", "list"]),
+            argv(&["git", "update-ref", "refs/heads/example", "HEAD"]),
+        ] {
+            assert!(
+                argv_reads_objects(&read),
+                "object-reading route omitted: {read:?}"
+            );
+        }
     }
 
     #[test]
@@ -1499,6 +1925,157 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn trusted_git_read_view_ignores_alternates_created_after_admission() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let selected = fixture.path().join("selected-repository");
+        let alternate = fixture.path().join("alternate-repository");
+        std::fs::create_dir(&selected).expect("selected repository");
+        std::fs::create_dir(&alternate).expect("alternate repository");
+        let raw_git = |cwd: &Path, args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&selected, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        assert!(raw_git(&alternate, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        std::fs::write(
+            alternate.join("outside.txt"),
+            "outside object must stay hidden\n",
+        )
+        .expect("alternate object content");
+        assert!(raw_git(&alternate, &["add", "outside.txt"])
+            .status
+            .success());
+        assert!(raw_git(
+            &alternate,
+            &[
+                "-c",
+                "user.name=C009",
+                "-c",
+                "user.email=c009@example.invalid",
+                "commit",
+                "-m",
+                "alternate"
+            ]
+        )
+        .status
+        .success());
+        let object = raw_git(&alternate, &["rev-parse", "HEAD:outside.txt"]);
+        assert!(object.status.success());
+        let object = String::from_utf8_lossy(&object.stdout).trim().to_owned();
+
+        // The policy check and command creation are complete before the
+        // hostile metadata arrives. Git must use only the private snapshot
+        // created for this command, not the now-present repository alternate.
+        let argv = vec!["git".into(), "cat-file".into(), "blob".into(), object];
+        let mut command = GitEnvPolicy::default()
+            .apply_sync(&argv, &selected)
+            .expect("trusted Git admission");
+        let view = command
+            .get_envs()
+            .find_map(|(name, value)| {
+                (name == "GIT_OBJECT_DIRECTORY")
+                    .then(|| value.map(Path::new).map(Path::to_path_buf))
+                    .flatten()
+            })
+            .expect("private object directory configured");
+        assert!(view.is_dir());
+        assert!(!view.join("info/alternates").exists());
+
+        let alternates = selected.join(".git/objects/info/alternates");
+        std::fs::create_dir_all(alternates.parent().unwrap()).expect("alternate metadata root");
+        std::fs::write(
+            &alternates,
+            format!("{}\n", alternate.join(".git/objects").display()),
+        )
+        .expect("create alternate after admission");
+        let output = command.output().expect("spawn trusted Git");
+        assert!(
+            !output.status.success(),
+            "external object was unexpectedly read"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("outside object must stay hidden"),
+            "trusted Git output exposed an object introduced by a raced alternate"
+        );
+        drop(command);
+        assert!(
+            !view.exists(),
+            "private object view must be removed after command use"
+        );
+    }
+
+    #[test]
+    fn trusted_git_read_view_is_immutable_after_admission() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let selected = fixture.path().join("selected-repository");
+        std::fs::create_dir(&selected).expect("selected repository");
+        let raw_git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(&selected)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&["init", "--initial-branch=main"]).status.success());
+        std::fs::write(selected.join("tracked.txt"), "trusted original object\n")
+            .expect("tracked file");
+        assert!(raw_git(&["add", "tracked.txt"]).status.success());
+        assert!(raw_git(&[
+            "-c",
+            "user.name=C009",
+            "-c",
+            "user.email=c009@example.invalid",
+            "commit",
+            "-m",
+            "initial"
+        ])
+        .status
+        .success());
+        let object = raw_git(&["rev-parse", "HEAD:tracked.txt"]);
+        assert!(object.status.success());
+        let object = String::from_utf8_lossy(&object.stdout).trim().to_owned();
+
+        let mut command = GitEnvPolicy::default()
+            .apply_sync(
+                &vec![
+                    "git".into(),
+                    "cat-file".into(),
+                    "blob".into(),
+                    object.clone(),
+                ],
+                &selected,
+            )
+            .expect("trusted Git admission");
+        let object_path = selected
+            .join(".git/objects")
+            .join(&object[..2])
+            .join(&object[2..]);
+        let mut object_permissions = std::fs::metadata(&object_path)
+            .expect("loose object metadata")
+            .permissions();
+        object_permissions.set_readonly(false);
+        std::fs::set_permissions(&object_path, object_permissions)
+            .expect("make loose object writable for race fixture");
+        std::fs::write(&object_path, b"mutated after admission")
+            .expect("mutate original loose object");
+
+        let output = command.output().expect("spawn trusted Git");
+        assert!(
+            output.status.success(),
+            "private snapshot should retain the admitted object: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"trusted original object\n");
+    }
+
     #[tokio::test]
     async fn trusted_git_refuses_common_dir_object_alternates() {
         let fixture = tempfile::tempdir().expect("fixture");
@@ -1556,6 +2133,100 @@ mod tests {
                 GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
             )) if capabilities == vec![GitExecutionCapability::RepositoryAlias]
         ));
+    }
+
+    #[test]
+    fn trusted_git_linked_worktree_read_view_ignores_common_alternate_race() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("main-worktree");
+        let linked = fixture.path().join("linked-worktree");
+        let alternate = fixture.path().join("alternate-repository");
+        std::fs::create_dir(&root).expect("main worktree");
+        std::fs::create_dir(&alternate).expect("alternate repository");
+        let raw_git = |cwd: &Path, args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("fixture Git command")
+        };
+        assert!(raw_git(&root, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        std::fs::write(root.join("selected.txt"), "selected repository\n").expect("selected file");
+        assert!(raw_git(&root, &["add", "selected.txt"]).status.success());
+        assert!(raw_git(
+            &root,
+            &[
+                "-c",
+                "user.name=C009",
+                "-c",
+                "user.email=c009@example.invalid",
+                "commit",
+                "-m",
+                "selected"
+            ]
+        )
+        .status
+        .success());
+        assert!(raw_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                linked.to_str().unwrap(),
+                "HEAD"
+            ]
+        )
+        .status
+        .success());
+        assert!(raw_git(&alternate, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        std::fs::write(alternate.join("outside.txt"), "outside common-dir object\n")
+            .expect("alternate object content");
+        assert!(raw_git(&alternate, &["add", "outside.txt"])
+            .status
+            .success());
+        assert!(raw_git(
+            &alternate,
+            &[
+                "-c",
+                "user.name=C009",
+                "-c",
+                "user.email=c009@example.invalid",
+                "commit",
+                "-m",
+                "alternate"
+            ]
+        )
+        .status
+        .success());
+        let object = raw_git(&alternate, &["rev-parse", "HEAD:outside.txt"]);
+        assert!(object.status.success());
+        let object = String::from_utf8_lossy(&object.stdout).trim().to_owned();
+        let common = raw_git(&linked, &["rev-parse", "--git-common-dir"]);
+        assert!(common.status.success());
+        let common = linked
+            .join(String::from_utf8_lossy(&common.stdout).trim())
+            .canonicalize()
+            .expect("common dir");
+
+        let argv = vec!["git".into(), "cat-file".into(), "blob".into(), object];
+        let mut command = GitEnvPolicy::default()
+            .apply_sync(&argv, &linked)
+            .expect("trusted Git admission");
+        let alternates = common.join("objects/info/alternates");
+        std::fs::create_dir_all(alternates.parent().unwrap()).expect("alternate metadata root");
+        std::fs::write(
+            &alternates,
+            format!("{}\n", alternate.join(".git/objects").display()),
+        )
+        .expect("create common alternate after admission");
+        let output = command.output().expect("spawn trusted Git");
+        assert!(!output.status.success(), "external common object was read");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("outside common-dir object"));
     }
 
     #[cfg(unix)]

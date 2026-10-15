@@ -23,7 +23,6 @@ use codegg_git::operation::ResetMode;
 use codegg_git::path::Pathspec;
 use codegg_git::ref_name::RemoteName;
 use codegg_git::{GitOperation, RiskSet};
-use tokio::process::Command;
 
 use crate::git_mutations::{
     resolve_repo_root, validate_repo_path, GitEnvPolicy, GitMutationError, GitMutationExecutor,
@@ -48,14 +47,14 @@ pub struct NetworkEnvPolicy {
     pub base: GitEnvPolicy,
 }
 impl NetworkEnvPolicy {
-    /// Build a `Command` from argv and repository root with the
-    /// network policy applied. The caller receives the `Command` with
+    /// Build a Git command wrapper from argv and repository root with the
+    /// network policy applied. The caller receives it with
     /// `args` and `current_dir` already set.
     pub fn apply_to_command(
         &self,
         argv: &[String],
         cwd: &Path,
-    ) -> Result<Command, egggit::GitExecutionPolicyOutcome> {
+    ) -> Result<egggit::process::GitAsyncCommand, egggit::GitExecutionPolicyOutcome> {
         // Start from the canonical generic Git policy. Network-specific
         // access is an additive overlay; it must not duplicate the local
         // env hardening rules.
