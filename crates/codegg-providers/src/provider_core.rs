@@ -2938,7 +2938,7 @@ mod tests {
                     provider,
                     Some(account),
                     CredentialKind::ApiKey,
-                    *secret,
+                    secret,
                     None,
                     vec![],
                 )

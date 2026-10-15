@@ -128,12 +128,12 @@ async fn simultaneous_overlapping_claims_have_one_winner_and_stale_cas_fails() {
     let (_dir, pool, group, members) = fixture().await;
     let store = WorkstreamClaimStore::new(pool.clone());
     let mut contenders = Vec::new();
-    for ordinal in 0..8 {
+    for (ordinal, (run, _task)) in members.iter().enumerate() {
         let store = store.clone();
         let input = scoped_input(
             &pool,
             &group,
-            &members[ordinal].0,
+            run,
             &format!("claim-{ordinal}"),
             "src/work.rs",
         )
