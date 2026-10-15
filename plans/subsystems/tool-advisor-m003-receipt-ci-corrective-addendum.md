@@ -1,6 +1,6 @@
 # Tool-Advisor M003 Frozen Receipt — Post-Closure CI Corrective
 
-Status: **active** — C001 **ready**, independently owned by tool-advisor; async C007 is a blocked consumer.
+Status: **closed** — C001 repair merged to main with full hosted `CI / verify`; async C007 is unblocked and active.
 Opened: 2026-10-15, reviewed PR #119 head `247edec5f37851ca3f67db5943675c896d19e9d9` and `main` `90ab44775a36ebe30466a0d6e340f584324de114`; revalidate on execution.
 Historical roadmap/closure: `plans/subsystems/tool-selection-advisor-causal-frontier-experiment-roadmap.md`; `plans/closure/tool-selection-advisor-causal-frontier-experiment/003-status.md`. M003 **closed with negative disposition D** (structured effect-path frontend hides necessary gold tools; M002 remains selected). Historical receipt `assets/tool-advisor/causal-frontier-m003-result.json` is evidence, not a disposable CI cache.
 
@@ -12,10 +12,10 @@ The likely classes are legitimate current native-tool implementation/schema regi
 
 | Milestone | Status | Plan | Qualification |
 |---|---|---|---|
-| C001 receipt identity diagnosis and hosted CI restoration | **ready** | `plans/implementation/tool-advisor-m003-receipt-ci-corrective/001-receipt-identity-reproduction-and-hosted-gate-restoration.md` | Reproduce the stored/fresh mismatch; identify exact changed tool-contract fields and historical baseline; fix correct source or versioned fixture semantics preserving D and M002; target regression + **full hosted CI / verify green on exact repair/integration SHA**, no skip/waiver. |
+| C001 receipt identity diagnosis and hosted CI restoration | **closed** | `plans/implementation/tool-advisor-m003-receipt-ci-corrective/001-receipt-identity-reproduction-and-hosted-gate-restoration.md`; closure `plans/closure/tool-advisor-m003-receipt-ci-corrective/001-status.md` | Historical schema is reconstructed for the frozen receipt; current drift remains live and falls back to M002. Repair head `7d569353` passed hosted run `38676411915` (13,637 tests, 5 configured skips) and merged as `9de8a545`; original D receipt and M002 selection preserved. |
 
 ## Dependency, closure and release governance
 
 This is a distinct tool-advisor corrective, not permission to re-open the M003 experiment or insert unrelated runtime behavior into PR #119. Preferred implementation on a narrow `main`-based tool-advisor branch, then independently verified integration into async PR #119. The C001 closure path is `plans/closure/tool-advisor-m003-receipt-ci-corrective/001-status.md`.
 
-The separate async roadmap `plans/subsystems/async-background-jobs-integration-qualification-corrective-addendum.md` marks C007 blocked until this plan's substantive repair and a fully green exact-SHA root CI are demonstrated. Completion must update both registry dependency and roadmap statuses with specific commits/run IDs; no automatic merge. M003 historical negative result and M002 selected runtime frontier are immutable until a separate explicit experimentation decision.
+The separate async roadmap `plans/subsystems/async-background-jobs-integration-qualification-corrective-addendum.md` now marks C007 active: C006 is closed and this repair passed full exact-head root CI before merging to main. C007 still owns latest-main reconciliation and final integrated-SHA CI/Desktop E2E; no automatic PR #119 merge is authorized. M003 historical negative result and M002 selected runtime frontier remain immutable absent a separate explicit experimentation decision.

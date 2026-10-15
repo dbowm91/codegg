@@ -1,7 +1,7 @@
 # Async Background Jobs Corrective C007 — Mainline Reconciliation, PR #119 Qualification and Merge-Readiness Decision
 
-Status: **blocked** — C006 strict single-unit tool lifecycle and the independent tool-advisor M003 CI corrective C001 must complete first; no merge is authorized by this plan.
-Planning baseline: `247edec5f37851ca3f67db5943675c896d19e9d9` on `work/async-background-jobs-production-wiring-c004-plans` (PR #119), `main` `90ab44775a36ebe30466a0d6e340f584324de114` (2026-10-15 review). Refresh both before proceeding.
+Status: **active** — C006 and tool-advisor C001 are closed; latest-main integration and exact-head qualification are in progress. No merge is authorized by this plan.
+Planning baseline: PR #119 `247edec5f37851ca3f67db5943675c896d19e9d9`; latest `main` repair merge `9de8a5452dbf4070b15aa78801bb0e703eec2447`. Refresh before final hosted qualification.
 Active addendum: `plans/subsystems/async-background-jobs-integration-qualification-corrective-addendum.md`.
 Historical closure: C005 `plans/closure/async-background-jobs-corrective/005-status.md`, accepted ADR-0031, C004 delivery closure and M001–M004/C001–C003 closures retained unchanged.
 

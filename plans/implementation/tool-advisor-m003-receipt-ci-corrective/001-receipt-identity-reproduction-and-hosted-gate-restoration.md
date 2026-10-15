@@ -1,6 +1,6 @@
 # Tool-Advisor M003 Receipt CI Corrective C001 — Reproduce Fingerprint Drift and Restore Hosted Gate
 
-Status: **ready** (independent CI-owner corrective); no implementation attempted.
+Status: **implemented** — closed after exact-head hosted verification and merge of the repair PR.
 Planning baseline: Codegg `main` at `90ab44775a36ebe30466a0d6e340f584324de114`, async-jobs PR #119 head `247edec5f37851ca3f67db5943675c896d19e9d9` (2026-10-15 review). Re-evaluate on execution.
 Corrective addendum: `plans/subsystems/tool-advisor-m003-receipt-ci-corrective-addendum.md`.
 Historical closure: `plans/closure/tool-selection-advisor-causal-frontier-experiment/003-status.md` (M003 disposition **D**, negative; M002 remains selected). Do **not** replace its historical result.
