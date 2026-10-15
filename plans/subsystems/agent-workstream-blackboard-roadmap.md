@@ -1,0 +1,145 @@
+# Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
+
+Status: proposed planning; M001 ready for corrective implementation, M002–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
+
+Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
+
+Normative sources:
+- plans/000-long-term-specification.md §§4, 6, 9, 16–17, 26–29
+- plans/001-terminology-and-domain-model.md §§5, 7–8, 12–13
+- plans/002-long-term-roadmap.md phases 9–11
+- plans/003-planning-process.md
+- plans/adrs/ADR-0001-programmatic-tool-execution-authority.md
+- plans/adrs/ADR-0002-agent-run-worktree-isolation-and-control.md (accepted, retains precedence)
+- plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md
+- plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md (proposed only)
+
+Existing closed substrate (do not reopen closures): agent-run-worktree-concurrency M001–M009; background-jobs M001–M004; WorkOrders M001–M007 and its UX corrective. The separate async-background-jobs post-C005 PR #119 remains draft/conditionally closed and is NOT a prerequisite or implicit merge for this roadmap.
+
+## Purpose, domain and user-facing outcome
+
+Enable a strong primary agent to delegate bounded parallel work to peers that know each other's responsibility, live execution facts, blockers and relevant changes without polling or sibling chat. Preserve an efficient single-agent path, isolated-worktree default, and an optional explicitly serialized shared-worktree group for costly compiled repositories, without making shared writes unsafe or creating a second scheduler.
+
+The daemon owns the coordination record and authorization; AgentRun/AgentRunGroup own execution lineage and joins; JobScheduler/JobStore own admission, attempts and build/process resources; WorktreeService owns physical checkout records and leases; typed Git execution owns repository mutations and integration; session projections and frontend surfaces are derived, not authoritative. A workstream is neither a new WorkOrder nor a file-based task tracker; don't replace eggplan plans/Todos with this state.
+
+## Research basis and hypotheses (not performance promises)
+
+- PASC, ESEM 2026, https://doi.org/10.4230/LIPIcs.ESEM.2026.18: two homogeneous agents on Python SWE-Bench Pro benefited from structured peer action observations; silent parallelism did not. Generalization to Rust, 3+ writers and different models is unproven.
+- CooperBench team trajectories, https://huggingface.co/datasets/CooperBench/team-trajectories: a structured lead/member task list and scratchpad outperformed plain two-agent cooperative Git in one harness; different evaluation denominators and no causal isolation of each component.
+- Google Research agent scaling, https://research.google/blog/towards-a-science-of-scaling-agent-systems-when-and-why-agent-systems-work/: performance depends on decomposition and coordination; sequential/tool-heavy work can lose to a single agent.
+- Grite preprint, https://arxiv.org/abs/2606.19616: append-only coordination and task claims motivated by synthetic agents, not evidence that a new Git-ref coordination store should replace CodeGG's daemon.
+
+Hypothesis: bounded peer observations and atomic task claims improve correctness/duplicate-work metrics more than naive fan-out, while sharing compiled workspaces only helps if build and mutation resources are actually coordinated. M008 must retain negative results.
+
+## Current production evidence and known defects
+
+- src/tool/task.rs supports spawn, spawn_many and bounded group joins, without a workspace placement parameter. Mutation-capable durable children always require a managed worktree in src/scheduler/executors.rs via SubAgentPool::requires_isolation; read-only children share an inherited root.
+- crates/codegg-core/src/agent_run_group.rs owns membership and statuses; crates/codegg-core/src/agent_run_control.rs and src/agent/run_control.rs own bounded parent/child mailboxes, safe-boundary journal/notifications. There is no authoritative task-claim blackboard or model-facing peer action projection.
+- crates/codegg-core/src/worktree_service.rs has managed checkout identity, generation-fenced leases and safe cleanup. A lease is currently effectively single-owner. Parent integration in src/agent/run_integration.rs requires an unchanged clean parent base; multiple child results and nested parent checkout must be qualified.
+- SessionStore::fork retains the same directory/workspace; the CLI '--fork' and TUI '/fork' fork conversation, while '/worktree' only lists. There is no native session-fork-and-worktree unit.
+- WorkOrder WorkspacePolicy AutoIsolated/Shared/Serialized is not the same as task-spawn placement. src/core/work_order_coordinator.rs computes is_mutation as NOT Shared, allowing shared write-capable work to take a ShareReadOnly branch. Its serialized contention key is the literal global exclusive:workspace-mutation, rather than scoped to a canonical workspace.
+- Generic process tools and user-supplied Cargo commands have no workstream-aware compiler-target/cache placement. CARGO_BUILD_JOBS=2 in scripts/verify.sh is only repository verification convention.
+- ADR-0002 requires distinct managed worktrees for concurrent mutation-capable children; any group-shared checkout exception is blocked on accepting ADR-0032 and proving an effective serial write boundary across all tool classes.
+
+## Invariants and non-goals
+
+- No second scheduler, group admission queue, generic workflow engine, agent chat platform or independent blackboard daemon.
+- The workstream grants no new Git, filesystem, sandbox, approval, provider, network, principal or sibling-control authority. Agent self-report is never authoritative evidence.
+- Read-only peer access is group/project/principal scoped and bounded. No raw transcripts, reasoning, prompts, secrets, arbitrary tool output or full local paths in snapshots.
+- Idempotent creation, monotonic revisions, CAS claims, generation-fenced release, stable actor identity, recoverable notifications and crash-safe cleanup.
+- A shared checkout is NOT equivalent to isolated worktrees; shared mutation must be explicit and serialized at the effective tool/process boundary, or denied. Do not implement simultaneous disjoint writers during this roadmap.
+- Read-only work is never forced into an extra worktree; single-agent/solo operations are no heavier by default.
+- No automatic cherry-pick/merge/commit, broad target sharing, mandatory sccache, hardcoded Rust detection, unsafe shared Cargo target, external cache service, network-dependent CI, permanent benchmark gate or arbitrary sibling mailbox.
+- No automatic regression toward more subagents or an SBC-specific release/compile benchmark. Development-host measurements are enough initially.
+
+## Dependency graph and statuses
+
+~~~
+existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
+  |
+  +-- M001 work-order shared/serialized authority corrective   [ready]
+  |
+  +-- M002 read-only durable workstream snapshot and evidence   [ready; parallel to M001]
+       |
+       +-- M003 atomic task claims, dependencies, handoff       [blocked: M002]
+            |
+            +-- M004 peer observation and model-facing tools    [blocked: M003]
+                 |
+                 +-- M005 explicit group checkout placement     [blocked: M001, M004, ADR-0032 accepted]
+                      |
+                      +-- M006 session / worktree launch ergonomics [blocked: M005]
+                      |
+                      +-- M007 build-resource coordination       [blocked: M005; interface may be planned earlier]
+                            |
+                            +-- M008 trajectory and economics    [blocked: M004, M006, M007]
+~~~
+
+M001 is an independently eligible safety corrective on already-closed WorkOrders, and M002 does not depend on that correction. M005 MUST remain blocked until the ADR is accepted. Dependencies are hard except M007's build-resource design interface, which may be explored alongside M005 without production shared placement.
+
+## Milestones / deliverables
+
+### M001 — WorkOrder workspace-policy correctness corrective (ready)
+
+Repair the Shared classification so mutation capability is derived from effective agent/tool authority, not selected placement. Ensure Shared mutation is deliberately serialized or explicitly denied; scope scheduler exclusivity keys by canonical workspace/repository identity, and ensure all admission variants use identical keys. Test cross-workspace parallelism, same-workspace seriality, permission narrowing, non-Git behavior and plan/agent-run compatibility. Reference prior WorkOrders M002/M007 closures; preserve them as historical evidence. No blackboard schema.
+
+Plan: plans/implementation/agent-workstream-blackboard/001-work-order-workspace-policy-corrective.md
+
+### M002 — Durable read-only workstream projections (ready)
+
+Derive a group-scoped peer board from existing run, task, group, worktree and job stores. Add a bounded, monotonic snapshot/journal and small persistence only for user/agent-authored intent absent from canonical stores; no duplication of status truth. Support reconnection/restart/visibility semantics using one daemon authority. No mutation permissions, model integration, or shared worktree.
+
+Plan: plans/implementation/agent-workstream-blackboard/002-durable-workstream-state.md
+
+### M003 — Atomic responsibility claims, handoffs and dependency state (blocked: M002)
+
+Implement typed task/path claims with revision-CAS, overlap and dependency checks, ownership transfer, lease expiry and cancellation, preserving provenance, audit and no-respawn semantics. Advisory task intent may be visible under isolated worktrees; claims do NOT themselves authorize writes or imply sandbox enforcement. No new workflow scheduler.
+
+Plan: plans/implementation/agent-workstream-blackboard/003-task-claims-and-dependencies.md
+
+### M004 — Peer action observations and bounded agent integration (blocked: M003)
+
+Host-computed, redactable observations from commits/status/test jobs/changed paths at safe loop boundaries; explicit read/claim/request-handoff tool actions and push-on-meaningful-change without per-agent polling. Bounded incremental state, relevance filtering, project/group privacy, hostile tool output tests. Preserve existing direct-parent control authorization.
+
+Plan: plans/implementation/agent-workstream-blackboard/004-peer-observation-and-tools.md
+
+### M005 — Explicit group-owned worktree placement (blocked: M001, M004, accepted ADR-0032)
+
+Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers.
+
+Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
+
+### M006 — Session/worktree fork-and-launch UX (blocked: M005)
+
+Native daemon operation for 'new session in new/existing worktree' and 'fork session in new/existing worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. Session fork alone retains old semantics.
+
+Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
+
+### M007 — Build-aware coordination on shared/isolated workstreams (blocked: M005)
+
+Use canonical scheduler resources to deduplicate or serialize compatible long-running builds; bounded per-workspace concurrent build policy, safe process supervision, optional Rust hints/sccache/Cargo target compatibility checks, protected cache reuse and disk accounting. Does not introduce a compiler service or require third-party cache.
+
+Plan: plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md
+
+### M008 — Comparative validation and closure (blocked: M004, M006, M007)
+
+Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware vs optional serialized shared checkout, preserving identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Deterministic simulated/captured traces for CI; optional manual provider-backed external experiment not a release gate. Negative/no-improvement results must be reported without hiding them.
+
+Plan: plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md
+
+## Security, persistence, protocol and operations
+
+Use additive schema migrations only when canonical stores lack the information; one source of truth per fact. Additive native protocol shapes have typed IDs, revision, bounded batch/snapshot, explicit auth and redaction. TUI/ACP observe derived projections, never mutate database directly. Enforce group membership AND project/principal scope; cross-team projections are not implicitly public. Cancellation or daemon restart must fence stale actors; journal redelivery may duplicate transport but never logical mutation. Refuse gaps instead of inventing peer state. No background scan loop; derive updates from canonical state transitions, with bounded reconciliation.
+
+Existing authoritative docs to update with implementations: architecture/agent.md, architecture/worktree.md, architecture/scheduler.md, architecture/session.md, architecture/projection.md, architecture/authorization.md, docs/tools.md, docs/cli.md and the agent/planning skills if contracts change.
+
+## Qualification, stop rules and closure
+
+Each milestone requires its own closure record at plans/closure/agent-workstream-blackboard/00N-status.md, exact commit/PR, requirement-evidence matrix, migrations, schema/transport compatibility, restart/CAS/cancellation/security/contention results, focused tests, static guards, documentation, limitations and downstream unblock audit.
+
+Baseline verification: cargo fmt --all -- --check; narrow cargo test -p codegg-core / -p codegg; scripts/verify.sh quick; cargo clippy --workspace --all-targets --locked -- -D warnings where applicable; scripts/check_core_boundary.sh spelling/actual bash scripts/check-core-boundary.sh, scripts/check_scheduler_bypass.py, scripts/check_execution_ownership.py, plus changed-surface authorization/projection guards. Use existing hosted CI only when acceptance requires it; do not introduce a benchmark CI gate.
+
+Stop and create a new corrective plan if acceptance needs a second admission authority; shared mutation can bypass the mandatory execution fence; any principal obtains unauthorized sibling visibility/control; source Git evidence is replaced by agent prose; or the benchmark silently changes task difficulty/budget. An opt-in feature may remain disabled if reliable cross-platform shared writes are not demonstrated. The rest of the blackboard may close independently.
+
+## Registry/unblock responsibility
+
+After M001 closure M005 remains blocked on M004 and ADR-0032. After M002 closure M003 becomes ready; after M003, M004 becomes ready. After M004, M005 remains blocked until M001 closure and ADR acceptance. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
