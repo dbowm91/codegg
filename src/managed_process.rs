@@ -2995,6 +2995,58 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_records_bounded_cold_and_warm_launch_latency() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("latency fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("latency workspace");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+
+        for label in ["cold", "warm"] {
+            let spec = config
+                .launch_spec("/bin/sh", &["-c".into(), "true".into()], Some(&workspace))
+                .expect("latency launch lease");
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace.clone(),
+                ProcessProvenance::new("c009-native", format!("launch-latency-{label}")),
+            );
+            request.timeout = Some(Duration::from_secs(15));
+            request.sandbox = SandboxRequest::Required(spec);
+            let started = std::time::Instant::now();
+            let result = ManagedProcessService::run(request)
+                .await
+                .unwrap_or_else(|error| panic!("{label} launch failed: {error}"));
+            let elapsed = started.elapsed();
+            assert!(
+                result.exit_status.success(),
+                "{label} launch stderr: {}",
+                result.stderr.to_string_lossy()
+            );
+            assert!(matches!(
+                result.sandbox,
+                SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+            ));
+            eprintln!("C009 {label} protected-mount launch elapsed: {elapsed:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_mount_view_real_managed_process_handoff() {
         if std::env::var("CODEGG_RUN_C006_BWRAP_NATIVE").as_deref() != Ok("1") {
             eprintln!(
