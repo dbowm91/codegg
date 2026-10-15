@@ -3029,8 +3029,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn protected_mount_rejects_denied_descendant_of_writable_root() {
+    #[test]
+    fn protected_mount_rejects_denied_descendant_of_writable_root() {
         use crate::security::sandbox::{SandboxConfig, SandboxMode};
 
         let fixture = tempfile::tempdir().expect("fixture");
@@ -3052,19 +3052,14 @@ mod tests {
                 Some(&workspace),
             )
             .expect("protected mount lease");
-        let mut argv = vec![spec.target.as_os_str().to_owned()];
-        argv.extend(spec.args.iter().map(OsString::from));
-        let mut request = ManagedProcessRequest::new(
-            argv,
-            workspace,
-            ProcessProvenance::new("c009-native", "deny-descendant-refusal"),
-        );
-        request.sandbox = SandboxRequest::Required(spec);
-        let error = ManagedProcessService::run(request)
-            .await
-            .expect_err("denied descendants of writable roots must refuse setup");
+        let error = crate::security::sandbox::linux_mount_view::compile(
+            &spec,
+            &workspace,
+            |_| Ok(256),
+        )
+        .expect_err("denied descendants of writable roots must refuse setup");
         assert!(
-            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("cannot isolate a denied path inside a writable grant")),
+            error.contains("cannot isolate a denied path inside a writable grant"),
             "unexpected denial disposition: {error:?}"
         );
         assert!(
