@@ -142,3 +142,13 @@ were never active on main and must not be reused for Windows references.
 - ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
 - ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
+
+## ADR-0032 workstream coordination reservation (2026-10-15)
+
+The agent-workstream-blackboard planning branch allocates
+ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md as
+**proposed**, not accepted. It does not modify accepted ADR-0002, admit
+shared-write child execution, or confer new capability by existing group
+membership. M005 remains blocked until independent maintainer acceptance and
+real tool-path confinement/recovery evidence. Check other active branches for
+numeric collisions before merging this reservation.
