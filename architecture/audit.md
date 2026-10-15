@@ -109,6 +109,13 @@ request payloads supply locators, never authority.
   secret never reaches storage or export. Metadata carries structural
   IDs, digests, and bounded labels — never prompts, file content,
   tool output, or credentials.
+- `AuditError::SecretDetected` carries the rejected **field name**, never
+  the rejected value: keys are structural identifiers, so naming one
+  leaks nothing. A guard whose failure names neither the key nor the field
+  makes every hit undiagnosable — a live daemon was losing audit appends
+  with `audit metadata carries secret-bearing material (key or value
+  rejected)` and nothing else, which is a log line that cannot be acted on.
+  Name the field; never log the value.
 
 ## Content digest and retention separation
 
