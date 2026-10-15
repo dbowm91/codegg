@@ -1,7 +1,7 @@
 # M004 process and IPC implementation readiness
 
-Status: implementation in progress; native positive qualification pending
-Reviewed source baseline: branch head `1795b0d6` plus uncommitted M004 work
+Status: implementation in progress; first exact-hosted positive denial matrix passed, broader compatibility/lifecycle gates remain open
+Reviewed source baseline: `dde64559` (2026-10-15)
 Related plan: `plans/implementation/linux-execution-isolation/004-process-ipc-seccomp.md`
 Related decision: accepted `plans/adrs/ADR-0031-composable-linux-execution-isolation.md`
 
@@ -29,7 +29,8 @@ does not weaken the request to PID/IPC-only containment.
 |---|---|---|
 | Local Ubuntu x86_64, kernel `6.8.0-147-generic`, Bubblewrap `0.9.0` | Native managed-process test confirmed the required launch is refused before its marker target executes. The Landlock scope probe reports the ABI 6 scope mask as incompatible. | Correct negative behavior on a kernel predating ABI 6. No positive process/IPC claim for this host. |
 | Linux qualification workflow | Added `.github/workflows/linux-m004-native.yml`; it records runner kernel/AppArmor/Bubblewrap facts and runs the managed-child M004 probe plus protected-mount/Git regressions. | Exact-head hosted positive evidence is pending. |
-| Seccomp compiler | `seccompiler` 0.5.0 is an upstream pure-Rust BPF compiler with an architecture-checked filter IR and `BpfProgram` output; Bubblewrap accepts raw cBPF program bytes through a seccomp FD. | Pinned as a Linux-only dependency and integrated with a fixed denylist covering namespace changes, legacy and new mount syscalls, tracing, and selected kernel control syscalls. Unit compilation passes; native syscall/tool-compatibility probes are pending. Sources: [seccompiler API](https://docs.rs/seccompiler/0.5.0/seccompiler/), [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). |
+| Seccomp compiler | `seccompiler` 0.5.0 is an upstream pure-Rust BPF compiler with an architecture-checked filter IR and `BpfProgram` output; Bubblewrap accepts raw cBPF program bytes through a seccomp FD. | Pinned as a Linux-only dependency and integrated with a fixed denylist covering namespace changes, legacy and new mount syscalls, tracing, and selected kernel control syscalls. Unit compilation and hosted denial of namespace and mount syscalls pass; rustup/Cargo/rustc compatibility remains open. Sources: [seccompiler API](https://docs.rs/seccompiler/0.5.0/seccompiler/), [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). |
+| Exact-head hosted run `38760659016` | Ubuntu 24.04 hosted runner, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`, x86_64, UID/GID 1001, AppArmor `unconfined`; `seccomp/actions_avail` includes `errno` and `allow`. The workflow changed ephemeral `kernel.apparmor_restrict_unprivileged_userns` from 1 to 0. | M004 native target passed 3/3: private proc/PID view, signal and abstract/pathname socket denial, ambient-FD closure, installed seccomp denial of namespace and mount syscalls, Git subprocess, and process-group descendant cancellation. The same run passed 11/11 protected-mount tests and 18/18 trusted-Git tests. This is candidate evidence on a runner whose user-namespace policy was relaxed; it does not admit a general host configuration. |
 
 The first hosted M004 run (`38754822245`, source SHA `7a507362`) reached the
 positive Landlock ABI 6 branch, then failed because its signal probe expected
@@ -44,34 +45,30 @@ but this kernel interface lists return actions (`allow`, `errno`, and similar),
 not filter mode. The incorrect check rejected the otherwise capable host
 before target execution, so no positive M004 result was obtained. The probe
 now requires the `allow` and `errno` actions needed by this fixed policy, with
-a unit test for the action-list contract. The hosted workflow records the
-action list. The following run (`38759579735`, source SHA `8d1df77`) passed the
-main M004 managed-child probe, including the live host socket, Git subprocess,
-FD closure, seccomp namespace denial and seccomp mount denial assertions. Its
-separate descendant-cancellation fixture failed before launch because the
-generated Python source nested shell single quotes incorrectly. That fixture's
-quoting is corrected; the exact-head rerun remains required before lifecycle
-evidence can be counted.
+a unit test for the action-list contract. Run `38759579735` then passed the
+main denial probe but exposed invalid Python quoting in the separate
+cancellation fixture. The quoting was corrected; exact-head run
+`38760659016` passed all three M004 tests and the protected-mount/Git
+regressions listed above.
 
 ## Remaining M004 production work
 
-1. Obtain a successful exact-head hosted native run for PID/proc invisibility,
-   same-UID signal denial, abstract socket denial, private status, normal child
-   execution, and managed cancellation.
-2. Audit all inherited descriptors at the ManagedProcessService/helper boundary;
-   retain only stdio, the bounded status/ack protocol, and explicit typed
-   capabilities. The M004 parent now closes ambient descriptors before exec,
-   preserving stdio and the reserved status/ack descriptors; its positive
-   native probe is pending. Audit environment socket hints and test pathname
-   sockets inside read/write bind roots before making any denial claim.
-3. Prove the pinned seccomp policy through Bubblewrap with a denied namespace
-   syscall and normal compiler/Python/Git behavior; review the syscall list and
-   add only compatibility-driven exceptions with explicit evidence.
-4. Exercise descendants, timeout/cancellation, concurrent sessions, and PTY
-   status/resize behavior. Verify a setup failure produces no target marker.
-5. Only after those results, close M004 or record narrowly scoped external host
-   limitations. Until then the process mode remains an internal opt-in with no
-   production admission.
+1. Extend adversarial checks to host `/proc/<pid>/environ` and `/fd`, ptrace,
+   `process_vm_readv/writev`, and same-UID concurrent session fixtures. Current
+   probes establish PID non-addressability and deny a signal, but not these
+   additional reads or attachment routes.
+2. Run rustup toolchain discovery and `rustc`/Cargo through the actual private
+   proc and protected mount view. M004 supplies `/proc/self/exe`, but this fix
+   has not yet been verified with the production toolchain path.
+3. Exercise service-level PTY launch/status/resize behavior and concurrent job
+   cleanup. The current cancellation probe covers an ordinary child process
+   group; it does not test a descendant that creates a new session.
+4. Qualify additional Linux host configurations without changing their
+   user-namespace policy. The only positive hosted run relaxed the ephemeral
+   runner's AppArmor user-namespace sysctl; M003 remains explicitly
+   unadmitted.
+5. Keep process isolation internal and unregistered until these gates and the
+   M003 production-admission gates are resolved.
 
 M005 can start after the M004 process/IPC and descriptor interface is stable.
 It must separately carry operator-owned `OfflineRequired`, install a network

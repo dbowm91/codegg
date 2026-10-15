@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -156,6 +157,18 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
         .spawn()
         .expect("start host signal fixture");
 
+    let rustup_path =
+        std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
+            .map(|directory| directory.join("rustup"))
+            .find(|path| path.is_file())
+            .expect("Rustup is installed by the Linux test toolchain");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").expect("test runner HOME is available"))
+                .join(".rustup")
+        });
+
     let probe_script = format!(
         "import os,socket,signal,sys\n\
          s=socket.socket(socket.AF_UNIX)\n\
@@ -177,10 +190,16 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
          print('seccomp-denied-namespace-change' if seccomp_mode == 2 and result == -1 and unshare_error == 38 else 'seccomp-namespace-change-allowed')\n\
          print('seccomp-denied-mount-change' if mount_result == -1 and mount_error == 38 else 'seccomp-mount-change-allowed')\n\
          if seccomp_mode != 2 or result != -1 or unshare_error != 38 or mount_result != -1 or mount_error != 38: sys.exit(14)\n\
-         import subprocess; subprocess.run(['git','--version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE); print('git-subprocess-ok')\n",
+         import subprocess; subprocess.run(['git','--version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE); print('git-subprocess-ok')\n\
+         rustup_env=os.environ.copy(); rustup_env['RUSTUP_HOME']={rustup_home:?}\n\
+         subprocess.run([{rustup_path:?},'toolchain','list'], check=True, env=rustup_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n\
+         subprocess.run([{rustup_path:?},'run','stable','rustc','--version'], check=True, env=rustup_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n\
+         print('rustup-procfs-ok')\n",
         signal_pid = signal_target.id(),
         host_pid = std::process::id(),
-        ambient_fd = ambient_fd.as_raw_fd()
+        ambient_fd = ambient_fd.as_raw_fd(),
+        rustup_path = rustup_path,
+        rustup_home = rustup_home
     );
 
     let sandbox = SandboxConfig::new()
@@ -230,6 +249,7 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
     );
     assert!(stdout.contains("seccomp-denied-mount-change"), "{stdout}");
     assert!(stdout.contains("git-subprocess-ok"), "{stdout}");
+    assert!(stdout.contains("rustup-procfs-ok"), "{stdout}");
     assert!(
         !signal_marker.exists(),
         "host fixture received a sandbox signal"

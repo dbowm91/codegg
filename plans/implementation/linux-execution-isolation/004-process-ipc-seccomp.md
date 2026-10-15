@@ -1,6 +1,6 @@
 # Linux Execution Isolation M004 — Process, IPC, Procfs and Syscall Isolation
 
-Status: active (internal PID/IPC/proc/FD/seccomp implementation is in place; native positive qualification and compatibility gates remain open)
+Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes; broader compatibility, lifecycle, and host-admission gates remain open)
 Primary class: capability
 Repository baseline: current-main merge `611f6bee` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in; positive native qualification, lifecycle, PTY and ordinary-tool compatibility remain open.
 
@@ -10,7 +10,7 @@ Provide an opt-in native Linux child execution tier with **real process and IPC 
 
 ## 2. Current evidence
 
-Landlock constrains filesystem grants and inherits across exec. ABI 6 adds signal and abstract Unix socket scopes, but the local Ubuntu 6.8 kernel does not provide them; the runtime scope probe refuses before target execution. Bubblewrap composes those scopes with PID/IPC namespaces, a private proc view, and an architecture-checked `seccompiler` denylist behind a new internal opt-in. The M004 parent closes inherited FDs above stdio and reserved status/ack descriptors. Native positive probes for those controls await a qualifying hosted kernel. Pathname-socket/service probes, PTY/process-tree lifecycle, and ordinary-tool qualification remain open. Existing tests explicitly record inherited-FD limitations. The daemon and tool services may expose local sockets; process-group cancellation alone is not an isolation boundary.
+Landlock constrains filesystem grants and inherits across exec. ABI 6 adds signal and abstract Unix socket scopes; the local Ubuntu 6.8 kernel lacks them and the required request refuses before target execution. Bubblewrap composes those scopes with PID/IPC namespaces, a private proc view, and an architecture-checked `seccompiler` denylist behind an internal opt-in. The M004 parent closes inherited FDs above stdio and reserved status/ack descriptors. Exact-head hosted run `38760659016` passed the M004 native denial and descendant-cancellation probes on Ubuntu 24.04, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`; the workflow relaxed that ephemeral runner's unprivileged-userns AppArmor sysctl. It also passed the protected-mount and trusted-Git regression filters. Remaining gaps include proc content/ptrace/process_vm probes, PTY service routing, concurrent-session cleanup, detached-session descendants, Rustup/Cargo/rustc compatibility, and production admission. Existing tests explicitly record inherited-FD limitations. The daemon and tool services may expose local sockets; process-group cancellation alone is not an isolation boundary.
 
 ## 3. Invariants
 
