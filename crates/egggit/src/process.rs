@@ -1350,6 +1350,38 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "manual performance qualification; requires CODEGG_OBJECT_VIEW_BENCH_REPOSITORY"]
+    fn private_object_view_warm_performance_samples() {
+        let repository = std::env::var_os("CODEGG_OBJECT_VIEW_BENCH_REPOSITORY")
+            .map(PathBuf::from)
+            .expect("set CODEGG_OBJECT_VIEW_BENCH_REPOSITORY to a Git worktree");
+        let repository = repository.canonicalize().expect("canonical Git worktree");
+        let samples = std::env::var("CODEGG_OBJECT_VIEW_BENCH_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(20);
+        assert!((1..=100).contains(&samples), "sample count must be 1..=100");
+        let argv = vec!["git".to_string(), "status".to_string()];
+        eprintln!(
+            "private Git object-view benchmark: repository={}",
+            repository.display()
+        );
+        for sample in 1..=samples {
+            let started = Instant::now();
+            let output = GitEnvPolicy::default()
+                .apply_sync(&argv, &repository)
+                .expect("prepare trusted private object view")
+                .output()
+                .expect("run trusted git status");
+            assert!(output.status.success());
+            eprintln!(
+                "sample {sample}: {:.3} ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    #[test]
     fn policy_tables_are_disjoint_and_unique() {
         let allowed = ALLOWED_ENV_VARS
             .iter()
