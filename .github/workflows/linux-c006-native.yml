@@ -9,6 +9,7 @@ on:
       - 'src/managed_process.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
+      - 'crates/egggit/src/**'
       - 'tests/linux_bubblewrap_first_hop.rs'
   push:
     paths:
@@ -17,6 +18,7 @@ on:
       - 'src/managed_process.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
+      - 'crates/egggit/src/**'
       - 'tests/linux_bubblewrap_first_hop.rs'
 
 permissions:
