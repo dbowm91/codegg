@@ -277,8 +277,9 @@ pub enum WorkspaceAction {
 ///
 /// `is_git` reports whether the project root is a Git repository;
 /// `is_mutation` reports whether the task is mutation-capable. Non-Git
-/// mutation is never mislabeled as isolated: it serializes or requires
-/// attention depending on the requested policy.
+/// mutation is never mislabeled as isolated. Explicit shared/serialized
+/// mutation requires a common writer guard that WorkOrder AgentTurn jobs do
+/// not currently share with ordinary turns, so it fails closed.
 pub fn resolve_workspace_action(
     requested: Option<WorkspacePolicy>,
     is_git: bool,
@@ -291,16 +292,23 @@ pub fn resolve_workspace_action(
         (WorkspacePolicy::AutoIsolated, true, true) => WorkspaceAction::UseManagedWorktree,
         // Read-only work may share safely under existing leases/policy.
         (WorkspacePolicy::AutoIsolated, _, false) => WorkspaceAction::ShareReadOnly,
-        (WorkspacePolicy::Shared, _, false) => WorkspaceAction::ShareReadOnly,
-        // Shared mutation serializes through scheduler contention (one
-        // writer); never claims worktree-equivalent isolation.
-        (WorkspacePolicy::Shared, _, true) => WorkspaceAction::ShareSerialized,
-        (WorkspacePolicy::Serialized, _, _) => WorkspaceAction::ShareSerialized,
+        (WorkspacePolicy::Shared | WorkspacePolicy::Serialized, _, false) => {
+            WorkspaceAction::ShareReadOnly
+        }
+        // The scheduler's old global resource key was neither checkout
+        // scoped nor acquired by every AgentTurn writer. Calling this
+        // serialized would therefore promise a guarantee it cannot enforce.
+        (WorkspacePolicy::Shared | WorkspacePolicy::Serialized, _, true) => {
+            WorkspaceAction::NeedsAttention {
+                code: AttentionCode::MaterializationFailed,
+                diagnostic: "shared_mutation_unavailable: this WorkOrder agent can mutate its checkout, but the daemon has no checkout-scoped writer reservation covering every AgentTurn; select auto_isolated or resolve the writer-guard capability first".to_owned(),
+            }
+        }
         // Non-Git mutation has no copy/overlay isolation backend in M002:
         // fail closed to attention rather than copying directories ad hoc.
         (WorkspacePolicy::AutoIsolated, false, true) => WorkspaceAction::NeedsAttention {
             code: AttentionCode::MaterializationFailed,
-            diagnostic: "isolation_unavailable: non-Git mutation has no managed-worktree backend; use serialized sharing or resolve to a Git repository"
+            diagnostic: "isolation_unavailable: non-Git mutation has no managed-worktree backend; resolve to a Git repository or use an authorized non-mutating agent"
                 .to_owned(),
         },
     }
@@ -615,9 +623,22 @@ mod tests {
             resolve_workspace_action(None, true, false),
             WorkspaceAction::ShareReadOnly
         );
-        assert_eq!(
+        assert!(matches!(
             resolve_workspace_action(Some(WorkspacePolicy::Serialized), true, true),
-            WorkspaceAction::ShareSerialized
+            WorkspaceAction::NeedsAttention { .. }
+        ));
+        assert!(matches!(
+            resolve_workspace_action(Some(WorkspacePolicy::Shared), true, true),
+            WorkspaceAction::NeedsAttention { .. }
+        ));
+        assert_eq!(
+            resolve_workspace_action(Some(WorkspacePolicy::Shared), true, false),
+            WorkspaceAction::ShareReadOnly
+        );
+        assert!(
+            crate::jobs::ResourceRequest::for_kind(crate::jobs::JobKind::AgentTurn)
+                .exclusivity_keys
+                .is_empty()
         );
         match resolve_workspace_action(None, false, true) {
             WorkspaceAction::NeedsAttention { diagnostic, .. } => {

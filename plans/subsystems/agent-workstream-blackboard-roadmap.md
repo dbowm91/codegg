@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: proposed planning; M001 ready for corrective implementation, M002–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
+Status: active; M001 active, M002 ready, M003–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
