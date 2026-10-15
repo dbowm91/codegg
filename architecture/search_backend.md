@@ -344,7 +344,7 @@ source-build compatibility, never required for a prebuilt install.
   path. The actual call will surface the real error if the tool is
   missing.
 - **Provider hints fail closed** — absent/`auto` omits the provider selector;
-  each other exposed value maps to a provider ID in eggsearch v0.4.1 or fails
+  each other exposed value maps to a provider ID in eggsearch v0.4.3 or fails
   before MCP dispatch. `github` maps to `github_repositories`; `brave` maps
   to the distinct `brave` provider; retired `google_news` gives guidance to
   use `intent="news"` with `brave_api` or `tavily` when source control matters.
@@ -374,7 +374,7 @@ MCP connection status, advertised tools, tool coverage classification
 surface, required/recommended coverage, default timeout, provider status,
 installation hint (bundle reinstall, never bare "install eggsearch"),
 `expose_raw_mcp_tools`, `fallback_to_builtin`, and all per-domain output
-caps. The search doctor checks exact eggsearch pin `0.4.1`, its ten-tool
+caps. The search doctor checks exact eggsearch pin `0.4.3`, its ten-tool
 surface, and every provider ID retained by the native wrapper. `doctor
 installation` prints `InstallationReport` (executable,
 directory, sibling states, helper/kernel probe, in-process eggsact line)

@@ -15,12 +15,13 @@ use codegg::search_backend::bootstrap::{
     bootstrap_search_runtime, EGGSEARCH_BUNDLED_COMPLETE_SURFACE, EGGSEARCH_WEBSEARCH_PROVIDER_IDS,
 };
 use codegg::search_backend::state;
+use codegg::tool::repo_search::RepoSearchTool;
 use codegg::tool::security_search::SecuritySearchTool;
 use codegg::tool::websearch::WebSearchTool;
 use codegg::tool::Tool;
 use serde_json::{json, Value};
 
-const EXPECTED_VERSION: &str = "0.4.1";
+const EXPECTED_VERSION: &str = "0.4.3";
 
 fn exact_version_line(output: &str) -> Option<&str> {
     let line = output.lines().next()?.trim();
@@ -84,6 +85,7 @@ fn smoke_config(binary: String, private: &Path, observation: &Path, child_stderr
         search: Some(SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
             fallback_to_builtin: Some(false),
+            max_repo_search_output_chars: Some(256),
             eggsearch: Some(EggsearchConfig {
                 command: Some(binary),
                 args: Some(vec![
@@ -103,9 +105,47 @@ fn smoke_config(binary: String, private: &Path, observation: &Path, child_stderr
     }
 }
 
-fn write_offline_config(path: &Path) {
-    let contents = "[search]\nmode = \"off\"\ndefault_max_results = 1\nmax_results_cap = 5\nmax_query_chars = 256\ntimeout_ms = 1000\ndefault_providers = [\"duckduckgo\"]\n\n[search.providers]\nduckduckgo = true\n\n[fetch]\nenabled = false\n";
+fn write_offline_config(path: &Path, workspace: &Path, local_enabled: bool) {
+    let workspace = workspace
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let contents = format!(
+        "[search]\nmode = \"off\"\ndefault_max_results = 5\nmax_results_cap = 5\nmax_query_chars = 256\ntimeout_ms = 1000\ndefault_providers = [\"duckduckgo\"]\n\n[search.providers]\nduckduckgo = true\n\n[fetch]\nenabled = false\n\n[local]\nenabled = {local_enabled}\nroots = [\"{}\"]\nrespect_gitignore = true\n",
+        workspace
+    );
     std::fs::write(path, contents).expect("write private eggsearch offline config");
+}
+
+fn make_private_repo(workspace: &Path) -> (PathBuf, String) {
+    let repo = workspace.join("private-repo");
+    std::fs::create_dir_all(&repo).expect("local_fixture: create private repository");
+    std::fs::write(
+        workspace.join("OUT_OF_ROOT.md"),
+        "CODEGG_OUT_OF_ROOT_MUST_NOT_APPEAR\n",
+    )
+    .expect("local_fixture: write out-of-root sentinel");
+    let marker = format!("CODEGG_EGGSEARCH_LOCAL_ONLY_{}", std::process::id());
+    std::fs::write(
+        repo.join("LOCAL_ONLY_MARKER.md"),
+        format!("# Private local qualification fixture\n\n{marker}\n"),
+    )
+    .expect("local_fixture: write private marker");
+    std::fs::write(
+        repo.join("OUT_OF_SCOPE_DECOY.md"),
+        "CODEGG_OUT_OF_SCOPE_DECOY_MUST_NOT_APPEAR\n",
+    )
+    .expect("local_fixture: write scoped decoy");
+    let init = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&repo)
+        .status()
+        .expect("local_fixture: git must be installed");
+    assert!(
+        init.success(),
+        "local_fixture: initialize private Git repository"
+    );
+    (repo, marker)
 }
 
 #[cfg(unix)]
@@ -230,7 +270,8 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     ] {
         std::fs::create_dir_all(dir).expect("child_environment: create private directory");
     }
-    write_offline_config(&eggsearch_config);
+    let (private_repo, marker) = make_private_repo(&workspace);
+    write_offline_config(&eggsearch_config, &private_repo, true);
 
     #[cfg(unix)]
     let command = {
@@ -249,7 +290,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
 
     let revision = std::env::var("CODEGG_REVISION").unwrap_or_else(|_| "unknown".to_string());
     let upstream_tag = std::env::var("CODEGG_EGGSEARCH_TAG")
-        .unwrap_or_else(|_| "v0.4.1 (binary-supplied)".to_string());
+        .unwrap_or_else(|_| "v0.4.3 (binary-supplied)".to_string());
     println!(
         "version_identity codegg_revision={revision} eggsearch_tag={upstream_tag} binary={} version={version_line}",
         binary.display(),
@@ -597,6 +638,306 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
     );
     println!("wrapper_request native=security_search upstream=security_search outcome=tagged_policy_denial is_error=true structured=preserved");
 
+    let local_search = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(
+            json!({
+                "query": marker,
+                "include_local": true,
+                "providers": ["duckduckgo"],
+                "max_results": 5
+            }),
+            None,
+        )
+        .await
+        .expect("repo_search: private local-only search should complete through native wrapper");
+    assert!(
+        local_search.success,
+        "repo_search: local result should be successful"
+    );
+    assert!(
+        local_search
+            .provenance
+            .as_ref()
+            .is_some_and(|provenance| provenance.truncated),
+        "repo_search: expected bounded model-facing output truncation"
+    );
+    let local_value = local_search
+        .value
+        .clone()
+        .expect("repo_search: structured retrieval dimensions must be retained");
+    let local_json = serde_json::to_string(&local_value).expect("repo_search: serialize value");
+    assert!(
+        local_json.contains(&marker),
+        "repo_search: private marker missing: {local_json}"
+    );
+    assert!(
+        local_json.contains("LOCAL_ONLY_MARKER.md"),
+        "repo_search: marker path missing"
+    );
+    assert!(
+        !local_json.contains("CODEGG_OUT_OF_SCOPE_DECOY_MUST_NOT_APPEAR"),
+        "repo_search: scoped result leaked decoy data"
+    );
+    assert!(
+        !local_json.contains("CODEGG_OUT_OF_ROOT_MUST_NOT_APPEAR"),
+        "repo_search: result escaped configured local root"
+    );
+    let queried = local_value
+        .get("providers_queried")
+        .and_then(Value::as_array)
+        .expect("repo_search: providers_queried inventory");
+    assert_eq!(queried, &[json!("local_workspace")]);
+    assert!(local_value.get("retrieval_summary").is_some());
+    assert!(local_value.get("warnings").is_some());
+    assert!(local_value.get("structured_warnings").is_some());
+    assert!(
+        local_value
+            .pointer("/telemetry/subqueries")
+            .and_then(Value::as_array)
+            .is_none_or(|rows| rows.iter().all(|row| row
+                .get("providers_attempted")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty))),
+        "repo_search: remote provider attempts reported"
+    );
+    let routing = local_value
+        .pointer("/telemetry/routing_decision")
+        .expect("repo_search: routing decision telemetry");
+    assert_eq!(
+        routing.get("reason").and_then(Value::as_str),
+        Some("local-only execution policy denies remote dispatch")
+    );
+    assert!(routing
+        .get("selected_providers")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+    assert!(
+        local_json.contains("local_trusted"),
+        "repo_search: local provenance missing"
+    );
+    println!("wrapper_request native=repo_search upstream=repo_search mode=off local_marker=pass providers_queried=local_workspace remote_attempts=0 local_provenance=pass");
+
+    let no_match = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(
+            json!({"query": "CODEGG_NO_MATCH_7d6f8162", "include_local": true}),
+            None,
+        )
+        .await
+        .expect("repo_search: scoped local no-match should return truthful structured coverage");
+    assert!(
+        no_match.success,
+        "repo_search: local no-match is a completed local query"
+    );
+    let no_match_value = no_match
+        .value
+        .expect("repo_search: no-match structured value");
+    assert!(no_match_value
+        .get("groups")
+        .and_then(Value::as_array)
+        .is_none_or(|groups| groups.iter().all(|group| group
+            .get("results")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty))));
+    assert_eq!(
+        no_match_value
+            .get("providers_queried")
+            .and_then(Value::as_array),
+        Some(&vec![json!("local_workspace")])
+    );
+    assert!(no_match_value.get("retrieval_summary").is_some());
+    assert!(no_match_value
+        .pointer("/telemetry/subqueries")
+        .and_then(Value::as_array)
+        .is_none_or(|rows| rows.iter().all(|row| row
+            .get("providers_attempted")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty))));
+    assert!(no_match_value
+        .pointer("/telemetry/routing_decision/selected_providers")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+    println!(
+        "wrapper_request native=repo_search outcome=scoped_local_no_match remote_coverage=skipped"
+    );
+
+    let local_denied = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(json!({"query": marker, "include_local": false}), None)
+        .await
+        .expect("repo_search: include_local=false should preserve typed policy response");
+    assert!(
+        !local_denied.success,
+        "repo_search: disabled local inclusion cannot report success"
+    );
+    assert!(
+        local_denied.output.contains("disabled by policy"),
+        "repo_search: expected policy denial, got {:?}",
+        local_denied.output
+    );
+    println!("wrapper_request native=repo_search include_local=false outcome=policy_denial");
+
+    let package_selection = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(
+            json!({"query": "crate serde", "include_local": true, "providers": ["duckduckgo"], "package": "serde", "ecosystem": "crates_io", "include_security_context": true}),
+            None,
+        )
+        .await
+        .expect("repo_search: package/security context should retain local-only result");
+    let package_value = package_selection
+        .value
+        .expect("repo_search: package structured value");
+    assert!(package_value
+        .get("providers_queried")
+        .and_then(Value::as_array)
+        .is_some_and(|providers| providers
+            .iter()
+            .any(|provider| provider == "local_workspace")
+            && providers
+                .iter()
+                .all(|provider| provider == "local_workspace")));
+    assert_eq!(
+        package_value
+            .pointer("/package_resolution/verified")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert!(package_value
+        .pointer("/package_resolution/warnings")
+        .and_then(Value::as_array)
+        .is_some_and(|warnings| warnings.iter().any(|warning| warning
+            .as_str()
+            .is_some_and(|message| message.contains("skipped by local-only execution policy")))));
+    assert!(package_value
+        .get("security_context")
+        .is_none_or(Value::is_null));
+    println!(
+        "wrapper_request native=repo_search package_and_security_context remote_resolution=skipped"
+    );
+
+    let disabled_config_path = private_path.join("config").join("disabled-local.toml");
+    write_offline_config(&disabled_config_path, &private_repo, false);
+    let mut disabled_config = smoke_config(
+        binary.to_string_lossy().into_owned(),
+        &private_path,
+        &observation,
+        &child_stderr,
+    );
+    if let Some(egg) = disabled_config
+        .search
+        .as_mut()
+        .and_then(|search| search.eggsearch.as_mut())
+    {
+        if let Some(config_arg) = egg.args.as_mut().and_then(|args| args.get_mut(1)) {
+            *config_arg = disabled_config_path.to_string_lossy().into_owned();
+        }
+    }
+    let mut disabled_service = codegg::mcp::McpService::new();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        disabled_service.connect_stdio(
+            "eggsearch-disabled-local",
+            &binary.to_string_lossy(),
+            &disabled_config
+                .search
+                .as_ref()
+                .and_then(|search| search.eggsearch.as_ref())
+                .and_then(|egg| egg.args.clone())
+                .expect("disabled_local: explicit child config args"),
+            HashMap::from([
+                ("HOME".to_string(), home.to_string_lossy().into_owned()),
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    config_root.to_string_lossy().into_owned(),
+                ),
+                (
+                    "XDG_DATA_HOME".to_string(),
+                    data.to_string_lossy().into_owned(),
+                ),
+                (
+                    "XDG_CACHE_HOME".to_string(),
+                    cache.to_string_lossy().into_owned(),
+                ),
+            ]),
+            10_000,
+        ),
+    )
+    .await
+    .expect("disabled_local: bounded real child handshake")
+    .expect("disabled_local: real child handshake");
+    let disabled_search_config = disabled_config
+        .search
+        .as_ref()
+        .expect("disabled_local: resolved search config");
+    let disabled_mcp = Arc::new(tokio::sync::RwLock::new(disabled_service));
+    let disabled_runtime =
+        codegg::search_backend::SearchRuntimeContext::from_config(disabled_search_config)
+            .with_mcp(disabled_mcp.clone());
+    let disabled_result = RepoSearchTool::with_search_runtime(disabled_runtime.clone())
+        .execute_structured(json!({"query": marker, "include_local": true}), None)
+        .await
+        .expect("disabled_local: local request should return classified policy denial");
+    assert!(
+        !disabled_result.success,
+        "disabled_local: absent backend cannot report complete search"
+    );
+    assert!(
+        disabled_result.output.contains("disabled by policy"),
+        "disabled_local: expected explicit denial, got {:?}",
+        disabled_result.output
+    );
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        disabled_mcp.write().await.shutdown_all(),
+    )
+    .await
+    .expect("disabled_local: bounded child shutdown");
+    println!("wrapper_request native=repo_search local_backend=disabled outcome=policy_denial");
+
+    let malformed_config_path = private_path.join("config").join("malformed.toml");
+    std::fs::write(&malformed_config_path, "[search\nmode = \"off\"\n")
+        .expect("negative_control: write malformed private config");
+    let mut malformed_service = codegg::mcp::McpService::new();
+    let malformed_result = tokio::time::timeout(
+        Duration::from_secs(5),
+        malformed_service.connect_stdio(
+            "eggsearch-malformed-config",
+            &binary.to_string_lossy(),
+            &[
+                "--config".to_string(),
+                malformed_config_path.to_string_lossy().into_owned(),
+                "mcp".to_string(),
+                "stdio".to_string(),
+            ],
+            HashMap::from([
+                ("HOME".to_string(), home.to_string_lossy().into_owned()),
+                (
+                    "XDG_CONFIG_HOME".to_string(),
+                    config_root.to_string_lossy().into_owned(),
+                ),
+                (
+                    "XDG_DATA_HOME".to_string(),
+                    data.to_string_lossy().into_owned(),
+                ),
+                (
+                    "XDG_CACHE_HOME".to_string(),
+                    cache.to_string_lossy().into_owned(),
+                ),
+            ]),
+            5_000,
+        ),
+    )
+    .await
+    .expect("negative_control: malformed config handshake must be bounded");
+    tokio::time::timeout(Duration::from_secs(5), malformed_service.shutdown_all())
+        .await
+        .expect("negative_control: malformed child cleanup must be bounded");
+    assert!(
+        malformed_result.is_err(),
+        "negative_control: malformed config unexpectedly initialized MCP"
+    );
+    println!(
+        "negative_control stage=config_identity malformed_private_config=rejected bounded=true"
+    );
+
     for (label, input, expected) in [
         (
             "retired_google_news",
@@ -625,6 +966,20 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
         );
         println!("wrapper_request negative={label} outcome=local_validation_error mcp=not_invoked");
     }
+    let invalid_repo_provider = RepoSearchTool::with_search_runtime(runtime.clone())
+        .execute_structured(
+            json!({"query": "x", "providers": ["missing_provider"]}),
+            None,
+        )
+        .await
+        .expect_err("wrapper_request: invalid repository provider must reject before MCP");
+    assert!(
+        invalid_repo_provider
+            .to_string()
+            .contains("unsupported provider"),
+        "wrapper_request: unexpected invalid repo provider error: {invalid_repo_provider}"
+    );
+    println!("wrapper_request negative=repo_search_unknown_provider outcome=local_validation_error mcp=not_invoked");
     // The stable alias remains covered against the exact tagged inventory by
     // search_backend_arg_mapping; the real child's provider inventory above
     // proves its destination id is present.
@@ -651,7 +1006,7 @@ async fn pinned_eggsearch_process_pair_is_compatible_offline() {
         kill_guard.released = true;
         println!("teardown shared_stdio_process=shutdown child_pid={pid} alive=false");
     }
-    println!("pair_coverage real_native_wrappers=2 tagged_tools=10 live_provider_calls=0 network_containment=not_claimed repo_search_mode_off_local_only=known_v041_issue");
+    println!("pair_coverage real_native_wrappers=3 tagged_tools=10 live_provider_calls=0 network_containment=not_claimed repo_search_mode_off_local_only=pass");
 
     if !keep_private {
         std::fs::remove_dir_all(&private_path)

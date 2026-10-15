@@ -86,6 +86,11 @@ impl Tool for RepoSearchTool {
                     "enum": ["generic", "coding", "security", "research"],
                     "description": "Provider-selection profile"
                 },
+                "providers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit provider IDs for remote repository search"
+                },
                 "include_local": {
                     "type": "boolean",
                     "description": "Include matching local workspace results when eggsearch provides them"

@@ -755,10 +755,17 @@ pub async fn call_repo_search_structured(
             "language",
             "symbol",
             "profile",
+            "ecosystem",
+            "package",
+            "version",
+            "version_requirement",
+            "package_namespace",
+            "include_security_context",
             "include_local",
             "mode",
         ],
     );
+    translate_provider_list(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
         .and_then(Value::as_u64)
@@ -1160,7 +1167,7 @@ pub async fn call_build_evidence_bundle(
 }
 
 /// Translate a stable CodeGG provider hint into the exact accepted
-/// eggsearch v0.4.1 provider id. `None` means intentional automatic
+/// eggsearch v0.4.3 provider id. `None` means intentional automatic
 /// routing; every explicit hint either maps or fails before MCP dispatch.
 pub(crate) fn translate_provider_hint(
     hint: Option<&str>,

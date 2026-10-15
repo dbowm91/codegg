@@ -112,7 +112,7 @@ Verified 2026-10-06 (third pass) against `src/upgrade/{mod,managed}.rs`,
   (`mod.rs:68`), `check_for_updates()` (`mod.rs:64`), `upgrade()`
   (`mod.rs:101`), `VersionInfo` (`mod.rs:44`), `describe_manual_fresh_install()`
   (`mod.rs:124`), the four-entry `SUPPORTED_TARGETS` (`managed.rs:25`), the
-  pinned eggsearch `0.4.1` (`managed.rs:24`), the 10-second Eggfetch profile
+  pinned eggsearch `0.4.3` (`managed.rs:24`), the 10-second Eggfetch profile
   (`managed.rs:156`, `:176`), exact-404-only asset absence
   (`managed.rs:552`, `:621`), the three required runfiles plus optional
   `THIRD-PARTY-NOTICES.txt` (`managed.rs:263`-`:264`, `:305`), and the

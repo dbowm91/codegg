@@ -29,9 +29,9 @@ cargo install --locked --path .
 
 This installs `codegg` and its sandbox helper. It does **not** install the
 pinned `codegg-eggsearch` sidecar, which powers web and repository search —
-build it from eggsearch tag `v0.4.1` (commit
-`32769d684417567dfb30fc5adea1475cee7f0ed0`) and place it next to the `codegg` binary,
-or override it in config. `codegg doctor` tells you if it is missing.
+build it from eggsearch tag `v0.4.3` (commit
+`5e7b853e7eebf29c58f84959805c8774279d7ea4`) and place it next to the `codegg`
+binary, or override it in config. `codegg doctor` tells you if it is missing.
 
 Optional Cargo features: `server` (HTTP/WebSocket server), `plugins` (WASM
 plugin runtime), `image` (terminal images).

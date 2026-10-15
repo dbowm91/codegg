@@ -30,7 +30,7 @@ pub const EGGSEARCH_RECOMMENDED_TOOLS: &[&str] = &[
     "research_search",
     "build_evidence_bundle",
 ];
-/// Complete ten-tool upstream surface for the pinned 0.4.1 bundle
+/// Complete ten-tool upstream surface for the pinned 0.4.3 bundle
 /// (required + recommended + the diagnostic `provider_status` helper).
 /// Closure for the self-contained-installation milestone expects this
 /// surface from the bundled sidecar; MCP initialize/tool discovery
@@ -49,7 +49,7 @@ pub const EGGSEARCH_BUNDLED_COMPLETE_SURFACE: &[&str] = &[
 ];
 
 /// Provider ids referenced by the stable `websearch.provider` contract.
-/// Every value is a v0.4.1 inventory id after adapter alias translation.
+/// Every value is a v0.4.3 inventory id after adapter alias translation.
 pub const EGGSEARCH_WEBSEARCH_PROVIDER_IDS: &[&str] = &[
     "duckduckgo",
     "mojeek",
@@ -1159,7 +1159,7 @@ mod tests {
         };
         let joined = report.summary_lines().join("\n");
         assert!(joined.contains("Eggsearch version: 0.4.2"));
-        assert!(joined.contains("incompatible version (expected 0.4.1)"));
+        assert!(joined.contains("incompatible version (expected 0.4.3)"));
     }
 
     #[test]

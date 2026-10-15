@@ -1,6 +1,6 @@
 # Search / Eggsearch Development Integration and Legacy Backend Retirement
 
-Status: active (M001 closed; pair C001 historical conditional; pair C002 ready; M002 blocked on strict C002)
+Status: active (M001 closed; pair C001 historical conditional; pair C002 active; M002 blocked on strict C002)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -305,4 +305,4 @@ The workstream closes when:
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
 | M001 pinned development adoption + paired contract | closed | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`; closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md` | Implementation `9dd8a1c8`; exact v0.4.1 paired process and quick verification passed |
-| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 closed; C001 historically conditional; upstream v0.4.3 published. CodeGG paired-compatibility **C002** `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` is now ready and must strictly close before deletion. |
+| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 closed; C001 historically conditional; upstream v0.4.3 published. CodeGG paired-compatibility **C002** `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` is active and must strictly close before deletion. |

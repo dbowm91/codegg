@@ -203,11 +203,12 @@ from either:
 The eggsearch adapter uses `call_tool_structured` to retain machine-
 readable evidence before display caps are applied.
 
-### Eggsearch 0.4.1 compatibility policy
+### Eggsearch 0.4.3 compatibility policy
 
-The stable eggsearch facade is audited against eggsearch `0.4.1` (tag
-`v0.4.1`, immutable commit `32769d684417567dfb30fc5adea1475cee7f0ed0`). CodeGG exposes the provider-neutral additive controls that fit its
-ownership boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
+The stable eggsearch facade is audited against eggsearch `0.4.3` (tag
+`v0.4.3`, immutable commit `5e7b853e7eebf29c58f84959805c8774279d7ea4`).
+CodeGG exposes the provider-neutral additive controls that fit its ownership
+boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
 its bounded extraction controls, and fetch `cache_policy` plus the
 tightening-only `max_cache_age_seconds` (including per-web-item batch
 controls). CodeGG always requests `response_detail=diagnostic` internally so
@@ -215,16 +216,17 @@ the structured result retains warnings, provider/retrieval state, trust
 markers, stable IDs, suggested fetches, and next actions; its existing
 bounded/trust-framed text remains the model-facing projection. `response_detail`
 is not a user-facing option, and next actions are data only—CodeGG never
-auto-executes them. Retained provider hints map to the exact v0.4.1 inventory;
-unknown and retired explicit values fail before dispatch. The development
-pair gate is `scripts/test-eggsearch-pair.sh`; it launches the real pinned MCP
-process with an explicit private `search.mode = "off"` config and cleared
-credentials. Its native web and security wrapper calls assert tagged policy
-errors without issuing provider searches. It does not enforce OS-level network
-containment. Do not use eggsearch v0.4.1 `repo_search(include_local=true)` as
-an offline fixture: a C001 qualification attempt observed remote provider
-dispatch despite the reported local-only routing decision; that upstream
-behavior remains a release blocker until corrected and requalified.
+auto-executes them. Retained provider hints map to the exact v0.4.3 inventory;
+unknown and retired explicit values fail before dispatch. The pinned CodeGG
+development contract is v0.4.3. Its pair gate launches one real pinned MCP
+process with an explicit private `search.mode = "off"` config, scoped local
+root, and cleared credentials. Native web and security wrappers assert tagged
+policy errors; native `repo_search(include_local=true)` proves private local
+retrieval, `local_workspace` provenance, and zero remote provider attempts even
+with an explicit remote provider hint. The gate does not enforce OS-level
+network containment. Historical v0.4.1/v0.4.2 local-search behavior remains
+documented in C001's immutable closure and is not used for current
+qualification.
 
 ### IDE Server (`ide_server.rs`)
 

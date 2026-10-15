@@ -92,7 +92,7 @@ EOF
 # Fixture eggsearch: reports the given upstream version via --version.
 make_eggsearch_fixture() {
     local path="$1"
-    local version="${2:-0.4.1}"
+    local version="${2:-0.4.3}"
     cat > "$path" <<EOF
 #!/bin/sh
 if [ "\$1" = "--version" ]; then
@@ -130,19 +130,20 @@ fi
 if [ "$(codegg_release_runfiles_for_target "x86_64-unknown-linux-gnu" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
     && [ "$(codegg_release_runfiles_for_target "aarch64-apple-darwin" | LC_ALL=C sort | tr '\n' ' ')" = "codegg codegg-eggsearch codegg-sandbox-helper " ] \
     && [ "$(codegg_release_runfiles_for_target "x86_64-pc-windows-msvc" | LC_ALL=C sort | tr '\n' ' ')" = "codegg-eggsearch.exe codegg-sandbox-helper.exe codegg.exe " ] \
-    && [ "$CODEGG_EGGSEARCH_PINNED_VERSION" = "0.4.1" ] \
-    && [ "$CODEGG_EGGSEARCH_UPSTREAM_TAG" = "v0.4.1" ] \
-    && [ "$CODEGG_EGGSEARCH_UPSTREAM_COMMIT" = "32769d684417567dfb30fc5adea1475cee7f0ed0" ] \
+    && [ "$CODEGG_EGGSEARCH_PINNED_VERSION" = "0.4.3" ] \
+    && [ "$CODEGG_EGGSEARCH_UPSTREAM_TAG" = "v0.4.3" ] \
+    && [ "$CODEGG_EGGSEARCH_UPSTREAM_COMMIT" = "5e7b853e7eebf29c58f84959805c8774279d7ea4" ] \
     && [ "$CODEGG_EGGSEARCH_SIDECAR" = "codegg-eggsearch" ]; then
-    ok "canonical per-target runfile manifest with pinned eggsearch 0.4.1"
+    ok "canonical per-target runfile manifest with pinned eggsearch 0.4.3"
 else
-    fail "canonical per-target runfile manifest with pinned eggsearch 0.4.1"
+    fail "canonical per-target runfile manifest with pinned eggsearch 0.4.3"
 fi
 
-if codegg_release_check_eggsearch_version_output "eggsearch 0.4.1" "0.4.1" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.3.8" "0.4.1" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.10" "0.4.1" 2>/dev/null \
-    && ! codegg_release_check_eggsearch_version_output "codegg 0.1.0" "0.4.1" 2>/dev/null; then
+if codegg_release_check_eggsearch_version_output "eggsearch 0.4.3" "0.4.3" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.1" "0.4.3" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.2" "0.4.3" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "eggsearch 0.4.30" "0.4.3" 2>/dev/null \
+    && ! codegg_release_check_eggsearch_version_output "codegg 0.1.0" "0.4.3" 2>/dev/null; then
     ok "eggsearch identity/version check accepts pin, rejects drift"
 else
     fail "eggsearch identity/version check accepts pin, rejects drift"
@@ -153,8 +154,8 @@ REL="$ROOT/rel"
 mkdir -p -- "$REL"
 make_fixture "$FIXBIN_DIR/codegg-fixture" "0.1.0"
 make_helper_fixture "$FIXBIN_DIR/helper-fixture"
-make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-fixture" "0.4.1"
-printf 'eggsearch 0.4.1 (%s tag %s)\nlicense: see upstream %s\n' "$CODEGG_EGGSEARCH_SOURCE" "$CODEGG_EGGSEARCH_UPSTREAM_TAG" "$CODEGG_EGGSEARCH_SOURCE" > "$FIXBIN_DIR/notice.txt"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-fixture" "0.4.3"
+printf 'eggsearch 0.4.3 (%s tag %s)\nlicense: see upstream %s\n' "$CODEGG_EGGSEARCH_SOURCE" "$CODEGG_EGGSEARCH_UPSTREAM_TAG" "$CODEGG_EGGSEARCH_SOURCE" > "$FIXBIN_DIR/notice.txt"
 
 for t in $CODEGG_REQUIRED_TARGETS; do
     expect_pass "package bundle fixture for $t" "$PKG" --target "$t" --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
@@ -178,7 +179,7 @@ for t in $CODEGG_REQUIRED_TARGETS; do
     out="$("$EXTRACT_CHECK/$t/codegg" --version)"
     [ "$out" = "codegg 0.1.0" ] || { payload_ok=0; break; }
     egg_out="$("$EXTRACT_CHECK/$t/codegg-eggsearch" --version)"
-    [ "$egg_out" = "eggsearch 0.4.1" ] || { payload_ok=0; break; }
+    [ "$egg_out" = "eggsearch 0.4.3" ] || { payload_ok=0; break; }
     if "$EXTRACT_CHECK/$t/codegg-sandbox-helper" >/dev/null 2>&1; then payload_ok=0; break; fi
 done
 if [ "$payload_ok" -eq 1 ]; then
@@ -234,7 +235,7 @@ expect_fail "reject symlink eggsearch" "$PKG" --target 'x86_64-unknown-linux-gnu
 printf 'not executable\n' > "$ROOT/plain-file"
 expect_fail "reject non-executable binary" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$ROOT/plain-file" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
 
-make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-wrong" "0.3.8"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-wrong" "0.4.1"
 expect_fail "reject wrong eggsearch version" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-wrong" --out-dir "$REL"
 cat > "$FIXBIN_DIR/not-eggsearch" <<'EOF'
 #!/bin/sh
@@ -246,7 +247,7 @@ echo "impostor"
 EOF
 chmod +x "$FIXBIN_DIR/not-eggsearch"
 expect_fail "reject wrong eggsearch identity" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/not-eggsearch" --out-dir "$REL"
-expect_fail "reject drifted --eggsearch-version flag" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --eggsearch-version "0.3.8" --out-dir "$REL"
+expect_fail "reject drifted --eggsearch-version flag" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --eggsearch-version "0.4.1" --out-dir "$REL"
 
 expect_fail "reject option-like binary path" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary '-evil' --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir "$REL"
 expect_fail "reject option-like out-dir" "$PKG" --target 'x86_64-unknown-linux-gnu' --binary "$FIXBIN_DIR/codegg-fixture" --sandbox-helper "$FIXBIN_DIR/helper-fixture" --eggsearch "$FIXBIN_DIR/eggsearch-fixture" --out-dir '-evil'

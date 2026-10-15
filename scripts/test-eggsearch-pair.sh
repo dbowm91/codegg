@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-EXPECTED_VERSION="0.4.1"
-EXPECTED_COMMIT="32769d684417567dfb30fc5adea1475cee7f0ed0"
-EXPECTED_TAG="v0.4.1"
+EXPECTED_VERSION="0.4.3"
+EXPECTED_COMMIT="5e7b853e7eebf29c58f84959805c8774279d7ea4"
+EXPECTED_TAG="v0.4.3"
 TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codegg-eggsearch-pair.XXXXXX")"
 SOURCE_ROOT=""
 cleanup() {
@@ -47,7 +47,7 @@ elif [[ -n "${CODEGG_EGGSEARCH_BIN:-}" ]]; then
     CODEGG_EGGSEARCH_BIN="$(cd "$(dirname "$CODEGG_EGGSEARCH_BIN")" && pwd -P)/$(basename "$CODEGG_EGGSEARCH_BIN")"
     CODEGG_EGGSEARCH_TAG="v$EXPECTED_VERSION (binary-supplied)"
 else
-    printf '%s\n' "error: set CODEGG_EGGSEARCH_BIN to an explicit binary or CODEGG_EGGSEARCH_SOURCE to a checkout containing the immutable v0.4.1 tag" >&2
+    printf '%s\n' "error: set CODEGG_EGGSEARCH_BIN to an explicit binary or CODEGG_EGGSEARCH_SOURCE to a checkout containing the immutable v0.4.3 tag" >&2
     exit 2
 fi
 export CODEGG_EGGSEARCH_BIN CODEGG_EGGSEARCH_TAG

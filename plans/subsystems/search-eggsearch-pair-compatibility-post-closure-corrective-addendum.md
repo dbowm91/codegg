@@ -39,7 +39,7 @@ These are **test-qualification gaps**, not evidence of a production CodeGG/eggse
 | ID | Milestone | Status | Plan | Dependencies |
 |---|---|---|---|---|
 | C001 | Real native-wrapper MCP dispatch and private-child isolation proof | **conditionally closed** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md`; closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` | Two native wrappers cross the pinned process and child isolation is demonstrated. Strict closure is withheld because exploratory `repo_search(include_local=true)` under Mode Off initiated remote provider dispatch. |
-| C002 | Correct and requalify Mode-Off local repository search | **ready** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` (historical filename retained) | Upstream v0.4.3 release satisfies the external gate; update CodeGG pins and execute native `repo_search` on real v0.4.3 child plus prior offline/negative trajectories. Strict C002 closure is still required. |
+| C002 | Correct and requalify Mode-Off local repository search | **active** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` (historical filename retained) | Upstream v0.4.3 release satisfies the external gate; CodeGG pin/harness changes and real child qualification are in progress. Strict C002 closure is still required. |
 
 C001 executed without working CodeGG full agent inference or publishing any release. Evidence-workflows M002–M004 retain their existing status; this pair-qualification stream does not change their dependencies.
 

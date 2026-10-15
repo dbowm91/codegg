@@ -177,7 +177,7 @@ if [ -z "$ARTIFACT" ]; then
     chmod 755 "$FIXBIN/helper-fixture"
     printf 'note: no built helper; using exit-125 fixture\n'
   fi
-  printf '#!/usr/bin/env sh\nprintf "eggsearch 0.4.1\\n"\n' > "$FIXBIN/eggsearch-fixture"
+  printf '#!/usr/bin/env sh\nprintf "eggsearch 0.4.3\\n"\n' > "$FIXBIN/eggsearch-fixture"
   chmod 755 "$FIXBIN/eggsearch-fixture"
   HOST_TARGET="$HOST_TARGET_DETECTED"
   printf 'fixture target: %s\n' "$HOST_TARGET"
@@ -300,8 +300,8 @@ if [ -x "$INSTALL_DEST/codegg-eggsearch" ]; then
     EGG_VERSION="$(cat "$RUN_LOG")"
     printf 'managed eggsearch version: %s\n' "$EGG_VERSION"
     case "$EGG_VERSION" in
-      *eggsearch*0.4.1*) ok "managed sidecar reports pinned 0.4.1" ;;
-      *) printf 'note: fixture sidecar version differs (expected 0.4.1, got %s)\n' "$EGG_VERSION" ;;
+      *eggsearch*0.4.3*) ok "managed sidecar reports pinned 0.4.3" ;;
+      *) printf 'note: fixture sidecar version differs (expected 0.4.3, got %s)\n' "$EGG_VERSION" ;;
     esac
   else
     fail "managed sidecar --version failed"
