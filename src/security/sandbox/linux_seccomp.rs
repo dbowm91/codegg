@@ -29,6 +29,17 @@ pub fn compile_filter() -> Result<Vec<u8>, String> {
         libc::SYS_mount,
         libc::SYS_umount2,
         libc::SYS_pivot_root,
+        libc::SYS_chroot,
+        // New mount API syscalls cannot be inferred from the legacy mount(2)
+        // deny; keep the namespace's mount tree immutable after Bubblewrap
+        // has installed its view.
+        libc::SYS_open_tree,
+        libc::SYS_move_mount,
+        libc::SYS_fsopen,
+        libc::SYS_fsconfig,
+        libc::SYS_fsmount,
+        libc::SYS_fspick,
+        libc::SYS_mount_setattr,
         libc::SYS_ptrace,
         libc::SYS_process_vm_readv,
         libc::SYS_process_vm_writev,

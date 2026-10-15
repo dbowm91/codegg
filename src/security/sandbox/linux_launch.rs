@@ -442,14 +442,19 @@ fn probe_user_namespace_creation() -> ProbeFact {
 
 fn probe_seccomp_filter() -> ProbeFact {
     match std::fs::read_to_string("/proc/sys/kernel/seccomp/actions_avail") {
-        Ok(actions) if actions.split_whitespace().any(|action| action == "filter") => {
-            ProbeFact::available(
-                "kernel advertises seccomp filter action; child application unproven",
-            )
+        Ok(actions) if seccomp_filter_actions_available(&actions) => ProbeFact::available(
+            "kernel advertises ALLOW and ERRNO seccomp actions; child filter installation unproven",
+        ),
+        Ok(_) => {
+            ProbeFact::unavailable("kernel does not advertise both ALLOW and ERRNO seccomp actions")
         }
-        Ok(_) => ProbeFact::unavailable("kernel does not advertise seccomp filter action"),
         Err(error) => ProbeFact::unknown(format!("cannot inspect seccomp actions: {error}")),
     }
+}
+
+fn seccomp_filter_actions_available(actions: &str) -> bool {
+    let actions = actions.split_whitespace().collect::<BTreeSet<_>>();
+    actions.contains("allow") && actions.contains("errno")
 }
 
 fn probe_proc_mount_inputs() -> ProbeFact {
@@ -605,6 +610,15 @@ mod tests {
             write_paths: vec![PathBuf::from("/workspace")],
             deny_paths: vec![PathBuf::from("/workspace/.git")],
         })
+    }
+
+    #[test]
+    fn seccomp_probe_requires_filter_actions_not_a_nonexistent_filter_action() {
+        assert!(seccomp_filter_actions_available(
+            "kill_process kill_thread trap errno user_notif trace log allow"
+        ));
+        assert!(!seccomp_filter_actions_available("kill_process trap allow"));
+        assert!(!seccomp_filter_actions_available("filter"));
     }
 
     #[test]

@@ -192,9 +192,9 @@ separate from M005's offline intent. This scoped path is intentionally
 fail-closed on hosts without those ABI features. The helper closes inherited
 descriptors except stdio and its private status/ack descriptors before exec,
 and passes an architecture-checked `seccompiler` denylist to Bubblewrap for
-installation before target exec. The filter blocks namespace changes, tracing,
-selected kernel control interfaces, and namespace flags passed to `clone`; it
-does not implement network denial. A native managed-child probe covers host-PID
+installation before target exec. The filter blocks namespace and legacy/new
+mount changes, tracing, selected kernel control interfaces, and namespace flags
+passed to `clone`; it does not implement network denial. A native managed-child probe covers host-PID
 invisibility, same-UID signal denial, abstract-socket denial, descriptor
 closure, and blocked namespace syscalls; its positive hosted run is pending.
 Pathname-socket denial and resource enforcement are not claimed. The process

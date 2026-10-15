@@ -172,9 +172,11 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
          print('ambient-fd-closed' if not os.path.exists('/proc/self/fd/{ambient_fd}') else 'ambient-fd-open')\n\
          import ctypes; libc=ctypes.CDLL(None, use_errno=True)\n\
          seccomp_mode=libc.prctl(21, 0, 0, 0, 0)\n\
-         result=libc.unshare(0x10000000)\n\
-         print('seccomp-denied-namespace-change' if seccomp_mode == 2 and result == -1 and ctypes.get_errno() == 38 else 'seccomp-namespace-change-allowed')\n\
-         if seccomp_mode != 2 or result != -1 or ctypes.get_errno() != 38: sys.exit(14)\n\
+         result=libc.unshare(0x10000000); unshare_error=ctypes.get_errno()\n\
+         mount_result=libc.mount(None, None, None, 0, None); mount_error=ctypes.get_errno()\n\
+         print('seccomp-denied-namespace-change' if seccomp_mode == 2 and result == -1 and unshare_error == 38 else 'seccomp-namespace-change-allowed')\n\
+         print('seccomp-denied-mount-change' if mount_result == -1 and mount_error == 38 else 'seccomp-mount-change-allowed')\n\
+         if seccomp_mode != 2 or result != -1 or unshare_error != 38 or mount_result != -1 or mount_error != 38: sys.exit(14)\n\
          import subprocess; subprocess.run(['git','--version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE); print('git-subprocess-ok')\n",
         signal_pid = signal_target.id(),
         host_pid = std::process::id(),
@@ -226,6 +228,7 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
         stdout.contains("seccomp-denied-namespace-change"),
         "{stdout}"
     );
+    assert!(stdout.contains("seccomp-denied-mount-change"), "{stdout}");
     assert!(stdout.contains("git-subprocess-ok"), "{stdout}");
     assert!(
         !signal_marker.exists(),
@@ -297,6 +300,10 @@ async fn process_tier_cancellation_kills_namespace_descendants() {
     for _ in 0..200 {
         if started.exists() {
             break;
+        }
+        if task.is_finished() {
+            let result = task.await.expect("join early M004 completion");
+            panic!("M004 launch ended before the descendant started: {result:?}");
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

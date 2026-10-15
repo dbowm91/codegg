@@ -52,6 +52,8 @@ jobs:
           bwrap --version
           id
           cat /proc/sys/user/max_user_namespaces
+          printf 'Seccomp actions: '
+          cat /proc/sys/kernel/seccomp/actions_avail || true
           printf 'AppArmor profile: '
           cat /proc/self/attr/current || true
           printf 'Bubblewrap mode: '
