@@ -128,7 +128,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-The current layout version is **70**, defined by
+The current layout version is **79**, defined by
 `storage::STORAGE_LAYOUT_VERSION` (`storage/mod.rs:41`), and must track the
 highest migration wired into the
 canonical schema path in `session/schema.rs` (see
@@ -169,6 +169,16 @@ store uses revision-checked lifecycle transitions and unique idempotency
 keys; restart reconciliation remains a pure classifier in the core domain.
 The legacy `task` table remains readable as compatibility history; it is not
 backfilled with unverifiable durable-run provenance.
+
+Migration 79 adds the bounded `workstream_claim` intent records,
+`workstream_claim_dependency` edges, and append-only
+`workstream_claim_event` provenance (Agent Workstream Blackboard M003).
+Claims are project/workspace/group scoped, revision and lease-generation
+fenced, and have an active exact-target uniqueness index; path/interface
+overlap checks remain conservative advice. The records never change
+filesystem, Git, sandbox, or scheduler authority. Group claim history is
+capped at 128 claims and 4096 events; each claim has at most 32 prerequisite
+edges. Existing agent run/task/group rows are not backfilled.
 
 The durable run records intentionally retain summaries, digests, references,
 and failure classifications rather than full prompts, hidden reasoning,
@@ -272,8 +282,8 @@ pub async fn init_pool_at_for_migration(db_path: &Path)
 
 Migrations are implemented in `session/schema.rs`, not in the storage
 module. The storage module calls `session::schema::migrate()` during
-initialization. `session/schema.rs` contains 76 `CREATE TABLE`
-statements; migrations v1–v72 are all present as `migrate_v<N>` functions
+initialization. `session/schema.rs` contains 87 `CREATE TABLE`
+statements; migrations v1–v79 are all present as `migrate_v<N>` functions
 (declaration order in the file is not numeric — `migrate_v67`,
 `migrate_v34`, `migrate_v33` lead, and `migrate_v50`/`v47`/`v46`/`v32` are
 defined at the end).

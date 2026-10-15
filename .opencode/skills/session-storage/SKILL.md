@@ -34,6 +34,7 @@ into a second source of truth.
 | Catalog | `crates/codegg-core/src/project_catalog.rs`, `project_storage.rs` | Daemon-owned project list/get/register/archive/restore; path-independent identity |
 | Identity | `crates/codegg-core/src/identity.rs` | Opaque string newtypes (UUIDv4), validated parsing, lexical contract |
 | Run artifacts | `crates/codegg-core/src/run_store.rs`, `src/run_rerun.rs` | Persistent run index + artifact storage; rerun linkage |
+| Workstream claims | `crates/codegg-core/src/workstream_claim.rs`, schema migration v79 | Group-scoped intent claims, CAS lifecycle, bounded dependencies and append-only provenance; never grants filesystem/Git/scheduler authority |
 
 ## Hard Rules
 

@@ -42,5 +42,6 @@ pub mod work_order;
 pub mod work_plan;
 pub mod workspace;
 pub mod workspace_services;
+pub mod workstream_claim;
 pub mod worktree;
 pub mod worktree_service;

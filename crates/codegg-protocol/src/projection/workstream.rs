@@ -11,6 +11,8 @@ use super::limits::{truncate_str, MAX_PROJECTION_STRING_BYTES};
 use super::snapshot::SessionProjectionSnapshot;
 
 pub const MAX_WORKSTREAM_MEMBERS: usize = 16;
+pub const MAX_WORKSTREAM_CLAIMS: usize = 128;
+pub const MAX_WORKSTREAM_DEPENDENCIES: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentWorkstreamSnapshot {
@@ -21,10 +23,43 @@ pub struct AgentWorkstreamSnapshot {
     pub revision: u64,
     pub group: AgentRunGroupSummaryProjection,
     pub members: Vec<AgentWorkstreamMember>,
+    #[serde(default)]
+    pub claims: Vec<WorkstreamClaimProjection>,
+    #[serde(default)]
+    pub dependencies: Vec<WorkstreamDependencyProjection>,
+    #[serde(default)]
+    pub unavailable_claim_ids: Vec<String>,
     /// Member IDs whose authoritative run facts were absent or outside this
     /// snapshot's project/workspace. Consumers must show an incomplete view.
     pub unavailable_member_run_ids: Vec<String>,
     pub truncated: bool,
+    #[serde(default)]
+    pub claims_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkstreamClaimProjection {
+    pub claim_id: String,
+    pub project_id: String,
+    pub workspace_id: String,
+    pub group_id: String,
+    pub kind: String,
+    pub target: String,
+    pub state: String,
+    pub owner_kind: String,
+    pub owner_id: String,
+    pub version: u64,
+    pub lease_generation: u64,
+    pub lease_expires_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkstreamDependencyProjection {
+    pub claim_id: String,
+    pub prerequisite_kind: String,
+    pub prerequisite_id: String,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,6 +107,18 @@ pub fn project_workstream(
     snapshot: &SessionProjectionSnapshot,
     group_id: &str,
 ) -> Result<AgentWorkstreamSnapshot, WorkstreamProjectionError> {
+    project_workstream_with_claims(snapshot, group_id, &[], &[])
+}
+
+/// Extend one authorized session snapshot with claim data read through the
+/// same group/project authorization boundary. Foreign or mismatched records
+/// are omitted and reported as unavailable; claim prose is never inferred.
+pub fn project_workstream_with_claims(
+    snapshot: &SessionProjectionSnapshot,
+    group_id: &str,
+    claims: &[WorkstreamClaimProjection],
+    dependencies: &[WorkstreamDependencyProjection],
+) -> Result<AgentWorkstreamSnapshot, WorkstreamProjectionError> {
     let mut group = snapshot
         .run_groups
         .iter()
@@ -104,6 +151,59 @@ pub fn project_workstream(
         members.push(project_member(snapshot, run));
     }
 
+    let mut projected_claims = Vec::new();
+    let mut unavailable_claim_ids = Vec::new();
+    let claims_truncated =
+        claims.len() > MAX_WORKSTREAM_CLAIMS || dependencies.len() > MAX_WORKSTREAM_DEPENDENCIES;
+    for claim in claims.iter().take(MAX_WORKSTREAM_CLAIMS) {
+        if claim.claim_id.is_empty()
+            || claim.project_id != snapshot.project_id
+            || claim.workspace_id != snapshot.workspace_id
+            || claim.group_id != group_id
+            || claim.target.len() > 256
+            || claim.owner_id.is_empty()
+            || claim.kind.len() > 32
+            || claim.state.len() > 32
+        {
+            unavailable_claim_ids.push(bounded(&claim.claim_id));
+            continue;
+        }
+        projected_claims.push(WorkstreamClaimProjection {
+            claim_id: bounded(&claim.claim_id),
+            project_id: snapshot.project_id.clone(),
+            workspace_id: snapshot.workspace_id.clone(),
+            group_id: group_id.to_owned(),
+            kind: bounded(&claim.kind),
+            target: truncate_str(&claim.target, 256).into_owned(),
+            state: bounded(&claim.state),
+            owner_kind: bounded(&claim.owner_kind),
+            owner_id: bounded(&claim.owner_id),
+            version: claim.version,
+            lease_generation: claim.lease_generation,
+            lease_expires_at: claim.lease_expires_at,
+            updated_at: claim.updated_at,
+        });
+    }
+    let projected_claim_ids: std::collections::HashSet<_> = projected_claims
+        .iter()
+        .map(|claim| claim.claim_id.as_str())
+        .collect();
+    let projected_dependencies = dependencies
+        .iter()
+        .take(MAX_WORKSTREAM_DEPENDENCIES)
+        .filter(|edge| {
+            projected_claim_ids.contains(edge.claim_id.as_str())
+                && !edge.prerequisite_id.is_empty()
+                && edge.prerequisite_id.len() <= 128
+        })
+        .map(|edge| WorkstreamDependencyProjection {
+            claim_id: bounded(&edge.claim_id),
+            prerequisite_kind: bounded(&edge.prerequisite_kind),
+            prerequisite_id: bounded(&edge.prerequisite_id),
+            created_at: edge.created_at,
+        })
+        .collect();
+
     Ok(AgentWorkstreamSnapshot {
         project_id: snapshot.project_id.clone(),
         workspace_id: snapshot.workspace_id.clone(),
@@ -111,8 +211,12 @@ pub fn project_workstream(
         revision: snapshot.event_seq,
         group,
         members,
+        claims: projected_claims,
+        dependencies: projected_dependencies,
+        unavailable_claim_ids,
         unavailable_member_run_ids: unavailable,
         truncated,
+        claims_truncated,
     })
 }
 
@@ -266,6 +370,53 @@ mod tests {
                 worktree_id: "worktree-a".into()
             }
         );
+    }
+
+    #[test]
+    fn workstream_projection_filters_claim_scope_and_bounds_dependency_edges() {
+        let claims = [
+            WorkstreamClaimProjection {
+                claim_id: "claim-a".into(),
+                project_id: "project-a".into(),
+                workspace_id: "ws-a".into(),
+                group_id: "group-a".into(),
+                kind: "path".into(),
+                target: "src/lib.rs".into(),
+                state: "claimed".into(),
+                owner_kind: "run".into(),
+                owner_id: "run-a".into(),
+                version: 2,
+                lease_generation: 1,
+                lease_expires_at: None,
+                updated_at: 4,
+            },
+            WorkstreamClaimProjection {
+                claim_id: "claim-foreign".into(),
+                project_id: "project-b".into(),
+                workspace_id: "ws-a".into(),
+                group_id: "group-a".into(),
+                kind: "path".into(),
+                target: "secret.rs".into(),
+                state: "claimed".into(),
+                owner_kind: "run".into(),
+                owner_id: "run-b".into(),
+                version: 1,
+                lease_generation: 1,
+                lease_expires_at: None,
+                updated_at: 4,
+            },
+        ];
+        let dependencies = [WorkstreamDependencyProjection {
+            claim_id: "claim-a".into(),
+            prerequisite_kind: "run".into(),
+            prerequisite_id: "run-b".into(),
+            created_at: 4,
+        }];
+        let view =
+            project_workstream_with_claims(&fixture(), "group-a", &claims, &dependencies).unwrap();
+        assert_eq!(view.claims.len(), 1);
+        assert_eq!(view.unavailable_claim_ids, ["claim-foreign"]);
+        assert_eq!(view.dependencies.len(), 1);
     }
 
     #[test]

@@ -102,6 +102,8 @@ pub use replay::{
 };
 pub use snapshot::SessionProjectionSnapshot;
 pub use workstream::{
-    project_workstream, AgentWorkstreamMember, AgentWorkstreamSnapshot, WorkstreamJobFact,
-    WorkstreamProjectionError, WorkstreamWorktreeFact, MAX_WORKSTREAM_MEMBERS,
+    project_workstream, project_workstream_with_claims, AgentWorkstreamMember,
+    AgentWorkstreamSnapshot, WorkstreamClaimProjection, WorkstreamDependencyProjection,
+    WorkstreamJobFact, WorkstreamProjectionError, WorkstreamWorktreeFact, MAX_WORKSTREAM_CLAIMS,
+    MAX_WORKSTREAM_DEPENDENCIES, MAX_WORKSTREAM_MEMBERS,
 };

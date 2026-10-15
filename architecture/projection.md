@@ -294,6 +294,12 @@ worktrees distinguish unavailable records from observed state. The response
 omits task descriptions, job summaries, terminal prose, paths, prompts, and
 logs. It grants no control authority and performs no storage access.
 
+Agent Workstream Blackboard M003 adds `project_workstream_with_claims`, which
+accepts bounded claims and dependency summaries supplied by the authorized
+group reader. It filters them to the source project/workspace/group and caps
+claims at 128 and projected dependency edges at 512. This is a derived view;
+the daemon claim store remains authoritative for revisions and ownership.
+
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events
 and `task get` remain compatibility adapters for the migration window; new
