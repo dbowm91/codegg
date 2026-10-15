@@ -130,3 +130,61 @@ checks required-launch refusal before the target marker. Hosted results are
 pending. A source audit confirms `InteractiveProcessService` and the `egglsp`
 launcher currently bypass the M004 launch owner; PTY/LSP production routing and
 protocol evidence remain hard M004 closure gates.
+
+## M003 controlled object-view performance follow-up (2026-10-15)
+
+The benchmark harness now supports repeated warm and cold-advised samples on
+caller-supplied repositories. Two equivalent repositories were built from the
+same 45,618 objects: one packed store (27.49 MiB, one pack) and one fragmented
+store (359.95 MiB, all loose). Five samples per shape/cache condition were
+collected on this host. This is an early-stop negative qualification, not a
+100-warm/30-cold percentile qualification: all five fragmented preparations
+breached the plan's hard 3,000 ms per-sample ceiling, so further sampling could
+not make the candidate admissible.
+
+| Shape/cache | Preparation (ms) | Protected `git status` (ms) | Plain status (ms) |
+|---|---:|---:|---:|
+| Packed/warm | 17.546–550.686 | 536.129–574.542 | 8.176–12.520 |
+| Packed/cold-advised | 524.991–702.630 | 535.434–706.368 | 8.469–19.609 |
+| Fragmented/warm | 8,011.941–9,007.093 | 7,209.960–9,545.200 | 7.433–7.666 |
+| Fragmented/cold-advised | 17,837.412–19,433.033 | 8,410.129–9,731.363 | 7.451–7.893 |
+
+Cold conditions use per-object `posix_fadvise(POSIX_FADV_DONTNEED)` and are
+described as cold-advised rather than guaranteed cold; the host page cache was
+not globally flushed. Packed warm preparation exceeded the 250 ms target in
+four of five samples, and protected status overhead exceeded the 500 ms warm
+limit in every sample. Fragmented preparation alone decisively exceeds the
+hard cap. The private full-copy object view is therefore not practical for
+routine agent Git reads on these repository shapes. C010's no-production-
+admission decision stands; this evidence does not admit any host or change the
+Landlock canonical backend. Any optimized view needs a fresh security review
+and a new paired qualification.
+
+## M004/M005 owner integration follow-up (2026-10-15)
+
+PTY creation now resolves the authenticated transport principal's daemon-owned
+profile. With no explicit constrained profile, the existing FullHost PTY path
+is preserved. When ReadOnly or WorkspaceWrite is explicitly selected, PTY
+creation fails before scheduler admission/spawn because no production M004
+receipt is available. Preference lookup failure also refuses. The process
+request does not accept a caller-selected profile. Focused PTY integration
+coverage passes locally (20 tests).
+
+Constrained turns cannot access/reuse the shared FullHost LSP service or its
+preview/context adapters. LSP child ownership is assigned to a distinct
+daemon-owned service keyed by immutable profile, workspace, server identity,
+and generation, responsible for launch/restart/cancel/shutdown. The current
+LSP launcher cannot retain supervised JSON-RPC duplex I/O through the M004
+Bubblewrap helper, so constrained LSP remains unavailable before spawn. This
+resolves the authority/ownership contract while retaining fail-closed runtime
+behavior; it is not positive contained-LSP evidence or M004 closure.
+
+## M005 candidate started (2026-10-15)
+
+An internal-only candidate composes `--unshare-net` with the M004 private
+process view. It is not persisted, user-selectable, or reported as enforced.
+A compile assertion verifies the launch spec and an opt-in native test probes
+host-loopback TCP denial; hosted execution is pending. IPv6, UDP, DNS, inherited
+network descriptors, launch-owner coverage, restricted-host refusal, and
+offline toolchain qualification remain open, as do M004 production-owner and
+host-admission gates.

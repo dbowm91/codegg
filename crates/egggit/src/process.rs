@@ -1361,12 +1361,31 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(20);
         assert!((1..=100).contains(&samples), "sample count must be 1..=100");
+        let cache_mode =
+            std::env::var("CODEGG_OBJECT_VIEW_BENCH_CACHE_MODE").unwrap_or_else(|_| "warm".into());
+        assert!(matches!(cache_mode.as_str(), "cold" | "warm"));
         let argv = vec!["git".to_string(), "status".to_string()];
         eprintln!(
-            "private Git object-view benchmark: repository={}",
-            repository.display()
+            "private Git object-view benchmark: repository={} cache_mode={} samples={}",
+            repository.display(),
+            cache_mode,
+            samples
         );
+        if cache_mode == "warm" {
+            drop(
+                prepare_private_object_view(&argv, &repository).expect("warm private object view"),
+            );
+            let output = GitEnvPolicy::default()
+                .apply_sync(&argv, &repository)
+                .expect("prepare warm trusted Git command")
+                .output()
+                .expect("warm trusted git status");
+            assert!(output.status.success());
+        }
         for sample in 1..=samples {
+            if cache_mode == "cold" {
+                evict_object_file_cache(&trusted_object_directory(&repository).unwrap().unwrap());
+            }
             let started = Instant::now();
             let view = prepare_private_object_view(&argv, &repository)
                 .expect("prepare trusted private object view");
@@ -1397,6 +1416,37 @@ mod tests {
                 baseline_status.as_secs_f64() * 1000.0,
             );
         }
+    }
+
+    #[cfg(unix)]
+    fn evict_object_file_cache(root: &Path) {
+        use std::os::fd::AsRawFd;
+
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let entries = std::fs::read_dir(&directory).expect("read object-store directory");
+            for entry in entries {
+                let entry = entry.expect("read object-store entry");
+                let metadata = entry.metadata().expect("stat object-store entry");
+                if metadata.is_dir() {
+                    pending.push(entry.path());
+                } else if metadata.is_file() {
+                    let file = std::fs::File::open(entry.path()).expect("open object file");
+                    // POSIX_FADV_DONTNEED asks the kernel to discard cached
+                    // pages for these source files; it does not mutate repo
+                    // contents or globally flush unrelated cache state.
+                    let result = unsafe {
+                        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
+                    };
+                    assert_eq!(result, 0, "advise cold object cache");
+                }
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn evict_object_file_cache(_root: &Path) {
+        panic!("cold object-view measurement requires POSIX_FADV_DONTNEED");
     }
 
     #[test]

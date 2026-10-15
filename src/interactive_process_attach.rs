@@ -593,6 +593,7 @@ impl InteractiveProcessProtocol {
         &self,
         client_id: &str,
         ctx: &Arc<ExecutionContext>,
+        profile: codegg_core::approval::SandboxProfile,
         dto: &crate::protocol::interactive_process::InteractiveProcessCreateRequest,
         audit: Option<InteractiveAuditHook>,
     ) -> CoreResponse {
@@ -601,6 +602,15 @@ impl InteractiveProcessProtocol {
         }
         if let Err(error) = dto.validate() {
             return map_protocol_error(&error);
+        }
+        if profile != codegg_core::approval::SandboxProfile::FullHost {
+            return CoreResponse::Error {
+                code: "interactive_constrained_backend_unavailable".into(),
+                message: format!(
+                    "PTY launch for profile '{}' is unavailable until the M004 contained launch owner is qualified",
+                    profile.as_str()
+                ),
+            };
         }
         let spec = match create_to_spec(dto) {
             Ok(spec) => spec,

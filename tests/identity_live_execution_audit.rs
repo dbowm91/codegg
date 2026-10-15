@@ -557,7 +557,13 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         scrollback_bytes: None,
     };
     let created = protocol
-        .create("client-owner", &exec_ctx, &dto, Some(hook))
+        .create(
+            "client-owner",
+            &exec_ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
         .await;
     match created {
         CoreResponse::InteractiveProcessCreated { .. } => {}
@@ -978,7 +984,13 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
         scrollback_bytes: None,
     };
     let created = protocol
-        .create("client-m004", &exec_ctx, &dto, Some(hook))
+        .create(
+            "client-m004",
+            &exec_ctx,
+            codegg_core::approval::SandboxProfile::FullHost,
+            &dto,
+            Some(hook),
+        )
         .await;
     let handle = match created {
         CoreResponse::InteractiveProcessCreated { handle, .. } => handle,

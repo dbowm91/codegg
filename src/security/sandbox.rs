@@ -362,6 +362,10 @@ pub struct SandboxConfig {
     /// Internal opt-in for the M004 process/IPC tier. This composes with the
     /// protected mount helper and remains disabled by every persisted profile.
     pub linux_process_isolation: bool,
+    /// Internal M005 candidate: require Bubblewrap's private network namespace.
+    /// It is never enabled by persisted profiles and is rejected unless the
+    /// M004 process/IPC tier is also requested.
+    pub linux_offline_network: bool,
 }
 
 impl SandboxConfig {
@@ -373,6 +377,7 @@ impl SandboxConfig {
             deny_paths: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
+            linux_offline_network: false,
         }
     }
 
@@ -407,6 +412,18 @@ impl SandboxConfig {
     pub fn with_linux_process_isolation(mut self, enabled: bool) -> Self {
         self.linux_process_isolation = enabled;
         self.linux_protected_mount_view |= enabled;
+        self
+    }
+
+    /// Request the M005 offline-network candidate together with M004's
+    /// process/IPC boundary. There is no fallback when Bubblewrap cannot
+    /// create the network namespace.
+    pub fn with_linux_offline_network(mut self, enabled: bool) -> Self {
+        self.linux_offline_network = enabled;
+        if enabled {
+            self.linux_process_isolation = true;
+            self.linux_protected_mount_view = true;
+        }
         self
     }
 
@@ -565,6 +582,7 @@ impl SandboxConfig {
         Ok(SandboxLaunchSpec {
             linux_protected_mount_view: self.linux_protected_mount_view,
             linux_process_isolation: self.linux_process_isolation,
+            linux_offline_network: self.linux_offline_network,
             protected_readonly_paths,
             path_identities,
             target,
@@ -599,6 +617,10 @@ pub struct SandboxLaunchSpec {
     /// signal/abstract-socket scopes. Does not request offline networking.
     #[serde(default)]
     pub linux_process_isolation: bool,
+    /// Require a private network namespace; valid only with process
+    /// isolation so M005 composes with M004's descriptor and IPC controls.
+    #[serde(default)]
+    pub linux_offline_network: bool,
     /// Git metadata paths resolved while the launch lease was constructed.
     /// The helper re-resolves and compares them before it builds mounts.
     #[serde(default)]

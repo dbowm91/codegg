@@ -323,6 +323,7 @@ pub async fn execute_python_script_with_profile(
             let spec = SandboxLaunchSpec {
                 linux_protected_mount_view: false,
                 linux_process_isolation: false,
+                linux_offline_network: false,
                 protected_readonly_paths: Vec::new(),
                 path_identities: Vec::new(),
                 target,

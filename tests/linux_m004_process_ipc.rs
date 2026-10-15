@@ -17,6 +17,7 @@ use codegg::security::sandbox::{SandboxConfig, SandboxMode};
 
 const OPT_IN: &str = "CODEGG_RUN_M004_BWRAP_NATIVE";
 const RESTRICTED_USERNS_OPT_IN: &str = "CODEGG_RUN_M004_RESTRICTED_USERNS";
+const M005_OPT_IN: &str = "CODEGG_RUN_M005_OFFLINE_NATIVE";
 
 #[test]
 fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
@@ -49,6 +50,81 @@ fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
         proc_dir < proc_mount,
         "proc mount must follow mountpoint creation"
     );
+}
+
+#[test]
+fn offline_network_compiles_private_network_namespace_with_m004() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec(
+            "/bin/sh",
+            &["-c".into(), "true".into()],
+            Some(workspace.path()),
+        )
+        .expect("offline M005 launch spec");
+    let (args, _) =
+        codegg::security::sandbox::linux_mount_view::compile(&spec, workspace.path(), |_| Ok(256))
+            .expect("compile offline M005 mount view");
+
+    assert!(spec.linux_process_isolation);
+    assert!(args.iter().any(|arg| arg == "--unshare-pid"));
+    assert!(args.iter().any(|arg| arg == "--unshare-ipc"));
+    assert!(args.iter().any(|arg| arg == "--unshare-net"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_network_namespace_cannot_reach_host_loopback_listener() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 child probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("M005 candidate requires qualified M004 process/IPC setup: {reason}");
+    }
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host listener");
+    let address = listener.local_addr().expect("listener address");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("target-ran");
+    let probe = format!(
+        "import socket; s=socket.socket(); s.settimeout(1);\ntry: s.connect(({:?}, {})); raise SystemExit(41)\nexcept OSError: open({:?}, 'w').write('offline')",
+        address.ip().to_string(),
+        address.port(),
+        marker.to_string_lossy(),
+    );
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec("python3", &["-c".into(), probe], Some(workspace.path()))
+        .expect("offline M005 launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m005", "offline-loopback-probe"),
+    );
+    request.timeout = Some(Duration::from_secs(15));
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("required offline network namespace should launch");
+    assert!(
+        result.exit_status.success(),
+        "child reached host loopback or failed: {}",
+        result.stderr.to_string_lossy()
+    );
+    assert_eq!(
+        std::fs::read_to_string(marker).expect("offline target marker"),
+        "offline"
+    );
+    drop(listener);
 }
 
 fn stop(child: &mut Child) {

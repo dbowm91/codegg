@@ -1,19 +1,40 @@
 # Linux Execution Isolation M005 — Offline Network Isolation
 
-Status: blocked — hard: M002 and M004
+Status: active — internal candidate path only; production qualification depends on M004 closure
 Primary class: capability
-Repository baseline: `main` @ `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03`, 2026-10-13.
+Repository baseline: reconciled feature branch at `81e857326b3d53a9ab2b606a0e9db736f43bc429`, 2026-10-15.
 Source: `plans/subsystems/linux-execution-isolation-roadmap.md`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
 Applicable accepted decisions: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033.
-No production implementation or verification is asserted by this plan.
 Target closure record: `plans/closure/linux-execution-isolation/005-status.md`.
+
+Current limitation: this plan is active for a private, opt-in Bubblewrap
+network-namespace candidate and native test fixture. No persisted preference,
+public request field, runtime default, or user-facing `OfflineRequired`
+enforcement claim is enabled. M004's production-owner and host-qualification
+gates remain hard dependencies for any production use.
 
 ## 1. Objective
 Introduce operator-opted `OfflineRequired` for local Linux child execution, independent from `SandboxProfile` and `ApprovalMode`, with **measured** inability to communicate with external/host-local network services. Retain existing unrestricted networking as the legacy default. Network isolation must be installed before user code is executed, not inferred from static Python analysis or shell command classification.
 
 ## 2. Why this milestone and existing evidence
 `codegg-core/src/approval.rs` explicitly reports `NetworkEnforcement::Unrestricted`; `src/python_script/sandbox.rs` only provides static capability inspection. Landlock filesystem ABI 3 does not isolate egress; Landlock ABI4 TCP port rules alone do not stop UDP, DNS or destination-specific traffic. M002 owns dimensional launch authority; M004 owns descriptor/Unix socket/PID and proc isolation. Reuse the real helper rather than adding an unowned Bash spawn path.
+
+### Implementation progress — 2026-10-15
+
+- `SandboxConfig::with_linux_offline_network(true)` selects a private internal
+  candidate that composes M004 process/IPC isolation and compiles Bubblewrap's
+  `--unshare-net` before target exec. It cannot be enabled by persisted
+  sandbox profiles; required setup failures remain fatal.
+- A deterministic compile test asserts the network namespace option is
+  present alongside PID/IPC namespaces. An opt-in native test holds a host
+  loopback TCP listener open and verifies the contained child cannot connect.
+  The M004 hosted native workflow runs this probe on the qualified ephemeral
+  Ubuntu runner after user-namespace setup.
+- This is not closure evidence for IPv6, UDP, DNS, inherited connected
+  descriptors, all launch entry points, or restricted host configurations.
+  Those remain required before any `NetworkEnforcement::Enforced` result or
+  production preference can be exposed.
 
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
