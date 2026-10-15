@@ -105,6 +105,9 @@ C010 closes as a negative production-admission decision. M003 remains blocked an
 
 ## Current-main integration follow-up (2026-10-15)
 
+Reviewed integration baseline: `188edb371759f40b291052f25598bdb8ab57702d`,
+including `origin/main` at `de49884f3fdc6d528620f2a2645694b9b19fc087`.
+
 The later current-main merge revealed that ADR-0031 is already accepted for
 authenticated idle continuation. The unchanged accepted Linux decision now has
 canonical identity ADR-0033; ADR-0032 remains the accepted command-authority

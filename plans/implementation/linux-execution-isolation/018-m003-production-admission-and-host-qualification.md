@@ -1,7 +1,7 @@
 # Linux Execution Isolation C010 — M003 Production Admission and Host Qualification
 
 Status: implemented
-Repository baseline: merge of current `origin/main` into the Linux isolation branch (`611f6bee`)
+Repository baseline: merge commit `188edb371759f40b291052f25598bdb8ab57702d` (includes `origin/main` at `de49884f3fdc6d528620f2a2645694b9b19fc087`)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8.
@@ -17,7 +17,7 @@ This corrective is bounded to the M003 admission decision. It does not claim M00
 ## 2. Why this milestone is ready
 
 - ADR-0033 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
-- The merge with current `origin/main` is committed at `611f6bee`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
+- The merge with current `origin/main` is committed at `188edb371759f40b291052f25598bdb8ab57702d`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
 - C009 names the remaining blockers: object-view performance, packed-store evidence, rustup's `/proc/self/exe` requirement, and the absence of a production backend route.
 
 ## 3. Current implementation evidence
