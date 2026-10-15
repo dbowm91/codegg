@@ -2811,6 +2811,32 @@ mod tests {
         let hook_before = std::fs::read(&common_hook).expect("read common hook");
         let marker = workspace.join("c009-target-ran");
         let rustc = tool_on_path("rustc");
+        let rustup = tool_on_path("rustup")
+            .canonicalize()
+            .expect("resolve rustup path");
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .expect("host HOME for rustup fixture");
+        let rustup_home = std::env::var_os("RUSTUP_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".rustup"));
+        let linker = tool_on_path("cc")
+            .canonicalize()
+            .expect("resolve C compiler path");
+        let host_triple_output = std::process::Command::new(&rustc)
+            .arg("-vV")
+            .output()
+            .expect("query Rust host triple");
+        assert!(host_triple_output.status.success());
+        let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("host: "))
+            .expect("Rust host triple")
+            .to_string();
+        let linker_env = format!(
+            "CARGO_TARGET_{}_LINKER",
+            host_triple.replace('-', "_").to_ascii_uppercase()
+        );
         let sysroot_output = std::process::Command::new(&rustc)
             .args(["--print", "sysroot"])
             .output()
@@ -2830,7 +2856,12 @@ mod tests {
         .expect("write Cargo manifest");
         std::fs::write(
             workspace.join("cargo-fixture/src/main.rs"),
-            "fn main() { println!(\"native-cargo-ok\"); }\n",
+            "fn main() { println!(\"native-cargo-ok\"); }\n\
+             #[cfg(test)]\n\
+             mod tests {\n\
+                 #[test]\n\
+                 fn native_test_fixture_passes() { assert_eq!(2 + 2, 4); }\n\
+             }\n",
         )
         .expect("write Rust source");
         let script = format!(
@@ -2844,18 +2875,30 @@ mod tests {
              test \"$(cat \"$workspace/nested-submodule/submodule.txt\")\" = 'nested content'\n\\
              export PATH={}/bin:/usr/bin:/bin\n\\
              export CARGO_HOME=\"$workspace/cargo-home\"\n\\
+             export HOME={}\n\\
+             export RUSTUP_HOME={}\n\\
              export LD_LIBRARY_PATH={}/lib\n\\
              export RUSTC={}\n\\
+             export {}={}\n\\
+             if {} run stable rustc --version >\"$workspace/rustup.out\" 2>&1; then :; \\
+             else grep -F 'no /proc/self/exe available' \"$workspace/rustup.out\" >/dev/null; fi\n\\
              {} check --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\"\n\\
+             {} test --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\" --quiet\n\\
              WORKSPACE=\"$workspace\" python3 -c 'import os,pathlib; pathlib.Path(os.environ[\"WORKSPACE\"],\"python-output.txt\").write_text(\"python-ok\\n\")'\n\\
              printf target-ran > {}",
             shell_quote(&workspace),
             shell_quote(&common_config),
             shell_quote(&common_hook),
             shell_quote(&submodule_config),
+            shell_quote(&home),
+            shell_quote(&rustup_home),
             shell_quote(&sysroot),
             shell_quote(&sysroot),
             shell_quote(&rustc),
+            linker_env,
+            shell_quote(&linker),
+            shell_quote(&rustup),
+            shell_quote(&cargo),
             shell_quote(&cargo),
             shell_quote(&marker),
         );
@@ -3005,9 +3048,13 @@ mod tests {
             format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
         }
 
+        fn git_command() -> std::process::Command {
+            std::process::Command::new(std::ffi::OsString::from("git"))
+        }
+
         let workspace = tempfile::tempdir().expect("writable workspace");
         let outside = tempfile::tempdir().expect("outside directory");
-        let initialized = std::process::Command::new("git")
+        let initialized = git_command()
             .args(["init", "--quiet"])
             .arg(workspace.path())
             .status()
@@ -3016,7 +3063,7 @@ mod tests {
             initialized.success(),
             "git init fixture failed: {initialized}"
         );
-        let configured = std::process::Command::new("git")
+        let configured = git_command()
             .args(["-C"])
             .arg(workspace.path())
             .args(["config", "--local", "c006.fixture", "protected config"])
@@ -3118,7 +3165,7 @@ mod tests {
             std::fs::read_to_string(workspace.path().join("allowed.txt")).unwrap(),
             "allowed"
         );
-        let git_config = std::process::Command::new("git")
+        let git_config = git_command()
             .args(["-C"])
             .arg(workspace.path())
             .args(["config", "--local", "c006.fixture"])
