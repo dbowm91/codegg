@@ -2287,7 +2287,7 @@ async fn verify_probe_credential(
     // An empty catalog leaves nothing to run a completion against. Reporting
     // that as unverified is the honest answer; claiming `Verified` from a
     // catalog that produced no model would be the exact defect being fixed.
-    let Some(model) = pick_verification_model(models) else {
+    let Some(model) = pick_verification_model(provider_id, models) else {
         return Ok(CredentialVerification::Unverified);
     };
     let verifier = codegg_providers::CompatibleCredentialProbe::new(
@@ -2327,13 +2327,30 @@ async fn verify_probe_credential(
 
 /// Choose the model to spend a verification completion on.
 ///
-/// Prefers a tool-capable model — the same class of request the agent loop
-/// actually issues — and falls back to any discovered model rather than
-/// refusing to verify. Returns `None` only for an empty catalog.
-fn pick_verification_model(models: &[ProbedModel]) -> Option<&str> {
+/// A model that the shared wire profile cannot route is useless here: the
+/// probe resolves a route per model and gives up when none exists, so picking
+/// an unroutable entry turns every verification into a silent `Inconclusive`
+/// and a credential can never be proven. Measured live: OpenCode Go's catalog
+/// lists `cat-jam-free` first, it has no reviewed wire mapping, and choosing
+/// it made every rotation report `unverified` regardless of the key.
+///
+/// Preference order: a tool-capable model that also routes (the same class of
+/// request the agent loop issues), any routable model, then a tool-capable
+/// model, then anything. Returns `None` only for an empty catalog.
+fn pick_verification_model<'a>(
+    provider_id: Option<&str>,
+    models: &'a [ProbedModel],
+) -> Option<&'a str> {
+    let routes = |model: &ProbedModel| {
+        provider_id
+            .and_then(|id| codegg_providers::provider_profile::resolve_route(id, &model.id).ok())
+            .is_some()
+    };
     models
         .iter()
-        .find(|model| model.supports_tools)
+        .find(|model| model.supports_tools && routes(model))
+        .or_else(|| models.iter().find(|model| routes(model)))
+        .or_else(|| models.iter().find(|model| model.supports_tools))
         .or_else(|| models.first())
         .map(|model| model.id.as_str())
 }
@@ -4477,7 +4494,10 @@ mod tests {
             matches!(error, EggpoolError::Probe(ProbeReason::EmptyCatalog)),
             "an empty catalog is a catalog fact, got {error:?}"
         );
-        assert_eq!(pick_verification_model(&[]), None);
+        assert_eq!(
+            pick_verification_model(Some("openai_compatible"), &[]),
+            None
+        );
         let verified: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM provider_connection_health WHERE credential_status = 'verified'",
         )

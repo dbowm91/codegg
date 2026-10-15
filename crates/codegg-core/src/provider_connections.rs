@@ -1003,6 +1003,29 @@ impl ProviderConnectionStore {
             tx.rollback().await.map_err(map_sql_error)?;
             return self.revision_conflict(id, expected_revision).await;
         }
+        // A lifecycle transition does not change which models the upstream
+        // offers, but it does advance the connection revision, and every
+        // catalog read is gated on `provider_connection_models.revision` equal
+        // to the connection's current revision. Without this carry-forward a
+        // single enable/disable silently orphans the whole catalog: the rows
+        // stay behind at the old revision, `/connections` reports zero models,
+        // and model resolution can no longer find anything to bind a session
+        // to. Observed live on a connection at revision 12 whose 104 model rows
+        // were stranded at revision 3.
+        sqlx::query(
+            "INSERT INTO provider_connection_models \
+             (connection_id, revision, model_id, model_name, context_window, \
+              max_output_tokens, supports_tools, supports_vision) \
+             SELECT connection_id, ?, model_id, model_name, context_window, \
+              max_output_tokens, supports_tools, supports_vision \
+             FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(next.revision as i64)
+        .bind(id.as_str())
+        .bind(expected_revision as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql_error)?;
         if is_extended_state(target) {
             sqlx::query(
                 "INSERT INTO provider_connection_lifecycle (connection_id, state, revision, time_updated) VALUES (?, ?, ?, ?) \
@@ -1748,6 +1771,92 @@ mod tests {
             PurgeOutcome::Purged
         ));
         assert!(store.get(&created.id).await.unwrap().is_none());
+    }
+
+    /// Seed catalog rows at a specific connection revision, mirroring what the
+    /// provision/rotate/refresh paths write.
+    async fn seed_models(
+        database: &sqlx::SqlitePool,
+        id: &ProviderConnectionId,
+        revision: u64,
+        models: &[&str],
+    ) {
+        for model_id in models {
+            sqlx::query(
+                "INSERT INTO provider_connection_models \
+                 (connection_id, revision, model_id, model_name, context_window, \
+                  max_output_tokens, supports_tools, supports_vision) \
+                 VALUES (?, ?, ?, ?, 128000, 16384, 1, 1)",
+            )
+            .bind(id.as_str())
+            .bind(revision as i64)
+            .bind(*model_id)
+            .bind(*model_id)
+            .execute(database)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// A lifecycle transition advances the connection revision but does not
+    /// change the upstream catalog. Every catalog read is gated on
+    /// `provider_connection_models.revision` matching the connection's current
+    /// revision, so a transition that fails to carry the rows forward silently
+    /// empties the catalog. This is the regression that made `/connections`
+    /// report zero models on a connection holding 104 stranded rows.
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_transitions_carry_the_model_catalog_forward() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database.clone());
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        seed_models(
+            &database,
+            &created.id,
+            created.revision,
+            &["m-alpha", "m-beta"],
+        )
+        .await;
+
+        let count_at_current = |revision: u64| {
+            let database = database.clone();
+            let id = created.id.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+                )
+                .bind(id.as_str())
+                .bind(revision as i64)
+                .fetch_one(&database)
+                .await
+                .unwrap()
+            }
+        };
+
+        assert_eq!(count_at_current(created.revision).await, 2);
+
+        // disable -> re-enable, the exact pair an operator performs while
+        // swapping credentials.
+        let disabled = store.disable(&created.id, created.revision).await.unwrap();
+        assert_eq!(count_at_current(disabled.revision).await, 2);
+
+        let enabled = store.enable(&created.id, disabled.revision).await.unwrap();
+        assert_eq!(count_at_current(enabled.revision).await, 2);
+
+        let tombstoned = store.delete(&created.id, enabled.revision).await.unwrap();
+        let tombstoned = store
+            .get(&created.id)
+            .await
+            .unwrap()
+            .expect("tombstone row is retained");
+        assert_eq!(tombstoned.revision, tombstoned.revision);
+        assert_eq!(
+            count_at_current(tombstoned.revision).await,
+            2,
+            "a tombstoned connection keeps its catalog so restore and purge stay coherent"
+        );
     }
 
     /// `d` must actually remove the row. Tombstone-only deletion left the
