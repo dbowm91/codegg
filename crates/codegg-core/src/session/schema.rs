@@ -3111,13 +3111,15 @@ async fn migrate_v76(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "ALTER TABLE ci_watch ADD COLUMN claim_owner TEXT",
         "ALTER TABLE ci_watch ADD COLUMN claim_until INTEGER",
         "ALTER TABLE ci_watch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
-        "CREATE INDEX IF NOT EXISTS idx_ci_watch_claim ON ci_watch(state, next_check_at, claim_until)",
     ] {
-        sqlx::query(statement)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| StorageError::Migration(e.to_string()))?;
+        add_column_ignore_duplicate(&mut *tx, statement.to_string()).await?;
     }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_claim ON ci_watch(state, next_check_at, claim_until)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
     Ok(())
 }
 
