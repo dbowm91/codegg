@@ -70,6 +70,7 @@ async fn assert_reparse_root_rejected(root: PathBuf, marker: PathBuf) {
     );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
         linux_protected_mount_view: false,
+        linux_process_isolation: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
         target: executable,
@@ -141,6 +142,7 @@ try {
     );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
         linux_protected_mount_view: false,
+        linux_process_isolation: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
         target: executable,
@@ -229,6 +231,7 @@ async fn windows_acl_lease_cancellation_restores_after_job_termination() {
     );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
         linux_protected_mount_view: false,
+        linux_process_isolation: false,
         protected_readonly_paths: Vec::new(),
         path_identities: Vec::new(),
         target: executable,

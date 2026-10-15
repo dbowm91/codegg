@@ -900,6 +900,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("workspace fixture");
         let spec = SandboxLaunchSpec {
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             target: PathBuf::from("/bin/sh"),

@@ -90,9 +90,21 @@ impl LinuxLaunchRequest {
                 parent_ceiling: NetworkIntent::LegacyUnrestricted,
             },
             process: Dimension {
-                demand: Demand::Disabled,
-                requested: ProcessScope::Legacy,
-                parent_ceiling: ProcessScope::Legacy,
+                demand: if spec.linux_process_isolation {
+                    Demand::Required
+                } else {
+                    Demand::Disabled
+                },
+                requested: if spec.linux_process_isolation {
+                    ProcessScope::Namespaced
+                } else {
+                    ProcessScope::Legacy
+                },
+                parent_ceiling: if spec.linux_process_isolation {
+                    ProcessScope::Namespaced
+                } else {
+                    ProcessScope::Legacy
+                },
             },
             syscalls: Dimension {
                 demand: Demand::Disabled,
@@ -167,6 +179,7 @@ fn process_within_ceiling(requested: ProcessScope, ceiling: ProcessScope) -> boo
 pub enum LinuxLaunchPlan {
     LegacyPrivateHelper,
     ProtectedMountView,
+    ProtectedProcessIsolation,
     EnhancedUnavailable { dimensions: Vec<&'static str> },
 }
 
@@ -182,6 +195,30 @@ impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
     fn plan(&self, request: &LinuxLaunchRequest) -> Result<LinuxLaunchPlan, String> {
         request.validate_parent_ceiling()?;
         if request.protected_mount_view {
+            if request.process.requested == ProcessScope::Namespaced {
+                if request.network.demand != Demand::Disabled
+                    || request.network.requested != NetworkIntent::LegacyUnrestricted
+                    || request.syscalls.demand != Demand::Disabled
+                    || request.syscalls.requested != SyscallConstraints::default()
+                    || request.resources.demand != Demand::Disabled
+                    || request.resources.requested != ResourceBudget::default()
+                {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: requested_enhanced_dimensions(request),
+                    });
+                }
+                if probe_trusted_bubblewrap().state != ProbeState::Available {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["trusted-bubblewrap"],
+                    });
+                }
+                if super::landlock::probe_process_scopes().is_err() {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["process-ipc-landlock-abi-6"],
+                    });
+                }
+                return Ok(LinuxLaunchPlan::ProtectedProcessIsolation);
+            }
             if request.requires_enhanced_backend() {
                 return Ok(LinuxLaunchPlan::EnhancedUnavailable {
                     dimensions: requested_enhanced_dimensions(request),
@@ -554,6 +591,7 @@ mod tests {
     fn legacy_request() -> LinuxLaunchRequest {
         LinuxLaunchRequest::legacy_filesystem(&super::super::SandboxLaunchSpec {
             linux_protected_mount_view: false,
+            linux_process_isolation: false,
             protected_readonly_paths: Vec::new(),
             path_identities: Vec::new(),
             target: PathBuf::from("/bin/true"),

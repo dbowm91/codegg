@@ -317,6 +317,18 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             )
         });
 
+    if spec.linux_process_isolation {
+        if let Err(reason) = codegg::security::sandbox::landlock::apply_process_scopes() {
+            fail(
+                status_fd,
+                SandboxLaunchOutcome::Unavailable {
+                    reason: String::new(),
+                },
+                reason,
+            );
+        }
+    }
+
     let mut command = Command::new(bubblewrap);
     command
         .env_clear()

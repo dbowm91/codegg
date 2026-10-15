@@ -57,6 +57,12 @@ by default until native qualification closes. The helper pins mount sources,
 owns Bubblewrap setup, and returns its private status through the same managed
 process result. Do not launch Bubblewrap from a tool executor or infer
 network, process, IPC, seccomp, or resource enforcement from a mount result.
+The separate `with_linux_process_isolation` opt-in additionally requires
+Landlock ABI 6 signal/abstract-socket scopes, PID/IPC namespaces, and private
+procfs; it preserves the existing network policy and does not claim seccomp or
+inherited-FD closure. Keep it fail-closed and unregistered until M004's full
+native, seccomp, descriptor, cancellation, and tool-compatibility evidence is
+accepted.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows
