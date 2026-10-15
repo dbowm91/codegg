@@ -12,8 +12,7 @@
 //!   expected argument mapping.
 //! - Output is wrapped in `external_untrusted` framing before being
 //!   returned.
-//! - The legacy built-in path is not invoked when eggsearch is
-//!   configured.
+//! - Eggsearch is the sole external-search execution owner.
 //!
 //! The tests do not require a real `eggsearch` binary or any
 //! network access. The mock is constructed directly into the
@@ -48,24 +47,16 @@ use codegg::tool::websearch::WebSearchTool;
 use codegg::tool::Tool;
 use tokio::sync::Mutex;
 
-fn eggsearch_config(expose_raw: bool, fallback: bool) -> SearchConfig {
+fn eggsearch_config(expose_raw: bool) -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
         expose_raw_mcp_tools: Some(expose_raw),
-        fallback_to_builtin: Some(fallback),
         max_search_output_chars: Some(12_000),
         max_fetch_output_chars: Some(20_000),
         eggsearch: Some(EggsearchConfig {
             server_name: Some("eggsearch".to_string()),
             ..Default::default()
         }),
-        ..Default::default()
-    }
-}
-
-fn builtin_config() -> SearchConfig {
-    SearchConfig {
-        backend: Some(SearchBackendConfig::Builtin),
         ..Default::default()
     }
 }
@@ -382,7 +373,7 @@ async fn websearch_dispatches_to_mcp_web_search() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let out = ctx
         .dispatch_web_search(&serde_json::json!({
@@ -414,7 +405,7 @@ async fn webfetch_dispatches_to_mcp_web_fetch() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let out = ctx
         .dispatch_web_fetch(&serde_json::json!({
@@ -446,7 +437,7 @@ async fn provider_status_dispatches_via_doctor_helper() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let mcp_handle = ctx.mcp();
     let out = codegg::search_backend::eggsearch::call_provider_status_with_service(
@@ -472,7 +463,7 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     // Empty service: no "eggsearch" server registered.
     let svc = McpService::new();
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let res = ctx
         .dispatch_web_search(&serde_json::json!({"query": "x"}))
@@ -485,29 +476,6 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
                 || msg.contains("not found")
                 || msg.contains("not advertised")),
         "expected actionable eggsearch error, got: {msg}"
-    );
-}
-
-/// With `backend = builtin`, dispatch should not touch MCP at all.
-#[tokio::test]
-async fn builtin_backend_does_not_invoke_mcp() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
-        &calls,
-    ))));
-    let ctx = SearchRuntimeContext::new(builtin_config()).with_mcp(svc);
-
-    // Force the legacy path to fail (no providers configured in
-    // test env) to make the assertion deterministic. We assert
-    // that the *MCP* was not called regardless of legacy success.
-    let _ = ctx
-        .dispatch_web_search(&serde_json::json!({"query": "x"}))
-        .await;
-    let recorded = calls.lock().await;
-    assert!(
-        recorded.is_empty(),
-        "builtin backend should not call MCP, got: {:?}",
-        *recorded
     );
 }
 
@@ -995,7 +963,6 @@ fn eggsearch_config_all_caps() -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
         expose_raw_mcp_tools: Some(false),
-        fallback_to_builtin: Some(false),
         max_search_output_chars: Some(12_000),
         max_fetch_output_chars: Some(20_000),
         max_repo_output_chars: Some(16_000),
@@ -1515,6 +1482,7 @@ async fn missing_upstream_tool_fails_clearly() {
 fn evidence_disabled_config() -> codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
     codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
         enabled: false,
+        backend: "disabled".to_string(),
         ..Default::default()
     }
 }
@@ -1551,6 +1519,8 @@ fn disabled_evidence_backend_omits_expanded_tools() {
             "tool '{tool}' should NOT be in definitions when evidence backend is disabled"
         );
     }
+    assert!(names.contains(&"websearch"));
+    assert!(names.contains(&"webfetch"));
 }
 
 /// With evidence backend enabled, expanded evidence wrapper tools
@@ -1616,40 +1586,4 @@ fn websearch_webfetch_always_registered() {
                 .map(|e| e.enabled),
         );
     }
-}
-
-/// With evidence backend set to builtin, expanded evidence wrapper tools
-/// should NOT appear in model-facing definitions (they are eggsearch-only).
-#[test]
-fn builtin_evidence_backend_omits_expanded_tools() {
-    let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
-        evidence_config: Some(
-            codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
-                enabled: true,
-                backend: "builtin".to_string(),
-                ..Default::default()
-            },
-        ),
-        ..Default::default()
-    });
-    let defs = registry.definitions();
-    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-
-    for tool in &[
-        "repo_search",
-        "repo_fetch",
-        "security_search",
-        "research_search",
-        "repo_map",
-        "batch_fetch",
-        "evidence_bundle",
-    ] {
-        assert!(
-            !names.contains(tool),
-            "tool '{tool}' should NOT be in definitions when evidence backend is builtin"
-        );
-    }
-    // websearch/webfetch are always present
-    assert!(names.contains(&"websearch"));
-    assert!(names.contains(&"webfetch"));
 }

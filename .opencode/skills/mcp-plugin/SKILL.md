@@ -21,7 +21,7 @@ to violate.
 |-------|----------|------|
 | MCP service | `src/mcp/mod.rs`, `local.rs`, `remote.rs` | `McpService`, `McpTool`, `McpClientType`, `McpExposurePolicy`; stdio child vs HTTP+SSE remotes; `McpConnectionManager` |
 | MCP auth/CLI | `src/mcp/auth.rs`, `cli.rs`, `ide_server.rs` | `OAuthManager` (PKCE, token encryption, callback server), `add/list/remove/enable/debug`, `openDiff` IDE server |
-| Eggsearch wiring | `src/search_backend/`, `src/mcp/` bootstrap | Production `websearch`/`webfetch` wrappers dispatch via `search_backend` → eggsearch MCP; legacy `src/search/` is fallback only — never add new web-search providers there (external `eggsearch` project owns them) |
+| Eggsearch wiring | `src/search_backend/`, `src/mcp/` bootstrap | Production search wrappers dispatch via `search_backend` → eggsearch MCP; CodeGG has no in-tree external-search provider implementation. New web-search providers belong in external `eggsearch`. |
 | Plugin service | `src/plugin/service.rs`, `registry.rs`, `manifest.rs` | `PluginService` hook dispatch + command invocation; `PluginRegistry` capability index; `PluginManifest`/`PluginCapability`/`PluginRuntimeSpec` |
 | Plugin runtimes | `src/plugin/runtime/process.rs`, `runtime/wasm.rs`, `runtime/wasm_cache.rs`, `runtime/builtin.rs`, `loader.rs`, `src/plugin/builtin/` | Process commands, sandboxed WASM (`plugins` feature; `WasmModuleCache` mtime-keyed), `BuiltinRuntime`/`BuiltinHandlerRegistry`, native auth hook handlers (copilot, gitlab, codex, poe) |
 | Plugin policy | `src/plugin/policy.rs`, `permission.rs`, `lifecycle.rs`, `activation.rs` | Composite `PluginPolicy`, `check_*_allowed`, typed lifecycle I/O, durable global/workspace activation |
@@ -29,9 +29,9 @@ to violate.
 
 ## Hard Rules
 
-1. **New web-search providers belong in `eggsearch`, not `src/search/`.**
-   `src/search/` is the legacy fallback; production evidence wrappers
-   require the eggsearch MCP backend or omit with a diagnostic.
+1. **New web-search providers belong in `eggsearch`.** CodeGG has no
+   in-tree external-search provider path. Search dispatch is Eggsearch or
+   disabled; provider failures never trigger a second provider stack.
 2. **WASM needs the `plugins` feature.** Process and built-in paths are
    always available; never gate them behind the feature flag.
 3. **Install paths are validated.** `install_from_path`/`uninstall` enforce

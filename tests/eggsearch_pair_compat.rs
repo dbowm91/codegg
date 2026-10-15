@@ -84,7 +84,6 @@ fn smoke_config(binary: String, private: &Path, observation: &Path, child_stderr
     Config {
         search: Some(SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
-            fallback_to_builtin: Some(false),
             max_repo_search_output_chars: Some(256),
             eggsearch: Some(EggsearchConfig {
                 command: Some(binary),

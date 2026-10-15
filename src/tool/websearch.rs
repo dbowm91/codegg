@@ -4,16 +4,12 @@ use std::time::Instant;
 
 use crate::error::ToolError;
 use crate::search_backend;
-use crate::tool::{
-    StructuredToolResult, Tool, ToolBackendKind, ToolCategory, ToolExecutionContext,
-    ToolProvenance, ToolTrust,
-};
+use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 /// Native `websearch` tool.
 ///
 /// Model-facing name is `websearch`. Internally dispatches to the
-/// configured search backend (eggsearch by default, in-tree
-/// built-in as fallback) through the tool's explicit
+/// configured eggsearch backend through the tool's explicit
 /// `SearchRuntimeContext` — never a process-global slot.
 #[derive(Default)]
 pub struct WebSearchTool {
@@ -110,18 +106,10 @@ impl Tool for WebSearchTool {
             .dispatch_web_search_structured(&input)
             .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let provenance = self
+        let mut provenance = self
             .search_runtime
             .provenance_for_search(Some(result.truncated))
-            .unwrap_or_else(|| ToolProvenance {
-                backend: ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
-                implementation: "websearch".to_string(),
-                version: None,
-                elapsed_ms: Some(elapsed_ms),
-                truncated: false,
-                trust: ToolTrust::ExternalUntrusted,
-            });
-        let mut provenance = provenance;
+            .expect("search provenance is defined for every backend");
         provenance.elapsed_ms = Some(elapsed_ms);
         Ok(search_backend::into_tool_result(result, provenance))
     }

@@ -785,9 +785,6 @@ pub struct SearchConfig {
     pub backend: Option<SearchBackendConfig>,
     /// Whether to expose raw `mcp__eggsearch__*` tools to the model.
     pub expose_raw_mcp_tools: Option<bool>,
-    /// If `true`, fall back to the legacy built-in implementation when
-    /// the eggsearch backend is unavailable.
-    pub fallback_to_builtin: Option<bool>,
     /// Output cap for `websearch` results, in characters.
     pub max_search_output_chars: Option<usize>,
     /// Output cap for `webfetch` results, in characters.
@@ -822,10 +819,6 @@ impl SearchConfig {
 
     pub fn expose_raw_mcp_tools(&self) -> bool {
         self.expose_raw_mcp_tools.unwrap_or(false)
-    }
-
-    pub fn fallback_to_builtin(&self) -> bool {
-        self.fallback_to_builtin.unwrap_or(false)
     }
 
     pub fn max_search_output_chars(&self) -> usize {
@@ -872,15 +865,32 @@ impl SearchConfig {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchBackendConfig {
     /// Use the external eggsearch MCP server.
     Eggsearch,
-    /// Use Codegg's in-tree built-in providers only.
-    Builtin,
     /// Disable web search/fetch entirely.
     Disabled,
+}
+
+impl<'de> Deserialize<'de> for SearchBackendConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "eggsearch" => Ok(Self::Eggsearch),
+            "disabled" => Ok(Self::Disabled),
+            "builtin" => Err(serde::de::Error::custom(
+                "search.backend = \"builtin\" was removed; configure the managed or explicit eggsearch sidecar, or set search.backend = \"disabled\"",
+            )),
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown search.backend {value:?}; expected \"eggsearch\" or \"disabled\""
+            ))),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
@@ -4125,7 +4135,6 @@ mod tests {
         let cfg = SearchConfig::default();
         assert_eq!(cfg.backend(), SearchBackendConfig::Eggsearch);
         assert!(!cfg.expose_raw_mcp_tools());
-        assert!(!cfg.fallback_to_builtin());
         assert_eq!(cfg.max_search_output_chars(), 12_000);
         assert_eq!(cfg.max_fetch_output_chars(), 20_000);
     }
@@ -4167,7 +4176,6 @@ mod tests {
             "search": {
                 "backend": "eggsearch",
                 "expose_raw_mcp_tools": true,
-                "fallback_to_builtin": true,
                 "max_search_output_chars": 5000,
                 "max_fetch_output_chars": 8000,
                 "eggsearch": {
@@ -4182,12 +4190,36 @@ mod tests {
         let s = cfg.search.expect("search section");
         assert_eq!(s.backend(), SearchBackendConfig::Eggsearch);
         assert!(s.expose_raw_mcp_tools());
-        assert!(s.fallback_to_builtin());
         assert_eq!(s.max_search_output_chars(), 5000);
         assert_eq!(s.max_fetch_output_chars(), 8000);
         let egg = s.eggsearch.expect("eggsearch section");
         assert_eq!(egg.command(), "eggsearch-test");
         assert_eq!(egg.timeout_ms(), 30_000);
+    }
+
+    #[test]
+    fn removed_search_backend_values_fail_with_migration_guidance() {
+        let error = serde_json::from_str::<Config>(r#"{"search":{"backend":"builtin"}}"#)
+            .expect_err("builtin backend must be rejected");
+        assert!(error
+            .to_string()
+            .contains("managed or explicit eggsearch sidecar"));
+        assert!(error.to_string().contains("search.backend = \"disabled\""));
+    }
+
+    #[test]
+    fn removed_search_fallback_setting_fails_with_migration_guidance() {
+        let error = crate::paths::parse_config(
+            r#"{"search":{"fallback_to_builtin":true}}"#,
+            std::path::Path::new("settings.json"),
+        )
+        .expect_err("removed fallback setting must be rejected");
+        assert!(error
+            .to_string()
+            .contains("search.fallback_to_builtin was removed"));
+        assert!(error
+            .to_string()
+            .contains("search failures no longer switch providers"));
     }
 
     #[test]

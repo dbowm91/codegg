@@ -92,7 +92,6 @@ pub async fn bootstrap_search_backend(
         let report = BootstrapReport {
             search_backend: Some(format!("{:?}", effective.backend()).to_lowercase()),
             expose_raw_mcp_tools: effective.expose_raw_mcp_tools(),
-            fallback_to_builtin: effective.fallback_to_builtin(),
             max_search_output_chars: effective.max_search_output_chars(),
             max_fetch_output_chars: effective.max_fetch_output_chars(),
             max_repo_output_chars: effective.max_repo_output_chars(),
@@ -150,7 +149,6 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     state::install_search_config(effective.clone());
     report.search_backend = Some(format!("{:?}", effective.backend()).to_lowercase());
     report.expose_raw_mcp_tools = effective.expose_raw_mcp_tools();
-    report.fallback_to_builtin = effective.fallback_to_builtin();
     report.max_search_output_chars = effective.max_search_output_chars();
     report.max_fetch_output_chars = effective.max_fetch_output_chars();
     report.max_repo_output_chars = effective.max_repo_output_chars();
@@ -455,7 +453,6 @@ fn effective_server_name(cfg: &SearchConfig) -> String {
 pub struct BootstrapReport {
     pub search_backend: Option<String>,
     pub expose_raw_mcp_tools: bool,
-    pub fallback_to_builtin: bool,
     pub max_search_output_chars: usize,
     pub max_fetch_output_chars: usize,
     pub max_repo_output_chars: usize,
@@ -648,14 +645,6 @@ impl BootstrapReport {
         lines.push(format!(
             "Raw MCP tools exposed to model: {}",
             if self.expose_raw_mcp_tools {
-                "yes"
-            } else {
-                "no"
-            }
-        ));
-        lines.push(format!(
-            "Fallback to built-in: {}",
-            if self.fallback_to_builtin {
                 "yes"
             } else {
                 "no"
@@ -888,7 +877,6 @@ mod tests {
             connected: true,
             tools: vec!["web_search".to_string(), "web_fetch".to_string()],
             expose_raw_mcp_tools: false,
-            fallback_to_builtin: false,
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
             max_repo_search_output_chars: 16_000,
@@ -919,7 +907,6 @@ mod tests {
         assert!(joined.contains("Missing recommended:"));
         assert!(joined.contains("repo_search"));
         assert!(joined.contains("Raw MCP tools exposed to model: no"));
-        assert!(joined.contains("Fallback to built-in: no"));
         assert!(joined.contains("Default timeout: 60000ms"));
         assert!(joined.contains("search=12000"));
         assert!(joined.contains("fetch=20000"));
@@ -1084,19 +1071,6 @@ mod tests {
             "expected enabled=false note, got: {:?}",
             report.note
         );
-    }
-
-    #[test]
-    fn builtin_backend_skips_eggsearch_bootstrap() {
-        let cfg = Config {
-            search: Some(SearchConfig {
-                backend: Some(SearchBackendConfig::Builtin),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let effective = effective_search_config(&cfg);
-        assert_eq!(effective.backend(), SearchBackendConfig::Builtin);
     }
 
     #[test]

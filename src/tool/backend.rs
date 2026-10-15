@@ -31,7 +31,7 @@ pub enum ToolBackendKind {
     Mcp,
     /// Tightly permissioned shell/process execution.
     Shell,
-    /// Codegg in-tree legacy implementation (e.g. old search providers).
+    /// Compatibility label for older in-process tool implementations.
     BuiltinLegacy,
 }
 
@@ -337,8 +337,8 @@ pub struct ToolProvenance {
     /// "builtin_legacy"). String form is used (rather than the enum)
     /// so the JSON serialization is stable across schema revisions.
     pub backend: String,
-    /// Human-readable implementation name (e.g. "eggsearch",
-    /// "codegg/websearch", "eggfetch-html2text").
+    /// Human-readable implementation name (e.g. "eggsearch" or
+    /// "codegg/read").
     pub implementation: String,
     /// Optional version string from the backend (e.g. MCP server
     /// version, or crate version for native calls).
@@ -835,7 +835,6 @@ pub fn build_report(
 
     let search_backend = search.backend();
     let expose_raw = search.expose_raw_mcp_tools();
-    let fallback = search.fallback_to_builtin();
     let eggsearch_server = search
         .eggsearch
         .as_ref()
@@ -852,11 +851,6 @@ pub fn build_report(
             "Disabled".to_string(),
             "—".to_string(),
             "disabled".to_string(),
-        ),
-        crate::config::schema::SearchBackendConfig::Builtin => (
-            "Builtin".to_string(),
-            "codegg/legacy".to_string(),
-            "ready".to_string(),
         ),
         crate::config::schema::SearchBackendConfig::Eggsearch => {
             if eggsearch_present {
@@ -899,7 +893,6 @@ pub fn build_report(
     };
     let webfetch_impl = match search_backend {
         crate::config::schema::SearchBackendConfig::Disabled => "—".to_string(),
-        crate::config::schema::SearchBackendConfig::Builtin => "codegg/eggfetch".to_string(),
         crate::config::schema::SearchBackendConfig::Eggsearch => {
             format!("{}/web_fetch", eggsearch_server)
         }
@@ -908,7 +901,6 @@ pub fn build_report(
         tool: "webfetch".to_string(),
         backend: match search_backend {
             crate::config::schema::SearchBackendConfig::Disabled => "Disabled".to_string(),
-            crate::config::schema::SearchBackendConfig::Builtin => "Builtin".to_string(),
             crate::config::schema::SearchBackendConfig::Eggsearch => "MCP".to_string(),
         },
         implementation: webfetch_impl,
@@ -1085,7 +1077,6 @@ pub fn build_report(
                 tool: "evidence".to_string(),
                 backend: match search_backend {
                     crate::config::schema::SearchBackendConfig::Disabled => "Disabled".to_string(),
-                    crate::config::schema::SearchBackendConfig::Builtin => "Builtin".to_string(),
                     crate::config::schema::SearchBackendConfig::Eggsearch => "MCP".to_string(),
                 },
                 implementation: format!("{}/bundle", eggsearch_server),
@@ -1102,10 +1093,9 @@ pub fn build_report(
     ) && !eggsearch_present
         && mcp_server_names.is_some()
     {
-        report.warnings.push(format!(
-            "eggsearch configured but not connected; websearch/webfetch will error unless fallback_to_builtin is enabled (currently {}).",
-            if fallback { "on" } else { "off" }
-        ));
+        report.warnings.push(
+            "eggsearch configured but not connected; websearch/webfetch will fail until the managed sidecar is restored or an explicit eggsearch command is configured.".to_string(),
+        );
     }
     if matches!(
         search_backend,

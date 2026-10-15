@@ -962,7 +962,6 @@ fn bootstrap_report_summary_fragments() {
         connected: true,
         tools: vec!["web_search".to_string(), "web_fetch".to_string()],
         expose_raw_mcp_tools: false,
-        fallback_to_builtin: false,
         ..Default::default()
     };
     let lines = report.summary_lines();
@@ -971,7 +970,6 @@ fn bootstrap_report_summary_fragments() {
     assert!(joined.contains("Eggsearch MCP: connected"));
     assert!(joined.contains("web_search, web_fetch"));
     assert!(joined.contains("Raw MCP tools exposed to model: no"));
-    assert!(joined.contains("Fallback to built-in: no"));
 }
 
 // ── Synthetic EggsactCallResult tests ───────────────────────────────

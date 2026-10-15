@@ -1,16 +1,17 @@
 # Search Backend Module
 
-Wrapper layer between Codegg's agent-facing search/evidence tools and
-the underlying search provider. The default backend is the external
-`eggsearch` MCP server; the legacy in-tree implementation under
-`src/search/*` is retained only as an explicit fallback.
+Wrapper layer between CodeGG's agent-facing search/evidence tools and
+the external `eggsearch` MCP server. Search execution is either
+Eggsearch-backed or disabled; CodeGG has no second external provider
+implementation or semantic fallback.
 
 ## Purpose
 
 Codegg exposes stable native tool names (`websearch`, `webfetch`,
 `repo_search`, `repo_fetch`, `repo_map`, `security_search`,
 `research_search`, `batch_fetch`, `evidence_bundle`) to the agent.
-Internally they delegate to a pluggable backend. The search backend
+Internally they delegate to the configured Eggsearch MCP backend or
+return a disabled/unavailable error. The search backend
 module owns the dispatch logic, output framing, truncation, and
 trust boundary between external content and the model.
 
@@ -29,7 +30,6 @@ src/search_backend/
 ├── state.rs         # Deprecated process-global slots (bootstrap reuse + legacy compat only)
 ├── bootstrap.rs     # Connect eggsearch at startup; emit BootstrapReport
 ├── eggsearch.rs     # Adapter: native args → eggsearch MCP args (explicit McpHandle)
-├── legacy.rs        # Adapter: native args → in-tree SearchProviderRegistry
 ├── framing.rs       # external_untrusted framing + clamp_output
 └── test_support.rs  # Cross-process flock (bootstrap compat tests only)
 ```
@@ -145,19 +145,20 @@ coverage is `"partial"`. If all are present, `"complete"`.
 ### Dispatch (`mod.rs`)
 
 Nine dispatch functions resolve the current `SearchConfig`, then
-delegate to the eggsearch adapter or legacy fallback:
+delegate to the eggsearch adapter or return an error when disabled or
+unavailable:
 
-| Function | Backend support | Fallback |
-|----------|----------------|----------|
-| `dispatch_web_search` | eggsearch / builtin | Yes (if `fallback_to_builtin`) |
-| `dispatch_web_fetch` | eggsearch / builtin | Yes (if `fallback_to_builtin`) |
-| `dispatch_repo_search` | eggsearch only | No |
-| `dispatch_repo_fetch` | eggsearch only | No |
-| `dispatch_repo_map` | eggsearch only | No |
-| `dispatch_security_search` | eggsearch only | No |
-| `dispatch_research_search` | eggsearch only | No |
-| `dispatch_batch_fetch` | eggsearch only | No |
-| `dispatch_evidence_bundle` | eggsearch only | No |
+| Function | Backend support |
+|----------|-----------------|
+| `dispatch_web_search` | eggsearch |
+| `dispatch_web_fetch` | eggsearch |
+| `dispatch_repo_search` | eggsearch |
+| `dispatch_repo_fetch` | eggsearch |
+| `dispatch_repo_map` | eggsearch |
+| `dispatch_security_search` | eggsearch |
+| `dispatch_research_search` | eggsearch |
+| `dispatch_batch_fetch` | eggsearch |
+| `dispatch_evidence_bundle` | eggsearch |
 
 Each has a `dispatch_*_structured` variant that returns
 `StructuredSearchResult` (output + optional structured value +
@@ -198,12 +199,6 @@ Key behaviors:
 Each adapter calls `ensure_tool_available()` before dispatch, producing
 an actionable error if the upstream MCP tool is missing.
 
-### Legacy Adapter (`legacy.rs`)
-
-Uses `SearchProviderRegistry::from_env()` to pick a provider from
-environment variables. Returns a formatted hit list. Errors with a
-clear message when no providers are configured. No structured variant.
-
 ### Trust Framing (`framing.rs`)
 
 Every eggsearch result is wrapped in `external_untrusted` framing:
@@ -217,8 +212,8 @@ Every eggsearch result is wrapped in `external_untrusted` framing:
 ```
 
 Fetch and evidence frames include a stronger warning about attacker-
-controlled content. The `source` parameter is configurable so builtin
-backend framing does not claim `source=eggsearch`.
+controlled content. External results always identify Eggsearch as their
+source.
 
 Output is clamped by `clamp_output()` which truncates at a byte
 boundary and appends `[truncated by Codegg: ...]`. Returns
@@ -271,23 +266,22 @@ resolved from `SearchConfig` so custom names are honored.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `SearchConfig` | `config/src/schema.rs:774` | Backend, output caps, eggsearch config |
-| `SearchBackendConfig` | `config/src/schema.rs:868` | Eggsearch / Builtin / Disabled |
-| `EggsearchConfig` | `config/src/schema.rs:879` | Server name, command, args, timeouts |
-| `ToolTimeoutKind` | `config/src/schema.rs:895` | Default / Security / Research / Batch |
+| `SearchConfig` | `crates/codegg-config/src/schema.rs:783` | Backend, output caps, eggsearch config |
+| `SearchBackendConfig` | `crates/codegg-config/src/schema.rs:870` | Eggsearch / Disabled |
+| `EggsearchConfig` | `crates/codegg-config/src/schema.rs:898` | Server name, command, args, timeouts |
+| `ToolTimeoutKind` | `crates/codegg-config/src/schema.rs:914` | Default / Security / Research / Batch |
 | `McpService` | `src/mcp/mod.rs:165` | MCP server registry (consumed by eggsearch adapter) |
-| `StructuredSearchResult` | `src/search_backend/mod.rs:56` | output + value + truncated |
-| `EggsearchCallResult` | `src/search_backend/eggsearch.rs:539` | output, value, truncated (per-call) |
-| `BootstrapReport` | `src/search_backend/bootstrap.rs:433` | Startup diagnostic report |
+| `StructuredSearchResult` | `src/search_backend/mod.rs:54` | output + value + truncated |
+| `EggsearchCallResult` | `src/search_backend/eggsearch.rs:587` | output, value, truncated (per-call) |
+| `BootstrapReport` | `src/search_backend/bootstrap.rs:453` | Startup diagnostic report |
 | `CrossProcessLockGuard` | `src/search_backend/test_support.rs:25` | Test isolation via flock |
 
 ## Configuration Surface
 
 ```toml
 [search]
-backend = "eggsearch"           # "eggsearch" | "builtin" | "disabled"
+backend = "eggsearch"           # "eggsearch" | "disabled"
 expose_raw_mcp_tools = false
-fallback_to_builtin = false
 max_search_output_chars = 12000
 max_fetch_output_chars = 20000
 max_repo_output_chars = 15000
@@ -323,15 +317,17 @@ source-build compatibility, never required for a prebuilt install.
 
 ## Invariants & Gotchas
 
-- **websearch/webfetch always registered** — they fall back to error
-  messages or builtin implementations when eggsearch is unavailable.
+- **websearch/webfetch always registered** — unavailable Eggsearch returns
+  an actionable error; it never invokes another provider implementation.
 - **Seven expanded wrappers conditionally registered** — based on
   `evidence_config.enabled`. When `[search].backend = "disabled"`,
   `EvidenceBackendRuntimeConfig.enabled` is `false` and the wrappers
   are omitted from the tool registry entirely.
-- **Only websearch/webfetch support builtin fallback** — the seven
-  expanded wrappers (`repo_search`, etc.) require `backend = "eggsearch"`
-  and return an error otherwise.
+- **No semantic fallback** — Eggsearch errors remain visible to the caller;
+  request and provider semantics are never changed by CodeGG.
+- **Removed configuration fails actionably** — `backend = "builtin"` directs
+  users to restore/configure the managed or explicit Eggsearch sidecar, or
+  select `disabled`. `fallback_to_builtin` is rejected and must be removed.
 - **Reentrant bootstrap is safe** — `bootstrap_search_backend` checks
   the installed service before re-connecting, so one daemon eggsearch
   connection is shared instead of spawned per turn.
@@ -373,8 +369,8 @@ MCP connection status, advertised tools, tool coverage classification
 (complete/partial/incompatible with missing tool lists), ten-tool bundled
 surface, required/recommended coverage, default timeout, provider status,
 installation hint (bundle reinstall, never bare "install eggsearch"),
-`expose_raw_mcp_tools`, `fallback_to_builtin`, and all per-domain output
-caps. The search doctor checks exact eggsearch pin `0.4.3`, its ten-tool
+`expose_raw_mcp_tools`, and all per-domain output caps. The search doctor
+checks exact eggsearch pin `0.4.3`, its ten-tool
 surface, and every provider ID retained by the native wrapper. `doctor
 installation` prints `InstallationReport` (executable,
 directory, sibling states, helper/kernel probe, in-process eggsact line)
@@ -406,11 +402,9 @@ cleared, using a temporary HOME/config/workspace.
 
 ## Where to Add New Providers
 
-New web search providers belong in the **eggsearch** project, not in
-Codegg's built-in search provider registry (`src/search/`). The built-
-in registry is legacy fallback only. Codegg owns the wrapper UX,
-permissioning, output caps, trust framing, and backend selection; the
-actual search/fetch logic lives in eggsearch.
+New web search providers belong in the **eggsearch** project. CodeGG owns
+the wrapper UX, permissioning, output caps, trust framing, and backend
+selection; the actual search/fetch logic lives in eggsearch.
 
 ## Testing
 
@@ -432,9 +426,6 @@ cargo test -p codegg --test fake_eggsearch_mcp
 
 # Argument mapping tests
 cargo test -p codegg --test search_backend_arg_mapping
-
-# Legacy adapter tests
-cargo test -p codegg --test search_backend_legacy
 
 # Eggsearch integration tests
 cargo test -p codegg --test search_backend_eggsearch
@@ -461,33 +452,12 @@ bootstrap compat tests that still assert on the legacy install slots.
 - [config.md](config.md) — config loading and validation
 - [security.md](security.md) — SSRF protection, trust framing
 
-## Source Verification
+## Current source verification
 
-Verified 2026-10-06 against `src/search_backend/`, `src/search/`,
-`src/mcp/mod.rs`, and `crates/codegg-config/src/schema.rs`.
-- Corrected 7 stale line refs. All four config refs had drifted ~220 lines
-  (`SearchConfig` `516`->`739`, `SearchBackendConfig` `610`->`833`,
-  `EggsearchConfig` `621`->`844`, `ToolTimeoutKind` `637`->`860`), plus
-  `McpService` `130`->`165`, `EggsearchCallResult` `399`->`539` (and added its
-  full path, `src/search_backend/eggsearch.rs`), and `BootstrapReport`
-  `306`->`433`.
-- Confirmed correct as written: `StructuredSearchResult`
-  (`src/search_backend/mod.rs:56`) and `CrossProcessLockGuard`
-  (`src/search_backend/test_support.rs:25`).
-- Confirmed `SearchBackendConfig` (`schema.rs:868`) has exactly the 3
-  documented variants: `Eggsearch`, `Builtin`, `Disabled`.
-
-Verified 2026-10-06 against source after upstream `2573f9c0` ("Decision runtime
-ownership migration and M006 closure"). That commit added the
-`DecisionEngineConfig` block near the top of
-`crates/codegg-config/src/schema.rs`, shifting every declaration below it by
-30 lines and re-breaking the four config refs corrected in the pass above.
-Corrected: `SearchConfig` `739`->`774`, `SearchBackendConfig` `833`->`868`,
-`EggsearchConfig` `844`->`879`, `ToolTimeoutKind` `860`->`895` — a uniform
-+35 in the working tree, which includes an in-flight 5-line
-`AutoupdateConfig` doc-comment insertion; each target was re-checked to land on
-the declared item. Confirmed unaffected: `StructuredSearchResult`
-(`src/search_backend/mod.rs:56`), `CrossProcessLockGuard`
-(`src/search_backend/test_support.rs:25`), `McpService` (`src/mcp/mod.rs:165`),
-and `EggsearchCallResult` (`src/search_backend/eggsearch.rs:539`), and the
-3-variant `SearchBackendConfig` claim.
+Verified after legacy-retirement M002 against `src/search_backend/`,
+`src/tool/webfetch.rs`, `src/tool/websearch.rs`, and
+`crates/codegg-config/src/schema.rs`. `SearchBackendConfig` has only
+`Eggsearch` and `Disabled`; legacy external-provider and webfetch HTTP
+execution modules have been deleted. The old `backend = "builtin"` and
+`fallback_to_builtin` settings fail during config deserialization with
+migration guidance.

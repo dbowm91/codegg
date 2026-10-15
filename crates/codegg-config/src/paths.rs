@@ -97,6 +97,14 @@ pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
 
 pub fn parse_config(content: &str, path: &Path) -> Result<Config, ConfigError> {
     let cleaned = strip_jsonc_comments(content);
+    let value: serde_json::Value = json5::from_str(&cleaned)
+        .map_err(|e| ConfigError::Parse(format!("{}: {}", path.display(), e)))?;
+    if value.pointer("/search/fallback_to_builtin").is_some() {
+        return Err(ConfigError::Parse(format!(
+            "{}: search.fallback_to_builtin was removed; delete this setting because search failures no longer switch providers",
+            path.display()
+        )));
+    }
     json5::from_str(&cleaned).map_err(|e| ConfigError::Parse(format!("{}: {}", path.display(), e)))
 }
 
@@ -228,9 +236,6 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                     }
                     if search.expose_raw_mcp_tools.is_some() {
                         existing.expose_raw_mcp_tools = search.expose_raw_mcp_tools;
-                    }
-                    if search.fallback_to_builtin.is_some() {
-                        existing.fallback_to_builtin = search.fallback_to_builtin;
                     }
                     if search.max_search_output_chars.is_some() {
                         existing.max_search_output_chars = search.max_search_output_chars;

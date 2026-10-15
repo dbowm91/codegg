@@ -252,6 +252,12 @@ a source install must provide it separately.
 codegg doctor search
 ```
 
+Search configuration supports `backend = "eggsearch"` or `"disabled"`.
+The retired `backend = "builtin"` value and `fallback_to_builtin` setting
+fail config parsing with migration guidance. If Eggsearch is unavailable,
+restore the managed sidecar or configure an explicit Eggsearch command; search
+does not switch to a second provider stack.
+
 The raw `mcp__eggsearch__*` tools are **hidden from the model by default**
 (`Raw MCP tools exposed to model: no`). The wrappers exist to bound and
 trust-frame the output instead of passing an unbounded third-party response

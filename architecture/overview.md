@@ -133,7 +133,7 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Decision Engine | Backend-neutral decision contract with an optional System One-compatible backend; explicit opt-in, bounded fallback; owns advisor decision paths | [tool-advisor.md](tool-advisor.md) |
 | Interactive Process | PTY lifecycle + attach protocol — distinct from finite managed process runs | [process-tool-execution-ownership.md](process-tool-execution-ownership.md) |
 | Git Service / Mutations / Network / Recovery | Canonical read executor plus typed guarded mutations, network policy, recovery | [git.md](git.md) |
-| Search Backend | Dispatch between in-tree search tools and the eggsearch MCP backend | [search_backend.md](search_backend.md) |
+| Search Backend | Dispatch between eggsearch MCP and explicit disabled mode | [search_backend.md](search_backend.md) |
 
 ### Tools and capabilities at a glance
 
@@ -206,7 +206,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | LSP | Language Server Protocol — `egglsp` is authoritative; `src/lsp/` is a thin shim | [lsp.md](lsp.md) |
 | MCP | Model Context Protocol client — local/remote servers, OAuth, reconnection | [mcp.md](mcp.md) |
 | Plugin | WASM plugin system (Wasmtime), manifest parsing, hooks, registry, lifecycle | [plugin.md](plugin.md) |
-| Search Backend | Wrapper between search tools and eggsearch MCP, with legacy in-tree fallback | [search_backend.md](search_backend.md) |
+| Search Backend | Wrapper between search tools and eggsearch MCP, with explicit disabled mode | [search_backend.md](search_backend.md) |
 
 ### Security Layer
 
@@ -262,11 +262,13 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Counts below were re-measured against the current tree on **2026-10-06**.
+Counts were last remeasured against the current tree on **2026-10-06**.
+Architecture docs and root integration-test counts were rechecked during M002
+on **2026-10-15**.
 
 | Item | Count | Source |
 |------|-------|--------|
-| Architecture docs | 85 | `architecture/*.md` |
+| Architecture docs | 86 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 2 test-only mocks in `program_manifest.rs`) |
 | Tool source files | 77 | `src/tool/**.rs` (incl. `bash/`) |
@@ -288,7 +290,7 @@ Counts below were re-measured against the current tree on **2026-10-06**.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 226 | `tests/*.rs` |
+| Integration test files | 233 | `tests/*.rs` |
 | CI guard scripts | 41 | `scripts/check_*` |
 
 ## Feature gates
@@ -414,7 +416,7 @@ Every architecture document in this directory, grouped by theme.
 - [Tool Advisor](tool-advisor.md) — bounded tool-selection advisor
 - [Tool Advisor Framework Spike](tool-advisor-framework-spike.md) — spike findings
 - [Git](git.md) — service, mutations, network, recovery, credential lifecycle
-- [Search Backend](search_backend.md) — eggsearch dispatch with legacy fallback
+- [Search Backend](search_backend.md) — eggsearch dispatch and disabled behavior
 
 ### User Interface
 - [TUI](tui.md) — Ratatui UI, async commands, state management
@@ -513,7 +515,6 @@ codegg/
 │   ├── python_script/          # Python scripting
 │   ├── research/               # Research pipeline
 │   ├── scheduler/              # Admission control, fair queue
-│   ├── search/                 # Legacy in-tree search tools
 │   ├── search_backend/         # Search backend dispatch
 │   ├── security/               # SSRF, sandboxing
 │   ├── server/                 # HTTP/WebSocket server (feature-gated)

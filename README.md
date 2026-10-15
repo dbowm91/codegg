@@ -78,6 +78,10 @@ codegg doctor                 # what is wired up and what is missing?
 `doctor` reports the search backend, MCP servers, language servers,
 deterministic tools, providers, stored credentials, and the installation
 itself. It exits 0 even when it reports problems, so read the output.
+External search and fetch use the managed Eggsearch sidecar as their sole
+provider execution owner; if it is unavailable, CodeGG reports an actionable
+error instead of switching to another provider implementation. Set
+`search.backend = "disabled"` to disable the external search surface.
 
 ### 4. Run it
 

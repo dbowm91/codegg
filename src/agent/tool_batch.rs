@@ -412,9 +412,7 @@ impl AgentLoop {
             // process-global lookup at execution time.
             match self.services.search_runtime.backend() {
                 SearchBackendConfig::Eggsearch => ToolBackendKind::Mcp,
-                SearchBackendConfig::Builtin | SearchBackendConfig::Disabled => {
-                    ToolBackendKind::BuiltinLegacy
-                }
+                SearchBackendConfig::Disabled => ToolBackendKind::Native,
             }
         } else {
             ToolBackendKind::Native

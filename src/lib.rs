@@ -67,7 +67,6 @@ pub mod python_script;
 pub mod research;
 pub mod run_rerun;
 pub mod scheduler;
-pub mod search;
 pub mod search_backend;
 pub mod security;
 pub mod shell;
