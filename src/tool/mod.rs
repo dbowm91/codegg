@@ -1030,55 +1030,50 @@ impl ToolRegistry {
             None => unrooted(Box::new(crate::tool::git_read::GitQueryTool::default())),
         });
 
-        // --- LSP: consult resolved backend config. ---
-        let lsp_backend = options
-            .tool_backends
-            .backend_for(crate::tool::backend::BackendDomain::Lsp);
-        let lsp_fallback = options
-            .tool_backends
-            .lsp
-            .as_ref()
-            .map(|c| c.fallback_to_native())
-            .unwrap_or(true);
-        // M003: one shared service for the model-facing `lsp` tool and
-        // the hidden program-only `lsp_read` adapter so both observe
-        // identical server state.
-        let lsp_service_shared = options.lsp_service.unwrap_or_else(|| {
-            crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
-                crate::config::schema::LspConfig::default(),
-            ))
-        });
-        let lsp_preview_registry = options.lsp_preview_registry.unwrap_or_else(|| {
-            Arc::new(parking_lot::Mutex::new(
-                egglsp::preview_registry::PreviewArtifactRegistry::new(),
-            ))
-        });
-        registry.lsp_service = Some(lsp_service_shared.clone());
-        registry.lsp_preview_registry = Some(lsp_preview_registry.clone());
-        match lsp_backend {
-            ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
-                let tool = crate::tool::lsp::LspTool::with_cache_config(
-                    lsp_service_shared.clone(),
-                    options.lsp_cache_config,
-                )
-                .with_preview_registry(lsp_preview_registry.clone());
-                registry.register(match workspace_root.as_ref() {
-                    Some(root) => tool.with_allowed_root(root.clone()),
-                    None => tool,
-                });
-            }
-            ToolImplementationBackend::Disabled => {
-                registry.register(crate::tool::disabled::DisabledTool::new(
-                    "lsp",
-                    crate::tool::lsp::LspTool::new(lsp_service_shared.clone()).description(),
-                    "lsp backend is configured as 'disabled' ([tool_backends.lsp].backend = \"disabled\")",
-                ));
-            }
-            ToolImplementationBackend::Mcp => {
-                if lsp_fallback {
-                    // MCP-configured but no live server: keep the
-                    // native wrapper as the active path. Diagnostics
-                    // report this row as `fallback-native`.
+        if sandbox_profile.requires_filesystem_containment() {
+            // The daemon-wide LSP service is not yet keyed by accepted
+            // sandbox profile. A constrained turn must neither create an
+            // LSP child through its legacy FullHost launcher nor reuse a
+            // client another turn created under FullHost.
+            let reason = "LSP process isolation is unavailable for constrained profiles";
+            registry.register(crate::tool::disabled::DisabledTool::new(
+                "lsp",
+                "Query a language server for code intelligence.",
+                reason,
+            ));
+            registry.register(crate::tool::disabled::DisabledTool::new(
+                "lsp_read",
+                "Read bounded facts from a language server.",
+                reason,
+            ));
+        } else {
+            // --- LSP: consult resolved backend config. ---
+            let lsp_backend = options
+                .tool_backends
+                .backend_for(crate::tool::backend::BackendDomain::Lsp);
+            let lsp_fallback = options
+                .tool_backends
+                .lsp
+                .as_ref()
+                .map(|c| c.fallback_to_native())
+                .unwrap_or(true);
+            // M003: one shared service for the model-facing `lsp` tool and
+            // the hidden program-only `lsp_read` adapter so both observe
+            // identical server state.
+            let lsp_service_shared = options.lsp_service.unwrap_or_else(|| {
+                crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+                    crate::config::schema::LspConfig::default(),
+                ))
+            });
+            let lsp_preview_registry = options.lsp_preview_registry.unwrap_or_else(|| {
+                Arc::new(parking_lot::Mutex::new(
+                    egglsp::preview_registry::PreviewArtifactRegistry::new(),
+                ))
+            });
+            registry.lsp_service = Some(lsp_service_shared.clone());
+            registry.lsp_preview_registry = Some(lsp_preview_registry.clone());
+            match lsp_backend {
+                ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
                     let tool = crate::tool::lsp::LspTool::with_cache_config(
                         lsp_service_shared.clone(),
                         options.lsp_cache_config,
@@ -1088,31 +1083,54 @@ impl ToolRegistry {
                         Some(root) => tool.with_allowed_root(root.clone()),
                         None => tool,
                     });
-                } else {
-                    // MCP configured, no fallback. Don't register a
-                    // model-visible tool. The diagnostic
-                    // `backend_report` reports this as
-                    // `unavailable` (ConfiguredButUnavailable).
+                }
+                ToolImplementationBackend::Disabled => {
                     registry.register(crate::tool::disabled::DisabledTool::new(
+                    "lsp",
+                    crate::tool::lsp::LspTool::new(lsp_service_shared.clone()).description(),
+                    "lsp backend is configured as 'disabled' ([tool_backends.lsp].backend = \"disabled\")",
+                ));
+                }
+                ToolImplementationBackend::Mcp => {
+                    if lsp_fallback {
+                        // MCP-configured but no live server: keep the
+                        // native wrapper as the active path. Diagnostics
+                        // report this row as `fallback-native`.
+                        let tool = crate::tool::lsp::LspTool::with_cache_config(
+                            lsp_service_shared.clone(),
+                            options.lsp_cache_config,
+                        )
+                        .with_preview_registry(lsp_preview_registry.clone());
+                        registry.register(match workspace_root.as_ref() {
+                            Some(root) => tool.with_allowed_root(root.clone()),
+                            None => tool,
+                        });
+                    } else {
+                        // MCP configured, no fallback. Don't register a
+                        // model-visible tool. The diagnostic
+                        // `backend_report` reports this as
+                        // `unavailable` (ConfiguredButUnavailable).
+                        registry.register(crate::tool::disabled::DisabledTool::new(
                         "lsp",
                         "Experimental: Query LSP server for code intelligence.",
                         "lsp MCP backend is configured but no MCP server is connected and fallback_to_native is false; set [tool_backends.lsp].backend = \"native\" or \"disabled\" or enable fallback_to_native",
                     ));
+                    }
                 }
             }
-        }
-        // --- M003: hidden program-only LSP read adapter. ---
-        // Always registered (even when the model-facing `lsp` tool is
-        // a disabled stub): without a live server its reads fail
-        // closed as typed execution errors, exactly like the M002
-        // `repo_search` unavailable-backend behavior. Hidden from
-        // model definitions and `tool_search`.
-        {
-            let tool = crate::tool::lsp_read::LspReadTool::new(lsp_service_shared);
-            registry.register(match workspace_root.as_ref() {
-                Some(root) => tool.with_allowed_root(root.clone()),
-                None => tool,
-            });
+            // --- M003: hidden program-only LSP read adapter. ---
+            // Always registered (even when the model-facing `lsp` tool is
+            // a disabled stub): without a live server its reads fail
+            // closed as typed execution errors, exactly like the M002
+            // `repo_search` unavailable-backend behavior. Hidden from
+            // model definitions and `tool_search`.
+            {
+                let tool = crate::tool::lsp_read::LspReadTool::new(lsp_service_shared);
+                registry.register(match workspace_root.as_ref() {
+                    Some(root) => tool.with_allowed_root(root.clone()),
+                    None => tool,
+                });
+            }
         }
 
         let commit_tool = if let Some(root) = workspace_root.as_ref() {
@@ -1793,6 +1811,46 @@ pub fn convert_lsp_cache_config(
         max_bytes: cfg.max_bytes.unwrap_or(4 * 1024 * 1024),
         ttl_seconds: cfg.ttl_seconds.unwrap_or(300),
     })
+}
+
+#[cfg(test)]
+mod lsp_profile_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn constrained_profile_does_not_bind_shared_lsp_service() {
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
+            lsp_service: Some(service),
+            ..ToolRegistryOptions::default()
+        });
+
+        assert!(registry.contains("lsp"));
+        assert!(registry.contains("lsp_read"));
+        assert!(registry.lsp_service_identity().is_none());
+        assert!(registry.lsp_preview_registry().is_none());
+    }
+
+    #[test]
+    fn full_host_profile_preserves_shared_lsp_service() {
+        let service = crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+            crate::config::schema::LspConfig::default(),
+        ));
+        let expected_identity = Arc::as_ptr(&service) as usize;
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+            lsp_service: Some(service),
+            ..ToolRegistryOptions::default()
+        });
+
+        assert!(registry.contains("lsp"));
+        assert!(registry.contains("lsp_read"));
+        assert_eq!(registry.lsp_service_identity(), Some(expected_identity));
+        assert!(registry.lsp_preview_registry().is_some());
+    }
 }
 
 #[cfg(test)]
