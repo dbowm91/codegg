@@ -543,6 +543,38 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
     let cargo_home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".cargo"));
+    let rustup = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("rustup"))
+        .find(|candidate| candidate.is_file())
+        .expect("Rustup is installed by the Linux test toolchain")
+        .canonicalize()
+        .expect("resolve rustup executable");
+    let host_triple_output = Command::new(&rustup)
+        .args(["run", "stable", "rustc", "-vV"])
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("query the installed Rust host triple");
+    assert!(
+        host_triple_output.status.success(),
+        "installed rustc query failed: {}",
+        String::from_utf8_lossy(&host_triple_output.stderr)
+    );
+    let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc -vV host triple")
+        .to_string();
+    let linker_env = format!(
+        "CARGO_TARGET_{}_LINKER",
+        host_triple.replace('-', "_").to_ascii_uppercase()
+    );
+    let linker = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("cc"))
+        .find(|candidate| candidate.is_file())
+        .expect("C linker is installed on the Linux test runner")
+        .canonicalize()
+        .expect("resolve C linker executable");
     let cargo =
         std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
             .map(|directory| directory.join("cargo"))
@@ -574,9 +606,17 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
         // installed Rust toolchain and Cargo caches so rustup and Cargo do not
         // look for an empty /tmp/.rustup.
         let mut launch_script = format!(
-            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; ",
+            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; export {}={}; export PATH={}:$PATH; ",
             shell_quote(&rustup_home.to_string_lossy()),
             shell_quote(&cargo_home.to_string_lossy()),
+            linker_env,
+            shell_quote(&linker.to_string_lossy()),
+            shell_quote(
+                &linker
+                    .parent()
+                    .expect("C linker has a parent directory")
+                    .to_string_lossy()
+            ),
         );
         if uses_rustup_shim {
             launch_script.push_str(&format!(
