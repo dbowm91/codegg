@@ -126,8 +126,10 @@ supported-host gates.
 
 M004 has added an exact-host Cargo check/test probe and a separate ephemeral
 runner job that disables user namespaces (`user.max_user_namespaces=0`) and
-checks required-launch refusal before the target marker. Hosted results are
-pending. A source audit confirms `InteractiveProcessService` and the `egglsp`
+checks required-launch refusal before the target marker. Exact-head run
+`38822273062` on `d010d728` passed the M004 native suite 8/8, protected-mount
+regressions 11/11, trusted-Git regressions 18/18, and the separate restricted-
+userns refusal job. A source audit confirms `InteractiveProcessService` and the `egglsp`
 launcher currently bypass the M004 launch owner; PTY/LSP production routing and
 protocol evidence remain hard M004 closure gates.
 
@@ -184,10 +186,11 @@ behavior; it is not positive contained-LSP evidence or M004 closure.
 An internal-only candidate composes `--unshare-net` with the M004 private
 process view. It is not persisted, user-selectable, or reported as enforced.
 A compile assertion verifies the launch spec and an opt-in native test probes
-host-loopback TCP denial; hosted execution is pending. IPv6, UDP, DNS, inherited
-network descriptors, launch-owner coverage, restricted-host refusal, and
-offline toolchain qualification remain open, as do M004 production-owner and
-host-admission gates.
+host-loopback TCP denial; exact-head hosted execution passed on `d010d728` in
+run `38822273062`. IPv6, UDP, DNS, inherited network descriptors, launch-owner
+coverage, restricted-host network qualification, and offline toolchain
+qualification remain open, as do M004 production-owner and host-admission
+gates.
 
 ### Exact-head hosted qualification (2026-10-15)
 

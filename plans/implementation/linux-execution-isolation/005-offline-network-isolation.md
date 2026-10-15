@@ -29,9 +29,12 @@ Introduce operator-opted `OfflineRequired` for local Linux child execution, inde
 - A deterministic compile test asserts the network namespace option is
   present alongside PID/IPC namespaces. An opt-in native test holds a host
   loopback TCP listener open and verifies the contained child cannot connect.
-  Exact-head hosted workflow 38817580703 passed both the compile assertion
-  and native loopback TCP denial probe on its qualified ephemeral Ubuntu
-  runner after user-namespace setup.
+  Exact-head hosted workflow [38822273062](https://github.com/dbowm91/codegg/actions/runs/38822273062)
+  passed the full M004 native target (8/8), including both the offline compile
+  assertion and native loopback TCP denial probe, on its qualified ephemeral
+  Ubuntu runner after user-namespace setup. Its protected-mount and trusted-Git
+  regression targets also passed (11/11 and 18/18); the separate restricted-
+  userns refusal job passed.
 - This is not closure evidence for IPv6, UDP, DNS, inherited connected
   descriptors, all launch entry points, or restricted host configurations.
   Those remain required before any `NetworkEnforcement::Enforced` result or
