@@ -1,7 +1,7 @@
 # M004 process and IPC implementation readiness
 
 Status: implementation in progress; first exact-hosted positive denial matrix passed, broader compatibility/lifecycle gates remain open
-Reviewed source baseline: `dde64559` (2026-10-15)
+Reviewed source baseline: `f2e4bd76` (2026-10-15)
 Related plan: `plans/implementation/linux-execution-isolation/004-process-ipc-seccomp.md`
 Related decision: accepted `plans/adrs/ADR-0031-composable-linux-execution-isolation.md`
 
@@ -31,6 +31,7 @@ does not weaken the request to PID/IPC-only containment.
 | Linux qualification workflow | Added `.github/workflows/linux-m004-native.yml`; it records runner kernel/AppArmor/Bubblewrap facts and runs the managed-child M004 probe plus protected-mount/Git regressions. | Exact-head hosted positive evidence is pending. |
 | Seccomp compiler | `seccompiler` 0.5.0 is an upstream pure-Rust BPF compiler with an architecture-checked filter IR and `BpfProgram` output; Bubblewrap accepts raw cBPF program bytes through a seccomp FD. | Pinned as a Linux-only dependency and integrated with a fixed denylist covering namespace changes, legacy and new mount syscalls, tracing, and selected kernel control syscalls. Unit compilation and hosted denial of namespace and mount syscalls pass; rustup/Cargo/rustc compatibility remains open. Sources: [seccompiler API](https://docs.rs/seccompiler/0.5.0/seccompiler/), [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). |
 | Exact-head hosted run `38760659016` | Ubuntu 24.04 hosted runner, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`, x86_64, UID/GID 1001, AppArmor `unconfined`; `seccomp/actions_avail` includes `errno` and `allow`. The workflow changed ephemeral `kernel.apparmor_restrict_unprivileged_userns` from 1 to 0. | M004 native target passed 3/3: private proc/PID view, signal and abstract/pathname socket denial, ambient-FD closure, installed seccomp denial of namespace and mount syscalls, Git subprocess, and process-group descendant cancellation. The same run passed 11/11 protected-mount tests and 18/18 trusted-Git tests. This is candidate evidence on a runner whose user-namespace policy was relaxed; it does not admit a general host configuration. |
+| Exact-head hosted run `38762601406`, source SHA `f2e4bd76` | Ubuntu 24.04.5 hosted runner, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`, x86_64, UID/GID 1001, AppArmor `unconfined`; seccomp `errno` and `allow` available. The workflow changed ephemeral `kernel.apparmor_restrict_unprivileged_userns` from 1 to 0. | M004 target passed 3/3, including `rustup toolchain list` and `rustup run stable rustc --version` through the private proc view. Protected-mount passed 11/11 and trusted-Git passed 18/18. This qualifies the installed stable Rustup path on that adjusted runner only. |
 
 The first hosted M004 run (`38754822245`, source SHA `7a507362`) reached the
 positive Landlock ABI 6 branch, then failed because its signal probe expected
@@ -57,9 +58,10 @@ regressions listed above.
    `process_vm_readv/writev`, and same-UID concurrent session fixtures. Current
    probes establish PID non-addressability and deny a signal, but not these
    additional reads or attachment routes.
-2. Run rustup toolchain discovery and `rustc`/Cargo through the actual private
-   proc and protected mount view. M004 supplies `/proc/self/exe`, but this fix
-   has not yet been verified with the production toolchain path.
+2. Extend the exact-host toolchain smoke beyond Rustup discovery and `rustc
+   --version` to Cargo checks/tests and realistic toolchain subprocess trees.
+   The installed stable Rustup path now passes through the private proc view on
+   hosted Ubuntu; offline Cargo and broader compiler compatibility remain open.
 3. Exercise service-level PTY launch/status/resize behavior and concurrent job
    cleanup. The current cancellation probe covers an ordinary child process
    group; it does not test a descendant that creates a new session.
