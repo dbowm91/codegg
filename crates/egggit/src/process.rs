@@ -1196,6 +1196,86 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn trusted_git_status_neutralizes_included_repository_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("repo");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&root).expect("repo root");
+        std::fs::create_dir(&outside).expect("outside root");
+        assert!(StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&root)
+            .status()
+            .expect("git init")
+            .success());
+
+        std::fs::write(outside.join("host-secret-name.txt"), "outside\n").expect("outside marker");
+        let marker = fixture.path().join("included-fsmonitor-ran");
+        let fsmonitor = fixture.path().join("included-fsmonitor.sh");
+        std::fs::write(
+            &fsmonitor,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'token\\n'\n",
+                marker.display()
+            ),
+        )
+        .expect("write included fsmonitor");
+        std::fs::set_permissions(&fsmonitor, std::fs::Permissions::from_mode(0o755))
+            .expect("make included fsmonitor executable");
+
+        let included = fixture.path().join("hostile-included.config");
+        std::fs::write(
+            &included,
+            format!(
+                "[core]\n\tworktree = {}\n\tfsmonitor = {}\n[c009]\n\tincluded = yes\n",
+                outside.display(),
+                fsmonitor.display()
+            ),
+        )
+        .expect("write included configuration");
+        let include_key = "includeIf.onbranch:main.path";
+        let configured = StdCommand::new("git")
+            .args(["config", "--local", include_key])
+            .arg(&included)
+            .current_dir(&root)
+            .status()
+            .expect("configure conditional include");
+        assert!(configured.success());
+
+        let included_value = StdCommand::new("git")
+            .args(["config", "--local", "--includes", "--get", "c009.included"])
+            .current_dir(&root)
+            .output()
+            .expect("verify include fixture");
+        assert!(
+            included_value.status.success(),
+            "include fixture did not match; key={include_key}; repo config={}",
+            std::fs::read_to_string(root.join(".git/config")).unwrap_or_default()
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&included_value.stdout).trim(),
+            "yes"
+        );
+
+        let status = run(&["status".to_string()], &root)
+            .await
+            .expect("trusted status");
+        assert!(status.status.success());
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            !stdout.contains("host-secret-name.txt"),
+            "included core.worktree must not redirect trusted Git: {stdout}"
+        );
+        assert!(
+            !marker.exists(),
+            "included repository fsmonitor must not execute"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn trusted_git_commit_does_not_run_repository_hooks() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();

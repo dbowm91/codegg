@@ -2269,6 +2269,60 @@ mod tests {
             "target must not run without helper status"
         );
     }
+    #[cfg(all(test, target_os = "linux"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_workspace_replacement_before_target_start() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace root");
+        let marker = workspace.join("target-ran");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("workspace launch lease");
+
+        let displaced = fixture.path().join("displaced-workspace");
+        std::fs::rename(&workspace, &displaced).expect("replace leased workspace path");
+        std::fs::create_dir(&workspace).expect("replacement workspace");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace,
+            ProcessProvenance::new("c009-race", "workspace-replacement"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(Path::parent)
+            .expect("target debug directory")
+            .join(crate::install::sandbox_helper_name());
+        let error = run_inner(request, None, Some(&helper))
+            .await
+            .expect_err("replacement must fail before target launch");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("replaced after authorization")),
+            "unexpected replacement result: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran against a replacement workspace"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn hardlinked_denied_path_fails_before_target_launch() {
@@ -2380,6 +2434,154 @@ mod tests {
             result.stderr.to_string_lossy(),
             "CODEGG_SANDBOX_ENFORCED abi=9\n"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_view_linked_worktree_common_dir_is_read_only() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        fn tool_on_path(name: &str) -> PathBuf {
+            std::env::split_paths(&std::env::var_os("PATH").expect("host PATH"))
+                .map(|directory| directory.join(name))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| panic!("{name} is missing from the hosted toolchain PATH"))
+        }
+
+        let fixture = tempfile::tempdir().expect("linked-worktree fixture");
+        let repository = fixture.path().join("repository");
+        let workspace = fixture.path().join("worktree");
+        std::fs::create_dir(&repository).expect("repository root");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&repository)
+                .args(args)
+                .status()
+                .expect("run Git fixture command")
+        };
+        assert!(git(&["init", "--quiet", "--initial-branch=main"]).success());
+        assert!(git(&["config", "user.name", "C009 Fixture"]).success());
+        assert!(git(&["config", "user.email", "c009@example.invalid"]).success());
+        assert!(git(&["config", "--local", "c009.fixture", "common config"]).success());
+        std::fs::write(repository.join("tracked.txt"), "seed\n").expect("seed file");
+        assert!(git(&["add", "tracked.txt"]).success());
+        assert!(git(&["commit", "--quiet", "-m", "seed"]).success());
+        let linked = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&repository)
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&workspace)
+            .arg("HEAD")
+            .status()
+            .expect("create linked worktree");
+        assert!(linked.success(), "linked worktree setup failed: {linked}");
+
+        let common_config = repository.join(".git/config");
+        let common_hook = repository.join(".git/hooks/pre-commit");
+        std::fs::write(&common_hook, "protected hook\n").expect("write common hook");
+        let config_before = std::fs::read(&common_config).expect("read common config");
+        let hook_before = std::fs::read(&common_hook).expect("read common hook");
+        let marker = workspace.join("c009-target-ran");
+        let rustc = tool_on_path("rustc");
+        let sysroot_output = std::process::Command::new(&rustc)
+            .args(["--print", "sysroot"])
+            .output()
+            .expect("query Rust sysroot");
+        assert!(sysroot_output.status.success());
+        let sysroot = PathBuf::from(String::from_utf8_lossy(&sysroot_output.stdout).trim())
+            .canonicalize()
+            .expect("canonical Rust sysroot");
+        let cargo = sysroot.join("bin/cargo");
+        let rustc = sysroot.join("bin/rustc");
+        assert!(cargo.is_file(), "Cargo binary missing from Rust sysroot");
+        std::fs::create_dir_all(workspace.join("cargo-fixture/src")).expect("create Cargo fixture");
+        std::fs::write(
+            workspace.join("cargo-fixture/Cargo.toml"),
+            "[package]\nname = \"c009-native-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("write Cargo manifest");
+        std::fs::write(
+            workspace.join("cargo-fixture/src/main.rs"),
+            "fn main() { println!(\"native-cargo-ok\"); }\n",
+        )
+        .expect("write Rust source");
+        let script = format!(
+            "set -eu\nworkspace={}\nprintf allowed > \"$workspace/allowed.txt\"\n\\
+             git -C \"$workspace\" --no-optional-locks status --porcelain >/dev/null\n\\
+             test \"$(git -C \"$workspace\" config --local c009.fixture)\" = 'common config'\n\\
+             if printf changed > {}; then exit 81; fi\n\\
+             if printf changed > {}; then exit 82; fi\n\\
+             export PATH={}/bin:/usr/bin:/bin\n\\
+             export CARGO_HOME=\"$workspace/cargo-home\"\n\\
+             export LD_LIBRARY_PATH={}/lib\n\\
+             export RUSTC={}\n\\
+             {} check --offline --manifest-path \"$workspace/cargo-fixture/Cargo.toml\"\n\\
+             printf target-ran > {}",
+            shell_quote(&workspace),
+            shell_quote(&common_config),
+            shell_quote(&common_hook),
+            shell_quote(&sysroot),
+            shell_quote(&sysroot),
+            shell_quote(&rustc),
+            shell_quote(&cargo),
+            shell_quote(&marker),
+        );
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![
+                workspace.to_string_lossy().into_owned(),
+                sysroot.to_string_lossy().into_owned(),
+            ])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+            .expect("linked-worktree protected mount lease");
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.clone(),
+            ProcessProvenance::new("c009-native", "linked-worktree-common-dir"),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+
+        let result = ManagedProcessService::run(request)
+            .await
+            .expect("linked-worktree mount launch");
+        assert!(
+            result.exit_status.success(),
+            "child stderr: {}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+        ));
+        assert!(
+            workspace.join(".git").is_file(),
+            "fixture must use a .git pointer"
+        );
+        assert_eq!(std::fs::read(&common_config).unwrap(), config_before);
+        assert_eq!(std::fs::read(&common_hook).unwrap(), hook_before);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
+            "allowed"
+        );
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "target-ran");
     }
 
     #[cfg(target_os = "linux")]

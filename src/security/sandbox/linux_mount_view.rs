@@ -154,7 +154,10 @@ pub fn compile(
                     future_git_paths.insert(metadata_path);
                 }
                 Err(error) => {
-                    return Err(format!("cannot inspect protected Git metadata: {error}"));
+                    return Err(format!(
+                        "cannot inspect protected Git metadata {}: {error}",
+                        metadata_path.display()
+                    ));
                 }
             }
         }
@@ -594,12 +597,30 @@ fn validate_no_nested_mounts<'a>(roots: impl Iterator<Item = &'a PathBuf>) -> Re
 fn validate_protected_tree(root: &Path) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
 
+    let root_metadata = std::fs::symlink_metadata(root)
+        .map_err(|error| format!("cannot inspect protected Git metadata root: {error}"))?;
+    if root_metadata.file_type().is_symlink() {
+        return Err("symlinked protected Git metadata root is unsupported".into());
+    }
+    if root_metadata.is_file() {
+        if root_metadata.nlink() > 1 {
+            return Err("hardlinked protected Git metadata cannot be mounted safely".into());
+        }
+        return Ok(());
+    }
+    if !root_metadata.is_dir() {
+        return Err("unsupported protected Git metadata root type".into());
+    }
+
     let mut pending = vec![root.to_path_buf()];
     let mut visited = 0usize;
     while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)
-            .map_err(|error| format!("cannot inspect protected Git metadata: {error}"))?
-        {
+        for entry in std::fs::read_dir(&directory).map_err(|error| {
+            format!(
+                "cannot inspect protected Git metadata at {}: {error}",
+                directory.display()
+            )
+        })? {
             let entry =
                 entry.map_err(|error| format!("cannot inspect Git metadata entry: {error}"))?;
             visited += 1;

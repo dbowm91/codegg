@@ -33,6 +33,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 4
       CODEGG_RUN_C006_BWRAP_NATIVE: '1'
+      CODEGG_RUN_C009_BWRAP_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -72,4 +73,4 @@ jobs:
         run: cargo build --locked --bin codegg-sandbox-helper
 
       - name: ManagedProcessService protected-mount qualification
-        run: cargo test --locked --lib protected_mount_view_real_managed_process_handoff -- --nocapture
+        run: cargo test --locked --lib protected_mount_view -- --nocapture
