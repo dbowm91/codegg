@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001 closed, M002 active, M003–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
+Status: active; M001–M002 closed, M003 ready, M004–M008 gated as listed. ADR-0032 is proposed, NOT accepted.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -59,9 +59,9 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
   |
   +-- M001 work-order shared/serialized authority corrective   [closed]
   |
-  +-- M002 read-only durable workstream snapshot and evidence   [active; sequential next]
+  +-- M002 read-only durable workstream snapshot and evidence   [closed]
        |
-       +-- M003 atomic task claims, dependencies, handoff       [blocked: M002]
+       +-- M003 atomic task claims, dependencies, handoff       [ready]
             |
             +-- M004 peer observation and model-facing tools    [blocked: M003]
                  |
@@ -86,13 +86,14 @@ Plan: plans/implementation/agent-workstream-blackboard/001-work-order-workspace-
 
 Closure: plans/closure/agent-workstream-blackboard/001-status.md. Shared and Serialized mutations now fail closed because an ordinary AgentTurn can bypass the former global scheduler key. M005 owns the common reservation follow-up, still gated on M004 and ADR-0032 acceptance.
 
-### M002 — Durable read-only workstream projections (active)
+### M002 — Durable read-only workstream projections (closed)
 
-Derive a group-scoped peer board from existing run, task, group, worktree and job stores. Add a bounded, monotonic snapshot/journal and small persistence only for user/agent-authored intent absent from canonical stores; no duplication of status truth. Support reconnection/restart/visibility semantics using one daemon authority. No mutation permissions, model integration, or shared worktree.
+Derive a group-scoped peer board from existing run, task, group, worktree and job stores. Reuse the authorized session projection snapshot and its monotonic replay cursor; do not duplicate status truth or add a second journal. Support reconnection/restart/visibility semantics using one daemon authority. No mutation permissions, model integration, or shared worktree.
 
 Plan: plans/implementation/agent-workstream-blackboard/002-durable-workstream-state.md
+Closure: plans/closure/agent-workstream-blackboard/002-status.md. No persistence migration was necessary; facts remain derived from canonical stores and absent job/worktree records are explicit.
 
-### M003 — Atomic responsibility claims, handoffs and dependency state (blocked: M002)
+### M003 — Atomic responsibility claims, handoffs and dependency state (ready)
 
 Implement typed task/path claims with revision-CAS, overlap and dependency checks, ownership transfer, lease expiry and cancellation, preserving provenance, audit and no-respawn semantics. Advisory task intent may be visible under isolated worktrees; claims do NOT themselves authorize writes or imply sandbox enforcement. No new workflow scheduler.
 

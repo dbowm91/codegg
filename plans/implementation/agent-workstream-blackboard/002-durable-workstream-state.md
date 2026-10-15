@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M002 — Durable Bounded Workstream State and Read-Only Projection
 
-Status: active — read-only groundwork; follows M001 closure
+Status: closed — bounded read-only workstream projection implemented; see `plans/closure/agent-workstream-blackboard/002-status.md`
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M002

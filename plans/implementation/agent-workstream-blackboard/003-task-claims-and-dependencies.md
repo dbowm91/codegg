@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M003 — Atomic Task Claims, Dependencies, and Ownership Handoff
 
-Status: blocked — hard dependency M002 closure
+Status: ready — M002 strict closure recorded in `plans/closure/agent-workstream-blackboard/002-status.md`
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M003
