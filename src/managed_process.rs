@@ -3034,6 +3034,76 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_concurrent_launches_keep_workspaces_separate() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        let fixtures = [
+            tempfile::tempdir().expect("first concurrent fixture"),
+            tempfile::tempdir().expect("second concurrent fixture"),
+        ];
+        let mut requests = Vec::new();
+        for (index, fixture) in fixtures.iter().enumerate() {
+            let workspace = fixture.path().join("workspace");
+            std::fs::create_dir(&workspace).expect("concurrent workspace");
+            let marker = workspace.join("launch-marker");
+            let script = format!("printf {index} > {}", shell_quote(&marker));
+            let config = SandboxConfig::new()
+                .with_enabled(true)
+                .with_mode(SandboxMode::WorkspaceWrite)
+                .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+                .with_linux_protected_mount_view(true);
+            let spec = config
+                .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+                .expect("concurrent protected mount lease");
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace,
+                ProcessProvenance::new("c009-native", format!("concurrent-{index}")),
+            );
+            request.timeout = Some(Duration::from_secs(15));
+            request.sandbox = SandboxRequest::Required(spec);
+            requests.push((request, marker));
+        }
+
+        let [(first_request, first_marker), (second_request, second_marker)] = requests.as_slice()
+        else {
+            panic!("expected two concurrent requests");
+        };
+        let (first, second) = tokio::join!(
+            ManagedProcessService::run(first_request.clone()),
+            ManagedProcessService::run(second_request.clone())
+        );
+        for (index, result) in [first, second].into_iter().enumerate() {
+            let result = result.unwrap_or_else(|error| panic!("launch {index} failed: {error}"));
+            assert!(
+                result.exit_status.success(),
+                "launch {index} stderr: {}",
+                result.stderr.to_string_lossy()
+            );
+            assert!(matches!(
+                result.sandbox,
+                SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+            ));
+        }
+        assert_eq!(std::fs::read_to_string(first_marker).unwrap(), "0");
+        assert_eq!(std::fs::read_to_string(second_marker).unwrap(), "1");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_mount_view_real_managed_process_handoff() {
         if std::env::var("CODEGG_RUN_C006_BWRAP_NATIVE").as_deref() != Ok("1") {
             eprintln!(

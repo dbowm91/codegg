@@ -75,7 +75,7 @@ jobs:
         run: cargo build --locked --bin codegg-sandbox-helper
 
       - name: ManagedProcessService protected-mount qualification
-        run: cargo test --locked --lib protected_mount_view -- --nocapture
+        run: cargo test --locked --lib protected_mount_ -- --nocapture
 
       - name: Trusted Git repository-config qualification
         run: cargo test -p egggit --locked trusted_git -- --test-threads=1
