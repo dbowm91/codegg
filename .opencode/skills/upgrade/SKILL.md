@@ -54,7 +54,8 @@ The Eggup dependencies use immutable git revision
    absolute paths, backslashes, duplicates/case collisions, unexpected names,
    and entries above their bounds.
 6. Hash each extracted file, stage it with Eggup, and validate CodeGG's exact
-   selected version, eggsearch's pinned `0.3.9`, and the helper's safe refusal
+   selected version, eggsearch `0.4.3` at immutable source commit
+   `5e7b853e7eebf29c58f84959805c8774279d7ea4`, and the helper's safe refusal
    probe. The notice is never executed.
 7. Classify current managed siblings by CodeGG-owned identity probes and commit
    the whole runfile generation with Eggup. Missing managed siblings may be

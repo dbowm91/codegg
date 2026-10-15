@@ -23,10 +23,9 @@
 //!   `Debug` implementation redacts `[search.eggsearch.env]` values
 //!   (keys only) so diagnostics cannot leak provider credentials.
 //!
-//! The legacy `state` module retains the process-global slots as
-//! deprecated compatibility for bootstrap connection reuse and for tests
-//! that explicitly exercise the legacy global wrappers. Production tool
-//! execution must use this context instead.
+//! The `state` module retains the process-global slots for bootstrap
+//! connection reuse and narrow global-wrapper compatibility. Production
+//! tool execution must use this context instead.
 
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
@@ -70,7 +69,6 @@ impl std::fmt::Debug for SearchRuntimeContext {
         let mut debug = f.debug_struct("SearchRuntimeContext");
         debug.field("backend", &format!("{:?}", self.config.backend()));
         debug.field("expose_raw_mcp_tools", &self.config.expose_raw_mcp_tools());
-        debug.field("fallback_to_builtin", &self.config.fallback_to_builtin());
         if let Some(egg) = self.config.eggsearch.as_ref() {
             debug.field("server_name", &egg.server_name().to_string());
             debug.field("command", &egg.command().to_string());

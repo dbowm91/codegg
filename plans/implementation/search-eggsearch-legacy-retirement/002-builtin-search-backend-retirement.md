@@ -1,6 +1,6 @@
 # Plan 002 — Builtin Search Backend Retirement
 
-Status: blocked
+Status: implemented; closed in `plans/closure/search-eggsearch-legacy-retirement/002-status.md`
 
 Source roadmap:
 
@@ -14,8 +14,24 @@ Planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
 Hard dependency:
 
-- CodeGG M001 parity release adoption and provider-contract reconciliation
-  closed.
+- CodeGG M001 **pre-release pinned integration + paired-process qualification**
+  strictly closed at `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
+  This is a development compatibility gate, not a CodeGG
+  public release/packaging or end-to-end operability gate.
+- Post-closure paired-compatibility **C001** is *historically conditionally closed*
+  at `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md`;
+  its local-only upstream dispatch finding has been corrected in immutable
+  eggsearch **v0.4.3** and discharged by strict CodeGG successor C002 evidence;
+  C001's historical record remains unchanged.
+- **Satisfied prerequisite: strict CodeGG C002 closure** at
+  `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`
+  (implementation `9ed08996`, qualification candidate `aaa9d3e`). Handoff plan:
+  `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md`.
+  It verifies CodeGG's actual v0.4.3 child, native local repo_search under Mode
+  Off, no remote provider routing, web/security denials, isolated child
+  environment, and process cleanup. That qualification made M002 ready for
+  implementation; M002 has since closed at
+  `plans/closure/search-eggsearch-legacy-retirement/002-status.md`.
 
 Relevant predecessor evidence:
 
@@ -27,8 +43,17 @@ Relevant predecessor evidence:
 
 ## 1. Objective
 
-Remove CodeGG's duplicate external-search implementation after the pinned
-eggsearch release has proven the provider compatibility surface.
+Remove CodeGG's duplicate external-search implementation after **CodeGG
+source-development M001** has proven the pinned eggsearch contract with
+the **offline paired-process compatibility suite**. No requirement for a
+working end-to-end coding agent or an actual CodeGG release/installer.
+Retirement is a maintenance and security-boundary cleanup, not a release
+readiness claim.
+
+After M002, rerun the **C002-v0.4.3-qualified single-command offline paired
+CodeGG runtime + eggsearch subprocess suite**, with a
+reduced `eggsearch|disabled` config. Confirm an absent/broken sidecar
+fails actionably and never routes through a legacy HTTP provider.
 
 After M002:
 
@@ -275,9 +300,13 @@ Then:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 scripts/verify.sh quick
 ```
+
+Follow `AGENTS.md` and `.opencode/skills/testing-ci/SKILL.md`: do not use
+`--all-features` for workspace sweeps because that enables real-server tests.
+The canonical workspace Clippy command above is the supported feature posture.
 
 Run the existing supported release/install smoke if config/doctor/startup
 changes touch that path materially.

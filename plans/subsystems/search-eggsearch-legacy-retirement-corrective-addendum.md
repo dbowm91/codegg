@@ -1,12 +1,13 @@
-# Search / Eggsearch Legacy Backend Retirement Corrective Addendum
+# Search / Eggsearch Development Integration and Legacy Backend Retirement
 
-Status: blocked
+Status: closed (M001, pair C002, and legacy-retirement M002 closed)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
 Controlling planning/process:
 
 - `plans/003-planning-process.md#7-corrective-passes`
+- `plans/subsystems/search-eggsearch-pair-compatibility-post-closure-corrective-addendum.md` (new post-closure C001 paired-test qualification)
 - closed predecessor: `plans/subsystems/search-eggsearch-integration-roadmap.md`
 - accepted predecessor closure:
   `plans/closure/search-eggsearch-integration/005-status.md`
@@ -44,6 +45,16 @@ or explicit disposition of that provider surface.
 This CodeGG corrective consumes that upstream contract and then removes the
 duplicate external-search execution owner.
 
+**Development-stage scope (2026-10-13 clarification):** CodeGG as a whole
+is not operationally ready and has **no near-term public release target**.
+M001 qualifies the native CodeGG search runtime and exact pinned eggsearch
+child process as a **single development unit**. It does not require full
+agent operation, model inference, production installation, packaging,
+release branches/tags, hosted publication or an external installer. Existing
+`codegg-eggsearch` release conventions are retained as static future
+compatibility configuration only. Production release readiness requires a
+separate future plan and gate, and is not inferred from M001/M002 closure.
+
 ## 2. Dependency boundary
 
 ```text
@@ -53,17 +64,25 @@ eggsearch CodeGG legacy-search parity M001/M002
 eggsearch M003 qualification + tagged release
                     |
                     v
-CodeGG M001 parity release adoption / contract reconciliation
+CodeGG M001 development pin adoption + paired-process qualification
                     |
                     v
 CodeGG M002 builtin backend retirement
 ```
 
-The CodeGG workstream is intentionally **blocked** today.
-
-M001 may not implement against an untagged moving eggsearch branch merely to
-make the cleanup start earlier. The normal CodeGG packaging contract pins and
-validates a concrete eggsearch version; the parity release must exist first.
+The former upstream release blocker is **satisfied** as of 2026-10-13:
+`eggstack/eggsearch/plans/closure/codegg-legacy-search-parity/005-status.md`
+records strict closure of the upstream parity work and immutable published
+`v0.4.1` tag at `32769d684417567dfb30fc5adea1475cee7f0ed0`.
+CodeGG M001 is **closed** at
+`plans/closure/search-eggsearch-legacy-retirement/001-status.md`: it adopted
+and qualified that **upstream** published source/binary contract (`v0.4.1`)
+in its development checkout. Strict CodeGG C002 later qualified the v0.4.3
+real-wrapper/local-only contract and made M002 ready; M002 has since closed at
+`plans/closure/search-eggsearch-legacy-retirement/002-status.md`. Upstream's immutable tag
+is the dependency source; it does **not** imply CodeGG itself must publish a
+release. M001 MUST use the pinned upstream artifact/source, never a moving
+branch or `latest`.
 
 ## 3. Current-state findings that justify retirement
 
@@ -164,18 +183,20 @@ The upstream M003 closure record is authoritative if the final matrix differs.
 
 ## 6. Milestones
 
-### M001 — Eggsearch parity release adoption and provider-contract reconciliation
+### M001 — Pinned eggsearch development adoption and provider-contract reconciliation
 
-Status: blocked.
+Status: closed (CodeGG pinned-binary acceptance recorded in M001 closure).
 
 Plan:
 
 - `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`
 
-Hard/operational blockers:
+Satisfied upstream release prerequisites:
 
-- eggsearch legacy-search-parity M003 accepted;
-- tagged eggsearch release exists carrying that accepted surface.
+- parity M003-M005 accepted and qualified in the v0.4.1 closure;
+- immutable published `v0.4.1` release carries that accepted surface.
+
+Closure evidence: `plans/closure/search-eggsearch-legacy-retirement/001-status.md`.
 
 Outcome:
 
@@ -186,13 +207,15 @@ Outcome:
 - remove provider values explicitly retired upstream;
 - make unknown/unsupported explicit provider requests fail actionably rather
   than degrade to automatic routing;
-- qualify wrappers/doctor/install identity against the real release;
+- qualify wrappers and search diagnostics against the real upstream process
+  using one repeatable offline CodeGG+eggsearch paired test; preserve
+  installer/release pin metadata as **static compatibility** only;
 - retain builtin backend temporarily so provider-contract migration and backend
   deletion are independently reviewable.
 
 ### M002 — Builtin external-search backend retirement
 
-Status: blocked on M001.
+Status: **closed** at `plans/closure/search-eggsearch-legacy-retirement/002-status.md`. The strict C002 v0.4.3 pair gate was satisfied before implementation. M002 removed the duplicate external-search provider tree and webfetch HTTP path, preserved the Eggsearch/disabled boundary, added migration errors for removed config, and passed the required focused and broad verification.
 
 Plan:
 
@@ -230,15 +253,24 @@ one already exists and does not preserve the old execution behavior.
 
 ## 8. Verification strategy
 
-M001 is contract/release focused:
+M001 is a **pre-release development contract** milestone:
 
-- strict request translation tests;
-- fake and real-current eggsearch compatibility;
-- installer/doctor version identity;
-- provider-hint negative tests;
-- normal `scripts/verify.sh quick`.
+- strict request translation tests and canonical upstream v0.4.1 schemas;
+- a single-command, isolated **CodeGG native wrapper/runtime +
+  real pinned eggsearch stdio subprocess** test (MCP handshake, ten tools,
+  nonprobing provider_status inventory, explicit errors and teardown);
+- deterministic fake-MCP fixture regression tests for structured
+  research/security receipts, no network or provider credentials required;
+- source/binary exact identity plus static install/upgrade pin checks,
+  **not** CodeGG installer/release qualification;
+- optional live-provider diagnostic kept separate and labeled non-gating;
+- provider-hint negative tests and normal `scripts/verify.sh quick`.
 
-M002 is ownership/deletion focused:
+A test pass validates this **pair**, not the whole CodeGG daemon, TUI,
+coding-agent loop, release bundle, security sandbox, or product usability.
+No CodeGG release tasks are authorized by this workstream.
+
+M002 is ownership/deletion focused **after C002 strict closure** (v0.4.3 real child and private local fixture):
 
 - search backend dispatch tests;
 - config migration/error tests;
@@ -248,7 +280,9 @@ M002 is ownership/deletion focused:
   backend diagnostics.
 
 No new CI lane, network-dependent CI, compatibility matrix, or permanent
-source scanner is required solely for this cleanup.
+source scanner is required solely for this cleanup. Reuse the paired
+compatibility check after M002 backend deletion to prove the simplified
+production path still preserves the same interface.
 
 ## 9. Completion definition
 
@@ -272,5 +306,5 @@ The workstream closes when:
 
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
-| M001 eggsearch parity release adoption + provider contract | blocked | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md` | eggsearch parity M003 + qualifying tagged release |
-| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | CodeGG M001 |
+| M001 pinned development adoption + paired contract | closed | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`; closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md` | Implementation `9dd8a1c8`; exact v0.4.1 paired process and quick verification passed |
+| M002 builtin backend retirement | closed | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md`; closure `plans/closure/search-eggsearch-legacy-retirement/002-status.md` | C002 strict closure was satisfied; backend and provider-tree retirement, migration behavior, paired requalification, focused tests, quick verification, and M002 closure are complete. |

@@ -69,7 +69,7 @@ Each phase updates `ResearchRunStatus` in `run.json` via
 ### Source Adapters
 
 Each adapter implements `ResearchSourceAdapter` (defined in
-`src/research/sources/mod.rs:15`):
+`src/research/sources/mod.rs`):
 
 | Adapter | File | What it collects |
 |---------|------|------------------|
@@ -80,7 +80,7 @@ Each adapter implements `ResearchSourceAdapter` (defined in
 | `DocsRsSource` | `docs_rs.rs` | docs.rs documentation pages |
 | `EggsearchSource` | `eggsearch.rs` | External search via `search_backend::dispatch_research_search_structured()` |
 
-**Registered in coordinator** (`coordinator.rs:36-53`, in
+**Registered in coordinator** (in
 `ResearchCoordinator::new()`): `LocalRepoSource`, `UrlSource`,
 `CratesIoSource` (if TLS available),
 `GitHubSource` (if TLS available), `DocsRsSource` (if TLS available),
@@ -197,16 +197,43 @@ re-fetched.
 adapter. It:
 
 1. Translates `ResearchMode` to upstream eggsearch workflow values
-   (line 28-38).
+   (`upstream_workflow()`).
 2. Builds a structured input with query, workflow, depth, and flags
-   (line 41-61).
+   (`request_input()`).
 3. Routes security queries through `dispatch_security_search_structured()`
-   and all others through `dispatch_research_search_structured()`
-   (line 289-293).
+   and all others through `dispatch_research_search_structured()`.
 4. Parses grouped results from `groups[*].results` in response order
-   (line 69-119).
+   from grouped response values in order.
 5. Converts each result to a `SourceRecord` with `trust=external_untrusted`
-   notes (line 171-253).
+   notes, nested publication dates, upstream stable-ID association, and a
+   separate `ResearchRetrievalReceipt` (see `RetrievalState` in
+   `src/research/types.rs`).
+
+The receipt is structured coordinator data, not status inferred from source
+notes. It distinguishes complete, partial, failed, skipped, truncated, and
+unknown outcomes; carries bounded warning codes, failed-provider labels,
+coverage text, and links from each existing per-run source UUID to eggsearch's
+stable ID. Historical v0.4.1 compatibility fixtures demonstrate diagnostic
+responses where `retrieval_summary` contains per-role/provider/subquery
+`dimensions`; `dimensions[*].state` and
+`attempt_outcome` are the status evidence. `has_failures`, job/dimension/role
+counts, truncation evidence, and `workflow_coverage` qualify that evidence.
+`completed_no_match` is a positive completed outcome for its represented role;
+`not_applicable`, skipped, unavailable, partial, failed, interrupted, unknown
+states, incomplete role counts, and uncertain result limits cannot prove
+absence. These v0.4.1 fixtures are compatibility evidence; the current live
+wrapper contract is qualified against Eggsearch v0.4.3 in
+`plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`.
+The compact `retrieval_status` projection omits dimensions, so its
+aggregate booleans alone never establish complete retrieval. Unknown older
+responses remain unknown unless they carry positively recognized legacy
+completion evidence. A complete response with zero sources is a scoped
+confirmed no-match; failed or incomplete collection is rendered in research
+outputs as a coverage gap. Upstream trust/provenance is
+retained as descriptive evidence only; CodeGG continues to mark network source
+content `external_untrusted`. Receipts are persisted in the additive
+`retrieval.json` run artifact and loaded into `ResearchBundle`; older runs
+without the artifact load with an empty receipt list.
 
 The bounded `external_untrusted` string is a display projection, not the
 authoritative input for source conversion.
@@ -232,7 +259,7 @@ authoritative input for source conversion.
   briefs to the model with `CLAIM_CONSTRUCTION_PROMPT`, parses structured
   JSON into `ClaimRecord`s. Falls back to deterministic on any error.
 
-### Contradiction Detection (`ResearchCoordinator::check_contradictions`, `coordinator.rs:443`)
+### Contradiction Detection (`ResearchCoordinator::check_contradictions`)
 
 Deterministic pass that:
 1. Groups claims by `applies_to` target.
@@ -296,20 +323,20 @@ run so the persisted request states the intended ceiling rather than
 implying "no model use".
 | `ResearchSourceSpec` | 77 | Source specification with `SourceSpecType` and value |
 | `SourceRecord` | 95 | Collected source with URI, type, quality, locator, content hash |
-| `EvidenceSpan` | 162 | Extracted text span with source reference and locator |
-| `ClaimRecord` | 176 | Claim with type, confidence, evidence references, caveats |
-| `ContradictionRecord` | 237 | Detected contradiction between claims |
-| `ResearchRunStatus` | 257 | Timing, counts, state, error |
-| `ResearchPlan` | 294 | Scope, comparison axes, source classes, stopping conditions |
-| `ResearchBundle` | 307 | Complete artifact bundle loaded from store |
-| `ResearchRunResult` | 329 | Completion result with outputs and artifact dir |
+| `EvidenceSpan` | 230 | Extracted text span with source reference and locator |
+| `ClaimRecord` | 244 | Claim with type, confidence, evidence references, caveats |
+| `ContradictionRecord` | 305 | Detected contradiction between claims |
+| `ResearchRunStatus` | 325 | Timing, counts, state, error |
+| `ResearchPlan` | 362 | Scope, comparison axes, source classes, stopping conditions |
+| `ResearchBundle` | 375 | Complete artifact bundle loaded from store |
+| `ResearchRunResult` | 399 | Completion result with outputs and artifact dir |
 
-### Claim Types (`ClaimType`, line 189)
+### Claim Types (`ClaimType` in `src/research/types.rs`)
 
 `Fact`, `Comparison`, `Recommendation`, `Risk`, `Caveat`, `OpenQuestion`,
 `Inference` — serialized as `snake_case`.
 
-### Source Types (`SourceType`, line 111)
+### Source Types (`SourceType` in `src/research/types.rs`)
 
 `LocalFile`, `LocalSearchResult`, `Url`, `HtmlPage`, `MarkdownPage`, `Pdf`,
 `GitHubFile`, `GitHubIssue`, `CratesIoMetadata`, `ManualText`.
@@ -483,3 +510,18 @@ missing `mod.rs` row to the module-layout table. Verified accurate:
 all enum variant lists (`ResearchMode` 8, `ResearchAudience` 5, `ResearchDepth`
 3, `ResearchOutputProfile` 5, `ClaimType` 7, `SourceType` 10), `ResearchBudget`
 6 fields, and the five output-profile artifact filenames (`store.rs:117-121`).
+
+Verified 2026-10-13 against `eggstack/eggsearch` immutable tag `v0.4.1`
+(`32769d684417567dfb30fc5adea1475cee7f0ed0`), its
+`src/core/retrieval_status.rs`, `src/mcp/tools/research_search.rs`,
+`src/mcp/tools/security_search.rs`, and `src/mcp/projection.rs`: diagnostic
+research/security tool responses expose `retrieval_summary.dimensions` with
+per-dimension state/outcome/truncation evidence plus summary counts and
+`workflow_coverage`; compact projection replaces that summary with aggregate
+`retrieval_status` and removes workflow coverage. The CodeGG adapter now
+reduces those dimensions conservatively and keeps missing/additive states
+indeterminate. Offline schema fixtures live under
+`tests/fixtures/eggsearch/v0.4.1/`. No live v0.4.1 binary smoke was run. The
+previous M001 paragraph's unqualified claim that any complete zero-source
+response proves no-match was too broad; completion must now be established
+from role-aware tagged retrieval evidence.

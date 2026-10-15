@@ -351,8 +351,8 @@ disabled program-call cache, and a permissive object output schema:
 - Bounds: `query` required, `max_results` capped at 30, display capped at
   `max_repo_search_output_chars` (default 15 KiB) with an explicit
   truncation marker and `truncated` metadata.
-- Backend/policy failures (disabled, builtin-without-eggsearch,
-  unavailable MCP service) surface as typed `InfrastructureError`
+- Backend/policy failures (disabled search or unavailable Eggsearch MCP
+  service) surface as typed `InfrastructureError`
   programmatic failures under existing policy; cancellation propagates
   through `BrokerAdapter` before dispatch.
 - Contract-hash changes invalidate stale manifests/caches by construction

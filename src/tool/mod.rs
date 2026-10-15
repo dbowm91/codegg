@@ -615,9 +615,8 @@ impl ToolRegistry {
             search_runtime.clone(),
         ));
 
-        // Evidence/search wrapper tools — only register when evidence backend
-        // is enabled AND backend mode is "eggsearch" (these tools require
-        // the eggsearch MCP backend; they error in builtin/disabled modes).
+        // Evidence/search wrapper tools — only register when the evidence
+        // backend is enabled and configured for eggsearch.
         let evidence_cfg = options.evidence_config.as_ref();
         let evidence_enabled = evidence_cfg.is_none_or(|c| c.enabled);
         let evidence_is_eggsearch = evidence_cfg.is_none_or(|c| c.backend == "eggsearch");

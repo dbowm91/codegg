@@ -35,6 +35,36 @@ fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
     }
 }
 
+fn translate_provider_list(input: &Value, args: &mut Value) -> Result<(), ToolError> {
+    let Some(value) = input.get("providers") else {
+        return Ok(());
+    };
+    let providers = value.as_array().ok_or_else(|| {
+        ToolError::Execution("'providers' must be a non-empty array of provider IDs".to_string())
+    })?;
+    if providers.is_empty() {
+        return Err(ToolError::Execution(
+            "'providers' cannot be empty; omit it or use provider='auto' for automatic routing"
+                .to_string(),
+        ));
+    }
+    let mut mapped = Vec::with_capacity(providers.len());
+    for provider in providers {
+        let provider = provider.as_str().ok_or_else(|| {
+            ToolError::Execution("'providers' must contain only provider ID strings".to_string())
+        })?;
+        let ids = translate_provider_hint(Some(provider))?.ok_or_else(|| {
+            ToolError::Execution(
+                "'auto' cannot be used inside 'providers'; omit the field for automatic routing"
+                    .to_string(),
+            )
+        })?;
+        mapped.extend(ids.into_iter().map(Value::String));
+    }
+    args["providers"] = Value::Array(mapped);
+    Ok(())
+}
+
 fn optional_u64_in_range(
     input: &Value,
     field: &str,
@@ -284,9 +314,13 @@ fn build_web_search_args(input: &Value) -> Result<Value, ToolError> {
         .unwrap_or(8)
         .min(30);
     let mut args = json!({"query": query, "max_results": max_results});
-    if let Some(providers) = translate_provider_hint(input.get("provider").and_then(Value::as_str))
-    {
-        if !providers.is_empty() {
+    if let Some(provider) = input.get("provider") {
+        if !provider.is_string() {
+            return Err(ToolError::Execution(
+                "'provider' must be a string naming a supported provider or 'auto'".to_string(),
+            ));
+        }
+        if let Some(providers) = translate_provider_hint(provider.as_str())? {
             args["providers"] = Value::Array(providers.into_iter().map(Value::String).collect());
         }
     }
@@ -351,18 +385,33 @@ fn translate_legacy_research_domains(input: &Value, args: &mut Value) -> Result<
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for value in &values {
+        if *value == "google_news" {
+            let _ = translate_provider_hint(Some(value))?;
+        }
+        if *value == "auto" {
+            return Err(ToolError::Execution(
+                "'auto' is a provider-routing choice, not a research domain; omit 'domains' for automatic routing"
+                    .to_string(),
+            ));
+        }
+    }
     if values.iter().all(|value| is_known_provider(value)) {
         if input.get("providers").is_some() {
             return Err(ToolError::Execution(
                 "legacy 'domains' and current 'providers' cannot both be supplied".to_string(),
             ));
         }
-        let provider_values = values
-            .iter()
-            .filter_map(|value| translate_provider_hint(Some(value)))
-            .flatten()
-            .map(Value::String)
-            .collect();
+        let mut provider_values = Vec::new();
+        for value in &values {
+            let translated = translate_provider_hint(Some(value))?.ok_or_else(|| {
+                ToolError::Execution(
+                    "'auto' cannot be used inside a provider list; omit the list for automatic routing"
+                        .to_string(),
+                )
+            })?;
+            provider_values.extend(translated.into_iter().map(Value::String));
+        }
         args["providers"] = Value::Array(provider_values);
     } else if values.len() == 1 && input.get("research_domain").is_none() {
         args["research_domain"] = Value::String(values[0].to_string());
@@ -384,7 +433,6 @@ fn is_known_provider(value: &str) -> bool {
             | "openalex"
             | "pubmed"
             | "hn_algolia"
-            | "google_news"
             | "github"
             | "exa"
             | "tavily"
@@ -707,10 +755,17 @@ pub async fn call_repo_search_structured(
             "language",
             "symbol",
             "profile",
+            "ecosystem",
+            "package",
+            "version",
+            "version_requirement",
+            "package_namespace",
+            "include_security_context",
             "include_local",
             "mode",
         ],
     );
+    translate_provider_list(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
         .and_then(Value::as_u64)
@@ -917,6 +972,7 @@ pub async fn call_security_search_structured(
             "workflow",
         ],
     );
+    translate_provider_list(input, &mut args)?;
     if let Some(cve) = non_empty_string(input, "cve")? {
         if input
             .get("cve_id")
@@ -997,6 +1053,7 @@ pub async fn call_research_search_structured(
             "known_context",
         ],
     );
+    translate_provider_list(input, &mut args)?;
     translate_legacy_research_domains(input, &mut args)?;
     args["max_results"] = json!(input
         .get("max_results")
@@ -1109,44 +1166,38 @@ pub async fn call_build_evidence_bundle(
     )
 }
 
-/// Best-effort translation of the historical Codegg `provider` hint to
-/// eggsearch's `providers` list. Returns `Some(vec)` when the user
-/// pinned a specific provider, `Some(vec![])` (i.e. "let eggsearch
-/// auto-pick") for `auto`/missing or any hint that eggsearch does not
-/// recognize, or `None` to mean "omit the field entirely".
-///
-/// Note: The model-facing enum advertises a long list of historical
-/// provider hints, but we do not have ground truth on which of them
-/// eggsearch supports today. Hints that eggsearch does not recognize
-/// are intentionally mapped to an empty list (auto-pick) so that the
-/// search still succeeds with a sensible default provider.
-pub(crate) fn translate_provider_hint(hint: Option<&str>) -> Option<Vec<String>> {
-    let h = hint.unwrap_or("auto");
-    match h {
-        "auto" => Some(Vec::new()),
-        "duckduckgo" => Some(vec!["duckduckgo".to_string()]),
-        "mojeek" => Some(vec!["mojeek".to_string()]),
-        "wikipedia" => Some(vec!["wikipedia".to_string()]),
-        "arxiv" => Some(vec!["arxiv".to_string()]),
-        "openalex" => Some(vec!["openalex".to_string()]),
-        "pubmed" => Some(vec!["pubmed".to_string()]),
-        "hn_algolia" => Some(vec!["hn_algolia".to_string()]),
-        "google_news" => Some(vec!["google_news".to_string()]),
-        "github" => Some(vec!["github".to_string()]),
-        "exa" => Some(vec!["exa".to_string()]),
-        "tavily" => Some(vec!["tavily".to_string()]),
-        "brave" | "brave_api" => Some(vec!["brave_api".to_string()]),
-        "kagi" => Some(vec!["kagi".to_string()]),
-        "serpapi" => Some(vec!["serpapi".to_string()]),
-        // Unknown hint: let eggsearch decide.
-        _ => Some(Vec::new()),
-    }
+/// Translate a stable CodeGG provider hint into the exact accepted
+/// eggsearch v0.4.3 provider id. `None` means intentional automatic
+/// routing; every explicit hint either maps or fails before MCP dispatch.
+pub(crate) fn translate_provider_hint(
+    hint: Option<&str>,
+) -> Result<Option<Vec<String>>, ToolError> {
+    let Some(hint) = hint else {
+        return Ok(None);
+    };
+    let mapped = match hint {
+        "auto" => return Ok(None),
+        "duckduckgo" | "mojeek" | "wikipedia" | "arxiv" | "openalex" | "pubmed" | "hn_algolia"
+        | "brave" | "brave_api" | "exa" | "tavily" | "serpapi" | "kagi" => hint,
+        "github" => "github_repositories",
+        "google_news" => {
+            return Err(ToolError::Execution(
+                "provider 'google_news' is retired by eggsearch; use intent='news' and, when source control is needed, choose a news-capable provider such as 'brave_api' or 'tavily'".to_string(),
+            ));
+        }
+        other => {
+            return Err(ToolError::Execution(format!(
+                "unsupported provider '{other}'; use 'auto' or one of: arxiv, brave, brave_api, duckduckgo, exa, github, hn_algolia, kagi, mojeek, openalex, pubmed, serpapi, tavily, wikipedia"
+            )));
+        }
+    };
+    Ok(Some(vec![mapped.to_string()]))
 }
 
 pub fn eggsearch_unavailable(detail: &str) -> ToolError {
     ToolError::Execution(format!(
         "eggsearch backend is configured but unavailable: {detail}. \
-         Install eggsearch or set [search].backend = \"builtin\" / \"disabled\"."
+         Configure the managed eggsearch sidecar or set [search].backend = \"disabled\"."
     ))
 }
 
@@ -1291,15 +1342,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_hint_auto_returns_empty() {
+    fn provider_hint_auto_omits_selection() {
         let v = translate_provider_hint(Some("auto"));
-        assert_eq!(v, Some(vec![]));
+        assert_eq!(v.unwrap(), None);
     }
 
     #[test]
     fn provider_hint_duckduckgo_passes_through() {
         assert_eq!(
-            translate_provider_hint(Some("duckduckgo")),
+            translate_provider_hint(Some("duckduckgo")).unwrap(),
             Some(vec!["duckduckgo".to_string()])
         );
     }
@@ -1307,31 +1358,98 @@ mod tests {
     #[test]
     fn provider_hint_mojeek_passes_through() {
         assert_eq!(
-            translate_provider_hint(Some("mojeek")),
+            translate_provider_hint(Some("mojeek")).unwrap(),
             Some(vec!["mojeek".to_string()])
         );
     }
 
     #[test]
-    fn provider_hint_brave_maps_to_brave_api() {
+    fn provider_hint_brave_maps_to_exact_brave_provider() {
         let v = translate_provider_hint(Some("brave"));
-        assert_eq!(v, Some(vec!["brave_api".to_string()]));
+        assert_eq!(v.unwrap(), Some(vec!["brave".to_string()]));
     }
 
     #[test]
-    fn provider_hint_unsupported_returns_empty_for_auto_pick() {
-        // The adapter intentionally treats unknown historical hints as "auto"
-        // (empty list) so that eggsearch can pick a provider.
+    fn provider_hint_github_maps_to_repository_discovery_id() {
         assert_eq!(
-            translate_provider_hint(Some("unsupported_historical")),
-            Some(vec![])
+            translate_provider_hint(Some("github")).unwrap(),
+            Some(vec!["github_repositories".to_string()])
         );
     }
 
     #[test]
-    fn provider_hint_unknown_returns_empty() {
+    fn every_exposed_provider_hint_maps_to_an_upstream_inventory_id() {
+        let mappings = [
+            ("duckduckgo", "duckduckgo"),
+            ("mojeek", "mojeek"),
+            ("wikipedia", "wikipedia"),
+            ("arxiv", "arxiv"),
+            ("openalex", "openalex"),
+            ("pubmed", "pubmed"),
+            ("hn_algolia", "hn_algolia"),
+            ("github", "github_repositories"),
+            ("exa", "exa"),
+            ("tavily", "tavily"),
+            ("brave", "brave"),
+            ("brave_api", "brave_api"),
+            ("serpapi", "serpapi"),
+            ("kagi", "kagi"),
+        ];
+        for (hint, expected_id) in mappings {
+            let mapped = translate_provider_hint(Some(hint))
+                .unwrap()
+                .unwrap_or_else(|| panic!("explicit provider {hint} was omitted"));
+            assert_eq!(mapped, [expected_id.to_string()], "hint {hint}");
+            assert!(
+                super::super::bootstrap::EGGSEARCH_WEBSEARCH_PROVIDER_IDS.contains(&expected_id),
+                "hint {hint} mapped to unadvertised provider {expected_id}"
+            );
+        }
+        assert_eq!(translate_provider_hint(None).unwrap(), None);
+        assert_eq!(translate_provider_hint(Some("auto")).unwrap(), None);
+    }
+
+    #[test]
+    fn provider_hint_unknown_is_actionable_error() {
         let v = translate_provider_hint(Some("mystery"));
-        assert_eq!(v, Some(vec![]));
+        assert!(v
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported provider 'mystery'"));
+    }
+
+    #[test]
+    fn provider_hint_google_news_has_migration_guidance() {
+        let error = translate_provider_hint(Some("google_news"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("retired"));
+        assert!(error.contains("intent='news'"));
+    }
+
+    #[test]
+    fn provider_list_rejects_automatic_empty_and_retired_values() {
+        for value in [
+            json!([]),
+            json!(["auto"]),
+            json!(["google_news"]),
+            json!(["unknown"]),
+        ] {
+            let mut args = json!({});
+            assert!(translate_provider_list(&json!({"providers": value}), &mut args).is_err());
+            assert!(args.get("providers").is_none());
+        }
+    }
+
+    #[test]
+    fn provider_list_maps_historical_ids_and_preserves_exact_current_ids() {
+        let input = json!({"providers": ["github", "brave_api", "kagi"]});
+        let mut args = json!({});
+        translate_provider_list(&input, &mut args).unwrap();
+        assert_eq!(
+            args["providers"],
+            json!(["github_repositories", "brave_api", "kagi"])
+        );
     }
 
     /// Verify that when a `websearch` call dispatches to the
@@ -1509,7 +1627,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("eggsearch"));
         assert!(msg.contains("test detail"));
-        assert!(msg.contains("builtin") || msg.contains("disabled"));
+        assert!(msg.contains("managed eggsearch sidecar"));
+        assert!(msg.contains("[search].backend = \"disabled\""));
     }
 
     #[test]

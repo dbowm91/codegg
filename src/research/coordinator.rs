@@ -146,7 +146,12 @@ impl ResearchCoordinator {
         self.store.update_run_status(&run_id, status).await?;
 
         // Phase 2: Source collection
-        let mut sources = self.collect_sources(&request, &plan).await?;
+        let collection = self.collect_sources(&request, &plan).await?;
+        let retrieval_receipts = collection.receipts;
+        let mut sources = collection.sources;
+        self.store
+            .write_retrieval_receipts(&run_id, &retrieval_receipts)
+            .await?;
         for source in &mut sources {
             source.run_id = run_id.clone();
             self.store.append_source(source).await?;
@@ -217,7 +222,7 @@ impl ResearchCoordinator {
         // Phase 6: Synthesis - render all requested output profiles
         let mut outputs = Vec::new();
         for profile in &request.output_profiles {
-            let text = self.render_profile(
+            let mut text = self.render_profile(
                 &request,
                 &plan,
                 &sources,
@@ -226,6 +231,11 @@ impl ResearchCoordinator {
                 &contradictions,
                 profile,
             );
+            let retrieval = synthesis::render_retrieval_status(&retrieval_receipts);
+            if !retrieval.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&retrieval);
+            }
             let path = self.store.write_report(&run_id, profile, &text).await?;
             outputs.push(ResearchArtifactRef {
                 run_id: run_id.clone(),
@@ -322,6 +332,7 @@ impl ResearchCoordinator {
             artifact_dir,
             outputs,
             counts: status.counts,
+            retrieval_receipts,
         })
     }
 
@@ -431,11 +442,15 @@ impl ResearchCoordinator {
         &self,
         request: &ResearchRequest,
         plan: &ResearchPlan,
-    ) -> Result<Vec<SourceRecord>> {
+    ) -> Result<SourceCollection> {
         let mut all_sources = Vec::new();
+        let mut receipts = Vec::new();
         for adapter in &self.source_adapters {
-            match adapter.collect(request, plan).await {
-                Ok(sources) => all_sources.extend(sources),
+            match adapter.collect_with_receipt(request, plan).await {
+                Ok(collection) => {
+                    all_sources.extend(collection.sources);
+                    receipts.extend(collection.receipts);
+                }
                 Err(ResearchError::NetworkNotAllowed) => {
                     // Expected whenever the run's budget disallows network
                     // collection. Logged rather than dropped silently: a
@@ -455,12 +470,25 @@ impl ResearchCoordinator {
                 }
             }
         }
-        // Deduplicate by URI
+        // Eggsearch stable IDs are scoped evidence identities. Keep distinct
+        // IDs even when they point at the same URL; older cards without an ID
+        // and local adapters retain the established URI deduplication.
         let mut seen = std::collections::HashSet::new();
-        all_sources.retain(|s| seen.insert(s.uri.clone()));
+        all_sources.retain(|source| seen.insert(source_dedup_key(source)));
         // Apply budget
         let max = request.budget.max_sources.min(all_sources.len());
         all_sources.truncate(max);
+
+        let retained: std::collections::HashSet<&str> = all_sources
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect();
+        for receipt in &mut receipts {
+            receipt
+                .sources
+                .retain(|link| retained.contains(link.source_id.as_str()));
+            receipt.source_count = receipt.sources.len();
+        }
 
         if request.budget.allow_network && all_sources.is_empty() {
             // With network explicitly permitted, collecting nothing means
@@ -472,7 +500,10 @@ impl ResearchCoordinator {
             );
         }
 
-        Ok(all_sources)
+        Ok(SourceCollection {
+            sources: all_sources,
+            receipts,
+        })
     }
 
     async fn read_source_contents(
@@ -685,6 +716,15 @@ impl ResearchCoordinator {
     }
 }
 
+fn source_dedup_key(source: &SourceRecord) -> String {
+    if source.note_value("source") == Some("eggsearch") {
+        if let Some(stable_id) = source.note_value("stable_id") {
+            return format!("eggsearch:{stable_id}");
+        }
+    }
+    format!("uri:{}", source.uri)
+}
+
 fn truncate_short(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -782,6 +822,28 @@ mod tests {
         assert_eq!(contents[0].1, "The retrieved body");
         // No snippet: falls back to the title rather than dropping the source.
         assert_eq!(contents[1].1, "A web page");
+    }
+
+    #[test]
+    fn eggsearch_distinct_stable_ids_do_not_collapse_on_same_url() {
+        let same_url = "https://example.com/source";
+        let one = url_source(
+            "one",
+            same_url,
+            vec!["source=eggsearch".into(), "stable_id=provider-a:one".into()],
+        );
+        let duplicate = url_source(
+            "duplicate",
+            same_url,
+            vec!["source=eggsearch".into(), "stable_id=provider-a:one".into()],
+        );
+        let distinct = url_source(
+            "distinct",
+            same_url,
+            vec!["source=eggsearch".into(), "stable_id=provider-b:one".into()],
+        );
+        assert_eq!(source_dedup_key(&one), source_dedup_key(&duplicate));
+        assert_ne!(source_dedup_key(&one), source_dedup_key(&distinct));
     }
 
     #[tokio::test]

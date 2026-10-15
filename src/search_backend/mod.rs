@@ -2,8 +2,8 @@
 //!
 //! Codegg exposes stable native `websearch` and `webfetch` tools to
 //! the agent. Internally they delegate to a pluggable backend, with
-//! `eggsearch` (an external MCP server) as the default. The legacy
-//! in-tree implementation is kept as an explicit fallback.
+//! `eggsearch` (an external MCP server) as the only external-search
+//! execution owner, with an explicit disabled mode.
 //!
 //! Explicit runtime contexts ([`context::SearchRuntimeContext`]) carry the
 //! resolved `SearchConfig` and the shared `McpService` handle. The
@@ -22,7 +22,6 @@
 //! - [`bootstrap`]: connect eggsearch from config and install the
 //!   shared state. Non-fatal if eggsearch is missing.
 //! - [`eggsearch`]: adapter that calls the eggsearch MCP tools.
-//! - [`legacy`]: adapter that calls the in-tree built-in providers.
 //! - [`framing`]: `external_untrusted` framing helpers and output
 //!   clamping.
 
@@ -30,7 +29,6 @@ pub mod bootstrap;
 pub mod context;
 pub mod eggsearch;
 pub mod framing;
-pub mod legacy;
 pub mod state;
 pub mod test_support;
 
@@ -60,15 +58,6 @@ pub struct StructuredSearchResult {
     pub success: bool,
 }
 
-fn legacy_structured(output: String) -> StructuredSearchResult {
-    StructuredSearchResult {
-        output,
-        value: None,
-        truncated: false,
-        success: true,
-    }
-}
-
 pub fn into_tool_result(
     result: StructuredSearchResult,
     mut provenance: crate::tool::ToolProvenance,
@@ -96,13 +85,6 @@ macro_rules! structured_eggsearch_dispatch {
             match cfg.backend() {
                 SearchBackendConfig::Disabled => Err(ToolError::Execution(
                     concat!($tool, " is disabled ([search].backend = \"disabled\")").to_string(),
-                )),
-                SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                    concat!(
-                        $tool,
-                        " requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    )
-                    .to_string(),
                 )),
                 SearchBackendConfig::Eggsearch => {
                     let svc = self.mcp();
@@ -151,10 +133,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "web search is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => {
-                let registry = legacy::legacy_registry();
-                legacy::call_web_search_legacy(registry, input, max_chars, 60).await
-            }
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -168,26 +146,8 @@ impl SearchRuntimeContext {
                         "websearch",
                         "web_search",
                     )?;
-                    match eggsearch::call_web_search(
-                        svc.as_ref(),
-                        &server,
-                        input,
-                        max_chars,
-                        timeout,
-                    )
-                    .await
-                    {
-                        Ok(s) => Ok(s),
-                        Err(e) if cfg.fallback_to_builtin() => {
-                            tracing::warn!(
-                                "eggsearch web_search failed ({}), falling back to built-in",
-                                e
-                            );
-                            let registry = legacy::legacy_registry();
-                            legacy::call_web_search_legacy(registry, input, max_chars, 60).await
-                        }
-                        Err(e) => Err(e),
-                    }
+                    eggsearch::call_web_search(svc.as_ref(), &server, input, max_chars, timeout)
+                        .await
                 }
             },
         }
@@ -202,10 +162,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "web fetch is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => {
-                // Use the built-in Eggfetch-based path via a private helper.
-                crate::tool::webfetch::execute_builtin(input, max_chars).await
-            }
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -219,41 +175,20 @@ impl SearchRuntimeContext {
                         "webfetch",
                         "web_fetch",
                     )?;
-                    match eggsearch::call_web_fetch(
-                        svc.as_ref(),
-                        &server,
-                        input,
-                        max_chars,
-                        timeout,
-                    )
-                    .await
-                    {
-                        Ok(s) => Ok(s),
-                        Err(e) if cfg.fallback_to_builtin() => {
-                            tracing::warn!(
-                                "eggsearch web_fetch failed ({}), falling back to built-in",
-                                e
-                            );
-                            crate::tool::webfetch::execute_builtin(input, max_chars).await
-                        }
-                        Err(e) => Err(e),
-                    }
+                    eggsearch::call_web_fetch(svc.as_ref(), &server, input, max_chars, timeout)
+                        .await
                 }
             },
         }
     }
 
     /// Run a `repo_search` call against the eggsearch backend.
-    /// Requires `backend = "eggsearch"` — no builtin fallback.
+    /// Requires `backend = "eggsearch"`.
     pub async fn dispatch_repo_search(&self, input: &Value) -> Result<String, ToolError> {
         let cfg = &self.config;
         match cfg.backend() {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "repo_search is disabled ([search].backend = \"disabled\")".to_string(),
-            )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "repo_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
             )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
@@ -284,10 +219,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "repo_fetch is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "repo_fetch requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
-            )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -317,10 +248,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "repo_map is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "repo_map requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
-            )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -348,10 +275,6 @@ impl SearchRuntimeContext {
         match cfg.backend() {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "security_search is disabled ([search].backend = \"disabled\")".to_string(),
-            )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "security_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
             )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
@@ -388,10 +311,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "research_search is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "research_search requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
-            )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -427,10 +346,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "batch_fetch is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "batch_fetch requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
-            )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -460,10 +375,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "evidence_bundle is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "evidence_bundle requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
-            )),
             SearchBackendConfig::Eggsearch => match self.mcp() {
                 None => Err(eggsearch::eggsearch_unavailable(
                     "McpService is not initialized",
@@ -492,9 +403,7 @@ impl SearchRuntimeContext {
         }
     }
 
-    /// Structured variants used by CodeGG's native wrappers. These intentionally
-    /// mirror the legacy dispatch policy so structured retention cannot introduce
-    /// a second backend or fallback authority.
+    /// Structured variants used by CodeGG's native wrappers.
     pub async fn dispatch_web_search_structured(
         &self,
         input: &Value,
@@ -505,10 +414,6 @@ impl SearchRuntimeContext {
         match cfg.backend() {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "web search is disabled ([search].backend = \"disabled\")".to_string(),
-            )),
-            SearchBackendConfig::Builtin => Ok(legacy_structured(
-                legacy::call_web_search_legacy(legacy::legacy_registry(), input, max_chars, 60)
-                    .await?,
             )),
             SearchBackendConfig::Eggsearch => {
                 let svc = self.mcp();
@@ -524,37 +429,20 @@ impl SearchRuntimeContext {
                     "websearch",
                     "web_search",
                 )?;
-                match eggsearch::call_web_search_structured(
+                let result = eggsearch::call_web_search_structured(
                     svc.as_ref(),
                     &server,
                     input,
                     max_chars,
                     timeout,
                 )
-                .await
-                {
-                    Ok(result) => Ok(StructuredSearchResult {
-                        output: result.output,
-                        value: result.value,
-                        truncated: result.truncated,
-                        success: result.success,
-                    }),
-                    Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
-                        legacy::call_web_search_legacy(
-                            legacy::legacy_registry(),
-                            input,
-                            max_chars,
-                            60,
-                        )
-                        .await
-                        .map_err(|fallback| {
-                            ToolError::Execution(format!(
-                                "eggsearch failed ({e}); fallback failed: {fallback}"
-                            ))
-                        })?,
-                    )),
-                    Err(e) => Err(e),
-                }
+                .await?;
+                Ok(StructuredSearchResult {
+                    output: result.output,
+                    value: result.value,
+                    truncated: result.truncated,
+                    success: result.success,
+                })
             }
         }
     }
@@ -570,9 +458,6 @@ impl SearchRuntimeContext {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "web fetch is disabled ([search].backend = \"disabled\")".to_string(),
             )),
-            SearchBackendConfig::Builtin => Ok(legacy_structured(
-                crate::tool::webfetch::execute_builtin(input, max_chars).await?,
-            )),
             SearchBackendConfig::Eggsearch => {
                 let svc = self.mcp();
                 if svc.is_none() {
@@ -587,32 +472,20 @@ impl SearchRuntimeContext {
                     "webfetch",
                     "web_fetch",
                 )?;
-                match eggsearch::call_web_fetch_structured(
+                let result = eggsearch::call_web_fetch_structured(
                     svc.as_ref(),
                     &server,
                     input,
                     max_chars,
                     timeout,
                 )
-                .await
-                {
-                    Ok(result) => Ok(StructuredSearchResult {
-                        output: result.output,
-                        value: result.value,
-                        truncated: result.truncated,
-                        success: result.success,
-                    }),
-                    Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
-                        crate::tool::webfetch::execute_builtin(input, max_chars)
-                            .await
-                            .map_err(|fallback| {
-                                ToolError::Execution(format!(
-                                    "eggsearch failed ({e}); fallback failed: {fallback}"
-                                ))
-                            })?,
-                    )),
-                    Err(e) => Err(e),
-                }
+                .await?;
+                Ok(StructuredSearchResult {
+                    output: result.output,
+                    value: result.value,
+                    truncated: result.truncated,
+                    success: result.success,
+                })
             }
         }
     }
@@ -674,10 +547,6 @@ impl SearchRuntimeContext {
         match cfg.backend() {
             SearchBackendConfig::Disabled => Err(ToolError::Execution(
                 "evidence_bundle is disabled ([search].backend = \"disabled\")".to_string(),
-            )),
-            SearchBackendConfig::Builtin => Err(ToolError::Execution(
-                "evidence_bundle requires the eggsearch backend ([search].backend = \"eggsearch\")"
-                    .to_string(),
             )),
             SearchBackendConfig::Eggsearch => {
                 let svc = self.mcp();
@@ -805,14 +674,9 @@ impl SearchRuntimeContext {
         let truncated = truncated.unwrap_or(false);
         let (backend, implementation, trust) = match cfg.backend() {
             SearchBackendConfig::Disabled => (
-                ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
+                "disabled".to_string(),
                 "disabled".to_string(),
                 ToolTrust::LocalTrusted,
-            ),
-            SearchBackendConfig::Builtin => (
-                ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
-                "codegg/legacy".to_string(),
-                ToolTrust::ExternalUntrusted,
             ),
             SearchBackendConfig::Eggsearch => {
                 let connected = self.mcp().is_some();
@@ -965,15 +829,6 @@ mod tests {
         let p = disabled_ctx().provenance_for_search(None).unwrap();
         assert_eq!(p.implementation, "disabled");
 
-        // Builtin backend.
-        let ctx = SearchRuntimeContext::new(SearchConfig {
-            backend: Some(SearchBackendConfig::Builtin),
-            ..Default::default()
-        });
-        let p = ctx.provenance_for_search(None).unwrap();
-        assert_eq!(p.implementation, "codegg/legacy");
-        assert_eq!(p.backend, "builtinlegacy");
-
         // Eggsearch backend, not connected.
         let ctx = SearchRuntimeContext::new(SearchConfig::default());
         let p = ctx.provenance_for_search(None).unwrap();
@@ -984,11 +839,8 @@ mod tests {
     #[test]
     fn independent_contexts_hold_different_backends() {
         let disabled = disabled_ctx();
-        let builtin = SearchRuntimeContext::new(SearchConfig {
-            backend: Some(SearchBackendConfig::Builtin),
-            ..Default::default()
-        });
+        let eggsearch = SearchRuntimeContext::new(SearchConfig::default());
         assert_eq!(disabled.backend(), SearchBackendConfig::Disabled);
-        assert_eq!(builtin.backend(), SearchBackendConfig::Builtin);
+        assert_eq!(eggsearch.backend(), SearchBackendConfig::Eggsearch);
     }
 }

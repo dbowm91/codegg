@@ -1,0 +1,32 @@
+{
+  "groups": [],
+  "subqueries": [],
+  "retrieval_summary": {
+    "dimensions": [
+      {
+        "evidence_role": "primary_sources",
+        "absence_kind": "no_matching_evidence_found",
+        "provider_id": "exa",
+        "attempt_outcome": "success_zero_results",
+        "truncated": false,
+        "truncation_evidence": "none",
+        "state": "completed_no_match"
+      }
+    ],
+    "has_failures": false,
+    "has_absences": true,
+    "has_truncation": false,
+    "attempted_job_count": 1,
+    "completed_job_count": 1,
+    "failed_job_count": 0,
+    "roles_attempted": 1,
+    "roles_complete": 1,
+    "roles_indeterminate": 0,
+    "attempted_dimension_count": 1,
+    "completed_dimension_count": 1,
+    "failed_dimension_count": 0
+  },
+  "workflow_coverage": null,
+  "structured_warnings": [],
+  "providers_failed": []
+}
