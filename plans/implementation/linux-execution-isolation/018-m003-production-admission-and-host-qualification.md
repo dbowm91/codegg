@@ -1,6 +1,6 @@
 # Linux Execution Isolation C010 — M003 Production Admission and Host Qualification
 
-Status: active
+Status: implemented
 Repository baseline: merge of current `origin/main` into the Linux isolation branch (`611f6bee`)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
@@ -17,12 +17,12 @@ This corrective is bounded to the M003 admission decision. It does not claim M00
 ## 2. Why this milestone is ready
 
 - ADR-0031 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
-- The merge with current `origin/main` is committed at `611f6bee` and `scripts/verify.sh quick` passes.
+- The merge with current `origin/main` is committed at `611f6bee`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
 - C009 names the remaining blockers: object-view performance, packed-store evidence, rustup's `/proc/self/exe` requirement, and the absence of a production backend route.
 
 ## 3. Current implementation evidence
 
-The candidate remains opt-in and unregistered for production. Landlock remains canonical. C009 exact-head hosted evidence is on `2921a9c6`; after this merge, native qualification must be rerun on the exact source revision. C009's local fragmented-store result was 2.95 seconds for a 105 MiB / 3,945-file object store on ext4 without reflink support. The current workstation is Ubuntu x86_64, kernel 6.8.0-147-generic, ext4, Bubblewrap 0.9.0, UID/GID 1000, AppArmor enabled with `kernel.apparmor_restrict_unprivileged_userns=1`; local C009 native tests passed 11/11. A temporary exact-wrapper measurement on the current cache-warm checkout recorded 325 ms for the mixed 105 MiB object store and 47 ms for a 29.07 MiB single-pack clone. These are exploratory single samples, not a production latency qualification.
+The candidate remains opt-in and unregistered for production. Landlock remains canonical. Exact post-merge hosted Linux run `38749191367` on `f6befe51` passed 11/11 protected-mount and 18/18 trusted-Git tests. Its ephemeral Ubuntu 24.04.5 runner used kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`, AppArmor `unconfined`, UID/GID 1001, and relaxed `kernel.apparmor_restrict_unprivileged_userns` from 1 to 0. C009's earlier local fragmented-store result was 2.95 seconds for a 105 MiB / 3,945-file object store on ext4 without reflink support. The current workstation is Ubuntu x86_64, kernel 6.8.0-147-generic, ext4, Bubblewrap 0.9.0, UID/GID 1000, AppArmor enabled with that userns restriction left at 1; local native tests passed 11/11. Temporary exact-wrapper, cache-warm measurements recorded 325 ms for a mixed 105 MiB object store and 47 ms for a 29.07 MiB single-pack clone. These are exploratory single samples, not a production latency qualification.
 
 The protected mount view intentionally omits host `/proc`; the C009 record documents that rustup needs `/proc/self/exe`. C009's Cargo check/test, direct rustc, Python, shell, PTY first-hop, and selected Git routes passed, but this does not establish general toolchain/LSP compatibility.
 
