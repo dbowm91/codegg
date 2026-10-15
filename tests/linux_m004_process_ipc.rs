@@ -539,6 +539,10 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
             .map(|directory| directory.join("cargo"))
             .find(|candidate| candidate.is_file())
             .expect("Cargo is installed by the Rust test toolchain");
+    let cargo_target = cargo.canonicalize().expect("resolve Cargo launcher");
+    let uses_rustup_shim = cargo_target
+        .file_name()
+        .is_some_and(|name| name == "rustup" || name == "rustup.exe");
     for (operation, args) in [
         (
             "cargo-workspace-check",
@@ -556,18 +560,26 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
             ],
         ),
     ] {
+        // SandboxConfig resolves executable symlinks to pin the target. Keep
+        // rustup's proxy dispatch explicit so the canonical binary receives
+        // `run <toolchain> cargo` rather than interpreting `check` as a
+        // rustup subcommand.
+        let (executable, launch_args) = if uses_rustup_shim {
+            let mut launch_args =
+                vec!["run".to_string(), "stable".to_string(), "cargo".to_string()];
+            launch_args.extend(args.iter().map(|arg| (*arg).to_string()));
+            (cargo_target.as_path(), launch_args)
+        } else {
+            (
+                cargo.as_path(),
+                args.iter().map(|arg| (*arg).to_string()).collect(),
+            )
+        };
         let spec = SandboxConfig::new()
             .with_enabled(true)
             .with_mode(SandboxMode::WorkspaceWrite)
             .with_linux_process_isolation(true)
-            .launch_spec(
-                &cargo,
-                &args
-                    .iter()
-                    .map(|arg| (*arg).to_string())
-                    .collect::<Vec<_>>(),
-                Some(&workspace),
-            )
+            .launch_spec(executable, &launch_args, Some(&workspace))
             .expect("M004 Cargo launch spec");
         let mut request = ManagedProcessRequest::new(
             [spec.target.as_os_str().to_owned()]

@@ -64,10 +64,12 @@ restricted-userns filter runs on a separate ephemeral runner with
 `user.max_user_namespaces=0`, verifies a direct harmless Bubblewrap probe is
 denied, then proves that an M004 request leaves no target marker. The Cargo
 filter runs `cargo check --locked --workspace` and the root crate's managed-
-process unit tests as M004 children. This exercises workspace compilation,
-build-script/proc-macro execution, writable target artifacts, and tests of the
-service that owns the sandbox launch. Hosted exact-head results are required;
-compilation or a skipped opt-in test is not qualification.
+process unit tests as M004 children. The Cargo probe preserves rustup's
+toolchain dispatch explicitly after executable canonicalization. This exercises
+workspace compilation, build-script/proc-macro execution, writable target
+artifacts, and tests of the service that owns the sandbox launch. Hosted
+exact-head results are required; compilation or a skipped opt-in test is not
+qualification.
 
 The `egglsp` launcher and `InteractiveProcessService` currently spawn children
 outside `ManagedProcessService` and do not consume the M004 policy. Their
