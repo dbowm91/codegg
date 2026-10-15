@@ -3961,7 +3961,19 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     };
 
     let mut subagent_registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
     let subagent_pool = crate::agent::worker::SubAgentPool::new(
         &config,
         agents,
@@ -4113,7 +4125,19 @@ async fn run_core_stdio() -> Result<(), AppError> {
     let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
 
     let mut subagent_registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
     let subagent_pool = crate::agent::worker::SubAgentPool::new(
         &config,
         agents,
@@ -4215,7 +4239,19 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     };
 
     let mut subagent_registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut subagent_registry, &config);
+    // A sub-agent pool resolves providers with the same authority every other
+    // daemon path uses. Built without it, any provider a rotation left an
+    // orphan record for resolves to nothing here, and the daemon reports a
+    // "several credentials are stored" ambiguity at startup for a connection
+    // it is about to serve perfectly well.
+    let subagent_locators =
+        codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+    provider::register_builtin_with_config_connections(
+        &mut subagent_registry,
+        &config,
+        &subagent_locators,
+        None,
+    );
     let subagent_pool = crate::agent::worker::SubAgentPool::new(
         &config,
         agents,
