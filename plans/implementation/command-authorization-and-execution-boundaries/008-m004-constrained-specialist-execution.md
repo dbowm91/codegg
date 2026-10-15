@@ -1,6 +1,6 @@
 # Command Authorization M004 Corrective 008 — Constrained Specialist Execution
 
-Status: active
+Status: implemented
 Repository baseline: `21dceaaa` (main reconciled before this implementation)
 
 Source roadmap: `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md#6-dependency-graph`
@@ -24,7 +24,7 @@ M004 plan 007 closed the route inventory and fail-closed admission predicate. `M
 - A live model-facing Python tool call now passes accepted WorkspaceWrite through the durable scheduler payload, into `ManagedProcessService`, and returns the script's output. The test also verifies fail-closed behavior when the trusted helper is absent; the positive native case uses the installation-owned sibling helper.
 - Test validates and persists the accepted profile in its durable job payload. `TestJobExecutor` carries it into the domain runner, whose streaming child lifecycle now uses `ManagedProcessService`; output parsing, redacted logs, reports, run records, timeout, stall, and cancellation handling remain in the domain runner.
 - The live Test tool scheduler fixture verifies the accepted profile survives into the durable payload. A native WorkspaceWrite fixture proves a test process can write inside its workspace but cannot create a sibling marker. ReadOnly refuses before submission.
-- Hosted exact-head qualification remains required for the Linux protected-mount lane, Windows cross-target/diagnostic lane, and macOS target build.
+- Hosted exact-head qualification is recorded in the closure: Linux C006 remains a bounded negative strict-M003 result, Windows process-launcher tests pass, and the macOS target compile passes. None promotes a Linux production backend or claims native macOS filesystem enforcement.
 - Bash managed processes already carry accepted authorization directly into `ManagedProcessService`.
 
 ## 4. Invariants that must not regress
@@ -107,9 +107,9 @@ Update `architecture/process-tool-execution-ownership.md`, `architecture/tool.md
 
 Stop if the scheduler cannot carry immutable accepted authority, Test output/stall semantics cannot be preserved without a second process owner, any route launches unconstrained, or native enforcement is unavailable without an explicitly reported refusal. Do not fall back to FullHost or invent network/IPC guarantees.
 
-## 15. Closure evidence required
+## 15. Closure evidence
 
-The closure record must show the authorization-to-process handoff, route-specific effect matrix, exact native/hosted verification, timeout/cancellation evidence, cross-platform build evidence, and a registry unblock audit. It must state which operator surfaces remain independent.
+The authorization-to-process handoff, route-specific effect matrix, exact native/hosted verification, timeout/cancellation evidence, cross-platform build evidence, and registry unblock audit are recorded in `plans/closure/command-authorization-and-execution-boundaries/008-status.md`. Operator surfaces remain independent.
 
 ## 16. Handoff notes
 

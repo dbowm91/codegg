@@ -68,7 +68,10 @@ backend promotion follows from this finding.
 - `cargo test -p egggit --locked process::tests::trusted_git_status_cannot_be_redirected_by_local_core_worktree`
 - `cargo test -p egggit --locked process::tests::trusted_git_status_does_not_run_repository_fsmonitor`
 - `python3 scripts/check_git_forbidden_patterns.py`
-- Exact reconciled-head Linux C006 evidence is recorded in
-  `plans/closure/linux-execution-isolation/014-status.md` (run
-  `38633625863`); the remaining cross-platform suite evidence is recorded
-  there after its exact-head workflows complete.
+- Exact reconciled production-source hosted evidence is recorded in
+  `plans/closure/linux-execution-isolation/014-status.md`: Linux C006 run
+  `38650935114` passed the protected-mount child test 1/1 on Bubblewrap 0.9.0;
+  Windows process launcher run `38650935131` passed its launcher and
+  restricted-process checks; macOS target compile run `38650935180` passed.
+  The macOS result is compile-only and does not claim native runtime
+  enforcement.
