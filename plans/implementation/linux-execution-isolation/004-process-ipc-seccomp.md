@@ -70,6 +70,10 @@ installed Rust/Cargo roots, target linker, and C build-script compiler inside
 the contained command because the helper clears ambient environment. This
 exercises workspace compilation, build-script/proc-macro execution, writable
 target artifacts, and tests of the service that owns the sandbox launch.
+The nested managed-process filter skips only tests named `protected_mount_`:
+those fixtures test host Bubblewrap discovery and recursive protected-mount
+launch, which is unavailable from inside the M004 child by design. The same
+hosted workflow runs those regressions separately after the M004 probe passes.
 Hosted exact-head results are required; compilation or a skipped opt-in test is
 not qualification.
 

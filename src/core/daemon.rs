@@ -5972,7 +5972,7 @@ mod tests {
         use codegg_core::identity::PrincipalId;
         use codegg_core::provider_connections::{
             Endpoint, NewProviderConnection, ProviderConnectionStore, ProviderKind, ProviderScope,
-            SecretBindingLocator, SecretRef, TlsPolicy,
+            TlsPolicy,
         };
         let pool = daemon.pool.clone().expect("test daemon pool");
         let conn_store = ProviderConnectionStore::new(pool.clone());
@@ -5985,10 +5985,12 @@ mod tests {
                     .unwrap(),
                 tls_policy: TlsPolicy::Disabled,
                 scope: ProviderScope::personal(PrincipalId::parse("test-user").unwrap()),
-                secret_binding: Some(
-                    SecretBindingLocator::new(SecretRef::new(), "test-provider", "acct-ps")
-                        .unwrap(),
-                ),
+                // The test supplies OPENAI_API_KEY and verifies durable
+                // session selection/admission only. A connection-bound
+                // secret locator would require mutating the real credential
+                // store, which makes this otherwise isolated fixture fail on
+                // hosted runners.
+                secret_binding: None,
             })
             .await
             .expect("create connection")
