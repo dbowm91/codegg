@@ -170,3 +170,64 @@ compatibility gates, or unblock downstream Git enforcement.
 Registry disposition: C006 is closed as a bounded negative qualification;
 M003 remains blocked, and nothing is unblocked. C007 and C008 retain their
 prior closure records unchanged.
+
+## 13. Final reconciled implementation-head hosted rerun — 2026-10-14
+
+After the accepted-authority routing fixture correction, exact branch head
+`24593079b9b38fc0cb066f33c30fd1477b663483` passed hosted C006 run
+[38633625863](https://github.com/dbowm91/codegg/actions/runs/38633625863).
+The runner was Ubuntu 24.04.5 x86_64, kernel `6.17.0-1022-azure`, UID 1001,
+Bubblewrap 0.9.0 at `/usr/bin/bwrap` with mode 0755, and AppArmor profile
+`unconfined`. The runner initially reported
+`kernel.apparmor_restrict_unprivileged_userns=1`; the workflow recorded that
+value and set it to `0` on the ephemeral host for qualification. The trusted
+helper built successfully, and
+`managed_process::tests::protected_mount_view_real_managed_process_handoff`
+passed 1/1 in 0.55 seconds (6094 filtered out).
+
+This supersedes the earlier exact-head C006 run in section 12. It is evidence
+for the bounded opt-in candidate only. It does not register Bubblewrap as the
+production backend, change Landlock as canonical, or close linked-worktree and
+common-directory aliases, concurrent rename races, Cargo/rustup, LSP/PTY,
+startup timing, descriptor inheritance, or the remaining compatibility matrix.
+M003 remains blocked and no Git C002/C003 or downstream Linux production plan
+is unblocked.
+
+## 14. Trusted-Git compatibility head hosted rerun — 2026-10-14
+
+After adding the identity-only configuration handoff for trusted commit
+operations, exact head `b0778262f48b50e3629fc9a239af15d3ceb5f20a` passed hosted
+C006 run [38638600698](https://github.com/dbowm91/codegg/actions/runs/38638600698).
+The Ubuntu 24.04.5 x86_64 runner reported kernel `6.17.0-1022-azure`, UID
+1001, Bubblewrap 0.9.0 at `/usr/bin/bwrap` with mode 0755, and AppArmor
+profile `unconfined`. The workflow observed
+`kernel.apparmor_restrict_unprivileged_userns=1` and set it to `0` on the
+ephemeral runner. The trusted helper built successfully and
+`managed_process::tests::protected_mount_view_real_managed_process_handoff`
+passed 1/1 in 0.54 seconds (6094 filtered out).
+
+This exact-head rerun supersedes section 13 as current-source C006 evidence.
+It preserves the bounded negative strict-M003 disposition: Bubblewrap is not
+registered as the production backend, Landlock remains canonical, M003 remains
+blocked on the documented alias/race/compatibility gates, and no downstream
+Git enforcement plan is unblocked.
+
+## 15. Current-main reconciled production-head hosted rerun — 2026-10-14
+
+After merging current `origin/main` and retaining the trusted-Git boundary,
+exact source head `a28523f5a9bf3e89a03d21929d8616417eb1022f` passed hosted C006
+run [38650935114](https://github.com/dbowm91/codegg/actions/runs/38650935114).
+The Ubuntu 24.04.5 x86_64 runner reported kernel `6.17.0-1022-azure`, UID
+1001, Bubblewrap 0.9.0 at `/usr/bin/bwrap` with mode 0755, and AppArmor
+profile `unconfined`. The workflow observed
+`kernel.apparmor_restrict_unprivileged_userns=1` and set it to `0` on the
+ephemeral runner for qualification. The trusted helper built successfully and
+`managed_process::tests::protected_mount_view_real_managed_process_handoff`
+passed 1/1 in 0.56 seconds (6095 filtered out).
+
+This confirms only the bounded protected-mount handoff on the reconciled source
+head. Bubblewrap is not registered as a production backend; Landlock remains
+canonical. Linked-worktree/common-directory aliases, rename races, Cargo/rustup,
+LSP/PTY, startup timing, descriptor inheritance, and the broader compatibility
+matrix remain unresolved. M003 stays blocked; no downstream Git plan is
+unblocked.
