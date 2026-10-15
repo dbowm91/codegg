@@ -2077,7 +2077,7 @@ mod tests {
 
         let mut command = GitEnvPolicy::default()
             .apply_sync(
-                &vec![
+                &[
                     "git".into(),
                     "cat-file".into(),
                     "blob".into(),
@@ -2093,6 +2093,12 @@ mod tests {
         let mut object_permissions = std::fs::metadata(&object_path)
             .expect("loose object metadata")
             .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            object_permissions.set_mode(object_permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
         object_permissions.set_readonly(false);
         std::fs::set_permissions(&object_path, object_permissions)
             .expect("make loose object writable for race fixture");
