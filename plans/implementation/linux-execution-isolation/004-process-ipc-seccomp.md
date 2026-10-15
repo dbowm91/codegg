@@ -2,7 +2,7 @@
 
 Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes, including concurrent namespace separation; broader compatibility, PTY routing, and host-admission gates remain open)
 Primary class: capability
-Repository baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in; positive native qualification, lifecycle, PTY and ordinary-tool compatibility remain open.
+Repository baseline: current-main merge `188edb371759f40b291052f25598bdb8ab57702d` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in and have exact-head hosted denial and ordinary-tool probes; broader host qualification, production PTY/LSP routing, and full toolchain compatibility remain open.
 
 ## 1. Objective
 
@@ -11,6 +11,17 @@ Provide an opt-in native Linux child execution tier with **real process and IPC 
 ## 2. Current evidence
 
 Landlock constrains filesystem grants and inherits across exec. ABI 6 adds signal and abstract Unix socket scopes; the local Ubuntu 6.8 kernel lacks them and the required request refuses before target execution. Bubblewrap composes those scopes with PID/IPC namespaces, a private proc view, and an architecture-checked `seccompiler` denylist behind an internal opt-in. The M004 parent closes inherited FDs above stdio and reserved status/ack descriptors. Exact-head hosted run `38764899922` on `c528ebff` passed the M004 native target (3/3), including host `/proc/<pid>/environ`/`fd` invisibility, ptrace/process_vm denial, detached-session descendant cancellation, and Rustup/rustc smoke. Follow-up run `38767363902` on `9f692258` passed M004 (4/4), protected-mount (11/11), and trusted-Git (18/18) tests, adding proof that concurrent launches receive distinct PID and IPC namespace inodes. Both runs used Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`; the workflow relaxed that ephemeral runner's unprivileged-userns AppArmor sysctl. Remaining gaps include broader Cargo/compiler compatibility, PTY service routing, and production admission. The interactive PTY owner does not yet consume this M004 policy; the protected-mount PTY test only exercises a manually constructed Bubblewrap first hop. The daemon and tool services may expose local sockets; process-group cancellation alone is not an isolation boundary.
+
+Exact reconciled-head qualification on `5f1f998616f8727e4a84aea37ff6125884da4d19`
+passed hosted run [38794947434](https://github.com/dbowm91/codegg/actions/runs/38794947434)
+on Ubuntu 24.04.5. The M004 native suite passed 6/6, including concurrent
+distinct PID/IPC namespaces, host-proc and host-signal/abstract-socket denial,
+descendant cancellation, and a contained workspace check plus managed-process
+tests. The separate restricted-userns job proved refusal before target start.
+The same run passed protected-mount regressions 11/11 and trusted-Git policy
+regressions 18/18. This qualifies the current internal process/IPC test tier;
+it does not qualify production PTY/LSP routing or change the no-admission
+decision for the protected-mount backend.
 
 ## 3. Invariants
 
@@ -108,12 +119,9 @@ and an injected launch owner that preserves JSON-RPC stdin/stdout and stderr
 supervision while applying the qualified M004 boundary. Until M003 has an
 admitted filesystem backend and this per-profile LSP ownership exists, any
 constrained LSP process request must refuse before spawn; FullHost LSP behavior
-continues unchanged. The current shared service does not receive the accepted
-turn profile, so constrained LSP launches are presently unqualified and may
-take the legacy direct-spawn path; M004 cannot close on that implementation.
-End-to-end tests must verify that a FullHost client still starts/restarts
-normally and that a constrained turn cannot create, reuse, or restart a
-FullHost LSP process.
+continues unchanged. End-to-end tests must verify that a FullHost client still
+starts/restarts normally and that a constrained turn cannot create, reuse, or
+restart a FullHost LSP process.
 
 The current corrective refuses constrained LSP at session-tool construction:
 it registers unavailable `lsp`/`lsp_read` tools, does not bind the shared LSP

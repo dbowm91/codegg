@@ -71,6 +71,22 @@ The transport `CoreRequest::LspPreviewApply` is authorized as `via_session` +
 before acquiring the daemon workspace lock. No preview data is persisted and
 no LSP command or opaque workspace edit is enabled.
 
+### LSP process profile boundary
+
+The daemon-wide `LspService` owns long-lived child processes and is shared by
+turn registries. Its client/restart identity does not include a sandbox
+profile, and its launcher is not yet integrated with the M004 process/IPC
+boundary. A constrained turn therefore registers unavailable `lsp` and
+`lsp_read` tools, does not retain the shared service or preview adapter, and
+does not collect LSP prompt context. This prevents a constrained turn from
+creating or reusing a FullHost LSP process. FullHost turns preserve the current
+shared service behavior. Profile selection is daemon-owned; it must never be
+added as a client-controlled LSP request field. Positive constrained LSP
+support requires an M004 launch owner that preserves JSON-RPC pipes and
+supervision plus process-pool identity/lifecycle that prevents cross-profile
+client reuse. Until then, the constrained denial is an explicit compatibility
+limit, not containment evidence for the LSP child.
+
 ### Tier 1 vs Tier 2 compatibility
 
 The `compatibility.rs` module defines explicit, data-driven profiles per
