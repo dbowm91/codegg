@@ -87,6 +87,12 @@ The paired command used the pinned Eggsearch `v0.4.3` release binary built from 
 - `bash scripts/release/test-installer.sh`: 165 passed, 0 failed.
 - `bash scripts/release/test-clean-host.sh`: 26 passed, 0 failed using a generated aarch64 macOS fixture bundle. The installed app, search doctor, managed Eggsearch 0.4.3, Eggsearch wrapper, and deterministic-tools doctor passed with a sanitized PATH and isolated HOME.
 
+The first Clippy run and first installer-harness run both stopped when the
+shared host volume ran out of space. I removed only this task's disposable
+`/tmp/codegg-c002-arm64-target/debug/incremental` cache, confirmed the volume
+had recovered, and reran both commands successfully as reported above. No
+source or test failure remained.
+
 The interactive TUI was not launched because this clean-host harness is headless; its `--help` surface passed. No public release, live-provider call, hosted CI run, or Linux sandbox qualification is claimed.
 
 ## 5. Invariant review
