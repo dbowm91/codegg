@@ -3434,3 +3434,154 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod migration_upgrade_tests {
+    use super::{migrate, migrate_and_record};
+    use crate::storage::STORAGE_LAYOUT_VERSION;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
+    use std::path::Path;
+
+    async fn open_pool(path: &Path) -> SqlitePool {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("open migration fixture database")
+    }
+
+    async fn apply_through_v77(pool: &SqlitePool, with_origin: bool) {
+        sqlx::query(
+            "CREATE TABLE migration_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(pool)
+        .await
+        .expect("create migration marker");
+        for version in 1..=72 {
+            migrate_and_record(pool, version)
+                .await
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+        let version: i64 = sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .expect("read v72 marker");
+        assert_eq!(version, 72, "fixture is an actual v72 schema");
+        if with_origin {
+            sqlx::query(
+                "INSERT INTO origin_attribution \
+                 (scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+                  transport_class, policy, membership_revision, decision_id, correlation_id, \
+                  time_created, attribution_json) \
+                 VALUES ('session', 'legacy-session', 'principal-1', 'local', 'test', \
+                         'local', 'allow', NULL, 'decision-1', 'correlation-1', 1, '{}')",
+            )
+            .execute(pool)
+            .await
+            .expect("seed pre-v78 origin row");
+        }
+        for version in 73..=77 {
+            migrate_and_record(pool, version)
+                .await
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn v72_to_latest_upgrade_survives_restart_and_rolls_back_failed_v78() {
+        let directory = tempfile::tempdir().expect("migration fixture directory");
+        let success_path = directory.path().join("v72-success.db");
+        let pool = open_pool(&success_path).await;
+        apply_through_v77(&pool, true).await;
+
+        // Each migration is its own transaction. Closing at committed v77
+        // simulates an interrupted startup immediately before the v78 rebuild.
+        pool.close().await;
+        let pool = open_pool(&success_path).await;
+        let before_resume: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read interrupted marker");
+        assert_eq!(before_resume, 77);
+        migrate(&pool).await.expect("resume v77 database to latest");
+
+        let upgraded: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read upgraded marker");
+        assert_eq!(upgraded, STORAGE_LAYOUT_VERSION as i64);
+        let preserved: (String, String) = sqlx::query_as(
+            "SELECT scope_kind, scope_id FROM origin_attribution WHERE scope_id = 'legacy-session'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read preserved pre-v78 attribution");
+        assert_eq!(
+            preserved,
+            ("session".to_string(), "legacy-session".to_string())
+        );
+        sqlx::query(
+            "INSERT INTO origin_attribution \
+             (scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+              transport_class, policy, membership_revision, decision_id, correlation_id, \
+              time_created, attribution_json) \
+             VALUES ('continuation_grant', 'grant-1', 'principal-1', 'user', 'local', \
+                     'local', 'allow', NULL, 'decision-2', 'correlation-2', 2, '{}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("v78 scope check admits continuation-grant attribution");
+        let count_before_rerun: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM origin_attribution")
+            .fetch_one(&pool)
+            .await
+            .expect("count attribution rows");
+        migrate(&pool).await.expect("second startup is idempotent");
+        let count_after_rerun: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM origin_attribution")
+            .fetch_one(&pool)
+            .await
+            .expect("recount attribution rows");
+        assert_eq!(count_after_rerun, count_before_rerun);
+        pool.close().await;
+
+        let rollback_path = directory.path().join("v77-rollback.db");
+        let pool = open_pool(&rollback_path).await;
+        apply_through_v77(&pool, false).await;
+        sqlx::query("DROP TABLE origin_attribution")
+            .execute(&pool)
+            .await
+            .expect("prepare malformed legacy table");
+        sqlx::query(
+            "CREATE TABLE origin_attribution (scope_kind TEXT NOT NULL, scope_id TEXT NOT NULL, PRIMARY KEY(scope_kind, scope_id))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create malformed source missing attribution_json");
+
+        assert!(
+            migrate(&pool).await.is_err(),
+            "malformed v77 fails v78 closed"
+        );
+        let rolled_back_version: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read marker after failed migration");
+        assert_eq!(rolled_back_version, 77, "v78 marker is in its transaction");
+        let transient_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_attribution_new'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("check rolled-back rebuild table");
+        assert_eq!(transient_table, 0, "failed v78 leaves no partial rebuild");
+
+        pool.close().await;
+    }
+}
