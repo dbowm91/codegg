@@ -7,7 +7,7 @@ Source: plans/subsystems/agent-workstream-blackboard-roadmap.md#milestones--deli
 Applicable accepted ADRs: ADR-0002, ADR-0004, ADR-0005; proposed ADR-0032 is NOT required to fix existing WorkOrders.
 Canonical: plans/000-long-term-specification.md §§9, 16, 17, 29; plans/001-terminology-and-domain-model.md §§5, 7–8; plans/003-planning-process.md §7.
 Primary class: invariant / corrective safety.
-Historical source and closures (do not rewrite): plans/implementation/project-work-orders-task-view/002-work-order-release-coordinator-and-session-materialization.md; plans/closure/project-work-orders-task-view/002-status.md and /007-status.md. Reverify exact historical path names before linking final closure.
+Historical source and closures (do not rewrite): plans/implementation/project-work-orders-task-view/002-release-coordinator-session-materialization.md; plans/closure/project-work-orders-task-view/002-status.md and /007-status.md. Reverify exact historical path names before linking final closure.
 
 ## Objective and discovered defects
 
