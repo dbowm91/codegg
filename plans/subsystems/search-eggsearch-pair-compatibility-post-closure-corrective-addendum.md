@@ -43,7 +43,7 @@ These are **test-qualification gaps**, not evidence of a production CodeGG/eggse
 
 C001 executed without working CodeGG full agent inference or publishing any release. Evidence-workflows M002–M004 retain their existing status; this pair-qualification stream does not change their dependencies.
 
-**Gate:** Strict C002 closure satisfies the local-only pair gate and makes legacy-retirement M002 **ready**; it does not implement or authorize skipping M002's own source deletion, tests, or closure. The conditional finding in C001 is discharged by this successor evidence without editing C001's historical record. After retirement, rerun the same-unit test. Evidence-workflow M005 remains blocked on actual M002 completion and M004.
+**Gate:** Strict C002 closure satisfies the local-only pair gate and made legacy-retirement M002 ready for its separately scoped deletion. M002 is now closed at `plans/closure/search-eggsearch-legacy-retirement/002-status.md`. The conditional finding in C001 is discharged by successor evidence without editing C001's historical record. The paired test was rerun after retirement. Evidence-workflow M005 remains blocked on its own evidence-workflow M002 and M004 closures; legacy-retirement M002 is not a dependency of that workflow roadmap.
 
 ## 5. Corrective completion definition
 
@@ -53,4 +53,4 @@ C001 executed without working CodeGG full agent inference or publishing any rele
 - One offline script invokes real-process and fake-MCP controls; typed failures return nonzero with stage-specific diagnostics. The offline test suite can be rerun after retirement M002 without reintroducing legacy search.
 - Closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` supplies exact tested CodeGG revision, eggsearch binary provenance/digest, negative trajectories, command results, non-run evidence and a decision on unblocking legacy-retirement M002.
 
-C001 implementation and local verification remain recorded in its immutable historical closure. Upstream eggsearch owns the correctness fix (v0.4.3); CodeGG C002 now records the strict successor pin/real-process requalification at `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`. That evidence unblocks legacy-retirement M002 to ready. The separate Evidence-workflows M005 dependency on completed M002 and M004 is unchanged.
+C001 implementation and local verification remain recorded in its immutable historical closure. Upstream eggsearch owns the correctness fix (v0.4.3); CodeGG C002 records the strict successor pin/real-process requalification at `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`. That evidence unblocked legacy-retirement M002, now closed under its own closure. The separate Evidence-workflows M005 dependency on its own M002 and M004 remains unchanged.

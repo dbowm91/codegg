@@ -1,6 +1,6 @@
 # Plan 002 — Builtin Search Backend Retirement
 
-Status: ready (M001 closed; strict C002 v0.4.3 paired qualification closed)
+Status: implemented; closed in `plans/closure/search-eggsearch-legacy-retirement/002-status.md`
 
 Source roadmap:
 
@@ -299,9 +299,13 @@ Then:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 scripts/verify.sh quick
 ```
+
+Follow `AGENTS.md` and `.opencode/skills/testing-ci/SKILL.md`: do not use
+`--all-features` for workspace sweeps because that enables real-server tests.
+The canonical workspace Clippy command above is the supported feature posture.
 
 Run the existing supported release/install smoke if config/doctor/startup
 changes touch that path materially.
