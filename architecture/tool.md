@@ -629,7 +629,8 @@ pub struct IntegratedToolRuntimeConfig {
 
 Entry point: `resolve_integrated_config(&Config) -> IntegratedToolRuntimeConfig`.
 
-- **Evidence**: `search_backend`, `expose_raw_mcp_tools`, `fallback_to_builtin`
+- **Evidence**: `search_backend`, `expose_raw_mcp_tools`; search backend is
+  Eggsearch or disabled and does not switch providers on failure.
 - **Deterministic**: `enabled`, `backend`, `profile` (validated by the linked
   eggsact `Profile::from_str_opt()` / `available_profiles()` APIs),
   `model_audience`, `harness_audience`,

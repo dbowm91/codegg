@@ -1,0 +1,33 @@
+{
+  "groups": [],
+  "vulnerabilities": [],
+  "retrieval_summary": {
+    "dimensions": [
+      {
+        "evidence_role": "security_advisories",
+        "absence_kind": "provider_failed",
+        "provider_id": "osv",
+        "attempt_outcome": "failed",
+        "error_class": "provider_error",
+        "truncated": false,
+        "truncation_evidence": "none",
+        "state": "failed"
+      }
+    ],
+    "has_failures": true,
+    "has_absences": false,
+    "has_truncation": false,
+    "attempted_job_count": 1,
+    "completed_job_count": 0,
+    "failed_job_count": 1,
+    "roles_attempted": 1,
+    "roles_complete": 0,
+    "roles_indeterminate": 1,
+    "attempted_dimension_count": 1,
+    "completed_dimension_count": 0,
+    "failed_dimension_count": 1
+  },
+  "workflow_coverage": null,
+  "structured_warnings": [],
+  "providers_failed": []
+}

@@ -57,11 +57,10 @@ validation pipeline:
    IPv4-mapped and IPv4-compatible IPv6 to IPv4 for range checking.
 
 Used by:
-- `tool::webfetch::execute_builtin` — the `builtin` webfetch path
 - `src/mcp/remote.rs` — MCP remote URL validation
-- The default `eggsearch` backend delegates SSRF protection to the
-  eggsearch subprocess; Codegg only does basic URL validation
-  (`validate_fetch_url`) on the adapter path.
+- External web fetch is owned by the eggsearch subprocess. CodeGG's adapter
+  checks that fetch URLs are non-empty, bounded, and HTTP(S) before dispatch;
+  destination resolution and SSRF enforcement remain in Eggsearch.
 
 ### Filesystem containment (`sandbox/`)
 

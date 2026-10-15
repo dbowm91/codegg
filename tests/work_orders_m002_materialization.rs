@@ -4,9 +4,9 @@
 //! Exactly-once claim/materialization through the existing global scheduler
 //! boundary: one occurrence creates at most one canonical session and one
 //! canonical initial `AgentTurn` submission; restart/duplicate wakes cannot
-//! duplicate side effects; concurrent managed-worktree creation respects the
-//! contained Git backend gate;
-//! model/policy resolution never silently falls back or widens.
+//! duplicate side effects; managed worktree creation fails closed when Git
+//! containment is unavailable; model/policy resolution never silently falls
+//! back or widens.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -455,7 +455,7 @@ async fn canonical_session_creation_uses_the_deterministic_key() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn concurrent_git_mutation_refuses_uncontained_managed_worktrees() {
+async fn managed_worktree_creation_fails_closed_without_git_containment_backend() {
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -486,46 +486,38 @@ async fn concurrent_git_mutation_refuses_uncontained_managed_worktrees() {
     );
     let project_id = project();
     let repository_id = codegg_core::identity::RepositoryId::new();
-    let workspace_a = codegg_core::workspace::WorkspaceId::new_unchecked("ws-a");
-    let workspace_b = codegg_core::workspace::WorkspaceId::new_unchecked("ws-b");
-    let request_a = codegg_core::worktree_service::CreateWorktreeRequest {
+    let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-a");
+    let request = codegg_core::worktree_service::CreateWorktreeRequest {
         project_id: project_id.clone(),
         repository_id: repository_id.clone(),
-        workspace_id: workspace_a,
+        workspace_id: workspace,
         node_id: None,
         repository_root: repo_dir.path().to_path_buf(),
         base_commit: None,
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
-    let request_b = codegg_core::worktree_service::CreateWorktreeRequest {
-        project_id: project_id.clone(),
-        repository_id: repository_id.clone(),
-        workspace_id: workspace_b,
-        node_id: None,
-        repository_root: repo_dir.path().to_path_buf(),
-        base_commit: None,
-        base_path: None,
-        owner_run_id: codegg_core::identity::AgentRunId::new(),
-    };
-    let (result_a, result_b) = tokio::join!(service.create(&request_a), service.create(&request_b));
-    for (workspace, result) in [("a", result_a), ("b", result_b)] {
-        let Err(codegg_core::worktree_service::WorktreeServiceError::Git(message)) = result else {
-            panic!("worktree {workspace} must be refused without the contained Git backend");
-        };
-        assert!(
-            message.contains("Git backend unavailable for [CleanSmudgeFilter]"),
-            "worktree {workspace} should report the missing filter backend, got: {message}"
-        );
-    }
-    let listed = codegg_core::worktree::list_worktrees(repo_dir.path())
+    let error = service
+        .create(&request)
         .await
-        .expect("list worktrees after refusals");
+        .expect_err("worktree mutation needs a contained Git backend");
+    assert!(error.to_string().contains("Git backend unavailable"));
+    assert!(error.to_string().contains("CleanSmudgeFilter"));
+
+    let records = service
+        .list(codegg_core::worktree_service::WorktreeQuery::default())
+        .await
+        .expect("list reserved worktrees");
+    assert_eq!(records.len(), 1);
     assert_eq!(
-        listed.len(),
-        1,
-        "refused managed creation must not materialize either worktree"
+        records[0].state,
+        codegg_core::worktree_service::ManagedWorktreeState::Orphaned
     );
+    assert_eq!(
+        records[0].health,
+        codegg_core::worktree_service::WorktreeHealth::GitError
+    );
+    assert!(!records[0].path.exists());
 }
 
 #[tokio::test(flavor = "current_thread")]

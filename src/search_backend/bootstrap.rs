@@ -30,7 +30,7 @@ pub const EGGSEARCH_RECOMMENDED_TOOLS: &[&str] = &[
     "research_search",
     "build_evidence_bundle",
 ];
-/// Complete ten-tool upstream surface for the pinned 0.3.9 bundle
+/// Complete ten-tool upstream surface for the pinned 0.4.3 bundle
 /// (required + recommended + the diagnostic `provider_status` helper).
 /// Closure for the self-contained-installation milestone expects this
 /// surface from the bundled sidecar; MCP initialize/tool discovery
@@ -46,6 +46,25 @@ pub const EGGSEARCH_BUNDLED_COMPLETE_SURFACE: &[&str] = &[
     "research_search",
     "build_evidence_bundle",
     "provider_status",
+];
+
+/// Provider ids referenced by the stable `websearch.provider` contract.
+/// Every value is a v0.4.3 inventory id after adapter alias translation.
+pub const EGGSEARCH_WEBSEARCH_PROVIDER_IDS: &[&str] = &[
+    "duckduckgo",
+    "mojeek",
+    "wikipedia",
+    "arxiv",
+    "openalex",
+    "pubmed",
+    "hn_algolia",
+    "github_repositories",
+    "exa",
+    "tavily",
+    "brave",
+    "brave_api",
+    "serpapi",
+    "kagi",
 ];
 
 /// Connect eggsearch from config and install shared state. Returns
@@ -73,7 +92,6 @@ pub async fn bootstrap_search_backend(
         let report = BootstrapReport {
             search_backend: Some(format!("{:?}", effective.backend()).to_lowercase()),
             expose_raw_mcp_tools: effective.expose_raw_mcp_tools(),
-            fallback_to_builtin: effective.fallback_to_builtin(),
             max_search_output_chars: effective.max_search_output_chars(),
             max_fetch_output_chars: effective.max_fetch_output_chars(),
             max_repo_output_chars: effective.max_repo_output_chars(),
@@ -131,7 +149,6 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     state::install_search_config(effective.clone());
     report.search_backend = Some(format!("{:?}", effective.backend()).to_lowercase());
     report.expose_raw_mcp_tools = effective.expose_raw_mcp_tools();
-    report.fallback_to_builtin = effective.fallback_to_builtin();
     report.max_search_output_chars = effective.max_search_output_chars();
     report.max_fetch_output_chars = effective.max_fetch_output_chars();
     report.max_repo_output_chars = effective.max_repo_output_chars();
@@ -218,6 +235,9 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
     let svc = Arc::new(RwLock::new(mcp_service));
     state::install_mcp_service(Arc::clone(&svc));
     report.server_version = svc.read().await.server_version(&server_name);
+    report.server_version_compatible = report.server_version.as_deref().map(|version| {
+        version.trim_start_matches(['v', 'V']) == crate::install::PINNED_EGGSEARCH_VERSION
+    });
 
     // Step 4: best-effort provider_status call (never break startup).
     if report.connected {
@@ -433,7 +453,6 @@ fn effective_server_name(cfg: &SearchConfig) -> String {
 pub struct BootstrapReport {
     pub search_backend: Option<String>,
     pub expose_raw_mcp_tools: bool,
-    pub fallback_to_builtin: bool,
     pub max_search_output_chars: usize,
     pub max_fetch_output_chars: usize,
     pub max_repo_output_chars: usize,
@@ -460,6 +479,11 @@ pub struct BootstrapReport {
     /// Server version reported by the structured provider-status response,
     /// when the upstream contract supplies one.
     pub server_version: Option<String>,
+    /// `Some(false)` means the live process version disagrees with the exact pin.
+    pub server_version_compatible: Option<bool>,
+    /// Provider inventory compatibility and per-provider operational state.
+    pub provider_inventory_summary: Option<String>,
+    pub provider_inventory_compatible: Option<bool>,
     /// True when provider_status returned data that was not valid JSON.
     pub provider_status_parse_error: bool,
     /// List of required upstream tools (web_search, web_fetch) and whether
@@ -626,14 +650,6 @@ impl BootstrapReport {
                 "no"
             }
         ));
-        lines.push(format!(
-            "Fallback to built-in: {}",
-            if self.fallback_to_builtin {
-                "yes"
-            } else {
-                "no"
-            }
-        ));
         if let Some(timeout) = self.timeout_ms {
             lines.push(format!("Default timeout: {timeout}ms"));
         }
@@ -650,14 +666,23 @@ impl BootstrapReport {
             self.max_batch_output_chars,
             self.max_evidence_output_chars,
         ));
+        if let Some(version) = &self.server_version {
+            lines.push(format!("Eggsearch version: {version}"));
+        }
+        if self.server_version_compatible == Some(false) {
+            lines.push(format!(
+                "Eggsearch compatibility: incompatible version (expected {})",
+                crate::install::PINNED_EGGSEARCH_VERSION
+            ));
+        }
         // Provider status (best-effort).
         if self.provider_status_ok {
             lines.push("Provider status: available".to_string());
-            if let Some(version) = &self.server_version {
-                lines.push(format!("Eggsearch version: {version}"));
-            }
             if let Some(summary) = &self.provider_status_summary {
                 lines.push(format!("Provider details: {summary}"));
+            }
+            if let Some(inventory) = &self.provider_inventory_summary {
+                lines.push(format!("CodeGG provider contract: {inventory}"));
             }
         } else if let Some(detail) = &self.provider_status_summary {
             lines.push(format!("Provider status: {detail}"));
@@ -678,16 +703,37 @@ fn summarize_provider_status(raw: &str, report: &mut BootstrapReport) -> String 
         return "invalid structured provider_status response".to_string();
     };
 
-    report.server_version = value
+    let payload_version = value
         .get("server_version")
         .or_else(|| value.get("version"))
         .or_else(|| value.pointer("/server_info/version"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    if let Some(version) = payload_version {
+        report.server_version = Some(version);
+    }
+    report.server_version_compatible = report.server_version.as_deref().map(|version| {
+        version.trim_start_matches(['v', 'V']) == crate::install::PINNED_EGGSEARCH_VERSION
+    });
 
     let Some(providers) = value.get("providers") else {
+        report.provider_inventory_summary = Some("provider inventory unavailable".to_string());
+        report.provider_inventory_compatible = Some(false);
         return "structured response received (provider list unavailable)".to_string();
     };
+    let inventory = provider_inventory_status(providers);
+    report.provider_inventory_compatible = Some(
+        inventory
+            .iter()
+            .all(|(_, status)| !status.starts_with("missing")),
+    );
+    report.provider_inventory_summary = Some(
+        inventory
+            .iter()
+            .map(|(id, status)| format!("{id}={status}"))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
     let mut entries = Vec::new();
     match providers {
         Value::Object(map) => {
@@ -743,6 +789,56 @@ fn summarize_provider_status(raw: &str, report: &mut BootstrapReport) -> String 
     }
 }
 
+fn provider_inventory_status(providers: &Value) -> Vec<(String, String)> {
+    let mut descriptors = std::collections::HashMap::new();
+    match providers {
+        Value::Array(items) => {
+            for item in items {
+                if let Some(id) = item.get("id").and_then(Value::as_str) {
+                    descriptors.insert(id, item);
+                }
+            }
+        }
+        Value::Object(map) => {
+            for (id, item) in map {
+                descriptors.insert(id.as_str(), item);
+            }
+        }
+        _ => {}
+    }
+    EGGSEARCH_WEBSEARCH_PROVIDER_IDS
+        .iter()
+        .map(|id| {
+            let status = match descriptors.get(id) {
+                None => "missing from upstream provider inventory".to_string(),
+                Some(descriptor)
+                    if descriptor.get("enabled").and_then(Value::as_bool) == Some(false) =>
+                {
+                    "present but disabled".to_string()
+                }
+                Some(descriptor)
+                    if descriptor.get("configured").and_then(Value::as_bool) == Some(false)
+                        && descriptor.get("requires_api_key").and_then(Value::as_bool)
+                            == Some(true) =>
+                {
+                    "present; required credential is not configured".to_string()
+                }
+                Some(descriptor)
+                    if descriptor.get("routable").and_then(Value::as_bool) == Some(false) =>
+                {
+                    let code = descriptor
+                        .get("skip_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or("provider unavailable");
+                    format!("present; degraded ({code})")
+                }
+                Some(_) => "present and routable".to_string(),
+            };
+            ((*id).to_string(), status)
+        })
+        .collect()
+}
+
 fn provider_status_label(value: &Value) -> &'static str {
     if value.get("degraded").and_then(Value::as_bool) == Some(true) {
         return "degraded";
@@ -781,7 +877,6 @@ mod tests {
             connected: true,
             tools: vec!["web_search".to_string(), "web_fetch".to_string()],
             expose_raw_mcp_tools: false,
-            fallback_to_builtin: false,
             max_search_output_chars: 12_000,
             max_fetch_output_chars: 20_000,
             max_repo_search_output_chars: 16_000,
@@ -812,7 +907,6 @@ mod tests {
         assert!(joined.contains("Missing recommended:"));
         assert!(joined.contains("repo_search"));
         assert!(joined.contains("Raw MCP tools exposed to model: no"));
-        assert!(joined.contains("Fallback to built-in: no"));
         assert!(joined.contains("Default timeout: 60000ms"));
         assert!(joined.contains("search=12000"));
         assert!(joined.contains("fetch=20000"));
@@ -980,19 +1074,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_backend_skips_eggsearch_bootstrap() {
-        let cfg = Config {
-            search: Some(SearchConfig {
-                backend: Some(SearchBackendConfig::Builtin),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let effective = effective_search_config(&cfg);
-        assert_eq!(effective.backend(), SearchBackendConfig::Builtin);
-    }
-
-    #[test]
     fn disabled_backend_skips_eggsearch_bootstrap() {
         let cfg = Config {
             search: Some(SearchConfig {
@@ -1042,6 +1123,20 @@ mod tests {
     }
 
     #[test]
+    fn report_surfaces_version_mismatch_even_when_provider_status_fails() {
+        let report = BootstrapReport {
+            server_version: Some("0.4.2".to_string()),
+            server_version_compatible: Some(false),
+            provider_status_ok: false,
+            provider_status_summary: Some("unavailable: timeout".to_string()),
+            ..Default::default()
+        };
+        let joined = report.summary_lines().join("\n");
+        assert!(joined.contains("Eggsearch version: 0.4.2"));
+        assert!(joined.contains("incompatible version (expected 0.4.3)"));
+    }
+
+    #[test]
     fn provider_status_summary_is_bounded_and_does_not_echo_secrets() {
         let mut report = BootstrapReport::default();
         let summary = summarize_provider_status(
@@ -1054,6 +1149,57 @@ mod tests {
         assert!(!summary.contains("secret-value"));
         assert!(!summary.contains("do-not-print"));
         assert!(!report.provider_status_parse_error);
+    }
+
+    #[test]
+    fn provider_inventory_distinguishes_contract_gaps_from_operational_state() {
+        let providers = EGGSEARCH_WEBSEARCH_PROVIDER_IDS
+            .iter()
+            .map(|id| {
+                let mut descriptor = serde_json::json!({
+                    "id": id,
+                    "enabled": true,
+                    "configured": true,
+                    "requires_api_key": false,
+                    "routable": true,
+                });
+                match *id {
+                    "exa" => {
+                        descriptor["requires_api_key"] = Value::Bool(true);
+                        descriptor["configured"] = Value::Bool(false);
+                        descriptor["routable"] = Value::Bool(false);
+                        descriptor["skip_code"] = Value::String("missing_credentials".to_string());
+                    }
+                    "kagi" => {
+                        descriptor["routable"] = Value::Bool(false);
+                        descriptor["skip_code"] = Value::String("cooldown".to_string());
+                    }
+                    "brave" => descriptor["enabled"] = Value::Bool(false),
+                    _ => {}
+                }
+                descriptor
+            })
+            .collect::<Vec<_>>();
+        let inventory = provider_inventory_status(&Value::Array(providers.clone()));
+        assert_eq!(inventory.len(), EGGSEARCH_WEBSEARCH_PROVIDER_IDS.len());
+        assert!(inventory
+            .iter()
+            .all(|(_, status)| !status.starts_with("missing")));
+        assert!(inventory
+            .iter()
+            .any(|(id, status)| id == "brave" && status == "present but disabled"));
+        assert!(inventory.iter().any(|(id, status)| {
+            id == "exa" && status == "present; required credential is not configured"
+        }));
+        assert!(inventory
+            .iter()
+            .any(|(id, status)| { id == "kagi" && status == "present; degraded (cooldown)" }));
+
+        let mut incomplete = providers;
+        incomplete.retain(|item| item["id"] != "github_repositories");
+        assert!(provider_inventory_status(&Value::Array(incomplete))
+            .iter()
+            .any(|(id, status)| id == "github_repositories" && status.starts_with("missing")));
     }
 
     #[test]

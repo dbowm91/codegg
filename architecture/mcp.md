@@ -203,11 +203,12 @@ from either:
 The eggsearch adapter uses `call_tool_structured` to retain machine-
 readable evidence before display caps are applied.
 
-### Eggsearch 0.3.9 compatibility policy
+### Eggsearch 0.4.3 compatibility policy
 
-The stable eggsearch facade is audited against eggsearch `0.3.9` (tag
-`v0.3.9`). CodeGG exposes the provider-neutral additive controls that fit its
-ownership boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
+The stable eggsearch facade is audited against eggsearch `0.4.3` (tag
+`v0.4.3`, immutable commit `5e7b853e7eebf29c58f84959805c8774279d7ea4`).
+CodeGG exposes the provider-neutral additive controls that fit its ownership
+boundary: search `excerpt_count` (`0..=3`), web-fetch `focus` and
 its bounded extraction controls, and fetch `cache_policy` plus the
 tightening-only `max_cache_age_seconds` (including per-web-item batch
 controls). CodeGG always requests `response_detail=diagnostic` internally so
@@ -215,8 +216,17 @@ the structured result retains warnings, provider/retrieval state, trust
 markers, stable IDs, suggested fetches, and next actions; its existing
 bounded/trust-framed text remains the model-facing projection. `response_detail`
 is not a user-facing option, and next actions are data only—CodeGG never
-auto-executes them. Provider-specific upstream knobs remain intentionally
-deferred, while legacy aliases are translated or rejected by the adapter.
+auto-executes them. Retained provider hints map to the exact v0.4.3 inventory;
+unknown and retired explicit values fail before dispatch. The pinned CodeGG
+development contract is v0.4.3. Its pair gate launches one real pinned MCP
+process with an explicit private `search.mode = "off"` config, scoped local
+root, and cleared credentials. Native web and security wrappers assert tagged
+policy errors; native `repo_search(include_local=true)` proves private local
+retrieval, `local_workspace` provenance, and zero remote provider attempts even
+with an explicit remote provider hint. The gate does not enforce OS-level
+network containment. Historical v0.4.1/v0.4.2 local-search behavior remains
+documented in C001's immutable closure and is not used for current
+qualification.
 
 ### IDE Server (`ide_server.rs`)
 
@@ -353,7 +363,7 @@ command = "eggsearch"
 args = ["mcp", "stdio"]
 ```
 
-The `schema.rs:3868` test `explicit_mcp_eggsearch_does_not_force_search_section`
+The `schema.rs:4252` test `explicit_mcp_eggsearch_does_not_force_search_section`
 parses exactly this direct-key form and asserts
 `cfg.mcp.contains_key("eggsearch")`.
 
@@ -451,19 +461,20 @@ Verified 2026-10-06 against `src/mcp/` and `crates/codegg-core/src/error.rs`.
   protocol versions `2026-07-28` / `2024-11-05`, and the
   `CodeGG MCP` OAuth envelope contract.
 
-Verified 2026-10-06 (second pass) against `crates/codegg-config/src/schema.rs`.
+Verified 2026-10-06 (second pass), with schema references rechecked 2026-10-15
+against `crates/codegg-config/src/schema.rs`.
 - **Removed a phantom `mcp.servers.<name>` level** from the Configuration
   Surface example. `Config.mcp` is `Option<HashMap<String, McpEntry>>`
   (`schema.rs:245`) — the map key *is* the server name. The prior nested
   `"servers"` object could never register its children: it parsed as one
   entry named `servers` whose flattened `McpServerConfig` was all-`None`,
   because `McpEntry`/`McpServerConfig` are `#[serde(default)]` without
-  `deny_unknown_fields` (`schema.rs:1211`, `:1219`). Proof of the real shape:
+  `deny_unknown_fields` (`schema.rs:1239`, `:1247`). Proof of the real shape:
   the test `explicit_mcp_eggsearch_does_not_force_search_section`
-  (`schema.rs:3868`) parses `"mcp": {"eggsearch": {...}}` directly and
+  (`schema.rs:4252`) parses `"mcp": {"eggsearch": {...}}` directly and
   asserts `contains_key("eggsearch")`. Added the equivalent TOML spelling.
-- Corrected 4 stale schema line refs: `McpEntry` `:934`→`:1213`,
-  `McpServerConfig` `:942`→`:1221`, `McpReconnectConfig` `:959`→`:1238`,
-  `McpOAuthConfig` `:969`→`:1248`.
+- Corrected 4 stale schema line refs: `McpEntry` `:934`→`:1239`,
+  `McpServerConfig` `:942`→`:1247`, `McpReconnectConfig` `:959`→`:1264`,
+  `McpOAuthConfig` `:969`→`:1274`.
 - Re-confirmed all 17 `mod.rs`/`local.rs`/`remote.rs`/`auth.rs`/`cli.rs`/
   `ide_server.rs` rows in the Key Types table as still accurate.

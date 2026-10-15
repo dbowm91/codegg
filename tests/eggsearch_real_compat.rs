@@ -23,7 +23,6 @@ fn smoke_config(binary: String) -> Config {
     Config {
         search: Some(SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
-            fallback_to_builtin: Some(false),
             eggsearch: Some(EggsearchConfig {
                 command: Some(binary),
                 args: Some(vec!["mcp".to_string(), "stdio".to_string()]),

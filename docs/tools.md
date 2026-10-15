@@ -264,17 +264,33 @@ See `architecture/scheduler.md`, `architecture/jobs.md`, and
 
 CodeGG's web, repository, security, research, batch-fetch, and evidence-bundle
 tools are **wrappers** around the external `eggsearch` MCP server. Prebuilt
-installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.3.9;
+installer bundles carry a pinned `codegg-eggsearch` sidecar at version 0.4.3;
 a source install must provide it separately.
 
 ```bash
 codegg doctor search
 ```
 
+Search configuration supports `backend = "eggsearch"` or `"disabled"`.
+The retired `backend = "builtin"` value and `fallback_to_builtin` setting
+fail config parsing with migration guidance. If Eggsearch is unavailable,
+restore the managed sidecar or configure an explicit Eggsearch command; search
+does not switch to a second provider stack.
+
 The raw `mcp__eggsearch__*` tools are **hidden from the model by default**
 (`Raw MCP tools exposed to model: no`). The wrappers exist to bound and
 trust-frame the output instead of passing an unbounded third-party response
 straight into context.
+
+Provider hints must match the wrapper's supported list. Unknown selectors fail
+before dispatch; `google_news` is retired with guidance to use `intent: "news"`
+and optionally `brave_api` or `tavily` for source selection. Use `auto` or omit
+the provider field for automatic routing.
+
+`repo_search` also accepts an explicit `providers` list for remote repository
+search. When search mode is off, an enabled local root is searched without
+dispatching those providers; the returned provider telemetry reports only the
+local workspace source.
 
 Output is capped per tool family, so no single lookup can dominate the context
 window:

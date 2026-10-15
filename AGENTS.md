@@ -155,8 +155,8 @@ change-triggered (`ls scripts/check_*` for the full list):
   missing root with no diagnostic, that mistake silently drops every global
   skill. Six sites build their own registry; all are listed in
   `architecture/skills.md`.
-- New web-search providers belong in the external `eggsearch` project, not `src/search/`
-  (legacy fallback). New deterministic validators go in the `eggsact` crate first. New
+- New web-search providers belong in the external `eggsearch` project; CodeGG's
+  retired `src/search/` provider tree must not be recreated. New deterministic validators go in the `eggsact` crate first. New
   LSP servers go in `crates/egglsp/src/server.rs` + config.
 - `codegg upgrade` uses CodeGG-owned release/target policy plus Eggup's
   immutable-pinned core/acquisition crates. Keep its existing Eggfetch trust and

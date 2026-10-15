@@ -5,7 +5,8 @@
 //!
 //! 1. Authenticated project Owner submits a turn/job (trusted context).
 //! 2. Model/tool path executes a command through `ToolBroker` (bash).
-//! 3. A Git mutation occurs (`GitMutationExecutor`).
+//! 3. A Git mutation is policy-checked and its terminal result is audited
+//!    (`GitMutationExecutor`).
 //! 4. An interactive process is created (no input retention).
 //! 5. A scheduler job reaches terminal success (durable `job_complete`).
 //! 6. Project Owner queries audit (daemon `audit_query`).
@@ -492,9 +493,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         .expect("broker bash succeeds");
     assert!(result.value.display.contains("m004-trajectory"));
 
-    // 3. Git mutation (single trusted commit transition). Stage the fixture
-    // with raw Git setup so the audited CodeGG operation exercises the
-    // trusted commit path; staging remains gated until filters are contained.
+    // 3. Git mutation (single stage transition).
     let repo = tempfile::tempdir().expect("git repo");
     init_repo(repo.path());
     std::fs::write(repo.path().join("m004.txt"), "m004\n").expect("write");
@@ -502,18 +501,27 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         .with_timeout(Duration::from_secs(30))
         .with_execution_audit(audit_ctx.clone())
         .with_audit_emitter(emitter.clone());
-    run_git(repo.path(), &["add", "m004.txt"]);
-    let committed = codegg::git_mutations_ops::commit_with_selection(
-        &git_exec,
-        repo.path(),
-        codegg::git_mutations::CommitSelection::AlreadyStaged,
-        "m004-trajectory commit",
-        false,
-        false,
-    )
-    .await
-    .expect("commit");
-    assert!(committed.mutation.success);
+    let staged =
+        codegg::git_mutations_ops::stage_paths(&git_exec, repo.path(), vec!["m004.txt".to_owned()])
+            .await;
+    assert!(
+        matches!(
+            &staged,
+            Err(codegg::git_mutations::GitMutationError::Policy(
+                egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
+            )) if capabilities.contains(&egggit::GitExecutionCapability::CleanSmudgeFilter)
+        ),
+        "staging must stop at the contained-execution gate: {staged:?}"
+    );
+    let index_check = Command::new("git")
+        .args(["diff", "--cached", "--quiet", "--", "m004.txt"])
+        .current_dir(repo.path())
+        .output()
+        .expect("check staged index");
+    assert!(
+        index_check.status.success(),
+        "blocked staging must leave the index unchanged"
+    );
 
     // 4. Interactive process create (input stays out of audit).
     let admission = {
@@ -629,7 +637,11 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
     let git = &rows[1];
     assert_eq!(
         git.metadata.get("git.op").map(String::as_str),
-        Some("commit")
+        Some("stage")
+    );
+    assert_eq!(
+        git.metadata.get("decision.outcome").map(String::as_str),
+        Some("policy_blocked")
     );
     assert_eq!(git.session_id.as_deref(), Some(session));
     let interactive = &rows[2];

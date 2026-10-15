@@ -133,7 +133,7 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Decision Engine | Backend-neutral decision contract with an optional System One-compatible backend; explicit opt-in, bounded fallback; owns advisor decision paths | [tool-advisor.md](tool-advisor.md) |
 | Interactive Process | PTY lifecycle + attach protocol — distinct from finite managed process runs | [process-tool-execution-ownership.md](process-tool-execution-ownership.md) |
 | Git Service / Mutations / Network / Recovery | Canonical read executor plus typed guarded mutations, network policy, recovery | [git.md](git.md) |
-| Search Backend | Dispatch between in-tree search tools and the eggsearch MCP backend | [search_backend.md](search_backend.md) |
+| Search Backend | Dispatch between eggsearch MCP and explicit disabled mode | [search_backend.md](search_backend.md) |
 
 ### Tools and capabilities at a glance
 
@@ -206,7 +206,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | LSP | Language Server Protocol — `egglsp` is authoritative; `src/lsp/` is a thin shim | [lsp.md](lsp.md) |
 | MCP | Model Context Protocol client — local/remote servers, OAuth, reconnection | [mcp.md](mcp.md) |
 | Plugin | WASM plugin system (Wasmtime), manifest parsing, hooks, registry, lifecycle | [plugin.md](plugin.md) |
-| Search Backend | Wrapper between search tools and eggsearch MCP, with legacy in-tree fallback | [search_backend.md](search_backend.md) |
+| Search Backend | Wrapper between search tools and eggsearch MCP, with explicit disabled mode | [search_backend.md](search_backend.md) |
 
 ### Security Layer
 
@@ -263,16 +263,16 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 ## Verified counts
 
 Every count below was re-measured against the current tree on
-**2026-10-13**, each against its own listed `Source`. Re-measure rather than
-copying a number from another doc — several rows had drifted since the
-previous audit.
+**2026-10-13**, each against its own listed `Source`. The tool-source,
+integration-test, and guard-script counts were remeasured on **2026-10-15**
+after reconciling the search-backend retirement with current `main`.
 
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 86 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
-| Tool source files | 77 | `src/tool/**.rs` (incl. `bash/`) |
+| Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 46 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 58 | `crates/codegg-core/src/bus/events.rs` |
@@ -291,8 +291,8 @@ previous audit.
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 234 | `tests/*.rs` |
-| CI guard scripts | 45 | `scripts/check_*` |
+| Integration test files | 244 | `tests/*.rs` |
+| CI guard scripts | 49 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -417,7 +417,7 @@ Every architecture document in this directory, grouped by theme.
 - [Tool Advisor](tool-advisor.md) — bounded tool-selection advisor
 - [Tool Advisor Framework Spike](tool-advisor-framework-spike.md) — spike findings
 - [Git](git.md) — service, mutations, network, recovery, credential lifecycle
-- [Search Backend](search_backend.md) — eggsearch dispatch with legacy fallback
+- [Search Backend](search_backend.md) — eggsearch dispatch and disabled behavior
 
 ### User Interface
 - [TUI](tui.md) — Ratatui UI, async commands, state management
@@ -516,7 +516,6 @@ codegg/
 │   ├── python_script/          # Python scripting
 │   ├── research/               # Research pipeline
 │   ├── scheduler/              # Admission control, fair queue
-│   ├── search/                 # Legacy in-tree search tools
 │   ├── search_backend/         # Search backend dispatch
 │   ├── security/               # SSRF, sandboxing
 │   ├── server/                 # HTTP/WebSocket server (feature-gated)
@@ -585,11 +584,11 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (45 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (49 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
-Verified against the working tree on **2026-10-13**. Counts in this document were re-measured directly, each row against its own listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, `AppEvent`/`CoreRequest`/`CoreResponse`/`CoreEvent`/`ProjectionEvent` variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, `CREATE TABLE` count, `STORAGE_LAYOUT_VERSION`, git operation/risk counts, workspace members, integration test files, guard scripts). This pass found 8 rows that had drifted since the 2026-10-06 audit — `CoreRequest`, `CoreResponse`, `CoreEvent`, authorized operations, slash commands, TUI state modules, `CREATE TABLE`, and `STORAGE_LAYOUT_VERSION` — and propagated the corrected values to `command.md`, `core.md`, `session.md`, and `storage.md`, which quoted the stale figures.
+The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

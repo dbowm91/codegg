@@ -15,7 +15,7 @@ Objective: Freeze a reusable, backend-neutral, actual-child security/compatibili
 
 
 Long-term references: `plans/000-long-term-specification.md` (sections 4, 17, 27 and 29) and `plans/001-terminology-and-domain-model.md` (section 8).
- 
+
 ## Present evidence and scope
 
 C011 host-secret alias reads and C013 populated ACL-lease failures are real native regressions. C014's actual child wrote/read projection but Git `init` failed on `/dev/null` **before** the rest of its denial probes. Current `tests/windows_projection_feasibility.rs` mixes toolchain smoke and later security checks into one sequential PowerShell script. Separate probes and collect per-probe outcomes so one compatibility fault never masks unrelated security behavior.

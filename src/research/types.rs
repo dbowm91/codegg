@@ -106,6 +106,48 @@ pub struct SourceRecord {
     pub notes: Vec<String>,
 }
 
+/// Retrieval outcome supplied by an external source adapter. This is kept
+/// separate from source notes so status never depends on parsing prose.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalState {
+    Complete,
+    Partial,
+    Failed,
+    Skipped,
+    Unknown,
+    Truncated,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RetrievalSourceLink {
+    pub source_id: String,
+    pub upstream_stable_id: Option<String>,
+    pub group: Option<String>,
+    pub providers: Vec<String>,
+    pub published_at: Option<DateTime<Utc>>,
+    /// Upstream's descriptive provenance marker. It never grants instruction trust.
+    pub provenance: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ResearchRetrievalReceipt {
+    pub adapter: String,
+    pub state: RetrievalState,
+    pub source_count: usize,
+    pub coverage: Option<String>,
+    pub warning_codes: Vec<String>,
+    pub trust_markers: Vec<String>,
+    pub failed_providers: Vec<String>,
+    pub sources: Vec<RetrievalSourceLink>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SourceCollection {
+    pub sources: Vec<SourceRecord>,
+    pub receipts: Vec<ResearchRetrievalReceipt>,
+}
+
 impl SourceRecord {
     /// Look up a `key=value` note, returning the value portion.
     ///
@@ -338,6 +380,8 @@ pub struct ResearchBundle {
     pub evidence: Vec<EvidenceSpan>,
     pub claims: Vec<ClaimRecord>,
     pub contradictions: Vec<ContradictionRecord>,
+    #[serde(default)]
+    pub retrieval_receipts: Vec<ResearchRetrievalReceipt>,
 }
 
 // -- Output helpers --
@@ -358,6 +402,8 @@ pub struct ResearchRunResult {
     pub artifact_dir: PathBuf,
     pub outputs: Vec<ResearchArtifactRef>,
     pub counts: ResearchRunCounts,
+    #[serde(default)]
+    pub retrieval_receipts: Vec<ResearchRetrievalReceipt>,
 }
 
 #[cfg(test)]

@@ -143,7 +143,7 @@ EOF
 
 # Fixture eggsearch sidecar: reports pinned upstream version via --version.
 make_eggsearch_fixture() {
-    local path="$1" version="${2:-0.3.9}"
+    local path="$1" version="${2:-0.4.3}"
     cat >"$path" <<EOF
 #!/bin/sh
 if [ "\$1" = "--version" ]; then
@@ -396,7 +396,7 @@ UROOT="$ROOT/unitsum"
 mkdir -p -- "$UROOT"
 make_fixture "$FIXBIN_DIR/unit-fixture" "0.1.0"
 make_helper_fixture "$FIXBIN_DIR/unit-helper"
-make_eggsearch_fixture "$FIXBIN_DIR/unit-egg" "0.3.9"
+make_eggsearch_fixture "$FIXBIN_DIR/unit-egg" "0.4.3"
 mkdir -p -- "$UROOT/stage"
 cp -- "$FIXBIN_DIR/unit-fixture" "$UROOT/stage/codegg"
 cp -- "$FIXBIN_DIR/unit-helper" "$UROOT/stage/codegg-sandbox-helper"
@@ -511,7 +511,7 @@ expect_fail "mismatched version rejected" codegg_installer_check_version_output 
 expect_pass "latest accepts any well-formed version" codegg_installer_check_version_output "codegg 0.1.0" ""
 expect_fail "garbage version output rejected" codegg_installer_check_version_output "hello world" ""
 expect_fail "empty version output rejected" codegg_installer_check_version_output "" ""
-expect_pass "eggsearch version output accepted" codegg_installer_check_eggsearch_output "eggsearch 0.3.9"
+expect_pass "eggsearch version output accepted" codegg_installer_check_eggsearch_output "eggsearch 0.4.3"
 expect_fail "eggsearch impostor rejected" codegg_installer_check_eggsearch_output "codegg 0.1.0"
 expect_fail "eggsearch empty rejected" codegg_installer_check_eggsearch_output ""
 
@@ -519,8 +519,8 @@ expect_fail "eggsearch empty rejected" codegg_installer_check_eggsearch_output "
 REL="$ROOT/rel"
 make_fixture "$FIXBIN_DIR/codegg-0.1.0" "0.1.0"
 make_helper_fixture "$FIXBIN_DIR/helper-0.1.0"
-make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-0.3.9" "0.3.9"
-make_release_dir "$REL" "0.1.0" "$FIXBIN_DIR/codegg-0.1.0" "$FIXBIN_DIR/helper-0.1.0" "$FIXBIN_DIR/eggsearch-0.3.9"
+make_eggsearch_fixture "$FIXBIN_DIR/eggsearch-0.4.3" "0.4.3"
+make_release_dir "$REL" "0.1.0" "$FIXBIN_DIR/codegg-0.1.0" "$FIXBIN_DIR/helper-0.1.0" "$FIXBIN_DIR/eggsearch-0.4.3"
 
 # 7a. Valid install into a fresh directory.
 DEST_OK="$ROOT/dest-ok"
@@ -528,7 +528,7 @@ installer_expect_pass "valid fixture installs" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_OK"
 if [ -x "$DEST_OK/codegg" ] && [ "$("$DEST_OK/codegg" --version)" = "codegg 0.1.0" ] \
     && [ -x "$DEST_OK/codegg-sandbox-helper" ] && [ -x "$DEST_OK/codegg-eggsearch" ] \
-    && [ "$("$DEST_OK/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    && [ "$("$DEST_OK/codegg-eggsearch" --version)" = "eggsearch 0.4.3" ]; then
     ok "installed bundle is executable and reports versions"
 else
     fail "installed bundle is executable and reports versions"
@@ -564,7 +564,7 @@ fresh_dest_with_sentinel "$DEST_REPLACE" >/dev/null
 installer_expect_pass "success replaces prior sentinel bundle" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_REPLACE"
 if [ "$("$DEST_REPLACE/codegg" --version)" = "codegg 0.1.0" ] \
-    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.4.3" ]; then
     ok "prior sentinel bundle replaced with new bundle"
 else
     fail "prior sentinel bundle replaced with new bundle"
@@ -572,7 +572,7 @@ fi
 installer_expect_pass "rerunning same version succeeds" \
     env "_CODEGG_INSTALLER_TEST_RELEASE_DIR=$REL" "CODEGG_INSTALL_DIR=$DEST_REPLACE"
 if [ "$("$DEST_REPLACE/codegg" --version)" = "codegg 0.1.0" ] \
-    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.3.9" ]; then
+    && [ "$("$DEST_REPLACE/codegg-eggsearch" --version)" = "eggsearch 0.4.3" ]; then
     ok "idempotent rerun keeps the bundle"
 else
     fail "idempotent rerun keeps the bundle"
@@ -800,7 +800,7 @@ chmod +x "$FIXBIN_DIR/canary-fixture"
 CANREL="$ROOT/canrel"
 rm -rf -- "$CANREL"
 mkdir -p -- "$CANREL"
-"$PKG" --target "$HOST_TARGET" --binary "$FIXBIN_DIR/canary-fixture" --sandbox-helper "$FIXBIN_DIR/helper-0.1.0" --eggsearch "$FIXBIN_DIR/eggsearch-0.3.9" --out-dir "$CANREL" >/dev/null 2>&1
+"$PKG" --target "$HOST_TARGET" --binary "$FIXBIN_DIR/canary-fixture" --sandbox-helper "$FIXBIN_DIR/helper-0.1.0" --eggsearch "$FIXBIN_DIR/eggsearch-0.4.3" --out-dir "$CANREL" >/dev/null 2>&1
 "$FIN" --dir "$CANREL" >/dev/null 2>&1
 printf 'x' >>"$CANREL/$HOST_ASSET"
 DEST_CANARY="$ROOT/dest-canary"

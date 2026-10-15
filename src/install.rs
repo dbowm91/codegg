@@ -19,7 +19,9 @@
 use std::path::{Path, PathBuf};
 
 /// Pinned upstream eggsearch version carried as `codegg-eggsearch`.
-pub const PINNED_EGGSEARCH_VERSION: &str = "0.3.9";
+pub const PINNED_EGGSEARCH_VERSION: &str = "0.4.3";
+/// Immutable upstream release commit for the managed sidecar contract.
+pub const PINNED_EGGSEARCH_COMMIT: &str = "5e7b853e7eebf29c58f84959805c8774279d7ea4";
 /// Upstream eggsearch source for provenance diagnostics.
 pub const PINNED_EGGSEARCH_SOURCE: &str = "https://github.com/eggstack/eggsearch";
 /// In-process eggsact library baseline (no executable is ever resolved).
@@ -81,10 +83,10 @@ impl EggsearchResolution {
 /// Resolve the installation directory for a given executable path.
 ///
 /// Canonicalizes the executable, takes its parent, and canonicalizes the
-/// parent. In test builds, Cargo places test executables under
-/// `target/<profile>/deps`; the parent is then lifted one level so tests
-/// resolve the same `target/<profile>` directory that holds the real
-/// sibling helper built by `cargo build`.
+/// parent. Cargo places test executables under `target/<profile>/deps`; the
+/// parent is lifted one level so integration tests (whose library dependency
+/// is not compiled with `cfg(test)`) resolve the same `target/<profile>`
+/// directory that holds the real sibling helper built by `cargo build`.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
@@ -94,15 +96,12 @@ pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|e| format!("CodeGG installation directory could not be resolved: {e}"))?;
-    #[cfg(test)]
-    {
-        if install_root.file_name().is_some_and(|name| name == "deps") {
-            return install_root
-                .parent()
-                .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
-                .canonicalize()
-                .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
-        }
+    if install_root.file_name().is_some_and(|name| name == "deps") {
+        return install_root
+            .parent()
+            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
+            .canonicalize()
+            .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
     }
     Ok(install_root)
 }
@@ -239,7 +238,7 @@ pub fn describe_sibling(name: &str) -> SiblingState {
 }
 
 /// Probe `codegg-eggsearch --version` with a bounded blocking spawn.
-/// Returns the raw first line on success (e.g. `eggsearch 0.3.9`).
+/// Returns the raw first line on success (e.g. `eggsearch 0.4.3`).
 pub fn probe_eggsearch_version(sidecar: &Path) -> Result<String, String> {
     let output = std::process::Command::new(sidecar)
         .arg("--version")
@@ -267,7 +266,13 @@ pub fn check_eggsearch_version_output(output: &str) -> Result<String, String> {
             "managed eggsearch sidecar identity rejected (expected eggsearch, got: {line:?})"
         ));
     }
-    if !line.contains(PINNED_EGGSEARCH_VERSION) {
+    let reported_version = line
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|pair| pair[0].eq_ignore_ascii_case("eggsearch"))
+        .map(|pair| pair[1].trim_start_matches(['v', 'V']));
+    if reported_version != Some(PINNED_EGGSEARCH_VERSION) {
         return Err(format!(
             "managed eggsearch sidecar version mismatch (expected {PINNED_EGGSEARCH_VERSION}, got: {line:?})"
         ));
@@ -475,6 +480,23 @@ mod tests {
     }
 
     #[test]
+    fn installation_dir_lifts_cargo_deps_executables_for_integration_tests() {
+        let target = tempfile::tempdir().expect("target directory fixture");
+        let deps = target.path().join("deps");
+        std::fs::create_dir(&deps).expect("deps directory");
+        let test_executable = deps.join("integration-test-123");
+        std::fs::write(&test_executable, b"test executable").expect("test executable fixture");
+
+        assert_eq!(
+            installation_dir_for(&test_executable).expect("Cargo test installation directory"),
+            target
+                .path()
+                .canonicalize()
+                .expect("canonical target directory")
+        );
+    }
+
+    #[test]
     fn absent_command_prefers_managed_sibling() {
         let cfg = codegg_config::schema::EggsearchConfig::default();
         assert!(!cfg.has_explicit_command());
@@ -567,8 +589,13 @@ mod tests {
 
     #[test]
     fn version_check_accepts_pin_and_rejects_drift() {
-        assert!(check_eggsearch_version_output("eggsearch 0.3.9").is_ok());
-        assert!(check_eggsearch_version_output("eggsearch 0.3.8").is_err());
-        assert!(check_eggsearch_version_output("something-else 0.3.9").is_err());
+        assert_eq!(
+            PINNED_EGGSEARCH_COMMIT,
+            "5e7b853e7eebf29c58f84959805c8774279d7ea4"
+        );
+        assert!(check_eggsearch_version_output("eggsearch 0.4.3").is_ok());
+        assert!(check_eggsearch_version_output("eggsearch 0.4.30").is_err());
+        assert!(check_eggsearch_version_output("eggsearch 0.4.2").is_err());
+        assert!(check_eggsearch_version_output("something-else 0.4.1").is_err());
     }
 }

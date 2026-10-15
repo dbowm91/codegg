@@ -45,7 +45,7 @@ It installs these siblings side by side:
 |---|---|
 | `codegg` | The application you invoke. |
 | `codegg-sandbox-helper` | Unix sandbox helper. On Windows the packaged `.exe` currently reports unavailable; Windows constrained requests fail before launching a target. |
-| `codegg-eggsearch` | Pinned web-search sidecar, version `0.3.9`. |
+| `codegg-eggsearch` | Pinned web-search sidecar, eggsearch `0.4.3` at immutable commit `5e7b853e7eebf29c58f84959805c8774279d7ea4`. |
 | `THIRD-PARTY-NOTICES.txt` | Only present when the release carries it. |
 
 CodeGG resolves the two helpers relative to its own executable rather than
@@ -111,7 +111,7 @@ does **not** produce a working managed bundle, because the third managed
 sibling is missing:
 
 - The pinned `codegg-eggsearch` sidecar is an upstream project
-  (`https://github.com/eggstack/eggsearch`, tag `v0.3.9`) with no Cargo
+  (`https://github.com/eggstack/eggsearch`, tag `v0.4.3`) with no Cargo
   dependency in this repository. You must build it from the pinned tag and
   place it next to `codegg` as `codegg-eggsearch`, or point CodeGG at a binary
   you already have via a `[search.eggsearch].command` or `[mcp.eggsearch]`

@@ -149,4 +149,4 @@ Stop if the only fix releases permit on async JoinHandle drop, forcibly kills th
 
 The implementation agent should touch only the daemon-owned listing admission/trim seam, narrow integration tests, relevant docs/guards and new closure record. Avoid broad task lifecycle, TUI input or editor completion changes.
 
-Create `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md` with exact implementation SHA, dated provenance, independently instrumented worker peak, actual serialized largest-byte result, denial/no-local-fallback tests, full verification outcomes and explicitly classified remaining issues. Update the corrective addendum and `plans/registry.md` status **only after** those criteria are verified. 
+Create `plans/closure/tui-editor-correctness-usability-post-closure-corrective/006-status.md` with exact implementation SHA, dated provenance, independently instrumented worker peak, actual serialized largest-byte result, denial/no-local-fallback tests, full verification outcomes and explicitly classified remaining issues. Update the corrective addendum and `plans/registry.md` status **only after** those criteria are verified.
