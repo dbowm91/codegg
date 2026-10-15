@@ -1,6 +1,6 @@
 # Search / Eggsearch Development Integration and Legacy Backend Retirement
 
-Status: active (M001 closed; paired-compatibility C001 ready; M002 blocked on C001)
+Status: active (M001 closed; pair C001 historical conditional; pair C002 ready; M002 blocked on strict C002)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -213,7 +213,7 @@ Outcome:
 
 ### M002 — Builtin external-search backend retirement
 
-Status: **blocked** on strict paired-compatibility corrective C001. The prior M001 implementation/closure remains accepted; this new gate strengthens native-wrapper request and isolated-child evidence before destructive legacy deletion.
+Status: **blocked** on CodeGG paired-compatibility **C002 strict closure**. Original M001 closure remains accepted, and C001 remains historically conditional. Upstream eggsearch v0.4.3 is published and qualified; only CodeGG's new pinned-child local-only proof can authorize destructive legacy deletion.
 
 Plan:
 
@@ -268,7 +268,7 @@ A test pass validates this **pair**, not the whole CodeGG daemon, TUI,
 coding-agent loop, release bundle, security sandbox, or product usability.
 No CodeGG release tasks are authorized by this workstream.
 
-M002 is ownership/deletion focused **after C001 strict closure**:
+M002 is ownership/deletion focused **after C002 strict closure** (v0.4.3 real child and private local fixture):
 
 - search backend dispatch tests;
 - config migration/error tests;
@@ -305,4 +305,4 @@ The workstream closes when:
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
 | M001 pinned development adoption + paired contract | closed | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`; closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md` | Implementation `9dd8a1c8`; exact v0.4.1 paired process and quick verification passed |
-| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 closed; new paired-compatibility C001 `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md` must strictly close before deletion |
+| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 closed; C001 historically conditional; upstream v0.4.3 published. CodeGG paired-compatibility **C002** `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` is now ready and must strictly close before deletion. |
