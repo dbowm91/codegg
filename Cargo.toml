@@ -308,6 +308,7 @@ sdm-runtime = { git = "https://github.com/dbowm91/sdm.git", rev = "8139b064bdcf3
 # Maintained Landlock bindings. The helper is only linked on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = { version = "0.4.7", default-features = false }
+seccompiler = { version = "0.5.0", default-features = false }
 
 # Process group management (Unix only)
 [target.'cfg(unix)'.dependencies]

@@ -27,7 +27,7 @@ use std::ffi::CString;
 #[cfg(unix)]
 use std::fs::{self, File};
 #[cfg(unix)]
-use std::io::Write;
+use std::io::{Seek, Write};
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, RawFd};
 #[cfg(unix)]
@@ -300,7 +300,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         )
     });
     let mut pinned_sources = Vec::<File>::new();
-    let (mount_args, inherited_fds) =
+    let (mount_args, mut inherited_fds) =
         codegg::security::sandbox::linux_mount_view::compile(spec, &cwd, |path| {
             let fd = open_mount_source(path, &spec.path_identities)?;
             let raw = fd.as_raw_fd();
@@ -316,6 +316,24 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
                 reason,
             )
         });
+
+    let seccomp_filter = if spec.linux_process_isolation {
+        let filter = codegg::security::sandbox::linux_seccomp::compile_filter()
+            .and_then(|bytes| seccomp_filter_file(&bytes))
+            .unwrap_or_else(|reason| {
+                fail(
+                    status_fd,
+                    SandboxLaunchOutcome::Unavailable {
+                        reason: String::new(),
+                    },
+                    reason,
+                )
+            });
+        inherited_fds.push(filter.as_raw_fd());
+        Some(filter)
+    } else {
+        None
+    };
 
     if spec.linux_process_isolation {
         if let Err(reason) = codegg::security::sandbox::landlock::apply_process_scopes() {
@@ -352,6 +370,11 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         .arg("GIT_CONFIG_SYSTEM")
         .arg("/dev/null")
         .args(mount_args)
+        .args(
+            seccomp_filter
+                .iter()
+                .flat_map(|fd| ["--seccomp".to_string(), fd.as_raw_fd().to_string()]),
+        )
         .arg("--block-fd")
         .arg(codegg::security::sandbox::SANDBOX_ACK_FD.to_string())
         .arg("--json-status-fd")
@@ -384,6 +407,31 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         },
         format!("exec trusted Bubblewrap: {error}"),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
+    use std::ffi::CString;
+
+    if bytes.is_empty() || bytes.len() > 32 * 1024 || bytes.len() % 8 != 0 {
+        return Err("compiled seccomp filter has an invalid size".into());
+    }
+    let name = CString::new("codegg-m004-seccomp").expect("static memfd name");
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(format!(
+            "create private seccomp filter descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(bytes)
+        .map_err(|error| format!("write private seccomp filter: {error}"))?;
+    file.flush()
+        .map_err(|error| format!("flush private seccomp filter: {error}"))?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| format!("rewind private seccomp filter: {error}"))?;
+    Ok(file)
 }
 
 #[cfg(target_os = "linux")]

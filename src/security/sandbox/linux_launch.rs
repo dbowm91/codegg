@@ -217,6 +217,11 @@ impl LinuxLaunchAdapter for ProductionLinuxLaunchAdapter {
                         dimensions: vec!["process-ipc-landlock-abi-6"],
                     });
                 }
+                if probe_seccomp_filter().state != ProbeState::Available {
+                    return Ok(LinuxLaunchPlan::EnhancedUnavailable {
+                        dimensions: vec!["seccomp-filter"],
+                    });
+                }
                 return Ok(LinuxLaunchPlan::ProtectedProcessIsolation);
             }
             if request.requires_enhanced_backend() {

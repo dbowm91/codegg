@@ -29,7 +29,17 @@ does not weaken the request to PID/IPC-only containment.
 |---|---|---|
 | Local Ubuntu x86_64, kernel `6.8.0-147-generic`, Bubblewrap `0.9.0` | Native managed-process test confirmed the required launch is refused before its marker target executes. The Landlock scope probe reports the ABI 6 scope mask as incompatible. | Correct negative behavior on a kernel predating ABI 6. No positive process/IPC claim for this host. |
 | Linux qualification workflow | Added `.github/workflows/linux-m004-native.yml`; it records runner kernel/AppArmor/Bubblewrap facts and runs the managed-child M004 probe plus protected-mount/Git regressions. | Exact-head hosted positive evidence is pending. |
-| Seccomp compiler | `seccompiler` 0.5.0 is an upstream pure-Rust BPF compiler with an architecture-checked filter IR and `BpfProgram` output; Bubblewrap accepts a seccomp program FD. | Candidate integration is viable without system `libseccomp`; no dependency is added and no filter is installed yet. Sources: [seccompiler API](https://docs.rs/seccompiler/0.5.0/seccompiler/), [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). |
+| Seccomp compiler | `seccompiler` 0.5.0 is an upstream pure-Rust BPF compiler with an architecture-checked filter IR and `BpfProgram` output; Bubblewrap accepts raw cBPF program bytes through a seccomp FD. | Pinned as a Linux-only dependency and integrated with a fixed denylist covering namespace changes, tracing, and selected kernel control syscalls. Unit compilation and native syscall/tool-compatibility probes are pending. Sources: [seccompiler API](https://docs.rs/seccompiler/0.5.0/seccompiler/), [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml). |
+
+The first hosted M004 run (`38754822245`, source SHA `7a507362`) reached the
+positive Landlock ABI 6 branch, then failed because its signal probe expected
+`EPERM`. In the private PID namespace the fixture PID is intentionally
+unaddressable and Linux returned `ESRCH` (`ProcessLookupError`); no signal was
+delivered. The test oracle now accepts `EPERM` or `ESRCH` as denial while still
+failing if the signal succeeds or the host marker is written. The rerun also
+adds a live host pathname-socket probe under `/tmp`, a Git subprocess smoke
+check, and descendant cancellation. This failed run is diagnostic evidence,
+not a passing enforcement result.
 
 ## Remaining M004 production work
 
@@ -42,9 +52,9 @@ does not weaken the request to PID/IPC-only containment.
    preserving stdio and the reserved status/ack descriptors; its positive
    native probe is pending. Audit environment socket hints and test pathname
    sockets inside read/write bind roots before making any denial claim.
-3. Select and pin a seccomp compiler release, build a conservative architecture-
-   checked policy, pass its bounded program FD through Bubblewrap, and prove
-   denied syscall plus ordinary compiler/Python/Git compatibility.
+3. Prove the pinned seccomp policy through Bubblewrap with a denied namespace
+   syscall and normal compiler/Python/Git behavior; review the syscall list and
+   add only compatibility-driven exceptions with explicit evidence.
 4. Exercise descendants, timeout/cancellation, concurrent sessions, and PTY
    status/resize behavior. Verify a setup failure produces no target marker.
 5. Only after those results, close M004 or record narrowly scoped external host
