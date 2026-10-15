@@ -19,6 +19,24 @@ pub enum AuthError {
     #[error("credential expired for provider '{0}'")]
     Expired(String),
 
+    /// Several usable records exist for one provider and nothing binds this
+    /// lookup to one of them.
+    ///
+    /// The store keeps every record a rotation or `/connect` ever wrote, so a
+    /// provider can hold an orphaned key beside the live one. Picking the
+    /// first record would inherit on-disk insertion order and silently
+    /// authenticate with a key the user replaced, so the choice is refused
+    /// and every candidate is named instead. `candidates` is a
+    /// comma-separated account-id list (or the literal `no-account` for a
+    /// legacy account-less record); no secret is ever rendered here.
+    #[error(
+        "several credentials are stored for provider '{provider_id}' with no provider connection bound to one of them (accounts: {candidates}); bind one with /connect or remove the unused accounts"
+    )]
+    AmbiguousCredential {
+        provider_id: String,
+        candidates: String,
+    },
+
     #[error(
         "no usable master key for new credential material; fresh installs bootstrap a managed key automatically, otherwise restore the historical CODEGG_MASTER_KEY (CODEGG_ENCRYPTION_KEY / OPENCODE_ENCRYPTION_KEY aliases) that encrypted the existing store; refusing to generate a replacement key over existing ciphertext"
     )]
@@ -325,6 +343,9 @@ pub enum ResolvedAuthSource {
     InlineValue,
     EncryptedConfig,
     UserStore,
+    /// A durable provider connection's own bound account. Wins over every
+    /// other source for the turn that connection speaks for.
+    ConnectionBinding,
     LegacyApiKey,
     LegacyDecrypted,
     ExternalCommand,
@@ -338,6 +359,7 @@ impl ResolvedAuthSource {
             ResolvedAuthSource::InlineValue => "config(inline)",
             ResolvedAuthSource::EncryptedConfig => "config(encrypted)",
             ResolvedAuthSource::UserStore => "user_store",
+            ResolvedAuthSource::ConnectionBinding => "connection_binding",
             ResolvedAuthSource::LegacyApiKey => "legacy(api_key)",
             ResolvedAuthSource::LegacyDecrypted => "legacy(decrypted)",
             ResolvedAuthSource::ExternalCommand => "external_command",
@@ -717,6 +739,22 @@ impl CredentialStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Every record stored for one provider, in on-disk order.
+    ///
+    /// Selection code that cannot name a single account must use this to
+    /// prove a choice is unambiguous. [`Self::list`] is deliberately
+    /// unsorted, so "first match" here is insertion order — which is exactly
+    /// the coin flip callers must not inherit.
+    pub fn records_for_provider(&self, provider_id: &str) -> Vec<StoredCredentialRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|record| record.provider_id == provider_id)
+            .cloned()
+            .collect()
     }
 
     pub fn get_plaintext(

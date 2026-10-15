@@ -757,16 +757,14 @@ impl ProviderConnectionProvisioner {
             .map_err(|_| EggpoolError::Storage)?;
             if let Some((provider_ref, account_ref)) = previous_binding {
                 if let Some(store) = self.credential_store.clone() {
-                    // Never remove the binding the new connection just claimed.
-                    if account_ref != account_id {
-                        if let Err(error) = store.remove(&provider_ref, Some(&account_ref)) {
-                            tracing::warn!(
-                                ?error,
-                                %existing_id,
-                                "eggpool superseded credential cleanup failed"
-                            );
-                        }
-                    }
+                    self.prune_superseded_credential(
+                        &store,
+                        &provider_ref,
+                        &account_ref,
+                        Some(existing_id),
+                        Some(account_id),
+                    )
+                    .await;
                 }
             }
         }
@@ -1290,11 +1288,14 @@ impl ProviderConnectionProvisioner {
 
         if staged_secret.is_some() && delete_previous_on_commit {
             if let Some(old) = old_binding {
-                if let Err(error) =
-                    credential_store.remove(&old.provider_ref, Some(&old.account_ref))
-                {
-                    tracing::warn!(?error, "eggpool previous credential cleanup failed");
-                }
+                self.prune_superseded_credential(
+                    &credential_store,
+                    &old.provider_ref,
+                    &old.account_ref,
+                    Some(connection_id.as_str()),
+                    Some(&binding.account_ref),
+                )
+                .await;
             }
         }
         Ok(ConnectionRotateStatusDto {
@@ -1760,6 +1761,101 @@ impl ProviderConnectionProvisioner {
     /// the wire, and only when a binding exists — the plaintext itself is
     /// dropped immediately and is never logged.
     ///
+    /// Remove the credential record a rotation or replacement just superseded.
+    ///
+    /// Scoping, deliberately narrow:
+    ///
+    /// - Only the *previous* binding of the connection being rotated or
+    ///   replaced is considered. Records that no connection ever bound (a
+    ///   key added by hand, or a leftover from an older build) are never
+    ///   swept here: nothing proves they are disposable, and deleting them
+    ///   would destroy credentials an unbound session still needs.
+    /// - The record is removed only when it is **provably unreferenced** by
+    ///   any other connection row. A credential two connections share is
+    ///   kept and reported; deleting it would silently break the second
+    ///   connection.
+    /// - `keep_account` is the binding the just-committed write claimed, so a
+    ///   rotation can never delete the credential it just installed.
+    /// - An unreadable connection store counts as "still referenced": the
+    ///   default is to keep the record and say so.
+    async fn prune_superseded_credential(
+        &self,
+        store: &codegg_providers::CredentialStore,
+        provider_ref: &str,
+        account_ref: &str,
+        rotated_connection_id: Option<&str>,
+        keep_account: Option<&str>,
+    ) {
+        if keep_account == Some(account_ref) {
+            return;
+        }
+        let referenced = self
+            .credential_account_referenced(provider_ref, account_ref, rotated_connection_id)
+            .await;
+        if referenced {
+            tracing::warn!(
+                provider_ref,
+                account_ref,
+                "superseded credential is still bound by another connection; keeping it"
+            );
+            return;
+        }
+        if let Err(error) = store.remove(provider_ref, Some(account_ref)) {
+            tracing::warn!(
+                ?error,
+                provider_ref,
+                account_ref,
+                "eggpool superseded credential cleanup failed"
+            );
+        }
+    }
+
+    /// `true` when a connection other than `except` still binds this account.
+    ///
+    /// Raw SQL stays inside this store: pruning a credential is only safe once
+    /// no connection row can point at it.
+    async fn credential_account_referenced(
+        &self,
+        provider_ref: &str,
+        account_ref: &str,
+        except: Option<&str>,
+    ) -> bool {
+        let count = match except {
+            Some(except) => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connections WHERE secret_provider_ref = ? AND secret_account_ref = ? AND id <> ?",
+                )
+                .bind(provider_ref)
+                .bind(account_ref)
+                .bind(except)
+                .fetch_one(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connections WHERE secret_provider_ref = ? AND secret_account_ref = ?",
+                )
+                .bind(provider_ref)
+                .bind(account_ref)
+                .fetch_one(&self.pool)
+                .await
+            }
+        };
+        match count {
+            Ok(count) => count > 0,
+            // A read failure must never authorize a deletion.
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    provider_ref,
+                    account_ref,
+                    "credential reference check failed; keeping the superseded credential"
+                );
+                true
+            }
+        }
+    }
+
     /// Best-effort by design: an absent hint is a missing discriminator, never
     /// a provisioning error, so an unreadable credential store degrades the
     /// picker instead of failing a connection list.
@@ -3456,6 +3552,104 @@ mod tests {
         assert_eq!(stored.revision, result.connection.revision + 1);
         assert_eq!(stored.endpoint.as_str(), format!("{rotated_host}/v1"));
         assert_eq!(stored.display_name, "Rotated Eggpool");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rotation_never_prunes_a_credential_another_connection_still_binds() {
+        // Pruning exists so a rotation cannot leave an orphan behind, but a
+        // credential two connections share is not an orphan: deleting it
+        // would silently break the second connection. Fixture the shared
+        // binding by cloning the connection row onto a second id, which is
+        // what two connections provisioned against one account look like.
+        let _master = MasterKeyGuard::new("eggpool-rotation-shared-credential-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let shared_account = credential_store.list()[0]
+            .account_id
+            .clone()
+            .expect("provisioned connection has an account");
+        let shared_provider = credential_store.list()[0].provider_id.clone();
+
+        // A second connection shares the account the rotation is about to
+        // supersede. Two connections provisioned against one account look
+        // exactly like this.
+        let other_id = ProviderConnectionId::new();
+        sqlx::query(
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) SELECT ?, provider_kind, 'Shared', endpoint, tls_policy, 'personal', 'shared-scope', 'shared-secret', ?, ?, 'active', 1, ?, ? FROM provider_connections WHERE id = ?",
+        )
+        .bind(other_id.as_str())
+        .bind(&shared_provider)
+        .bind(shared_account.as_str())
+        .bind(now_millis())
+        .bind(now_millis())
+        .bind(connection_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("shared-connection row inserts");
+
+        let (rotated_host, rotated_server) = fake_eggpool(Duration::ZERO);
+        let secret_ref = SecretInputRef::new("shared-rotation-handle").unwrap();
+        assert!(provisioner.register_rotation_secret(secret_ref.clone(), "rotated-key".to_owned()));
+        let status = provisioner
+            .rotate(
+                "rotation-shared-credential",
+                &connection_id,
+                result.connection.revision,
+                ConnectionRotateChange::CredentialAndEndpoint {
+                    endpoint: format!("{rotated_host}/v1"),
+                    tls_policy: "disabled".to_owned(),
+                    display_name: None,
+                },
+                secret_ref,
+                true,
+            )
+            .await
+            .expect("rotation succeeds");
+        rotated_server.join().expect("rotation fake server joins");
+        assert_eq!(status.state, "committed");
+
+        // The superseded account is still bound by `other_id`, so it survived
+        // and still decrypts.
+        assert!(
+            credential_store
+                .find_record(&shared_provider, Some(&shared_account))
+                .is_some(),
+            "a credential another connection binds must never be pruned"
+        );
+        assert!(credential_store
+            .get_credential(&shared_provider, Some(&shared_account))
+            .expect("decrypt")
+            .is_some());
+
+        // The rotation installed exactly one new record and pruned nothing
+        // else: the shared account plus the record it just claimed.
+        let accounts: Vec<String> = credential_store
+            .list()
+            .into_iter()
+            .map(|record| record.account_id.unwrap_or_default())
+            .collect();
+        assert_eq!(
+            accounts.len(),
+            2,
+            "the rotation must add one record and keep the shared one: {accounts:?}"
+        );
+        assert!(
+            accounts.contains(&shared_account),
+            "the shared record must remain in {accounts:?}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

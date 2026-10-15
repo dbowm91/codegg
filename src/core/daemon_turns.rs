@@ -249,6 +249,49 @@ impl CoreDaemon {
                         }
                     }
                 }
+                // The selected connection's `secret_binding` is this turn's
+                // credential locator: the exact store account the connection
+                // is bound to. A turn bound to a connection must authenticate
+                // with that account, not with whichever record for the same
+                // provider happens to sit first in `credentials.json` — that
+                // file-order pick silently undid every rotation. A session
+                // with no durable selection passes `None`, leaving provider
+                // resolution to the (ambiguity-checked) store fallback.
+                let credential_locator = match (
+                    selected_connection.as_ref(),
+                    self.selection_service.as_ref(),
+                ) {
+                    (Some(selected), Some(selection_service)) => {
+                        match codegg_core::identity::ProviderConnectionId::parse(
+                            selected.id.as_str(),
+                        ) {
+                            Ok(connection_id) => {
+                                match selection_service.connection_store.get(&connection_id).await {
+                                    Ok(Some(connection)) => {
+                                        connection.secret_binding.map(|binding| {
+                                            crate::provider::TurnCredentialLocator {
+                                                provider_ref: binding.provider_ref,
+                                                account_ref: binding.account_ref,
+                                            }
+                                        })
+                                    }
+                                    Ok(None) => None,
+                                    Err(error) => {
+                                        tracing::debug!(
+                                            target: "codegg::core::daemon_turns",
+                                            error = %error,
+                                            connection_id = %connection_id,
+                                            "selected connection binding unreadable; the turn resolves its credential without connection authority"
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    _ => None,
+                };
                 // Validate the provider exists before delegating to the turn
                 // runtime. This preserves the existing `provider_not_found`
                 // response shape from the daemon layer. The turn runtime
@@ -655,6 +698,7 @@ impl CoreDaemon {
                     // + one watcher; closing a turn leaves watchers live.
                     shared_job_notification_service: self.deps.job_notification_service.clone(),
                     shared_ci_watch_service: self.deps.ci_watch_service.clone(),
+                    credential_locator,
                 };
                 let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
                     Ok(output) => output,

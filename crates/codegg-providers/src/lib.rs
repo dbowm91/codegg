@@ -64,10 +64,11 @@ pub use opencode_go::PROVIDER_ID as OPENCODE_GO_PROVIDER_ID;
 pub use provider_core::{
     assistant_text_content_value, builtin_registration_order, create_http_client,
     credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
-    register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
-    EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
-    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ProviderWirePolicy,
-    ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
+    register_builtin, register_builtin_with_config, register_builtin_with_config_for_turn,
+    ChatEvent, ChatRequest, ContentPart, EventStream, ImageUrl, Message, ModelInfo, ModelVariant,
+    Provider, ProviderCapabilities, ProviderCredentialCapability, ProviderRegistry,
+    ProviderRequestContext, ProviderWirePolicy, ReasoningVisibility, ResponseFormat, TokenUsage,
+    ToolCall, ToolDefinition, TurnCredentialError, TurnCredentialLocator, MAX_BUFFER_SIZE,
     MAX_REASONING_BYTES,
 };
 pub use provider_profile::{

@@ -100,8 +100,8 @@ so the caller gets an actionable state instead of a silent pick.
 
 ### Credential Resolution
 
-`resolve_provider_credential(provider_id, cfg, env_var, store)`
-(`provider_core.rs:625`) is the single resolution path. It builds a
+`resolve_provider_credential(provider_id, cfg, env_var, store, pin)`
+(`provider_core.rs`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -109,6 +109,8 @@ and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 reinterpretation). Expired records return `AuthError::Expired` before
 transport. Resolution order:
 
+0. **`pin` — the turn's connection binding** (a turn only; see below). This
+   precedes every other source, including config and env.
 1. Explicit `auth.env` env var
 2. Conventional `{PROVIDER}_API_KEY`
 3. Inline `auth.value`
@@ -116,19 +118,64 @@ transport. Resolution order:
 5. User-level `CredentialStore` lookup (by `account_id`)
 6. Legacy `api_key` / `encrypted_api_key` fields
 
-**Store fallback (steps 1–6 all miss).** When the resolver returns `None`,
+**Store fallback (steps 0–6 all miss).** When the resolver returns `None`,
 `resolve_provider_credential` makes one final attempt against the
-`CredentialStore` by provider id — preferring an account-scoped record, then
-any record for that provider. An expired or empty record is treated as absent
-rather than as a bad key. This exists because a credential added through the
-TUI `/connect` flow is written *only* to the credential store: it appears in
-neither config nor the environment. Without the fallback such a provider
-resolved to `None`, was skipped at registration (`NO KEY for provider ...`),
-and contributed no models — so `/connect` reported success while `/models`
-stayed empty. The fallback never displaces the precedence above: config and env
-still win whenever they resolve. Covered by
-`resolve_provider_credential_falls_back_to_store_without_config_entry` and
-`env_still_wins_over_the_store_fallback` in `provider_core.rs`.
+`CredentialStore` by provider id. It *counts* usable records instead of racing
+them: expired records are not candidates, one usable record resolves, and two
+or more return typed `AuthError::AmbiguousCredential` naming every candidate
+account. This exists because a credential added through the TUI `/connect` flow
+is written *only* to the credential store: it appears in neither config nor the
+environment. Without the fallback such a provider resolved to `None`, was skipped
+at registration (`NO KEY for provider ...`), and contributed no models — so
+`/connect` reported success while `/models` stayed empty. The fallback never
+displaces the precedence above: config and env still win whenever they resolve.
+Covered by `resolve_provider_credential_falls_back_to_store_without_config_entry`
+and `env_still_wins_over_the_store_fallback` in `provider_core.rs`.
+
+**The store is unsorted, so "first match" is a coin flip.** `CredentialStore::list`
+returns the on-disk vector in insertion order. A provider that has been rotated
+holds the superseded `rot-<uuid>` record beside the live one, so a first-match
+pick authenticates with the key the user replaced — the rotation appears to do
+nothing. Refusing the ambiguous case is what makes the store a safe source; a
+`no-account` label in a candidate list means a legacy account-less record.
+
+### Turn Credential Authority (connection binding)
+
+A turn bound to a durable connection authenticates with *that connection's*
+account. This is the rule the store fallback cannot express, so it is threaded
+explicitly:
+
+- `daemon_turns.rs` reads the selected connection's `secret_binding` and hands
+  the turn a `TurnCredentialLocator { provider_ref, account_ref }` through
+  `TurnRunInput::credential_locator`. A session with no durable selection
+  passes `None`. Plaintext never crosses this boundary: the locator is a store
+  address, and the credential is resolved inside the turn's own registration
+  pass.
+- The turn calls `register_builtin_with_config_for_turn(registry, config,
+  provider_id, locator, store)`, which reads the bound record by **exact**
+  `(provider_ref, account_ref)`, pins it for that provider's registration, and
+  returns `ResolvedAuthSource::ConnectionBinding`. The pin is checked before
+  config, env, and the store because rotation exists precisely so a connection's
+  key changes while config, env, and other records still hold the old one.
+- `provider_id` is the registry id the turn actually calls, resolved from the
+  connection's provider kind (`resolve_turn_provider`) — not the client-supplied
+  model string. The locator is still read from the *store* by
+  `secret_provider_ref`, so a storage-key namespace (`other:opencode_go`) and a
+  registry id never have to agree.
+- A bound-but-missing record is a hard failure
+  (`TurnCredentialError::Missing`, code `connection_credential_missing`), never
+  a fallback to another record for the same provider. The same holds for a bound
+  credential that cannot build the provider at all.
+- With no binding, several usable records for the turn's provider are
+  `TurnCredentialError::Ambiguous` (code `provider_credential_ambiguous`) and the
+  provider is *not* registered. A single record is unchanged. Resolution
+  failures surface as `AppError::Provider(ProviderError::Auth(..))`, so HTTP
+  surfaces report `401` rather than a transport error.
+
+`register_builtin_with_config` remains the non-turn entry point (model
+listing, pickers, work orders): it logs and skips a provider it cannot
+resolve. It never picks between competing store records — that choice now
+returns a typed error the caller may surface.
 
 `ExternalCommand` and `OAuthDevice` auth modes are parsed but return
 `AuthError::Unsupported`. The previous `std::process::Command` shell-out
@@ -146,6 +193,31 @@ Rotation stages a new credential binding, validates the endpoint, runs
 the bounded compatible model probe, and commits metadata in one SQLite
 transaction. Connection refresh is explicit, single-flight, and bounded
 by provider probe limits.
+
+**Superseded-credential pruning (`prune_superseded_credential`).** A credential
+rotation writes a fresh `rot-<uuid>` account and, for credential-bearing
+rotations (`delete_previous_on_commit`, set by `ConnectionRotateBegin` for
+`CredentialOnly` / `CredentialAndEndpoint`), drops the connection's previous
+record so a rotation never accumulates an orphan. Replacement (`replace:
+superseded`) prunes the same way. The rule is deliberately narrow:
+
+- **Removed:** the *previous* binding of the connection being rotated or
+  replaced, and only when it is provably unreferenced — no other
+  `provider_connections` row carries the same
+  `(secret_provider_ref, secret_account_ref)`. The account the just-committed
+  write claimed is never a candidate.
+- **Kept, and reported:** a superseded record another connection still binds.
+  Deleting it would silently break that connection, so the prune is skipped
+  with a warning naming the account. An unreadable connection store counts as
+  "still referenced" — a failed read must never authorize a deletion.
+- **Never swept:** records that no rotation produced. A key added by hand, or an
+  orphan from an older build, is not attributable to any rotation, so nothing
+  here deletes it. Those records surface through the ambiguity error above,
+  which is what makes them visible and actionable.
+
+Covered by `rotation_commits_new_revision_and_removes_only_previous_credential`
+and `rotation_never_prunes_a_credential_another_connection_still_binds` in
+`src/core/eggpool.rs`.
 
 **`provider_connection_lifecycle` wins on read, and that is deliberate.**
 `ProviderConnectionStore::apply_lifecycle_state` overwrites
@@ -194,10 +266,10 @@ concerns:
   CHECK only admits `active`/`disabled`/`credential_missing`, so the row moves
   to `disabled` while the authoritative tombstone is recorded in
   `provider_connection_lifecycle` (+ `provider_connection_tombstones` and a
-  `replace:superseded` audit event). Its credential binding is dropped after
-  commit: leaving it would leave two records for one provider, and provider
-  resolution picks a single record per provider — the stale key could win and
-  silently undo the rotation.
+  `replace:superseded` audit event). Its credential record is pruned after
+  commit, subject to the rule below: leaving it would leave two records for one
+  provider, and the turn resolver refuses such a store as ambiguous rather than
+  picking one.
 - **In-flight operation** — a `provider_provisioning` row in a *non-terminal*
   state (`staged`, `probing`) for the same idempotency key means an equivalent
   operation is already running, and returns `Conflict`.
