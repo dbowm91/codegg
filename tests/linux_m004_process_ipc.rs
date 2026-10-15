@@ -521,8 +521,9 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
             .unwrap_or_else(|error| panic!("M004 {operation} failed to launch: {error}"));
         assert!(
             result.exit_status.success(),
-            "M004 {operation} failed (status {:?}); stderr: {}",
+            "M004 {operation} failed (status {:?}); stdout: {}; stderr: {}",
             result.exit_status,
+            result.stdout.to_string_lossy(),
             result.stderr.to_string_lossy()
         );
     }
