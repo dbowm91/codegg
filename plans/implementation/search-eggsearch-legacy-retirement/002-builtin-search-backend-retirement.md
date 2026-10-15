@@ -29,8 +29,9 @@ Hard dependency:
   `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md`.
   It verifies CodeGG's actual v0.4.3 child, native local repo_search under Mode
   Off, no remote provider routing, web/security denials, isolated child
-  environment, and process cleanup. M002 is now ready for its separately scoped
-  backend retirement implementation.
+  environment, and process cleanup. That qualification made M002 ready for
+  implementation; M002 has since closed at
+  `plans/closure/search-eggsearch-legacy-retirement/002-status.md`.
 
 Relevant predecessor evidence:
 

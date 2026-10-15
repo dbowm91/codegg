@@ -262,36 +262,37 @@ Two directories under `crates/` are intentionally **not** workspace members: `eg
 
 ## Verified counts
 
-Counts were last remeasured against the current tree on **2026-10-06**.
-Architecture docs and root integration-test counts were rechecked during M002
-on **2026-10-15**.
+Every count below was re-measured against the current tree on
+**2026-10-13**, each against its own listed `Source`. The tool-source,
+integration-test, and guard-script counts were remeasured on **2026-10-15**
+after reconciling the search-backend retirement with current `main`.
 
 | Item | Count | Source |
 |------|-------|--------|
 | Architecture docs | 86 | `architecture/*.md` |
 | Tool registrations in `with_options()` | 63 call sites | `src/tool/mod.rs` |
-| Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 2 test-only mocks in `program_manifest.rs`) |
-| Tool source files | 77 | `src/tool/**.rs` (incl. `bash/`) |
+| Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
+| Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
 | `codegg-core` modules | 46 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
 | `AppEvent` variants | 58 | `crates/codegg-core/src/bus/events.rs` |
-| `CoreRequest` variants | 234 (211 struct + 23 unit) | `crates/codegg-protocol/src/core.rs` |
-| `CoreResponse` variants | 149 | `crates/codegg-protocol/src/core.rs` |
-| `CoreEvent` variants | 87 | `crates/codegg-protocol/src/core.rs` |
+| `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
+| `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
+| `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
-| Authorized operations | 228 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
+| Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 17 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 155 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 161 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
-| TUI state modules | 27 (28 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 73 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 68 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| TUI state modules | 29 (30 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
+| Database tables (`CREATE TABLE`) | 76 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 72 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |
-| Integration test files | 233 | `tests/*.rs` |
-| CI guard scripts | 41 | `scripts/check_*` |
+| Integration test files | 244 | `tests/*.rs` |
+| CI guard scripts | 49 | `scripts/check_*` |
 
 ## Feature gates
 
@@ -583,11 +584,11 @@ python3 scripts/generate_builtin_agents.py --check              # agent asset st
 python3 scripts/check_projection_transport_isolation.py          # projection transport guard
 ```
 
-Full `check_*` inventory lives in `scripts/` (41 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
+Full `check_*` inventory lives in `scripts/` (49 guards) and additionally covers audit coverage/invariants, authorization matrix, discovery invariants, identity path usage, project-catalog invariants, provider-connections coverage/tombstones, sandbox contract, tool-broker boundary, TUI project authority, and websocket bounds. See `AGENTS.md` for the complete change-triggered guard list.
 
 ## Source verification
 
-Verified against the working tree on **2026-10-06**. Counts in this document were re-measured directly (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, `AppEvent` variants, slash-command registry length, built-in agents, bundled themes, TUI state modules, `CREATE TABLE` count, `STORAGE_LAYOUT_VERSION`, git operation/risk counts, workspace members, integration test files, guard scripts).
+The full count audit on **2026-10-13** remeasured each row directly against its listed `Source` (tool registrations, distinct tool names, tool source files, LSP server definitions, `codegg-core` module count, event/request/response variants, authorized operations, identity newtypes, slash-command registry length, built-in agents, bundled themes, TUI state modules, database tables, storage-layout version, Git operation/risk counts, workspace members, integration test files, and guard scripts). After merging current `main` on **2026-10-15**, tool source files (78), integration test files (244), and guard scripts (49) were rechecked and updated.
 
 This file supersedes the earlier overview's stale counts (77 docs / 53 tool registrations / 53 `AppEvent` variants / 142 slash commands / 71 tables / layout v56 / 21 guards / 189 tests) and adds previously undocumented surfaces: `src/tool_advisor/`, `crates/codegg-document/`, `src/command/`, `src/tui/document_session.rs`, `src/tui/interactive_terminal.rs`, `apps/desktop/`, and the excluded `eggwork-test-node` fixture workspace.
 

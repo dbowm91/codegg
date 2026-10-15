@@ -408,7 +408,7 @@ impl PreflightService {
         };
 
         let output = &result.output;
-        let is_block = verdict.as_deref() == Some("block")
+        let is_risk_signal = verdict.as_deref() == Some("block")
             || risk.as_deref() == Some("high")
             || output.contains("risk: high")
             || output.contains("verdict: block");
@@ -417,11 +417,11 @@ impl PreflightService {
             || output.contains("risk: medium")
             || output.contains("verdict: warn");
 
-        if is_block {
+        if is_risk_signal {
             findings.push(PreflightFinding {
-                severity: PreflightSeverity::Block,
+                severity: PreflightSeverity::Warn,
                 machine_code: result.machine_code.clone(),
-                message: format!("Command preflight: {}", truncate(output, 200)),
+                message: format!("Advisory command risk: {}", truncate(output, 200)),
                 location: None,
                 source_tool: "command_preflight".to_string(),
             });

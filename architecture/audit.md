@@ -441,6 +441,22 @@ canonical execution owners through the M001 seam
   duplicate/secret negatives across trajectories) is closed in M004
   (see below).
 
+### Authorization and obtained-route metadata (command-authorization M003)
+
+Agent Bash `command_execute` events may additionally record the accepted
+permission receipt ID/source/revision, requested sandbox profile, bounded
+risk level, exact route label, and the managed process service's obtained
+filesystem outcome. Completed raw-shell launches also record the exit code,
+whether bounded output was truncated, whether cleanup diagnostics were clean,
+and the helper identity when the helper ran. The network field remains
+`unrestricted` for the current shell backends. The event still stores only a
+digest for command/argv content; it never stores command text, script source,
+raw argv, or output. A timed-out process records that its enforcement outcome
+was not returned rather than claiming a backend result. These are structural
+metadata on the existing event action; no new audit action or transcript is
+introduced. The record identifies the dispatched route and helper result; it
+does not trace every nested syscall or prove every downstream effect.
+
 ## Scheduler terminal hook (M003)
 
 `job_complete` is emitted live at the durable scheduler terminal

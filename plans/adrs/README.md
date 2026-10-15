@@ -12,6 +12,20 @@ ADR-NNNN-short-title.md
 
 Numbers are monotonically increasing and never reused.
 
+## Cross-branch identity migration
+
+The 2026-10-13 Windows/TUI branch collision was resolved before PR #111
+integration. Mainline TUI ADR-0021 and ADR-0022 retain their original identities.
+The Windows decision records now use ADR-0023 through ADR-0026; the exact former
+records remain under `plans/archive/windows-adr-id-aliases/`, with the source
+SHA, content fingerprints, and disposition recorded in
+`plans/adrs/windows-adr-id-migration.md`. The aliases are historical provenance,
+not active ADR allocations.
+
+The Linux execution-isolation and command-authority decisions use ADR-0027 and
+ADR-0028, respectively. These identities were assigned after the Windows
+records landed on main so no ADR number is reused.
+
 ## Status lifecycle
 
 ```text
@@ -108,3 +122,23 @@ An ADR is normally required when a decision:
 - materially changes a long-term non-goal.
 
 An ADR is usually unnecessary for local refactors, internal naming cleanup, implementation-specific data structures, or reversible optimizations that preserve established contracts.
+
+## Cross-branch numbering note (2026-10-13)
+
+The Windows sandbox workstream `work/windows-native-sandbox-foundation` already allocates ADR-0019 (staged workspace projection) and ADR-0020 (successor sandbox feasibility), even where an older `main` snapshot lists only ADR-0018. New editor-completion planning therefore reserves **ADR-0021**, currently **proposed**, to avoid cross-branch number reuse. Its presence is not acceptance or implementation authorization.
+
+## Cross-branch ADR-0022 reservation (2026-10-13)
+
+The post-closure TUI remote-file-tree authority workstream reserves `ADR-0022-daemon-authorized-workspace-directory-listing.md` as **proposed**. This supplements accepted ADR-0021 and does not constitute acceptance. Verify across active branches before allocating the next ADR number.
+
+## Windows successor decisions after PR #111 (2026-10-13)
+
+Renumbered 2026-10-14: the successor decisions first landed as ADR-0027/ADR-0028
+on the planning branch, but main had meanwhile assigned those numbers to the
+Linux execution-isolation (ADR-0027) and command-syntax authority (ADR-0028)
+decisions. The Windows records are ADR-0029/ADR-0030 below; the old numbers
+were never active on main and must not be reused for Windows references.
+
+- ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
+- ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
+- New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.

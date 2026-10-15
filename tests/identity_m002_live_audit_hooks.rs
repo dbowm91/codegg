@@ -159,8 +159,26 @@ fn audited_executor(
 #[tokio::test(flavor = "current_thread")]
 async fn bash_shell_success_emits_one_structural_event() {
     let pool = test_pool().await;
-    let tool = codegg::tool::bash::BashTool::new();
-    let ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    let mut ctx = tool_ctx(&pool, "corr-bash-ok", "inv-bash-ok");
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::FullHost,
+                None,
+                Some("session-corr-bash-ok".into()),
+                Some("agent".into()),
+                Some("policy-r9".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "reviewer_allow",
+                Some("policy-r9".into()),
+            ),
+            command_preflight: None,
+        });
+    let tool = codegg::tool::bash::BashTool::new()
+        .with_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost, &ctx.cwd);
     let out = tool
         .execute_structured(serde_json::json!({"command": "echo m002-ok"}), Some(ctx))
         .await
@@ -187,6 +205,63 @@ async fn bash_shell_success_emits_one_structural_event() {
         event.metadata.get("command.digest").map(String::as_str),
         Some(expected_digest.as_str())
     );
+    assert_eq!(
+        event.metadata.get("permission.source").map(String::as_str),
+        Some("reviewer_allow")
+    );
+    assert!(event.metadata.contains_key("permission.receipt_id"));
+    assert_eq!(
+        event
+            .metadata
+            .get("permission.policy_revision")
+            .map(String::as_str),
+        Some("policy-r9")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("sandbox.requested_profile")
+            .map(String::as_str),
+        Some("full_host")
+    );
+    assert_eq!(
+        event.metadata.get("execution.route").map(String::as_str),
+        Some("raw_shell")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.filesystem")
+            .map(String::as_str),
+        Some("full_host")
+    );
+    assert_eq!(
+        event.metadata.get("execution.network").map(String::as_str),
+        Some("unrestricted")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.exit_code")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.output_truncated")
+            .map(String::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        event.metadata.get("execution.cleanup").map(String::as_str),
+        Some("complete")
+    );
+    assert_eq!(
+        event.metadata.get("execution.helper").map(String::as_str),
+        Some("none")
+    );
+    assert!(event.metadata.contains_key("execution.risk_level"));
     // Chain causation preserved from the trusted context.
     assert_eq!(event.session_id.as_deref(), Some("session-corr-bash-ok"));
     assert_eq!(event.turn_id.as_deref(), Some("turn-corr-bash-ok"));
@@ -195,6 +270,104 @@ async fn bash_shell_success_emits_one_structural_event() {
     let blob = metadata_blob(event);
     assert!(!blob.contains("m002-ok"), "command text leaked: {blob}");
     assert!(!blob.contains("echo"), "command text leaked: {blob}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn bash_constrained_audit_reports_obtained_landlock_and_unrestricted_network() {
+    let pool = test_pool().await;
+    let root = tempfile::tempdir().expect("workspace tempdir");
+    let mut ctx = tool_ctx(&pool, "corr-bash-landlock", "inv-bash-landlock");
+    ctx.execution_authorization =
+        Some(codegg::tool::authorization::ExecutionAuthorizationContext {
+            snapshot: codegg_core::approval::ExecutionPolicySnapshot::capture(
+                codegg_core::approval::ApprovalMode::Yolo,
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                None,
+                Some("session-corr-bash-landlock".into()),
+                Some("agent".into()),
+                Some("policy-r10".into()),
+                None,
+            ),
+            receipt: codegg::permission::PermissionDecisionReceipt::allowed(
+                "operator_rule",
+                Some("policy-r10".into()),
+            ),
+            command_preflight: None,
+        });
+    let tool = codegg::tool::bash::BashTool::new().with_sandbox_profile(
+        codegg_core::approval::SandboxProfile::WorkspaceWrite,
+        root.path(),
+    );
+    let out = tool
+        .execute_structured(
+            serde_json::json!({
+                "command": "printf landlock-ok; python3 -c \"print('x'*60000)\"",
+                "workdir": root.path()
+            }),
+            Some(ctx),
+        )
+        .await
+        .expect("confined bash succeeds");
+    assert!(out.output.contains("landlock-ok"), "{}", out.output);
+
+    let rows = events_for(
+        &pool,
+        AuditAction::CommandExecute.as_str(),
+        "corr-bash-landlock",
+    )
+    .await;
+    assert_eq!(rows.len(), 1, "one dispatch → one event");
+    let event = &rows[0];
+    assert_eq!(
+        event.metadata.get("permission.source").map(String::as_str),
+        Some("operator_rule")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("sandbox.requested_profile")
+            .map(String::as_str),
+        Some("workspace_write")
+    );
+    let filesystem = event
+        .metadata
+        .get("execution.filesystem")
+        .expect("actual filesystem outcome recorded");
+    assert!(
+        filesystem.starts_with("enforced:landlock:abi="),
+        "obtained filesystem outcome was {filesystem}"
+    );
+    assert_eq!(
+        event.metadata.get("execution.network").map(String::as_str),
+        Some("unrestricted")
+    );
+    assert_eq!(
+        event.metadata.get("execution.route").map(String::as_str),
+        Some("raw_shell")
+    );
+    assert_eq!(
+        event.metadata.get("execution.helper").map(String::as_str),
+        Some("codegg-sandbox-helper")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.exit_code")
+            .map(String::as_str),
+        Some("0")
+    );
+    assert_eq!(
+        event
+            .metadata
+            .get("execution.output_truncated")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        event.metadata.get("execution.cleanup").map(String::as_str),
+        Some("complete")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -250,13 +423,15 @@ async fn bash_failure_timeout_and_denial_matrix() {
         Some("timeout")
     );
 
-    // Denied: blocked before any spawn → no execution event. The
-    // denial itself is an authorization surface, not a command event.
+    // Disabled tool: rejected before any spawn → no execution event.
+    // Do not use a dangerous-looking spelling as a synthetic deny rule;
+    // command syntax alone is advisory in the current policy.
     let ctx = tool_ctx(&pool, "corr-bash-denied", "inv-bash-denied");
-    let err = tool
-        .execute_structured(serde_json::json!({"command": "rm -rf /"}), Some(ctx))
+    let err = codegg::tool::bash::BashTool::new()
+        .with_deny_all()
+        .execute_structured(serde_json::json!({"command": "echo denied"}), Some(ctx))
         .await
-        .expect_err("blocked command must fail");
+        .expect_err("disabled tool must fail");
     assert!(!err.to_string().is_empty());
     let rows = events_for(
         &pool,
@@ -671,9 +846,8 @@ async fn git_stage_and_branch_mutation_emit_once_each() {
     std::fs::write(repo.path().join("staged.txt"), "staged\n").expect("write");
     let staged =
         codegg::git_mutations_ops::stage_paths(&exec, repo.path(), vec!["staged.txt".to_owned()])
-            .await
-            .expect("stage");
-    assert!(staged.success, "stage must succeed");
+            .await;
+    assert!(staged.is_err(), "stage requires clean-filter containment");
     codegg::git_mutations_ops::branch_create(&exec, repo.path(), "feature-m002", None, false)
         .await
         .expect("branch_create");
@@ -687,7 +861,7 @@ async fn git_stage_and_branch_mutation_emit_once_each() {
     assert_eq!(
         rows.len(),
         2,
-        "stage + branch_create → two events, got {}",
+        "blocked stage + branch_create → two events, got {}",
         rows.len()
     );
     let ops: Vec<&str> = rows
@@ -705,7 +879,15 @@ async fn git_stage_and_branch_mutation_emit_once_each() {
     for event in &rows {
         // Bounded outcome vocabulary, trusted chain preserved.
         assert!(
-            ["completed", "no-op", "fast-forward", "conflict", "rejected"].contains(
+            [
+                "completed",
+                "no-op",
+                "fast-forward",
+                "conflict",
+                "rejected",
+                "policy_blocked"
+            ]
+            .contains(
                 &event
                     .metadata
                     .get("decision.outcome")
@@ -727,7 +909,7 @@ async fn git_stage_and_branch_mutation_emit_once_each() {
         );
         assert!(!blob.contains("initial"), "message leaked: {blob}");
     }
-    // Stage carries no ref material: the empty structural digest.
+    // Blocked stage carries no path material: the empty structural digest.
     let stage = rows
         .iter()
         .find(|event| event.metadata.get("git.op").map(String::as_str) == Some("stage"))
@@ -761,7 +943,7 @@ async fn git_network_push_fetch_and_credential_url_stay_structural() {
     );
     let exec = audited_executor(&pool, "corr-git-network");
 
-    codegg::git_network_ops::push(
+    let push = codegg::git_network_ops::push(
         &exec,
         repo.path(),
         codegg::git_network_ops::PushRequest {
@@ -774,11 +956,12 @@ async fn git_network_push_fetch_and_credential_url_stay_structural() {
             dry_run: false,
         },
     )
-    .await
-    .expect("push to local bare remote");
-    codegg::git_network_ops::fetch(&exec, repo.path(), Some("origin"), vec![], false, false)
-        .await
-        .expect("fetch from local bare remote");
+    .await;
+    assert!(push.is_err(), "push requires contained remote execution");
+    let fetch =
+        codegg::git_network_ops::fetch(&exec, repo.path(), Some("origin"), vec![], false, false)
+            .await;
+    assert!(fetch.is_err(), "fetch requires contained remote execution");
 
     // Re-point the remote at a credential-bearing URL on loopback (fast
     // refusal, no network): the failed fetch still emits, and the URL
@@ -796,8 +979,8 @@ async fn git_network_push_fetch_and_credential_url_stay_structural() {
         codegg::git_network_ops::fetch(&exec, repo.path(), Some("origin"), vec![], false, false)
             .await;
     assert!(
-        failed.is_err() || !failed.unwrap().success,
-        "loopback fetch must fail"
+        failed.is_err(),
+        "credential URL fetch requires contained execution"
     );
 
     let rows = events_for(
@@ -808,26 +991,16 @@ async fn git_network_push_fetch_and_credential_url_stay_structural() {
     .await;
     assert_eq!(
         rows.len(),
-        3,
-        "push + fetch + failed fetch, got {}",
-        rows.len()
-    );
-    let ops: Vec<String> = rows
-        .iter()
-        .map(|event| event.metadata.get("git.op").cloned().unwrap_or_default())
-        .collect();
-    assert_eq!(
-        ops.iter().filter(|op| op.as_str() == "push").count(),
-        1,
-        "ops: {ops:?}"
-    );
-    assert_eq!(
-        ops.iter().filter(|op| op.as_str() == "fetch").count(),
         2,
-        "ops: {ops:?}"
+        "unavailable push and fetch each emit a policy event, got {}",
+        rows.len()
     );
     for event in &rows {
         let blob = metadata_blob(event);
+        assert_eq!(
+            event.metadata.get("decision.outcome").map(String::as_str),
+            Some("policy_blocked")
+        );
         assert!(!blob.contains("s3cret-m002"), "credential leaked: {blob}");
         assert!(!blob.contains("127.0.0.1"), "URL material leaked: {blob}");
         assert!(!blob.contains("user"), "URL userinfo leaked: {blob}");
@@ -862,10 +1035,11 @@ async fn git_recovery_transition_emits_once() {
     assert!(!merge_status.success(), "fixture must conflict");
 
     let exec = audited_executor(&pool, "corr-git-recovery");
-    let result = codegg::git_recovery::abort_in_progress_typed(&exec, repo.path())
-        .await
-        .expect("abort recovery");
-    assert!(result.success, "abort must succeed");
+    let result = codegg::git_recovery::abort_in_progress_typed(&exec, repo.path()).await;
+    assert!(
+        result.is_err(),
+        "recovery requires merge-driver containment"
+    );
 
     let rows = events_for(
         &pool,
@@ -873,14 +1047,14 @@ async fn git_recovery_transition_emits_once() {
         "corr-git-recovery",
     )
     .await;
-    assert_eq!(rows.len(), 1, "one recovery transition → one event");
+    assert_eq!(rows.len(), 1, "one blocked recovery → one policy event");
     assert_eq!(
         rows[0].metadata.get("git.op").map(String::as_str),
         Some("merge")
     );
     assert_eq!(
         rows[0].metadata.get("decision.outcome").map(String::as_str),
-        Some("completed")
+        Some("policy_blocked")
     );
 }
 
@@ -929,22 +1103,20 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
             }),
             Some(ctx),
         )
-        .await
-        .expect("routed git add succeeds");
+        .await;
     assert!(
-        out.output.contains("[exit code: 0]"),
-        "output: {}",
-        out.output
+        out.is_err(),
+        "routed git add must require clean-filter containment"
     );
-    // The file really was staged through the typed executor.
+    // The request was refused before execution.
     let staged = Command::new("git")
         .args(["diff", "--cached", "--name-only"])
         .current_dir(&repo_root)
         .output()
         .expect("git diff cached");
     assert!(
-        String::from_utf8_lossy(&staged.stdout).contains("routed.txt"),
-        "routed.txt must be staged"
+        !String::from_utf8_lossy(&staged.stdout).contains("routed.txt"),
+        "routed.txt must remain unstaged"
     );
 
     let git_rows = events_for(&pool, AuditAction::GitOperation.as_str(), "corr-git-routed").await;
@@ -954,14 +1126,17 @@ async fn bash_routed_git_mutation_emits_single_git_event() {
         "corr-git-routed",
     )
     .await;
-    assert_eq!(git_rows.len(), 1, "executor owns the single event");
+    assert_eq!(git_rows.len(), 1, "typed refusal emits one policy event");
     assert_eq!(
-        git_rows[0].metadata.get("git.op").map(String::as_str),
-        Some("stage")
+        git_rows[0]
+            .metadata
+            .get("decision.outcome")
+            .map(String::as_str),
+        Some("policy_blocked")
     );
     assert!(
         cmd_rows.is_empty(),
-        "shell layer must stay silent on the Git route (found {})",
+        "shell layer must stay silent after typed Git refusal (found {})",
         cmd_rows.len()
     );
     let _ = std::fs::remove_dir_all(&repo_root);
@@ -1057,6 +1232,48 @@ async fn denied_git_mutation_emits_no_execution_event() {
     .await;
     assert!(git_rows.is_empty(), "denied mutation must not emit");
     assert!(cmd_rows.is_empty(), "denied mutation must not emit");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_contained_git_capability_emits_structural_policy_event() {
+    if !git_available() {
+        eprintln!("skipping: git not in PATH");
+        return;
+    }
+    let pool = test_pool().await;
+    let repo = tempfile::tempdir().expect("tempdir");
+    init_repo(repo.path());
+    std::fs::write(repo.path().join("filter.txt"), "new\n").expect("write file");
+    let exec = audited_executor(&pool, "corr-git-policy-blocked");
+
+    let error =
+        codegg::git_mutations_ops::stage_paths(&exec, repo.path(), vec!["filter.txt".to_owned()])
+            .await
+            .expect_err("stage requires contained filter capability");
+    assert!(matches!(
+        error,
+        codegg::git_mutations::GitMutationError::Policy(
+            egggit::GitExecutionPolicyOutcome::BackendUnavailable { .. }
+        )
+    ));
+
+    let rows = events_for(
+        &pool,
+        AuditAction::GitOperation.as_str(),
+        "corr-git-policy-blocked",
+    )
+    .await;
+    assert_eq!(rows.len(), 1, "policy refusal records one structural event");
+    assert_eq!(
+        rows[0].metadata.get("git.op").map(String::as_str),
+        Some("stage")
+    );
+    assert_eq!(
+        rows[0].metadata.get("decision.outcome").map(String::as_str),
+        Some("policy_blocked")
+    );
+    let metadata = metadata_blob(&rows[0]);
+    assert!(!metadata.contains("filter.txt"), "path leaked: {metadata}");
 }
 
 #[tokio::test(flavor = "current_thread")]

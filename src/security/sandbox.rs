@@ -24,11 +24,17 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub mod backend;
+pub mod guarantee;
 pub mod landlock;
+#[cfg(target_os = "linux")]
+pub mod linux_launch;
 pub mod policy;
 pub mod seatbelt;
 
 pub use backend::{BackendEnforcement, BackendId, BACKENDS, UNCONTAINED};
+pub use guarantee::{
+    AttestedCapabilities, CapabilityFact, Refusal, RequestedGuarantees, SatisfiedContract,
+};
 pub use policy::BackendPolicy;
 
 #[derive(Clone, Debug, Default, PartialEq)]

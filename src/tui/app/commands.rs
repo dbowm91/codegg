@@ -148,15 +148,42 @@ pub enum TuiCommand {
         result: Option<crate::protocol::lsp::LspReadResultDto>,
         error: Option<String>,
     },
-    /// Completion of a bounded M006-D workspace tree walk. Carries the
-    /// request id, the tree generation, and the root the walk was issued
-    /// for, so a completion for a superseded walk or a workspace the user
-    /// has left is discarded rather than rendered.
+    /// Completion of one M003 completion read. Carries the request id and
+    /// the full completion scope (document identity, revision, cursor), so
+    /// a result for a moved cursor or an old revision is discarded rather
+    /// than displayed.
+    EditorCompletionFinished {
+        request_id: u64,
+        /// Lifetime fencing epoch captured at request time (C003/F2).
+        /// Checked against the live state before anything renders, so a
+        /// pre-reset answer can never satisfy a post-reset request even
+        /// when scope and request id coincide.
+        completion_epoch: u64,
+        scope: crate::tui::editor_completion::EditorCompletionScope,
+        result: Option<crate::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    },
+    /// Completion of a bounded C005 daemon-owned directory listing. Carries
+    /// the request id, the tree generation, and the root the request was
+    /// issued for, so a completion for a superseded request or a workspace
+    /// the user has left is discarded rather than rendered. The listing
+    /// itself is daemon-origin metadata keyed to the echoed workspace
+    /// identity before dispatch.
     FileTreeListed {
         request_id: u64,
         generation: u64,
         root: std::path::PathBuf,
         listing: crate::tui::file_tree::TreeListing,
+    },
+    /// Failure of a C005 daemon-owned directory listing. Carries the same
+    /// fence as [`TuiCommand::FileTreeListed`] plus an explicit message.
+    /// Failures are fail-visible in the pane; there is no local walk that
+    /// could mask them.
+    FileTreeFailed {
+        request_id: u64,
+        generation: u64,
+        root: std::path::PathBuf,
+        message: String,
     },
     /// Completion of an M006-E change-review accept. Carries the request id
     /// and review generation so a completion for a rejected or superseded
@@ -609,6 +636,14 @@ pub enum TuiCommand {
     },
     TurnSubmissionFinished {
         request_id: String,
+        error: Option<String>,
+    },
+    /// A `TurnCancel` request finished. Carries the addressed turn so a
+    /// completion for a turn that has already been superseded is dropped
+    /// rather than applied to whatever is running now.
+    TurnCancelRequested {
+        session_id: String,
+        turn_id: String,
         error: Option<String>,
     },
     ShellExpand {

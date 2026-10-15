@@ -101,15 +101,51 @@ between project tabs.
 
 ### Moving between the box and the panel
 
-`Shift+L` — or `Shift+→` — is a **directional**: it means "move this to the
-panel on the right" when a box is open, and "select a pane" when one is not.
-`Shift+←` returns to the main buffer; `Shift+↑` / `Shift+↓` cycle which panel
-is loaded. The vim `Shift+H/J/K/L` do the same four things.
+The directionals are one gesture family, and **which key does what depends on
+where your panel is docked**:
 
-So `/chat` then `Shift+L` closes the box and leaves the conversation running
-in the side column, `/help` then `Shift+L` does the same for the keybinding
-reference, and `/terminal` then `Shift+L` moves the terminal across. With no
-box open, the same keys move the keyboard instead.
+| Panel is | Enter the panel | Back to the buffer | Cycle loaded panel |
+|---|---|---|---|
+| right column *(default)* | `Shift+→` / `Shift+L` | `Shift+←` / `Shift+H` | `Shift+↓`/`↑` / `Shift+J`/`K` |
+| left column | `Shift+←` / `Shift+H` | `Shift+→` / `Shift+L` | `Shift+↓`/`↑` / `Shift+J`/`K` |
+| bottom row | `Shift+↓` / `Shift+J` | `Shift+↑` / `Shift+K` | `Shift+→`/`←` / `Shift+L`/`H` |
+
+Read it as "the gesture pointing at a panel enters it, the opposite gesture
+comes back, and the other two walk the panel list". With a **box** open, the
+same gesture instead means "move this box into the panel on that side".
+
+**The main buffer is a stop of its own, not something you step over.** With two
+columns up — Terminal left, Chat right — one `Shift+H` from Chat lands in the
+buffer and the second reaches Terminal. The buffer sits *between* the columns, so
+the gestures walk the whole frame rather than jumping from one end to the other.
+
+So on the default right-column layout: `/chat` then `Shift+L` closes the box
+and leaves the conversation running in the panel, `/help` then `Shift+L` does
+the same for the keybinding reference, and `/terminal` then `Shift+L` moves
+the terminal across. With no box open, the same keys move the keyboard
+instead.
+
+### Moving a panel to the other side
+
+**Pushing a panel toward an empty side moves it there.** There is no "wrong
+side" to land on: `/chat` then `Shift+H` walks the chat panel to the left
+column, and the right column goes back to **whatever it was showing before** —
+the session panel if that was up, collapsed if you had put it away with
+`Ctrl+B`. So you never lose the panel you displaced, and you never get an
+empty column where something used to be.
+
+Concretely:
+
+1. `Ctrl+B` collapses everything.
+2. `/chat` then `Shift+L` puts chat on the right.
+3. `/chat` then `Shift+H` puts chat on the left, and the right goes back to
+   collapsed — because that is how you left it.
+
+CodeGG says what the vacated edge became ("Chat moved to the Left; the Right is
+now Session"), since that edge changes without you pressing anything there.
+
+Each side remembers a short history (the last few panels it was showing), so a
+panel you displace by picking another one comes back the same way.
 
 The docked **Help** panel opens in `NOR` rather than `INS`, because a panel is
 read and scrolled before it is filtered: `j`/`k` and the arrow keys scroll
@@ -117,14 +153,43 @@ immediately, and `i` takes you to the filter. The `/help` *box* opens in `INS`,
 because you opened it to type a query.
 
 The **panel manager** lists every panel with a one-line
-description; type to filter, `Enter` to load, and a digit (`1`-`9`, `0`) to
-bind that panel to `Ctrl+<digit>` so you can swap to it in one keystroke.
-Bindings are saved to `codegg.json` and survive a restart. `Ctrl` rather than
-`Cmd` because a terminal does not deliver a Cmd modifier.
+description; a digit (`1`-`9`, `0`) binds that panel to `Ctrl+<digit>` so you can swap
+to it in one keystroke. Bindings are saved to `codegg.json` and survive a restart.
+`Ctrl` rather than `Cmd` because a terminal does not deliver a Cmd modifier.
+
+It opens in `NOR`, because it is reached with a Normal-mode chord and is read
+before it is typed into:
+
+- **`NOR`** — `j`/`k` and the arrow keys move the highlight; `Shift+H/J/K/L`
+  (or `Shift+←/→/↑/↓`) **put the highlighted panel on that edge**; `Enter`
+  loads it onto the edge the strip marks; `p` moves that edge; a digit binds;
+  `i` takes you to the filter.
+- **`INS`** — type to filter, `Backspace` edits, `Esc` goes back to `NOR` with
+  your query intact. `Esc` in `NOR` clears the filter first and only closes
+  once there is nothing to clear.
+
+The directional is the reason the manager needs its own mode: in `NOR` it is
+free, so it means *put this panel over there* — the same gesture the main
+buffer uses. In `INS` it is just the letter, so it types into the filter like
+any other character.
+
+Opening the manager never changes your frame. If an edge is collapsed it stays
+collapsed, and the strip says so (`[Left collapsed]`) rather than popping the
+column open behind you.
 
 It has two ways in: `Shift+S` in `NOR` mode, or the `/panels` command from
 anywhere. Use `/panels` mid-prompt — in `INS` mode `Shift+S` is just the
 letter `S`, so it has to stay typeable.
+
+`p` inside the manager moves the panel to the next edge — right → left →
+bottom — carrying whatever panel is loaded with it, and the choice is saved too
+(`panel_placement` in `codegg.json`). The strip above the list always shows all
+three with the live one marked, so you can see there are three places to be
+before you press it again.
+
+`Ctrl+B` hides and shows the panel you are looking at. It closes whichever pane
+has your keyboard, whatever side that pane is on, and leaves the other side
+alone.
 
 ### Where your input goes
 
@@ -139,11 +204,11 @@ what Enter will do:
 destinations — the bright one is armed. `[CHAT]` lights up only while the chat
 side panel has the keyboard, so it cannot be armed by accident.
 
-To reach the side panel, press `Esc` (to get to `[NOR]`) and then
-`Shift+→` or `Shift+L`. `Shift+←` or `Shift+H` returns you. These work in
-`[NOR]` mode only — while you are in `[INS]`, `Shift+→` moves the caret as
-usual. The panel you are controlling shows a `▸` marker and says where Enter
-will go.
+To reach the side panel, press `Esc` (to get to `[NOR]`) and then the
+directional that points at it — `Shift+→` or `Shift+L` on the default layout.
+The opposite direction returns you. These work in `[NOR]` mode only — while you
+are in `[INS]`, `Shift+→` moves the caret as usual. The panel you are
+controlling shows a `▸` marker and says where Enter will go.
 
 There are deliberately two indicators because they answer different
 questions: the composer badge says *where the text goes*, and the `▸` marker
@@ -267,6 +332,33 @@ The `[human_shell]` settings `enabled`, `default_timeout_secs`,
 `auto_promote_bangbang`, `confirm_dangerous`, and `ansi` are read by the TUI.
 Human output sent to model context is ANSI-stripped, redacted, and capped at
 32 KiB even when shell-output redaction is configured off.
+
+### Resizing a panel
+
+`Ctrl+N` arms resize mode. `h`, `j`, `k` and `l` then drag **the surface your
+keyboard is on** — each key its own border, and **outward only**:
+
+| Keyboard is on | `h` | `l` | `j` / `k` |
+|---|---|---|---|
+| a panel in the **right** column | widens it | — | — |
+| a panel in the **left** column | — | widens it | — |
+| a panel in the **bottom** row | — | — | `k` makes it taller |
+| the **main buffer** (`LLM`) | narrows a left column | narrows a right column | `j` narrows a bottom row |
+
+A dash means that border is the frame's own edge, so there is nothing to drag —
+`l` inside a right-hand column does nothing rather than shrinking it. Every
+border belongs to two surfaces, so growing one shrinks the other: `h` from
+inside the chat column widens it, and `l` from the transcript beside it narrows
+the same column. That is why resize works from both sides.
+
+`Esc`, `Enter`, or `Ctrl+N` again leaves. The mode stays armed while you drag
+several borders in one go. Sizes are per-edge and last for the session; the
+first time you drag the bottom row it switches from a percentage to exact rows,
+so one press is always one row.
+
+`Ctrl+N` used to start a new session. **New session is now the bare `n`** —
+in Normal mode. It is still safe to type: bare letters go to the prompt in
+Insert mode.
 
 ## Interactive terminal
 
@@ -416,6 +508,74 @@ Navigation opens only locations carrying the daemon-validated
 workspace-relative target; other results remain display-only. The TUI does
 not start language servers itself and does not claim live diagnostic push
 updates.
+
+### Completion
+
+With the editor buffer focused, press F8 — or type `:complete` in Normal
+mode — to ask the language server for completions at the cursor. A popup
+lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
+Normal mode) move the selection, `Enter` applies the selected item, and
+`Esc` dismisses the popup without touching anything. Typing anything else
+dismisses the popup first and inserts normally.
+
+Only supported plain-text edits can be applied, and only after the editor
+re-checks the document identity, revision, and edit range against the
+current text. Anything else — snippets, edits needing extra changes,
+server commands, stale or out-of-range results — is shown as unavailable
+and refused with a message; nothing is ever inserted on your behalf, and
+every acceptance is one ordinary edit with one undo step. An empty answer
+("no suggestions") looks different from a warming server, a changed
+document, or a server without completions, and a truncated list says so.
+A reconnect never lets an old answer paint over a new request, even when
+everything else lines up. On a very long single line, F8 past the first
+32 KiB refuses with "Line too long for completion at this position"
+instead of guessing the cursor.
+
+### Semantic highlighting limits and truncation
+
+Semantic highlighting covers up to 1000 tokens per file (the protocol
+maximum). Ordinary files with more than 100 tokens highlight normally;
+only a response beyond 1000 is rejected as a whole. Token types the theme
+does not style — including ordinary `variable`, `parameter`, `property`,
+and `namespace` kinds — render as plain text without erasing neighboring
+highlights. One malformed span drops only itself, never the whole file.
+
+When the language server reports more tokens than fit, the status row says
+`highlighting truncated`; when some spans were dropped locally it says
+`highlighting partial`. Either means the colors are incomplete coverage,
+not a complete file view. An empty highlight with no such notice is a real
+empty result, not a warming server. Editing, reloading, resyncing, or
+reconnecting clears the highlight until the next validated read, so colors
+never paint against a different revision.
+
+### Very long lines and large file trees
+
+One logical line is one screen row, and each visible line examines at most
+32 KiB per frame (256 KiB for the whole frame). A line past 32 KiB shows
+its start followed by a `…[too long]` marker, and the status row adds
+`line too long — showing prefix` when the cursor is on such a line. The
+cursor position itself stays exact, but horizontal scrolling and motion stop
+at the end of the shown prefix; normal files are unaffected.
+
+The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
+listing for the active workspace: the daemon walks at most 100,000
+directory entries and keeps at most 4096, saying which limit stopped it.
+The complete listing response (entries plus workspace/prefix, status,
+and truncation reason) is capped at 512 KiB on the wire: oversized trees
+are trimmed from the trailing top-level entries with an explicit reason,
+down to an explicitly truncated empty listing when even one giant nested
+directory cannot fit — never a silent empty project and never an oversize
+payload. At most one scan runs at a time on each side; the daemon holds
+its admission until the actual filesystem scan exits, so cancelling a
+request cannot start a second scan behind it. A refresh that arrives while
+a request is active waits as one queued latest request and the pane says
+"waiting for prior scan…" instead of piling up workers. A refresh that is
+superseded, or a listing answered for a different workspace, never paints
+a stale or foreign listing: the pane keeps its previous state and says
+why. Listings unavailable from the daemon are explicit errors — the tree
+never falls back to reading the local machine's own files, so a
+same-spelled local directory can never masquerade as the workspace. A busy
+daemon asks for an explicit retry with `r`.
 
 ## Where to go next
 

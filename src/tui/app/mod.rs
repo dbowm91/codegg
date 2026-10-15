@@ -483,6 +483,10 @@ pub struct App {
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
+    /// C004: single-flight admission for file-tree blocking scans. At most
+    /// one blocking scan executes; newer rebuilds coalesce as one pending
+    /// latest intent. Abort of the async waiter never frees capacity early.
+    pub file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator,
     /// Plugin-owned UI surfaces: dialogs, panels, and status items.
     /// Consumed by `apply_plugin_ui_effect` and rendered by
     /// `PluginUiRenderer`.
@@ -572,6 +576,14 @@ pub struct App {
     /// `ChatDialog` resolve against this project, and completions push a
     /// fresh snapshot into the window without a new fetch.
     pub chat_panel_project: Option<String>,
+    /// What the open panel picker was routing, if one is open.
+    ///
+    /// `TuiMsg::SelectPanel` means "show me this panel" to the manager and
+    /// "put this content in this panel" to the picker, and the message cannot
+    /// tell them apart — so the picker records its intent here and the message
+    /// handler spends it. Cleared on every commit, so a picker the user
+    /// abandoned cannot load its content into the next panel they pick.
+    pub pending_panel_picker_subject: Option<&'static str>,
     /// User-saved `Ctrl+digit` panel bindings, loaded from `codegg.json`
     /// and written back when the manager changes one.
     ///
@@ -754,6 +766,13 @@ impl App {
                 )
             })
             .unwrap_or_default();
+        // Which edge the panel is docked to. Same tolerance as the hotkeys
+        // above: an unrecognised value falls back to the default layout
+        // rather than refusing to start.
+        let saved_panel_placement = cfg
+            .and_then(|c| c.panel_placement.as_deref())
+            .and_then(crate::tui::panels::PanelPlacement::parse)
+            .unwrap_or_default();
         debug_log!(
             "loaded {} keybindings, custom config: {}",
             bindings.len(),
@@ -890,6 +909,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 working_since: None,
                 running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -938,6 +959,7 @@ impl App {
                 task_submit_started: false,
                 task_model_choice: None,
                 chat_seed: None,
+                stop_armed_at: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1028,7 +1050,7 @@ impl App {
             },
             command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
-            panel_host: crate::tui::panels::SidePanelHost::new(),
+            panel_host: crate::tui::panels::SidePanelHost::with_placement(saved_panel_placement),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             policy_ui: crate::tui::commands::policy::PolicyUiState::default(),
             session_store: None,
@@ -1139,6 +1161,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             plugin_manager: None, // initialized lazily after construction
             project_tabs,
@@ -1156,6 +1180,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            pending_panel_picker_subject: None,
             panel_hotkeys: saved_panel_hotkeys,
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1455,6 +1480,8 @@ impl App {
                 session_status: SessionStatus::Idle,
                 working_since: None,
                 running_tool: None,
+                active_turn_id: None,
+                stopped_turn: false,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1503,6 +1530,7 @@ impl App {
                 task_submit_started: false,
                 task_model_choice: None,
                 chat_seed: None,
+                stop_armed_at: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -1673,6 +1701,8 @@ impl App {
                 crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
+            file_tree_coordinator: crate::tui::file_tree_coordinator::FileTreeScanCoordinator::new(
+            ),
             render_panic_injection: RenderPanicInjection::all_false(),
             remote_sequence: 0,
             plugin_manager: None, // initialized lazily after construction
@@ -1691,6 +1721,7 @@ impl App {
             observer: crate::tui::app::state::ObserverState::new(),
             chat: crate::tui::app::state::ChatState::new(),
             chat_panel_project: None,
+            pending_panel_picker_subject: None,
             panel_hotkeys: Default::default(),
             terminal_panel_spawn: false,
             workspace_focus: crate::tui::app::state::WorkspaceFocus::default(),
@@ -1777,10 +1808,11 @@ impl App {
         }
         self.session_state.working_since = None;
         self.session_state.session_status = SessionStatus::Error;
-        self.messages_state.toasts.error(
+        self.messages_state.toasts.error(&format!(
             "turn stalled: the core produced no event for over 5 minutes. \
-             The turn may still be running — press esc to cancel it.",
-        );
+             The turn may still be running — press {} twice to stop it.",
+            crate::tui::commands::turn_control::STOP_KEY_LABEL,
+        ));
         true
     }
 
@@ -1800,8 +1832,15 @@ impl App {
         }
         use crate::protocol::core::CoreEvent as E;
         match event {
-            E::TurnStarted { .. } => {
+            E::TurnStarted { turn_id, .. } => {
                 self.messages_state.messages.finalize_streaming();
+                // The daemon mints this id and `TurnCancel` rejects a
+                // mismatch, so it is the only thing that can stop the turn it
+                // just announced. It was discarded here, which is why nothing
+                // in the TUI could interrupt a running agent.
+                self.session_state.active_turn_id = Some(turn_id.clone());
+                // A fresh turn supersedes any earlier stop.
+                self.session_state.stopped_turn = false;
                 // Announce the turn in the chat tail. Everything below
                 // re-arms this on the next event, so the one-line
                 // indicator follows the agent's actual phase
@@ -1847,7 +1886,7 @@ impl App {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state
                     .messages
-                    .begin_activity(format!("running {tool_name}"));
+                    .begin_activity(tool_activity_label(&tool_name, &arguments));
                 self.session_state.running_tool =
                     Some(crate::tui::app::state::session::RunningTool::new(
                         tool_id.clone(),
@@ -1905,6 +1944,12 @@ impl App {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state.messages.end_activity();
                 self.messages_state.messages.finalize_streaming();
+                // The turn is over either way, so it can no longer be
+                // cancelled. `stopped_turn` deliberately survives: the user
+                // asked to stop, and the stopped badge plus `/resume` are
+                // still what they should see until they resume or send a new
+                // prompt.
+                self.session_state.active_turn_id = None;
                 self.session_state.session_status = if stop_reason == "error" {
                     SessionStatus::Error
                 } else {
@@ -1949,6 +1994,8 @@ impl App {
                 // The single most important arm: without it a failed turn
                 // left the status pinned on "working" with no explanation.
                 self.messages_state.messages.finalize_streaming();
+                self.messages_state.messages.end_activity();
+                self.session_state.active_turn_id = None;
                 self.session_state.session_status = SessionStatus::Error;
                 self.status_bar.set_thinking(false, None);
                 self.messages_state.toasts.error(&message);
@@ -3146,6 +3193,18 @@ impl App {
 
     pub fn prepare_shutdown(&mut self) {
         self.invalidate_pending_session_submit(false);
+        // C004 bounded shutdown policy: signal the in-flight blocking scan
+        // cooperatively (it exits at its next entry, within the examined
+        // budget), drop any queued latest intent, and abort waiters. A worker
+        // stuck inside a kernel `read_dir` syscall cannot be joined on a
+        // bounded deadline — the shutdown does not wait for it and never
+        // claims it was joined. The worker's `RunningGuard` still releases
+        // its instrumentation count on exit; its late completion (if any)
+        // mismatches the cleared admission and is discarded.
+        self.file_tree_state.cancel_in_flight();
+        self.file_tree_coordinator.clear_pending();
+        tracing::debug!("{}", self.file_tree_coordinator.diagnostics());
+        self.file_tree_coordinator.force_clear_for_shutdown();
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
         if active > 0 {
@@ -3287,9 +3346,22 @@ impl App {
         // what lets one bottom composer deliver to either target, because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
-        let panel_active = self.ui_state.sidebar_visible
+        let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
             && self.ui_state.input_mode == InputMode::Normal;
+        // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
+        // ahead of the focused panel, and ahead of the binding map. It has to
+        // be ahead of the panel because `h/j/k/l` are the panel's own cursor
+        // movements, and ahead of the map because `Ctrl+N` is deliberately no
+        // longer an `InputAction`: the frame is not a composable action, and
+        // giving it a configurable binding would let someone bind it to a key
+        // a panel already owns. Normal mode only, so a chord typed into the
+        // composer stays text.
+        if self.ui_state.input_mode == InputMode::Normal
+            && crate::tui::commands::panels::handle_panel_resize_key(self, key)
+        {
+            return;
+        }
         // A saved `Ctrl+digit` panel binding. Claimed *before* the focused
         // panel, because a panel that swallows it would trap the user in
         // whichever panel they last selected — the only key that leaves is
@@ -3433,6 +3505,12 @@ impl App {
             Some(InputAction::SelectModel) => self.process_msg(TuiMsg::OpenModelDialog),
             Some(InputAction::ClearSession) => self.process_msg(TuiMsg::ClearSession),
             Some(InputAction::NewSession) => self.process_msg(TuiMsg::NewSession),
+            Some(InputAction::ToggleAgentRun) => {
+                crate::tui::commands::turn_control::toggle_stop_or_resume(
+                    self,
+                    crate::tui::commands::turn_control::STOP_KEY_LABEL,
+                );
+            }
             Some(InputAction::ToggleSidebar) => self.process_msg(TuiMsg::ToggleSidebar),
             // Every direction shares one contextual dispatcher: it docks the
             // open box when there is one, and selects a pane when there is
@@ -3486,7 +3564,7 @@ impl App {
             Some(InputAction::ToggleSection) => {
                 if workspace_active {
                     crate::tui::commands::workspace_dashboard::toggle_dashboard_expand(self);
-                } else if self.ui_state.sidebar_visible {
+                } else if self.panel_host.any_visible() {
                     self.sidebar.toggle_focused();
                 }
             }
@@ -4844,14 +4922,16 @@ impl App {
                     .to_string();
 
                 if args.is_empty() {
-                    // Bare `/agents`: open the management panel, which is the
-                    // interactive surface. The *text* listing stays on
-                    // `/agents show` and `/agents --all` below, so nothing
-                    // that was reachable before becomes unreachable.
-                    crate::tui::commands::panels::open_panel_box(
-                        self,
-                        crate::tui::panels::SidePanelId::Agents,
-                    );
+                    // Bare `/agents`: open a box, like every other `/` command
+                    // that brings up a surface, and let the user say which
+                    // panel it should go to. It used to jump straight into the
+                    // side column, so the command had no box of its own and
+                    // no way to ask where its content belonged — and a list
+                    // that is already the whole answer looks like nothing
+                    // happened. The *text* listing stays on `/agents show`
+                    // and `/agents --all` below, so nothing that was
+                    // reachable before becomes unreachable.
+                    crate::tui::commands::panels::open_panel_picker(self, "agents");
                     return;
                 }
 
@@ -5505,6 +5585,12 @@ impl App {
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
+            }
+            B::Stop => {
+                crate::tui::commands::turn_control::stop(self);
+            }
+            B::StartTurn => {
+                crate::tui::commands::turn_control::start(self);
             }
             B::Share => {
                 if let Some(ref session) = self.session_state.session {
@@ -9586,20 +9672,15 @@ impl App {
         }
     }
 
+    /// Hide or show the panel buffer (`Ctrl+B`).
+    ///
+    /// Thin delegation: the behaviour lives in
+    /// `commands::panels::toggle_selected_pane`, which is scoped to the
+    /// *selected* pane rather than to a right-hand column, so a left or
+    /// bottom placement is closed by the same key without this method growing
+    /// a branch per side.
     fn toggle_sidebar(&mut self) {
-        self.ui_state.sidebar_visible = !self.ui_state.sidebar_visible;
-        if self.ui_state.sidebar_visible {
-            // Focus the active panel, not the session sidebar: the column
-            // may be showing chat, and focusing a panel the user cannot see
-            // would strand every key in an invisible surface.
-            crate::tui::commands::panels::focus_panel(self);
-            if self.panel_host.active() == crate::tui::panels::SidePanelId::Session {
-                self.sidebar.focus_sidebar();
-            }
-        } else {
-            crate::tui::commands::panels::blur_panel(self);
-            self.sidebar.blur_sidebar();
-        }
+        crate::tui::commands::panels::toggle_selected_pane(self);
     }
 
     /// Handle `/theme [list|use <name>|reload|diagnostics]`. With no arguments,
@@ -9891,8 +9972,8 @@ impl App {
                 vec!["git".into(), "show".into(), format!("HEAD:{}", file_path)];
             let old_content = crate::git_mutations::GitEnvPolicy::default()
                 .apply_sync(&show_argv, &git_root)
-                .output()
                 .ok()
+                .and_then(|mut command| command.output().ok())
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
                 .unwrap_or_default();
@@ -9914,7 +9995,8 @@ impl App {
             let diff_argv: Vec<String> = vec!["git".into(), "diff".into()];
             let output = crate::git_mutations::GitEnvPolicy::default()
                 .apply_sync(&diff_argv, &git_root)
-                .output();
+                .map_err(|outcome| std::io::Error::other(outcome.to_string()))
+                .and_then(|mut command| command.output());
 
             match output {
                 Ok(o) if o.status.success() => {
@@ -10037,7 +10119,8 @@ impl App {
         ];
         let output = crate::git_mutations::GitEnvPolicy::default()
             .apply_sync(&checkout_argv, &git_root)
-            .output();
+            .map_err(|outcome| std::io::Error::other(outcome.to_string()))
+            .and_then(|mut command| command.output());
 
         match output {
             Ok(o) if o.status.success() => {
@@ -11530,14 +11613,62 @@ impl App {
     /// `None` when no panel is focused and nothing is armed — the row is not
     /// reserved at all in that case, so the prompt keeps its height.
     pub fn composer_hint_text(&self) -> Option<String> {
+        // Resize mode owns the frame, so it outranks every surface hint: the
+        // keys that just changed meaning are `h/j/k/l`, and a reader who sees
+        // "j/k scroll" while resize mode is armed has been told something
+        // false. A modal layer has to name itself on the line that exists to
+        // describe the modal layer.
+        if self.panel_host.is_resizing() {
+            let subject = match self.panel_host.resize_subject() {
+                crate::tui::panel_resize::ResizeSubject::Main => "LLM",
+                crate::tui::panel_resize::ResizeSubject::Panel(placement) => placement.label(),
+            };
+            return Some(format!(
+                "RESIZE {subject} · h/j/k/l drag its own borders out · Esc/Enter exit"
+            ));
+        }
         if let Some(seed) = self.prompt_state.chat_seed.as_ref() {
             return Some(format!(
                 "CHAT · {}",
                 crate::tui::chat_browser::input_hints(seed)
             ));
         }
-        self.panel_host
-            .composer_hints(self.chat_panel_project.as_deref())
+        // The LLM buffer has no panel to advertise keys for, which is exactly
+        // why its own keys were undiscoverable: the one surface where a turn
+        // runs long, and the one surface with nothing written above the input.
+        // Only during a turn — an idle buffer has nothing to stop.
+        //
+        // The turn keys come first but never gate the panel's own hints: a
+        // focused panel advertises its keys whether a turn is running or not,
+        // and only a composer with neither shows no row at all.
+        let agent_keys = self.llm_buffer_key_hints();
+        let panel = self
+            .panel_host
+            .composer_hints(self.chat_panel_project.as_deref());
+        match (agent_keys, panel) {
+            (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
+            (Some(agent_keys), None) => Some(agent_keys),
+            (None, Some(panel)) => Some(panel),
+            (None, None) => None,
+        }
+    }
+
+    /// The stop/resume keys for the main buffer, or `None` when idle.
+    ///
+    /// Distinct from the strip's own trailing hint: that one is drawn only
+    /// while the working strip is up, and this one is what reserves the row.
+    fn llm_buffer_key_hints(&self) -> Option<String> {
+        let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
+        if self.session_state.stopped_turn {
+            return Some(format!("{key} start agent · /start · i type"));
+        }
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            if crate::tui::commands::turn_control::stop_armed(self) {
+                return Some(format!("press {key} again to stop agent"));
+            }
+            return Some(format!("{key} stop agent (press twice) · /stop · i type"));
+        }
+        None
     }
 
     /// Arm the shared composer for a chat reply or edit.
@@ -11883,6 +12014,28 @@ impl App {
             unauthorized,
             unsupported,
             reconnect_epoch,
+        );
+    }
+
+    /// M004: apply a finished completion read. Stale, superseded, and
+    /// wrong-scope answers are dropped by the state guard; nothing is
+    /// fabricated. Used by the runtime dispatch arm and by trajectory
+    /// tests driving completions without the runtime loop.
+    pub fn apply_editor_completion(
+        &mut self,
+        request_id: u64,
+        completion_epoch: u64,
+        scope: crate::tui::editor_completion::EditorCompletionScope,
+        result: Option<crate::protocol::lsp::LspCompletionResultDto>,
+        error: Option<String>,
+    ) {
+        crate::tui::commands::editor::apply_editor_completion(
+            self,
+            request_id,
+            completion_epoch,
+            scope,
+            result,
+            error,
         );
     }
 
@@ -13860,6 +14013,69 @@ impl App {
             .toasts
             .info("Handoff exported to clipboard");
     }
+}
+
+/// Describe what the agent is doing, for the one-line activity throbber.
+///
+/// The bare tool name answers "is something happening" but not "what". A turn
+/// that spends ninety seconds in `bash` looks identical to a turn that spent
+/// ninety seconds thinking, and the user cannot tell which to wait out — so
+/// the label carries the argument that identifies the work.
+///
+/// Bounded twice over: the summary is capped in [`SUMMARY_MAX`] characters and
+/// flattened to a single line, because this draws into one fixed-height row.
+/// It is never *more* revealing than the transcript itself, which already
+/// renders these same arguments in full above the strip.
+fn tool_activity_label(tool_name: &str, arguments: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        // Unparseable arguments are not a reason to lose the tool name.
+        return format!("running {tool_name}");
+    };
+    let Some(summary) = summarize_tool_arguments(&value) else {
+        return format!("running {tool_name}");
+    };
+    if summary.is_empty() {
+        return format!("running {tool_name}");
+    }
+    format!("running {tool_name} · {summary}")
+}
+
+/// Argument keys worth naming, in priority order, per tool.
+///
+/// Ordered rather than scanned because the *first* meaningful argument is the
+/// one that identifies the work; a tool with a dozen knobs still gets a label
+/// that names the one that matters.
+const TOOL_SUMMARY_KEYS: &[&str] = &[
+    "command",
+    "path",
+    "file_path",
+    "pattern",
+    "query",
+    "url",
+    "name",
+    "description",
+];
+
+/// Cap on the argument summary appended to a tool label.
+const SUMMARY_MAX: usize = 48;
+
+/// Pick the most identifying bounded argument out of a tool call's arguments.
+fn summarize_tool_arguments(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in TOOL_SUMMARY_KEYS {
+        let Some(raw) = object.get(*key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let flattened = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flattened.is_empty() {
+            continue;
+        }
+        return Some(crate::tui::wrap::ellipsize_to_width(
+            &flattened,
+            SUMMARY_MAX,
+        ));
+    }
+    None
 }
 
 fn index_files_sync(dir: &str) -> Vec<String> {
@@ -16855,6 +17071,26 @@ mod projection_adoption_tests {
         app.on_projection_reconnect();
         assert!(app.projection_client.is_unsupported());
         assert_eq!(app.projection_client.reconnect_epoch(), 1);
+    }
+
+    #[test]
+    fn on_projection_reconnect_clears_stale_semantic_highlight() {
+        let mut app = App::new_for_testing("/tmp".into());
+        app.editor_state.lsp.semantic_tokens = vec![codegg_protocol::lsp::LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        app.editor_state.lsp.semantic_revision = Some(9);
+        app.editor_state.lsp.semantic_truncated = true;
+        app.editor_state.lsp.semantic_incomplete = true;
+        app.on_projection_reconnect();
+        assert!(app.editor_state.lsp.semantic_tokens.is_empty());
+        assert_eq!(app.editor_state.lsp.semantic_revision, None);
+        assert!(!app.editor_state.lsp.semantic_truncated);
+        assert!(!app.editor_state.lsp.semantic_incomplete);
     }
 
     #[test]

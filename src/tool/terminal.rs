@@ -144,7 +144,17 @@ impl TerminalTool {
             outcome,
         );
         crate::live_execution_audit::emit_command_execute(
-            emitter, audit, digest_hex, "process", outcome, &scope,
+            emitter,
+            audit,
+            digest_hex,
+            "process",
+            outcome,
+            &scope,
+            None,
+            Some("terminal"),
+            None,
+            None,
+            None,
         )
         .await;
     }
@@ -420,13 +430,13 @@ mod tests {
             ),
             ("sleep", vec!["5".to_string(), "&".to_string()], false),
             ("bash", vec!["-c".to_string(), "echo ok".to_string()], false),
-            // Hard denies stay hard in every approval mode.
+            // Built-in risk patterns are advisory in agent execution.
             (
                 "env",
                 vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
-                true,
+                false,
             ),
-            ("reboot", vec![], true),
+            ("reboot", vec![], false),
         ];
 
         for (command, args, should_block) in cases {
@@ -466,12 +476,15 @@ mod tests {
         assert!(allowlisted
             .check_command_security_for_args("echo", &["ok".to_string()])
             .is_err());
-        // An allowlist must not bypass a *canonical hard deny*. Command
-        // substitution is an escalation signal, not a hard deny, so it is
-        // no longer rejected here — the permission layer reviews it.
+        // Built-in patterns are advisory; command substitution on an
+        // allowlisted command is a review signal, not a refusal.
         assert!(allowlisted
             .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
             .is_ok());
+        // Built-in patterns are advisory, but an explicit allowlist still
+        // restricts: `rm` is not allowlisted, so the env-wrapped destructive
+        // command is refused by the adapter's own filter, not by any
+        // canonical pattern.
         assert!(allowlisted
             .check_command_security_for_args(
                 "env",
@@ -501,11 +514,13 @@ mod tests {
             }))
             .await;
 
-        assert!(result.is_ok(), "an escalation signal must not be rejected");
+        assert!(
+            result.is_ok(),
+            "shell syntax must not be rejected by text heuristics"
+        );
         assert!(
             marker.exists(),
-            "the escalation signal must reach the permission layer, which is the \
-             only remaining gate before this runs"
+            "the harmless fixture should execute in this direct-tool test"
         );
     }
 }

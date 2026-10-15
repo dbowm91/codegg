@@ -27,34 +27,33 @@ tool-execution path classifies every tool call and resolves an action against th
 policy, in this order:
 
 1. An explicit `denied_commands` match: denied
-2. **Critical** classification with `deny_critical_commands = true`: denied
-3. **Critical** with `deny_critical_commands = false` and `ask_on_high_risk_command = true`: escalated from Allow to Ask
+2. **Critical** classification with explicitly configured `deny_critical_commands = true`: denied as a best-effort text rule
+3. **Critical** with the gate omitted (default) and `ask_on_high_risk_command = true`: escalated from Allow to Ask
 4. Network exfiltration or secret exposure with the matching `ask_on_*` gate: escalated from Allow to Ask
 5. **High** classification with `ask_on_high_risk_command = true`: escalated from Allow to Ask
 6. **Medium** under `strict` only: escalated from Allow to Ask
 7. Otherwise: `Observe` — existing permission behavior is unchanged
 
-This does not replace the permission system. It adds an additional safety layer.
+Built-in command and severity classifiers are advisory. The critical gate is
+omitted by default; setting it to `true` opts into a best-effort invocation text
+denial. Neither classifier is OS containment.
 
-## Shell Blocked Patterns
+## Shell Command Risk Signals
 
-The `bash` and `terminal` tools enforce shell safety in two tiers, and the
-distinction matters.
+The agent-facing `bash` and `terminal` tools combine explicit invocation-text
+filters with advisory risk signals. Human-owned shell confirmation remains a
+separate policy path.
 
-**Hard deny** is reserved for a short list of catastrophic shapes: fork bombs,
-`rm -rf` against `/` or `~`, `mkfs` on a block device, `dd` writing to a raw
-device, disk partitioning (`fdisk`/`parted`), system shutdown/reboot, and
-`kill -9 -1`. These are rejected inside the tool, *below* the permission
-system, so no approval mode and no user rule can weaken them. A scoped delete
-like `rm -rf ./target` is ordinary work and is not in this tier.
+Built-in catastrophic command shapes (fork bombs, raw-device writes, and power
+commands) are risk signals and can request review through the configured
+approval mode. They do not guarantee that equivalent behavior is absent.
 
-**Escalation signals** cover everything else of note — pipe-to-shell, redirects
-to a block device, `$VAR`/`$( )`/backticks, `eval`/`exec`, dot-sourcing, inline
-interpreters, `chmod`/`chown` to system paths, shell wrappers (`bash -c`),
-privilege escalation (`sudo`/`su`/`pkexec`), credential-file reads, and
-backgrounding. These are not rejections. They are surfaced to the permission
-layer *before* execution as a normal approval prompt, so you decide under the
-configured approval mode and sandbox.
+Concrete risky targets such as pipe-to-shell, raw-device redirects,
+system-path writes, privilege elevation, and credential-file reads may request
+review before execution. Ordinary quoting, variable or command substitution,
+interpreter flags, shell wrappers, and background syntax alone do not request
+review. Explicit `bash_deny_patterns` and `denied_commands` remain
+best-effort invocation filters.
 
 ### Why the escalation tier is not a blocklist
 
@@ -78,6 +77,13 @@ For that reason CodeGG follows the same direction the major agents took:
 Containment here is the `SandboxProfile` (`read_only` / `workspace_write` /
 `full_host`) plus Landlock, which a regex cannot emulate.
 
+On Linux, host feature discovery for user namespaces, other namespace types,
+seccomp, proc, Bubblewrap, Landlock, cgroup v2, and active LSMs is diagnostic.
+It does not mean those dimensions were applied to a child. CodeGG currently
+uses its existing filesystem helper; network remains unrestricted under the
+legacy profile, and enhanced namespace/network/resource requests remain
+unavailable until their native enforcement gates close.
+
 ### Tuning
 
 Three global pattern lists configure the review controls:
@@ -86,11 +92,20 @@ Three global pattern lists configure the review controls:
 |---|---|
 | `permission.bash_allow_patterns` | auto-approve without prompting (adds to a built-in read-only set: `ls`, `cat`, `head`, `tail`, `grep`, `rg`, `find`, `wc`, `diff`, `cargo`, read-only `git`, …) |
 | `permission.bash_ask_patterns` | escalate to a prompt (additive to the built-in signals) |
-| `permission.bash_deny_patterns` | reject outright (your own rules; the catastrophic tier above is separate and cannot be relaxed) |
+| `permission.bash_deny_patterns` | best-effort denial of a matching invocation (operator-selected text rule) |
 
-An escalation signal resolves under the active `approval_mode`: `interactive`
+Within a permission tier, a matching pattern takes precedence over its
+unpatterned fallback, and Deny outranks Ask, which outranks Allow. A current
+effective Deny also outranks a remembered Allow. These patterns classify the
+invocation text; they do not prevent a script, wrapper, or alternate tool from
+producing an equivalent effect. Saved approvals for simple shell commands are
+scoped by executable family. Compound or ambiguous commands are scoped by a
+digest of the full command text, so they do not inherit a saved `cmd:cargo`
+grant. Older explicitly broad saved grants remain broad for compatibility.
+
+An advisory signal resolves under the active `approval_mode`: `interactive`
 prompts you, `automatic` routes to the bounded reviewer, and `yolo`
-auto-approves escalations while hard denies and the sandbox still apply.
+auto-approves escalations while explicit text denies and the sandbox still apply.
 
 ## Security Tool
 

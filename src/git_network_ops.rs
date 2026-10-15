@@ -51,11 +51,15 @@ impl NetworkEnvPolicy {
     /// Build a `Command` from argv and repository root with the
     /// network policy applied. The caller receives the `Command` with
     /// `args` and `current_dir` already set.
-    pub fn apply_to_command(&self, argv: &[String], cwd: &Path) -> Command {
+    pub fn apply_to_command(
+        &self,
+        argv: &[String],
+        cwd: &Path,
+    ) -> Result<Command, egggit::GitExecutionPolicyOutcome> {
         // Start from the canonical generic Git policy. Network-specific
         // access is an additive overlay; it must not duplicate the local
         // env hardening rules.
-        let mut cmd = self.base.apply(argv, cwd);
+        let mut cmd = self.base.apply(argv, cwd)?;
 
         // Restore network-specific env vars (SSH agent, proxy,
         // credential-helper essentials for remote access).
@@ -74,7 +78,7 @@ impl NetworkEnvPolicy {
             cmd.env_remove(key);
         }
 
-        cmd
+        Ok(cmd)
     }
 }
 

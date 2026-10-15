@@ -87,6 +87,22 @@ pub struct CoreDaemon {
     pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
     /// Process-local canonical editor document buffers and connection leases.
     pub documents: Arc<crate::document_service::DocumentService>,
+    /// C005 (ADR-0022 §4): single-flight admission for daemon-owned
+    /// directory scans. One permit per daemon: a contended scan answers
+    /// `busy` instead of queueing unbounded blocking workers. The permit
+    /// is held from admission until the blocking walk completes, so an
+    /// aborted waiter can never free a worker that is still scanning.
+    ///
+    /// C006: the permit is owned by the actual `spawn_blocking` worker
+    /// (moved into its closure), never by the abortable async handler.
+    /// See `super::daemon_documents::DirectoryListingProbe` for the
+    /// deterministic worker-entry/exit instrumentation.
+    pub directory_listing_permits: Arc<tokio::sync::Semaphore>,
+    /// C006: per-daemon directory-listing worker probe. Counts actual
+    /// blocking-worker entry/exit (peak live scanners) and hosts an
+    /// optional deterministic test gate. Production paths never install
+    /// a gate, so behaviour is unchanged outside tests.
+    pub directory_listing_probe: Arc<super::daemon_documents::DirectoryListingProbe>,
     /// Ephemeral one-use previews for guarded root `AGENTS.md` publication.
     pub project_init_drafts: Arc<super::project_init::ProjectInitDraftRegistry>,
     /// Project Work Orders M001: daemon-owned project work-order
@@ -538,6 +554,7 @@ impl CoreDaemon {
                 | CoreRequest::DocumentSave { .. }
                 | CoreRequest::DocumentReload { .. }
                 | CoreRequest::DocumentClose { .. }
+                | CoreRequest::WorkspaceDirectoryList { .. }
                 | CoreRequest::ProjectInitDraftGet { .. }
                 | CoreRequest::ProjectInitPublish { .. }
         );
@@ -948,6 +965,9 @@ impl CoreDaemon {
             | CoreRequest::ProjectInitPublish { project_id, .. } => Some(project_id),
             CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
             CoreRequest::HumanShellRunCreate { request } => Some(request.project_id.as_str()),
+            // C005: the listing carries its locator nested in the DTO,
+            // exactly like the human-shell and LSP DTO-carrying reads.
+            CoreRequest::WorkspaceDirectoryList { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunRead { request } => Some(request.project_id.as_str()),
             CoreRequest::HumanShellRunCancel { request } => Some(request.project_id.as_str()),
             CoreRequest::SessionList { project_id, .. } => Some(project_id),
@@ -2927,6 +2947,12 @@ impl CoreDaemon {
             | CoreRequest::EditCheckpointReapply { session_id, .. }
             | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
             CoreRequest::LspPreviewApply { request } => Some(request.session_id.as_str()),
+            // M003: the completion read resolves its session exactly like the
+            // preview-apply write, so a team principal with `file.read` on
+            // the session's project passes and one without is denied — never
+            // `NotReady`, never `MissingScope` for a bound session. The M006-B
+            // reads are deliberately untouched here.
+            CoreRequest::LspCompletionGet { request } => Some(request.session_id.as_str()),
             CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
             CoreRequest::GoalSet { session_id, .. }
             | CoreRequest::GoalFromFile { session_id, .. }

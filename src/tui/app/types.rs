@@ -73,6 +73,10 @@ pub enum Dialog {
     /// `/approval` + `/sandbox` fast-select. FocusManager-owned; see
     /// `policy_selector.rs`.
     PolicySelector,
+    /// "Which panel should this content go in?" — opened by `/agents` and
+    /// shared with the panel manager's list mechanics. See
+    /// `components/dialogs/panel_picker.rs`.
+    PanelPicker,
 }
 
 impl Dialog {
@@ -127,6 +131,7 @@ impl Dialog {
                 | Self::TriggerSecret
                 | Self::WorkspaceDashboard
                 | Self::PolicySelector
+                | Self::PanelPicker
         )
     }
 }
@@ -214,6 +219,34 @@ pub enum TuiMsg {
     SavePanelHotkey {
         digit: char,
         panel: crate::tui::panels::SidePanelId,
+    },
+    /// Move the panel to `placement` and persist the choice.
+    ///
+    /// Separate from `SelectPanel` on purpose: the two answer different
+    /// questions — *which panel* is loaded versus *where the panel lives* —
+    /// and folding them together would make the layout strip a way to
+    /// silently retarget the loaded panel.
+    SetPanelPlacement {
+        placement: crate::tui::panels::PanelPlacement,
+    },
+    /// Step to the next placement. The manager's single layout key.
+    CyclePanelPlacement,
+    /// Put the manager's highlighted panel on `placement`.
+    ///
+    /// The Normal-mode directional inside the manager, so *where* a panel lives
+    /// is the same gesture everywhere else in the TUI rather than a manager-only
+    /// verb. Separate from [`SelectPanel`](Self::SelectPanel) for the reason
+    /// [`SetPanelPlacement`](Self::SetPanelPlacement) is: this one positions
+    /// and leaves the panel unloaded, so arriving on an edge and filling it are
+    /// two deliberate acts rather than one gesture that silently starts a load.
+    ///
+    /// Deliberately not [`MoveDirection`](Self::MoveDirection): that resolves
+    /// the keyboard position between the edges already in use, which is the
+    /// wrong question while the manager is modal — there is no panel focused to
+    /// move.
+    MovePanelTo {
+        panel: crate::tui::panels::SidePanelId,
+        placement: crate::tui::panels::PanelPlacement,
     },
     ToggleTodoList,
     ToggleFullscreen,

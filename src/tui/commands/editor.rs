@@ -29,8 +29,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use codegg_client::{DocumentController, DocumentControllerError, DocumentState};
 use codegg_protocol::document::DocumentScope;
 use codegg_protocol::lsp::{
-    LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto, LspReadOperation, LspReadRequestDto,
-    LspReadResultDto, LspReadStatus,
+    LspCompletionApplicabilityDto, LspCompletionRequestDto, LspCompletionResultDto,
+    LspCompletionUnsupportedReason, LspDiagnosticsGetRequestDto, LspDiagnosticsResultDto,
+    LspReadOperation, LspReadRequestDto, LspReadResultDto, LspReadStatus,
 };
 
 use crate::tui::app::state::editor::{EditorNotice, EditorOperation, EditorState, EditorStatus};
@@ -42,6 +43,7 @@ use crate::tui::editor::{
 };
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+use super::super::editor_completion::EditorCompletionScope;
 use super::super::editor_lsp::EditorLspScope;
 
 /// Maximum length of a workspace-relative path accepted by the open command.
@@ -504,6 +506,9 @@ pub(crate) fn refresh_editor_diagnostics(app: &mut App) {
     let Some(scope) = current_lsp_scope(app) else {
         return;
     };
+    // The diagnostics panel takes the centered surface; a completion popup
+    // underneath would be stale context, so the explicit gesture wins.
+    app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_diagnostics(&scope) else {
         return;
     };
@@ -589,6 +594,8 @@ fn start_editor_lsp_read(app: &mut App, operation: LspReadOperation, query: Opti
             .warning("LSP is unavailable: select a session-bound workspace document first");
         return;
     };
+    // A read result panel takes the centered surface; see above.
+    app.editor_state.completion.dismiss();
     let Some(request_id) = app.editor_state.lsp.begin_read(&scope) else {
         app.messages_state
             .toasts
@@ -731,14 +738,17 @@ pub(crate) fn apply_editor_lsp_read(
         return;
     }
     if operation == LspReadOperation::SemanticTokens {
-        let tokens = match app.editor_state.lsp.read_result.take() {
+        // A `Ready` with zero tokens is a valid empty highlight; `NotReady`,
+        // errors, and wrong-operation payloads carry no semantic truth and
+        // clear the presentation instead of masquerading as empty.
+        let ready = match app.editor_state.lsp.read_result.take() {
             Some(LspReadResultDto {
                 status: LspReadStatus::Ready,
                 payload:
-                    Some(crate::protocol::lsp::LspReadPayloadDto::SemanticTokens { tokens, .. }),
+                    Some(crate::protocol::lsp::LspReadPayloadDto::SemanticTokens { tokens, truncated }),
                 ..
-            }) => tokens,
-            _ => Vec::new(),
+            }) => Some((tokens, truncated)),
+            _ => None,
         };
         let current_revision = app
             .editor_state
@@ -746,12 +756,32 @@ pub(crate) fn apply_editor_lsp_read(
             .as_ref()
             .and_then(|session| session.try_snapshot())
             .map(|snapshot| snapshot.revision().get());
-        app.editor_state.lsp.semantic_tokens =
-            if current_revision == app.editor_state.lsp.semantic_revision {
-                validate_semantic_tokens(app, tokens)
-            } else {
-                Vec::new()
-            };
+        match (ready, current_revision) {
+            (Some((tokens, truncated)), Some(current))
+                if Some(current) == app.editor_state.lsp.semantic_revision =>
+            {
+                match validate_semantic_tokens(app, tokens) {
+                    Some(validated) => {
+                        app.editor_state
+                            .lsp
+                            .store_semantic(current, validated, truncated);
+                    }
+                    None => {
+                        // No snapshot to validate against: fail closed with
+                        // no highlight rather than painting unvalidated spans.
+                        app.editor_state.lsp.clear_semantic();
+                    }
+                }
+            }
+            (Some(_), _) => {
+                // Late completion after edit, resync, reconnect, or switch
+                // is discarded without painting a different revision.
+                app.editor_state.lsp.clear_semantic();
+            }
+            (None, _) => {
+                app.editor_state.lsp.clear_semantic();
+            }
+        }
         app.editor_state.lsp.panel = None;
     }
 }
@@ -759,16 +789,341 @@ pub(crate) fn apply_editor_lsp_read(
 fn validate_semantic_tokens(
     app: &App,
     tokens: Vec<crate::protocol::lsp::LspSemanticTokenDto>,
-) -> Vec<crate::protocol::lsp::LspSemanticTokenDto> {
-    let Some(snapshot) = app
+) -> Option<crate::tui::editor_lsp::ValidatedSemanticTokens> {
+    let snapshot = app
         .editor_state
         .session
         .as_ref()
-        .and_then(|session| session.try_snapshot())
-    else {
-        return Vec::new();
+        .and_then(|session| session.try_snapshot())?;
+    Some(crate::tui::editor_lsp::validate_semantic_tokens(
+        &snapshot, tokens,
+    ))
+}
+
+// ── Completion (M004) ────────────────────────────────────────────────────────
+
+/// Why a completion scope could not be built for an explicit request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionScopeError {
+    /// No bound session, attachment, snapshot, or read scope.
+    Unavailable,
+    /// The cursor sits past the bounded position budget on a giant line.
+    /// Refused visibly rather than allocating the whole prefix or sending
+    /// a truncated/wrong UTF-16 cursor.
+    LineTooLong,
+}
+
+/// Build the completion scope for an explicit user request.
+///
+/// The read scope proves session/project/workspace/path binding; the
+/// attachment adds the real document identity and daemon revision; the
+/// cursor resolves to the UTF-16 position the server will see through a
+/// bounded rope-chunk walk (C003/F3), never by materializing a giant line
+/// prefix. Returns an error when anything is missing or the line is over
+/// budget, leaving the popup closed: a completion request without a bound
+/// attachment is a client bug, and an over-budget line is an explicit
+/// refusal — neither is ever sent half-formed.
+fn current_completion_scope(app: &App) -> Result<EditorCompletionScope, CompletionScopeError> {
+    let read_scope = current_lsp_scope(app).ok_or(CompletionScopeError::Unavailable)?;
+    let session = app
+        .editor_state
+        .session
+        .as_ref()
+        .ok_or(CompletionScopeError::Unavailable)?;
+    let attachment = session
+        .attachment_info()
+        .ok_or(CompletionScopeError::Unavailable)?;
+    let snapshot = session
+        .try_snapshot()
+        .ok_or(CompletionScopeError::Unavailable)?;
+    let cursor = session.presentation().cursor_byte.min(snapshot.len_bytes());
+    let line = editor::cursor_line(&snapshot, cursor);
+    let row_start = editor::line_start(&snapshot, line).ok_or(CompletionScopeError::Unavailable)?;
+    let character = snapshot
+        .utf16_column_bounded(row_start, cursor)
+        .map_err(|error| {
+            if error == codegg_document::DocumentError::CompletionPrefixTooLong {
+                CompletionScopeError::LineTooLong
+            } else {
+                CompletionScopeError::Unavailable
+            }
+        })?;
+    Ok(EditorCompletionScope {
+        read_scope,
+        document_id: attachment.document_id,
+        revision: attachment.revision,
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        character,
+    })
+}
+
+/// Start one completion request on explicit user action.
+///
+/// Opens the popup in its loading state and issues the M003 read through
+/// the scoped task seam. A re-trigger supersedes the in-flight request: the
+/// state guard drops the older answer on arrival. Nothing here polls,
+/// retries, or auto-accepts.
+pub(crate) fn start_editor_completion(app: &mut App) {
+    let scope = match current_completion_scope(app) {
+        Ok(scope) => scope,
+        Err(CompletionScopeError::LineTooLong) => {
+            app.messages_state
+                .toasts
+                .warning("Line too long for completion at this position");
+            return;
+        }
+        Err(CompletionScopeError::Unavailable) => {
+            app.messages_state
+                .toasts
+                .warning("Completion needs a session-bound workspace document — open a file first");
+            return;
+        }
     };
-    crate::tui::editor_lsp::validate_semantic_tokens(&snapshot, tokens)
+    let request_id = app.editor_state.completion.begin(&scope);
+    // C003/F2: the epoch travels with the completion so a pre-reset answer
+    // can never satisfy a post-reset request, even when scope and request
+    // id coincide after a clear, reconnect, or scope ping-pong.
+    let epoch = app.editor_state.completion.epoch();
+    let Some(client) = app.core_client.clone() else {
+        app.editor_state.completion.apply(
+            request_id,
+            epoch,
+            &scope,
+            None,
+            Some("daemon unavailable".to_string()),
+        );
+        return;
+    };
+    let request = LspCompletionRequestDto {
+        session_id: scope.read_scope.session_id.clone(),
+        path: scope.read_scope.path.clone(),
+        document_id: scope.document_id.clone(),
+        revision: scope.revision,
+        line: scope.line,
+        character: scope.character,
+        trigger_character: None,
+        max_candidates: codegg_protocol::lsp::MAX_LSP_COMPLETION_CANDIDATES as u32,
+    };
+    if let Err(error) = request.validate() {
+        app.editor_state.completion.apply(
+            request_id,
+            epoch,
+            &scope,
+            None,
+            Some(format!("invalid completion request: {error:?}")),
+        );
+        return;
+    }
+    let tx = app.tui_cmd_tx.clone();
+    let tab_id = app.active_tab_id().map(|tab_id| tab_id.to_string());
+    // The completion keeps `scope` for the spawn-failure path below; the
+    // task gets its own clone.
+    let task_scope = scope.clone();
+    let task_id = spawn_scoped_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Editor,
+        "editor_completion",
+        tab_id,
+        None,
+        None,
+        async move {
+            let response = client
+                .request(crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    crate::protocol::core::CoreRequest::LspCompletionGet { request },
+                ))
+                .await;
+            let (result, error) = match response {
+                Ok(crate::protocol::core::CoreResponse::LspCompletionResult { result }) => {
+                    (Some(result), None)
+                }
+                Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
+                    (None, Some(message))
+                }
+                Ok(other) => (
+                    None,
+                    Some(format!("unexpected completion response: {other:?}")),
+                ),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            Some(TuiCommand::EditorCompletionFinished {
+                request_id,
+                completion_epoch: epoch,
+                scope: task_scope,
+                result,
+                error,
+            })
+        },
+    );
+    if task_id.is_none() {
+        app.editor_state.completion.apply(
+            request_id,
+            epoch,
+            &scope,
+            None,
+            Some("TUI command channel unavailable".to_string()),
+        );
+    }
+}
+
+/// Apply one finished completion request.
+///
+/// Generation-, scope-, and epoch-fenced like the read path: answers for a
+/// moved cursor, an old revision, a previous attachment, or a pre-reset
+/// epoch are dropped by the state guard rather than displayed. The epoch
+/// is what survives a reconnect that leaves generation and scope
+/// unchanged: `clear` on reconnect bumps it, so a queued pre-reconnect
+/// answer can never satisfy the post-reconnect request.
+pub(crate) fn apply_editor_completion(
+    app: &mut App,
+    request_id: u64,
+    completion_epoch: u64,
+    scope: EditorCompletionScope,
+    result: Option<LspCompletionResultDto>,
+    error: Option<String>,
+) {
+    if app.editor_state.generation != scope.read_scope.generation
+        || current_lsp_scope(app).as_ref() != Some(&scope.read_scope)
+    {
+        return;
+    }
+    app.editor_state
+        .completion
+        .apply(request_id, completion_epoch, &scope, result, error);
+}
+
+/// Answer one key for the completion popup, if it owns the key.
+///
+/// Runs inside `handle_editor_key` after the LSP panel and before the F-key
+/// match, so popup keys never reach buffer editing or global bindings:
+/// - `F8` always starts a request: closed opens the popup, open supersedes
+///   the in-flight answer with a fresh one. Dismissal is `Esc`'s job, so a
+///   stale or warming state is one key away from a refresh.
+/// - With the popup open, `Up`/`Down` (and `j`/`k` in Normal mode, where
+///   they are navigation rather than text) move the selection, `Enter`
+///   accepts the selected candidate, and `Esc` dismisses.
+/// - Any other key dismisses the popup first and falls through, so typing
+///   both clears the popup (clear-on-edit) and inserts normally. A
+///   keystroke is never both typed and interpreted as popup input.
+fn handle_completion_key(app: &mut App, key: KeyEvent) -> bool {
+    if key.code == KeyCode::F(8) {
+        start_editor_completion(app);
+        return true;
+    }
+    if !app.editor_state.completion.is_open() {
+        return false;
+    }
+    let normal_mode = app.editor_state.mode() == EditorMode::Normal;
+    match key.code {
+        KeyCode::Esc => {
+            app.editor_state.completion.dismiss();
+            true
+        }
+        KeyCode::Enter => {
+            accept_selected_completion(app);
+            true
+        }
+        KeyCode::Up => {
+            app.editor_state.completion.select_previous();
+            true
+        }
+        KeyCode::Down => {
+            app.editor_state.completion.select_next();
+            true
+        }
+        KeyCode::Char('k') if normal_mode => {
+            app.editor_state.completion.select_previous();
+            true
+        }
+        KeyCode::Char('j') if normal_mode => {
+            app.editor_state.completion.select_next();
+            true
+        }
+        _ => {
+            app.editor_state.completion.dismiss();
+            false
+        }
+    }
+}
+
+/// Accept the selected candidate after re-validating everything.
+///
+/// The popup is advisory: this re-checks scope, generation, attachment
+/// identity, and revision against the CURRENT state, resolves the edit
+/// against the CURRENT snapshot, and only then submits the single
+/// transaction through the shared edit path — one undo unit on acceptance.
+/// Anything stale, mismatched, non-applicable, or unresolvable is refused
+/// with a notice and no text, disk, or history change.
+fn accept_selected_completion(app: &mut App) {
+    let Some(scope) = app.editor_state.completion.scope.clone() else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    if current_lsp_scope(app).as_ref() != Some(&scope.read_scope)
+        || app.editor_state.generation != scope.read_scope.generation
+    {
+        app.editor_state.completion.clear();
+        app.messages_state
+            .toasts
+            .info("Completion expired — re-trigger to refresh");
+        return;
+    }
+    let candidate = app.editor_state.completion.selected_candidate().cloned();
+    let Some(candidate) = candidate else {
+        app.messages_state.toasts.info("No completion selected");
+        return;
+    };
+    let edit = match &candidate.applicability {
+        LspCompletionApplicabilityDto::Applicable { edit } => edit.clone(),
+        LspCompletionApplicabilityDto::NonApplicable { reason } => {
+            app.messages_state.toasts.warning(match reason {
+                LspCompletionUnsupportedReason::Snippet => {
+                    "Snippet completions can't be applied yet"
+                }
+                LspCompletionUnsupportedReason::AdditionalEdits => {
+                    "Completion needs additional edits — not applied"
+                }
+                LspCompletionUnsupportedReason::Command => {
+                    "Completion carries a server command — not applied"
+                }
+                LspCompletionUnsupportedReason::OutOfRange => {
+                    "Completion range is outside the current text"
+                }
+                LspCompletionUnsupportedReason::EditTooLarge => "Completion edit is too large",
+                LspCompletionUnsupportedReason::InsertAndReplace => {
+                    "Completion range shape isn't supported yet"
+                }
+            });
+            return;
+        }
+    };
+    let Some(session) = app.editor_state.session.as_ref() else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    let attachment = session.attachment_info();
+    let snapshot = session.try_snapshot();
+    let (Some(attachment), Some(snapshot)) = (attachment, snapshot) else {
+        app.editor_state.completion.dismiss();
+        return;
+    };
+    if attachment.document_id != scope.document_id || attachment.revision != scope.revision {
+        app.editor_state.completion.clear();
+        app.messages_state
+            .toasts
+            .info("Completion expired — re-trigger to refresh");
+        return;
+    }
+    let stay_insert = app.editor_state.mode() == EditorMode::Insert;
+    let Some(resolved) = editor::resolve_completion_edit(&snapshot, &edit, stay_insert) else {
+        app.messages_state
+            .toasts
+            .warning("Completion no longer applies to the current text");
+        return;
+    };
+    submit_edit(&mut app.editor_state, resolved);
+    app.editor_state.completion.dismiss();
 }
 
 /// Close the attachment and leave the editor view.
@@ -904,6 +1259,9 @@ where
     let request_id = app.editor_state.request.begin();
     let generation = app.editor_state.generation;
     app.editor_state.operation = Some(operation);
+    // Save, reload, resync, and close all move the text or the binding out
+    // from under a popup: clear it at initiation, not at completion.
+    app.editor_state.completion.clear();
     if operation == EditorOperation::Save {
         app.editor_state.status = EditorStatus::Flushing;
     }
@@ -973,6 +1331,19 @@ pub(crate) fn apply_editor_operation_finished(
     if operation.clears_undo_history() {
         if let Some(session) = app.editor_state.session.as_mut() {
             editor::clear_history(session.presentation_mut());
+        }
+    }
+    // Reload, resync, and save can replace the replica revision; stale
+    // semantic spans must never paint against the new text. Save re-reads
+    // immediately below, reload/resync leave a clean no-highlight state
+    // until the next explicit LSP request.
+    if matches!(
+        operation,
+        EditorOperation::Reload | EditorOperation::Resync | EditorOperation::Save
+    ) {
+        app.editor_state.lsp.clear_semantic();
+        if !app.editor_state.lsp.diagnostics.is_empty() {
+            app.editor_state.lsp.diagnostics_stale = true;
         }
     }
     if operation == EditorOperation::Close {
@@ -1091,8 +1462,10 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 cursor_before,
                 anchor_before,
             );
-            state.lsp.semantic_tokens.clear();
-            state.lsp.semantic_revision = None;
+            state.lsp.clear_semantic();
+            // Any local edit — including a completion accept — invalidates
+            // the popup and its pending request: the text moved on.
+            state.completion.clear();
             if !state.lsp.diagnostics.is_empty() {
                 state.lsp.diagnostics_stale = true;
             }
@@ -1190,6 +1563,11 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     // position the user is leaving, so redoing returns to where the edit
     // left the cursor rather than to the undo point.
     editor::record_redo(presentation, entry.rebased(cursor_leaving, None));
+    state.lsp.clear_semantic();
+    state.completion.clear();
+    if !state.lsp.diagnostics.is_empty() {
+        state.lsp.diagnostics_stale = true;
+    }
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
 }
@@ -1228,6 +1606,11 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
         None => presentation.cursor_byte = entry.cursor_before,
     }
     editor::restore_undo(presentation, entry.rebased(cursor_leaving, None));
+    state.lsp.clear_semantic();
+    state.completion.clear();
+    if !state.lsp.diagnostics.is_empty() {
+        state.lsp.diagnostics_stale = true;
+    }
     state.status = EditorStatus::DirtyLocal;
     state.clear_notice();
 }
@@ -1401,6 +1784,9 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
     if handle_lsp_panel_key(app, key) {
         return true;
     }
+    if handle_completion_key(app, key) {
+        return true;
+    }
     match key.code {
         KeyCode::F(2) => {
             refresh_editor_diagnostics(app);
@@ -1509,6 +1895,8 @@ fn run_editor_command(app: &mut App, command: EditorCommandName, argument: Optio
             };
             open_editor(app, &path);
         }
+        // `:complete` takes no argument; the parser already refuses one.
+        EditorCommandName::Complete => start_editor_completion(app),
     }
 }
 
@@ -2828,6 +3216,71 @@ mod tests {
             draft, "theirs",
             "the local draft was never silently accepted"
         );
+    }
+
+    // ── Semantic stale lifecycle (C001) ─────────────────────────────────
+
+    fn seed_semantic(state: &mut EditorState) {
+        use codegg_protocol::lsp::LspSemanticTokenDto;
+        state.lsp.semantic_tokens = vec![LspSemanticTokenDto {
+            line: 0,
+            character: 0,
+            length: 1,
+            token_type: "keyword".into(),
+            modifiers: vec![],
+        }];
+        state.lsp.semantic_revision = state
+            .session
+            .as_ref()
+            .and_then(|s| s.try_snapshot())
+            .map(|snap| snap.revision().get());
+        state.lsp.semantic_truncated = true;
+        state.lsp.semantic_incomplete = true;
+    }
+
+    fn assert_no_semantic(state: &EditorState) {
+        assert!(state.lsp.semantic_tokens.is_empty());
+        assert_eq!(state.lsp.semantic_revision, None);
+        assert!(!state.lsp.semantic_truncated);
+        assert!(!state.lsp.semantic_incomplete);
+    }
+
+    #[tokio::test]
+    async fn a_local_edit_undo_and_redo_clear_stale_semantic_state() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        seed_semantic(&mut state);
+        editor_insert_literal(&mut state, "!");
+        assert_no_semantic(&state);
+
+        seed_semantic(&mut state);
+        editor_undo(&mut state);
+        assert_no_semantic(&state);
+
+        // Redo needs an undone entry: edit, undo, then redo clears again.
+        editor_insert_literal(&mut state, "?");
+        seed_semantic(&mut state);
+        editor_undo(&mut state);
+        assert_no_semantic(&state);
+        // Re-seed to prove redo also clears (revision changed again).
+        seed_semantic(&mut state);
+        editor_redo(&mut state);
+        assert_no_semantic(&state);
+    }
+
+    #[tokio::test]
+    async fn detach_clears_semantic_so_reopened_path_starts_fresh() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        seed_semantic(&mut state);
+        let generation = state.generation;
+        state.detach();
+        assert_no_semantic(&state);
+        assert_ne!(state.generation, generation);
+        // Reopening the same path starts with no highlight until the next
+        // validated read; a late completion for the old generation must be
+        // discarded by the caller (generation check in apply_editor_lsp_read).
+        let daemon = FakeDaemon::new("base", true);
+        let reopened = open_state(&daemon, true).await;
+        assert_no_semantic(&reopened);
     }
 
     // ── Key routing ─────────────────────────────────────────────────────

@@ -432,3 +432,251 @@ fn a_silent_turn_with_no_tool_still_trips_the_watchdog() {
     assert!(app.check_turn_stall());
     assert_eq!(app.session_state.session_status, SessionStatus::Error);
 }
+
+// ---------------------------------------------------------------------------
+// 6. Scrolling a long transcript
+// ---------------------------------------------------------------------------
+
+/// A session whose transcript is much taller than the viewport, ending in a
+/// marker row that can only be on screen if scrolling reached the real end.
+///
+/// Every message carries a tool result whose lines are long enough to wrap.
+/// That combination is what used to break: the scroll range was computed from
+/// a row *estimate* that disagreed with the rows actually drawn, and because
+/// the disagreement was per message it accumulated down the buffer — so the
+/// tail drifted further and further out of reach the longer the transcript got.
+fn app_with_long_wrapping_transcript() -> App {
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Session("s1".into()));
+    for i in 0..30 {
+        app.messages_state
+            .messages
+            .add_user_message(format!("request {i}"), None);
+        app.messages_state
+            .messages
+            .add_assistant_text(format!("working on request {i}"));
+        let long_output = (0..6)
+            .map(|n| format!("detail {n} {}", "padding".repeat(20)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let last = app.messages_state.messages.messages.last_mut().unwrap();
+        last.parts.push(MsgPart::ToolCall {
+            id: format!("t{i}"),
+            name: "bash".into(),
+            input: "cargo test".into(),
+            output: long_output,
+            status: ToolStatus::Completed,
+            duration_ms: Some(10),
+            exit_code: Some(0),
+            output_lines: Some(6),
+            expanded: false,
+        });
+    }
+    app.messages_state
+        .messages
+        .add_assistant_text("THE-TRANSCRIPT-ENDS-HERE".into());
+    app
+}
+
+#[test]
+fn scrolling_to_the_bottom_reveals_the_last_line_of_a_long_transcript() {
+    let mut app = app_with_long_wrapping_transcript();
+
+    // Start at the bottom, the way the TUI follows a live turn.
+    app.messages_state.messages.scroll_to_bottom();
+    let buffer = render_to_buffer(&mut app, 100, 30);
+
+    assert!(
+        buffer_text(&buffer).contains("THE-TRANSCRIPT-ENDS-HERE"),
+        "the final line of the transcript must be reachable by scrolling"
+    );
+}
+
+#[test]
+fn every_row_of_the_viewport_is_filled_at_the_bottom_of_a_long_transcript() {
+    let mut app = app_with_long_wrapping_transcript();
+    app.messages_state.messages.scroll_to_bottom();
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let area = app.viewport_area.expect("viewport area recorded");
+
+    // The viewport is 30 rows less the prompt/footer chrome. At the bottom of
+    // the buffer every one of those rows has content: a row index that
+    // over-counts leaves blank space here instead of showing the tail.
+    let last_row: String = (area.x..area.x + area.width)
+        .map(|x| buffer[(x, area.y + area.height - 1)].symbol())
+        .collect();
+    assert!(
+        !last_row.trim().is_empty(),
+        "the bottom viewport row must not be blank when scrolled to the end"
+    );
+}
+
+#[test]
+fn expanding_a_tool_call_extends_the_reachable_range_of_a_long_transcript() {
+    let mut app = app_with_long_wrapping_transcript();
+    app.messages_state.messages.scroll_to_bottom();
+    render_to_buffer(&mut app, 100, 30);
+    let collapsed_reach = app.messages_state.messages.max_scroll();
+
+    // Expand the first tool result, well above the fold.
+    let target = app
+        .messages_state
+        .messages
+        .messages
+        .iter()
+        .position(|m| {
+            m.parts
+                .iter()
+                .any(|p| matches!(p, MsgPart::ToolCall { id, .. } if id == "t0"))
+        })
+        .expect("fixture contains the first tool call");
+    app.messages_state.messages.toggle_tool_output(target);
+    render_to_buffer(&mut app, 100, 30);
+
+    // Collapsed output shows a preview; expanding shows all of it, so the
+    // reachable range has to grow to match.
+    assert!(
+        app.messages_state.messages.max_scroll() > collapsed_reach,
+        "expanding must extend the reachable range ({} -> {})",
+        collapsed_reach,
+        app.messages_state.messages.max_scroll()
+    );
+
+    // And the tail must still be reachable afterwards.
+    app.messages_state.messages.scroll_to_bottom();
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    assert!(
+        buffer_text(&buffer).contains("THE-TRANSCRIPT-ENDS-HERE"),
+        "the end of the transcript must stay reachable after an expansion"
+    );
+}
+
+#[test]
+fn a_search_highlight_survives_a_re_render() {
+    let mut app = app_with_long_wrapping_transcript();
+    app.messages_state.messages.scroll_to_bottom();
+    let _ = render_to_buffer(&mut app, 100, 30);
+
+    app.messages_state
+        .messages
+        .search("THE-TRANSCRIPT-ENDS-HERE");
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let area = app.viewport_area.expect("viewport area recorded");
+    assert!(
+        row_containing(&buffer, area, "THE-TRANSCRIPT-ENDS-HERE").is_some(),
+        "the match must still be drawn after the search invalidates the rows"
+    );
+
+    app.messages_state.messages.clear_search();
+    let _ = render_to_buffer(&mut app, 100, 30);
+}
+
+// ---------------------------------------------------------------------------
+// 4. Stopping, resuming, and the agent activity indicator
+// ---------------------------------------------------------------------------
+//
+// A turn the user cannot interrupt is a turn they can only wait out, and a
+// long wait with no changing pixels reads as a dropped connection rather than
+// as work. These cover the three answers that make it legible: the key is
+// discoverable, the destructive direction is confirmed rather than
+// single-keystroke, and the stopped state stays visible.
+
+#[test]
+fn a_working_turn_names_the_key_that_stops_it() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        text.contains("to stop"),
+        "the working strip must advertise the stop key; a long pause with no \
+         way out is what reads as a disconnect. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn the_stop_confirmation_is_visible_between_the_two_presses() {
+    let mut app = test_app();
+    // A fresh app composes (Insert), and bare-char bindings are Normal-mode
+    // only so `x` can never shadow a letter being typed. Reaching for the stop
+    // key therefore means leaving Insert first.
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Normal;
+    app.session_state.session_status = SessionStatus::Working;
+
+    // First press: arm, and say what completes it. Without this the second
+    // press looks like a no-op and the key reads as broken.
+    let _ = render_to_buffer(&mut app, 100, 30);
+    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    assert!(
+        app.prompt_state.stop_armed_at.is_some(),
+        "one press must arm, not stop"
+    );
+    assert!(
+        app.session_state.session_status == SessionStatus::Working,
+        "an armed confirmation must not have stopped the turn"
+    );
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+    assert!(
+        text.contains("again to stop agent"),
+        "the armed state must say which press completes it. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn a_single_x_in_insert_mode_is_typed_rather_than_stopping_the_agent() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Insert;
+
+    let _ = render_to_buffer(&mut app, 100, 30);
+    app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+    assert!(
+        app.prompt_state.stop_armed_at.is_none(),
+        "`x` while composing must be a letter, never a stop"
+    );
+    assert!(
+        app.prompt_state.prompt.get_text().contains('x'),
+        "the letter must have reached the composer"
+    );
+}
+
+#[test]
+fn a_stopped_turn_stays_visible_and_names_the_way_back() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.session_state.stopped_turn = true;
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        text.contains("stopped"),
+        "a stopped agent must say so. Rendered:\n{text}"
+    );
+    assert!(
+        text.contains("/start"),
+        "the stopped state must name the way out. Rendered:\n{text}"
+    );
+}
+
+#[test]
+fn an_idle_agent_shows_no_stop_affordance() {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Idle;
+    app.session_state.stopped_turn = false;
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
+    assert!(
+        !text.contains("to stop") && !text.contains("stopped"),
+        "nothing to stop and nothing stopped means no stop affordance. \
+         Rendered:\n{text}"
+    );
+}

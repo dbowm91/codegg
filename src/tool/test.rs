@@ -301,7 +301,17 @@ async fn emit_test_audit(ctx: Option<&ToolExecutionContext>, digest_hex: &str, o
         outcome,
     );
     crate::live_execution_audit::emit_command_execute(
-        emitter, audit, digest_hex, "test", outcome, &scope,
+        emitter,
+        audit,
+        digest_hex,
+        "test",
+        outcome,
+        &scope,
+        None,
+        Some("test"),
+        None,
+        None,
+        None,
     )
     .await;
 }

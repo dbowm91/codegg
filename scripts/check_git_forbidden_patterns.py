@@ -342,6 +342,62 @@ def check_direct_git_process_construction() -> List[Finding]:
     return findings
 
 
+def check_trusted_git_execution_policy() -> List[Finding]:
+    """Keep typed Git capability classification at the sole process owner."""
+    findings: List[Finding] = []
+    path = CRATES / "egggit" / "src" / "process.rs"
+    if not path.exists():
+        return [
+            Finding(
+                rule="trusted-git-policy-missing",
+                file="crates/egggit/src/process.rs",
+                line=1,
+                message="canonical Git process owner is missing",
+            )
+        ]
+    text = path.read_text()
+    required = [
+        "classify_git_request(argv)",
+        "GitExecutionPolicyOutcome",
+        "RequiresContainedExecution",
+        "add_trusted_git_overrides(&mut cmd, argv)",
+        "pub fn apply(",
+        "pub fn apply_sync(",
+        '"core.fsmonitor"',
+        '"core.hooksPath"',
+        '"diff.external"',
+        '"credential.helper"',
+        '"protocol.ext.allow"',
+    ]
+    missing = [token for token in required if token not in text]
+    if missing:
+        findings.append(
+            Finding(
+                rule="trusted-git-policy-incomplete",
+                file=str(path.relative_to(ROOT)),
+                line=1,
+                message=f"canonical trusted Git policy is missing controls: {', '.join(missing)}",
+            )
+        )
+    forbidden = [
+        "DENIED_GIT_EXECUTABLE",
+        "trusted_git_request_denied",
+        "REPOSITORY_EXECUTABLE_OPERATIONS",
+        "TRUSTED_GIT_BUILTINS",
+    ]
+    present = [token for token in forbidden if token in text]
+    if present:
+        findings.append(
+            Finding(
+                rule="fabricated-or-name-banned-git-policy",
+                file=str(path.relative_to(ROOT)),
+                line=1,
+                message=f"Git policy must use typed capability outcomes, not: {', '.join(present)}",
+            )
+        )
+    return findings
+
+
 def check_runstore_argv_sanitization() -> List[Finding]:
     """RunStore invocations whose argv comes from a git
     `render_argv` call must flow through
@@ -400,6 +456,7 @@ CHECKS = [
     check_expose_secret_callers,
     check_duplicated_env_policy,
     check_direct_git_process_construction,
+    check_trusted_git_execution_policy,
     check_rerun_argv_construction,
     check_runstore_argv_sanitization,
 ]

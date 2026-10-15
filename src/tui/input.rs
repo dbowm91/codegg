@@ -22,7 +22,8 @@
 //! | Shift+Tab | TogglePermissionMode |
 //! | Ctrl+L | SelectModel |
 //! | Ctrl+K | ClearSession |
-//! | Ctrl+N | NewSession |
+//! | n | NewSession (Normal only) |
+//! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTodoList |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
@@ -110,6 +111,14 @@ pub enum InputAction {
     SelectModel,
     ClearSession,
     NewSession,
+    /// Stop the running turn, or resume a stopped one (`x`, Normal mode
+    /// only).
+    ///
+    /// One key for both directions because the state already says which one
+    /// applies: a stopped agent resumes, a working one stops. Stopping is the
+    /// destructive direction, so it takes a confirmed second press inside a
+    /// short window — see `turn_control::toggle_stop_or_resume`.
+    ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
     /// Open the side-panel manager (`Shift+S`), Normal mode only.
@@ -216,6 +225,13 @@ pub enum ActionKey {
     SelectModel,
     ClearSession,
     NewSession,
+    /// Stop the running turn, or resume a stopped one (`x`, Normal mode
+    /// only).
+    ///
+    /// One key for both directions because the state already says which one
+    /// applies: a stopped agent resumes, a working one stops. Stopping is the
+    /// destructive direction, so it takes a confirmed second press.
+    ToggleAgentRun,
     ToggleSidebar,
     FocusSidebar,
     /// Open the side-panel manager (`Shift+S`, Normal mode only).
@@ -292,6 +308,7 @@ impl ActionKey {
             Self::SelectModel,
             Self::ClearSession,
             Self::NewSession,
+            Self::ToggleAgentRun,
             Self::ToggleSidebar,
             Self::FocusSidebar,
             Self::ToggleSection,
@@ -348,6 +365,7 @@ impl ActionKey {
             Self::SelectModel => InputAction::SelectModel,
             Self::ClearSession => InputAction::ClearSession,
             Self::NewSession => InputAction::NewSession,
+            Self::ToggleAgentRun => InputAction::ToggleAgentRun,
             Self::ToggleSidebar => InputAction::ToggleSidebar,
             Self::FocusSidebar => InputAction::FocusSidebar,
             Self::OpenPanelManager => InputAction::OpenPanelManager,
@@ -409,6 +427,7 @@ impl ActionKey {
             Self::SelectModel => "Select model",
             Self::ClearSession => "Clear session",
             Self::NewSession => "New session",
+            Self::ToggleAgentRun => "Stop / resume agent (x)",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::FocusSidebar => "Focus sidebar",
             Self::OpenPanelManager => "Open panel manager (Shift+S)",
@@ -507,6 +526,10 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // chord is retired and this is now the only spelling, which
             // makes the mode gate the whole reason the key is safe.
             | InputAction::OpenPanelManager
+            // Already covered by the bare-char rule, but stated here because
+            // it is load-bearing: `x` must never be claimed while composing,
+            // or typing a word containing it would stop the agent.
+            | InputAction::ToggleAgentRun
     )
 }
 
@@ -580,6 +603,12 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
     // `q` quits from Normal mode. Insert mode skips bare-char bindings, so
     // this costs nothing while typing.
     map.insert((KeyModifiers::NONE, KeyCode::Char('q')), InputAction::Quit);
+    // `x` stops a running turn and resumes a stopped one. Bare char, so it is
+    // Normal-mode only and can never shadow an `x` typed into the composer.
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('x')),
+        InputAction::ToggleAgentRun,
+    );
     map.insert((KeyModifiers::NONE, KeyCode::Up), InputAction::NavigateUp);
     map.insert(
         (KeyModifiers::NONE, KeyCode::Down),
@@ -609,10 +638,19 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         (KeyModifiers::CONTROL, KeyCode::Char('k')),
         InputAction::ClearSession,
     );
-    map.insert(
-        (KeyModifiers::CONTROL, KeyCode::Char('n')),
-        InputAction::NewSession,
-    );
+    // `Ctrl+N` is deliberately NOT bound to NewSession. New session is the bare
+    // `n` below — bare, so Insert mode still types the letter — and `Ctrl+N`
+    // is the chord that arms yazi-style panel resize mode
+    // (`commands::panels::handle_panel_resize_key`). A chord is the right
+    // spelling for a modal frame gesture: it cannot collide with a panel verb
+    // the way a bare letter would, and it stays out of the composer.
+    //
+    // It is deliberately absent from `default_help_entries` too, and that list
+    // is *auditable* — `documented_keys_resolve_in_the_active_map` asserts
+    // every advertised key resolves to an `InputAction`. Resize mode is a frame
+    // gesture rather than a composable action, so it names itself on the
+    // composer line when armed (and in `docs/tui.md`) instead of pretending to
+    // be a binding.
     // Ctrl+T expands the todo list above the input; the sidebar moved to
     // Ctrl+B so both panels stay independently reachable.
     map.insert(
@@ -1088,12 +1126,6 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Insert,
             key: "Ctrl+K",
             action: "Clear session",
-            condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Insert,
-            key: "Ctrl+N",
-            action: "New session",
             condition: None,
         },
         HelpEntry {

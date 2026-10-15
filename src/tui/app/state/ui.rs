@@ -43,7 +43,19 @@ pub struct UiState {
     pub theme: Arc<Theme>,
     /// Layout manager
     pub layout: TuiLayout,
-    /// Whether sidebar is visible
+    /// Whether *any* panel edge is currently showing a panel.
+    ///
+    /// A derived mirror of `SidePanelHost::any_visible()`, written after every
+    /// change that can collapse or reveal an edge. It is **not** the
+    /// authority: with several edges independently collapsible, a single bool
+    /// cannot say *which* one is up, so anything that needs that must ask the
+    /// host. Kept as a field rather than a method only because the session
+    /// manifest persists a sidebar-visibility preference that predates
+    /// placements and still has to be written.
+    ///
+    /// Do not branch behavior on this: a read here is the bug this field's
+    /// existence invites, since it looks like the answer and silently answers
+    /// a coarser question than the one being asked.
     pub sidebar_visible: bool,
     /// M006-D: whether the file-tree pane holds keyboard focus.
     ///

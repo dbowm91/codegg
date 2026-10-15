@@ -1094,6 +1094,12 @@ pub enum CoreResponse {
         conflicted: bool,
         writer: bool,
     },
+    /// C005 (ADR-0022 §3): daemon-owned workspace directory listing.
+    /// Advisory metadata only; opening an entry still routes through
+    /// `DocumentOpen`, which independently reauthorizes.
+    WorkspaceDirectoryList {
+        result: document::WorkspaceDirectoryListResultDto,
+    },
     AssetRefresh {
         report: AssetRefreshReportDto,
     },
@@ -1526,6 +1532,12 @@ pub enum CoreResponse {
     /// `NotReady` result never carries one.
     LspReadResult {
         result: crate::lsp::LspReadResultDto,
+    },
+    /// M003: result of one bounded inert LSP completion read (`via_session`,
+    /// `file.read`). `status` is authoritative and must be checked before
+    /// `candidates`; every non-`Ready` result carries none.
+    LspCompletionResult {
+        result: crate::lsp::LspCompletionResultDto,
     },
     /// M006-B: the authoritative current diagnostics of a project
     /// (`direct_project`, `file.read`). This is the resync authority that the
@@ -2022,6 +2034,16 @@ pub enum CoreRequest {
     DocumentClose {
         project_id: String,
         document_id: String,
+    },
+    /// C005 (ADR-0022 §3): one bounded daemon-owned workspace directory
+    /// listing — inert metadata only (`direct_project` + `file.read`).
+    ///
+    /// The daemon resolves the session's project/workspace and permitted
+    /// root, enforces containment, then lists entries on the daemon host.
+    /// No file bodies, no absolute daemon paths. Old daemons report
+    /// `Unsupported`; clients must never fall back to a local `read_dir`.
+    WorkspaceDirectoryList {
+        request: document::WorkspaceDirectoryListRequestDto,
     },
     AssetRefresh {
         request: AssetRefreshRequestDto,
@@ -2720,6 +2742,16 @@ pub enum CoreRequest {
     /// daemon has not started returns `NotReady` and never launches one.
     LspReadGet {
         request: crate::lsp::LspReadRequestDto,
+    },
+    /// M003: one bounded inert LSP completion read — typed candidates with
+    /// explicit supported/unsupported edit metadata bound to the synchronized
+    /// document snapshot (`via_session` + `file.read`).
+    ///
+    /// Warm-only by contract (ADR-0021 §2): a read against a server the
+    /// daemon has not started returns `NotReady` and never launches one. No
+    /// edit is applied; M004 owns user interaction and controller mutation.
+    LspCompletionGet {
+        request: crate::lsp::LspCompletionRequestDto,
     },
     /// M006-B: fetch the authoritative current diagnostics for a project
     /// (`direct_project` + `file.read`).

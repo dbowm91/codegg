@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
 
 /// Maximum display width of the agent name shown beside the input-mode badge.
@@ -59,10 +60,20 @@ fn readable_on(
 impl App {
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let main_chunks = self
-            .ui_state
-            .layout
-            .split(area, self.ui_state.sidebar_visible);
+        // One rect per *occupied* edge, named rather than positional: the
+        // transcript reads `regions.main` whatever the panels do, so adding a
+        // second column cannot renumber the thing underneath it.
+        let occupied: Vec<PanelPlacement> = PanelPlacement::ALL
+            .iter()
+            .copied()
+            .filter(|placement| self.panel_host.is_visible_at(*placement))
+            .collect();
+        // Recorded so a resize can convert the bottom panel's percentage into
+        // an exact row count the first time a reader drags that edge; a
+        // percentage cannot express a one-row step on its own.
+        self.ui_state.layout.observe_frame(area);
+        let regions = self.ui_state.layout.split(area, &occupied);
+        let main_chunks = [regions.main];
         let main_area = main_chunks[0];
 
         // Reserve a 1-column strip on the left of the main area for the
@@ -214,15 +225,26 @@ impl App {
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
-        // Sidebar — dynamic content can trigger panics
-        if self.ui_state.sidebar_visible && main_chunks.len() > 1 {
-            self.sidebar_area = Some(main_chunks[1]);
+        // Panels — dynamic content can trigger panics
+        //
+        // Each occupied edge paints itself from *its own* slot, so two edges
+        // can be up at once. Nothing here changes which edge the app thinks
+        // is selected: render is not allowed to move the keyboard, and the
+        // gesture dispatcher reads `placement()` after this returns.
+        self.sidebar_area = None;
+        for (placement, rect) in regions.occupied() {
+            if rect.width == 0 || rect.height == 0 {
+                continue;
+            }
+            if self.panel_host.panel_at(placement) == SidePanelId::Session {
+                self.sidebar_area = Some(rect);
+            }
             let sidebar_result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                     if self.render_panic_injection.sidebar {
                         panic!("injected sidebar render panic");
                     }
-                    self.render_sidebar(frame, main_chunks[1]);
+                    self.render_panel_at(frame, placement, rect);
                     Ok(())
                 }));
             if let Err(err) = sidebar_result {
@@ -231,10 +253,8 @@ impl App {
                 self.ui_state
                     .diagnostics
                     .record_component_render_panic("sidebar");
-                self.render_component_fallback(frame, main_chunks[1], "Sidebar unavailable");
+                self.render_component_fallback(frame, rect, "Sidebar unavailable");
             }
-        } else {
-            self.sidebar_area = None;
         }
 
         // Dialog — failures close only that dialog
@@ -841,6 +861,7 @@ impl App {
                 busy,
                 snapshot: &snapshot,
                 lsp: &self.editor_state.lsp,
+                completion: &self.editor_state.completion,
                 presentation: session.presentation_mut(),
                 theme,
             }
@@ -1205,9 +1226,15 @@ impl App {
         1 + shown as u16 + overflow
     }
 
-    /// Whether a turn is in flight and the strip should be drawn.
+    /// Whether the strip has anything to say.
+    ///
+    /// A stopped turn counts. The user stopped it on purpose and the very next
+    /// question is "is it still stopped, and how do I carry on" — an indicator
+    /// that vanishes the instant work stops answers neither, and the buffer
+    /// goes quiet exactly when they are deciding what to type next.
     fn should_show_working_strip(&self) -> bool {
         matches!(self.session_state.session_status, SessionStatus::Working)
+            || self.session_state.stopped_turn
     }
 
     /// Draw the working strip: a throbber with elapsed time and the current
@@ -1216,6 +1243,11 @@ impl App {
     /// Hit rects are recorded as they are drawn so a click resolves to the
     /// row the user actually saw rather than a recomputed layout.
     fn render_working_strip(&mut self, frame: &mut Frame, chunk: Option<Rect>) {
+        // Expire a lapsed stop confirmation here rather than only on the next
+        // keypress: the pump runs on every animation tick, so a prompt the
+        // user walked away from clears itself instead of waiting to be
+        // overwritten by whatever they type next.
+        crate::tui::commands::turn_control::expire_pending_stop_armed(self);
         let Some(area) = chunk else {
             self.ui_state.working_area = None;
             self.ui_state.subagents.hits.clear();
@@ -1242,16 +1274,40 @@ impl App {
         // Row 0: the throbber. `ActivityIndicator::line` derives its glyph
         // from whole elapsed seconds, so it animates on the 80ms pump without
         // depending on render cadence.
-        let phase = self
-            .messages_state
-            .messages
-            .activity
-            .as_ref()
-            .map(|activity| activity.line())
-            .unwrap_or_else(|| self.working_elapsed_fallback());
+        //
+        // The right-hand side is the reason a long pause reads as progress
+        // rather than as a disconnect: it names the one key that changes the
+        // situation. An indicator that only reports the current phase still
+        // leaves a user staring at a frozen screen with no way out.
+        let phase = if self.session_state.stopped_turn {
+            // Stopped is not a phase of a running turn, so it does not get a
+            // spinner — an animated glyph beside "stopped" would be a lie
+            // about whether anything is still running.
+            format!(
+                "■ stopped · press {} or /start",
+                crate::tui::commands::turn_control::STOP_KEY_LABEL
+            )
+        } else {
+            let phase = self
+                .messages_state
+                .messages
+                .activity
+                .as_ref()
+                .map(|activity| activity.line())
+                .unwrap_or_else(|| self.working_elapsed_fallback());
+            let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
+            // A stop waits for a confirming second press, so while the arm is
+            // live the line must say exactly which press completes it —
+            // otherwise the confirmation is invisible and the key looks dead.
+            if crate::tui::commands::turn_control::stop_armed(self) {
+                format!("{phase} · press {key} again to stop agent")
+            } else {
+                format!("{phase} · {key} to stop")
+            }
+        };
         let running_subs = self.ui_state.subagents.running_count();
         let mut head = phase;
-        if running_subs > 0 {
+        if running_subs > 0 && !self.session_state.stopped_turn {
             head.push_str(&format!(" · {running_subs} subagent"));
             if running_subs != 1 {
                 head.push('s');
@@ -1259,7 +1315,11 @@ impl App {
         }
         lines.push(Line::from(Span::styled(
             format!(" {head}"),
-            Style::default().fg(theme.primary),
+            Style::default().fg(if self.session_state.stopped_turn {
+                theme.warning
+            } else {
+                theme.primary
+            }),
         )));
 
         for (index, sub) in self
@@ -1765,11 +1825,15 @@ impl App {
         }
     }
 
-    fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
-        // The side column is a panel host now: whichever panel is active
-        // renders here. Everything below only *populates* the projections
-        // the panels read (sidebar widget, chat state); it never decides
-        // which panel shows.
+    /// Paint the panel docked to `placement`.
+    ///
+    /// Split from [`render_sidebar`](Self::render_sidebar) so the two differ in
+    /// exactly one thing: which slot's panel they read, and whether that slot is
+    /// the one holding the keyboard. Keeping them together is what would let the
+    /// focus flag drift between "the edge I am painting" and "the edge I am
+    /// driving", which shows up as a panel that renders unfocused while the badge
+    /// claims it is focused.
+    fn render_panel_at(&mut self, frame: &mut Frame, placement: PanelPlacement, area: Rect) {
         self.populate_session_panel();
         let mut ctx = crate::tui::panels::PanelCtx {
             theme: Arc::clone(&self.ui_state.theme),
@@ -1784,18 +1848,19 @@ impl App {
             vim_mode: self.ui_state.vim_mode,
             chat_project: self.chat_panel_project.as_deref(),
             area,
-            focused: self.panel_host.is_focused(),
+            focused: self.panel_host.is_focused_at(placement),
             input_mode: self.ui_state.input_mode,
         };
         // `Clear` first: the previous panel's pixels must not show through
         // a narrower panel (the chat panel is shorter than the sidebar).
         frame.render_widget(Clear, area);
-        self.panel_host.render(&mut ctx, frame.buffer_mut(), area);
+        self.panel_host
+            .render_at(placement, &mut ctx, frame.buffer_mut(), area);
     }
 
     /// Push session projection into the Session panel's widget.
     ///
-    /// Split out of `render_sidebar` so the sidebar's field population is
+    /// Split out of `render_panel_at` so the sidebar's field population is
     /// readable on its own; it performs no I/O and reads only cached state.
     fn populate_session_panel(&mut self) {
         // The Workspace route no longer forces this panel. It selects the

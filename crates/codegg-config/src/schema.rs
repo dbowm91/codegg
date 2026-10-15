@@ -277,6 +277,13 @@ pub struct Config {
     /// on load rather than failing the boot, because a typo in a preference
     /// is not worth refusing to start over.
     pub panel_hotkeys: Option<HashMap<String, String>>,
+    /// Which edge the side panel is docked to: `right`, `left` or `bottom`.
+    ///
+    /// Written by the panel manager's layout strip (`p`). Absent or
+    /// unrecognised means `right`, which is the layout that shipped first —
+    /// so a config that predates this key, or a hand-edited typo, still
+    /// starts with a panel the user recognises rather than with none.
+    pub panel_placement: Option<String>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
     pub daemon: Option<DaemonConfig>,
@@ -1281,15 +1288,14 @@ pub struct PermissionConfig {
     pub list: Option<PermissionRule>,
     pub bash: Option<PermissionRule>,
     pub bash_allow_patterns: Option<Vec<String>>,
+    /// Best-effort invocation-text denials. This cannot contain equivalent
+    /// behavior expressed through another command or tool.
     pub bash_deny_patterns: Option<Vec<String>>,
     /// Extra shell patterns that escalate to an approval prompt.
     ///
-    /// Additive to the built-in escalation signals (`curl … | sh`, redirects
-    /// to a block device, inline interpreters, `chmod`/`chown` to a system
-    /// path, …). This is a *review* control, not a boundary: it shapes the
-    /// operator's decision under the configured approval mode. For a true
-    /// boundary use `bash_deny_patterns` or the sandbox profile — a pattern
-    /// match constrains the invocation, not the program.
+    /// Additive to built-in risk signals such as pipe-to-shell, raw block
+    /// device redirects, system-path writes, and catastrophic command shapes.
+    /// This is a review signal, not an execution boundary.
     pub bash_ask_patterns: Option<Vec<String>>,
     pub allow_all_bash: Option<bool>,
     pub task: Option<PermissionRule>,
@@ -2941,6 +2947,7 @@ pub struct SecurityConfig {
     pub profiles: SecurityProfileConfig,
     pub sensitive_paths: Vec<SensitivePathConfig>,
     pub allowed_network_domains: Vec<String>,
+    /// Best-effort invocation-text denials; not an OS execution boundary.
     pub denied_commands: Vec<String>,
     pub auto_invoke_review_agent: bool,
 }
@@ -2975,7 +2982,8 @@ pub enum SecurityMode {
 #[serde(default)]
 pub struct SecurityGateConfig {
     pub ask_on_high_risk_command: bool,
-    pub deny_critical_commands: bool,
+    /// Explicit opt-in text classifier denial. Omitted config is advisory.
+    pub deny_critical_commands: Option<bool>,
     pub ask_on_network_exfiltration: bool,
     pub ask_on_secret_exposure: bool,
     pub ask_on_dependency_risk: bool,
@@ -2986,7 +2994,7 @@ impl Default for SecurityGateConfig {
     fn default() -> Self {
         Self {
             ask_on_high_risk_command: true,
-            deny_critical_commands: true,
+            deny_critical_commands: None,
             ask_on_network_exfiltration: true,
             ask_on_secret_exposure: true,
             ask_on_dependency_risk: false,
@@ -3985,6 +3993,15 @@ mod tests {
             path: Some(path.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn critical_command_deny_gate_preserves_presence() {
+        let omitted: SecurityGateConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(omitted.deny_critical_commands, None);
+        let explicit: SecurityGateConfig =
+            serde_json::from_str(r#"{"deny_critical_commands":true}"#).unwrap();
+        assert_eq!(explicit.deny_critical_commands, Some(true));
     }
 
     #[test]

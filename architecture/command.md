@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 161 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 163 built-in commands
 - `crates/codegg-config/src/schema.rs` — `CommandConfig` for config-file
   commands (re-exported as `crate::config::schema`)
 
@@ -20,7 +20,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 161 hardcoded commands (highest priority)
+1. **Built-in commands**: 163 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -253,7 +253,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (161 total)
+### Built-in Commands (163 total)
 
 Representative built-ins:
 
@@ -274,8 +274,10 @@ Representative built-ins:
 | `/sandbox` | `/sandbox-profile` | Select sandbox profile (read-only/workspace-write/full-host) |
 | `/themes` | | Switch theme |
 | `/help` | | Help |
-| `/sessions` | `resume`, `continue` | Switch session |
+| `/sessions` | `resume`, `continue` | Switch session. `resume` stays the session-switch spelling; carrying on after a stopped turn is `/start` (below) |
 | `/new` | `clear` | New session |
+| `/stop` | | Interrupt the agent's running turn. Also `x` twice in Normal mode |
+| `/start` | | Carry on after a stopped turn. Re-submits: a cancelled turn cannot be resurrected |
 | `/share` | | Share session |
 | `/unshare` | | Unshare session |
 | `/rename` | | Rename session |
@@ -292,7 +294,7 @@ Representative built-ins:
 | `/models` | `/model` | Switch model |
 | `/models-refresh` | `refresh-models` | Refresh model list |
 | `/variants` | | Switch model variant |
-| `/agents` | | Switch agent |
+| `/agents` | | Open the "which panel?" box, then load the agent list into it; `Enter` in the list opens the agent's config editor |
 | `/mcps` | | Manage MCP servers |
 | `/workspaces` | | Manage workspaces |
 | `/tree` | | Show file tree |
@@ -386,7 +388,7 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 161**: Guarded by
+- **Built-in count is 163**: Guarded by
   `built_in_command_count_matches_release_docs` and
   `command_docs_count_matches_registry` in `src/tui/command.rs`. The
   docs test parses this file and fails on drift, so update the test
@@ -407,7 +409,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-157 count stays in sync with this documentation.
+163 count stays in sync with this documentation.
 
 ## Related Docs
 
@@ -416,16 +418,16 @@ The `built_in_command_count_matches_release_docs` test ensures the
 
 ## Source verification
 
-Verified 2026-10-12 against `src/tui/command.rs` and `src/command/mod.rs`:
+Verified 2026-10-13 against `src/tui/command.rs` and `src/command/mod.rs`:
 both count-guard tests pass — `built_in_command_count_matches_release_docs`
-(`command.rs:1158`) asserts 161, and every `(\d+)\s+(hardcoded|built-in|total)`
-plus `[Cc]ount is (\d+)` match in this document resolves to 161 (the three
-former's matches are on lines 15, 23, and 256; the latter's on line 388).
-Also verified the 161 built-in registry length, `BuiltinSlashAction`
-(153 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
+(`command.rs:1181`) asserts 163, and every `(\d+)\s+(hardcoded|built-in|total)`
+plus `[Cc]ount is (\d+)` match in this document resolves to 163 (the three
+former's matches are on lines 15, 23, and 256; the latter's on line 391).
+Also verified the 163 built-in registry length, `BuiltinSlashAction`
+(155 variants, `command.rs:112`), `CommandDomain` (11), `CommandScope` (2),
 `CommandSource` (4), `CommandCategory` (3, `command.rs:10`), `CommandAction`
-(5, `command.rs:287`), the TUI `Command` struct fields
-(`command.rs:296`), `CommandRegistry` (`command.rs:473`), core `Command`
+(5, `command.rs:298`), the TUI `Command` struct fields
+(`command.rs:307`), `CommandRegistry` (`command.rs:485`), core `Command`
 (`src/command/mod.rs:39`), `ProcessCommandSpec`
 (`src/command/mod.rs:12`), `execute_command_template`
 (`src/command/mod.rs:320`), `CommandConfig`

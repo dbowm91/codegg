@@ -311,6 +311,12 @@ impl SidePanel for AgentsPanel {
                     };
                 }
                 match key.code {
+                    // Selecting a row is the gesture everyone reaches for
+                    // first, and it did nothing: `Enter` fell through to the
+                    // catch-all and returned `Consumed` without emitting a
+                    // message, so the panel looked inert. It now means the
+                    // same thing as `e` — open this agent's config.
+                    KeyCode::Enter => return self.emit(AgentSelection::Edit),
                     KeyCode::Char('e') => return self.emit(AgentSelection::Edit),
                     KeyCode::Char('t') => return self.emit(AgentSelection::ToggleDisabled),
                     KeyCode::Char('r') => return self.emit(AgentSelection::Restore),

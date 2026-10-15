@@ -2875,12 +2875,23 @@ fn effect_binding_registry() -> crate::tool::ToolRegistry {
 /// gap is visible in the fingerprint rather than silently skipped.
 pub fn effect_catalog_fingerprint() -> String {
     let registry = effect_binding_registry();
+    effect_catalog_fingerprint_with_schema_overrides(&registry, &BTreeMap::new())
+}
+
+fn effect_catalog_fingerprint_with_schema_overrides(
+    registry: &crate::tool::ToolRegistry,
+    schema_overrides: &BTreeMap<String, serde_json::Value>,
+) -> String {
     let catalog = causal_catalog();
     let mut entries = Vec::with_capacity(catalog.len());
     for (name, contract) in catalog.iter() {
         let bound = match registry.get(name) {
             Some(tool) => {
-                let live = tool.contract(name, tool.parameters());
+                let input_schema = schema_overrides
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| tool.parameters());
+                let live = tool.contract(name, input_schema);
                 bind_causal_contract(
                     name,
                     contract,
@@ -5768,6 +5779,8 @@ mod tests {
             serde_json::from_str(RECEIPT_JSON).expect("stored receipt parses");
         let fresh = qualify_m003(BENCHMARK_JSONL, PREREG_JSON, CAUSAL_M003_LATENCY_ITERATIONS)
             .expect("m003 requalifies");
+        assert_eq!(stored.disposition, CausalM003Disposition::Negative.code());
+        assert_eq!(fresh.disposition, CausalM003Disposition::Negative.code());
         assert_eq!(stored.schema_version, fresh.schema_version);
         assert_eq!(stored.protocol, fresh.protocol);
         assert_eq!(stored.ontology_version, fresh.ontology_version);
@@ -5784,10 +5797,158 @@ mod tests {
             stored.contract_catalog_fingerprint,
             fresh.contract_catalog_fingerprint
         );
+        let registry = effect_binding_registry();
+        let mut historical_schemas = BTreeMap::new();
+
+        // Reconstruct the frozen test-tool schema. These two fields were
+        // added after M003 and must not rewrite its immutable receipt.
+        let mut historical_test_schema = registry
+            .get("test")
+            .expect("test tool remains registered")
+            .parameters();
+        let test_properties = historical_test_schema["properties"]
+            .as_object_mut()
+            .expect("test input schema properties");
+        let mut observed_post_m003_test_fields = Vec::new();
+        for field in ["execution_mode", "on_complete"] {
+            if test_properties.remove(field).is_some() {
+                observed_post_m003_test_fields.push(field);
+            }
+        }
+        assert!(
+            observed_post_m003_test_fields.is_empty()
+                || observed_post_m003_test_fields == ["execution_mode", "on_complete"],
+            "unexpected test-tool input-schema changes: {observed_post_m003_test_fields:?}"
+        );
+        historical_schemas.insert("test".to_string(), historical_test_schema);
+
+        // Search-backend retirement intentionally narrowed explicit provider
+        // selectors and added an explicit remote-provider list to repo_search.
+        // Reconstruct only those v0.4.3-era schema deltas when validating the
+        // frozen M003 effect-catalog fingerprint.
+        let mut historical_websearch_schema = registry
+            .get("websearch")
+            .expect("websearch tool remains registered")
+            .parameters();
+        let websearch_provider = &mut historical_websearch_schema["properties"]["provider"];
+        assert_eq!(
+            websearch_provider["enum"],
+            serde_json::json!([
+                "auto",
+                "duckduckgo",
+                "mojeek",
+                "wikipedia",
+                "arxiv",
+                "openalex",
+                "pubmed",
+                "hn_algolia",
+                "github",
+                "exa",
+                "tavily",
+                "brave",
+                "brave_api",
+                "kagi",
+                "serpapi"
+            ]),
+            "unexpected post-M003 websearch provider schema"
+        );
+        assert_eq!(
+            websearch_provider["description"],
+            "Optional provider hint. Unsupported or retired explicit values fail with migration guidance; use auto or omit for automatic routing."
+        );
+        websearch_provider["enum"] = serde_json::json!([
+            "auto",
+            "duckduckgo",
+            "mojeek",
+            "wikipedia",
+            "arxiv",
+            "openalex",
+            "pubmed",
+            "hn_algolia",
+            "google_news",
+            "github",
+            "exa",
+            "tavily",
+            "brave",
+            "kagi",
+            "serpapi"
+        ]);
+        websearch_provider["description"] = serde_json::json!(
+            "Provider hint. Unknown values fall back to eggsearch's automatic provider selection."
+        );
+        historical_schemas.insert("websearch".to_string(), historical_websearch_schema);
+
+        let mut historical_repo_search_schema = registry
+            .get("repo_search")
+            .expect("repo_search tool remains registered")
+            .parameters();
+        let repo_properties = historical_repo_search_schema["properties"]
+            .as_object_mut()
+            .expect("repo_search input schema properties");
+        assert!(
+            repo_properties.remove("providers").is_some(),
+            "unexpected post-M003 repo_search schema"
+        );
+        historical_schemas.insert("repo_search".to_string(), historical_repo_search_schema);
+
+        let historical_effect_fingerprint =
+            effect_catalog_fingerprint_with_schema_overrides(&registry, &historical_schemas);
         assert_eq!(
             stored.effect_catalog_fingerprint,
-            fresh.effect_catalog_fingerprint
+            historical_effect_fingerprint,
+            "M003 receipt must match its historical tool schemas after applying only recorded post-M003 changes"
         );
+        let live_schemas = ["test", "websearch", "repo_search"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    registry
+                        .get(name)
+                        .unwrap_or_else(|| panic!("{name} tool remains registered"))
+                        .parameters(),
+                )
+            })
+            .collect();
+        let live_effect_fingerprint =
+            effect_catalog_fingerprint_with_schema_overrides(&registry, &live_schemas);
+        assert_ne!(live_effect_fingerprint, stored.effect_catalog_fingerprint);
+        assert!(
+            fresh.effect_catalog_fingerprint == live_effect_fingerprint,
+            "M003 recomputation must fingerprint the current live tool schemas"
+        );
+        let case = m003_structured_cases()
+            .into_iter()
+            .next()
+            .expect("frozen benchmark contains a structured case");
+        let (status, m002_frontier) = evaluate_effect_path(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+            &fresh.effect_catalog_fingerprint,
+            &stored.effect_catalog_fingerprint,
+        )
+        .expect("schema drift falls back rather than failing benchmark scoring");
+        assert_eq!(status.code(), "stale_catalog_fallback");
+        let direct_m002 = evaluate_benchmark_case(
+            &case,
+            &causal_catalog(),
+            &fresh.contract_catalog_fingerprint,
+        )
+        .expect("current M002 frontier evaluates");
+        assert_eq!(
+            m002_frontier, direct_m002,
+            "stale M003 identity must select the directly evaluated M002 frontier"
+        );
+        let m002_visible: BTreeSet<String> = m002_frontier
+            .admissible_contracted
+            .iter()
+            .chain(m002_frontier.uncontracted_fallback.iter())
+            .chain(m002_frontier.required_visible.iter())
+            .cloned()
+            .collect();
+        assert_eq!(m002_visible, m002_frontier.visible_union());
+        assert_eq!(status.used_size(m002_visible.len()), m002_visible.len());
         assert_eq!(
             stored.catalog_binding_complete,
             fresh.catalog_binding_complete

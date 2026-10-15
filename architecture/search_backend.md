@@ -266,10 +266,10 @@ resolved from `SearchConfig` so custom names are honored.
 
 | Type | File:Line | Purpose |
 |------|-----------|---------|
-| `SearchConfig` | `crates/codegg-config/src/schema.rs:783` | Backend, output caps, eggsearch config |
-| `SearchBackendConfig` | `crates/codegg-config/src/schema.rs:870` | Eggsearch / Disabled |
-| `EggsearchConfig` | `crates/codegg-config/src/schema.rs:898` | Server name, command, args, timeouts |
-| `ToolTimeoutKind` | `crates/codegg-config/src/schema.rs:914` | Default / Security / Research / Batch |
+| `SearchConfig` | `crates/codegg-config/src/schema.rs:790` | Backend, output caps, eggsearch config |
+| `SearchBackendConfig` | `crates/codegg-config/src/schema.rs:877` | Eggsearch / Disabled |
+| `EggsearchConfig` | `crates/codegg-config/src/schema.rs:905` | Server name, command, args, timeouts |
+| `ToolTimeoutKind` | `crates/codegg-config/src/schema.rs:921` | Default / Security / Research / Batch |
 | `McpService` | `src/mcp/mod.rs:165` | MCP server registry (consumed by eggsearch adapter) |
 | `StructuredSearchResult` | `src/search_backend/mod.rs:54` | output + value + truncated |
 | `EggsearchCallResult` | `src/search_backend/eggsearch.rs:587` | output, value, truncated (per-call) |

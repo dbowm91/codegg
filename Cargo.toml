@@ -378,6 +378,11 @@ path = "tests/document_lsp_integration.rs"
 required-features = ["lsp-test-support"]
 
 [[test]]
+name = "lsp_completion_trajectory"
+path = "tests/lsp_completion_trajectory.rs"
+required-features = ["lsp-test-support"]
+
+[[test]]
 name = "windows_acl_lease"
 path = "tests/windows_acl_lease.rs"
 required-features = ["windows-sandbox-test-support"]

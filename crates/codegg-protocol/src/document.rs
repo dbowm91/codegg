@@ -95,6 +95,134 @@ impl DocumentScope {
     }
 }
 
+/// Maximum serialized size of one daemon directory-listing response.
+///
+/// The in-memory walk is already bounded (depth/nodes/examined/name), but
+/// deeply nested paths inflate JSON beyond the node count. Responses that
+/// would exceed this budget are trimmed from the trailing top-level nodes
+/// with an explicit truncation reason rather than failing or growing
+/// without bound. Frozen by ADR-0022.
+pub const MAX_DIRECTORY_LISTING_RESPONSE_BYTES: usize = 512 * 1024;
+
+/// Maximum components in a listing `prefix`. Matches the walk depth so a
+/// prefix can never address a subtree the walker itself could not reach.
+pub const MAX_DIRECTORY_LISTING_PREFIX_COMPONENTS: usize = 12;
+
+/// Maximum byte length of one `prefix` component. Matches the walk's
+/// per-entry name cap so a prefix can never name an entry the walker
+/// would skip.
+pub const MAX_DIRECTORY_LISTING_PREFIX_NAME_BYTES: usize = 255;
+
+/// Whether a listed entry can be opened as a document.
+///
+/// Variant order is the sibling sort order: directories before files.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceDirectoryNodeKindDto {
+    Directory,
+    File,
+}
+
+/// One inert entry in a daemon directory listing.
+///
+/// `path` is always workspace-relative and `/`-separated, built from
+/// validated component names. It carries no file bytes, no absolute
+/// daemon path, and no authority of its own: opening it still routes
+/// through `DocumentOpen`, which revalidates containment and `file.read`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceDirectoryNodeDto {
+    pub name: String,
+    pub path: String,
+    pub depth: usize,
+    pub kind: WorkspaceDirectoryNodeKindDto,
+    /// `None` for files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children: Option<Vec<WorkspaceDirectoryNodeDto>>,
+}
+
+/// Readiness of a daemon directory listing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceDirectoryListStatusDto {
+    /// The listing describes the daemon workspace at scan time.
+    #[default]
+    Ready,
+    /// Daemon scan admission is contended; retry explicitly.
+    Busy,
+    /// The daemon cannot serve a listing (workspace unresolvable,
+    /// scan failed, unsupported daemon). Never a local fallback.
+    Unavailable,
+}
+
+/// C005 (ADR-0022 §3): daemon-owned workspace directory listing request.
+///
+/// Carries only a project/workspace locator plus an optional
+/// workspace-relative `prefix`. The daemon resolves the canonical root
+/// itself; no client-supplied absolute root is honored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceDirectoryListRequestDto {
+    pub project_id: String,
+    pub workspace_id: String,
+    /// Workspace-relative subdirectory to list. Empty means the root.
+    /// Validated by [`Self::validate_prefix`] before any I/O.
+    #[serde(default)]
+    pub prefix: String,
+}
+
+impl WorkspaceDirectoryListRequestDto {
+    /// Validate `prefix` without touching the filesystem.
+    ///
+    /// Returns the normalized prefix (`""` for the root). Refuses
+    /// absolute paths, backslash separators, empty/`.`/`..` components,
+    /// overlong components, and prefixes deeper than the walk itself.
+    pub fn validate_prefix(&self) -> Result<String, &'static str> {
+        if self.prefix.is_empty() {
+            return Ok(String::new());
+        }
+        if self.prefix.starts_with('/') || self.prefix.starts_with('\\') {
+            return Err("listing prefix must be workspace-relative");
+        }
+        if self.prefix.contains('\\') {
+            return Err("listing prefix must use `/` separators");
+        }
+        let components: Vec<&str> = self.prefix.split('/').collect();
+        if components.len() > MAX_DIRECTORY_LISTING_PREFIX_COMPONENTS {
+            return Err("listing prefix is deeper than the maximum walk depth");
+        }
+        for component in &components {
+            if component.is_empty() || *component == "." || *component == ".." {
+                return Err("listing prefix must not contain empty or `.`/`..` components");
+            }
+            if component.len() > MAX_DIRECTORY_LISTING_PREFIX_NAME_BYTES {
+                return Err("listing prefix component exceeds the maximum name length");
+            }
+        }
+        Ok(components.join("/"))
+    }
+}
+
+/// C005 (ADR-0022 §3): daemon-owned workspace directory listing result.
+///
+/// Advisory metadata only: a file may disappear between listing and
+/// `DocumentOpen`, which independently reauthorizes. `workspace_id` and
+/// `prefix` echo the authorized scope so the TUI can key the response
+/// before display.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceDirectoryListResultDto {
+    pub workspace_id: String,
+    pub prefix: String,
+    #[serde(default)]
+    pub nodes: Vec<WorkspaceDirectoryNodeDto>,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
+    /// Directory entries examined, including filtered-out ones.
+    #[serde(default)]
+    pub examined: usize,
+    pub status: WorkspaceDirectoryListStatusDto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DocumentSnapshotDto {
     pub document_id: String,
@@ -117,6 +245,75 @@ pub struct DocumentSnapshotDto {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listing_prefix_validation_refuses_traversal_and_absolute_paths() {
+        let request = |prefix: &str| WorkspaceDirectoryListRequestDto {
+            project_id: "p".to_owned(),
+            workspace_id: "w".to_owned(),
+            prefix: prefix.to_owned(),
+        };
+        assert_eq!(request("").validate_prefix().as_deref(), Ok(""));
+        assert_eq!(request("src").validate_prefix().as_deref(), Ok("src"));
+        assert_eq!(
+            request("src-tauri/icons").validate_prefix().as_deref(),
+            Ok("src-tauri/icons")
+        );
+        for rejected in [
+            "/etc",
+            "../escape",
+            "a/../../escape",
+            "a//b",
+            "a/./b",
+            "a/",
+            ".",
+            "..",
+            "a\\b",
+            "C:\\win",
+        ] {
+            assert!(
+                request(rejected).validate_prefix().is_err(),
+                "expected {rejected:?} to be refused"
+            );
+        }
+        let deep = (0..MAX_DIRECTORY_LISTING_PREFIX_COMPONENTS + 1)
+            .map(|i| format!("d{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(request(&deep).validate_prefix().is_err());
+        let long = "a".repeat(MAX_DIRECTORY_LISTING_PREFIX_NAME_BYTES + 1);
+        assert!(request(&long).validate_prefix().is_err());
+    }
+
+    #[test]
+    fn listing_dto_roundtrip_preserves_status_and_truncation() {
+        let result = WorkspaceDirectoryListResultDto {
+            workspace_id: "w".to_owned(),
+            prefix: "src".to_owned(),
+            nodes: vec![WorkspaceDirectoryNodeDto {
+                name: "lib.rs".to_owned(),
+                path: "src/lib.rs".to_owned(),
+                depth: 1,
+                kind: WorkspaceDirectoryNodeKindDto::File,
+                children: None,
+            }],
+            truncated: true,
+            truncated_reason: Some("stopped at the maximum of 4096 entries".to_owned()),
+            examined: 5000,
+            status: WorkspaceDirectoryListStatusDto::Ready,
+        };
+        let round: WorkspaceDirectoryListResultDto =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(round, result);
+        // An older peer's result without the newer optional fields still
+        // decodes instead of failing the whole listing.
+        let legacy: WorkspaceDirectoryListResultDto =
+            serde_json::from_str(r#"{"workspace_id":"w","prefix":"","status":"busy"}"#)
+                .expect("legacy listing must still decode");
+        assert_eq!(legacy.status, WorkspaceDirectoryListStatusDto::Busy);
+        assert!(legacy.nodes.is_empty());
+        assert!(!legacy.truncated);
+    }
 
     #[test]
     fn a_global_agent_is_one_bare_toml_file() {

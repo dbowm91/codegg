@@ -2,7 +2,7 @@ name: Windows process launcher
 
 on:
   push:
-    branches: [work/windows-native-sandbox-foundation]
+    branches: [main, work/windows-native-sandbox-foundation]
     paths:
       - '.github/workflows/windows-process-launcher.yml'
       - 'Cargo.toml'
@@ -21,13 +21,57 @@ on:
       - 'crates/egggit/src/**'
       - 'tests/windows_process_launcher.rs'
       - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_projection_feasibility.rs'
+      - 'tests/windows_acl_lease.rs'
+      - 'tests/windows_sandbox_adversarial.rs'
+      - 'research/windows-native-sandbox/**'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-process-launcher.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/managed_process.rs'
+      - 'src/managed_process/**'
+      - 'src/security/sandbox.rs'
+      - 'src/security/sandbox/**'
+      - 'src/tool/bash/process.rs'
+      - 'src/tool/mod.rs'
+      - 'src/tool/factory.rs'
+      - 'src/scheduler/executors.rs'
+      - 'crates/codegg-config/src/schema.rs'
+      - 'crates/codegg-config/src/paths.rs'
+      - 'crates/egggit/Cargo.toml'
+      - 'crates/egggit/src/**'
+      - 'tests/windows_process_launcher.rs'
+      - 'tests/windows_restricted_managed_process.rs'
+      - 'tests/windows_projection_feasibility.rs'
       - 'tests/windows_acl_lease.rs'
       - 'tests/windows_sandbox_adversarial.rs'
       - 'research/windows-native-sandbox/**'
   workflow_dispatch:
+    inputs:
+      run_c014_research:
+        description: Run the historically negative C014 projection experiment
+        type: boolean
+        required: false
+        default: false
+      run_bounded_successor_probes:
+        description: Run only the C050/C052 test-only native probes
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+
+# Ordinary Windows-affecting PRs and mainline pushes share one launcher job.
+# Costly MXC/eligibility research workflows stay manual or path-scoped and
+# never run as part of this gate. Hosted Windows Server coverage and
+# Windows 11 ARM MXC eligibility remain separate jobs with no cross-host
+# security inference.
+concurrency:
+  group: windows-process-launcher-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   process-launcher:
@@ -46,9 +90,11 @@ jobs:
         shell: pwsh
         run: |
           $os = Get-CimInstance Win32_OperatingSystem
+          $version = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
           "OS: $($os.Caption)"
           "Version: $($os.Version)"
           "Build: $($os.BuildNumber)"
+          "UBR: $($version.UBR)"
           rustc --version --verbose
 
       - name: Record disposable runner privilege evidence
@@ -103,36 +149,55 @@ jobs:
           }
 
       - name: Windows managed process launcher tests
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --test windows_process_launcher -- --nocapture --test-threads=1
 
       - name: Windows suspended-target failure injection
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::failed_job_assignment_never_runs_the_suspended_target -- --nocapture
 
       - name: Restricted stdio setup failure injection
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::restricted_ -- --nocapture --test-threads=1
 
+      - name: WRITE_RESTRICTED synthetic-root feasibility probe
+        if: github.event_name == 'workflow_dispatch' && inputs.run_bounded_successor_probes
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::write_restricted_token_confines_new_synthetic_root_without_original_path_mutation -- --nocapture --test-threads=1
+
+      - name: C044 WRITE_RESTRICTED token-flag differential
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_bounded_successor_probes
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_process::windows::tests::c052_restricted_token_flag_differential_is_bounded_and_job_owned -- --nocapture --test-threads=1
+
       - name: Managed environment block control test
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib managed_environment_block_is_accepted_by_create_process -- --nocapture
 
       - name: Sandbox status frame rejection tests
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --lib status_decoder_rejects_malformed_duplicate_and_oversized_frames -- --nocapture
 
       - name: Test-only restricted managed process integration
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_restricted_managed_process -- --nocapture --test-threads=1
 
       - name: Journaled Windows ACL lease and recovery tests
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_acl_lease -- --nocapture --test-threads=1
 
       - name: Windows sandbox existing-root adversarial qualification
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_sandbox_adversarial -- --nocapture --test-threads=1
 
       - name: Windows ACL lease failure and recovery unit tests
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --features windows-sandbox-test-support --lib windows_acl_lease -- --nocapture --test-threads=1
 
       - name: Rust AppContainer launch ordering and cleanup proof
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         run: cargo test --locked -p codegg --lib managed_process::windows::tests::appcontainer_ -- --nocapture
 
       - name: Windows native shell and policy inputs
+        if: github.event_name != 'workflow_dispatch' || !inputs.run_bounded_successor_probes
         shell: pwsh
         run: |
           cargo test --locked -p codegg --lib windows_policy_tests -- --nocapture
@@ -150,4 +215,32 @@ jobs:
           cargo test --locked -p codegg --lib configured_cmd_shell_executes_raw_text -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p codegg --lib configured_git_bash_executes_raw_text -- --nocapture
+
+  c014-negative-reproduction:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_c014_research
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Record research runner metadata
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          "OS: $($os.Caption)"
+          "Version: $($os.Version)"
+          "Build: $($os.BuildNumber)"
+          rustc --version --verbose
+          "C014 is a historically negative research reproduction; failure is expected and is not launcher CI success."
+
+      - name: Reproduce closed-negative C014 projection experiment
+        env:
+          CODEGG_DAEMON_HOME: ${{ runner.temp }}\codegg-c014-daemon
+        run: cargo test --locked -p codegg --features windows-sandbox-test-support --test windows_projection_feasibility -- --nocapture --test-threads=1
 

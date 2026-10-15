@@ -16,6 +16,13 @@ Preserve the typed job request, permission decision, cancellation, and durable
 result path when changing those capabilities. Human shell commands are a
 separate TUI feature and do not become model tools.
 
+The broker derives every retry's `ToolExecutionContext` from the same
+`BrokerInvocationContext`. When an agent call includes
+`ExecutionAuthorizationContext`, preserve its immutable snapshot, receipt, and
+preflight summary through the canonical executor. Do not repeat command
+preflight after approval or let an executor use a broader sandbox profile than
+the accepted snapshot; unavailable required containment is a typed refusal.
+
 `ManagedProcessService` remains the sole finite-process owner on every host.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
@@ -29,6 +36,16 @@ The C010 test fixture can attach journaled read, read/write, and deny ACL leases
 to fresh disposable roots and exercises restoration after exit, cancellation,
 and recovery. It remains test-only; the production daemon-owned journal and
 Windows constrained backend are not activated by this fixture.
+
+Raw model-shell text is compiled to platform-specific execution inputs (`sh -c`
+on Unix; an absolute Windows PowerShell, `cmd.exe`, Git Bash, or WSL executable
+on Windows). `cmd.exe` uses a dedicated raw-command field because its command
+line parser differs from standard Windows argv parsing; that field is accepted
+only with the selected absolute `cmd.exe`. Structured argv continues to bypass
+shells. Windows raw-shell calls get a unique temporary directory through
+`TEMP`/`TMP`, cleaned after completion; that does not restrict filesystem
+access. Shell selection and policy path checks must not be described as Windows
+enforcement.
 
 Raw model-shell text is compiled to platform-specific execution inputs (`sh -c`
 on Unix; an absolute Windows PowerShell, `cmd.exe`, Git Bash, or WSL executable

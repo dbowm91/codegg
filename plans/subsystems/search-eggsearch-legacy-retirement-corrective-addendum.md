@@ -77,7 +77,9 @@ records strict closure of the upstream parity work and immutable published
 CodeGG M001 is **closed** at
 `plans/closure/search-eggsearch-legacy-retirement/001-status.md`: it adopted
 and qualified that **upstream** published source/binary contract (`v0.4.1`)
-in its development checkout. M002 is now ready. Upstream's immutable tag
+in its development checkout. Strict CodeGG C002 later qualified the v0.4.3
+real-wrapper/local-only contract and made M002 ready; M002 has since closed at
+`plans/closure/search-eggsearch-legacy-retirement/002-status.md`. Upstream's immutable tag
 is the dependency source; it does **not** imply CodeGG itself must publish a
 release. M001 MUST use the pinned upstream artifact/source, never a moving
 branch or `latest`.

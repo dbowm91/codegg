@@ -10,6 +10,7 @@
 //! submodule, so a test that called the handlers directly would be testing a
 //! path no user can reach.
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use codegg::tui::app::{App, TuiMsg};
 use codegg::tui::components::component::DialogType;
 use codegg::tui::input::InputMode;
@@ -386,6 +387,459 @@ fn a_clear_on_an_unknown_handle_reports_failure() {
     );
 }
 
+// ── Terminal navigation, selection, and clear ───────────────────────
+
+/// Put a live, attached terminal with scrolled-past output behind `handle`.
+///
+/// Built by driving the controller directly rather than through the daemon
+/// completions: `InteractiveOutputChunk` is private to the crate, and what
+/// these tests assert is that a *keystroke* reaches navigation state. The
+/// attach transport itself is `interactive_terminal_tui.rs`'s job.
+///
+/// Put a live, attached terminal behind `handle` with a screen exactly
+/// `screen_rows` tall.
+///
+/// The explicit screen height is the point: passing `rows.len()` would make the
+/// output fit exactly and leave *no* scrollback, so the tests that need history
+/// to scroll back into would have none. Lines are joined CRLF with no trailing
+/// newline, so screen row `n` is `rows[n]` until the screen overflows.
+fn attach_terminal_sized(app: &mut App, handle: &str, rows: &[&str], screen_rows: u16) {
+    use codegg::protocol::interactive_process::InteractiveOutputChunk;
+
+    let rendered = rows.join("\r\n");
+    let terminals = &mut app.interactive_terminals;
+    assert!(terminals.apply_created(
+        handle.to_string(),
+        "ws-1".to_string(),
+        "cat".to_string(),
+        40,
+        screen_rows.max(1)
+    ));
+    let chunk = InteractiveOutputChunk {
+        handle: handle.to_string(),
+        from_seq: 0,
+        next_seq: rendered.len() as u64,
+        gap: false,
+        data_b64: B64.encode(rendered.as_bytes()),
+    };
+    assert!(terminals
+        .apply_attached(handle, "att-1".to_string(), &chunk, None)
+        .expect("attach")
+        .is_none());
+}
+
+/// Screen sized to fit `rows` exactly — no trailing blank row, no scrollback.
+fn attach_terminal(app: &mut App, handle: &str, rows: &[&str]) {
+    attach_terminal_sized(app, handle, rows, u16::try_from(rows.len()).unwrap_or(1));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn d_deletes_the_selection_and_c_is_what_clears() {
+    // `d` is `OpenDiff` globally and a focused panel is consulted before
+    // Normal-mode actions, so the panel must claim `d` explicitly. It claims
+    // it as the *delete operator*; `C` took over the clear it used to do.
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-nav", &["alpha", "bravo", "charlie", "delta"]);
+    focus_terminal_panel(&mut app);
+
+    // `x` takes the cursor's whole line, then `d` removes it.
+    app.on_key(plain('x'));
+    app.on_key(plain('d'));
+    assert_eq!(
+        app.interactive_terminals.redaction_count("t-nav"),
+        1,
+        "d must delete the held selection"
+    );
+    assert!(
+        app.interactive_terminals.selection("t-nav").is_none(),
+        "d is an operator: it consumes what it acted on"
+    );
+
+    app.on_key(plain('d'));
+    assert_eq!(
+        app.ui_state.dialog,
+        codegg::tui::Dialog::None,
+        "a bare d is a no-op, never the diff box"
+    );
+
+    // `C` is the clear.
+    app.on_key(plain('C'));
+    let remaining = app
+        .interactive_terminals
+        .render_lines("t-nav", 200)
+        .expect("render")
+        .join("\n")
+        .trim()
+        .to_string();
+    assert!(
+        remaining.is_empty(),
+        "C must clear the screen, not leave the old output (got {remaining:?})"
+    );
+    assert_eq!(
+        app.ui_state.dialog,
+        codegg::tui::Dialog::None,
+        "C must not open the diff box"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn x_selects_whole_lines_and_movement_alone_does_not_add_them() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-x", &["one", "two", "three", "four"]);
+    focus_terminal_panel(&mut app);
+    // Park the cursor on "two". The panel cursor starts on the last row, and
+    // growth is capped at the last *visible* row, so starting there would test
+    // the cap rather than the gesture.
+    app.on_key(plain('k'));
+    app.on_key(plain('k'));
+
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-x").as_deref(),
+        Some("two")
+    );
+
+    // `j` is a movement. In line mode it must relocate the cursor and leave the
+    // selection exactly one line wide — otherwise "press x again for the next
+    // line" and "press x on the line I moved to" become the same key.
+    app.on_key(plain('j'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-x").as_deref(),
+        Some("two"),
+        "a bare movement must not widen a line selection"
+    );
+    assert_eq!(
+        app.interactive_terminals.cursor("t-x").map(|(_, col)| col),
+        Some(0),
+        "the cursor did move to the next line"
+    );
+
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-x").as_deref(),
+        Some("three"),
+        "x after a move re-anchors on the cursor's line"
+    );
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-x").as_deref(),
+        Some("three\nfour")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v_is_a_mode_and_x_then_v_extends_by_movement() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(
+        &mut app,
+        "t-v",
+        &["cargo build --release", "second", "third"],
+    );
+    focus_terminal_panel(&mut app);
+    // The panel cursor starts on the last row; these verbs are about the line
+    // the reader is actually on, so park it on the first one.
+    app.on_key(plain('k'));
+    app.on_key(plain('k'));
+    assert_eq!(
+        app.interactive_terminals.cursor("t-v").map(|(row, _)| row),
+        Some(0)
+    );
+
+    app.on_key(plain('v'));
+    app.on_key(plain('l'));
+    app.on_key(plain('l'));
+    app.on_key(plain('l'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-v").as_deref(),
+        Some("carg"),
+        "in character mode movement extends the selection"
+    );
+
+    // `x` re-anchors as a whole line, whatever was selected before.
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-v").as_deref(),
+        Some("cargo build --release"),
+        "x ignores the cursor column and takes the whole line"
+    );
+
+    // `x` then `v`: movement now extends, because `v` re-armed character mode.
+    // `v` re-anchors *at the cursor*, so walk the cursor to the line start
+    // first — the whole line `x` took is not what `v` refines.
+    app.on_key(plain('h'));
+    app.on_key(plain('h'));
+    app.on_key(plain('h'));
+    assert_eq!(
+        app.interactive_terminals.cursor("t-v").map(|(_, col)| col),
+        Some(0)
+    );
+    app.on_key(plain('v'));
+    app.on_key(plain('e'));
+    app.on_key(plain('e'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-v").as_deref(),
+        Some("cargo build"),
+        "`e` after `x` then `v` extends the re-anchored selection by word"
+    );
+
+    // `v` again releases the mode; movement stops widening.
+    app.on_key(plain('v'));
+    assert!(app.interactive_terminals.selection("t-v").is_none());
+    app.on_key(plain('b'));
+    assert!(
+        app.interactive_terminals.selection("t-v").is_none(),
+        "movement after v was released must not re-arm it"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn word_motion_walks_the_cursor_without_widening_a_line_selection() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(
+        &mut app,
+        "t-w",
+        &["cargo build --release", "second", "third"],
+    );
+    focus_terminal_panel(&mut app);
+    app.on_key(plain('k'));
+    app.on_key(plain('k'));
+
+    app.on_key(plain('x'));
+    let before = app.interactive_terminals.selected_text("t-w");
+
+    app.on_key(plain('e'));
+    app.on_key(plain('b'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-w"),
+        before,
+        "e/b are movements, and movements do not add to a line selection"
+    );
+
+    // In character mode the same keys do extend.
+    app.on_key(plain('v'));
+    app.on_key(plain('e'));
+    app.on_key(plain('e'));
+    assert_eq!(
+        app.interactive_terminals.selected_text("t-w").as_deref(),
+        Some("cargo build")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scrolling_back_reaches_output_that_left_the_screen() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    let rows: Vec<String> = (0..40).map(|n| format!("page-{n:02}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    // A 10-row screen over 40 lines: 30 rows of history to scroll back into.
+    attach_terminal_sized(&mut app, "t-scroll", &refs, 10);
+    focus_terminal_panel(&mut app);
+
+    assert!(
+        visible(&mut app, "t-scroll").contains("page-39"),
+        "the newest output is on screen while following"
+    );
+    assert!(
+        !visible(&mut app, "t-scroll").contains("page-00"),
+        "output that scrolled off is not on the live screen"
+    );
+
+    // `k` walks the cursor up one row at a time and the viewport follows it,
+    // so enough presses to cross the whole retained history must reveal the
+    // oldest output still in the buffer.
+    for _ in 0..40 {
+        app.on_key(plain('k'));
+    }
+
+    assert!(
+        app.interactive_terminals
+            .viewport_offset("t-scroll")
+            .is_some_and(|offset| offset > 0),
+        "k must move the viewport into the retained history"
+    );
+    assert!(
+        visible(&mut app, "t-scroll").contains("page-00"),
+        "the retained scrollback is what makes old output selectable"
+    );
+}
+
+/// Select the Terminal panel and put the keyboard on it in Normal mode.
+///
+/// `choose_nth` alone is not enough for the navigation tests: it selects the
+/// panel, but a panel is only consulted for keys when it is both focused *and*
+/// in Normal mode — the contract that keeps a composing `q` typeable.
+fn focus_terminal_panel(app: &mut App) {
+    choose_nth(app, SidePanelId::Terminal.index());
+    app.ui_state.input_mode = InputMode::Normal;
+    assert!(
+        app.panel_host.is_focused(),
+        "the terminal panel must hold the keyboard for these keys to reach it"
+    );
+}
+
+/// Everything the *viewport* currently shows for `handle`, as one string.
+///
+/// Reads through the selection-aware render path rather than `render_lines`:
+/// only that path parks the scrollback offset on the emulator first, so this is
+/// what actually tells the reader whether old output is reachable.
+fn visible(app: &mut App, handle: &str) -> String {
+    // One newline per *line*, not per span. A row's spans are split wherever
+    // the style changes — and the cursor's REVERSED modifier splits the row
+    // under it — so joining spans inserts a newline mid-row and makes a row
+    // like "page-39" unreadable. That is a rendering artifact of this helper,
+    // not what the user sees.
+    app.interactive_terminals
+        .render_view(handle, 200, ratatui::style::Style::default())
+        .expect("render")
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .map(|span| span.content.to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_selection_survives_leaving_and_refocusing_the_panel() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(
+        &mut app,
+        "t-sel",
+        &["first", "second", "third", "fourth", "fifth"],
+    );
+    focus_terminal_panel(&mut app);
+
+    // The screen holds exactly the five lines given, so row 4 is "fifth" and
+    // `x` on it must take that line whole — cursor column is irrelevant.
+    app.on_key(plain('x'));
+    let one = app
+        .interactive_terminals
+        .selected_text("t-sel")
+        .expect("a line is selected");
+    assert_eq!(one, "fifth");
+
+    // The cursor is already on the last screen row, so `x` cannot grow further
+    // and the selection correctly stays put rather than inventing an empty
+    // line below the visible screen.
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals
+            .selected_text("t-sel")
+            .expect("the selection grew"),
+        "fifth",
+        "growing at the last visible row must not select past the screen"
+    );
+
+    // Walk the cursor up two lines, then re-anchor with `x`.
+    app.on_key(plain('k'));
+    app.on_key(plain('k'));
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals
+            .selected_text("t-sel")
+            .expect("a line is selected"),
+        "third",
+        "x selects the cursor's line, whatever the cursor column"
+    );
+
+    // Pressing `x` again grows the selection one line from the anchor — the
+    // affordance behind "hit x repeatedly to take the next line".
+    app.on_key(plain('x'));
+    assert_eq!(
+        app.interactive_terminals
+            .selected_text("t-sel")
+            .expect("the selection grew"),
+        "third\nfourth"
+    );
+
+    // `v` re-anchors at character granularity from the current cursor, which is
+    // how a reader switches granularity after `x` grabbed too much.
+    app.on_key(plain('v'));
+    let cell = app
+        .interactive_terminals
+        .selected_text("t-sel")
+        .expect("a character selection");
+    assert_eq!(
+        cell.chars().count(),
+        1,
+        "v selects the single cell under the cursor, got {cell:?}"
+    );
+    assert!(
+        "fourth".contains(cell.as_str()),
+        "the cell must come from the cursor's row, got {cell:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v_selects_characters_and_space_y_arms_only_a_prefix() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-char", &["abcdef", "ghijkl", "mnopqr"]);
+    focus_terminal_panel(&mut app);
+
+    // Cursor starts on the bottom row; `k` walks it up to "ghijkl", `h` takes
+    // it to column 0, `v` anchors there, and two `l`s extend the selection.
+    app.on_key(plain('k'));
+    app.on_key(key(KeyCode::Char('h'), KeyModifiers::NONE));
+    app.on_key(plain('v'));
+    app.on_key(key(KeyCode::Char('l'), KeyModifiers::NONE));
+    app.on_key(plain('l'));
+
+    let selected = app
+        .interactive_terminals
+        .selected_text("t-char")
+        .expect("a character selection");
+    assert_eq!(
+        selected, "ghi",
+        "character selection stays inside the cursor's row"
+    );
+
+    // `space` alone arms nothing visible; the following `y` consumes the prefix.
+    app.on_key(plain(' '));
+    assert!(app.interactive_terminals.prefix_pending("t-char"));
+    app.on_key(plain('y'));
+    assert!(
+        !app.interactive_terminals.prefix_pending("t-char"),
+        "the yank must disarm the prefix"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn esc_drops_a_selection_before_it_leaves_the_panel() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-esc", &["one", "two", "three", "four"]);
+    focus_terminal_panel(&mut app);
+
+    app.on_key(plain('x'));
+    assert!(app.interactive_terminals.selection("t-esc").is_some());
+
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+
+    // The host claims Esc as the panel exit, so the selection must survive it:
+    // the state lives on the controller, so stepping back out and returning
+    // finds the text the reader was about to copy still selected.
+    assert!(
+        !app.panel_host.is_focused(),
+        "Esc is the host's exit from a focused panel"
+    );
+    assert!(
+        app.interactive_terminals.selection("t-esc").is_some(),
+        "leaving the panel must not discard the selection"
+    );
+
+    focus_terminal_panel(&mut app);
+    assert!(app.interactive_terminals.selection("t-esc").is_some());
+}
+
 // ── Panel hotkeys ───────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -411,6 +865,8 @@ async fn reassigning_a_digit_rebinds_rather_than_failing() {
     let mut app = test_app();
     // Bind slot 3 to Chat, then rebind the same slot to Help. The manager
     // opens on the live panel each time, so walk from there.
+    // Terminal, not Chat: an unbound chat panel refuses focus and would
+    // leave the keyboard in the composer, which is a different test entirely.
     choose_by_label(&mut app, SidePanelId::Chat);
     // `Enter` above committed the panel and closed the manager; the digit
     // only binds while the manager is up.
@@ -486,6 +942,11 @@ fn ctrl_digit_shaped_keys_are_recognised_and_other_keys_are_not() {
 /// stays a typeable letter. That `Esc` is consumed by the box, which is
 /// exactly why the app-level mode is still Insert afterwards: the composer
 /// never saw it. This is the precise state that used to strand the user.
+///
+/// The dock gesture that follows is `Shift+L` throughout: a box dock names
+/// the side it should land on, and the panel is on the right by default. It
+/// used to be `Shift+H` because *any* directional docked, which is exactly
+/// what made "open a panel on the left" impossible to ask for.
 fn open_help_box_while_composing(app: &mut App) {
     app.ui_state.input_mode = InputMode::Insert;
     for ch in "/help".chars() {
@@ -518,7 +979,7 @@ async fn docking_a_box_leaves_a_panel_the_keyboard_can_actually_reach() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert_eq!(
         app.panel_host.active(),
         SidePanelId::Help,
@@ -555,7 +1016,7 @@ async fn leaving_a_panel_restores_the_composer_mode_it_had() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert_eq!(
         app.ui_state.input_mode,
         InputMode::Normal,
@@ -582,7 +1043,7 @@ async fn a_normal_mode_composer_is_not_rewritten_by_a_panel_visit() {
     open_help_box_while_composing(&mut app);
     app.ui_state.input_mode = InputMode::Normal;
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(
         app.panel_host.is_focused(),
         "precondition: docked + focused"
@@ -608,7 +1069,7 @@ async fn leaving_a_panel_with_escape_also_restores_the_composer_mode() {
     let mut app = test_app();
     open_help_box_while_composing(&mut app);
 
-    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    app.on_key(key(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(
         app.panel_host.is_focused(),
         "precondition: docked + focused"
@@ -839,4 +1300,207 @@ async fn tasks_without_a_project_lands_on_its_placeholder() {
         Some(false)
     );
     assert!(!app.panel_host.is_focused());
+}
+
+// ── Panel resize mode ─────────────────────────────────────────────────
+
+/// Arm resize mode the way a reader does: `Ctrl+N` in Normal mode.
+fn arm_resize(app: &mut App) {
+    app.on_key(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert!(app.panel_host.is_resizing(), "Ctrl+N arms resize mode");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ctrl_n_arms_resize_mode_and_new_session_is_now_a_bare_n() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Normal;
+
+    // The chord is the resize toggle, not a second spelling of new session.
+    arm_resize(&mut app);
+    assert!(
+        app.panel_host.is_resizing(),
+        "Ctrl+N no longer starts a session"
+    );
+
+    // And the bare letter still does, so nothing was lost by the remap.
+    let mut app = test_app();
+    app.ui_state.input_mode = InputMode::Normal;
+    app.on_key(plain('n'));
+    assert!(
+        !app.panel_host.is_resizing(),
+        "a bare n is NewSession, not the resize toggle"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resize_mode_stays_armed_until_esc_enter_or_the_chord() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Normal;
+
+    for exit in [
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+    ] {
+        arm_resize(&mut app);
+        app.on_key(exit);
+        assert!(
+            !app.panel_host.is_resizing(),
+            "{exit:?} must leave resize mode"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn h_on_a_right_panel_widens_it_and_l_is_a_no_op() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Normal;
+    // Terminal, not Chat: an unbound chat panel refuses focus and would
+    // leave the keyboard in the composer, which is a different test entirely.
+    choose_by_label(&mut app, SidePanelId::Terminal);
+    let before = app
+        .ui_state
+        .layout
+        .config
+        .column_width(codegg::tui::panels::PanelPlacement::Right);
+
+    arm_resize(&mut app);
+    app.on_key(plain('h'));
+    assert_eq!(
+        app.ui_state
+            .layout
+            .config
+            .column_width(codegg::tui::panels::PanelPlacement::Right),
+        before + 1,
+        "h drags a right panel's left border out, so the column grows"
+    );
+
+    // A right panel has no right border of its own — the frame owns it — so
+    // `l` must do nothing at all rather than shrinking the panel.
+    app.on_key(plain('l'));
+    assert_eq!(
+        app.ui_state
+            .layout
+            .config
+            .column_width(codegg::tui::panels::PanelPlacement::Right),
+        before + 1,
+        "a frame edge is not draggable; resize is outward-only"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn l_from_the_main_buffer_narrows_the_chat_column() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Normal;
+    // Terminal, not Chat: an unbound chat panel refuses focus and would
+    // leave the keyboard in the composer, which is a different test entirely.
+    choose_by_label(&mut app, SidePanelId::Terminal);
+    let before = app
+        .ui_state
+        .layout
+        .config
+        .column_width(codegg::tui::panels::PanelPlacement::Right);
+
+    // Hand the keyboard back to the transcript. The chat column and the buffer
+    // share one border, and `l` must mean opposite things on each side of it.
+    app.on_key(key(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(!app.panel_host.is_focused());
+    // Leaving a panel restores whatever mode the composer had before it took
+    // focus, so a Normal-mode frame gesture needs Normal mode stated again.
+    app.ui_state.input_mode = InputMode::Normal;
+
+    arm_resize(&mut app);
+    app.on_key(plain('l'));
+    assert_eq!(
+        app.ui_state
+            .layout
+            .config
+            .column_width(codegg::tui::panels::PanelPlacement::Right),
+        before - 1,
+        "growing the buffer pushes the column's left border out from under it"
+    );
+
+    // Nothing is docked on the left, so `h` from the buffer has no panel to
+    // push and must be inert.
+    app.on_key(plain('h'));
+    assert_eq!(
+        app.ui_state
+            .layout
+            .config
+            .column_width(codegg::tui::panels::PanelPlacement::Left),
+        app.ui_state.layout.config.sidebar_width
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hjkl_do_not_navigate_while_resize_mode_is_armed() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-resize", &["alpha", "bravo", "charlie"]);
+    focus_terminal_panel(&mut app);
+    let parked = app
+        .interactive_terminals
+        .cursor("t-resize")
+        .expect("cursor");
+
+    arm_resize(&mut app);
+    for ch in ['h', 'j', 'k', 'l'] {
+        app.on_key(plain(ch));
+    }
+
+    assert_eq!(
+        app.interactive_terminals
+            .cursor("t-resize")
+            .expect("cursor"),
+        parked,
+        "a focused panel consumes every key it is shown, so resize mode has \
+         to be answered ahead of the panel or h/j/k/l would move the cursor"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hjkl_navigate_again_once_resize_mode_is_left() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-resize", &["alpha", "bravo", "charlie"]);
+    focus_terminal_panel(&mut app);
+    let before = app
+        .interactive_terminals
+        .cursor("t-resize")
+        .expect("cursor");
+
+    arm_resize(&mut app);
+    app.on_key(key(KeyCode::Esc, KeyModifiers::NONE));
+    app.on_key(plain('k'));
+
+    assert_ne!(
+        app.interactive_terminals
+            .cursor("t-resize")
+            .expect("cursor"),
+        before,
+        "the keys must mean navigation again"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resize_mode_is_a_normal_mode_gesture() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    app.ui_state.input_mode = InputMode::Insert;
+
+    // Resize steals `h/j/k/l`, which in Insert are ordinary letters. It is a
+    // frame gesture for the same reason the panel manager is Normal-only: a
+    // frame-level mode that could be armed mid-sentence would swallow the next
+    // four letters of whatever was being typed. `Ctrl+N` arriving here at all
+    // is harmless — it is a chord, so it is never text — but it must not arm a
+    // mode that then eats the prompt.
+    app.on_key(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert!(
+        !app.panel_host.is_resizing(),
+        "resize mode is Normal-only; Insert keeps its letters"
+    );
 }

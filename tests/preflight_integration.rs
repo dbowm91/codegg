@@ -472,29 +472,22 @@ async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn test_bash_tool_with_preflight_blocks_on_dangerous_command() {
-    let policy = PreflightPolicy {
-        shell: true,
-        ..Default::default()
-    };
-    let svc = test_preflight_service_with_policy(policy);
-    let tool = codegg::tool::bash::BashTool::new().with_preflight(svc);
-
-    // A dangerous command that should be caught by security checks
-    let input = serde_json::json!({
-        "command": "rm -rf /"
-    });
-
-    let result = tool.execute(input).await;
-    assert!(result.is_err(), "dangerous command should be blocked ");
-    let err_msg = format!("{}", result.unwrap_err());
+#[test]
+fn test_bash_command_preflight_risk_is_advisory() {
+    let svc = service_for_synthetic();
+    let result = synthetic_result(
+        "ok: true\nverdict: block\nrisk: high",
+        Some(serde_json::json!({"verdict": "block", "risk_level": "high"})),
+        None,
+    );
+    let decision = svc.parse_command_result(result);
     assert!(
-        err_msg.contains("blocked")
-            || err_msg.contains("permission")
-            || err_msg.contains("blocked list "),
-        "error should indicate blocking: {}",
-        err_msg
+        decision.has_warnings(),
+        "risk should be surfaced for review"
+    );
+    assert!(
+        !decision.is_blocked(),
+        "risk classification is not contract invalidity"
     );
 }
 
@@ -1047,8 +1040,8 @@ fn check_command_uses_structured_verdict() {
     );
     let decision = svc.parse_command_result(result);
     assert!(
-        decision.is_blocked(),
-        "verdict block should block: {:?}",
+        decision.has_warnings(),
+        "command risk verdict should be advisory: {:?}",
         decision
     );
 }
@@ -1087,8 +1080,8 @@ fn fallback_to_string_parsing_when_no_structured_fields() {
     let result = synthetic_result("ok: true\nrisk: high", None, None);
     let decision = svc.parse_command_result(result);
     assert!(
-        decision.is_blocked(),
-        "string fallback risk high should block"
+        decision.has_warnings(),
+        "string fallback risk high should warn"
     );
 
     // text_security_inspect: no structured result, verdict: block in output

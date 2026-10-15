@@ -117,8 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once, so it is `~/.config/codegg/skills`.
 - **`architecture/security.md`** described `Ambient` as "observation only, no
   auto-deny" and showed `prompt_hints = false` / `max_findings_in_prompt = 10`.
-  `deny_critical_commands` defaults to true, so Ambient denies critical commands;
-  the real defaults are `true` and `5`.
+  `deny_critical_commands` is omitted by default and critical classifications
+  are advisory; the other real defaults are `true` and `5`.
 
 ### Known issues (not fixed here)
 

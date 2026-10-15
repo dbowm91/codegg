@@ -5,7 +5,8 @@
 //!
 //! 1. Authenticated project Owner submits a turn/job (trusted context).
 //! 2. Model/tool path executes a command through `ToolBroker` (bash).
-//! 3. A Git mutation occurs (`GitMutationExecutor`).
+//! 3. A Git mutation is policy-checked and its terminal result is audited
+//!    (`GitMutationExecutor`).
 //! 4. An interactive process is created (no input retention).
 //! 5. A scheduler job reaches terminal success (durable `job_complete`).
 //! 6. Project Owner queries audit (daemon `audit_query`).
@@ -477,6 +478,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         current_policy_revision: None,
         execution_audit: Some(audit_ctx.clone()),
         audit_emitter: Some(emitter.clone()),
+        execution_authorization: None,
     };
     let result = broker
         .execute_with_retry(
@@ -500,9 +502,25 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         .with_audit_emitter(emitter.clone());
     let staged =
         codegg::git_mutations_ops::stage_paths(&git_exec, repo.path(), vec!["m004.txt".to_owned()])
-            .await
-            .expect("stage");
-    assert!(staged.success);
+            .await;
+    assert!(
+        matches!(
+            &staged,
+            Err(codegg::git_mutations::GitMutationError::Policy(
+                egggit::GitExecutionPolicyOutcome::BackendUnavailable { capabilities }
+            )) if capabilities.contains(&egggit::GitExecutionCapability::CleanSmudgeFilter)
+        ),
+        "staging must stop at the contained-execution gate: {staged:?}"
+    );
+    let index_check = Command::new("git")
+        .args(["diff", "--cached", "--quiet", "--", "m004.txt"])
+        .current_dir(repo.path())
+        .output()
+        .expect("check staged index");
+    assert!(
+        index_check.status.success(),
+        "blocked staging must leave the index unchanged"
+    );
 
     // 4. Interactive process create (input stays out of audit).
     let admission = {
@@ -620,6 +638,10 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         git.metadata.get("git.op").map(String::as_str),
         Some("stage")
     );
+    assert_eq!(
+        git.metadata.get("decision.outcome").map(String::as_str),
+        Some("policy_blocked")
+    );
     assert_eq!(git.session_id.as_deref(), Some(session));
     let interactive = &rows[2];
     assert_eq!(
@@ -705,6 +727,7 @@ async fn single_host_trajectory_is_ordered_correlated_and_secret_free() {
         current_policy_revision: None,
         execution_audit: Some(audit_ctx.clone()),
         audit_emitter: Some(emitter.clone()),
+        execution_authorization: None,
     };
     broker
         .execute_with_retry(
@@ -895,6 +918,7 @@ async fn credential_git_url_secret_command_and_terminal_input_stay_structural() 
         current_policy_revision: None,
         execution_audit: Some(audit_ctx.clone()),
         audit_emitter: Some(emitter.clone()),
+        execution_authorization: None,
     };
     let command = format!("echo {secret}");
     let result = broker

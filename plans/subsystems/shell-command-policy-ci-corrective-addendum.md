@@ -1,0 +1,25 @@
+# Shell Command Policy CI — Legacy Hard-deny vs Ask Reconciliation Corrective
+
+Status: **closed** (C001 integrated and exact-head qualified; independent of Windows MXC admission).
+
+**Post-closure supersession notice (2026-10-14):** This C001 status is **historical**, not the current executable policy contract. Accepted ADR-0028 and command-authorization closure 005 established an empty default Bash blocklist and advisory built-in risk; C001's unconditional catastrophic text hard-deny expectation and direct destructive tests are contradicted. New successor C002 at `plans/subsystems/shell-command-policy-adr0028-post-closure-corrective-addendum.md` owns safe test replacement, docs, guard and independently verified closure. Preserve C001 records; never restore the built-in regex hard stop to satisfy its original tests.
+Parent authority: `plans/003-planning-process.md`; canonical tool/permission, approval/sandbox and shell ownership contracts; relevant security ADR-0004.
+Source failure: Linux CI run `38417097457` (SHA `3fbe6201`) and earlier `38405432003` failed `tests/tool_execution.rs::test_bash_tool_blocked_patterns` (`$(whoami)`) and `test_bash_tool_blocked_command_list` (`sudo su`). Tests were written for a historical regex hard-block expectation.
+
+## Upstream implementation discovery (2026-10-13)
+
+At `main` SHA `b9ba494c1b21638c2e2f660301ba207ce8859682`, commit `9d32c35b516315adef21e30eb2a9e436826231e0` has **already replaced** the two historic stale hard-block assertions with hard-deny-versus-Ask tests in `tests/tool_execution.rs`. The Windows work branch `631ae9488f251ac70e91b9c8299d2c1c3bff83fa` has not integrated those mainline commits. C001 is **not yet closed**: the mainline tests must be brought into the Windows branch by C040, the actual approval/no-bypass path must be verified, and focused plus hosted CI must pass at the integrated SHA. Do not recreate the upstream test fix or restore regex denial.
+
+## Current reality and intended distinction
+
+`src/tool/bash/policy.rs` distinguishes irreversible **hard-deny** command patterns and review-worthy **ask** patterns, while `src/permission/mod.rs` handles the approval decision. A direct `BashTool::new().execute` test without an approval context is not an end-to-end proof of an approval prompt. Restoring blanket string-spelling denials for `sudo` or `$(...)` would regress the intended structural-authority model and create obfuscation incentives; silently allowing them under a configured ask policy without an actual approval decision is also unacceptable.
+
+Do not loosen canonical prohibitions for genuinely forbidden operations (e.g. destructive root mutations), do not hide CI failures by ignoring tests, and do not couple this repair to C036/C037 or MXC runtime support.
+
+## Dependency
+
+C001 `plans/implementation/shell-command-policy-ci-corrective/001-bash-hard-deny-vs-ask-test-reconciliation.md` is closed at exact integrated head `b89ba9e364bbf492d19048bed54803c4a8fd6d8e`; see `plans/closure/shell-command-policy-ci-corrective/001-status.md`. The corrected hard-deny/Ask matrix, actual approval/no-dispatch path, focused suites, and hosted Linux CI passed. Native MXC research remains independent.
+
+## Acceptance
+
+Correct and regression-test the three separate outcomes (hard-deny, policy ask requiring a decision, explicit authorized execution) through their canonical owners. No new command-regex security barrier, no silent bypass of permission mode, and no false positive from a direct model-facing tool call without approval context. Record closure, hosted test result and update the registry.

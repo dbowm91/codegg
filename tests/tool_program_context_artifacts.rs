@@ -213,6 +213,7 @@ fn program_ctx() -> BrokerInvocationContext {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        execution_authorization: None,
     }
 }
 
@@ -346,6 +347,7 @@ async fn broker_returns_display_for_agent_calls() {
         current_policy_revision: None,
         execution_audit: None,
         audit_emitter: None,
+        execution_authorization: None,
     };
     let result = broker
         .execute(&registry, "read", json!({"path": "/tmp/test.txt"}), ctx)

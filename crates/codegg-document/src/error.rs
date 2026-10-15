@@ -22,4 +22,6 @@ pub enum DocumentError {
     RevisionExhausted,
     #[error("line or byte column is out of bounds")]
     InvalidPosition,
+    #[error("line prefix exceeds the bounded completion-position budget")]
+    CompletionPrefixTooLong,
 }

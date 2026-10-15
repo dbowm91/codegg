@@ -111,6 +111,26 @@ pub struct SessionState {
     /// turns that were simply running several slow commands. Tracking the
     /// in-flight call lets the watchdog tell "working" apart from "wedged".
     pub running_tool: Option<RunningTool>,
+    /// The daemon-issued id of the turn currently in flight.
+    ///
+    /// `CoreRequest::TurnCancel` addresses a turn by `(session_id, turn_id)`
+    /// and the daemon *rejects* a mismatch (`turn_id_mismatch`) rather than
+    /// ignoring it, so stopping a turn is impossible without this id. It
+    /// arrives on two wires — `CoreEvent::TurnStarted` and the
+    /// `TurnAdmissionReceipt` returned by submit — and both used to be
+    /// discarded, which is why nothing in the TUI could interrupt a turn.
+    ///
+    /// Bound from `TurnStarted`: that is the event-level truth, so it
+    /// survives a frontend reconnect that joins a turn already running in the
+    /// daemon. Cleared by every terminal turn event.
+    pub active_turn_id: Option<String>,
+    /// The user stopped the current turn, and has not resumed or replaced it.
+    ///
+    /// A cancelled turn arrives as an ordinary `TurnCompleted` with an
+    /// unrecognised `stop_reason`, so status alone cannot distinguish "I
+    /// stopped this" from "the agent finished". Without this flag the stopped
+    /// state is invisible and `/start` has nothing to act on.
+    pub stopped_turn: bool,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,

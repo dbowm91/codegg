@@ -109,9 +109,11 @@ pub mod command;
 pub mod commands;
 pub mod components;
 pub mod file_diff;
+pub mod helix_selection;
 pub mod input;
 pub mod interactive_terminal;
 pub mod layout;
+pub mod panel_resize;
 pub mod panels;
 pub mod route;
 pub(crate) mod runtime;
@@ -2644,6 +2646,8 @@ mod async_cmd_tests {
 }
 pub mod document_session;
 pub mod editor;
+pub mod editor_completion;
 pub mod editor_lsp;
 pub mod file_tree;
+pub mod file_tree_coordinator;
 pub mod unified_diff;

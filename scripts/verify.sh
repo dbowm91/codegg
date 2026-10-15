@@ -67,6 +67,9 @@ run_quick() {
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
 
+    echo "==> python3 scripts/check_adr_integrity.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_adr_integrity.py)
+
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
@@ -75,6 +78,9 @@ run_quick() {
 
     echo "==> python3 scripts/check_tui_editor_text_authority.py"
     (cd "$REPO_ROOT" && python3 scripts/check_tui_editor_text_authority.py)
+
+    echo "==> python3 scripts/check_daemon_listing_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_daemon_listing_authority.py)
 
     echo "==> python3 scripts/check_http_route_disposition.py"
     (cd "$REPO_ROOT" && python3 scripts/check_http_route_disposition.py)
@@ -117,6 +123,12 @@ run_quick() {
 
     echo "==> python3 scripts/check_first_party_skills.py"
     (cd "$REPO_ROOT" && python3 scripts/check_first_party_skills.py)
+
+    echo "==> python3 scripts/check_shell_policy_test_safety.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_shell_policy_test_safety.py)
+
+    echo "==> python3 scripts/test_shell_policy_test_safety.py"
+    (cd "$REPO_ROOT" && python3 scripts/test_shell_policy_test_safety.py)
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)

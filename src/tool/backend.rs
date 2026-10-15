@@ -151,6 +151,10 @@ pub struct ToolExecutionContext {
     /// approval mode. Subagent construction reads this as the parent
     /// ceiling; missing means the pre-M005 default (`workspace_write`).
     pub sandbox_profile: Option<String>,
+    /// M002: authorization state accepted at the tool-batch boundary.
+    /// This immutable value is threaded through the broker and every retry;
+    /// tools must not reconstruct authority from model input or live mode.
+    pub execution_authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
 }
 
 impl ToolExecutionContext {
@@ -195,6 +199,7 @@ impl ToolExecutionContext {
             decision_revoked_at: None,
             program_contract_snapshot: None,
             sandbox_profile: None,
+            execution_authorization: None,
             execution_audit: None,
             audit_emitter: None,
         }

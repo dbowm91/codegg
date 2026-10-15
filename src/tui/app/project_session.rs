@@ -91,6 +91,34 @@ impl App {
             .set_registry(&self.command_registry);
     }
 
+    /// Guarantee the launch directory owns a session by the time the event
+    /// loop starts.
+    ///
+    /// "The directory you ran the TUI in" is the session. Opening CodeGG in a
+    /// folder and having to press `Ctrl+N` before the chat, file browser, or
+    /// agent surfaces respond is a dead first impression: every one of those
+    /// surfaces resolves its binding through the active session, so a launch
+    /// that leaves `session` as `None` looks like a broken install rather than
+    /// a missing keystroke.
+    ///
+    /// This is idempotent by construction — it is a no-op whenever a session
+    /// is already bound, so `--session`, `--fork`, and `-c/--continue` keep
+    /// exactly the session they asked for and this never races them. It runs
+    /// after the launch-directory bootstrap so the request carries the typed
+    /// `(project_id, workspace_id)` pair instead of a bare directory locator,
+    /// which is the same shape `Ctrl+N` uses and the one the daemon can
+    /// actually resolve.
+    ///
+    /// It is deliberately not `App::new_session`: that path clears the
+    /// transcript, resets the route, and can open a template picker, none of
+    /// which belong in a launch that has nothing to clear.
+    pub fn ensure_launch_session(&mut self) {
+        if self.session_state.session.is_some() {
+            return;
+        }
+        crate::tui::commands::sessions::start_new_session(self);
+    }
+
     /// Invalidate the frontend-only SessionCreate continuation.  The daemon
     /// request is intentionally not undone: it may already have committed a
     /// durable session, but that session must not be rebound to a new tab or
@@ -124,6 +152,10 @@ impl App {
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            // M004: a tab switch moves the project context out from under
+            // the popup's scope binding, so the popup closes even though
+            // the attachment itself survives.
+            self.editor_state.completion.clear();
             // C001: dropping the transient trigger bearer on scope loss.
             // Metadata stays cached; the secret is never carried across
             // projects/tabs.
@@ -203,6 +235,17 @@ impl App {
         // bounded request); stale cached counts never survive an
         // epoch change and revocation clears via whole-page replace.
         crate::tui::commands::workspace_dashboard::resync_dashboard_after_reconnect(self);
+        // TUI editor C001: a reconnect may have replaced the daemon replica.
+        // Stale semantic spans must never paint against the resynced text;
+        // diagnostics are marked stale rather than cleared so the last
+        // complete set remains visible until the next refresh.
+        self.editor_state.lsp.clear_semantic();
+        // M004: a reconnect invalidates the popup and its pending request
+        // outright — suggestions carry no resync semantics worth keeping.
+        self.editor_state.completion.clear();
+        if !self.editor_state.lsp.diagnostics.is_empty() {
+            self.editor_state.lsp.diagnostics_stale = true;
+        }
     }
 
     /// Presence M002: route a daemon `PresenceUpdated { project_id }`

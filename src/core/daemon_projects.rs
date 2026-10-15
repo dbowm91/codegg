@@ -465,8 +465,10 @@ impl CoreDaemon {
                     Some(root) => {
                         let argv: Vec<String> =
                             vec!["git".into(), "status".into(), "--porcelain".into()];
-                        let mut cmd =
-                            crate::git_mutations::GitEnvPolicy::default().apply(&argv, root);
+                        let cmd = crate::git_mutations::GitEnvPolicy::default().apply(&argv, root);
+                        let Ok(mut cmd) = cmd else {
+                            return Err(AppError::Worktree(cmd.unwrap_err().to_string()));
+                        };
                         match cmd.output().await {
                             Ok(output) => {
                                 let stdout = String::from_utf8_lossy(&output.stdout);

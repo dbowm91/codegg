@@ -372,7 +372,7 @@ Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:783`)
+### SearchConfig (`schema.rs:790`)
 
 Web search/fetch backend: `backend` (Eggsearch/Disabled),
 `expose_raw_mcp_tools`, output caps per domain, and the `eggsearch`

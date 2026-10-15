@@ -147,3 +147,15 @@ Do not edit the historical `plans/closure/windows-native-sandbox/004-status.md` 
 ## 16. Handoff notes
 
 The GitHub hosted Windows runner meets the disposable privileged environment gate: the workflow observed an Administrator role and high-integrity token (UAC remains enabled). Use the fresh runner-owned workspace and synthetic credential/IPC fixtures for C011; do not access repository or runner secrets. Do not rewrite historical `plans/closure/windows-native-sandbox/004-status.md`. An additive M004 closure may use e.g. `plans/closure/windows-native-sandbox/004-requalification-status.md` to preserve original evidence chronology.
+
+## C013 existing-object and alias corrective handoff (2026-10-12)
+
+This C011 plan remains **blocked** by the genuine existing-file read leak; C012's populated-tree preflight is only a conditional test-only fail-closed mitigation. The next dependency-ready corrective is `plans/implementation/windows-native-sandbox/013-c011-existing-object-access-and-alias-containment.md`. C013 requires an actual file-object DACL/token/alias causal proof, a bounded implementation strategy if feasible, native running-child denial evidence, handle-based admission/race tests and journal-safe rollback. Windows Server 2025 disposable hosted fixtures suffice to begin. A safe **negative** feasibility disposition must keep populated roots unsupported rather than invent recursive ACL assurance. C013 alone never marks C011 or M004 closed and must not enable the production backend.
+
+The C011 full privileged IPC, descendant, restart, realistic-workspace and independent security review gate remains intact. Preserve original `plans/closure/windows-native-sandbox/011-status.md` and `plans/closure/windows-native-sandbox/012-status.md` as historical findings. No unrelated branch diff work is included.
+
+## ADR-0019 successor research line (2026-10-12)
+
+C013 remains **closed negative** for existing-tree ACL leasing; the C011 direct/junction/hardlink synthetic credential leak and remaining IPC/descendant/restart/real-workspace review are not closed. ADR-0019 now accepts *only* a staged-workspace/AppContainer **feasibility experiment** (not production security authority). C014 `plans/implementation/windows-native-sandbox/014-projection-appcontainer-compatibility-and-deny-boundary.md` is ready. C015 snapshot, C016 restricted staging, C017 authorized promotion and C018 independent adversarial requalification are hard dependency-gated. Negative C014 must stop the architecture line. No production `Required` capability, filesystem `Enforced`, M004 closure, or M005/M006 unblocking is authorized by planning alone.
+
+Source research: `research/windows-native-sandbox/adr-0019-successor-assessment.md`. Historical ``plans/closure/windows-native-sandbox/004-status.md``, `011-status.md`, `012-status.md` and `013-status.md` remain unchanged. Unrelated branch-diff review is outside this line.

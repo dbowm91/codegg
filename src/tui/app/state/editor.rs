@@ -286,6 +286,9 @@ pub struct EditorState {
     /// Diagnostics, read results, and semantic spans bound to this document
     /// generation. Contains no document text.
     pub lsp: crate::tui::editor_lsp::EditorLspState,
+    /// Completion popup state bound to this document generation. Typed
+    /// candidates and presentation identity only; never document text.
+    pub completion: crate::tui::editor_completion::EditorCompletionState,
 }
 
 impl Default for EditorState {
@@ -302,6 +305,7 @@ impl Default for EditorState {
             wants_writer: false,
             close_after_save: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
+            completion: crate::tui::editor_completion::EditorCompletionState::default(),
         }
     }
 }
@@ -367,6 +371,7 @@ impl EditorState {
         self.wants_writer = false;
         self.close_after_save = false;
         self.lsp.reset();
+        self.completion.clear();
     }
 }
 

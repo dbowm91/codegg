@@ -35,6 +35,8 @@ root and lifecycle modules.
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
 | `src/tui/commands/` | command-handler submodules (see `mod.rs` for the current set) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
+| `src/tui/helix_selection.rs` | The Helix selection **state machine** over a generic `SelectionPoint`. Coordinate-agnostic on purpose: the terminal instantiates it with viewport cells, the editor would instantiate it with byte offsets. Owns the rules (`v` is a mode, `x` is an action, a movement extends only in character mode); owns no surface. |
+| `src/tui/panel_resize.rs` | Outward-only panel resize: which key drags which border, and on which panel. Knows nothing about `App`. |
 | `src/tui/runtime/` | Runtime loop and event routing |
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
 | `src/tui/route.rs` | `Route`/`RouteManager` primary views (Home, Session, Workspace, Editor) |
@@ -154,17 +156,28 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   list; `Char` is the explicit non-configurable input exception.
 
 - **The side column is a panel host**: `SidePanelHost` (`src/tui/panels/`)
-  owns which `SidePanelId` is active and whether it holds focus. 33 panels
-  ship: 4 **bespoke** (`Session`, `Chat`, `Terminal`, `Help`) and 29
+  owns which `SidePanelId` is active, whether it holds focus, and which edge of
+  the frame it lives on (`PanelPlacement`: `Right` — the default and the
+  shipped layout — `Left`, or `Bottom`, a full-width row under the main input
+  box). Placement is changed with `p` in the **panel manager box**
+  (`Shift+S` in Normal mode, or `/panels` from anywhere) and persisted as
+  `ui.panel_placement`; the strip is deliberately **display-only** rather than
+  rows in the navigable list, because "which edge" and "which panel" are
+  different questions and merging them renumbers every panel row. 33 panels
+  ship: 5 **bespoke** (`Session`, `Agents`, `Chat`, `Terminal`, `Help`) and 28
   **hosted** — one per `/` command that brings up a box. Which one is loaded
-  is chosen by the **panel manager box** (`Shift+S` in Normal mode, or
-  `/panels` from anywhere), which renders `SidePanelId::ALL` directly — the list it shows
-  *is* the registry. To add a **hosted** panel (the common case): an enum
+  is chosen by the same manager, which renders `SidePanelId::ALL` directly —
+  the list it shows *is* the registry. To add a **hosted** panel (the common case): an enum
   variant, an entry in `SidePanelId::ALL`, and `label`/`title`/`hint`/
   `load_command`/`config_key` arms. The host builds its `HostPanel` from
-  `ALL`, so there is no host field, no `panel()` arm and no render-path
-  branch. To add a **bespoke** panel also write a `SidePanel` impl and add
-  arms in `panel()`, `panel_is_empty()`, `composer_hints()`.
+  `ALL` filtered on **`SidePanelId::is_bespoke()`**, so there is no host field,
+  no `panel()` arm and no render-path branch. To add a **bespoke** panel: add
+  it to `is_bespoke()`, write a `SidePanel` impl, and add arms in `panel()`,
+  `panel_is_empty()`, `composer_hints()`. That list is load-bearing, not
+  documentation — a bespoke panel left out of it keeps a hosted placeholder,
+  and `materialize_hosted_panel` reads that placeholder as "an unloaded box"
+  and calls `open_panel_box`, which calls `select_panel`, which calls it again.
+  That loop killed the process on `/agents`.
   Docking is a **move**: `App::close_dialog` returns the component it
   unmounted and `SidePanelHost::adopt` installs it, so the panel inherits the
   box's filter, cursor and scroll. Selecting an empty hosted panel loads it
@@ -284,6 +297,18 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   delegating, and `App::on_key` answers it ahead of the modal short-circuit
   for the same reason. Keep the two spellings in lockstep — a third route is
   a third thing to keep working.
+- **The manager's fixed rows are budgeted, not free.** Its chunks are
+  `[Length(3) title, Length(3) filter, Min(1) list, Length(3) footer]` in a box
+  roughly 44 columns wide. Adding a fifth `Length(3)` chunk looks correct at
+  40 rows tall and then, at 24, the fixed rows exceed the box and the **footer
+  — the only place its keys are written down — is pushed off the bottom
+  entirely**. That is why the `PanelPlacement` strip shares the title block's
+  inner row instead of taking a chunk. When something new has to go in the
+  box, draw it inside an existing block's interior or take it from the list;
+  never add a fixed chunk. Relatedly, the list scrolls
+  (`PanelManagerDialog::scroll`) because 33 panels do not fit in ~10 rows and
+  `j` must never walk the highlight off the bottom — the highlight is the only
+  thing saying which panel `Enter` commits to.
 - **A toast is its message and a border, nothing else.** The live column is
   a fixed 60×10 overlay at the top right (`App::render`), so every row a
   toast spends is a row of transcript it hides. It previously drew a
@@ -314,23 +339,67 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   governs their `j`/`k`. Never add a bespoke `direction_of` check to a
   dialog that is a viewer box — the central gate already covers it, and a
   second copy is a second rule that can drift.
-- **The directionals are one gesture family with two meanings.**
+- **The directionals are one gesture family, and their meaning is geometry.**
   `Shift+←/→/↑/↓` and the vim `Shift+H/J/K/L` twins all resolve to
   `InputAction::Direction*` and then to one dispatcher,
-  `commands::panels::move_directionally`: a dockable box is open → the box is
-  *moved* into the panel; no box is open → the direction *selects a pane*
-  (`→` into the column, `←` back to the main buffer, `↑`/`↓` cycle the loaded
-  panel type). Resolve it there, never per surface, or a box and its panel will
-  drift. Normal-mode only via `is_normal_only`. Uppercase letters only —
-  `Char('l')` is a bare `l`, a within-surface verb, never the gesture — and
-  each is bound with *and* without `SHIFT` because terminals disagree on the
-  encoding. `Shift+Up/Down` and `Shift+J/K` were once reserved for a stacked
-  layout; they are bound now because `↑`/`↓` cycle the panel list, so the key
-  is no longer advertising an absent capability.
+  `commands::panels::move_directionally`. It asks, in order: a box is open →
+  dock it to the edge the direction names; the keyboard is in the main buffer
+  and the direction names an edge that is **showing** a panel → take the
+  keyboard there; the keyboard is in a panel and the direction leads **away**
+  from its edge → return to the main buffer; otherwise `cycle_step(dir)` walks
+  the loaded panel type. Never branch on a side per surface, or a box and its
+  panel drift. **The main buffer is a stop, not a gap** — it sits *between* the
+  columns, so two `Shift+H` from Chat reach Terminal and one lands in the
+  buffer; routing past it made the surface the user spends most of their time
+  unreachable by the gesture that names it. `PanelPlacement::named_by` returns
+  `None` for `Up`, so `Shift+K` names no edge and can never shadow the way out
+  of a bottom panel. Normal-mode only via `is_normal_only`.
+- **Edges are slots, and a panel moves between them.**
+  `SidePanelHost` holds one `PanelSlot {panel, visible, history}` per
+  `PanelPlacement`. Panel *state* stays keyed by `SidePanelId`, so
+  `host.dock(id, edge)` moves a panel — keeping its cursor, filter and scroll —
+  and never loads one panel on two edges at once. The edge being vacated
+  restores its remembered state, **collapsed-ness included**, so an edge the
+  user had put away comes back put away rather than popping open. If you add a
+  new edge, add the slot, the `PanelPlacement` arm, and a geometry arm in
+  `TuiLayout::split`; do not add a second "which panel is where" map.
+- **A gesture naming an empty edge moves the panel there; it does not refuse.**
+  This replaced a deliberate refusal and the difference matters. A dead end
+  told the user their key was wrong when the frame had a perfectly good place
+  for the panel; swapping keeps the gesture truthful. `ui_state.sidebar_visible`
+  is a derived mirror of `host.any_visible()` kept only for the session
+  manifest — **never branch behavior on it**, because it cannot say *which*
+  edge is up and will silently answer a coarser question than the one asked.
+  Uppercase letters only — `Char('l')` is a bare `l`, a within-surface verb,
+  never the gesture — and each is bound with *and* without `SHIFT` because
+  terminals disagree on the encoding. A box dock gesture pointing at a side
+  with no panel is refused **out loud** rather than docked to the wrong one; a
+  user whose box lands on the wrong side has learned the gesture lies. That
+  refusal is what a second column deletes.
+  `TuiLayout::split` returns `(main, panel)` whatever the side, so render
+  chunks are indexed by role, never position.
   `App::input_target()` is derived from panel focus on every read — never
   latched — so leaving the panel re-arms `Build` automatically. `send_prompt`
   reads the same value; when `Chat` is armed but unbound, text is dropped with
   a warning rather than rerouted to the agent.
+- **The manager opens in Normal, and opening it must not change the frame.**
+  Two rules that keep reading as one bug when either is broken. (1) It used to
+  force the selected edge visible, on the reasoning that a strip describing a
+  collapsed column is confusing — so a panel the user had deliberately put away
+  with `Ctrl+B` came back the moment they reached for `Shift+S`. A box that only
+  *describes* the layout cannot be the reason a column reappears; the strip now
+  names the state (`[Left collapsed]`, live edge only, because three states in a
+  44-column box wrap). (2) It carries **NOR/INS** like every other dockable box:
+  in Normal the highlight moves and `Shift+H/J/K/L` puts the highlighted panel on
+  that edge; in Insert, `Shift+H` is the letter `H` and belongs in the filter.
+  It opens in Normal because it is reached with a Normal-mode chord and is read
+  before it is typed into — opening in Insert made `j`/`k` filter text, which is
+  indistinguishable from a dead pane. The manager's directional is
+  `TuiMsg::MovePanelTo`, deliberately **not** `MoveDirection`: the latter
+  resolves the keyboard position between edges already in use, which is the wrong
+  question while the manager is modal. Moving and loading stay separate acts, for
+  the same reason walking the list never materializes an empty panel — a gesture
+  that silently starts a daemon load is not a positioning gesture.
 - **Every surface the composer can target needs a name.** The badge row reads
   `[NOR|INS] [agent] [LLM]` — one mode, one agent, **one** destination. That
   destination is `App::composer_destination_title`: the focused panel's
@@ -382,14 +451,53 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   unreachable, because the viewport click arm is the only thing that expands
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
-- **The working strip owns turn liveness.** `render_working_strip` draws one
-  throbber row plus one row per advertised subagent between the transcript and
-  the composer, reserved from the prompt allocation and carved back off like
-  the hint line and the todo strip. It draws only while `Working`.
+- **The working strip owns turn liveness, and it names the way out.**
+  `render_working_strip` draws one throbber row plus one row per advertised
+  subagent between the transcript and the composer, reserved from the prompt
+  allocation and carved back off like the hint line and the todo strip. It
+  draws while `Working` **or** while `SessionState::stopped_turn` — a stopped
+  turn keeps the strip deliberately, because the user's next question is
+  whether it is still stopped and how to carry on, and an indicator that
+  vanishes the instant work stops answers neither. Row 0 pairs the phase with
+  the key that changes it (`x to stop`, `press x again to stop agent` while a
+  confirmation is armed, `■ stopped · press x or /start` once stopped): a
+  long pause with no way out is what reads as a dropped connection.
   `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
   because the strip is carved out of the prompt chunk — the reverse order
   resolves every subagent click to click-to-focus. Hit rects live in
   `SubagentState::hits` and are rebuilt every frame.
+- **A turn must be interruptible, and the id is what makes it so.**
+  `TurnCancel` is addressed by `(session_id, turn_id)` and the daemon
+  *rejects* a mismatch, so `SessionState::active_turn_id` — bound from
+  `TurnStarted`, cleared by every terminal turn event — is the only thing that
+  can stop a turn. A cancelled turn arrives as an ordinary `TurnCompleted`,
+  so `stopped_turn` is what distinguishes "I stopped this" from "it
+  finished", and it deliberately survives `TurnCompleted`. `/stop` marks it
+  optimistically and undoes only on a real failure, because the daemon's
+  cancel is cooperative and the lag would otherwise be visible. There is no
+  protocol-level resume, so `/start` **re-submits**; never imply it revives
+  the cancelled turn. `x` is one key for both directions — the state says
+  which applies — and the destructive one takes a second press inside
+  `STOP_ARM_WINDOW`, expired by the render pump rather than only on the next
+  key. Bare-char binding, so Insert types the letter.
+- **The launch directory starts its own session.** `App::ensure_launch_session`
+  runs once from `main.rs` and is a no-op whenever a session is bound, because
+  every session-scoped surface resolves through it and a launch without one
+  reads as a broken install rather than a missing `Ctrl+N`. It reuses
+  `sessions::start_new_session` so the request carries the **typed**
+  `(project_id, workspace_id)` pair, and is deliberately not
+  `App::new_session` (that clears the view and can open a template picker).
+- **Two panel boxes, one list implementation.** `PanelManagerDialog` and
+  `PanelPickerDialog` (opened by bare `/agents`) share query/cursor/scroll/
+  mode/keymap through `PanelListState`; two boxes that both list panels must
+  agree on what `j` does. The cursor is an index into `SidePanelId::ALL`,
+  never into the filtered view — filtering narrows visibility without
+  renumbering what `Enter` acts on. The picker commits the **same**
+  `TuiMsg::SelectPanel` the manager emits; `App::pending_panel_picker_subject`
+  is what gives the selection its second half (load the content into the
+  chosen panel), and it is spent on commit so an abandoned picker cannot leak
+  into the next pick. A panel row that a user selects must do something:
+  `AgentsPanel` had no `Enter` arm at all and consumed the key silently.
 - **Subagent rows are projection-derived and last-known-good.**
   `sync_subagents_from_snapshot` reads the same agent tree the sidebar reads.
   A snapshot that arrives replaces the rows; a *missing* snapshot does not,
@@ -431,6 +539,18 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   end on the selected message's last row, so scrolling up filled the screen
   with blank rows *below* the selection and made every later message
   unreachable. Centre, then clamp — tail-follow still lands on the newest.
+- **One row producer for the main buffer.** `MessagesWidget::build_message_rows`
+  is the only thing that turns a message into rows, and
+  `messages/layout.rs` derives every scroll offset from what it emits. A
+  cheaper parallel counter (`estimate_msg_lines`) drifted from the emit loops
+  on two tool-output paths, and since the disagreement is per message it
+  *accumulated* — long transcripts clipped off the edge and most of the history
+  was unreachable. Do not add a second counter beside the builder. Rebuilds are
+  suffix-scoped via `rows_dirty_from` (streaming appends to the last message),
+  so a token costs one message, not the buffer. Any new output path must wrap
+  to `width - TOOL_OUTPUT_INDENT`: the widget paints no `Paragraph::wrap` and
+  has no horizontal scroll, so an unwrapped line is not merely clipped, it is
+  unreachable.
 - **`/chat` and the chat panel are one implementation, not two.**
   `src/tui/chat_browser.rs` owns the cursor, the keymap, row rendering, the
   viewport anchor, and the hints; each surface owns only its composer. They
@@ -518,6 +638,73 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;
   never write raw child escape sequences to the host terminal.
+- **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
+  speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
+  `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`
+  selects the cursor's whole line and grows one line per press, `d` deletes the
+  selection, `space+y` yanks to the system clipboard, and `C` clears scrollback
+  while the process keeps running. In focused (INS) mode the PTY owns the
+  keyboard and every key goes through `classify_key`, so a `v` or `d` typed at
+  a running program stays program input. Five things make this work and are
+  easy to undo by accident:
+  1. The emulator holds a **bounded 5,000-row scrollback**. A zero-length
+     history destroys rows as they scroll off, leaving nothing to scroll to or
+     select — the reader can only address the screen, which is exactly the text
+     about to disappear.
+  2. **The selection rules live in `tui::helix_selection`, not on either
+     surface.** `SelectionState<P>` is coordinate-agnostic on purpose: the
+     terminal instantiates `P = (u16, u16)` cells, the editor would instantiate
+     it with byte offsets. `v` is a **mode** (the head follows the cursor, so
+     movement extends) and `x` is an **action** (the head is pinned, so a bare
+     movement cannot widen it) — that split is the whole reason `x` can mean
+     both "select this line" and "again, the next one". Never re-derive those
+     rules per surface.
+  3. Navigation state lives on the **controller**, so box and panel cannot
+     disagree; selection coordinates are **viewport** offsets and shift with
+     the content on every scroll.
+  4. `sync_viewport` clamps the offset before every read —
+     `Grid::visible_rows` subtracts without guarding, so a stale offset is a
+     panic, and `clear_scrollback` is how one arises. `clear_scrollback` also
+     drops the scrub overlay: it is keyed on text the clear threw away.
+  5. Verbs are applied by `apply_nav`, which returns `ClearRequested` rather
+     than clearing, because only the command layer can issue the daemon
+     operation. `d` and `C` must both stay in `classify_nav_key` — a focused
+     panel is consulted before the global bindings, so an unclaimed `d` falls
+     through to `OpenDiff`. `space+y` is two events in legacy xterm encoding,
+     so the prefix is remembered state (`prefix_pending`), not a chord.
+  `d` deletes **locally**: `vt100::Screen` is read-only, so `Redactions`
+  remembers each scrubbed range against the **row's text** rather than its
+  position — a bounded scrollback has no stable row identity, and a
+  position-keyed overlay drifts onto whatever scrolls into the same cells.
+  Deleted text is also excluded from the yank path, or `d` would be a visual
+  effect rather than a deletion. A docked terminal resizes its PTY to the real
+  panel rect and drains it through `flush_terminal_resize`, because the render
+  path has no `App` and the program otherwise wraps to columns the narrow
+  column cannot show.
+- **Panel resize is a modal frame gesture, and `Ctrl+N` is the only chord.**
+  `h/j/k/l` drag the focused surface's **own** borders *outward only*: `h` is
+  its left border, `l` its right, `j` its bottom, `k` its top. Only shared
+  borders move, so a right-docked panel grows with `h` and not with `l`, and a
+  border belongs to two surfaces — growing one shrinks the other. That makes
+  `l` from the main buffer narrow the chat column while `h` from inside the
+  chat column widens it, which is the whole point of doing it from both sides.
+  `resolve_resize` (`tui::panel_resize`) answers "which panel changes, and
+  which way", so the same key cannot mean two things depending on the subject.
+  It must be resolved **ahead of the focused panel** in `App::on_key`: a
+  focused panel consumes every key it is shown, so `h/j/k/l` would otherwise
+  move a terminal cursor instead of a border — and it must also work with the
+  keyboard in the main buffer, which is the other half of the gesture. A resize
+  key naming a frame edge is consumed and ignored, never passed through. Leave
+  with `Esc`, `Enter`, or `Ctrl+N` again; stay armed across keys, because the
+  gesture is "drag several borders in one visit". Normal-mode only, like
+  `Shift+S` — a frame mode that could be armed mid-sentence would swallow the
+  next four letters. `Ctrl+N` is deliberately **not** an `InputAction`: the
+  frame is not a composable action, and a configurable binding would let it be
+  pinned to a key a panel already owns. New session is the bare `n`. Column
+  widths are per edge (`LayoutConfig::{left,right}_panel_width`, falling back
+  to `sidebar_width`), and the bottom panel records an exact `bottom_panel_rows`
+  because a percentage cannot express a one-row step — `observe_frame` records
+  the last rendered height purely so that conversion has a denominator.
 - **Project scope**: resolve `App::project_execution_context()` before
   spawning project-scoped work. The active tab supplies project/workspace/
   session identities and the workspace root. Never use process cwd or the

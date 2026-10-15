@@ -363,7 +363,7 @@ command = "eggsearch"
 args = ["mcp", "stdio"]
 ```
 
-The `schema.rs:3868` test `explicit_mcp_eggsearch_does_not_force_search_section`
+The `schema.rs:4252` test `explicit_mcp_eggsearch_does_not_force_search_section`
 parses exactly this direct-key form and asserts
 `cfg.mcp.contains_key("eggsearch")`.
 
@@ -461,19 +461,20 @@ Verified 2026-10-06 against `src/mcp/` and `crates/codegg-core/src/error.rs`.
   protocol versions `2026-07-28` / `2024-11-05`, and the
   `CodeGG MCP` OAuth envelope contract.
 
-Verified 2026-10-06 (second pass) against `crates/codegg-config/src/schema.rs`.
+Verified 2026-10-06 (second pass), with schema references rechecked 2026-10-15
+against `crates/codegg-config/src/schema.rs`.
 - **Removed a phantom `mcp.servers.<name>` level** from the Configuration
   Surface example. `Config.mcp` is `Option<HashMap<String, McpEntry>>`
   (`schema.rs:245`) — the map key *is* the server name. The prior nested
   `"servers"` object could never register its children: it parsed as one
   entry named `servers` whose flattened `McpServerConfig` was all-`None`,
   because `McpEntry`/`McpServerConfig` are `#[serde(default)]` without
-  `deny_unknown_fields` (`schema.rs:1211`, `:1219`). Proof of the real shape:
+  `deny_unknown_fields` (`schema.rs:1239`, `:1247`). Proof of the real shape:
   the test `explicit_mcp_eggsearch_does_not_force_search_section`
-  (`schema.rs:3868`) parses `"mcp": {"eggsearch": {...}}` directly and
+  (`schema.rs:4252`) parses `"mcp": {"eggsearch": {...}}` directly and
   asserts `contains_key("eggsearch")`. Added the equivalent TOML spelling.
-- Corrected 4 stale schema line refs: `McpEntry` `:934`→`:1213`,
-  `McpServerConfig` `:942`→`:1221`, `McpReconnectConfig` `:959`→`:1238`,
-  `McpOAuthConfig` `:969`→`:1248`.
+- Corrected 4 stale schema line refs: `McpEntry` `:934`→`:1239`,
+  `McpServerConfig` `:942`→`:1247`, `McpReconnectConfig` `:959`→`:1264`,
+  `McpOAuthConfig` `:969`→`:1274`.
 - Re-confirmed all 17 `mod.rs`/`local.rs`/`remote.rs`/`auth.rs`/`cli.rs`/
   `ide_server.rs` rows in the Key Types table as still accurate.

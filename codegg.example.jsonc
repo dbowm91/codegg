@@ -13,6 +13,17 @@
   "version": "1",
   "log_level": "info",
 
+  // Command risk classifiers are advisory by default. Omit
+  // deny_critical_commands for review behavior; setting it to true opts into
+  // a best-effort invocation text denial (not OS containment).
+  "security": {
+    "enabled": true,
+    "mode": "ambient",
+    "gates": {
+      "ask_on_high_risk_command": true
+    }
+  },
+
   // Optional semantic model routing. Select "virtual:code" to run a bounded
   // selector decision; concrete model selections bypass this policy. CodeGG
   // applies only a route compatible with the already-selected connection.
@@ -341,6 +352,18 @@
     "1": "chat",
     "2": "terminal"
   },
+
+  // Which edge the side panel is docked to: "right" (the default), "left",
+  // or "bottom" (a full-width row under the input box). The panel manager's
+  // layout strip writes this for you when you press `p`.
+  //
+  // This moves the directionals with it. With the panel on the left,
+  // Shift+H enters it and Shift+L comes back; under the buffer it is
+  // Shift+J and Shift+K. The two remaining directions keep cycling which
+  // panel is loaded.
+  //
+  // An unrecognised value falls back to "right" rather than failing startup.
+  "panel_placement": "right",
 
   "instructions": [
     "Always write tests before committing code",

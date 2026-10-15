@@ -256,6 +256,32 @@ impl CoreDaemon {
                      Check provider connectivity and restart the daemon."
                 );
             }
+            // Registration succeeding is not the same as covering every
+            // dispatchable job kind. A kind with no executor is marked
+            // unschedulable at dispatch, and its submitting tool then blocks
+            // until its wait bound expires and reports a bogus timeout — the
+            // `python_script` stall this guards against. Surface the gap at
+            // startup, where it is actionable, instead of mid-turn.
+            {
+                let registered = scheduler_arc.executor_kinds_sync();
+                let missing: Vec<&'static str> =
+                    crate::scheduler::executor::REQUIRED_EXECUTOR_KINDS
+                        .iter()
+                        .map(|kind| kind.as_str())
+                        .filter(|name| {
+                            !registered.is_empty()
+                                && !registered.iter().any(|r| r.as_str() == *name)
+                        })
+                        .collect();
+                if !missing.is_empty() {
+                    tracing::error!(
+                        missing = ?missing,
+                        "USER ACTION REQUIRED: scheduler degraded - job kinds with no registered \
+                         executor. Tool calls for these kinds will stall until their wait bound \
+                         expires and then fail with a timeout. Restart the daemon."
+                    );
+                }
+            }
             // SchedulerEvent has no corresponding CoreEvent protocol variant.
             // Leave the optional sink unset rather than attaching a sender whose
             // receiver would be dropped and falsely reporting a live event path.
@@ -410,6 +436,8 @@ impl CoreDaemon {
                 codegg_core::collaboration::CollaborationService::with_defaults(deps.pool.clone()),
             ),
             documents: Arc::new(crate::document_service::DocumentService::new()),
+            directory_listing_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            directory_listing_probe: Arc::new(super::daemon_documents::DirectoryListingProbe::new()),
             project_init_drafts: Arc::new(super::project_init::ProjectInitDraftRegistry::new()),
             work_orders: Arc::new(codegg_core::work_order::WorkOrderService::with_defaults(
                 deps.pool.clone(),
