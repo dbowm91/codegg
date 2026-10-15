@@ -330,6 +330,11 @@ owner = "test_only"
 reason = "Windows junction policy fixture invokes cmd.exe only inside a Windows-only unit test"
 
 [[site]]
+path = "src/security/sandbox.rs"
+owner = "test_only"
+reason = "Bare-repository sandbox fixture invokes git init only inside a Linux-only unit test"
+
+[[site]]
 path = "src/git_service.rs"
 owner = "definition_or_adapter"
 reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"

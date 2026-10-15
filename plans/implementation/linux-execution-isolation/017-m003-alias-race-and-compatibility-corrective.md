@@ -29,16 +29,18 @@ Arbitrary future nested `.git` creation is permitted as workspace content. Trust
 
 ## 3. Current implementation evidence and gaps
 
-`src/security/sandbox/linux_mount_view.rs` discovers existing `.git` entries, linked-worktree pointers and common-dir pointers, pins bind sources through the trusted helper, and fails closed on several ambiguous path types. `crates/egggit/src/process.rs` pins trusted operations to the selected worktree, disables global/system config and selected executable features, and retains commit identity through a bounded data-only handoff.
+`src/security/sandbox/linux_mount_view.rs` discovers existing `.git` entries, linked-worktree pointers and common-dir pointers, pins bind sources through the trusted helper, and fails closed on ambiguous path types, including bare Git repositories as writable roots. `crates/egggit/src/process.rs` pins trusted operations to the selected worktree, disables global/system config and selected executable features, and retains commit identity through a bounded data-only handoff. Trusted object-reading commands reject static alternates and run against a private per-command snapshot of regular loose and packed objects; the snapshot has no `objects/info` and is copied/reflinked so later alternate creation or source-object mutation cannot change the admitted object view.
 
-Current native evidence is one hosted C006 real-child handoff. Missing evidence includes linked worktrees with external common dirs, configuration include attacks, deterministic identity/path replacement during setup, Cargo/rustup and compiler behavior, LSP/PTY compatibility, concurrency/cancellation cleanup, and cold/warm setup measurements.
+Hosted runs cover linked worktrees with external common dirs and nested submodules, configuration attacks, setup replacement races, Cargo/Python/test-child behavior, PTY first-hop transport, cancellation/concurrency, and mount startup samples. The exact-hosted gap is the newest trusted-object snapshot and bare-workspace refusal implementation, which must be run after commit. The native PTY probe qualifies the candidate through the existing transport; production `InteractiveProcessService` profile routing is a separate M004 integration concern and is not required to close this M003 candidate qualification.
 
 ## 4. Invariants
 
 - No target starts before required mount setup, identity validation, and private status handoff succeed.
 - No alias or replacement grants reads/writes outside the selected lease or exposes protected Git/denied content.
 - Ambiguous repository layouts and unsupported mount topology fail closed with no target marker.
+- Bare Git repositories are unsupported as writable workspaces and fail before target execution.
 - Trusted Git reads operate on the selected worktree and cannot execute repository-controlled helpers on the trusted route.
+- Trusted object-reading commands cannot follow repository object alternates created after admission or observe source-object writes made after their private view is prepared.
 - Obtained status describes only mounted filesystem scope; it does not imply process, IPC, network, seccomp, or resource enforcement.
 - Landlock remains the default and all other platform launch behavior remains intact.
 
@@ -46,7 +48,7 @@ Current native evidence is one hosted C006 real-child handoff. Missing evidence 
 
 ### In scope
 
-- Native fixture matrix for ordinary repos, linked worktrees, external common dirs, nested repositories/submodules, malformed pointers, and unsupported aliases.
+- Native fixture matrix for ordinary repos, linked worktrees, external common dirs, nested repositories/submodules, malformed pointers, unsupported aliases, and bare-root refusal.
 - Barrier-controlled rename/replacement tests across lease capture, mount source opening, and the pre-target gate.
 - Trusted Git configuration tests for local `core.worktree`, `includeIf`, hooks, fsmonitor, filters, diff/textconv, and helper routes.
 - Native compatibility checks for Cargo/rustup/rustc, Python, representative trusted Git reads, LSP/test subprocesses, and PTY use where available.
@@ -98,7 +100,7 @@ No persistent configuration or default changes. Unsupported layouts remain expli
 
 - Unit: `.git` directory/file parsing, linked gitdir/common-dir resolution, malformed and oversized pointers, alias normalization, unsupported mount topology, and trusted Git config precedence.
 - Native security: protected metadata, denied secrets, outside symlinks/hardlinks, common-dir writes, replacement races, no-target setup failure, and actual mount visibility.
-- Compatibility: `cargo check`, a bounded `cargo test` fixture, `rustc`, Python, trusted `git status`/`diff`, one installed LSP or test child, and PTY input/output.
+- Compatibility: `cargo check`, a bounded `cargo test` fixture, `rustc`, Python, trusted `git status`/`diff`, one installed LSP or test child, and PTY input/output through the existing first-hop transport.
 - Lifecycle/contention: timeout/cancel cleanup and two concurrent isolated launches.
 - Cross-platform: existing Windows compile and a provisioned macOS compile, without claiming those platforms enforce the Linux mount view.
 
@@ -113,7 +115,7 @@ Update the Linux roadmap and registry with actual status and dependency evidence
 ## 13. Acceptance criteria
 
 - Every supported repository topology passes native allowed/denied assertions; unsupported or ambiguous topology fails before the target marker.
-- Replacement attacks cannot redirect a mount source or trusted Git operation after authorization.
+- Replacement attacks cannot redirect a mount source or trusted Git read after authorization; object reads use a private command-scoped view with no repository alternates.
 - Trusted local Git metadata cannot execute hooks, fsmonitor, filters, diff drivers, or helpers on the trusted route, and cannot redirect reads outside the selected worktree.
 - The documented compatibility subset passes on the exact hosted source head with no broad host-root mount.
 - No default change or production backend promotion occurs unless M003's full closure definition and every required native gate are satisfied.
@@ -177,11 +179,21 @@ The candidate is currently internal and opt-in through `SandboxConfig::with_linu
 - Hosted run [`38727487239`](https://github.com/dbowm91/codegg/actions/runs/38727487239), job `116396842810`, passed on exact commit `508bc89f8ef2c6cde540fdc038b294d187e739fe`: 10/10 native protected-mount tests and 14/14 trusted-Git tests. Runner: GitHub-hosted Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0-1ubuntu0.3`, UID/GID 1001, AppArmor `unconfined`; `kernel.apparmor_restrict_unprivileged_userns` changed from 1 to 0 for the ephemeral runner.
 - Exact-head macOS compile workflow [`38727487230`](https://github.com/dbowm91/codegg/actions/runs/38727487230) passed on `508bc89f8ef2c6cde540fdc038b294d187e739fe`. Current local bundle: all 10 `protected_mount_` tests pass with C006/C009 native flags enabled, including the PTY first-hop probe; egggit (101 tests), `scripts/verify.sh quick`, formatting, ADR integrity, forbidden-Git, sandbox contract/policy, execution ownership, and diff checks pass on the working tree.
 
+### Implementation progress — 2026-10-15 (trusted object-view corrective)
+
+- Trusted Git read admission now prepares a private per-command object view for the exact object-reading allowlist. The view excludes `objects/info`; Git receives its path through `GIT_OBJECT_DIRECTORY`, and `GIT_OPTIONAL_LOCKS=0` remains enabled. Static alternates still return typed `BackendUnavailable[RepositoryAlias]` for compatibility. Mutation and executable Git routes do not use this view.
+- Unix setup traverses the object directory using descriptor-relative, no-follow opens, validates fanout/pack names and regular-file types, and bounds entries. Linux uses `FICLONE` when the filesystem supports it, falling back to a private byte copy; other platforms use private copies. The temporary view remains alive through command completion/cancellation.
+- Added regression tests prove an alternate created after admission is ignored for ordinary and linked-worktree common-dir layouts, and that mutating a source loose object after admission cannot change the already-created private view. Added a Linux native protected-mount test proving a bare repository is refused before target execution.
+- Local verification: `cargo test -p egggit --locked -- --test-threads=1` passed 105 tests; the focused private-view route matrix passes 1/1. Windows GNU and macOS egggit test-target checks pass; Windows retains three existing test-only unused warnings. Native protected-mount tests pass 11/11, sandbox containment 15/15, Landlock 3/3, and the final `scripts/verify.sh quick` passes. Exact-head hosted verification is pending after commit.
+- The plan's compatibility interpretation is resolved: C009 qualifies PTY compatibility at the existing first-hop transport boundary. It does not add production service routing, which belongs to M004 and is not required for the opt-in M003 candidate qualification.
+
 ### Remaining acceptance work
 
 - Extend native Git topology assertions to any supported alias or pointer/common-dir cases not already represented by the linked-worktree, nested-submodule, malformed-pointer, and oversized-pointer fixtures. Keep unsupported layouts fail-closed.
 - Remaining replacement work is to identify additional supported alias/setup boundaries beyond the current post-lease `.git` pointer, gitdir, common-dir, workspace-root, and parent-ancestor replacements. The separate post-setup nested-deny rename race is closed by rejecting every deny path beneath a writable grant.
 - Keep the trusted Git matrix aligned with its tests: `includeIf`, `core.worktree`, fsmonitor, hooks, diff/textconv, filters, and executable aliases are now covered. Remaining helper/config precedence cases must be selected from the classified Git execution capabilities and shown either harmless on the trusted route or refused before spawn.
-- Close the on-disk object-store alias gap for the full trusted Git process lifetime. The current `.git/objects/info/alternates` check catches a static external alternate, including linked-worktree common metadata, but it is mutable after preflight; add an enforcement boundary or retain this as an explicit M003 blocker. Obtain exact-head hosted evidence for the new alternate regressions after the implementation is committed.
-- Qualify Python, LSP or test children, and PTY integration. Cargo test covers a test child. The PTY first-hop compatibility probe now passes locally, but the separate `InteractiveProcessService` path (`src/interactive_process.rs::SpawnSpec`) still has no sandbox descriptor or profile-routing contract; resolve whether that production integration is required before M003 can close. Timeout/cancellation cleanup, concurrent isolated launches, and cold/warm timings pass hosted runs `38719972886`/`38721017009`; direct offline Cargo check/test also passes hosted. Rustup's `/proc/self/exe` requirement and refusal of nested deny under writable grants are explicit compatibility limits.
+- Hosted-qualify the new trusted-object private view and bare-workspace refusal on the exact implementation head. Local tests now prove late alternate creation is ignored in ordinary and linked-worktree common-dir layouts, source loose-object mutation after admission cannot alter the private view, and bare roots fail before target execution. The read view is scoped to the explicit trusted object-reading allowlist; mutation routes remain C002/authorization work.
+- Compatibility is covered for the M003 candidate's existing PTY first-hop transport, plus hosted Python workspace writes and bounded Cargo check/test. Production `InteractiveProcessService` profile routing belongs to M004's production admission/integration boundary; it is not a C009 exit gate. Rustup's `/proc/self/exe` requirement and refusal of nested deny under writable grants remain explicit limitations.
+- The read-route matrix is reconciled against the typed classifier and `argv_reads_objects`: object-bearing forms including `config --blob`, `check-attr --source`, `apply --3way`, reflog, tag/notes listing, and remote/worktree/stash listing are covered by the private view. Object-writing Git mutations such as commit/tag creation remain on the separate C002 containment path; this corrective does not claim they use the read view or qualify them for production.
+- Snapshot cost was measured locally by running trusted `git status` against the current checkout: 105 MiB across 3,945 object files on ext4 without reflink support took 2.95 seconds including object-view setup and Git execution. This is a material compatibility limit for fragmented repositories. Packed-repository timing has not been measured; no production Git routing is enabled, and M003/C002 remain blocked pending contained mutation and representative performance qualification.
 - M003 remains blocked; C009 remains active. No backend registration, production routing, or default change follows from this partial hosted pass.

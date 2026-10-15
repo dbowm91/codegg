@@ -1037,6 +1037,35 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn protected_mount_refuses_bare_repository_as_workspace() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("bare-workspace");
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(&workspace)
+            .status()
+            .expect("initialize bare repository");
+        assert!(initialized.success(), "git init --bare failed");
+
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let result = config.launch_spec(
+            "/bin/sh",
+            &["-c".into(), "touch should-not-run".into()],
+            Some(&workspace),
+        );
+        assert!(
+            matches!(result, Err(ToolError::Permission(ref reason)) if reason.contains("bare Git repositories are not supported")),
+            "bare repository workspace should fail closed: {result:?}"
+        );
+        assert!(!workspace.join("should-not-run").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn landlock_access_keeps_directory_rights_for_directories() {
         use ::landlock::{AccessFs, ABI};
 

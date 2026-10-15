@@ -678,6 +678,9 @@ fn discover_git_metadata(workspace: &Path) -> Result<Vec<PathBuf>, String> {
             Err(error) => return Err(format!("cannot inspect Git metadata path: {error}")),
         };
         let has_git_entry = git_metadata.is_some();
+        if directory == workspace && !has_git_entry && looks_like_bare_repository(&directory)? {
+            return Err("bare Git repositories are not supported as writable workspaces".into());
+        }
         if let Some(metadata) = git_metadata {
             if metadata.file_type().is_symlink() {
                 return Err("symlinked .git metadata path is not supported".into());
@@ -756,6 +759,37 @@ fn discover_git_metadata(workspace: &Path) -> Result<Vec<PathBuf>, String> {
     protected.sort();
     protected.dedup();
     Ok(protected)
+}
+
+fn looks_like_bare_repository(root: &Path) -> Result<bool, String> {
+    let head = root.join("HEAD");
+    let objects = root.join("objects");
+    let refs = root.join("refs");
+    let config = root.join("config");
+    let head = std::fs::symlink_metadata(head);
+    let objects = std::fs::symlink_metadata(objects);
+    let refs = std::fs::symlink_metadata(refs);
+    let config = std::fs::symlink_metadata(config);
+    match (head, objects, refs, config) {
+        (Ok(head), Ok(objects), Ok(refs), Ok(config)) => Ok(head.is_file()
+            && objects.is_dir()
+            && refs.is_dir()
+            && config.is_file()
+            && !head.file_type().is_symlink()
+            && !objects.file_type().is_symlink()
+            && !refs.file_type().is_symlink()
+            && !config.file_type().is_symlink()),
+        (head, objects, refs, config) => {
+            for result in [head, objects, refs, config] {
+                if let Err(error) = result {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return Err(format!("cannot inspect possible bare repository: {error}"));
+                    }
+                }
+            }
+            Ok(false)
+        }
+    }
 }
 
 pub fn git_metadata_paths(write_roots: &[PathBuf]) -> Result<Vec<PathBuf>, String> {

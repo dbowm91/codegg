@@ -115,7 +115,7 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
 fn hardened_git_command(
     args: &[&str],
     git_root: &Path,
-) -> Result<std::process::Command, egggit::GitExecutionPolicyOutcome> {
+) -> Result<egggit::process::GitSyncCommand, egggit::GitExecutionPolicyOutcome> {
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push("git".to_owned());
     argv.extend(args.iter().map(|arg| (*arg).to_owned()));
