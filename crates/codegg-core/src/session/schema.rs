@@ -238,6 +238,24 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 72 {
         migrate_and_record(pool, 72).await?;
     }
+    if current_version < 73 {
+        migrate_and_record(pool, 73).await?;
+    }
+    if current_version < 74 {
+        migrate_and_record(pool, 74).await?;
+    }
+    if current_version < 75 {
+        migrate_and_record(pool, 75).await?;
+    }
+    if current_version < 76 {
+        migrate_and_record(pool, 76).await?;
+    }
+    if current_version < 77 {
+        migrate_and_record(pool, 77).await?;
+    }
+    if current_version < 78 {
+        migrate_and_record(pool, 78).await?;
+    }
 
     Ok(())
 }
@@ -322,6 +340,12 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             70 => migrate_v70(&mut tx).await?,
             71 => migrate_v71(&mut tx).await?,
             72 => migrate_v72(&mut tx).await?,
+            73 => migrate_v73(&mut tx).await?,
+            74 => migrate_v74(&mut tx).await?,
+            75 => migrate_v75(&mut tx).await?,
+            76 => migrate_v76(&mut tx).await?,
+            77 => migrate_v77(&mut tx).await?,
+            78 => migrate_v78(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2901,6 +2925,346 @@ async fn migrate_v71(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     Ok(())
 }
 
+/// Async background jobs M001: durable generic job background subscriptions
+/// and terminal notifications.
+///
+/// Two additive tables, mirroring the Tool Program `tool_program_notification`
+/// shape without mutating its IDs or rows (M017 stays authoritative):
+///
+/// - `job_background_subscription`: one row per explicitly subscribed
+///   background job, written after durable job acceptance and before the
+///   `JobHandle` is returned. Foreground or historic jobs never gain rows
+///   here, so they can never retroactively create action items.
+/// - `job_notification`: one row per logical terminal (`notice_id = job_id`),
+///   with CAS claim/ack state, bounded payload, and durable injection key.
+///
+/// No historical job row is backfilled: absent subscription means "not a
+/// background job", which is exactly the pre-M001 behavior.
+async fn migrate_v73(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS job_background_subscription (
+            job_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            invocation_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_background_subscription_session ON job_background_subscription(session_id, created_at)",
+        r#"
+        CREATE TABLE IF NOT EXISTS job_notification (
+            notice_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            run_id TEXT,
+            payload_digest TEXT NOT NULL,
+            state TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            claim_owner TEXT,
+            claim_lease_until INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            delivered_at INTEGER,
+            injection_key TEXT NOT NULL,
+            injected_event_id TEXT,
+            UNIQUE(job_id, notice_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_notification_session ON job_notification(session_id, state, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_job_notification_job ON job_notification(job_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs M003: durable single-use continuation leases.
+///
+/// One row per terminal notice that opted into `resume_owner` at submit
+/// time (`lease_id = notice_id = job_id`). The lease binds immutable
+/// session/owner/principal/workspace/turn ancestry, the authorized
+/// continuation mode, expiry, and a single-wake budget. Delivery consumes
+/// the lease exactly once via CAS; expiry/cancel/revocation suppresses it.
+/// No inference is ever spent by the lease row itself — consumption only
+/// authorizes one bounded continuation at the next safe, user-authorized
+/// turn boundary. No historical row is backfilled: absent lease means
+/// `notify_only`, the conservative default.
+async fn migrate_v74(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS job_continuation_lease (
+            lease_id TEXT PRIMARY KEY,
+            notice_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            owner_principal TEXT,
+            workspace_id TEXT,
+            authorized_mode TEXT NOT NULL CHECK (authorized_mode IN ('resume_owner')),
+            status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'expired', 'suppressed')),
+            expiry_ms INTEGER NOT NULL,
+            max_wakes INTEGER NOT NULL CHECK (max_wakes >= 1 AND max_wakes <= 8),
+            wakes_used INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(notice_id, lease_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_session ON job_continuation_lease(session_id, status, expiry_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_job_continuation_lease_job ON job_continuation_lease(job_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs M004: durable GitHub Actions watch records.
+///
+/// One row per explicitly created watch (`watch_id` stable per accepted
+/// invocation). The row carries the frozen immutable target, observation
+/// scheduling state (`next_check_at`, backoff, ETag, attempt budget,
+/// expiry), owner lineage, and the terminal result. No historical row is
+/// backfilled: absent row means "no watch". The terminal CI result is
+/// delivered once through the M001 job-notification table (kind
+/// `ci_watch`); the watch row itself never carries model-visible content.
+async fn migrate_v75(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS ci_watch (
+            watch_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            run_id INTEGER,
+            commit_sha TEXT,
+            check_selector TEXT,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            invocation_key TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending', 'observing', 'completed_success', 'completed_failure', 'cancelled', 'expired', 'needs_attention')),
+            conclusion TEXT,
+            conclusion_detail TEXT,
+            last_etag TEXT,
+            next_check_at INTEGER NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            attempt_budget INTEGER NOT NULL,
+            expiry_ms INTEGER NOT NULL,
+            owner_principal TEXT,
+            workspace_id TEXT,
+            credential_ref TEXT NOT NULL,
+            api_base_url TEXT NOT NULL,
+            last_observed_sha TEXT,
+            last_run_status TEXT,
+            final_url TEXT,
+            failure_summary TEXT,
+            on_complete TEXT NOT NULL DEFAULT 'notify_only',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(provider, owner, repo, run_id, commit_sha, check_selector, session_id, invocation_key)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_session ON ci_watch(session_id, state, next_check_at)",
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_due ON ci_watch(state, next_check_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Async background jobs corrective C001: persisted cross-service observation
+/// lease for `ci_watch`.
+///
+/// Three additive columns, no backfill beyond safe defaults:
+///
+/// - `claim_owner` — opaque daemon/service identity holding the current
+///   observation lease (NULL when unclaimed).
+/// - `claim_until` — wall-clock expiry (ms) of that lease (NULL when
+///   unclaimed). Expired claims are recoverable by any live service.
+/// - `generation` — monotonically increasing claim epoch. Each successful
+///   CAS claim bumps it; a slow old holder whose generation no longer
+///   matches the durable row must fail its stale final update instead of
+///   overwriting a newer terminal state.
+///
+/// Existing rows keep `NULL, NULL, 0` (unclaimed, generation zero), which
+/// is exactly the pre-C001 behavior. `record_json` continues to carry the
+/// full snapshot; the new columns are the cross-service CAS authority.
+async fn migrate_v76(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE ci_watch ADD COLUMN claim_owner TEXT",
+        "ALTER TABLE ci_watch ADD COLUMN claim_until INTEGER",
+        "ALTER TABLE ci_watch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0",
+    ] {
+        add_column_ignore_duplicate(&mut *tx, statement.to_string()).await?;
+    }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_ci_watch_claim ON ci_watch(state, next_check_at, claim_until)",
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    Ok(())
+}
+
+/// Async background jobs corrective C002: explicit idle-continuation grants
+/// and exactly-once dispatch intents.
+///
+/// Two additive tables, no backfill (absent grant = no autonomous resume):
+///
+/// - `continuation_grant`: one row per host-trusted user/task approval that
+///   authorizes at most one bounded owner turn for one background wait
+///   (`notice_job_id` = background `job_id` or `ciwatch:<watch_id>`). Binds
+///   principal, session, workspace, originating task/turn, allowed model/
+///   connection, budgets, expiry, and max continuations (default 1). Legacy
+///   `resume_owner` leases without a grant row never auto-resume.
+/// - `idle_continuation`: one row per `(notice_id, grant_id)` dispatch
+///   (`intent_id` stable). `Pending -> Claimed -> TurnAccepted -> Started ->
+///   Completed`, plus `Suppressed/Expired/NeedsAttention`. First-write-wins;
+///   a crash after provider submission becomes `needs_attention` (no blind
+///   replay). Exactly-once logical admission; external provider execution is
+///   at-most-once per intent, never claimed as exactly-once.
+async fn migrate_v77(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS continuation_grant (
+            grant_id TEXT PRIMARY KEY,
+            notice_job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            owner_principal TEXT,
+            workspace_id TEXT,
+            origin_turn_id TEXT,
+            allowed_model TEXT,
+            allowed_connection TEXT,
+            max_continuations INTEGER NOT NULL DEFAULT 1 CHECK (max_continuations >= 1 AND max_continuations <= 4),
+            used_continuations INTEGER NOT NULL DEFAULT 0,
+            max_tokens INTEGER,
+            max_tool_calls INTEGER,
+            max_duration_ms INTEGER,
+            status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending', 'approved', 'revoked', 'consumed', 'expired')),
+            expiry_ms INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_continuation_grant_job ON continuation_grant(notice_job_id, status, expiry_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_continuation_grant_session ON continuation_grant(session_id, status, expiry_ms)",
+        r#"
+        CREATE TABLE IF NOT EXISTS idle_continuation (
+            intent_id TEXT PRIMARY KEY,
+            notice_id TEXT NOT NULL,
+            grant_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending', 'eligible', 'claimed', 'turn_accepted', 'started', 'completed', 'suppressed', 'expired', 'needs_attention')),
+            turn_id TEXT,
+            cause TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(notice_id, grant_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_idle_continuation_notice ON idle_continuation(notice_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_idle_continuation_session ON idle_continuation(session_id, state)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Async Background Jobs C005 (ADR-0031): admit the `continuation_grant`
+/// origin-attribution scope.
+///
+/// Same rebuild pattern as v61 (`work_order`): the v53
+/// `origin_attribution` table pins its scope kinds in a SQL `CHECK`, so
+/// the store rebuilds the table with the extended kind set. Every
+/// existing row is copied verbatim (same columns, same primary key);
+/// fresh databases receive the new shape directly. The Rust-side scope
+/// allow-list already admits `continuation_grant`; this migration aligns
+/// the durable backstop so host-grant origin capture persists instead of
+/// failing closed (a grant without stored origin stays non-autonomous).
+async fn migrate_v78(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    const NEW_SCHEMA: &str = r#"
+        CREATE TABLE IF NOT EXISTS origin_attribution_new (
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('session','turn','run','job','worktree','provider','work_order','continuation_grant')),
+            scope_id TEXT NOT NULL,
+            origin_principal TEXT NOT NULL,
+            origin_kind TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            transport_class TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            membership_revision INTEGER,
+            decision_id TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            attribution_json TEXT NOT NULL,
+            PRIMARY KEY (scope_kind, scope_id)
+        )
+        "#;
+    sqlx::query(NEW_SCHEMA)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| StorageError::Migration(e.to_string()))?;
+    let legacy_exists: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_attribution'",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| StorageError::Migration(e.to_string()))?;
+    if legacy_exists.0 > 0 {
+        for statement in [
+            "INSERT OR IGNORE INTO origin_attribution_new \
+             (scope_kind, scope_id, origin_principal, origin_kind, auth_method, transport_class, \
+              policy, membership_revision, decision_id, correlation_id, time_created, \
+              attribution_json) \
+             SELECT scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+              transport_class, policy, membership_revision, decision_id, correlation_id, \
+              time_created, attribution_json FROM origin_attribution",
+            "DROP TABLE origin_attribution",
+            "ALTER TABLE origin_attribution_new RENAME TO origin_attribution",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Migration(e.to_string()))?;
+        }
+    } else {
+        sqlx::query("ALTER TABLE origin_attribution_new RENAME TO origin_attribution")
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_principal ON origin_attribution(origin_principal)",
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_decision ON origin_attribution(decision_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Human execution C004: idempotent durable turn-admission receipts.
 async fn migrate_v72(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
@@ -3071,4 +3435,155 @@ async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_upgrade_tests {
+    use super::{migrate, migrate_and_record};
+    use crate::storage::STORAGE_LAYOUT_VERSION;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
+    use std::path::Path;
+
+    async fn open_pool(path: &Path) -> SqlitePool {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("open migration fixture database")
+    }
+
+    async fn apply_through_v77(pool: &SqlitePool, with_origin: bool) {
+        sqlx::query(
+            "CREATE TABLE migration_version (id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(pool)
+        .await
+        .expect("create migration marker");
+        for version in 1..=72 {
+            migrate_and_record(pool, version)
+                .await
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+        let version: i64 = sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .expect("read v72 marker");
+        assert_eq!(version, 72, "fixture is an actual v72 schema");
+        if with_origin {
+            sqlx::query(
+                "INSERT INTO origin_attribution \
+                 (scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+                  transport_class, policy, membership_revision, decision_id, correlation_id, \
+                  time_created, attribution_json) \
+                 VALUES ('session', 'legacy-session', 'principal-1', 'local', 'test', \
+                         'local', 'allow', NULL, 'decision-1', 'correlation-1', 1, '{}')",
+            )
+            .execute(pool)
+            .await
+            .expect("seed pre-v78 origin row");
+        }
+        for version in 73..=77 {
+            migrate_and_record(pool, version)
+                .await
+                .unwrap_or_else(|error| panic!("apply migration v{version}: {error}"));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn v72_to_latest_upgrade_survives_restart_and_rolls_back_failed_v78() {
+        let directory = tempfile::tempdir().expect("migration fixture directory");
+        let success_path = directory.path().join("v72-success.db");
+        let pool = open_pool(&success_path).await;
+        apply_through_v77(&pool, true).await;
+
+        // Each migration is its own transaction. Closing at committed v77
+        // simulates an interrupted startup immediately before the v78 rebuild.
+        pool.close().await;
+        let pool = open_pool(&success_path).await;
+        let before_resume: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read interrupted marker");
+        assert_eq!(before_resume, 77);
+        migrate(&pool).await.expect("resume v77 database to latest");
+
+        let upgraded: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read upgraded marker");
+        assert_eq!(upgraded, STORAGE_LAYOUT_VERSION as i64);
+        let preserved: (String, String) = sqlx::query_as(
+            "SELECT scope_kind, scope_id FROM origin_attribution WHERE scope_id = 'legacy-session'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read preserved pre-v78 attribution");
+        assert_eq!(
+            preserved,
+            ("session".to_string(), "legacy-session".to_string())
+        );
+        sqlx::query(
+            "INSERT INTO origin_attribution \
+             (scope_kind, scope_id, origin_principal, origin_kind, auth_method, \
+              transport_class, policy, membership_revision, decision_id, correlation_id, \
+              time_created, attribution_json) \
+             VALUES ('continuation_grant', 'grant-1', 'principal-1', 'user', 'local', \
+                     'local', 'allow', NULL, 'decision-2', 'correlation-2', 2, '{}')",
+        )
+        .execute(&pool)
+        .await
+        .expect("v78 scope check admits continuation-grant attribution");
+        let count_before_rerun: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM origin_attribution")
+            .fetch_one(&pool)
+            .await
+            .expect("count attribution rows");
+        migrate(&pool).await.expect("second startup is idempotent");
+        let count_after_rerun: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM origin_attribution")
+            .fetch_one(&pool)
+            .await
+            .expect("recount attribution rows");
+        assert_eq!(count_after_rerun, count_before_rerun);
+        pool.close().await;
+
+        let rollback_path = directory.path().join("v77-rollback.db");
+        let pool = open_pool(&rollback_path).await;
+        apply_through_v77(&pool, false).await;
+        sqlx::query("DROP TABLE origin_attribution")
+            .execute(&pool)
+            .await
+            .expect("prepare malformed legacy table");
+        sqlx::query(
+            "CREATE TABLE origin_attribution (scope_kind TEXT NOT NULL, scope_id TEXT NOT NULL, PRIMARY KEY(scope_kind, scope_id))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create malformed source missing attribution_json");
+
+        assert!(
+            migrate(&pool).await.is_err(),
+            "malformed v77 fails v78 closed"
+        );
+        let rolled_back_version: i64 =
+            sqlx::query_scalar("SELECT version FROM migration_version WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .expect("read marker after failed migration");
+        assert_eq!(rolled_back_version, 77, "v78 marker is in its transaction");
+        let transient_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'origin_attribution_new'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("check rolled-back rebuild table");
+        assert_eq!(transient_table, 0, "failed v78 leaves no partial rebuild");
+
+        pool.close().await;
+    }
 }

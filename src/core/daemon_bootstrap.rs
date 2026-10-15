@@ -330,7 +330,28 @@ impl CoreDaemon {
     /// admits queued work so interrupted attempts do not silently
     /// consume capacity. Returns the recovery report; the report is
     /// also available via `CoreRequest::JobRecoveryReport`.
+    ///
+    /// Also heals the idle-completion hint gap (best-effort): durable
+    /// terminal notices committed before a crash but never forwarded
+    /// get their persisted live hint republished here, deduped by
+    /// notice id.
     pub async fn recover_jobs(&self) -> Option<crate::job_recovery::RecoveryReportSummary> {
+        // C004 crash-gap healing first: republish live hints lost between
+        // the durable notice commit and the forwarder publish. Failure
+        // only warns; job recovery below proceeds regardless.
+        let hints = self.reconcile_idle_completion_hints().await;
+        if hints > 0 {
+            tracing::info!(hints, "idle completion hints republished during recovery");
+        }
+        // C005 (ADR-0031) restart twin: re-evaluate delegated wakes for
+        // recent terminals that may have missed their fanout wake (crash
+        // between commit and fanout, forwarder abort). CAS-gated and
+        // bounded; missed wakes otherwise heal the same way on the next
+        // restart. Never fails daemon recovery.
+        let wakes = self.reconcile_idle_continuation_wakes().await;
+        if wakes > 0 {
+            tracing::info!(wakes, "idle-continuation wakes dispatched during recovery");
+        }
         if let Some(scheduler) = self.deps.scheduler.as_ref() {
             match scheduler
                 .recover_at_startup(&self.deps.recovery_policy)
@@ -361,6 +382,50 @@ impl CoreDaemon {
         } else {
             None
         }
+    }
+
+    /// C004 crash-gap healing (ADR-0031 §Decision.5): republish persisted
+    /// `BackgroundJobCompleted` hints for durable terminal notices that
+    /// have no hint in `core_event_log`.
+    ///
+    /// Covers the crash between the notice commit and the forwarder
+    /// publish, forwarder abort, and lagged/closed broadcast receivers.
+    /// Bounded (512 newest durable notices via
+    /// `durable_notices_for_hint_recovery`), deduped by notice id: never
+    /// a second notice row, never a turn. Best-effort: failures only warn
+    /// and never fail daemon recovery. Returns the republished count.
+    pub async fn reconcile_idle_completion_hints(&self) -> usize {
+        let Some(notifier) = self.deps.job_notification_service.clone() else {
+            return 0;
+        };
+        let notices = match notifier.durable_notices_for_hint_recovery().await {
+            Ok(notices) => notices,
+            Err(error) => {
+                tracing::warn!(?error, "idle hint reconciliation skipped");
+                return 0;
+            }
+        };
+        let mut republished = 0;
+        for notice in &notices {
+            if self
+                .event_log
+                .has_persisted_background_completion(&notice.notice_id)
+                .await
+            {
+                continue;
+            }
+            Self::publish_idle_completion_hint(&self.event_log, &self.notification_router, notice)
+                .await;
+            republished += 1;
+        }
+        if republished > 0 {
+            tracing::info!(
+                republished,
+                total_notices = notices.len(),
+                "republished missing idle completion hints"
+            );
+        }
+        republished
     }
 
     pub async fn replay_from(

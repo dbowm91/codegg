@@ -2,7 +2,7 @@
 
 Status: active (internal PID/IPC/proc/FD/seccomp implementation has exact-hosted positive probes, including concurrent namespace separation; broader compatibility, PTY routing, and host-admission gates remain open)
 Primary class: capability
-Repository baseline: current-main merge `611f6bee` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in; positive native qualification, lifecycle, PTY and ordinary-tool compatibility remain open.
+Repository baseline: current-main merge `611f6bee` (2026-10-15); implementation work began at `1795b0d6`. Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. PID/IPC/proc/FD and architecture-checked seccomp enforcement are implemented behind an internal opt-in; positive native qualification, lifecycle, PTY and ordinary-tool compatibility remain open.
 
 ## 1. Objective
 
@@ -53,14 +53,29 @@ cargo fmt --all -- --check
 cargo test -p codegg --lib managed_process
 cargo test -p codegg --test managed_process_descendants -- --test-threads=1
 cargo test -p codegg --test sandbox_containment -- --test-threads=1
+CODEGG_RUN_M004_BWRAP_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket -- --nocapture
+CODEGG_RUN_M004_CARGO_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_runs_a_real_cargo_check_and_core_test_workflow -- --nocapture
+CODEGG_RUN_M004_RESTRICTED_USERNS=1 cargo test --locked --test linux_m004_process_ipc required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
 python3 scripts/check_sandbox_contract.py
 scripts/verify.sh quick
 ```
-Add focused Linux-only process/IPC/seccomp tests and record the exact command in closure. Do not mark only unit tests as mechanism evidence.
+The positive host filters require Landlock ABI 6 and usable namespaces. The
+restricted-userns filter runs on a separate ephemeral runner with
+`user.max_user_namespaces=0`, verifies a direct harmless Bubblewrap probe is
+denied, then proves that an M004 request leaves no target marker. The Cargo
+filter runs real `cargo check --locked -p codegg-core` and
+`cargo test --locked -p codegg-core --lib` commands as M004 children. Hosted
+exact-head results are required; compilation or a skipped opt-in test is not
+qualification.
+
+The `egglsp` launcher and `InteractiveProcessService` currently spawn children
+outside `ManagedProcessService` and do not consume the M004 policy. Their
+production integration is a hard M004 closure gate; a PTY first-hop fixture or
+standalone LSP smoke does not satisfy it.
 
 ## 9. Acceptance criteria
 
-An opted-in child cannot enumerate or inspect host proc, signal/ptrace a same-UID fixture process, reach a withheld Codegg-daemon/session socket or abstract UDS, or install unsafe namespaces. It **can** run expected child shell/compiler/test operations and its descendant processes remain cancellable/reaped. Every advertised seccomp/process/IPC guarantee is supported by a real negative and positive probe. Required failure leaves no target execution; legacy behavior unaffected.
+An opted-in child cannot enumerate or inspect host proc, signal/ptrace a same-UID fixture process, reach a withheld Codegg-daemon/session socket or abstract UDS, or install unsafe namespaces. It **can** run expected child shell/compiler/test operations and its descendant processes remain cancellable/reaped. Cargo check/test workflows pass through the M004 child boundary. A host with user namespaces disabled demonstrably refuses before target execution. Production PTY and LSP process creation use the canonical M004 launch/receipt owner before closure; direct-spawn service paths are not treated as contained. Every advertised seccomp/process/IPC guarantee is supported by a real negative and positive probe. Required failure leaves no target execution; legacy behavior unaffected.
 
 ## 10. Stop conditions
 

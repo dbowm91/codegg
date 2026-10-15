@@ -1778,6 +1778,30 @@ impl App {
         self.session_state.session_status = status;
     }
 
+    /// Release a turn that never started, with a reason the user can act on.
+    ///
+    /// `send_prompt` optimistically moves the session to `Working`, adds the
+    /// message to the transcript, and clears the composer *before* the daemon
+    /// has accepted anything. Every way that acceptance can fail — a refused
+    /// `turn.submit`, a dead socket, no core client, no session bound — must
+    /// therefore undo that optimistic state explicitly. Otherwise the composer
+    /// sits on a spinner for a turn that does not exist, and the only thing the
+    /// user ever learns is the stall watchdog's generic five-minute message.
+    pub fn fail_unstarted_turn(&mut self, reason: &str) {
+        self.session_state.working_since = None;
+        self.session_state.active_turn_id = None;
+        self.set_session_status(SessionStatus::Error);
+        self.status_bar.set_thinking(false, None);
+        self.messages_state.messages.finalize_streaming();
+        self.messages_state.messages.end_activity();
+        // A refused submit must not block the next one: `pending_send` is the
+        // guard that refuses a second prompt while the first is in flight, and
+        // there is no in-flight turn to guard.
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        self.messages_state.toasts.error(reason);
+    }
+
     /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
     ///
     /// Returns `true` when the watchdog fired and the caller should redraw. The
@@ -2080,6 +2104,33 @@ impl App {
                         }]
                     });
                 self.show_question_dialog(questions, id);
+                true
+            }
+            E::BackgroundJobCompleted {
+                session_id,
+                kind,
+                status,
+                summary,
+                ..
+            } => {
+                // Session-scope it like `TodoListUpdated`: the daemon
+                // broadcasts to every attached frontend, and this screen
+                // renders exactly one session. A foreign session's
+                // completion stays in the daemon router history; only the
+                // visible session toasts. The toast names kind/status plus
+                // the bounded redacted summary — the actionable handle is
+                // the existing `job.status` / CI-watch surface, not a new
+                // control (ADR-0031: no new authority in the frontend
+                // slice).
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.messages_state.messages.finalize_streaming();
+                self.messages_state
+                    .toasts
+                    .info(&format!("Background {kind} {status}: {summary}"));
                 true
             }
             _ => false,
@@ -2437,9 +2488,18 @@ impl App {
 
     pub fn dispatch_turn_submit_request(&mut self, text: String) {
         let Some(client) = self.core_client.clone() else {
+            // No core client means nothing can carry this prompt. Returning
+            // silently left the session pinned on `Working` for a turn that
+            // was never even attempted.
+            self.fail_unstarted_turn(
+                "No connection to the core daemon; the prompt was not submitted",
+            );
             return;
         };
         let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
+            self.fail_unstarted_turn(
+                "No session is bound to this view; the prompt was not submitted",
+            );
             return;
         };
         // Belt and braces: make sure the session filter is registered before
@@ -2539,7 +2599,10 @@ impl App {
                     );
                 }
             } else if let Some(error) = error {
-                tracing::debug!("core facade turn.submit failed: {}", error);
+                // No TUI command channel means this process cannot show
+                // anything, but `debug!` buried a submission failure so deep
+                // that a refused turn looked identical to a slow one.
+                tracing::warn!("core facade turn.submit failed: {}", error);
             }
         });
     }
@@ -10561,13 +10624,71 @@ impl App {
         );
     }
 
+    /// Provider name for a connection being rotated, derived the same way
+    /// [`Self::open_connection_rotation_dialog`] derives it: the target's
+    /// `provider_kind` with the `other:` storage prefix stripped, falling back
+    /// to the connection's `display_name`, then to a generic word when the
+    /// connection list has not loaded.
+    ///
+    /// The rotation toast used to say "Eggpool" unconditionally, so rotating
+    /// an `other:opencode_go` credential announced the wrong provider in the
+    /// one message the user sees while the probe runs.
+    fn rotation_provider_label(&self, connection_id: &str) -> String {
+        self.dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let stripped = kind.strip_prefix("other:").unwrap_or(kind).trim();
+                if stripped.is_empty() {
+                    connection.display_name.clone()
+                } else {
+                    stripped.to_string()
+                }
+            })
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| "provider".to_string())
+    }
+
     fn open_connection_rotation_dialog(&mut self, connection_id: String, expected_revision: u64) {
         use crate::tui::components::dialogs::connect::ProviderInfo;
 
+        // The dialog is built from the connection being rotated, not from a
+        // hardcoded provider. `other:opencode_go` is the canonical
+        // provider_kind for OpenCode Go, so a fixed "eggpool" entry left the
+        // dialog asking an OpenCode Go user to rotate an Eggpool credential —
+        // right action, wrong subject, and no way to tell from the prompt.
+        let (provider_id, provider_name) = self
+            .dialog_state
+            .connection_selection_dialog
+            .as_ref()
+            .and_then(|dialog| {
+                dialog
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == connection_id)
+            })
+            .map(|connection| {
+                let kind = connection.provider_kind.as_str();
+                let id = kind.strip_prefix("other:").unwrap_or(kind);
+                (id.to_string(), connection.display_name.clone())
+            })
+            .unwrap_or_else(|| {
+                // No summary to name it from (a rotation opened before the list
+                // loaded). The id is what the probe path uses, so falling back
+                // to the built-in alias still routes; only the label is generic.
+                ("eggpool".to_string(), "provider".to_string())
+            });
         let providers = vec![ProviderInfo::api_key(
-            "eggpool",
-            "Eggpool",
-            "Rotate the stored Eggpool credential",
+            provider_id.clone(),
+            provider_name.clone(),
+            format!("Rotate the stored {provider_name} credential"),
             None,
         )];
         let mut dialog = crate::tui::components::dialogs::connect::ConnectDialog::new(
@@ -10604,7 +10725,12 @@ impl App {
         // current state.
         let tx = self.tui_cmd_tx.clone();
         if let Some(tx) = tx {
-            let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+            let _ = send_tui(
+                &tx,
+                TuiCommand::SessionSelectionRefresh {
+                    focus_connection_id: None,
+                },
+            );
         }
     }
 
@@ -10744,6 +10870,7 @@ impl App {
         }
         // Rotation keeps the existing masked-credential editor path.
         if let Some((connection_id, expected_revision)) = rotation_target.clone() {
+            let rotation_label = self.rotation_provider_label(&connection_id);
             let Ok(api_key) = SecretInput::new(api_key_text.clone()) else {
                 let message = "Credential is invalid".to_string();
                 if let Some(dialog) = self.dialog_state.connect_dialog.as_mut() {
@@ -10832,9 +10959,9 @@ impl App {
                     })
                 },
             );
-            self.messages_state
-                .toasts
-                .info("Rotating Eggpool credential (probe in progress)…");
+            self.messages_state.toasts.info(&format!(
+                "Rotating {rotation_label} credential (probe in progress)…"
+            ));
             return;
         }
 
@@ -11423,6 +11550,7 @@ impl App {
                 tx,
                 TuiCommand::SessionSelectionLoad {
                     session_id: sess_id.clone(),
+                    focus_connection_id: None,
                 },
             );
             // Adopt a model chosen *before* this session existed.
@@ -11757,7 +11885,9 @@ impl App {
         // *not* `adopt_persisted_tab_model`: that re-reads local tab state,
         // which is exactly the value just rejected.
         if let Some(session_id) = self.active_session_id().map(str::to_owned) {
-            crate::tui::commands::session_selection::start_selection_refresh(self, session_id);
+            crate::tui::commands::session_selection::start_selection_refresh(
+                self, session_id, None,
+            );
         }
         self.messages_state
             .toasts
@@ -17549,5 +17679,155 @@ mod policy_selector_route_tests {
         );
         app.on_key(key(crossterm::event::KeyCode::Char('0')));
         assert!(app.dialog_state.permission_dialog.is_some());
+    }
+}
+
+#[cfg(test)]
+mod connection_rotation_tests {
+    use super::*;
+    use crate::protocol::provider::ProviderConnectionSummaryDto;
+
+    fn summary(id: &str, kind: &str, name: &str) -> ProviderConnectionSummaryDto {
+        ProviderConnectionSummaryDto {
+            id: id.to_string(),
+            provider_kind: kind.to_string(),
+            display_name: name.to_string(),
+            endpoint: "https://example.invalid/v1".to_string(),
+            tls_policy: "required".to_string(),
+            scope: "personal".to_string(),
+            state: "active".to_string(),
+            revision: 1,
+            model_count: 0,
+            catalog_revision: None,
+            health: None,
+            credential_hint: None,
+        }
+    }
+
+    /// Regression: rotation built a fixed `eggpool`/`Eggpool` row, so rotating
+    /// an OpenCode Go credential asked for an Eggpool one. The dialog has to
+    /// name the connection it is about to replace, and `other:` is how
+    /// third-party providers are stored.
+    #[test]
+    fn rotation_names_the_provider_being_rotated() {
+        let mut app = App::new_for_testing("rotation-test".to_string());
+        let mut dialog =
+            crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![summary("conn-1", "other:opencode_go", "eggstackmain")];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        app.open_connection_rotation_dialog("conn-1".to_string(), 1);
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation opens the connect dialog");
+        let provider = &connect.providers[0];
+        assert_eq!(
+            provider.id, "opencode_go",
+            "the `other:` prefix is storage naming, not the provider id"
+        );
+        assert_eq!(
+            provider.name, "eggstackmain",
+            "the prompt must name the credential being replaced"
+        );
+        assert!(
+            provider.description.contains("eggstackmain"),
+            "description follows the connection, not a hardcoded provider"
+        );
+    }
+
+    /// A rotation opened before the connection list has loaded must still
+    /// produce a usable dialog rather than panic on a missing summary.
+    #[test]
+    fn rotation_without_a_loaded_list_still_opens() {
+        let mut app = App::new_for_testing("rotation-empty".to_string());
+        app.open_connection_rotation_dialog("conn-missing".to_string(), 1);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("rotation always opens a dialog");
+        assert_eq!(connect.providers.len(), 1);
+    }
+
+    /// The rotation toast named Eggpool for every provider. It is the only
+    /// feedback between pressing Enter and the probe returning, so it has to
+    /// name the connection actually being rotated.
+    #[test]
+    fn rotation_provider_label_follows_the_rotation_target() {
+        let mut app = App::new_for_testing("rotation-label".to_string());
+        let mut dialog =
+            crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog::new(
+                "session-1".to_string(),
+                Arc::clone(&app.ui_state.theme),
+            );
+        dialog.connections = vec![
+            summary("conn-go", "other:opencode_go", "eggstackmain"),
+            summary("conn-eggpool", "eggpool", "Eggpool"),
+        ];
+        app.dialog_state.connection_selection_dialog = Some(dialog);
+
+        assert_eq!(app.rotation_provider_label("conn-go"), "opencode_go");
+        assert_eq!(app.rotation_provider_label("conn-eggpool"), "eggpool");
+        assert_eq!(
+            app.rotation_provider_label("conn-missing"),
+            "provider",
+            "an unknown target must not be labelled Eggpool"
+        );
+    }
+
+    /// A failed rotation used to clear the secret and nothing else: the dialog
+    /// stayed on `EnterApiKey` with an empty masked field and no message, so
+    /// the user was silently asked for the same API key again with no idea
+    /// the first attempt failed.
+    #[tokio::test]
+    async fn failed_rotation_leaves_a_visible_error_and_an_empty_field() {
+        let mut app = App::new_for_testing("rotation-failure".to_string());
+        app.open_connection_rotation_dialog("conn-1".to_string(), 3);
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_mut()
+            .expect("rotation opens the connect dialog");
+        connect.operation_id = Some("rot-1".to_string());
+        connect.api_key_input = "sk-rejected".to_string();
+        app.ensure_tui_cmd_channel();
+
+        crate::tui::runtime::command_dispatch::dispatch_tui_command(
+            &mut app,
+            TuiCommand::ConnectionRotationFinished {
+                operation_id: "rot-1".to_string(),
+                result: Err("probe rejected the credential".to_string()),
+            },
+        )
+        .await;
+
+        let connect = app
+            .dialog_state
+            .connect_dialog
+            .as_ref()
+            .expect("a failed rotation must stay open for a retry");
+        assert!(
+            connect.api_key_input.is_empty(),
+            "the failed credential must not stay in memory"
+        );
+        assert_eq!(connect.operation_id, None, "the attempt is finished");
+        let error = connect
+            .error_message
+            .as_deref()
+            .expect("a failed rotation must say so on the dialog");
+        assert!(
+            error.contains("probe rejected the credential"),
+            "the dialog must name the failure, got: {error}"
+        );
+        assert!(
+            error.contains("empty"),
+            "the dialog must make the blank field deliberate, got: {error}"
+        );
     }
 }

@@ -22,6 +22,7 @@ pub struct TestTool {
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     session_id: Option<String>,
+    job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
 }
 
 impl TestTool {
@@ -30,6 +31,7 @@ impl TestTool {
             run_store: None,
             submission: None,
             session_id: None,
+            job_notifications: None,
         }
     }
 
@@ -38,6 +40,7 @@ impl TestTool {
             run_store: Some(store),
             submission: None,
             session_id: None,
+            job_notifications: None,
         }
     }
 
@@ -52,6 +55,31 @@ impl TestTool {
     ) -> Self {
         self.submission = Some(submission);
         self
+    }
+
+    pub fn with_job_notifications(
+        mut self,
+        service: Arc<crate::scheduler::job_notifications::JobNotificationService>,
+    ) -> Self {
+        self.job_notifications = Some(service);
+        self
+    }
+}
+
+/// Execution mode for the `test` tool (M001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestExecutionMode {
+    Foreground,
+    Background,
+}
+
+impl TestExecutionMode {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "background" | "bg" => Self::Background,
+            _ => Self::Foreground,
+        }
     }
 }
 
@@ -72,7 +100,7 @@ impl Tool for TestTool {
     }
 
     fn description(&self) -> &str {
-        "Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context."
+        "Run project tests through codegg's supervised test runner. Prefer this over bash for cargo test, cargo nextest, pytest, uv run pytest, go test, make test, and similar test commands. The tool streams full stdout/stderr to logs, classifies timeouts/failures, and returns a compact report instead of dumping full output into context. Set execution_mode=background to receive a stable JobHandle immediately and a terminal notification on completion without blocking; foreground (default) preserves the current synchronous report."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -112,6 +140,16 @@ impl Tool for TestTool {
                     "type": "integer",
                     "minimum": 1,
                     "description": "Hard ceiling for the formatted report returned to the model, in bytes. Default 20000. Useful for keeping model-visible output bounded when failure sets are large."
+                },
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["foreground", "background"],
+                    "description": "Execution mode. 'foreground' (default) blocks until completion and returns the compact report. 'background' returns a stable JobHandle immediately; one terminal notification is delivered when the job finishes. No polling is needed."
+                },
+                "on_complete": {
+                    "type": "string",
+                    "enum": ["notify_only", "resume_owner"],
+                    "description": "Background completion disposition (default notify_only). notify_only persists one durable notice for the next turn without spending model tokens. resume_owner additionally records a next-turn continuation marker and, only with an explicit host-trusted continuation grant, may start one bounded idle owner turn; without a grant idle dispatch stays notify-only. User cancel, expiry, or revocation wins before any invocation. Applies to background only."
                 }
             },
             "required": ["scope"]
@@ -123,6 +161,17 @@ impl Tool for TestTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        let mode = input
+            .get("execution_mode")
+            .and_then(|v| v.as_str())
+            .map(TestExecutionMode::from_str)
+            .unwrap_or(TestExecutionMode::Foreground);
+        if mode == TestExecutionMode::Background {
+            // Legacy string path has no turn context; use the tool's bound
+            // session if present. Fail without spawning otherwise.
+            let handle = self.submit_background(input, None).await?;
+            return Ok(serde_json::to_string_pretty(&handle).unwrap_or_default());
+        }
         let request = parse_test_request(&input)?;
         let max_report_bytes = request.max_report_bytes;
         let (summary, _) = self.run_scheduled_test(request, None).await?;
@@ -139,6 +188,41 @@ impl Tool for TestTool {
     ) -> Result<StructuredToolResult, ToolError> {
         use crate::live_execution_audit as live;
         let start = Instant::now();
+        let mode = input
+            .get("execution_mode")
+            .and_then(|v| v.as_str())
+            .map(TestExecutionMode::from_str)
+            .unwrap_or(TestExecutionMode::Foreground);
+        if mode == TestExecutionMode::Background {
+            let value = self.submit_background(input.clone(), ctx.clone()).await?;
+            let digest = live::command_digest_str(
+                &serde_json::to_vec(&input)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_default(),
+            );
+            emit_test_audit(ctx.as_ref(), &digest, "submitted").await;
+            let output = format!(
+                "background test submitted as job {}; terminal notification will arrive without polling",
+                value
+                    .get("job_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+            );
+            let provenance = ToolProvenance {
+                backend: ToolBackendKind::Native.label().to_lowercase(),
+                implementation: "test_runner".to_string(),
+                version: None,
+                elapsed_ms: Some(start.elapsed().as_millis() as u64),
+                truncated: false,
+                trust: ToolTrust::LocalTrusted,
+            };
+            return Ok(StructuredToolResult {
+                output,
+                value: Some(value),
+                success: true,
+                provenance: Some(provenance),
+            });
+        }
         let mut request = parse_test_request(&input)?;
         let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
@@ -215,6 +299,151 @@ impl Tool for TestTool {
 }
 
 impl TestTool {
+    /// M001 background path: validate, submit durably, subscribe for terminal
+    /// delivery, and return a stable `JobHandle` without blocking.
+    ///
+    /// The handle is returned only after both durable acceptance and durable
+    /// subscription. Crash between submit and subscribe is healed by retry
+    /// with the same submission key (same invocation returns the same job,
+    /// then subscribes). Background requires a real host-originated session
+    /// context; otherwise it fails without spawning.
+    async fn submit_background(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<serde_json::Value, ToolError> {
+        let Some(submission) = self.submission.clone() else {
+            return Err(ToolError::Execution(
+                "test execution requires the daemon scheduler; standalone callers must provide a harness scheduler".into(),
+            ));
+        };
+        let Some(notifications) = self.job_notifications.clone() else {
+            return Err(ToolError::Execution(
+                "background test requires the daemon job notification service".into(),
+            ));
+        };
+        let session_id = ctx
+            .as_ref()
+            .and_then(|c| c.session_id.clone())
+            .or_else(|| self.session_id.clone())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ToolError::Execution(
+                    "background test requires a real host-originated session context".into(),
+                )
+            })?;
+        let turn_id = ctx.as_ref().and_then(|c| c.turn_id.clone());
+        let invocation_key = ctx
+            .as_ref()
+            .and_then(|c| c.invocation_key.clone())
+            .unwrap_or_else(|| format!("test-bg:{}", uuid::Uuid::new_v4()));
+        let disposition = input
+            .get("on_complete")
+            .and_then(|v| v.as_str())
+            .map(crate::scheduler::job_notifications::JobCompletionDisposition::from_str)
+            .unwrap_or(crate::scheduler::job_notifications::JobCompletionDisposition::NotifyOnly);
+        let owner_principal = ctx.as_ref().and_then(|c| {
+            c.origin_principal
+                .clone()
+                .or_else(|| c.principal_identity.clone())
+        });
+        let sandbox_profile = ctx
+            .as_ref()
+            .and_then(|c| c.sandbox_profile.as_deref())
+            .map(|raw| {
+                codegg_core::approval::SandboxProfile::parse(raw).ok_or_else(|| {
+                    ToolError::Permission("invalid accepted sandbox profile in tool context".into())
+                })
+            })
+            .transpose()?;
+        let mut request = parse_test_request(&input)?;
+        request.session_id = Some(session_id.clone());
+        let resolved = crate::test_runner::resolve_test_command(&request)
+            .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
+        let workspace_id = submission
+            .workspace_id_for_root(&request.workdir)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let key_digest = crate::tool::tool_program_context::stable_digest(&invocation_key);
+        let submission_key =
+            crate::scheduler::submission::SubmissionKey::new(format!("test-bg:{key_digest}"))
+                .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
+        let submitted = submission
+            .submit(
+                Some(submission_key),
+                codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: Some(session_id.clone()),
+                    turn_id: turn_id.clone(),
+                    kind: codegg_core::jobs::JobKind::Test,
+                    source: codegg_core::jobs::JobSource::Interactive,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Test {
+                        command: resolved.argv.join(" "),
+                        argv: resolved.argv,
+                        cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
+                        scope: Some(resolved.scope_label),
+                        parent_run_id: None,
+                        sandbox_profile,
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Test,
+                    ),
+                    timeout: request.timeout_secs.map(std::time::Duration::from_secs),
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                    target: ExecutionTarget::default(),
+                },
+            )
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        // Durable subscription before reporting acceptance. If the daemon
+        // restarts after submit but before subscribe, retry with the same
+        // invocation key returns the same job and completes the subscribe.
+        notifications
+            .subscribe_with_options(
+                &submitted.job_id,
+                "test",
+                &session_id,
+                turn_id.as_deref(),
+                &invocation_key,
+                disposition,
+                owner_principal.as_deref(),
+                Some(submitted.workspace_id.as_str()),
+                None,
+            )
+            .await
+            .map_err(|e| ToolError::Execution(format!("background subscribe failed: {e}")))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let handle = crate::scheduler::job_notifications::job_handle_for(
+            &submitted.job_id,
+            "test",
+            "submitted",
+            now,
+            None,
+        );
+        Ok(serde_json::json!({
+            "job_id": handle.job_id,
+            "kind": handle.kind,
+            "status": handle.status,
+            "submitted_at": handle.submitted_at,
+            "inspect_ref": handle.inspect_ref,
+            "cancel_ref": handle.cancel_ref,
+            "on_complete": disposition.as_str(),
+            "message": "background test accepted; one terminal notification will arrive without polling",
+        }))
+    }
+
     async fn run_scheduled_test(
         &self,
         request: TestRunRequest,

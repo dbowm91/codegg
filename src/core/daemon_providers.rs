@@ -10,7 +10,7 @@ use crate::protocol::core::{CoreEvent, CoreRequest, CoreResponse};
 use super::daemon::CoreDaemon;
 use super::daemon::{
     connection_detail_dto, connection_lifecycle_response, eggpool_error_code,
-    eggpool_error_message, purge_blocker_dto,
+    eggpool_error_message, purge_blocker_dto, purge_blocker_summary,
 };
 
 impl CoreDaemon {
@@ -411,13 +411,51 @@ impl CoreDaemon {
                 connection_id,
                 expected_revision,
             } => {
-                connection_lifecycle_response(
-                    self.pool.clone(),
-                    connection_id,
-                    expected_revision,
-                    "delete",
-                )
-                .await
+                // `d` removes the row. It goes through the provisioner (not
+                // the store) so the deleted connection's credential binding is
+                // dropped exactly like `p` does, and a blocked delete reports
+                // the concrete references instead of silently tombstoning.
+                let Some(_pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connections require a daemon SQLite catalog".to_string(),
+                    });
+                };
+                let Ok(id) = codegg_core::identity::ProviderConnectionId::parse(&connection_id)
+                else {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_connection_id".to_string(),
+                        message: "Provider connection ID is invalid".to_string(),
+                    });
+                };
+                let provisioner = self.eggpool_provisioner.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("Eggpool provisioner is unavailable for delete")
+                });
+                let Ok(provisioner) = provisioner else {
+                    return Ok(CoreResponse::Error {
+                        code: "provider_connections_unavailable".to_string(),
+                        message: "Provider connection delete requires the daemon provisioner"
+                            .to_string(),
+                    });
+                };
+                match provisioner.delete(&id, expected_revision).await {
+                    Ok(codegg_core::provider_connections::PurgeOutcome::Purged) => {
+                        Ok(CoreResponse::Ack)
+                    }
+                    Ok(codegg_core::provider_connections::PurgeOutcome::Blocked(blockers)) => {
+                        Ok(CoreResponse::Error {
+                            code: "connection_delete_blocked".to_string(),
+                            message: format!(
+                                "Connection was not removed; it stays tombstoned until the references clear: {}. Run purge to finish.",
+                                purge_blocker_summary(&blockers)
+                            ),
+                        })
+                    }
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "connection_delete_failed".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
             }
             CoreRequest::ConnectionRestore {
                 connection_id,

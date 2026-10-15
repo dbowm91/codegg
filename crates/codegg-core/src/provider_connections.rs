@@ -1003,6 +1003,29 @@ impl ProviderConnectionStore {
             tx.rollback().await.map_err(map_sql_error)?;
             return self.revision_conflict(id, expected_revision).await;
         }
+        // A lifecycle transition does not change which models the upstream
+        // offers, but it does advance the connection revision, and every
+        // catalog read is gated on `provider_connection_models.revision` equal
+        // to the connection's current revision. Without this carry-forward a
+        // single enable/disable silently orphans the whole catalog: the rows
+        // stay behind at the old revision, `/connections` reports zero models,
+        // and model resolution can no longer find anything to bind a session
+        // to. Observed live on a connection at revision 12 whose 104 model rows
+        // were stranded at revision 3.
+        sqlx::query(
+            "INSERT INTO provider_connection_models \
+             (connection_id, revision, model_id, model_name, context_window, \
+              max_output_tokens, supports_tools, supports_vision) \
+             SELECT connection_id, ?, model_id, model_name, context_window, \
+              max_output_tokens, supports_tools, supports_vision \
+             FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(next.revision as i64)
+        .bind(id.as_str())
+        .bind(expected_revision as i64)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql_error)?;
         if is_extended_state(target) {
             sqlx::query(
                 "INSERT INTO provider_connection_lifecycle (connection_id, state, revision, time_updated) VALUES (?, ?, ?, ?) \
@@ -1112,6 +1135,77 @@ impl ProviderConnectionStore {
         self.transition(id, expected_revision, ProviderConnectionState::Tombstoned)
             .await
             .map(|_| current.state != ProviderConnectionState::Tombstoned)
+    }
+
+    /// Detach every session bound to this connection, so a deliberate delete is
+    /// not blocked forever by session history.
+    ///
+    /// A `selected_session` reference is bookkeeping, not a live handle: nothing
+    /// is executing, and the session survives the connection it was pinned to.
+    /// Treating that history as a hard blocker made a connection undeletable
+    /// for as long as any session had ever selected it, with no operator action
+    /// that could clear it. Detaching clears `session.provider_connection_id`
+    /// and drops the matching reference rows in one transaction, so a session
+    /// left unbound can re-select any other connection.
+    ///
+    /// Only this reference kind is detached. `active_runtime` and
+    /// `provisioning_operation` describe work that is still in flight, so
+    /// [`Self::purge`] keeps blocking on those.
+    pub async fn detach_sessions(
+        &self,
+        id: &ProviderConnectionId,
+    ) -> Result<u64, ProviderConnectionError> {
+        let mut tx = self.pool.begin().await.map_err(map_sql_error)?;
+        let detached = sqlx::query(
+            "UPDATE session SET provider_connection_id = NULL WHERE provider_connection_id = ?",
+        )
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql_error)?
+        .rows_affected();
+        sqlx::query(
+            "DELETE FROM provider_connection_references WHERE connection_id = ? AND reference_kind = ?",
+        )
+        .bind(id.as_str())
+        .bind(ProviderConnectionReferenceKind::SelectedSession.storage_key())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sql_error)?;
+        tx.commit().await.map_err(map_sql_error)?;
+        Ok(detached)
+    }
+
+    /// One-step hard delete: tombstone the row, detach the sessions that
+    /// referenced it, then purge it.
+    ///
+    /// The tombstone transition is kept as the first step so the compatibility
+    /// projection in `provider_connections` never holds a state its CHECK
+    /// rejects, and so anything racing the delete observes a tombstoned row
+    /// rather than a vanished one. Session references are detached rather than
+    /// blocking — see [`Self::detach_sessions`]. [`PurgeOutcome::Blocked`]
+    /// remains reachable for in-flight runtime and provisioning references, and
+    /// leaves the tombstone in place for `p` to finish once those clear.
+    ///
+    /// [`Self::delete`] keeps its tombstone-only contract for callers that
+    /// want the intermediate state.
+    pub async fn delete_permanently(
+        &self,
+        id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<PurgeOutcome, ProviderConnectionError> {
+        let tombstone = self
+            .transition(id, expected_revision, ProviderConnectionState::Tombstoned)
+            .await?;
+        let detached = self.detach_sessions(id).await?;
+        if detached > 0 {
+            tracing::info!(
+                connection = %id.as_str(),
+                detached_sessions = detached,
+                "provider connection delete detached referencing sessions"
+            );
+        }
+        self.purge(id, tombstone.revision).await
     }
 
     pub async fn add_reference(
@@ -1721,6 +1815,325 @@ mod tests {
         assert!(matches!(
             store
                 .purge(&created.id, tombstone_again.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(store.get(&created.id).await.unwrap().is_none());
+    }
+
+    /// Seed catalog rows at a specific connection revision, mirroring what the
+    /// provision/rotate/refresh paths write.
+    async fn seed_models(
+        database: &sqlx::SqlitePool,
+        id: &ProviderConnectionId,
+        revision: u64,
+        models: &[&str],
+    ) {
+        for model_id in models {
+            sqlx::query(
+                "INSERT INTO provider_connection_models \
+                 (connection_id, revision, model_id, model_name, context_window, \
+                  max_output_tokens, supports_tools, supports_vision) \
+                 VALUES (?, ?, ?, ?, 128000, 16384, 1, 1)",
+            )
+            .bind(id.as_str())
+            .bind(revision as i64)
+            .bind(*model_id)
+            .bind(*model_id)
+            .execute(database)
+            .await
+            .unwrap();
+        }
+    }
+
+    /// A lifecycle transition advances the connection revision but does not
+    /// change the upstream catalog. Every catalog read is gated on
+    /// `provider_connection_models.revision` matching the connection's current
+    /// revision, so a transition that fails to carry the rows forward silently
+    /// empties the catalog. This is the regression that made `/connections`
+    /// report zero models on a connection holding 104 stranded rows.
+    #[tokio::test(flavor = "current_thread")]
+    async fn lifecycle_transitions_carry_the_model_catalog_forward() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database.clone());
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        seed_models(
+            &database,
+            &created.id,
+            created.revision,
+            &["m-alpha", "m-beta"],
+        )
+        .await;
+
+        let count_at_current = |revision: u64| {
+            let database = database.clone();
+            let id = created.id.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+                )
+                .bind(id.as_str())
+                .bind(revision as i64)
+                .fetch_one(&database)
+                .await
+                .unwrap()
+            }
+        };
+
+        assert_eq!(count_at_current(created.revision).await, 2);
+
+        // disable -> re-enable, the exact pair an operator performs while
+        // swapping credentials.
+        let disabled = store.disable(&created.id, created.revision).await.unwrap();
+        assert_eq!(count_at_current(disabled.revision).await, 2);
+
+        let enabled = store.enable(&created.id, disabled.revision).await.unwrap();
+        assert_eq!(count_at_current(enabled.revision).await, 2);
+
+        assert!(
+            store.delete(&created.id, enabled.revision).await.unwrap(),
+            "delete must report that it moved a live row to tombstoned"
+        );
+        let tombstoned = store
+            .get(&created.id)
+            .await
+            .unwrap()
+            .expect("tombstone row is retained");
+        assert_eq!(tombstoned.state, ProviderConnectionState::Tombstoned);
+        assert_eq!(
+            count_at_current(tombstoned.revision).await,
+            2,
+            "a tombstoned connection keeps its catalog so restore and purge stay coherent"
+        );
+    }
+
+    /// `d` must actually remove the row. Tombstone-only deletion left the
+    /// connection listed in `/connections` forever, which reads to the operator
+    /// as a delete that did nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_permanently_removes_an_unreferenced_row() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let project = ProjectId::new();
+        let created = store
+            .create(input(ProviderScope::project(project.clone())))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, created.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(
+            store.get(&created.id).await.unwrap().is_none(),
+            "the connection row must be gone, not left tombstoned"
+        );
+        assert!(store.list().await.unwrap().is_empty());
+        assert!(store.references(&created.id).await.unwrap().is_empty());
+
+        // The scope + binding uniqueness guard is scoped to live rows, so a
+        // tombstone left behind would still block re-adding the same provider.
+        let readded = store
+            .create(input(ProviderScope::project(project)))
+            .await
+            .expect("a deleted connection must not hold its own slot hostage");
+        assert_eq!(readded.state, ProviderConnectionState::Active);
+    }
+
+    /// A delete detaches session history but still refuses while a live runtime
+    /// holds the connection, keeping the tombstone that `purge` finishes from.
+    /// Silently stopping at "tombstoned" is what this replaces.
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocked_delete_keeps_the_tombstone_and_reports_the_blockers() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        for (kind, reference_id) in [
+            (
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            ),
+            (ProviderConnectionReferenceKind::ActiveRuntime, "runtime-1"),
+        ] {
+            store
+                .add_reference(&created.id, kind, reference_id)
+                .await
+                .unwrap();
+        }
+
+        let outcome = store
+            .delete_permanently(&created.id, created.revision)
+            .await
+            .unwrap();
+        let PurgeOutcome::Blocked(blockers) = outcome else {
+            panic!("a live runtime must still stop the removal");
+        };
+        assert!(
+            !blockers.contains(&PurgeBlocker::SelectedSessions { count: 1 }),
+            "session history must not block a deliberate delete: {blockers:?}"
+        );
+        assert!(
+            blockers.contains(&PurgeBlocker::ActiveRuntime {
+                reference_id: "runtime-1".to_owned()
+            }),
+            "the live runtime must be named: {blockers:?}"
+        );
+        assert!(
+            !store
+                .references(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|reference| {
+                    reference.kind == ProviderConnectionReferenceKind::SelectedSession
+                }),
+            "the detached session reference must be gone"
+        );
+
+        let tombstone = store
+            .get(&created.id)
+            .await
+            .unwrap()
+            .expect("a blocked delete keeps the row for the operator to finish");
+        assert_eq!(tombstone.state, ProviderConnectionState::Tombstoned);
+        assert!(
+            !tombstone.state.is_selectable(),
+            "a tombstoned row must not become selectable again"
+        );
+
+        store
+            .remove_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::ActiveRuntime,
+                "runtime-1",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.purge(&created.id, tombstone.revision).await.unwrap(),
+            PurgeOutcome::Purged
+        ));
+        assert!(store.get(&created.id).await.unwrap().is_none());
+    }
+
+    /// A session pinned to a connection must come back unbound, not be left
+    /// pointing at a row that no longer exists.
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_detaches_the_sessions_that_referenced_the_connection() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database.clone());
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("project-1")
+        .bind("/tmp/project-1")
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind("{}")
+        .execute(&database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated, provider_connection_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("session-1")
+        .bind("project-1")
+        .bind("session-1")
+        .bind("/tmp/session-1")
+        .bind("session-1")
+        .bind("1")
+        .bind(0_i64)
+        .bind(0_i64)
+        .bind(created.id.as_str())
+        .execute(&database)
+        .await
+        .unwrap();
+        store
+            .add_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::SelectedSession,
+                "session-1",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(store.detach_sessions(&created.id).await.unwrap(), 1);
+
+        let bound: Option<String> =
+            sqlx::query_scalar("SELECT provider_connection_id FROM session WHERE id = ?")
+                .bind("session-1")
+                .fetch_one(&database)
+                .await
+                .unwrap();
+        assert!(
+            bound.is_none(),
+            "a detached session must not keep pointing at the removed connection"
+        );
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, created.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Purged
+        ));
+    }
+
+    /// A blocked delete leaves the row tombstoned; pressing `d` again must
+    /// finish the removal once the references clear rather than fail on the
+    /// `tombstoned -> tombstoned` no-op transition.
+    #[tokio::test(flavor = "current_thread")]
+    async fn delete_permanently_retries_a_blocked_tombstone() {
+        let database = pool().await;
+        let store = ProviderConnectionStore::new(database);
+        let created = store
+            .create(input(ProviderScope::project(ProjectId::new())))
+            .await
+            .unwrap();
+        store
+            .add_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::ProvisioningOperation,
+                "op-1",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, created.revision)
+                .await
+                .unwrap(),
+            PurgeOutcome::Blocked(_)
+        ));
+        let tombstone = store.get(&created.id).await.unwrap().unwrap();
+        store
+            .remove_reference(
+                &created.id,
+                ProviderConnectionReferenceKind::ProvisioningOperation,
+                "op-1",
+            )
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store
+                .delete_permanently(&created.id, tombstone.revision)
                 .await
                 .unwrap(),
             PurgeOutcome::Purged

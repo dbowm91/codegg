@@ -602,6 +602,12 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("job_submit", "job_submit"),
     ("job_cancel", "job_cancel"),
     ("job_retry", "job_complete"),
+    // C005 (ADR-0031): idle-continuation grant management mutates
+    // durable delegation authority (a future owner turn), so create and
+    // revoke carry the same structural delegation action as `goal_set`.
+    // The status read is a project-keyed read and stays uninstrumented.
+    ("continuation_grant_create", "agent_delegate"),
+    ("continuation_grant_revoke", "agent_delegate"),
     ("job_recovery_report", "audit_query"),
     ("schedule_create", "job_submit"),
     ("schedule_pause", "job_cancel"),
@@ -722,6 +728,11 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "job_get",
     "job_list",
     "job_wait",
+    // C005 (ADR-0031): the grant status read is the same shape —
+    // `via_session` + `session.read`, inert metadata, no mutation — so
+    // it shares the reads' classification. Denial *is* audited upstream
+    // by `authorize_request`.
+    "continuation_grant_status",
     // M006-B (ADR-0012): authorized LSP reads of project file content. Same
     // shape as `document_read` above — a capability-gated read that discloses
     // content the principal may already read, and discloses no mutation, so

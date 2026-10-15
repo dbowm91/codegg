@@ -327,6 +327,66 @@ impl CoreDaemon {
             ),
         };
         deps.submission = Some(submission.clone());
+        // C001 daemon-scoped singletons: one notifier + one watcher for the
+        // daemon lifetime, injected into every turn. Per-turn construction
+        // remains only for legacy/test paths that never asked for the shared
+        // handle. The scheduler's notification pointer is installed here (not
+        // per turn) so turns cannot race it.
+        let shared_notifier = deps.shared_job_notification_service();
+        let shared_watches = deps.shared_ci_watch_service();
+        // C004 daemon-scoped continuation store (fail-closed: owning the
+        // store never starts turns; no coordinator dispatch is wired).
+        let shared_continuation = deps.shared_continuation_service();
+        scheduler.set_job_notification_service_sync(shared_notifier.clone());
+        // C004 post-commit completion fanout: one unbounded channel per
+        // daemon. The notifier sends each newly stored terminal here after
+        // its durable commit; the forwarder below publishes the live
+        // owner-scoped `BackgroundJobCompleted` hint. Duplicates never
+        // send (see `record_notice`), so live delivery is exactly-once per
+        // logical terminal. A full/closed channel never fails the terminal
+        // path; durability is the notice row, not the hint.
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::unbounded_channel::<
+            crate::scheduler::job_notifications::JobTerminalNotice,
+        >();
+        shared_notifier.set_completion_hook_sync(completion_tx);
+        // C005 (ADR-0031) delegated-wake cell: published post-`Arc` via
+        // `attach_idle_wake`. The forwarder below upgrades it per notice;
+        // unset means notify-only (fail-closed).
+        let idle_wake_cell: Arc<std::sync::OnceLock<std::sync::Weak<super::daemon::CoreDaemon>>> =
+            Arc::new(std::sync::OnceLock::new());
+        let idle_completion_handle = {
+            let event_log_for_fanout = event_log.clone();
+            let router_for_fanout = notification_router.clone();
+            let wake_cell_for_fanout = idle_wake_cell.clone();
+            tokio::runtime::Handle::try_current().ok().map(|handle| {
+                handle.spawn(async move {
+                    crate::core::daemon::CoreDaemon::forward_idle_completions(
+                        completion_rx,
+                        event_log_for_fanout,
+                        router_for_fanout,
+                        wake_cell_for_fanout,
+                    )
+                    .await;
+                })
+            })
+        };
+        // C001 idle driver: one earliest-due wake loop per pooled daemon.
+        // Pool-less (in-memory/headless) daemons explicitly have no idle
+        // persistence: `ci_watch_driver` stays `None` and idle advancement is
+        // unavailable rather than falsely claimed.
+        let (ci_watch_driver, ci_watch_driver_handle) = match deps.pool.clone() {
+            Some(_) => {
+                let driver = Arc::new(crate::scheduler::ci_watch_idle::CiWatchIdleDriver::new(
+                    shared_watches.clone(),
+                ));
+                let handle = tokio::runtime::Handle::try_current()
+                    .ok()
+                    .map(|_| driver.spawn());
+                deps.ci_watch_driver = Some(driver.clone());
+                (Some(driver), handle)
+            }
+            None => (None, None),
+        };
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
             pool.configure_durable_delegation(
                 submission.clone(),
@@ -464,6 +524,11 @@ impl CoreDaemon {
             presence: Arc::new(codegg_core::presence::PresenceService::default()),
             projection_seam,
             _projection_maintenance_handle: projection_maintenance_handle,
+            ci_watch_driver,
+            _ci_watch_driver_handle: ci_watch_driver_handle,
+            continuation_service: Some(shared_continuation),
+            _idle_completion_handle: idle_completion_handle,
+            idle_wake_cell,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
             // M002: share the scheduler's admission controller so
             // interactive spawns draw from the same process-slot

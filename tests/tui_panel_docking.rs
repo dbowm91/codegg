@@ -1504,3 +1504,70 @@ async fn resize_mode_is_a_normal_mode_gesture() {
         "resize mode is Normal-only; Insert keeps its letters"
     );
 }
+
+/// The reported failure, on the panel: `/terminal`, dock it with `Shift+H`,
+/// and the box appears in the left column — but typing does nothing.
+///
+/// The daemon-bound send drains the queue into a request, and the test app has
+/// no `CoreClient`, so the observable proof that a keystroke reached the PTY
+/// send seam is the refusal it produces. A key that were consumed as panel
+/// navigation instead would queue nothing and produce no such refusal at all.
+#[tokio::test(flavor = "current_thread")]
+async fn a_docked_terminal_panel_accepts_typing_after_i() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-type", &["$ "]);
+    focus_terminal_panel(&mut app);
+
+    // Normal mode: `i` is the way in.
+    assert!(
+        !app.interactive_terminals.is_focused("t-type"),
+        "the panel starts viewing, not focused"
+    );
+    app.on_key(plain('i'));
+    assert!(
+        app.interactive_terminals.is_focused("t-type"),
+        "`i` is the documented way into the PTY"
+    );
+
+    // A printable key must now reach the PTY send seam. With no daemon the
+    // send reports that it could not be delivered — which is exactly the
+    // evidence that the bytes were routed as input rather than swallowed as
+    // navigation.
+    app.on_key(plain('l'));
+    assert!(
+        app.messages_state
+            .toasts
+            .iter()
+            .any(|toast| toast.message.contains("terminal input dropped")),
+        "typing after `i` must be routed as PTY input, not eaten as panel navigation"
+    );
+}
+
+/// `Esc Esc` is the exit a Mac keyboard can actually send. Regression: the only
+/// documented exit was `Ctrl-]`, which a US Mac layout cannot type — so `i`
+/// left the user stuck in a TUI that looked frozen.
+#[tokio::test(flavor = "current_thread")]
+async fn esc_esc_leaves_the_docked_terminal_panel() {
+    let mut app = test_app();
+    app.ui_state.sidebar_visible = true;
+    attach_terminal(&mut app, "t-esc", &["$ "]);
+    focus_terminal_panel(&mut app);
+
+    app.on_key(plain('i'));
+    assert!(app.interactive_terminals.is_focused("t-esc"));
+
+    // One Esc still belongs to the program under it.
+    app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.interactive_terminals.is_focused("t-esc"),
+        "a lone Esc is forwarded to the PTY, not consumed as an exit"
+    );
+
+    // The second one is the user asking to get out.
+    app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.interactive_terminals.is_focused("t-esc"),
+        "Esc Esc must hand the keyboard back"
+    );
+}

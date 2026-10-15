@@ -148,6 +148,12 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // the tool surface and already reads back through the authorized
         // todo path, so it is classified Safe rather than Internal.
         CoreEvent::TodoListUpdated { .. } => SafePublicationClass::Safe,
+        // C004: durable background completion hint carries identity, kind,
+        // terminal status, and a bounded redacted summary only. Receivers
+        // re-fetch the full notice through the authorized job/watch path
+        // on doubt; the event itself never carries stdout, credentials,
+        // raw CI logs, or remote instructions.
+        CoreEvent::BackgroundJobCompleted { .. } => SafePublicationClass::Safe,
     }
 }
 
@@ -201,6 +207,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::ConvergenceUpserted { session_id, .. } => !session_id.is_empty(),
         CoreEvent::SessionControlChanged { session_id, .. } => !session_id.is_empty(),
         CoreEvent::SessionControlRequested { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::BackgroundJobCompleted { session_id, .. } => !session_id.is_empty(),
         _ => false,
     }
 }

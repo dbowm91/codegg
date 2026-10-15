@@ -164,6 +164,27 @@ pub struct TurnRunInput {
     /// written.
     pub credential_observer:
         Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
+    /// C001 daemon-scoped singleton notifier. `Some` in production daemon
+    /// turns (injected from `CoreRuntimeDeps`); `None` in legacy/test turns
+    /// where the runtime constructs a per-turn fallback. When present, the
+    /// runtime must reuse the shared `Arc` (pointer identity) and must not
+    /// create a competing notifier that would reset scheduler pointers.
+    pub shared_job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    /// C001 daemon-scoped singleton watch service. Same lifetime rules as
+    /// the notifier above; closing one turn must leave watchers live.
+    pub shared_ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
+    /// Credential-store locator for the durable provider connection this turn
+    /// resolved to, when the session has one.
+    ///
+    /// `Some` makes that account the turn's only admissible credential:
+    /// config, env, and other stored records are ignored for the provider the
+    /// connection names, so rotating a connection takes effect on the next
+    /// turn instead of being undone by whichever record sits first in
+    /// `credentials.json`. `None` (no durable selection) leaves the store
+    /// fallback in place, where several usable records for the turn's provider
+    /// are refused as ambiguous rather than picked by file order.
+    pub credential_locator: Option<crate::provider::TurnCredentialLocator>,
 }
 
 /// Minimal output from a turn execution.
@@ -240,6 +261,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             approval_mode,
             sandbox_profile,
             credential_observer,
+            shared_job_notification_service,
+            shared_ci_watch_service,
+            credential_locator,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -257,12 +281,52 @@ impl TurnRuntime for DefaultTurnRuntime {
         if let Err(error) = notification_service.recover_from_pool().await {
             tracing::warn!(error = %error, "failed to recover tool-program notifications");
         }
+        // M001/C001: generic job terminal notices share the daemon pool.
+        // C001 singleton: when the daemon injected its lifetime-owned handle,
+        // reuse it (pointer identity); otherwise fall back to per-turn
+        // construction for legacy/test turns. The shared handle keeps
+        // watchers live across turn close and prevents competing scheduler
+        // notification pointers.
+        let job_notification_service = match shared_job_notification_service {
+            Some(shared) => shared,
+            None => Arc::new(match pool.clone() {
+                Some(pool) => {
+                    crate::scheduler::job_notifications::JobNotificationService::with_pool(pool)
+                }
+                None => crate::scheduler::job_notifications::JobNotificationService::new(),
+            }),
+        };
+        // Install the service on the scheduler so every durable terminal
+        // transition attempts one idempotent notice for subscribed jobs.
+        if let Some(submission) = submission.clone() {
+            submission
+                .scheduler()
+                .set_job_notification_service(job_notification_service.clone())
+                .await;
+        }
+        // M004/C001: daemon-owned CI watch service over the same pool and the
+        // M001 notifier (terminal watches reuse the verified notice/lease
+        // machinery). C001 reuses the daemon singleton when injected; the
+        // fallback constructs a per-turn instance for legacy/test paths. No
+        // pool (headless exec) degrades to in-memory rows for the turn
+        // lifetime; production daemons always have a pool.
+        let ci_watch_service = match shared_ci_watch_service {
+            Some(shared) => shared,
+            None => Arc::new(match pool.clone() {
+                Some(pool) => crate::scheduler::ci_watch::CiWatchService::with_pool(
+                    pool,
+                    job_notification_service.clone(),
+                    crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+                ),
+                None => crate::scheduler::ci_watch::CiWatchService::new(
+                    job_notification_service.clone(),
+                    crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+                ),
+            }),
+        };
         let workspace_locks = workspace_service_lease.as_ref().map(|lease| lease.locks());
 
         // ── Provider resolution ──────────────────────────────────────
-        let mut registry = crate::provider::ProviderRegistry::new();
-        crate::provider::register_builtin_with_config(&mut registry, &config);
-
         let semantic_router = crate::agent::semantic_router::SemanticRouter::from_config(&config)
             .map_err(|error| {
             AppError::Config(crate::error::ConfigError::Invalid(error.to_string()))
@@ -290,6 +354,31 @@ impl TurnRuntime for DefaultTurnRuntime {
             Some((_, model_id)) => model_id.to_string(),
             None => execution_model.clone(),
         };
+
+        // The registry is built under this turn's credential authority, so
+        // registration happens after the provider this turn will actually
+        // call is known: the connection binding pins its own account, and an
+        // unbound turn refuses an ambiguous store instead of guessing.
+        let mut registry = crate::provider::ProviderRegistry::new();
+        crate::provider::register_builtin_with_config_for_turn(
+            &mut registry,
+            &config,
+            &provider_name,
+            credential_locator.as_ref(),
+            None,
+        )
+        .map_err(|error| {
+            tracing::warn!(
+                provider = %provider_name,
+                code = error.code(),
+                "turn credential resolution failed"
+            );
+            AppError::Provider(crate::error::ProviderError::Auth(format!(
+                "{} ({})",
+                error,
+                error.code()
+            )))
+        })?;
 
         let base_provider = registry.get(&provider_name).ok_or_else(|| {
             AppError::Provider(crate::error::ProviderError::NotFound(format!(
@@ -385,6 +474,8 @@ impl TurnRuntime for DefaultTurnRuntime {
                 repository_id,
                 turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
+                job_notification_service: Some(job_notification_service.clone()),
+                ci_watch_service: Some(ci_watch_service.clone()),
                 workspace_locks,
                 lsp_service: lsp_service.clone(),
                 document_service,
@@ -753,6 +844,8 @@ impl TurnRuntime for DefaultTurnRuntime {
             execution,
             workspace_service_lease,
             notification_service: Some(notification_service),
+            job_notification_service: Some(job_notification_service),
+            ci_watch_service: Some(ci_watch_service),
             approval_mode,
             sandbox_profile,
             credential_observer,

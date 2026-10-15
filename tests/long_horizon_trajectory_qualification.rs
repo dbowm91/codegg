@@ -2013,6 +2013,14 @@ async fn legacy_session_without_workplan_uses_legacy_behavior() {
         .execute(&pool)
         .await
         .unwrap();
+    // The rewound version is also before the v75/v76 CI-watch shape. Remove
+    // that post-v58 table so v75 recreates its historical shape before v76
+    // adds the claim columns; leaving the v78 table in place would make this
+    // fixture internally inconsistent and cause duplicate-column failure.
+    sqlx::query("DROP TABLE IF EXISTS ci_watch")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE migration_version SET version = 58 WHERE id = 1")
         .execute(&pool)
         .await

@@ -1,6 +1,6 @@
 # Linux Execution Isolation C005 — M003 Test-Only Bubblewrap First-Hop and Native Feature Proof
 
-Status: **implemented, bounded test-only**; full production adapter remains blocked on ADR-0031 disposition and later enforcement evidence
+Status: **implemented, bounded test-only**; full production adapter remains blocked on ADR-0033 disposition and later enforcement evidence
 Class: infrastructure / feasibility
 Closure target: `plans/closure/linux-execution-isolation/013-status.md`.
 Baseline: after C004 closure @ `5ff248d` (2026-10-14 UTC). Long-term: `plans/000-long-term-specification.md` §§4/17/27/29, `plans/001-terminology-and-domain-model.md` §8, and `plans/003-planning-process.md`. Execution authority: ADR-0001/0004/0016; command classification: currently accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` (canonical ID to be reconciled under C004). Existing Landlock ABI >=3 filesystem-only support must remain intact. This is a handoff plan, not a claim of implementation or test execution.
@@ -41,4 +41,4 @@ Success here is **real evidence for or against feasibility**, plus zero producti
 
 Stop if an unprivileged helper cannot create the required namespace on the documented supported host; if making it work requires setuid/root/host-wide AppArmor relaxation; if setup status can be forged by child; if a target marker appears after failed required setup; or if parent/namespace descendants cannot be cancelled/reaped correctly. Record a minimal negative reproducer and architecture issue, not a permission workaround.
 
-No persisted schema or public DTO changes. ADR-0031 was proposed when this plan was written and was accepted separately on 2026-10-14; C004 identity cleanup is closed. Acceptance does not qualify or register a production backend.
+No persisted schema or public DTO changes. ADR-0033 was proposed when this plan was written and was accepted separately on 2026-10-14; C004 identity cleanup is closed. Acceptance does not qualify or register a production backend.

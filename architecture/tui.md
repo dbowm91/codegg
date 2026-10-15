@@ -635,6 +635,37 @@ thinking renders as ordinary assistant prose with no `Thought for` header and
 no way to collapse it. `apply_core_event`'s `TurnReasoningDelta` arm previously
 did exactly that while the standalone `AppEvent::ReasoningDelta` arm did not.
 
+### A refused submit is not a stall
+
+`TurnFailed` covers a turn the daemon *accepted* and then failed. It does not
+cover a turn the daemon never took. `send_prompt` is optimistic: it stamps
+`Working`, appends the message to the transcript, and clears the composer
+before the daemon has acknowledged anything, so **every** way acceptance can
+fail has to undo that state explicitly. There are three such paths, and all
+three used to be silent:
+
+| Failure | Carrier | Before |
+|---|---|---|
+| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { error }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
+| No core client | `dispatch_turn_submit_request` | bare `return` |
+| No session bound | `dispatch_turn_submit_request` | bare `return` |
+
+The result was identical in all three: the composer kept its message, the
+session stayed pinned on `Working`, and the user saw no output and no error
+until `check_turn_stall` fired five minutes later with a generic "the core
+produced no event" — a diagnosis that named none of the three actual causes.
+
+`App::fail_unstarted_turn` is the single release path: it clears
+`working_since` (so the watchdog stops counting a turn that never started),
+drops `active_turn_id`, sets `SessionStatus::Error`, stops the thinking
+indicator, finalizes streaming, **releases `pending_send` so a retry is
+possible**, clears the prompt waiting flag, and toasts the reason. The
+`TurnSubmissionFinished` arm calls it with the daemon's own message.
+
+The stall watchdog remains the backstop for the case where the daemon accepted
+the turn and then went quiet — a different failure, and still measured by
+silence.
+
 ### Turn-stall watchdog vs. long tool calls
 
 `check_turn_stall` measures *silence*, and `bash` is silent by construction —
@@ -726,9 +757,15 @@ through the TUI `CoreClient`.
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
   `/terminal-remove [handle]`, `/terminal-clear [handle]`.
 - **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
-  to the process), `Esc` unfocuses, `Esc` again closes with detach.
-  The raw `Esc` byte is never forwarded and a prompt is never submitted
-  from terminal focus (`classify_key`).
+  to the process). Leaving focus is `Esc Esc` or `Ctrl-]`; in viewing mode a
+  single `Esc` closes with detach.
+  A lone `Esc` **is** forwarded to the PTY (full-screen programs own it), and a
+  prompt is never submitted from terminal focus (`classify_key_stateful`, via
+  `InteractiveTerminalController::classify_focused`). `Esc Esc` exists because
+  `Ctrl-]` alone is untypeable on a US Mac keyboard, which left macOS users
+  with no reachable exit and a TUI that looked frozen; the pair is cleared by
+  any intervening key and by every focus transition, so only a *consecutive*
+  pair escapes.
 - **Bounds**: 64 KiB scrollback window per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
@@ -778,18 +815,30 @@ load-bearing, and all three are rules rather than drawing details:
 
 **Selection and navigation are claimed by the panel before the global map.**
 `classify_nav_key` answers `j/k/h/l` and arrows, `Ctrl+u`/`Ctrl+d`, `e`/`b`,
-`v`, `x`, `d`, `space+y`, and `C`. `d` and `C` are deliberately in that table
+`v`, `x`, `d`, `space+y`, `C`, and `D`. `d` and `C` are deliberately in that table
 rather than left to the global bindings: a focused panel is consulted *before*
 Normal-mode actions, so an unclaimed `d` would fall through to `OpenDiff`. `d`
 is the **delete operator** and `C` took over the clear it used to be, because a
 key that means "clear the whole view" and a key that means "remove what I
 selected" cannot be the same key. A bare `d` with nothing selected is a no-op
 that is still *consumed*, for exactly the precedence reason above. `C` is bound
-with and without `SHIFT` because terminals disagree on the encoding. Paging
+with and without `SHIFT` because terminals disagree on the encoding, and `D`
+follows the same four-spelling rule for the same reason. Paging
 matches the global orientation — `Ctrl+u` toward older output, `Ctrl+d` toward
 newer. `space+y` is state, not a chord: legacy xterm encoding delivers `Space`
 and `y` as separate events, so `prefix_pending` remembers the first key and any
 second key other than `y` disarms it and is then handled normally.
+
+**The box header is compact by default; `D` is the diagnostics dump.**
+`header_lines` leads with one line — command, link state, and whether the
+terminal is taking keys — because the dump it used to print unconditionally
+(handle, workspace, attachment id, size, sequence cursors) is six lines of
+exactly what a bug report needs and almost nothing a reader who just asked for
+a shell needs, and on a short dialog it pushed the terminal rows off the end.
+`full_header_lines` keeps every field and `D` folds it in or out per view.
+Anything that changes what the visible rows *mean* — a resync, a degraded VT
+screen, an exit — stays on screen in both forms; hiding "exited, input is
+rejected" behind a toggle is exactly how a dead terminal reads as a live one.
 
 **`d` deletes locally, and the overlay is keyed on text.** `vt100::Screen` is
 read-only — there is no API to remove a row — so deletion means the selected
@@ -1254,6 +1303,19 @@ Terminal panel is granted `&mut InteractiveTerminalController` — the *same*
 object the `/terminal` box drives, because two VT parsers for one PTY would
 disagree about what is on screen. That grant carries presentation state only:
 no client, no locator, no authority to choose a project or a terminal.
+
+**A focused PTY claims the host's exit keys.** `owns_exit_key` takes `ctx`
+because the claim depends on state the panel does not own. The Terminal panel
+returns true for `Esc`/`q` **only while its view is focused**, so those keys
+route into `handle_key` instead of `SidePanelHost::blur`. Declining them split
+the two focus flags: the host dropped panel focus while
+`TerminalFocus::Focused` stayed set on the view, so `q` looked like it left and
+the PTY still held the keyboard — and because `panel_active` requires
+`is_focused()`, the panel then saw no keys at all while still reporting INS.
+That is the reported "no key combo lets me leave": the keyboard was already
+gone before `Esc Esc` could ever be pressed. `handle_key` owns the exit and ends
+in `TuiMsg::TerminalPanelBlur`, the one call that clears the view's focus. In
+Normal mode the panel declines, so `Esc`/`q` remain cheap focus exits.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:
@@ -3393,3 +3455,37 @@ to `unavailable` (then a bounded `Error`), never an oversize payload. The
 enforcer binary-searches the longest fitting prefix in `O(log n)` full
 serializations, never `O(n)` pops. ADR-0022 Option B is unchanged; its
 acceptance-date provenance is marked unverified (see its C006 note).
+
+### The connection dialog's model pane is per-connection
+
+`/connections` fetches a catalog for exactly one connection at a time, so
+which connection the pane belongs to is part of the contract, not a detail.
+
+`start_selection_refresh` resolved the focus only from an existing
+`SessionSelectionDto::Selected`. A session with nothing bound therefore
+rendered an empty model pane — and because the pane is the only way to bind
+one, that is a closed loop: no models to pick, so nothing to bind, so still
+no models. Focus now falls back to an `active` connection, then to the first
+row, and `SessionSelectionRefresh { focus_connection_id }` carries the
+user's highlight across the fetch.
+
+The highlight arm matters for correctness, not just freshness. `Up`/`Down`
+emit `TuiMsg::ConnectionFocusChanged`, which re-drives the refresh for the
+newly highlighted row; without it the dialog kept the previous connection's
+models on screen while `pending_update` paired them with the newly
+highlighted connection, so Enter would have bound one connection's model to
+another connection.
+
+**The pane's `catalog_revision` must be the daemon's, never a local
+placeholder.** `fetch_models` used to discard the `catalog_revision` the daemon
+returned and mint a literal `"0"` for every row. `pending_update` forwards that
+value verbatim as `expected_catalog_revision`, and `update_selection` compares
+it against `catalog_revision_for(current revision)`, so the bind failed with
+`selection_catalog_stale` every single time — the dialog could list a
+connection's models and still never bind one. The value was manufactured
+locally rather than observed as stale, so no refresh (`r`) and no daemon
+restart could change the outcome. Guarded by
+`fetched_models_carry_the_daemons_catalog_revision`.
+
+Model navigation is `Tab`/`BackTab` (`move_model`), while `Up`/`Down` move the
+connection highlight.

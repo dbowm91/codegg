@@ -118,6 +118,30 @@ pub struct CoreDaemon {
     /// Handle for the background projection replay maintenance task.
     /// `None` when no pool is available. Held to keep the task alive.
     pub(crate) _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
+    /// C001 daemon-owned idle CI-watch coordinator (earliest-due wake loop).
+    /// `None` when idle watch support is unavailable (pool-less) or when
+    /// constructed without a Tokio runtime (e.g. bare struct tests). Exactly
+    /// one loop per daemon when present; held to keep the task alive.
+    pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
+    pub(crate) _ci_watch_driver_handle: Option<tokio::task::JoinHandle<()>>,
+    /// C004 daemon-owned idle-continuation grant/intent store. `None` in
+    /// legacy/test daemons that never asked for the shared handle.
+    /// C005 (ADR-0031, accepted): the store now feeds the authenticated
+    /// delegated wake below; grants without stored origin attribution stay
+    /// non-autonomous.
+    pub continuation_service: Option<Arc<crate::scheduler::idle_continuation::ContinuationService>>,
+    /// C004 daemon-owned completion fanout task. Forwards durable terminal
+    /// notices (machine jobs and CI watches) to the live `EventLog` +
+    /// `NotificationRouter` hint path. Held to keep the task alive; `None`
+    /// when no channel was installed (pool-less or pre-C004 paths).
+    pub(crate) _idle_completion_handle: Option<tokio::task::JoinHandle<()>>,
+    /// C005 (ADR-0031) delegated-wake cell. The static fanout task cannot
+    /// hold the daemon (it spawns during construction, before any `Arc`
+    /// exists), so post-`Arc` sites publish a [`std::sync::Weak`] here via
+    /// [`Self::attach_idle_wake`]. Unset (pool-less, bare-struct tests,
+    /// unattached daemons) means notify-only: hints still publish, wakes
+    /// never evaluate. Fail-closed by construction.
+    pub(crate) idle_wake_cell: Arc<std::sync::OnceLock<std::sync::Weak<CoreDaemon>>>,
     /// Total events the event bridge was forced to drop because the
     /// broadcast receiver lagged behind publishers. Exposed for metrics
     /// and the request to manually resync after a sustained spike.
@@ -450,6 +474,123 @@ impl CoreDaemon {
         tokio::spawn(async move {
             documents.detach_client(&client_id).await;
         });
+    }
+
+    /// Publish one idle-completion hint for a durable terminal notice:
+    /// one persisted session-scoped `CoreEvent::BackgroundJobCompleted`
+    /// plus one ephemeral dedupe-keyed router toast.
+    ///
+    /// Shared by the live forwarder below and by startup hint
+    /// reconciliation (`reconcile_idle_completion_hints`). The durable
+    /// notice row is the authority; this transport is a hint.
+    /// Duplicates never arrive here from one daemon (`record_notice`
+    /// sends only on first-write); cross-daemon duplicates are absorbed
+    /// by the persisted-completion check in the forwarder and by the
+    /// router's `dedupe_key`. A closed receiver or a failed publish never
+    /// fails the terminal path. Never spends model tokens and never starts
+    /// a turn: autonomous provider resume stays blocked (fail-closed,
+    /// ADR-0031 governs the future delegated entry).
+    pub(crate) async fn publish_idle_completion_hint(
+        event_log: &Arc<super::event_log::EventLog>,
+        router: &Arc<super::notification::NotificationRouter>,
+        notice: &crate::scheduler::job_notifications::JobTerminalNotice,
+    ) {
+        use crate::protocol::core::CoreEvent;
+        let session_id = notice.session_id.clone();
+        if session_id.is_empty() {
+            return;
+        }
+        let payload = CoreEvent::BackgroundJobCompleted {
+            session_id: session_id.clone(),
+            notice_id: notice.notice_id.clone(),
+            job_id: notice.job_id.clone(),
+            kind: notice.kind.clone(),
+            status: notice.status.clone(),
+            summary: notice.summary.clone(),
+        };
+        event_log
+            .publish(Some(session_id.clone()), None, payload)
+            .await;
+        let priority = match notice.status.as_str() {
+            "completed" => super::notification::NotificationPriority::Normal,
+            _ => super::notification::NotificationPriority::High,
+        };
+        router
+            .emit(super::notification::NotificationEvent {
+                id: format!("bg-{}", notice.notice_id),
+                session_id: Some(session_id),
+                turn_id: notice.turn_id.clone(),
+                kind: super::notification::NotificationKind::BackgroundJobCompleted,
+                priority,
+                message: format!(
+                    "Background {} {}: {}",
+                    notice.kind, notice.status, notice.summary
+                ),
+                dedupe_key: Some(notice.notice_id.clone()),
+                created_at: chrono::Utc::now(),
+            })
+            .await;
+    }
+
+    /// Live forwarder: one task per daemon lifetime draining the
+    /// post-commit completion channel (see `daemon_construct.rs`).
+    ///
+    /// Cross-instance/restart dedupe: before publishing, check the
+    /// persisted log for an existing hint with the same notice id. A
+    /// second daemon over the same pool (stale `flock`, divergent
+    /// `CODEGG_DAEMON_HOME`, pool-less construction) may forward the
+    /// same terminal; the check absorbs the common case and the
+    /// identical-id duplicate is benign in the residual race.
+    ///
+    /// C005 (ADR-0031): after the hint publishes, evaluate one delegated
+    /// wake per notice through the attached daemon, if any. The wake runs
+    /// detached (spawned) so a long-running delegated turn never stalls
+    /// hint delivery; exactly-once across concurrent wakes rests on the
+    /// durable intent CAS, not on this task. Unattached (pool-less, bare
+    /// tests) means notify-only.
+    pub(crate) async fn forward_idle_completions(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<
+            crate::scheduler::job_notifications::JobTerminalNotice,
+        >,
+        event_log: Arc<super::event_log::EventLog>,
+        router: Arc<super::notification::NotificationRouter>,
+        wake_cell: Arc<std::sync::OnceLock<std::sync::Weak<CoreDaemon>>>,
+    ) {
+        while let Some(notice) = rx.recv().await {
+            if notice.session_id.is_empty() {
+                continue;
+            }
+            if event_log
+                .has_persisted_background_completion(&notice.notice_id)
+                .await
+            {
+                tracing::debug!(
+                    notice_id = %notice.notice_id,
+                    "skipping duplicate idle completion hint (already persisted)"
+                );
+                continue;
+            }
+            Self::publish_idle_completion_hint(&event_log, &router, &notice).await;
+            if let Some(daemon) = wake_cell.get().and_then(|weak| weak.upgrade()) {
+                let wake_notice = notice.clone();
+                tokio::spawn(async move {
+                    daemon.maybe_dispatch_idle_continuation(&wake_notice).await;
+                });
+            }
+        }
+    }
+
+    /// C005 (ADR-0031): publish the daemon for delegated idle wakes.
+    ///
+    /// Call exactly once at each site that wraps the constructed daemon
+    /// in an `Arc` (production mains, the in-process core client, tests
+    /// that drive the wake). Idempotent: the first publication wins and
+    /// later calls are ignored. Never call with a short-lived `Arc` the
+    /// fanout could outlive as the *only* owner — the `Weak` must not
+    /// keep a dead daemon's wake evaluating against recycled state; in
+    /// practice the daemon `Arc` always outlives its fanout task.
+    pub fn attach_idle_wake(self: &Arc<Self>) {
+        let _ = self.idle_wake_cell.set(Arc::downgrade(self));
     }
 
     /// Interactive Process Sessions M002: transport-derived authority for
@@ -2963,6 +3104,12 @@ impl CoreDaemon {
             }
             CoreRequest::JobSubmit { spec } => spec.session_id.as_deref(),
             CoreRequest::ScheduleCreate { spec } => spec.session_id.as_deref(),
+            // C005 (ADR-0031): grant requests carry the owning
+            // session locator; the project resolves through the
+            // session row server-side, exactly like `TurnSubmit`.
+            CoreRequest::ContinuationGrantCreate { session_id, .. }
+            | CoreRequest::ContinuationGrantRevoke { session_id, .. }
+            | CoreRequest::ContinuationGrantStatus { session_id, .. } => Some(session_id),
             CoreRequest::RunRerun {
                 session_id: Some(session_id),
                 ..
@@ -3215,6 +3362,11 @@ impl CoreDaemon {
             | CoreRequest::ChatActionSubmit { .. }
             | CoreRequest::HumanShellRunCreate { .. }
             | CoreRequest::AuditQuery { .. }
+            // C005 (ADR-0031): the grant id is minted in the handler,
+            // so creation skips the pre-side-effect emit and is
+            // recorded post-creation with its durable id (same pattern
+            // as `JobSubmit`). Revocation keeps the generic pre-emit.
+            | CoreRequest::ContinuationGrantCreate { .. }
             | CoreRequest::AuditExport { .. } => return,
             // Work Orders M001: creation and mutation operations mint or
             // change durable identity in the handler, so they skip the
@@ -3337,6 +3489,17 @@ impl CoreDaemon {
                     | CoreRequest::ToolProgramRecoveryDebugInspect { session_id, .. } => {
                         (session_id.clone(), request_id.to_owned())
                     }
+                    // C005 (ADR-0031): grant delegation records the
+                    // owning session as parent and the durable grant id
+                    // as child. Creation never reaches this pre-emit
+                    // (it mints the id in-handler); revocation does.
+                    CoreRequest::ContinuationGrantCreate { session_id, .. } => {
+                        (session_id.clone(), request_id.to_owned())
+                    }
+                    CoreRequest::ContinuationGrantRevoke {
+                        session_id,
+                        grant_id,
+                    } => (session_id.clone(), grant_id.clone()),
                     _ => (
                         chain
                             .session_id
@@ -4185,6 +4348,33 @@ pub(crate) fn connection_detail_dto(
     }
 }
 
+/// Concrete, user-readable blocker text for a blocked delete/purge.
+///
+/// `Debug` on the blocker enums reads as `ActiveRuntime { reference_id: "…" }`,
+/// which tells an operator nothing about what to go and detach. The ids and
+/// counts are the actionable part, so they lead.
+pub(crate) fn purge_blocker_summary(
+    blockers: &[codegg_core::provider_connections::PurgeBlocker],
+) -> String {
+    let mut parts = Vec::with_capacity(blockers.len());
+    for blocker in blockers {
+        parts.push(match blocker {
+            codegg_core::provider_connections::PurgeBlocker::SelectedSessions { count } => {
+                format!("{count} selected session(s)")
+            }
+            codegg_core::provider_connections::PurgeBlocker::ProvisioningOperation {
+                operation_id,
+            } => {
+                format!("provisioning operation {operation_id}")
+            }
+            codegg_core::provider_connections::PurgeBlocker::ActiveRuntime { reference_id } => {
+                format!("active runtime {reference_id}")
+            }
+        });
+    }
+    parts.join(", ")
+}
+
 pub(crate) fn purge_blocker_dto(
     blocker: codegg_core::provider_connections::PurgeBlocker,
 ) -> crate::protocol::provider::PurgeBlocker {
@@ -4201,6 +4391,12 @@ pub(crate) fn purge_blocker_dto(
     }
 }
 
+/// Uniform state-only lifecycle verbs (enable/disable/restore).
+///
+/// Delete and purge are deliberately absent: both physically remove a
+/// connection, so they need the provisioner (credential cleanup) and report
+/// their own blockers. See `CoreRequest::ConnectionDelete` in
+/// `src/core/daemon_providers.rs`.
 pub(crate) async fn connection_lifecycle_response(
     pool: Option<sqlx::SqlitePool>,
     connection_id: String,
@@ -4223,7 +4419,6 @@ pub(crate) async fn connection_lifecycle_response(
     let result = match action {
         "enable" => store.enable(&id, expected_revision).await.map(|_| ()),
         "disable" => store.disable(&id, expected_revision).await.map(|_| ()),
-        "delete" => store.delete(&id, expected_revision).await.map(|_| ()),
         "restore" => store.restore(&id, expected_revision).await.map(|_| ()),
         _ => Err(
             codegg_core::provider_connections::ProviderConnectionError::Invalid(

@@ -738,6 +738,32 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             };
             events.push(ProjectionEvent::JobUpserted { job });
         }
+        CoreEvent::BackgroundJobCompleted {
+            session_id,
+            job_id,
+            kind,
+            status,
+            summary,
+            ..
+        } => {
+            // Idle-delivery completion (C004 fanout, ADR-0031): adapt to
+            // the existing session job list, mirroring the `JobFailed`
+            // shape above. `workspace_id` stays empty: the envelope
+            // carries no workspace and adapters must not fabricate one.
+            let job = JobProjection {
+                job_id: job_id.clone(),
+                workspace_id: String::new(),
+                kind: truncate_str(kind, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                state: truncate_str(status, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                summary: truncate_str(summary, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned(),
+                session_id: Some(session_id.clone()),
+                turn_id: None,
+                active_attempt_id: None,
+                error_class: None,
+                updated_at: env.timestamp_ms,
+            };
+            events.push(ProjectionEvent::JobUpserted { job });
+        }
         CoreEvent::ToolProgramCompleted {
             program_id,
             job_id,

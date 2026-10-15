@@ -204,7 +204,7 @@ sysctl. Broader Cargo/compiler support, cross-session isolation, PTY service
 routing, and other host configurations remain unqualified. The process tier is
 not production-admitted while those M004 and M003 gates remain open.
 
-ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
+ADR-0033 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
 network behavior are unchanged. The opt-in mount path is implemented but
 remains unqualified until the native protected-mount, descriptor, race,

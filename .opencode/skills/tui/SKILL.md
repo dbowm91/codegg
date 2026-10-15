@@ -127,6 +127,17 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `ui_state.dialog` is a derived compatibility discriminator, while
   `active_dialog_type()` controls modal lifecycle.
 
+## Connection dialog model pane
+
+The model pane is scoped to one connection. `start_selection_refresh` must
+resolve a focus for the fetch — an unbound session falls back to an `active`
+connection, then to the first row — or the pane stays empty and the session
+can never bind itself. `Up`/`Down` emit `TuiMsg::ConnectionFocusChanged`,
+which re-drives `SessionSelectionRefresh { focus_connection_id }`; never let
+the highlight move without refetching, because `pending_update` pairs the
+rendered models with the highlighted connection and would bind the wrong
+model to the wrong connection.
+
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
@@ -442,6 +453,16 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   *different surface* than the usual one (the side panel), carry the route as
   explicit app state — `App::terminal_panel_spawn` — and clear it on **every**
   failure path, or a failed create diverts the next unrelated terminal.
+- **A diagnostic dump is not a header.** `header_lines` leads with one line —
+  command, link state, whether the terminal is taking keys. The full dump
+  (handle, workspace, attachment id, size, cursors) is `D` away via
+  `full_header_lines`, because six lines of bug-report fields pushed the actual
+  terminal rows off a short dialog and left the box reading as a handle list
+  rather than a shell. Anything that changes what the visible rows *mean* — a
+  resync, a degraded VT screen, an exit — stays on screen in **both** forms;
+  hiding "exited, input rejected" behind a toggle is how a dead terminal reads
+  as a live one. Opening the box is an async create-and-attach round trip, so
+  keystrokes before it completes belong to the composer, not the terminal.
 - **Viewport click and viewport drag share one press.** Inside the message
   viewport, `Down` arms a selection, `Drag` extends it, and `Up` decides:
   release on the anchor cell is a *click* and reaches `on_click` (whose
@@ -514,6 +535,18 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   `Thought for` header. Both the daemon (`TurnReasoningDelta`) and standalone
   (`ReasoningDelta`) arms must call `add_reasoning`, or the two transports
   silently disagree.
+- **A refused submit is not a stall — release it immediately.**
+  `send_prompt` is optimistic: it stamps `Working`, appends the message, and
+  clears the composer before the daemon acknowledges anything. So every path
+  where acceptance fails must undo that explicitly, or the user watches an
+  eternal spinner and learns nothing for five minutes. The three carriers are
+  `TuiCommand::TurnSubmissionFinished { error }` (daemon refused it or the
+  socket is dead), and `dispatch_turn_submit_request`'s no-core-client and
+  no-session early returns. Route all of them through
+  `App::fail_unstarted_turn`, which clears `working_since` (so the watchdog
+  stops counting a turn that never started), sets `Error`, stops the thinking
+  indicator, and **releases `pending_send` so a retry is possible**. Never
+  record a submission failure in a log line and return; the log is not the UI.
 - **The stall watchdog measures silence, and long tools are silent.**
   `bash` delivers its output only on completion, so a multi-minute build emits
   no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared
@@ -634,10 +667,21 @@ malformed or overlapping ranges. Do not cache snapshot text in the LSP state.
   locally or send frontend cwd/environment. Insert a run into shell history
   only after daemon admission; preserve the captured session/workspace binding
   so late output cannot be promoted into another tab.
-- **Interactive terminal keys** are modal input: focused Esc is forwarded to
-  the PTY, Ctrl-] leaves focus, and viewing-mode Esc detaches/closes. Terminal
+- **Interactive terminal keys** are modal input: a focused lone `Esc` is
+  forwarded to the PTY, `Esc Esc` (or `Ctrl-]`) leaves focus, and viewing-mode
+  Esc detaches/closes. `Esc Esc` is the reachable exit on keyboards without a
+  `]` key, and any intervening key disarms the pair. Terminal
   output is interpreted by bounded VT screen state before Ratatui rendering;
   never write raw child escape sequences to the host terminal.
+- **Focus must never desync between the panel host and the PTY view.**
+  `SidePanelHost::blur` and `TerminalFocus` are separate flags, and
+  `panel_active` requires `is_focused()` — so a focused PTY that declines
+  `owns_exit_key` looks like it left while still reporting INS, and then takes
+  no keys at all. A panel whose view can hold the keyboard claims the host's
+  exit keys (`owns_exit_key` takes `ctx` for exactly this) and ends in the
+  blur that clears its own focus. Terminal output is interpreted by bounded VT
+  screen state before Ratatui rendering; never write raw child escape sequences
+  to the host terminal.
 - **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
   speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
   `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`

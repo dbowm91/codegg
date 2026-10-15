@@ -1350,7 +1350,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    #[ignore = "manual performance qualification; requires CODEGG_OBJECT_VIEW_BENCH_REPOSITORY"]
+    #[ignore = "manual performance qualification; requires a representative Git worktree"]
     fn private_object_view_warm_performance_samples() {
         let repository = std::env::var_os("CODEGG_OBJECT_VIEW_BENCH_REPOSITORY")
             .map(PathBuf::from)
@@ -1368,15 +1368,33 @@ mod tests {
         );
         for sample in 1..=samples {
             let started = Instant::now();
+            let view = prepare_private_object_view(&argv, &repository)
+                .expect("prepare trusted private object view");
+            let preparation = started.elapsed();
+            drop(view);
+
+            let started = Instant::now();
             let output = GitEnvPolicy::default()
                 .apply_sync(&argv, &repository)
-                .expect("prepare trusted private object view")
+                .expect("prepare trusted private Git command")
                 .output()
                 .expect("run trusted git status");
             assert!(output.status.success());
+            let protected_status = started.elapsed();
+
+            let started = Instant::now();
+            let baseline = StdCommand::new("git")
+                .args(&argv[1..])
+                .current_dir(&repository)
+                .output()
+                .expect("run paired baseline git status");
+            assert!(baseline.status.success());
+            let baseline_status = started.elapsed();
             eprintln!(
-                "sample {sample}: {:.3} ms",
-                started.elapsed().as_secs_f64() * 1000.0
+                "sample {sample}: preparation_ms={:.3} protected_status_ms={:.3} baseline_status_ms={:.3}",
+                preparation.as_secs_f64() * 1000.0,
+                protected_status.as_secs_f64() * 1000.0,
+                baseline_status.as_secs_f64() * 1000.0,
             );
         }
     }

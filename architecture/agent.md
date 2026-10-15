@@ -718,6 +718,52 @@ Uses `BTreeMap` for deterministic iteration order.
 | `EMERGENCY_DEFAULT_MODEL` | Hardcoded fallback when no model configured |
 | `CODEGG_ROUTING_DISABLE=1` | Kill switch for command routing |
 
+## Background job continuation (M003)
+
+`src/agent/job_notification_recovery.rs` drives M001 generic job notices at
+safe turn boundaries through `follow_up.rs::inject_pending_notifications`
+(exact owning session only; no cross-turn injection; no stale sender for
+ended turns; no synthesized user utterance; completed turns are never
+reopened). Three dispositions: `notify_only` (default — durable attention
+event, next turn may inspect/consume, zero model tokens spent by delivery),
+`resume_owner` (explicit opt-in via `on_complete` — one single-use lease per
+logical terminal, consumed exactly once under duplicate terminals and
+concurrent frontends, within TTL and wake budget), `suppress`
+(cancelled/archived — audit/inspect only). The lease binds immutable
+session/turn/principal/workspace ancestry plus the authorized mode; user
+cancel, expiry, revocation, or owner mismatch suppresses it before any
+invocation. No recursive `AgentLoop::run()` from scheduler callbacks and no
+competing inference queue: M003 consumption only authorizes one bounded
+continuation at the next user-authorized turn; without C002 it never
+auto-spends inference on an idle turn. Delivery states
+`Pending → SessionEventCommitted → AvailableToOwner/ResumeQueued →
+Consumed/Expired/Suppressed` are queryable via
+`JobNotificationService::delivery_state`. Crash at persist/append/ack/claim
+boundaries reconstructs without duplicate inference (confirm-then-mark,
+mark-then-consume, consume-then-ack are separate durable steps).
+
+C002 adds the opt-in idle leg without changing the marker above: a
+host-trusted `ContinuationGrant` (migration v77) plus an exactly-once
+`idle_continuation` intent (`UNIQUE(notice_id, grant_id)`) authorizes at most
+one bounded owner turn while idle. A model `resume_owner` without a grant
+stays notify-only for idle (legacy leases never auto-resume); the accepted
+turn id + cause persist before dispatch, and ambiguity after provider start
+becomes `needs_attention` (never replayed). Only host-authored compact
+refs enter authorized context; `on_complete` copy in tool descriptions names
+the grant requirement.
+
+C004 (delivery slice) publishes the durable terminal to live frontends
+without waiting for the next turn: the daemon-owned fanout emits one
+persisted, session-scoped `CoreEvent::BackgroundJobCompleted` per logical
+terminal immediately after the notice commits, replayable on reconnect and
+restart with the identical notice id/status. Delivery spends zero model
+tokens. C005 (ADR-0031, accepted) wires the authenticated resume the
+slice left blocked: host-approved grants through daemon request
+authority plus the daemon-internal delegated entry, so a granted terminal
+admits exactly one canonical owner turn while idle; ungranted and legacy
+rows stay notify-only (see `architecture/jobs.md` and
+`architecture/authorization.md`).
+
 ## Invariants & Gotchas
 
 ### Session transcript persistence

@@ -488,7 +488,19 @@ impl super::daemon::CoreDaemon {
             let provider_kind = requested.split('/').next().unwrap_or(requested);
             let mut registry = crate::provider::ProviderRegistry::new();
             let config = super::load_config_or_default();
-            crate::provider::register_builtin_with_config(&mut registry, &config);
+            // Same authority the turn path uses. Without it a provider whose
+            // rotation left an orphan store record resolved to nothing here
+            // and the occurrence was latched to `NeedsAttention` /
+            // `ModelUnavailable` for a provider the daemon could actually
+            // serve — a scheduled job blocked by a bookkeeping artefact.
+            let locators =
+                crate::core::session_selection::user_connection_credential_locators().await;
+            crate::provider::register_builtin_with_config_connections(
+                &mut registry,
+                &config,
+                &locators,
+                None,
+            );
             if registry.get(provider_kind).is_none() {
                 let attention = self
                     .work_orders

@@ -494,6 +494,21 @@ impl App {
             } => {
                 self.open_connection_rotation_dialog(connection_id, expected_revision);
             }
+            TuiMsg::ConnectionFocusChanged { connection_id } => {
+                // The model pane is scoped to one connection, so a highlight
+                // move has to refetch that connection's catalog. Dispatching
+                // this as a command (not doing the read inline) keeps the
+                // key handler off the daemon round-trip, which is the same
+                // boundary every other dialog read respects.
+                if let Some(tx) = self.tui_cmd_tx.clone() {
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionRefresh {
+                            focus_connection_id: Some(connection_id),
+                        },
+                    );
+                }
+            }
             TuiMsg::ConnectionLifecycle {
                 action,
                 connection_id,
@@ -506,7 +521,7 @@ impl App {
                     let (title, message) = match action {
                         ConnectionLifecycleAction::Delete => (
                             "Delete Provider Connection",
-                            "Tombstone this connection? It will stop being selectable.",
+                            "Delete this connection and its history? A row still in use is kept.",
                         ),
                         ConnectionLifecycleAction::Purge => (
                             "Purge Provider Connection",

@@ -29,13 +29,17 @@
 //! by the queue or admission controller in isolation.
 
 pub mod admission;
+pub mod ci_watch;
+pub mod ci_watch_idle;
 pub mod config;
 pub mod eggwork;
 pub mod events;
 pub mod executor;
 pub mod executors;
 pub mod fair_queue;
+pub mod idle_continuation;
 pub mod job_complete_audit;
+pub mod job_notifications;
 pub mod permit;
 #[allow(clippy::module_inception)]
 pub mod scheduler;

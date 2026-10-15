@@ -5,7 +5,7 @@
 //! A peer of the terminal *box*, built on the same
 //! [`InteractiveTerminalController`] rather than a second implementation.
 //! Both surfaces read the same views, forward through the same
-//! [`classify_key`] gate, and send through the same
+//! focus gate, and send through the same
 //! [`send_terminal_input`](crate::tui::commands::interactive_terminal::send_terminal_input)
 //! command seam, so a key cannot mean one thing in the box and another in the
 //! panel.
@@ -33,7 +33,7 @@
 //!   `d` is a no-op rather than a fallback. `C` rather than `d` for clear is
 //!   what frees `d` to mean delete.
 //! * **INS** — the PTY owns the keyboard. Every key is mapped by
-//!   [`map_key`] and gated by [`classify_key`]; `Ctrl-]` leaves.
+//!   [`map_key`] and gated by `classify_focused`; `Esc Esc` leaves.
 //!
 //! Focus lives on the *controller's* view rather than on the panel, so the
 //! box and the panel cannot disagree about whether the PTY is live.
@@ -61,7 +61,7 @@ use ratatui::{
 use crate::tui::app::TuiMsg;
 use crate::tui::commands::interactive_terminal::{apply_nav, map_key, NavOutcome};
 use crate::tui::input::InputAction;
-use crate::tui::interactive_terminal::{classify_key, TerminalKeyAction};
+use crate::tui::interactive_terminal::TerminalKeyAction;
 use crate::tui::theme::Theme;
 
 use super::{PanelCtx, PanelHints, PanelKey, SidePanel, SidePanelId};
@@ -321,8 +321,10 @@ impl SidePanel for TerminalPanel {
         };
 
         // INS. Every key is classified by the same gate the box uses, so
-        // the two cannot disagree about what is a control sequence.
-        match classify_key(true, map_key(key)) {
+        // the two cannot disagree about what is a control sequence — including
+        // the `Esc Esc` arming, which lives on the view this panel reads
+        // through `ctx` rather than in a private copy.
+        match ctx.terminal.classify_focused(&handle, map_key(key)) {
             TerminalKeyAction::EscapeFocus => {
                 PanelKey::Intent(TuiMsg::TerminalPanelBlur { handle })
             }
@@ -331,6 +333,28 @@ impl SidePanel for TerminalPanel {
             }
             TerminalKeyAction::Ignored => PanelKey::Consumed,
         }
+    }
+
+    /// Claim `Esc`/`q` while the PTY is focused (INS).
+    ///
+    /// The host drops panel focus on either key *without consulting the
+    /// controller*, so a focused terminal that declined them left the two focus
+    /// flags disagreeing: the panel was no longer focused, but the view still
+    /// read `TerminalFocus::Focused`. That is the reported "no key combo lets
+    /// you leave" — `q` did drop panel focus while the PTY kept the keyboard,
+    /// and refocusing the panel put the user straight back into INS with no
+    /// route out. Claiming the key routes it through [`Self::handle_key`],
+    /// which owns the `Esc Esc` rule and ends in
+    /// `TuiMsg::TerminalPanelBlur` — the one call that clears the view's focus.
+    ///
+    /// Only in INS: while viewing there is no PTY keyboard to protect, so the
+    /// host's exit is the correct answer and keeps `q`/`Esc` cheap.
+    fn owns_exit_key(&self, key: KeyEvent, ctx: &PanelCtx<'_>) -> bool {
+        matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+            && self
+                .handle
+                .as_deref()
+                .is_some_and(|handle| ctx.terminal.is_focused(handle))
     }
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
@@ -346,7 +370,7 @@ impl SidePanel for TerminalPanel {
             "TERM · i start a shell · v chars · x lines · d delete · space+y copy · C clear"
                 .to_string()
         } else {
-            "TERM · i type · ^-] stop · v chars · x lines · d delete · space+y copy · C clear"
+            "TERM · i type · Esc Esc stop · v chars · x lines · d delete · space+y copy · C clear"
                 .to_string()
         })
     }

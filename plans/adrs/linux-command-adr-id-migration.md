@@ -2,11 +2,16 @@
 
 Date: 2026-10-14
 
-The C004 identity-only migration maps the proposed Linux execution-isolation ADR
+The C004 identity-only migration mapped the proposed Linux execution-isolation ADR
 from ADR-0027 to ADR-0031 and the already-accepted command-syntax authority from
 ADR-0028 to ADR-0032. IDs 0029/0030 are reserved by the concurrent Windows ADR
 identity migration. No decision status, authorization, design choice, or
 security boundary changed.
+
+Current-main reconciliation on 2026-10-15 revealed that main had independently
+accepted ADR-0031 for authenticated idle continuation. The Linux decision retains
+its accepted status and substance under ADR-0033; idle continuation retains
+ADR-0031 and command syntax retains ADR-0032. This is an identity correction only.
 
 Exact pre-migration records and their source Git blob IDs and SHA-256 digests
 are preserved in `plans/archive/linux-command-adr-id-aliases/`. The machine-

@@ -16,7 +16,7 @@ Reviewed-baseline implementation commits: none. Production M003 backend work was
 
 ## 1. Executive finding
 
-C006 remains blocked. At this record's reviewed baseline, ADR-0031 was proposed and the C004 identity cleanup had not accepted it. The C005 Bubblewrap evidence proves a bounded test-only namespace first hop; its closure explicitly does not qualify protected Git/credential mounts, production status ownership, or toolchain/PTY compatibility. M002 is conditionally closed for its typed interface/probe only and selects no new backend. The protected mount graph and Git metadata integration were not implemented or tested.
+C006 remains blocked. At this record's reviewed baseline, Linux ADR-0031 was proposed and the C004 identity cleanup had not accepted it. The C005 Bubblewrap evidence proves a bounded test-only namespace first hop; its closure explicitly does not qualify protected Git/credential mounts, production status ownership, or toolchain/PTY compatibility. M002 is conditionally closed for its typed interface/probe only and selects no new backend. The protected mount graph and Git metadata integration were not implemented or tested.
 
 The separate maintainer decision was pending at the reviewed baseline; see the dated status update below.
 
@@ -24,8 +24,8 @@ The separate maintainer decision was pending at the reviewed baseline; see the d
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 is uniquely identified; its proposed/accepted state did not change. |
-| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0031-composable-linux-execution-isolation.md` | pass (2026-10-14) | ADR-0031 is accepted. This clears the architecture decision gate only; it does not prove or enable a production backend. |
+| C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 was uniquely identified at the reviewed baseline; its proposed status did not change during C004. |
+| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0033-composable-linux-execution-isolation.md` | pass (2026-10-14; canonical ID later reconciled) | The Linux ADR was accepted as ADR-0031. This cleared the architecture decision gate only; it did not prove or enable a production backend. |
 | C005 strict-positive native production launcher qualification | `plans/closure/linux-execution-isolation/013-status.md` | partial / blocked | Real test-only namespaces and setup-failure behavior passed, but protected overlays, production adapter integration, toolchain, Git workspace, and PTY compatibility were not qualified. |
 | M002 typed launch contract | `plans/closure/linux-execution-isolation/002-status.md` | partial | Interface/probe slice is conditionally closed; no mount backend is selected and enhanced dimensions remain unavailable. |
 | Protected workspace/Git metadata implementation | no implementation | blocked | No mount manifest, protected nested overlays, worktree alias handling, metadata lease, or trusted integration exists. |
@@ -53,15 +53,20 @@ No C006 production code or test fixture was added. No C006-specific test command
 
 ## 6. Roadmap and registry disposition
 
-C006 remains in the blocked dependency register. ADR-0031 acceptance cleared the architecture decision gate on 2026-10-14; qualifying production mount evidence, protected Git metadata handling, and compatibility evidence remain outstanding. No plan became ready from the ADR decision alone. This is a blocked status record, not a successful milestone closure.
+C006 remains in the blocked dependency register. Linux ADR-0031 acceptance cleared the architecture decision gate on 2026-10-14; qualifying production mount evidence, protected Git metadata handling, and compatibility evidence remain outstanding. No plan became ready from the ADR decision alone. This is a blocked status record, not a successful milestone closure.
 
 ## 7. Status update — 2026-10-14
 
-The maintainer accepted ADR-0031. This supersedes only the pending-decision statements above; the reviewed-baseline findings and implementation evidence remain unchanged. At that point C006 remained blocked until the protected mount graph, production launch integration, Git metadata lease, strict-positive real-child denial matrix, and required compatibility evidence were implemented and verified. Acceptance did not select, register, or enable the Bubblewrap backend or change defaults.
+The maintainer accepted Linux ADR-0031. This supersedes only the pending-decision statements above; the reviewed-baseline findings and implementation evidence remain unchanged. At that point C006 remained blocked until the protected mount graph, production launch integration, Git metadata lease, strict-positive real-child denial matrix, and required compatibility evidence were implemented and verified. Acceptance did not select, register, or enable the Bubblewrap backend or change defaults.
 
 ## 8. Implementation-start update — 2026-10-14
 
-C006 moved to active implementation after ADR-0031 acceptance. The first source change rejects fixed-path Bubblewrap candidates with setuid or setgid mode bits. This narrows trusted-helper eligibility only; no mount backend was registered, no constrained launch routing changed, and no C006 enforcement or native denial evidence is claimed.
+C006 moved to active implementation after Linux ADR-0031 acceptance. The first source change rejects fixed-path Bubblewrap candidates with setuid or setgid mode bits. This narrows trusted-helper eligibility only; no mount backend was registered, no constrained launch routing changed, and no C006 enforcement or native denial evidence is claimed.
+
+Current identity note (2026-10-15): current main uses ADR-0031 for accepted
+authenticated idle continuation. The Linux decision referenced above is now
+canonical ADR-0033 with unchanged substance and accepted status. This note
+reconciles identity only; the findings and verdict remain unchanged.
 
 ## 9. Implementation and hosted native qualification update — 2026-10-14
 

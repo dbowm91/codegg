@@ -285,8 +285,12 @@ pub enum AuditError {
     MetadataTooLarge(String),
     #[error("audit body too large: {0} bytes (max {1})")]
     BodyTooLarge(usize, usize),
-    #[error("audit metadata carries secret-bearing material (key or value rejected)")]
-    SecretDetected,
+    /// Names the rejected *field*, never the rejected value: the whole
+    /// point of the guard is that the offending bytes never reach a log.
+    /// Metadata keys are structural identifiers, so naming one leaks
+    /// nothing and turns an undiagnosable append failure into a named cause.
+    #[error("audit field {field:?} carries secret-bearing material (rejected)")]
+    SecretDetected { field: String },
     #[error("audit writer backpressure: {0}")]
     Backpressure(String),
     #[error("audit write timed out after {0}ms")]
@@ -306,7 +310,7 @@ impl AuditError {
             Self::InvalidField { .. } => "audit_invalid_field",
             Self::MetadataTooLarge(_) => "audit_metadata_too_large",
             Self::BodyTooLarge(_, _) => "audit_body_too_large",
-            Self::SecretDetected => "audit_secret_detected",
+            Self::SecretDetected { .. } => "audit_secret_detected",
             Self::Backpressure(_) => "audit_backpressure",
             Self::Timeout(_) => "audit_write_timeout",
             Self::Unavailable(_) => "audit_unavailable",
@@ -398,7 +402,9 @@ fn validate_metadata_key(key: &str) -> Result<(), AuditError> {
         });
     }
     if is_secret_key(key) {
-        return Err(AuditError::SecretDetected);
+        return Err(AuditError::SecretDetected {
+            field: key.to_owned(),
+        });
     }
     Ok(())
 }
@@ -420,7 +426,7 @@ fn validate_metadata(map: &BTreeMap<String, String>) -> Result<(), AuditError> {
             )));
         }
         if value_scans_as_secret(value) {
-            return Err(AuditError::SecretDetected);
+            return Err(AuditError::SecretDetected { field: key.clone() });
         }
         total += key.len() + value.len();
     }
@@ -704,7 +710,9 @@ impl AuditEventBuilder {
             if !body.is_empty() {
                 let lossy = String::from_utf8_lossy(body);
                 if value_scans_as_secret(&lossy) {
-                    return Err(AuditError::SecretDetected);
+                    return Err(AuditError::SecretDetected {
+                        field: "body".to_owned(),
+                    });
                 }
             }
         }
@@ -1547,7 +1555,10 @@ mod tests {
             )
             .await
             .expect_err("secret key must be rejected");
-        assert!(matches!(error, AuditError::SecretDetected));
+        assert!(
+            matches!(&error, AuditError::SecretDetected { field } if field == "api_token"),
+            "the rejected field must be named: {error:?}"
+        );
         let error = store
             .append(
                 AuditEventBuilder::new(AuditAction::SessionCreate, &principal, &decision)
@@ -1555,7 +1566,10 @@ mod tests {
             )
             .await
             .expect_err("secret value must be rejected");
-        assert!(matches!(error, AuditError::SecretDetected));
+        assert!(
+            matches!(&error, AuditError::SecretDetected { field } if field == "note"),
+            "the rejected field must be named even when the key is benign: {error:?}"
+        );
         assert_eq!(store.count().await.unwrap(), 0);
     }
 

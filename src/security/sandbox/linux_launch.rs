@@ -509,7 +509,7 @@ pub fn trusted_bubblewrap_path() -> Result<PathBuf, String> {
             if metadata.is_file()
                 && owner == 0
                 && mode & 0o022 == 0
-                // ADR-0031 explicitly rejects setuid helpers; accepting one
+                // ADR-0033 explicitly rejects setuid helpers; accepting one
                 // here could turn a namespace setup path into a privilege
                 // transition even though the executable is root-owned.
                 && mode & 0o6000 == 0

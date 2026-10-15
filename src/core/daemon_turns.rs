@@ -30,7 +30,7 @@ fn turn_admission_receipt_response(
 /// Narrow domain error for daemon-side prompt composition. Protocol
 /// response construction belongs to the `SessionPromptSubmit` boundary.
 #[derive(Debug)]
-struct PromptCompositionError {
+pub(crate) struct PromptCompositionError {
     code: &'static str,
     message: String,
 }
@@ -249,6 +249,65 @@ impl CoreDaemon {
                         }
                     }
                 }
+                // The selected connection's `secret_binding` is this turn's
+                // credential locator: the exact store account the connection
+                // is bound to. A turn bound to a connection must authenticate
+                // with that account, not with whichever record for the same
+                // provider happens to sit first in `credentials.json` — that
+                // file-order pick silently undid every rotation. A session
+                // with no durable selection passes `None`, leaving provider
+                // resolution to the (ambiguity-checked) store fallback.
+                let credential_locator = match (
+                    selected_connection.as_ref(),
+                    self.selection_service.as_ref(),
+                ) {
+                    (Some(selected), Some(selection_service)) => {
+                        match codegg_core::identity::ProviderConnectionId::parse(
+                            selected.id.as_str(),
+                        ) {
+                            Ok(connection_id) => {
+                                match selection_service.connection_store.get(&connection_id).await {
+                                    Ok(Some(connection)) => {
+                                        connection.secret_binding.map(|binding| {
+                                            crate::provider::TurnCredentialLocator {
+                                                provider_ref: binding.provider_ref,
+                                                account_ref: binding.account_ref,
+                                            }
+                                        })
+                                    }
+                                    Ok(None) => None,
+                                    Err(error) => {
+                                        tracing::debug!(
+                                            target: "codegg::core::daemon_turns",
+                                            error = %error,
+                                            connection_id = %connection_id,
+                                            "selected connection binding unreadable; the turn resolves its credential without connection authority"
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            Err(_) => None,
+                        }
+                    }
+                    // No durable model selection. The session was never bound
+                    // to a connection, but the provider may still have exactly
+                    // one `active` connection, and that connection is the
+                    // credential authority for this turn. Without it the turn
+                    // falls through to the ambiguity-checked store fallback,
+                    // where the live record sits beside the orphan its rotation
+                    // replaced and *every* turn for the provider is refused.
+                    (_, Some(selection_service)) => {
+                        let provider_name =
+                            crate::core::session_selection::runtime_model_provider_segment(&model);
+                        crate::core::session_selection::unbound_turn_credential_locator(
+                            selection_service.connection_store.as_ref(),
+                            provider_name,
+                        )
+                        .await
+                    }
+                    _ => None,
+                };
                 // Validate the provider exists before delegating to the turn
                 // runtime. This preserves the existing `provider_not_found`
                 // response shape from the daemon layer. The turn runtime
@@ -256,7 +315,27 @@ impl CoreDaemon {
                 // intentionally duplicated for backward-compatible error handling.
                 let mut registry = crate::provider::ProviderRegistry::new();
                 let config = super::load_config_or_default();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                // This pre-check must resolve providers with the *same*
+                // authority the turn runtime uses. Built without connection
+                // authority it falls through to the credential-store
+                // fallback, which refuses any provider a rotation has left an
+                // orphan record for — so `registry.get` came back empty and
+                // this returned `provider_not_found` for a provider the daemon
+                // was perfectly able to serve, aborting the turn before the
+                // runtime ever ran.
+                let locators = match self.pool.clone() {
+                    Some(pool) => {
+                        crate::core::session_selection::pool_connection_credential_locators(&pool)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let semantic_router =
                     match crate::agent::semantic_router::SemanticRouter::from_config(&config) {
                         Ok(router) => router,
@@ -651,6 +730,11 @@ impl CoreDaemon {
                     approval_mode,
                     sandbox_profile,
                     credential_observer,
+                    // C001 daemon singletons: every turn shares one notifier
+                    // + one watcher; closing a turn leaves watchers live.
+                    shared_job_notification_service: self.deps.job_notification_service.clone(),
+                    shared_ci_watch_service: self.deps.ci_watch_service.clone(),
+                    credential_locator,
                 };
                 let turn_output = match self.deps.turn_runtime.run_turn(turn_input).await {
                     Ok(output) => output,
@@ -943,7 +1027,19 @@ impl CoreDaemon {
                 };
                 let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                // A live connection is the authority for its own provider, so
+                // the picker sees the same provider set a turn would use. Without
+                // it a rotated provider vanishes from `/models` and the TUI
+                // renders a permanently empty list.
+                let locators =
+                    crate::core::session_selection::pool_connection_credential_locators(&pool)
+                        .await;
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let discovery = crate::provider::discovery::ModelDiscoveryService::new(
                     std::path::PathBuf::new(),
                 )
@@ -1438,7 +1534,19 @@ impl CoreDaemon {
             CoreRequest::SnapshotModels => {
                 let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let locators = match self.pool.clone() {
+                    Some(pool) => {
+                        crate::core::session_selection::pool_connection_credential_locators(&pool)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let model_ids: Vec<String> = if let Some(pool) = self.pool.clone() {
                     let discovery = crate::provider::discovery::ModelDiscoveryService::new(
                         std::path::PathBuf::new(),
@@ -1655,7 +1763,7 @@ impl CoreDaemon {
         }
     }
 
-    async fn resolve_prompt_submit_composition(
+    pub(crate) async fn resolve_prompt_submit_composition(
         &self,
         session_id: &str,
         text: &str,

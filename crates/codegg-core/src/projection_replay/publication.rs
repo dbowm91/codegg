@@ -479,6 +479,40 @@ pub fn projection_events_from_core(
             };
             Some((String::new(), None, event))
         }
+        // Idle-delivery completion (C004 fanout, ADR-0031): one
+        // `BackgroundJobCompleted` per logical terminal adapts to the
+        // existing session job list so desktop/remote projection
+        // consumers observe the terminal with no new event type and no
+        // new authority. `workspace_id` stays empty by the same
+        // convention as the arms above: the envelope carries no
+        // workspace and this pure function must not fabricate one
+        // (session binding owns scope). Length bounds are enforced by
+        // `JobProjection::normalise` in the reducer; the summary is
+        // already bounded at the notice commit.
+        CoreEvent::BackgroundJobCompleted {
+            session_id,
+            job_id,
+            kind,
+            status,
+            summary,
+            ..
+        } => {
+            let event = ProjectionEvent::JobUpserted {
+                job: codegg_protocol::projection::dto::JobProjection {
+                    job_id: job_id.clone(),
+                    workspace_id: String::new(),
+                    kind: kind.clone(),
+                    state: status.clone(),
+                    summary: summary.clone(),
+                    session_id: Some(session_id.clone()),
+                    turn_id: None,
+                    active_attempt_id: None,
+                    error_class: None,
+                    updated_at: envelope.timestamp_ms,
+                },
+            };
+            Some((session_id.clone(), None, event))
+        }
         CoreEvent::ToolProgramCompleted {
             program_id,
             job_id,

@@ -301,6 +301,12 @@ pub struct JobScheduler {
     /// terminal attempt transition. `None` in standalone/test mode.
     audit_emitter:
         Arc<AsyncMutex<Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter>>>,
+    /// Async-background-jobs M001: durable generic job terminal notices.
+    /// Installed by the daemon boundary; `None` in standalone/test mode.
+    /// When present, every durable terminal transition attempts one
+    /// idempotent notice for explicitly subscribed background jobs only.
+    job_notifications:
+        Arc<AsyncMutex<Option<std::sync::Arc<super::job_notifications::JobNotificationService>>>>,
 }
 
 impl JobScheduler {
@@ -354,6 +360,7 @@ impl JobScheduler {
             event_tx,
             agent_runs: Arc::new(AsyncMutex::new(None)),
             audit_emitter: Arc::new(AsyncMutex::new(None)),
+            job_notifications: Arc::new(AsyncMutex::new(None)),
         })
     }
 
@@ -373,6 +380,75 @@ impl JobScheduler {
         &self,
     ) -> Option<codegg_core::audit_instrumentation::ExecutionAuditEmitter> {
         self.audit_emitter.lock().await.clone()
+    }
+
+    /// Install the daemon-owned generic job notification service.
+    pub async fn set_job_notification_service(
+        &self,
+        service: std::sync::Arc<super::job_notifications::JobNotificationService>,
+    ) {
+        *self.job_notifications.lock().await = Some(service);
+    }
+
+    /// Synchronous install for daemon construction (which runs before the
+    /// scheduler loop is spawned). A failed `try_lock` is a wiring error.
+    pub fn set_job_notification_service_sync(
+        &self,
+        service: std::sync::Arc<super::job_notifications::JobNotificationService>,
+    ) {
+        match self.job_notifications.try_lock() {
+            Ok(mut slot) => {
+                *slot = Some(service);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "scheduler notification-service install contended during construction; retrying via blocking task"
+                );
+                let slot = self.job_notifications.clone();
+                // Construction may run without a Tokio runtime in bare struct
+                // tests; fall back to a best-effort spawn when possible.
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        *slot.lock().await = Some(service);
+                    });
+                }
+            }
+        }
+    }
+
+    /// Snapshot the installed job notification service, if any.
+    pub async fn job_notification_service_snapshot(
+        &self,
+    ) -> Option<std::sync::Arc<super::job_notifications::JobNotificationService>> {
+        self.job_notifications.lock().await.clone()
+    }
+
+    /// Best-effort durable terminal notice for one terminal job.
+    ///
+    /// Only explicitly subscribed background jobs produce notices; all
+    /// other jobs return silently. Notification failure never fails the
+    /// job itself (no process re-execution because inbox insertion
+    /// failed); it is logged for next-turn recovery via
+    /// `recover_from_store`.
+    async fn notify_job_terminal(
+        &self,
+        terminal_job: &JobRecord,
+        summary: &str,
+        run_id: Option<&str>,
+    ) {
+        let Some(service) = self.job_notifications.lock().await.clone() else {
+            return;
+        };
+        match service.record_terminal(terminal_job, summary, run_id).await {
+            Ok(Some(_)) | Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    job_id = %terminal_job.job_id,
+                    error = %e,
+                    "job terminal notice persistence failed; next-turn recovery will retry"
+                );
+            }
+        }
     }
 
     /// Install the daemon-owned delegated-run store after construction.
@@ -1316,6 +1392,7 @@ impl JobScheduler {
         let running_tasks = self.running_tasks.clone();
         let task_attempt_id = attempt_id.clone();
         let audit_emitter_for_task = self.audit_emitter.lock().await.clone();
+        let job_notifications_for_task = self.job_notifications.lock().await.clone();
         let job_for_task = job.clone();
         let subject_start_for_task = start_provenance.clone();
         let subject_root_for_task = ctx.workspace_root.clone();
@@ -1498,6 +1575,25 @@ impl JobScheduler {
                                 &completion,
                             )
                             .await;
+                        }
+                        // M001: one idempotent terminal notice for explicitly
+                        // subscribed background jobs only. Best-effort: never
+                        // fails the job; recovery covers missed inserts.
+                        if let Some(service) = job_notifications_for_task.as_ref() {
+                            if let Err(e) = service
+                                .record_terminal(
+                                    &terminal_job,
+                                    &completion.summary,
+                                    completion.run_id.as_ref().map(|r| r.as_str()),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    job_id = %terminal_job.job_id,
+                                    error = %e,
+                                    "job terminal notice failed; recovery will retry"
+                                );
+                            }
                         }
                     }
                     Err(error) => {
@@ -1837,6 +1933,7 @@ impl JobScheduler {
             )
             .await;
         }
+        self.notify_job_terminal(&terminal_job, reason, None).await;
         // Publish the terminal outcome to in-process waiters. `wait_for_completion`
         // re-reads the completion cache each time it is woken, and `signal_job`
         // below wakes exactly the waiters on this job, so without this a job that
@@ -1927,6 +2024,11 @@ impl JobScheduler {
                     )
                     .await;
                 }
+            }
+            // M001: queued cancellation before attempt is a final terminal
+            // for subscribed background jobs (cancellation-before-start).
+            if let Ok(Some(terminal_job)) = self.store.get_job(job_id).await {
+                self.notify_job_terminal(&terminal_job, reason, None).await;
             }
         }
         // A queued job reaches its terminal state here without any executor

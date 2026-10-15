@@ -61,6 +61,7 @@ fn should_persist(event: &CoreEvent) -> bool {
             | CoreEvent::AgentRunGroupUpserted { .. }
             | CoreEvent::SessionUpdated { .. }
             | CoreEvent::AssetRefreshCompleted { .. }
+            | CoreEvent::BackgroundJobCompleted { .. }
             | CoreEvent::Error { .. }
     )
 }
@@ -210,6 +211,31 @@ impl EventLog {
     /// Subscribe to live events.
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope<CoreEvent>> {
         self.tx.subscribe()
+    }
+
+    /// Best-effort check: has a `BackgroundJobCompleted` hint for this
+    /// notice already been persisted in `core_event_log`?
+    ///
+    /// Used by the idle-completion forwarder (cross-instance/restart
+    /// dedupe) and by startup hint reconciliation (crash-gap healing).
+    /// Returns `false` for pool-less logs. A `false` result is advisory:
+    /// two daemons may still race to publish; duplicates carry the
+    /// identical notice id/status and consumers dedupe by notice id, so
+    /// the race is benign (see ADR-0031 §Decision.4/5).
+    pub async fn has_persisted_background_completion(&self, notice_id: &str) -> bool {
+        let Some(ref pool) = self.pool else {
+            return false;
+        };
+        sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM core_event_log WHERE event_type = 'background_job_completed' \
+             AND json_extract(payload_json, '$.notice_id') = ? LIMIT 1",
+        )
+        .bind(notice_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
     }
 
     /// Replay events strictly after `from_event_seq` (i.e. with

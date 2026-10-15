@@ -2980,9 +2980,9 @@ impl EventStore {
             return Ok(ConfirmExistingEvent::SemanticMatch);
         }
 
-        // Semantic path for ToolProgramNotification: ignore
-        // created_at differences while requiring all identity and
-        // content fields to match.
+        // Semantic path for ToolProgramNotification and
+        // JobTerminalNotification: ignore created_at differences while
+        // requiring all identity and content fields to match.
         match (
             expected,
             serde_json::from_str::<super::events::SessionEvent>(&stored_payload),
@@ -2990,6 +2990,19 @@ impl EventStore {
             (
                 super::events::SessionEvent::ToolProgramNotification(incoming),
                 Ok(super::events::SessionEvent::ToolProgramNotification(stored)),
+            ) => {
+                if incoming.semantic_equals(&stored) {
+                    Ok(ConfirmExistingEvent::SemanticMatch)
+                } else {
+                    Err(StorageError::Database(format!(
+                        "session event semantic collision: {}",
+                        expected_meta.id
+                    )))
+                }
+            }
+            (
+                super::events::SessionEvent::JobTerminalNotification(incoming),
+                Ok(super::events::SessionEvent::JobTerminalNotification(stored)),
             ) => {
                 if incoming.semantic_equals(&stored) {
                     Ok(ConfirmExistingEvent::SemanticMatch)
@@ -3028,9 +3041,10 @@ impl EventStore {
 ///
 /// Returns `Ok(true)` when the stored payload is semantically identical to
 /// the incoming event ignoring only `meta.created_at` for the event kinds
-/// that stamp it on reconstruction (`ToolProgramNotification` and
-/// `ContextCompacted`). All other field differences fail closed via
-/// `Ok(false)`; a malformed stored payload is a collision error.
+/// that stamp it on reconstruction (`ToolProgramNotification`,
+/// `JobTerminalNotification`, and `ContextCompacted`). All other field
+/// differences fail closed via `Ok(false)`; a malformed stored payload is
+/// a collision error.
 fn events_semantically_equal(
     incoming: &super::events::SessionEvent,
     stored_payload: &str,
@@ -3046,6 +3060,10 @@ fn events_semantically_equal(
         (
             super::events::SessionEvent::ToolProgramNotification(a),
             super::events::SessionEvent::ToolProgramNotification(b),
+        ) => Ok(a.semantic_equals(b)),
+        (
+            super::events::SessionEvent::JobTerminalNotification(a),
+            super::events::SessionEvent::JobTerminalNotification(b),
         ) => Ok(a.semantic_equals(b)),
         (
             super::events::SessionEvent::ContextCompacted(a),

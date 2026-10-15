@@ -9,6 +9,19 @@
 //! the TUI can build on the same `CredentialStore` API for richer
 //! behavior.
 //!
+//! ## No credential tail here, on purpose
+//!
+//! `ProviderConnectionSummaryDto::credential_hint` carries a bounded `…abcd`
+//! tail so two connections sharing a display name can be told apart in the
+//! **interactive** connection picker, where the user is about to rotate or
+//! delete one of them and must be able to say which. That hint is scoped to
+//! that dialog.
+//!
+//! This module deliberately does not participate. `auth status` prints "no
+//! plaintext, no ciphertext, no fingerprint" and keeps doing so: a
+//! non-interactive listing has no ambiguity to resolve, so it discloses
+//! nothing at all.
+//!
 //! ## Identifier validation
 //!
 //! Provider and account ids must be non-empty and contain only

@@ -16,6 +16,7 @@ use codegg::managed_process::{
 use codegg::security::sandbox::{SandboxConfig, SandboxMode};
 
 const OPT_IN: &str = "CODEGG_RUN_M004_BWRAP_NATIVE";
+const RESTRICTED_USERNS_OPT_IN: &str = "CODEGG_RUN_M004_RESTRICTED_USERNS";
 
 #[test]
 fn process_view_compiles_pid_ipc_and_proc_in_safe_mount_order() {
@@ -285,6 +286,72 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
     }
 }
 
+#[tokio::test]
+async fn required_process_tier_fails_closed_when_user_namespaces_are_restricted() {
+    if std::env::var(RESTRICTED_USERNS_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {RESTRICTED_USERNS_OPT_IN}=1 for the restricted-userns host probe");
+        return;
+    }
+
+    let restriction = std::fs::read_to_string("/proc/sys/user/max_user_namespaces")
+        .expect("host must expose the user namespace limit");
+    assert_eq!(
+        restriction.trim(),
+        "0",
+        "host user namespaces were not disabled"
+    );
+    codegg::security::sandbox::landlock::probe_process_scopes()
+        .expect("this probe needs Landlock ABI 6 to reach the namespace setup gate");
+
+    let bwrap = codegg::security::sandbox::linux_launch::trusted_bubblewrap_path()
+        .expect("trusted Bubblewrap binary required for the restricted-host probe");
+    let direct_probe = Command::new(&bwrap)
+        .args(["--unshare-user", "--ro-bind", "/", "/", "--", "/bin/true"])
+        .output()
+        .expect("run a harmless Bubblewrap user-namespace capability probe");
+    assert!(
+        !direct_probe.status.success(),
+        "host unexpectedly allowed user namespaces while max_user_namespaces=0"
+    );
+
+    let workspace = tempfile::tempdir().expect("workspace");
+    let marker = workspace.path().join("target-ran");
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_process_isolation(true)
+        .launch_spec(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("touch {}", shell_quote(&marker.to_string_lossy())),
+            ],
+            Some(workspace.path()),
+        )
+        .expect("M004 launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m004", "restricted-userns-probe"),
+    );
+    request.sandbox = SandboxRequest::Required(spec);
+    let error = ManagedProcessService::run(request)
+        .await
+        .expect_err("required M004 launch must refuse under the restricted host policy");
+    assert!(
+        error.to_string().contains("sandbox") || error.to_string().contains("Bubblewrap"),
+        "unexpected refusal reason: {error}"
+    );
+    assert!(
+        !marker.exists(),
+        "required M004 ran its target after user-namespace setup was denied"
+    );
+    eprintln!("restricted user-namespace launch refused before target exec: {error}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn process_tier_cancellation_kills_namespace_descendants() {
     if std::env::var(OPT_IN).as_deref() != Ok("1") {
@@ -454,6 +521,71 @@ async fn concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces() {
         second_ids[1], host_ipc,
         "second job retained the host IPC namespace"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_tier_runs_a_real_cargo_check_and_core_test_workflow() {
+    if std::env::var("CODEGG_RUN_M004_CARGO_NATIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set CODEGG_RUN_M004_CARGO_NATIVE=1 for Cargo compatibility probes");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("Cargo compatibility probe requires the positive M004 host profile: {reason}");
+    }
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cargo =
+        std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
+            .map(|directory| directory.join("cargo"))
+            .find(|candidate| candidate.is_file())
+            .expect("Cargo is installed by the Rust test toolchain");
+    for (operation, args) in [
+        (
+            "cargo-check",
+            vec!["check", "--locked", "-p", "codegg-core"],
+        ),
+        (
+            "cargo-test",
+            vec!["test", "--locked", "-p", "codegg-core", "--lib"],
+        ),
+    ] {
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec(
+                &cargo,
+                &args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>(),
+                Some(&workspace),
+            )
+            .expect("M004 Cargo launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.clone(),
+            ProcessProvenance::new("linux-m004", operation),
+        );
+        request.environment_policy = request
+            .environment_policy
+            .clone()
+            .with_var("CARGO_BUILD_JOBS", "2");
+        request.timeout = Some(Duration::from_secs(15 * 60));
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .unwrap_or_else(|error| panic!("M004 {operation} failed to launch: {error}"));
+        assert!(
+            result.exit_status.success(),
+            "M004 {operation} failed (status {:?}); stderr: {}",
+            result.exit_status,
+            result.stderr.to_string_lossy()
+        );
+    }
 }
 
 fn shell_quote(value: &str) -> String {

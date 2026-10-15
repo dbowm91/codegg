@@ -303,6 +303,22 @@ Package managers (`npm install`, `pip install`, `cargo install`, etc.) are
 safety boundary: package installs mutate global state and should not be
 auto-routed.
 
+## Background Bash (M002)
+
+`bash.execution_mode=foreground|background` (default foreground) reuses the
+same classify/authorize/plan pipeline. Background submits scheduler-backed
+routes with trusted owner lineage (`SubmissionKey bash-bg:<digest>`, session
++ turn + invocation key) and subscribes via M001 before returning the
+canonical `JobHandle`; it never calls the blocking wait. `RouteToTestRunner`,
+`RouteToManagedProcess` (build/lint/format/managed), `RouteToShell`, and
+`RouteToPythonScripting` may background; raw-shell background adopts the same
+`JobKind::Shell` translation (identical argv/platform launcher, no detached
+PID). `RouteToNativeTool`, `RouteToGit`, and `Rejected` fail closed in
+background without spawning — no fallback, no reparse, no sandbox downgrade.
+`test` direct and `bash`-translated tests share `JobKind::Test` without double
+notification (one scheduler terminal → one M001 notice). Reuse the M001
+`job` tool for status/wait/cancel/output.
+
 ## Invariants & Gotchas
 
 - The typed parser (`codegg_git::parse_git_argv`) is the authoritative

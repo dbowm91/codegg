@@ -102,6 +102,28 @@ pub struct CoreRuntimeDeps {
     /// Daemon-owned create/enqueue facade. Production tools use this
     /// instead of writing to `JobStore` and dispatching separately.
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    /// C001 daemon-scoped singleton job-terminal notifier. Created once per
+    /// daemon lifetime and injected into turn runtime + watch service; per-turn
+    /// construction is the pre-C001 fallback only. `None` in legacy/test
+    /// daemons that have not yet asked for the shared handle.
+    pub job_notification_service:
+        Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    /// C001 daemon-scoped singleton CI-watch service. Created once per
+    /// daemon lifetime alongside the notifier above; shared by every turn
+    /// and by the daemon-owned idle driver. `None` until initialized.
+    pub ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
+    /// C004 daemon-scoped singleton idle-continuation grant/intent store.
+    /// Created once per daemon lifetime alongside the notifier above.
+    /// Production idle provider dispatch remains blocked (fail-closed):
+    /// no daemon path calls `maybe_dispatch` with a real executor until
+    /// an authenticated host-grant workflow exists. The store is owned
+    /// here so future grant issuance can bind server-resolved principal,
+    /// session, and workspace instead of caller-supplied strings.
+    pub continuation_service: Option<Arc<crate::scheduler::idle_continuation::ContinuationService>>,
+    /// C001 daemon-owned idle CI-watch coordinator (earliest-due wake loop).
+    /// `None` when idle watch support is unavailable (pool-less) or not yet
+    /// started; exactly one loop per daemon when present.
+    pub ci_watch_driver: Option<Arc<crate::scheduler::ci_watch_idle::CiWatchIdleDriver>>,
     /// Phase 5: scheduler configuration applied at construction time.
     /// Even when `scheduler` is `None`, the resolved config is held
     /// here so it can be queried for snapshots and settings pages.
@@ -133,9 +155,74 @@ impl Clone for CoreRuntimeDeps {
             daemon_generation: self.daemon_generation.clone(),
             scheduler: self.scheduler.clone(),
             submission: self.submission.clone(),
+            job_notification_service: self.job_notification_service.clone(),
+            ci_watch_service: self.ci_watch_service.clone(),
+            continuation_service: self.continuation_service.clone(),
+            ci_watch_driver: self.ci_watch_driver.clone(),
             scheduler_config: self.scheduler_config.clone(),
             connection_manager: self.connection_manager.clone(),
         }
+    }
+}
+
+impl CoreRuntimeDeps {
+    /// C001 shared daemon-scoped notifier, creating it once on first use.
+    /// The same `Arc` is returned on every call (pointer identity is the
+    /// singleton proof); per-turn construction must not replace it.
+    pub fn shared_job_notification_service(
+        &mut self,
+    ) -> Arc<crate::scheduler::job_notifications::JobNotificationService> {
+        if let Some(existing) = self.job_notification_service.clone() {
+            return existing;
+        }
+        let created = Arc::new(match self.pool.clone() {
+            Some(pool) => {
+                crate::scheduler::job_notifications::JobNotificationService::with_pool(pool)
+            }
+            None => crate::scheduler::job_notifications::JobNotificationService::new(),
+        });
+        self.job_notification_service = Some(created.clone());
+        created
+    }
+
+    /// C001 shared daemon-scoped watch service, creating it once on first use
+    /// over the shared notifier above. Pointer identity is the singleton proof.
+    pub fn shared_ci_watch_service(&mut self) -> Arc<crate::scheduler::ci_watch::CiWatchService> {
+        if let Some(existing) = self.ci_watch_service.clone() {
+            return existing;
+        }
+        // Avoid double-borrow: build the notifier first, then the watcher.
+        let notifier = self.shared_job_notification_service();
+        let created = Arc::new(match self.pool.clone() {
+            Some(pool) => crate::scheduler::ci_watch::CiWatchService::with_pool(
+                pool,
+                notifier,
+                crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+            ),
+            None => crate::scheduler::ci_watch::CiWatchService::new(
+                notifier,
+                crate::scheduler::ci_watch::CiWatchConfig::from_env(),
+            ),
+        });
+        self.ci_watch_service = Some(created.clone());
+        created
+    }
+
+    /// C004 shared daemon-scoped continuation store, creating it once on
+    /// first use. Pointer identity is the singleton proof. Production
+    /// dispatch stays fail-closed: owning the store does not start turns.
+    pub fn shared_continuation_service(
+        &mut self,
+    ) -> Arc<crate::scheduler::idle_continuation::ContinuationService> {
+        if let Some(existing) = self.continuation_service.clone() {
+            return existing;
+        }
+        let created = Arc::new(match self.pool.clone() {
+            Some(pool) => crate::scheduler::idle_continuation::ContinuationService::with_pool(pool),
+            None => crate::scheduler::idle_continuation::ContinuationService::new(),
+        });
+        self.continuation_service = Some(created.clone());
+        created
     }
 }
 
@@ -180,6 +267,10 @@ impl CoreRuntimeDeps {
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
             submission: None,
+            job_notification_service: None,
+            ci_watch_service: None,
+            continuation_service: None,
+            ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
         }
@@ -225,6 +316,10 @@ impl CoreRuntimeDeps {
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
             submission: None,
+            job_notification_service: None,
+            ci_watch_service: None,
+            continuation_service: None,
+            ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager: None,
         }
@@ -289,6 +384,10 @@ impl CoreRuntimeDeps {
             daemon_generation: DaemonGeneration::new(),
             scheduler: None,
             submission: None,
+            job_notification_service: None,
+            ci_watch_service: None,
+            continuation_service: None,
+            ci_watch_driver: None,
             scheduler_config: crate::scheduler::config::ResolvedSchedulerConfig::default(),
             connection_manager,
         }

@@ -18,7 +18,7 @@ Implementation commits:
 
 ## 1. Executive finding
 
-C004 is complete. The Linux mechanism ADR now has unique identity ADR-0031 and remains **proposed**. The accepted command-authority ADR now has unique identity ADR-0032 and remains **accepted** with unchanged authority. Exact pre-migration files and Git/SHA-256 fingerprints are preserved. No Linux sandbox feature was selected or enabled by this work.
+C004 is complete. At the reviewed C004 baseline, the Linux mechanism ADR had unique identity ADR-0031 and remained **proposed**. The accepted command-authority ADR had unique identity ADR-0032 and remained **accepted** with unchanged authority. Exact pre-migration files and Git/SHA-256 fingerprints are preserved. No Linux sandbox feature was selected or enabled by this work.
 
 IDs 0029/0030 were reserved by the concurrent Windows identity migration; the next unused IDs, 0031/0032, were assigned to Linux/command. The Windows ADR references were kept referent-specific.
 
@@ -34,7 +34,7 @@ IDs 0029/0030 were reserved by the concurrent Windows identity migration; the ne
 
 ## 3. Production implementation evidence
 
-No runtime, storage, protocol, or backend code changed. ADR-0031 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
+No runtime, storage, protocol, or backend code changed. ADR-0033 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
 
 ## 4. Verification executed
 
@@ -54,7 +54,7 @@ All commands passed locally. `scripts/verify.sh quick` reported `Quick verificat
 ## 5. Invariant review
 
 - No authority ceiling, explicit deny, sandbox default, requested capability, or obtained-capability claim changed.
-- Linux ADR-0031 remains proposed; no namespace or mount backend was registered.
+- Linux ADR-0033 remains proposed; no namespace or mount backend was registered.
 - Command ADR-0032 remains accepted; its content was not substantively revised.
 - Windows ADR-0027/0028 references continue to mean Windows decisions on this branch.
 
@@ -79,16 +79,25 @@ Updated ADR index, Linux and command roadmaps, registered implementation referen
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | The concurrent Windows identity migration must be integrated with this branch using its reserved ADR-0029/0030 paths and references. | Cross-branch integration still needs the ordinary exact-head guard run. | Re-run `python3 scripts/check_adr_integrity.py` after integration; the IDs are reserved and no active collision exists in either branch's intended mapping. |
-| low | ADR-0031 acceptance and positive native Linux isolation evidence remain outstanding. | C006 and production M003–M008 remain gated. | Obtain a separate maintainer decision and required native proof; C004 does not satisfy either gate. |
+| low | At the C004 review date, Linux ADR-0031 acceptance and positive native Linux isolation evidence remained outstanding. | C006 and production M003–M008 remained gated. | Obtain a separate maintainer decision and required native proof; C004 did not satisfy either gate. |
 
 No medium or high finding remains for the identity migration itself.
 
 ## 11. Roadmap disposition
 
-C004 is closed. C005 remains eligible and may proceed. C006 remains blocked on explicit ADR-0031 disposition, qualifying positive C005 native evidence, and M002. C007/C008 and command M004 remain independently ready for their bounded audit/test-only scopes.
+C004 is closed. C005 remains eligible and may proceed. At the C004 review date, C006 remained blocked on explicit ADR-0031 disposition, qualifying positive C005 native evidence, and M002. C007/C008 and command M004 remained independently ready for their bounded audit/test-only scopes.
 
 ## 12. Registry updates
 
 - Move C004 from dependency-ready work to recently closed with implementation commit `2e8d93189f3dae73d7a8a5cc5446aebea181101a` and this closure link.
 - Mark C004 closed in the Linux roadmap.
 - Unblock audit: no new plan became ready because of C004. C005/C007/C008 and command M004 were already ready; C006 remains blocked by its other hard gates.
+
+## Current identity correction (2026-10-15)
+
+Current main had accepted authenticated idle continuation as ADR-0031. The
+Linux decision remains accepted with unchanged substance as ADR-0033; command
+authority remains ADR-0032. This later canonical-ID correction does not alter
+the historical C004 baseline or its evidence. See the migration note in
+`plans/adrs/README.md` and the current canonical ADR at
+`plans/adrs/ADR-0033-composable-linux-execution-isolation.md`.

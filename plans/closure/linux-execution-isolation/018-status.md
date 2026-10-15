@@ -13,7 +13,7 @@ Implementation commits:
 
 ## 1. Executive finding
 
-C010 is conditionally closed with an explicit decision: **the Bubblewrap protected-mount candidate is not admitted for production on any Linux host configuration yet.** ADR-0031 remains accepted, Landlock remains canonical, and no production backend/default/profile routing changed.
+C010 is conditionally closed with an explicit decision: **the Bubblewrap protected-mount candidate is not admitted for production on any Linux host configuration yet.** ADR-0033 remains accepted, Landlock remains canonical, and no production backend/default/profile routing changed.
 
 The post-merge candidate passed exact-head native Linux qualification and cross-platform compile qualification. The performance evidence is contradictory across cold and cache-warm runs: the prior cold fragmented-store operation took 2.95 seconds, while this workstation measured 325 ms on a cache-warm mixed 105 MiB object store and 47 ms for a cache-warm 29 MiB packed store. This does not establish a cold/p95 budget. Rustup still requires `/proc/self/exe`, and production LSP/PTY routing has not been qualified. These findings make no-admission the only evidence-backed disposition.
 
@@ -22,7 +22,7 @@ The post-merge candidate passed exact-head native Linux qualification and cross-
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
 | Reconcile feature branch against current main | Merge commit `611f6bee`; quick verification on merge and final source | pass | Resolved conflicts using current-main Git behavior and test contracts; preserved Linux isolation implementation and accepted ADR. |
-| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0031 remains accepted; ADR-0032 remains accepted; active IDs unique and local paths resolve. |
+| Accepted ADR and unique canonical identities | `python3 scripts/check_adr_integrity.py` | pass | ADR-0033 remains accepted; ADR-0032 remains accepted; active IDs unique and local paths resolve. |
 | Exact-head Linux protected-mount native behavior | Hosted run [`38749191367`](https://github.com/dbowm91/codegg/actions/runs/38749191367), exact SHA `f6befe51` | pass | 11/11 protected-mount tests and 18/18 trusted-Git tests. Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, Bubblewrap 0.9.0, UID/GID 1001, AppArmor `unconfined`. The ephemeral runner changed `kernel.apparmor_restrict_unprivileged_userns` 1→0. |
 | Native behavior on an AppArmor-restricted-userns local host | Local exact merge-source native test | pass | Ubuntu x86_64, kernel `6.8.0-147-generic`, ext4, Bubblewrap 0.9.0, UID/GID 1000, AppArmor active, userns restriction sysctl remained 1; 11/11 tests passed. |
 | Packed and mixed/fragmented object-store preparation | Temporary test called the exact `GitEnvPolicy::apply_sync` private-view path | partial | Cache-warm single samples: mixed 105 MiB store 325 ms; single-pack 29.07 MiB store 47 ms. C009 cold fragmented measurement was 2.95 seconds. No cold/p95 distribution or stable acceptable budget. |
@@ -61,7 +61,7 @@ No production code, persisted policy, protocol, backend registration or default 
 
 ## 5. Invariant review
 
-- ADR-0031 remains accepted and unmodified; ADR-0032 remains accepted and unmodified.
+- ADR-0033 remains accepted and unmodified; ADR-0032 remains accepted and unmodified.
 - Canonical ADR identifiers remain unique.
 - Landlock remains the default; the candidate remains explicit and unregistered for production.
 - No test or feature result is used to imply process, IPC, seccomp, network or resource containment beyond the achieved filesystem view.
@@ -102,3 +102,28 @@ C010 closes as a negative production-admission decision. M003 remains blocked an
 - M003 remains blocked because no Linux configuration met the production-admission criteria.
 - M004 remains active against the stable M002/M003 internal interfaces. M005 remains blocked on M004's process/IPC contract and native evidence.
 - C002/C003 and M007 retain their existing gates. C010 unblocked no registered implementation plan: local Git still requires M002–M005 native enforcement, remote Git still requires M005/M006 and C002's local state interface, and cgroup enforcement still requires a delegated writable cgroup-v2 host.
+
+## Current-main integration follow-up (2026-10-15)
+
+The later current-main merge revealed that ADR-0031 is already accepted for
+authenticated idle continuation. The unchanged accepted Linux decision now has
+canonical identity ADR-0033; ADR-0032 remains the accepted command-authority
+decision. The Linux ADR integrity self-test now represents all three active
+identities. This renumbering does not alter C010's no-admission result.
+
+The active M003 plan now makes the performance gate finite and measurable:
+100 warm and 30 cold paired samples for fragmented and equivalent packed stores;
+private-view preparation p95 <=250 ms warm / <=1,000 ms cold; end-to-end
+protected-view `git status` overhead p95 <=500 ms warm / <=1,500 ms cold; no
+single preparation over 3 seconds; and warm p95 no greater than 2x baseline.
+The historical 20-sample mixed-store data does not satisfy or refute these
+limits because it did not isolate preparation or control cache state. No host
+is admitted until the controlled gate passes along with the compatibility and
+supported-host gates.
+
+M004 has added an exact-host Cargo check/test probe and a separate ephemeral
+runner job that disables user namespaces (`user.max_user_namespaces=0`) and
+checks required-launch refusal before the target marker. Hosted results are
+pending. A source audit confirms `InteractiveProcessService` and the `egglsp`
+launcher currently bypass the M004 launch owner; PTY/LSP production routing and
+protocol evidence remain hard M004 closure gates.

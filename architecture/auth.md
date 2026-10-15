@@ -114,9 +114,11 @@ Three helpers in `crates/codegg-providers/src/provider_core.rs`:
   string; short-lived bearer lifecycle is not claimed for these paths.
 
 All three call `resolve_provider_credential(provider_id, cfg, env_var,
-store)` which builds a `ResolverContext` with
+store, pin)` which builds a `ResolverContext` with
 `capability = credential_capability_for(provider_id)` and returns
-`ResolvedAuth`. This is the **single resolution path** for provider
+`ResolvedAuth`. `pin` is the turn's connection-bound credential, checked
+ahead of every other source; `architecture/provider.md` "Turn Credential
+Authority" owns that contract. This is the **single resolution path** for provider
 registration. The executable matrix lives in
 `credential_capability_for` plus `builtin_registration_order()`; the
 `capability_matrix_covers_every_registration_branch` test fails if a new
@@ -481,7 +483,8 @@ input buffer. `ConnectionRotateBegin` carries only a redacted
 `SecretInputRef` handle. Remote WebSocket requests carrying the
 variant are rejected with `secret_operation_remote_denied`. Rotation
 allocates a new credential account reference and removes the previous
-exact binding only after commit.
+exact binding only after commit, and only when no other connection still
+binds it (`prune_superseded_credential` in `src/core/eggpool.rs`).
 
 ## Provider-Neutral `/connect` Secret Handling
 
