@@ -1,8 +1,8 @@
 # Linux Execution Isolation M004 — Process, IPC, Procfs and Syscall Isolation
 
-Status: blocked (hard: M002; interface: M003 protected view)
+Status: active (M002 typed interface and M003 candidate interface are stable; native enforcement remains unqualified)
 Primary class: capability
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
+Repository baseline: current-main merge `611f6bee` (2026-10-15). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0031. Accepted ADR-0032 governs representation-independent command authorization. Real Linux backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/004-status.md`. No production process/IPC/seccomp enforcement is represented as already implemented.
 
 ## 1. Objective
 
