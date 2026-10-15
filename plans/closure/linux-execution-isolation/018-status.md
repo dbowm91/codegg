@@ -188,3 +188,22 @@ host-loopback TCP denial; hosted execution is pending. IPv6, UDP, DNS, inherited
 network descriptors, launch-owner coverage, restricted-host refusal, and
 offline toolchain qualification remain open, as do M004 production-owner and
 host-admission gates.
+
+### Exact-head hosted qualification (2026-10-15)
+
+The pushed implementation at `f3c2a73c13452ad398bee1e505e101ceb3e7c849`
+passed Linux native workflow
+[38817580703](https://github.com/dbowm91/codegg/actions/runs/38817580703)
+on the ephemeral Ubuntu runner. The M004 process/IPC target passed 8/8,
+including the M005 private-network namespace compile assertion and the native
+host-loopback TCP denial probe. The workflow also passed protected-mount
+regressions 11/11 and trusted-Git policy tests 18/18. Its separate restricted-
+userns job proved the required M004 launch refuses before target execution.
+The C006 hosted regression also passed at the same head in run
+[38817580592](https://github.com/dbowm91/codegg/actions/runs/38817580592).
+
+This is positive M004 candidate evidence and one M005 IPv4/TCP boundary
+result. It does not establish full M004 production PTY/LSP integration,
+supported-host admission, or M005 IPv6/UDP/DNS/inherited-descriptor and
+offline-toolchain coverage. No enforcement status or production default is
+promoted by these runs.
