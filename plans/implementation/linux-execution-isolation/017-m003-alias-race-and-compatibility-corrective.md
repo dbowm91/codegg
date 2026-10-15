@@ -129,3 +129,22 @@ Include a requirement-to-test matrix, exact hosted workflow/run and SHA, host/ke
 ## 16. Handoff notes
 
 The candidate is currently internal and opt-in through `SandboxConfig::with_linux_protected_mount_view`; do not route production tools to it or claim enhanced network/process/resource enforcement. Historical C006 and M002 closures are immutable evidence, not substitutes for this corrective's missing tests.
+
+## 17. Implementation progress — 2026-10-15
+
+### Exact-head hosted native evidence
+
+- Commit `ccbaa9bdca23e6afe365358a09296342647c2fda` was tested by hosted run [`38671588961`](https://github.com/dbowm91/codegg/actions/runs/38671588961) (`Linux C006 protected mount qualification`), job `116215708578`; conclusion: success.
+- Runner: GitHub-hosted Ubuntu 24.04.5, kernel `6.17.0-1022-azure`, x86_64, Bubblewrap `0.9.0` (`0.9.0-1ubuntu0.3`), `/usr/bin/bwrap` mode 0755 owned by root. Runner identity was UID/GID 1001; AppArmor profile was `unconfined`. `kernel.apparmor_restrict_unprivileged_userns` was initially `1`, then changed to `0` on this ephemeral hosted runner for the native qualification. This is test-host setup evidence, not a production host requirement.
+- Exact hosted command: `cargo test --locked --lib protected_mount_view -- --nocapture`, with `CODEGG_RUN_C006_BWRAP_NATIVE=1` and `CODEGG_RUN_C009_BWRAP_NATIVE=1`.
+- Result: 2 passed, 0 failed. The C009 test exercised a linked worktree whose common Git directory is external to the selected worktree, verified trusted reads and denied writes to common Git config/hooks, permitted an ordinary worktree write, and completed dependency-free `cargo check --offline` inside the protected mount. The existing C006 real managed-process handoff also passed.
+- The workflow proves a real native protected-mount launch and the tested fixture's obtained visibility/denial behavior. It does not record `uname`/Bubblewrap facts for a broader host matrix or claim process, IPC, network, seccomp, or resource isolation.
+- A trusted-Git integration regression was added for a repository-configured external diff and textconv helper; local focused execution passed and verified ordinary diff output while the helper marker stayed absent. The hosted workflow now runs the trusted-Git config tests serially alongside the native mount tests; exact-head hosted evidence for this added step is pending.
+
+### Remaining acceptance work
+
+- Expand native layouts: nested repositories/submodules, malformed and unsupported pointers, and other supported alias topologies.
+- Expand deterministic replacement coverage across `.git` pointer, gitdir, common-dir, denied path, and ancestor setup barriers; current tests cover mount-source pinning and workspace replacement before target start, not every requested race boundary.
+- Extend trusted Git adversarial config coverage beyond the current `includeIf`/`core.worktree`/fsmonitor fixture to hooks, filters, diff/textconv, and helper routes, and prove those routes stay gated.
+- Qualify installed rustup/toolchain behavior, Python, LSP or test children, PTY, bounded `cargo test`, startup timings, cancellation/timeout cleanup, and concurrent isolated launches where supported.
+- M003 remains blocked; C009 remains active. No backend registration, production routing, or default change follows from this partial hosted pass.

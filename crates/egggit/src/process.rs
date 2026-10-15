@@ -1276,6 +1276,74 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn trusted_git_diff_does_not_run_repository_external_diff_or_textconv() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let marker = root.join("diff-helper-ran");
+        let helper = root.join("diff-helper.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display()),
+        )
+        .expect("write hostile diff helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make diff helper executable");
+
+        let raw_git = |args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git command")
+        };
+        assert!(raw_git(&["init", "--initial-branch=main"]).status.success());
+        assert!(raw_git(&["config", "user.email", "test@example.invalid"])
+            .status
+            .success());
+        assert!(raw_git(&["config", "user.name", "C009 Test"])
+            .status
+            .success());
+        assert!(
+            raw_git(&["config", "diff.hostile.textconv", helper.to_str().unwrap()])
+                .status
+                .success()
+        );
+        assert!(
+            raw_git(&["config", "diff.external", helper.to_str().unwrap()])
+                .status
+                .success()
+        );
+        std::fs::write(root.join(".gitattributes"), "*.txt diff=hostile\n")
+            .expect("write hostile diff attributes");
+        std::fs::write(root.join("tracked.txt"), "before\n").expect("write tracked file");
+        assert!(raw_git(&["add", ".gitattributes", "tracked.txt"])
+            .status
+            .success());
+        assert!(raw_git(&["commit", "-m", "initial"]).status.success());
+        std::fs::write(root.join("tracked.txt"), "after\n").expect("modify tracked file");
+
+        let output = run(&["diff".to_string(), "HEAD".to_string()], root)
+            .await
+            .expect("trusted diff");
+        assert!(
+            output.status.success(),
+            "trusted diff failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("-before\n+after"),
+            "diff should still return the ordinary content change"
+        );
+        assert!(
+            !marker.exists(),
+            "repository external-diff and textconv helpers must not execute"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn trusted_git_commit_does_not_run_repository_hooks() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
