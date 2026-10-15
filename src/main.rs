@@ -1709,7 +1709,8 @@ async fn cmd_providers() -> Result<(), AppError> {
     // credential store.
     let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut registry, &config);
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
 
     if registry.list().is_empty() {
         println!(
@@ -1729,7 +1730,8 @@ async fn cmd_providers() -> Result<(), AppError> {
 async fn cmd_models(provider_filter: Option<String>) -> Result<(), AppError> {
     let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut registry, &config);
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
 
     let providers = registry.list();
     let providers = match &provider_filter {
@@ -2875,7 +2877,8 @@ async fn cmd_exec(
 async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
-    provider::register_builtin_with_config(&mut registry, &config);
+    let locators = codegg::core::session_selection::user_connection_credential_locators().await;
+    provider::register_builtin_with_config_connections(&mut registry, &config, &locators, None);
 
     let default_model = config.model.clone().unwrap_or_default();
     let model = cli.model.as_ref().unwrap_or(&default_model);
@@ -3158,7 +3161,14 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             }));
 
             let mut registry = ProviderRegistry::new();
-            provider::register_builtin_with_config(&mut registry, &config);
+            let locators =
+                codegg::core::session_selection::pool_connection_credential_locators(&pool).await;
+            provider::register_builtin_with_config_connections(
+                &mut registry,
+                &config,
+                &locators,
+                None,
+            );
 
             let discovery = provider::discovery::ModelDiscoveryService::new(PathBuf::new())
                 .with_pool(pool.clone());

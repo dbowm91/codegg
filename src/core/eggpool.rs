@@ -3974,6 +3974,102 @@ mod tests {
         ));
     }
 
+    /// Exactly one active connection is the authority for its provider.
+    ///
+    /// This is the rule that lets `codegg exec`, `codegg models`, and `/models`
+    /// find a provider at all. They have no session and no turn, so without a
+    /// connection they fall back to counting credential-store records — and a
+    /// rotation leaves the live record beside the orphan it replaced, the count
+    /// reaches two, and the provider disappears with `Provider not found` while
+    /// a healthy `active` connection holds its working key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_active_connection_is_the_authority_for_its_provider() {
+        let _master = MasterKeyGuard::new("eggpool-connection-authority-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let store = codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone());
+        let provider_kind = store
+            .get(&connection_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_kind
+            .as_str()
+            .to_string();
+
+        let locators = crate::core::session_selection::connection_credential_locators(&store).await;
+        assert_eq!(locators.len(), 1, "one active connection is authority");
+        assert_eq!(locators[0].0, provider_kind);
+        assert_eq!(
+            locators[0].1.account_ref,
+            credential_store.list()[0]
+                .account_id
+                .clone()
+                .expect("provisioned connection has an account")
+        );
+
+        // A second *active* connection for the same provider is a real
+        // ambiguity. Picking one would be a coin flip, so the rule yields
+        // nothing and the existing refusal stands.
+        let second_id = ProviderConnectionId::new();
+        sqlx::query(
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) SELECT ?, provider_kind, 'Second', endpoint, tls_policy, 'personal', 'second-scope', 'second-secret', secret_provider_ref, secret_account_ref, 'active', 1, ?, ? FROM provider_connections WHERE id = ?",
+        )
+        .bind(second_id.as_str())
+        .bind(now_millis())
+        .bind(now_millis())
+        .bind(connection_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("second-connection row inserts");
+        assert!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .is_empty(),
+            "two active connections for one provider must not be guessed between"
+        );
+
+        // Only `active` speaks. Disabling one restores a single answer, which
+        // is what the user reaches for when they disable a duplicate.
+        sqlx::query("UPDATE provider_connections SET state = 'disabled' WHERE id = ?")
+            .bind(second_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("disable second connection");
+        assert_eq!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .len(),
+            1,
+            "a disabled connection is not authority"
+        );
+
+        // And with none active there is nothing to say.
+        sqlx::query("UPDATE provider_connections SET state = 'disabled' WHERE id = ?")
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("disable first connection");
+        assert!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .is_empty()
+        );
+    }
+
     /// A catalog stranded behind a revision bump must be rebuildable.
     ///
     /// Both the rotate copy-shortcut and the refresh no-op branch used to trust

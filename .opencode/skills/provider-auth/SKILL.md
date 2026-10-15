@@ -50,8 +50,14 @@ to violate.
    registering providers ad hoc.
    `register_builtin_with_config_for_turn` is the **turn** entry point: same
    pass, plus the connection pin and a typed error for an unresolvable
-   credential (rule 4a). It delegates to
-   `register_builtins_with_store(registry, config, store, pin)`, which every
+   credential (rule 4a). `register_builtin_with_config_connections` is the
+   **process-wide** entry point (`codegg exec`, `codegg models`, `/models`,
+   the pickers): it pins *every* provider that has exactly one `Active`
+   connection with a secret binding, via
+   `session_selection::connection_credential_locators`, because those surfaces
+   have no session and no turn and would otherwise refuse any provider whose
+   rotation left an orphan record. Both delegate to
+   `register_builtins_with_store(registry, config, store, pins)`, which every
    other entry point shares — add a built-in through the three helpers, never
    a fourth path, so a new provider inherits the pin automatically.
    Exact totals are `builtin_registration_order()` / the catalog, not this
@@ -82,6 +88,16 @@ to violate.
    `TurnCredentialError::Missing`, never a fallback to another record for the
    same provider. Never add a "pick the first/most recent record" shortcut,
    and never let a turn fall back to `register_builtin_with_config`.
+4c. **Every persisted catalog is wire-qualified.** Provision discovers through
+   `Provider::models()` (already filtered by `qualify_models`); refresh and
+   rotate discover through the provider-neutral `CompatibleProbe` and must
+   apply `qualify_routable_models` themselves. An unqualified catalog
+   advertises models that fail closed at `wire_unresolved` before any request
+   is built, and alphabetical order puts the worst offenders first — on OpenCode
+   Go, `cat-jam-free` sorts first with no reviewed mapping, so the very first
+   row a user lands on could never work. Scope the filter to providers
+   `shared_provider_id` adapts; leave every other upstream untouched. Digest
+   the *stored* rows so "catalog changed" means what a user can select changed.
 4b. **Setup catalog owns onboarding metadata.** New built-in providers need
    a `setup_catalog` definition (explicit connectable disposition) plus a
    durable-builder arm — never a second name list, and never a fake

@@ -1007,7 +1007,19 @@ impl CoreDaemon {
                 };
                 let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                // A live connection is the authority for its own provider, so
+                // the picker sees the same provider set a turn would use. Without
+                // it a rotated provider vanishes from `/models` and the TUI
+                // renders a permanently empty list.
+                let locators =
+                    crate::core::session_selection::pool_connection_credential_locators(&pool)
+                        .await;
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let discovery = crate::provider::discovery::ModelDiscoveryService::new(
                     std::path::PathBuf::new(),
                 )
@@ -1502,7 +1514,19 @@ impl CoreDaemon {
             CoreRequest::SnapshotModels => {
                 let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
-                crate::provider::register_builtin_with_config(&mut registry, &config);
+                let locators = match self.pool.clone() {
+                    Some(pool) => {
+                        crate::core::session_selection::pool_connection_credential_locators(&pool)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                crate::provider::register_builtin_with_config_connections(
+                    &mut registry,
+                    &config,
+                    &locators,
+                    None,
+                );
                 let model_ids: Vec<String> = if let Some(pool) = self.pool.clone() {
                     let discovery = crate::provider::discovery::ModelDiscoveryService::new(
                         std::path::PathBuf::new(),

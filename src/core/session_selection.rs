@@ -947,27 +947,105 @@ pub async fn unbound_turn_credential_locator(
     connection_store: &ProviderConnectionStore,
     provider_name: &str,
 ) -> Option<crate::provider::TurnCredentialLocator> {
-    let connections = connection_store.list().await.ok()?;
-    let mut active = connections
+    connection_credential_locators(connection_store)
+        .await
         .into_iter()
-        .filter(|connection| {
-            connection.state == ProviderConnectionState::Active
-                && connection.provider_kind.as_str() == provider_name
-        })
-        .filter_map(|connection| connection.secret_binding);
-    let only = active.next()?;
-    if active.next().is_some() {
-        tracing::debug!(
-            target: "codegg::core::session_selection",
-            provider = %provider_name,
-            "several active connections speak for this provider; the turn resolves its credential without connection authority"
-        );
-        return None;
+        .find(|(provider, _)| provider == provider_name)
+        .map(|(_, locator)| locator)
+}
+
+/// Every provider that has exactly one `Active` connection with a secret binding,
+/// paired with the credential-store account that connection speaks for.
+///
+/// This is the single implementation of "a connection is the authority for its
+/// own provider". [`unbound_turn_credential_locator`] reads one entry out of it
+/// for a turn; the process-wide registration path feeds the whole map in so
+/// `codegg exec`, `codegg models`, and the model pickers stop depending on
+/// credential-store *file order* the moment a rotation leaves an orphan behind.
+///
+/// The exclusion rules are the turn's rules, unchanged: only `Active`
+/// connections speak, and two active connections for one provider stay a
+/// genuine ambiguity that yields no entry rather than a coin flip.
+pub async fn connection_credential_locators(
+    connection_store: &ProviderConnectionStore,
+) -> Vec<(String, crate::provider::TurnCredentialLocator)> {
+    let Ok(connections) = connection_store.list().await else {
+        return Vec::new();
+    };
+    let mut by_provider: std::collections::BTreeMap<
+        String,
+        Vec<crate::provider::TurnCredentialLocator>,
+    > = std::collections::BTreeMap::new();
+    for connection in connections {
+        if connection.state != ProviderConnectionState::Active {
+            continue;
+        }
+        let Some(binding) = connection.secret_binding else {
+            continue;
+        };
+        by_provider
+            .entry(connection.provider_kind.as_str().to_string())
+            .or_default()
+            .push(crate::provider::TurnCredentialLocator {
+                provider_ref: binding.provider_ref,
+                account_ref: binding.account_ref,
+            });
     }
-    Some(crate::provider::TurnCredentialLocator {
-        provider_ref: only.provider_ref,
-        account_ref: only.account_ref,
-    })
+    let mut locators = Vec::new();
+    for (provider, mut candidates) in by_provider {
+        if candidates.len() != 1 {
+            tracing::debug!(
+                target: "codegg::core::session_selection",
+                provider = %provider,
+                count = candidates.len(),
+                "several active connections speak for this provider; its credential resolves without connection authority"
+            );
+            continue;
+        }
+        locators.push((provider, candidates.remove(0)));
+    }
+    locators
+}
+
+/// Read connection locators from a pool the caller already holds.
+///
+/// Preferred over [`user_connection_credential_locators`] whenever a pool is
+/// already in hand — the daemon, and the in-process core — because it reuses
+/// the existing connection instead of opening a second one against a database
+/// another process is actively writing.
+pub async fn pool_connection_credential_locators(
+    pool: &sqlx::SqlitePool,
+) -> Vec<(String, crate::provider::TurnCredentialLocator)> {
+    let store = codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone());
+    connection_credential_locators(&store).await
+}
+
+/// Read connection locators straight from the user-scoped daemon catalog.
+///
+/// Process-wide paths — `codegg exec`, `/models`, `codegg models` — have no
+/// session, no turn, and no pool handed to them, yet they still need the same
+/// connection authority a turn already has. This opens the catalog **read-only**
+/// and never migrates or writes it: the daemon owns those rows, and a CLI read
+/// that took a write lock would contend with the daemon actually serving the
+/// user.
+///
+/// Every failure here degrades to "no locators", which is exactly the
+/// pre-existing unbound resolution order. Read-only means it cannot make
+/// anything worse than it found.
+pub async fn user_connection_credential_locators(
+) -> Vec<(String, crate::provider::TurnCredentialLocator)> {
+    let db_path = codegg_core::storage::DaemonPaths::default().catalog_db_path();
+    if !db_path.exists() {
+        return Vec::new();
+    }
+    let url = format!("sqlite:file:{}?mode=ro", db_path.display());
+    let Ok(pool) = sqlx::SqlitePool::connect(&url).await else {
+        return Vec::new();
+    };
+    let store = codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone());
+    let locators = connection_credential_locators(&store).await;
+    pool.close().await;
+    locators
 }
 
 /// Turn-path classification of a session's durable model selection.

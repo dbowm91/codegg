@@ -658,14 +658,14 @@ pub(crate) fn resolve_provider_credential(
     cfg: Option<&codegg_config::schema::ProviderConfig>,
     env_var: Option<&str>,
     store: Option<&std::sync::Arc<CredentialStore>>,
-    pin: Option<&TurnCredentialPin>,
+    pins: &[TurnCredentialPin],
 ) -> Result<Option<ResolvedAuth>, crate::auth_types::AuthError> {
-    // A resolved provider connection is the authority for its own turn. This
+    // A resolved provider connection is the authority for its own provider. This
     // check runs before config, env, and the store on purpose: rotation exists
     // precisely so a connection's key changes while the rest of the machine
     // (config, env, other stored records) still holds the old one, and any
     // later source could silently undo the rotation the user just performed.
-    if let Some(pin) = pin.filter(|pin| pin.provider_id == provider_id) {
+    if let Some(pin) = pins.iter().find(|pin| pin.provider_id == provider_id) {
         if pin.credential.secret.is_empty() {
             return Ok(None);
         }
@@ -862,7 +862,7 @@ fn register_credential_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pin) {
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if !resolved.credential.secret.is_empty() {
                     tracing::debug!(
@@ -924,7 +924,7 @@ fn register_api_key_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pin) {
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if let Some(cred) = ensure_api_key_credential(name, &resolved) {
                     tracing::debug!(
@@ -979,7 +979,7 @@ fn register_config_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, None, scope.store, scope.pin) {
+        match resolve_provider_credential(name, cfg_opt, None, scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if let Some(cred) = ensure_api_key_credential(name, &resolved) {
                     tracing::debug!(
@@ -1021,7 +1021,79 @@ pub fn register_builtin_with_config(
     config: &codegg_config::schema::Config,
 ) {
     // Resolution errors are already logged by the per-provider helpers.
-    let _ = register_builtins_with_store(registry, config, None, None);
+    let _ = register_builtins_with_store(registry, config, None, &[]);
+}
+
+/// Register the built-ins with connection authority for **every** provider.
+///
+/// [`register_builtin_with_config_for_turn`] binds exactly one provider because
+/// a turn names exactly one. Process-wide paths — `codegg exec`, `/models`,
+/// `codegg models`, the model pickers — have no turn and no session, so they used
+/// to fall straight through to the credential-store fallback, which counts every
+/// usable record for a provider and refuses once more than one exists.
+///
+/// That made a rotation permanently break those paths for the rotated provider:
+/// the live record sits beside the orphan the rotation replaced, the count
+/// reaches two, and the provider disappears from `codegg models` with
+/// `Provider not found` even though a healthy `active` connection holds its
+/// working key. Supplying every connection's locator here restores exactly the
+/// rule a turn already obeys — a connection is the authority for its own
+/// provider — so the same setup works from the CLI and the TUI.
+///
+/// Locators for providers the shared profile does not adapt are ignored, as is
+/// any provider with no locator: those keep the pre-existing resolution order.
+pub fn register_builtin_with_config_connections(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    locators: &[(String, TurnCredentialLocator)],
+    store: Option<std::sync::Arc<CredentialStore>>,
+) -> Vec<(String, crate::auth_types::AuthError)> {
+    if locators.is_empty() {
+        return register_builtin_with_config_failures(registry, config, store);
+    }
+    let resolved = match store {
+        Some(store) => Some(store),
+        None => CredentialStore::at_default_location().map(Arc::new).ok(),
+    };
+    let Some(resolved) = resolved else {
+        // Without a store there is nothing to pin from. Falling back to the
+        // unbound pass is strictly better than registering nothing: it
+        // reproduces the exact pre-existing behaviour, ambiguity refusal and all.
+        return register_builtin_with_config_failures(registry, config, None);
+    };
+    let mut pins: Vec<TurnCredentialPin> = Vec::with_capacity(locators.len());
+    for (provider_id, locator) in locators {
+        let Ok(Some(credential)) =
+            resolved.get_credential(&locator.provider_ref, Some(&locator.account_ref))
+        else {
+            continue;
+        };
+        // An expired bound record is dead material. It is left unpinned so the
+        // ordinary resolution order reports it as missing rather than letting a
+        // turn fail later as an opaque upstream 401.
+        if credential
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+        {
+            continue;
+        }
+        pins.push(TurnCredentialPin {
+            provider_id: provider_id.clone(),
+            credential,
+        });
+    }
+    if pins.is_empty() {
+        return register_builtin_with_config_failures(registry, config, None);
+    }
+    register_builtins_with_store(registry, config, Some(resolved), &pins)
+}
+
+fn register_builtin_with_config_failures(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    store: Option<std::sync::Arc<CredentialStore>>,
+) -> Vec<(String, crate::auth_types::AuthError)> {
+    register_builtins_with_store(registry, config, store, &[])
 }
 
 /// One registration pass, returning every `(provider, error)` it hit so a
@@ -1034,7 +1106,7 @@ pub(crate) fn register_builtins_with_store(
     registry: &mut ProviderRegistry,
     config: &codegg_config::schema::Config,
     store: Option<std::sync::Arc<CredentialStore>>,
-    pin: Option<&TurnCredentialPin>,
+    pins: &[TurnCredentialPin],
 ) -> Vec<(String, crate::auth_types::AuthError)> {
     let providers = config.provider.as_ref();
     let disabled = config.disabled_providers.as_ref();
@@ -1056,7 +1128,7 @@ pub(crate) fn register_builtins_with_store(
     };
     let scope = RegistrationScope {
         store: store.as_ref(),
-        pin,
+        pins,
         failures: std::cell::RefCell::new(Vec::new()),
     };
 
@@ -1263,7 +1335,7 @@ pub(crate) struct TurnCredentialPin {
 /// losing the distinction between "skipped" and "refused".
 struct RegistrationScope<'a> {
     store: Option<&'a std::sync::Arc<CredentialStore>>,
-    pin: Option<&'a TurnCredentialPin>,
+    pins: &'a [TurnCredentialPin],
     failures: std::cell::RefCell<Vec<(String, crate::auth_types::AuthError)>>,
 }
 
@@ -1379,7 +1451,8 @@ pub fn register_builtin_with_config_for_turn(
         }
         None => None,
     };
-    let failures = register_builtins_with_store(registry, config, store, pin.as_ref());
+    let pins = pin.as_slice();
+    let failures = register_builtins_with_store(registry, config, store, pins);
     if let Some((_, error)) = failures.into_iter().find(|(name, _)| name == provider_id) {
         return Err(match error {
             crate::auth_types::AuthError::AmbiguousCredential { candidates, .. } => {
@@ -2111,7 +2184,7 @@ mod tests {
         std::env::remove_var("RESOLVE_TEST_PROVIDER_API_KEY");
         let cfg = make_provider_config();
         let resolved =
-            resolve_provider_credential("resolve_test_provider", Some(&cfg), None, None, None)
+            resolve_provider_credential("resolve_test_provider", Some(&cfg), None, None, &[])
                 .expect("ok")
                 .expect("some");
         assert_eq!(resolved.credential.secret, "inline-key");
@@ -2155,7 +2228,7 @@ mod tests {
             Some(&cfg),
             None,
             Some(&store),
-            None,
+            &[],
         )
         .expect("ok")
         .expect("some");
@@ -2210,7 +2283,7 @@ mod tests {
 
         // No config entry at all — exactly what `/connect` leaves behind.
         let resolved =
-            resolve_provider_credential("connect_fallback_test", None, None, Some(&store), None)
+            resolve_provider_credential("connect_fallback_test", None, None, Some(&store), &[])
                 .expect("ok")
                 .expect("the stored credential must be found without config or env");
         assert_eq!(resolved.credential.secret, "connect-added-key");
@@ -2252,7 +2325,7 @@ mod tests {
             None,
             Some("CONNECT_PRECEDENCE_TEST_API_KEY"),
             Some(&store),
-            None,
+            &[],
         )
         .expect("ok")
         .expect("env must resolve");
@@ -2548,7 +2621,7 @@ mod tests {
             encrypted_api_key: Some(encrypted),
             ..Default::default()
         };
-        let resolved = resolve_provider_credential("legacy_enc_test", Some(&cfg), None, None, None)
+        let resolved = resolve_provider_credential("legacy_enc_test", Some(&cfg), None, None, &[])
             .expect("ok")
             .expect("some");
         assert_eq!(resolved.credential.secret, "decrypted-legacy-key");
@@ -2580,8 +2653,8 @@ mod tests {
             ..Default::default()
         };
         // No master key, no env override -> no credential resolved.
-        let resolved = resolve_provider_credential("no_master_test", Some(&cfg), None, None, None)
-            .expect("ok");
+        let resolved =
+            resolve_provider_credential("no_master_test", Some(&cfg), None, None, &[]).expect("ok");
         assert!(resolved.is_none());
 
         if let Some(v) = prev_master {
@@ -2700,7 +2773,7 @@ mod tests {
             ..Default::default()
         };
         let resolved =
-            resolve_provider_credential("xai", Some(&cfg), Some("XAI_API_KEY"), Some(&store), None)
+            resolve_provider_credential("xai", Some(&cfg), Some("XAI_API_KEY"), Some(&store), &[])
                 .expect("ok")
                 .expect("some");
         assert_eq!(resolved.credential.kind, CredentialKind::BearerToken);
@@ -2751,7 +2824,7 @@ mod tests {
                 Some(&cfg),
                 Some(env_var),
                 Some(&store),
-                None,
+                &[],
             ) {
                 Ok(_) => panic!("bearer for '{provider}' must fail"),
                 Err(err) => err,
@@ -2795,7 +2868,7 @@ mod tests {
             Some(&cfg),
             Some("GROQ_API_KEY"),
             Some(&store),
-            None,
+            &[],
         ) {
             Ok(_) => panic!("expired bearer must fail"),
             Err(err) => err,
@@ -2833,7 +2906,7 @@ mod tests {
             Some(&cfg),
             Some("MINIMAX_API_KEY"),
             Some(&store),
-            None,
+            &[],
         )
         .expect("ok")
         .expect("some");
