@@ -1,10 +1,10 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: blocked — M001 and M004 strict closure AND ADR-0032 explicit acceptance
+Status: blocked — M001/M004 and ADR-0032 acceptance satisfied; verified writer-path containment remains outstanding
 
 Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
-Hard decision gate: plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md is PROPOSED, not accepted. ADR-0002 remains controlling until accepted supersession of its per-concurrent-mutating-child rule.
+Decision gate: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was accepted on 2026-10-15. Its shared-write mode is not qualified or enabled; ADR-0002 isolation remains the effective mutation contract until M005 proves complete writer containment and passes its acceptance gates.
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27, 29; plans/001-terminology-and-domain-model.md §§5, 7–8.
 Primary class: capability / invariant. No work may enable shared mutation before the decision and safety gates close.
 

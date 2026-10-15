@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004 closed (M004 strict closure through corrective M009); M005–M008 remain gated as listed. ADR-0032 acceptance is recorded separately; M005 still requires verified writer-path containment.
+Status: active; M001–M004 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005–M008 remain gated as listed. M005 still requires verified writer-path containment.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -12,7 +12,7 @@ Normative sources:
 - plans/adrs/ADR-0001-programmatic-tool-execution-authority.md
 - plans/adrs/ADR-0002-agent-run-worktree-isolation-and-control.md (accepted, retains precedence)
 - plans/adrs/ADR-0005-project-work-orders-and-task-orchestration.md
-- plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md (proposed only)
+- plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md (accepted; shared-write execution awaits M005 qualification)
 
 Existing closed substrate (do not reopen closures): agent-run-worktree-concurrency M001–M009; background-jobs M001–M004; WorkOrders M001–M007 and its UX corrective. The separate async-background-jobs post-C005 PR #119 remains draft/conditionally closed and is NOT a prerequisite or implicit merge for this roadmap.
 
@@ -65,7 +65,7 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             |
             +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
-                 +-- M005 explicit group checkout placement     [blocked: strict M004, ADR-0032 accepted, writer containment]
+                 +-- M005 explicit group checkout placement     [blocked: writer containment]
                       |
                       +-- M006 session / worktree launch ergonomics [blocked: M005]
                       |
@@ -84,7 +84,7 @@ Repair the Shared classification so mutation capability is derived from effectiv
 
 Plan: plans/implementation/agent-workstream-blackboard/001-work-order-workspace-policy-corrective.md
 
-Closure: plans/closure/agent-workstream-blackboard/001-status.md. Shared and Serialized mutations now fail closed because an ordinary AgentTurn can bypass the former global scheduler key. M005 owns the common reservation follow-up, still gated on M004 and ADR-0032 acceptance.
+Closure: plans/closure/agent-workstream-blackboard/001-status.md. Shared and Serialized mutations now fail closed because an ordinary AgentTurn can bypass the former global scheduler key. M005 owns the common reservation follow-up, still gated on verified writer-path containment.
 
 ### M002 — Durable read-only workstream projections (closed)
 
@@ -123,7 +123,7 @@ strict status is controlled by corrective closure 009.
 Plan: `plans/implementation/agent-workstream-blackboard/009-peer-observation-before-mutation-corrective.md`.
 Closure: `plans/closure/agent-workstream-blackboard/009-status.md`.
 
-### M005 — Explicit group-owned worktree placement (blocked: M001, strict M004, accepted ADR-0032, writer-path containment)
+### M005 — Explicit group-owned worktree placement (blocked: verified writer-path containment)
 
 Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers.
 
@@ -164,4 +164,4 @@ Stop and create a new corrective plan if acceptance needs a second admission aut
 
 ## Registry/unblock responsibility
 
-After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009. M005 remains blocked until ADR-0032 acceptance and verified writer-path containment. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
+After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009 and ADR-0032 was accepted on 2026-10-15. M005 remains blocked until writer-path containment is verified. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.

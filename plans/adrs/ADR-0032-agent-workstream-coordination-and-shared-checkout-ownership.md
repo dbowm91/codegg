@@ -1,6 +1,6 @@
 # ADR-0032: Daemon-Owned Agent Workstream Coordination and Explicit Shared-Checkout Mutation
 
-Status: proposed — decision not yet accepted; no shared-write behavior authorized by this document
+Status: accepted — architecture direction accepted 2026-10-15; shared-checkout execution remains unauthorized until M005 qualification
 
 Date: 2026-10-15
 
@@ -46,9 +46,16 @@ Portable across checkouts but invites Git/index/merge contention, uncontrolled a
 
 ### C — Derive a read-only, group-scoped blackboard from canonical run/job/Git state; add small CAS-owned responsibility records and optional serialized shared-checkout group ownership
 
-Selected as the proposed direction, subject to acceptance for changed lease and shared-write contracts.
+Selected and accepted as the architecture direction, subject to M005
+qualification before any changed lease or shared-write behavior is enabled.
 
-## Proposed decision
+## Decision
+
+Accepted by explicit user direction on 2026-10-15. This accepts the
+architecture direction below; it does not qualify or enable serialized
+shared-checkout execution. M005 must still prove effective writer-path
+containment and satisfy the verification gates below before any shared-write
+mode can be activated.
 
 1. Define an AgentWorkstream as a bounded coordination view over an existing AgentRunGroup or direct owner and its authorized members; it is NOT a new scheduler, job, WorkOrder, session, execution authority or globally writable document. Reuse AgentRunGroupId where practicable; add a distinct ID only if tests prove groups cannot express required lifecycle.
 2. The daemon owns a durable, versioned workstream snapshot. Observed facts (run status, Git commits/changed paths, job/test status, dependency completion) are derived from canonical services. Agent-authored intent (task descriptions, declared intended paths, blockers, handoffs) is stored separately, labeled as claims, and never masquerades as verified execution evidence.
@@ -81,7 +88,7 @@ Once accepted and qualified, only ADR-0002's unconditional *per-child checkout f
 - Respect private projects and cross-principal tenancy; group membership is not a blanket permission grant.
 - Stop shared-write enablement if any Bash/terminal/exec/plugin/LSP/file/Git mutation path can circumvent the group execution reservation or if an approval/sandbox ceiling would need widening. In that case retain separate worktrees and deliver only peer-awareness improvements.
 
-## Verification needed before acceptance and closure
+## Verification required before shared-write enablement and strict ADR closure
 
 1. Contract review of existing ADR-0002, WorktreeService/lease generation, SubagentExecutor, WorkOrders and all mutation paths.
 2. Two agents racing for one responsibility, stale/replayed writes, overlap/rename/symlink claims, cancelled owners, restarts and 16-member capacity limits.
