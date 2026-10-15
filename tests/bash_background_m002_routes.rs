@@ -349,7 +349,7 @@ async fn identical_commands_distinct_ids_same_invocation_reuses() {
 #[tokio::test(flavor = "current_thread")]
 async fn background_rejects_without_session_and_blocked_commands() {
     let (submission, _scheduler, notifications) = harness().await;
-    let tool = bash_tool_with(submission, notifications);
+    let tool = bash_tool_with(submission.clone(), notifications.clone());
     // No session in ctx-free legacy path -> fail without spawning.
     let err = tool
         .execute(serde_json::json!({"command": "echo hi", "execution_mode": "background"}))
@@ -357,7 +357,9 @@ async fn background_rejects_without_session_and_blocked_commands() {
         .unwrap_err();
     assert!(err.to_string().contains("session context"), "got {err}");
     // Blocked commands fail before any submit even in foreground.
-    let err = tool
+    let blocked_tool =
+        bash_tool_with(submission, notifications).with_blocked_commands(vec!["rm -rf /"]);
+    let err = blocked_tool
         .execute(serde_json::json!({"command": "rm -rf /"}))
         .await
         .unwrap_err();
