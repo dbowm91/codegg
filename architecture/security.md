@@ -195,14 +195,14 @@ and passes an architecture-checked `seccompiler` denylist to Bubblewrap for
 installation before target exec. The filter blocks namespace and legacy/new
 mount changes, tracing, selected kernel control interfaces, and namespace flags
 passed to `clone`; it does not implement network denial. Exact-head hosted run
-[`38762601406`](https://github.com/dbowm91/codegg/actions/runs/38762601406)
-passed M004 host-PID/proc, signal, abstract/pathname socket, descriptor, seccomp,
-Rustup discovery and `rustc --version` probes, plus protected-mount and trusted-Git
+[`38764899922`](https://github.com/dbowm91/codegg/actions/runs/38764899922)
+passed M004 host-PID/proc and proc-content invisibility, signal, abstract/pathname
+socket, descriptor, seccomp, ptrace/process_vm denial, detached-session descendant
+cancellation, and Rustup/rustc probes, plus protected-mount and trusted-Git
 regressions. The runner relaxed its ephemeral unprivileged-userns AppArmor
-sysctl. Broader Cargo/compiler support, proc content/ptrace probes, PTY service
-routing, detached-session descendants, and other host configurations remain
-unqualified. The process tier is not production-admitted while those M004 and
-M003 gates remain open.
+sysctl. Broader Cargo/compiler support, cross-session isolation, PTY service
+routing, and other host configurations remain unqualified. The process tier is
+not production-admitted while those M004 and M003 gates remain open.
 
 ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
