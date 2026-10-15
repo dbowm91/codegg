@@ -3417,6 +3417,38 @@ mod tests {
             !timeout_marker.exists(),
             "target continued after managed timeout cleanup"
         );
+
+        let cancel_marker = workspace.path().join("cancel-must-not-run");
+        let cancel_script = format!("sleep 5; touch {}", shell_quote(&cancel_marker));
+        let cancel_spec = timeout_config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), cancel_script],
+                Some(workspace.path()),
+            )
+            .expect("cancellation launch lease");
+        let mut cancel_argv = vec![cancel_spec.target.as_os_str().to_owned()];
+        cancel_argv.extend(cancel_spec.args.iter().map(OsString::from));
+        let cancellation = CancellationToken::new();
+        let mut cancel_request = ManagedProcessRequest::new(
+            cancel_argv,
+            workspace.path().to_owned(),
+            ProcessProvenance::new("c009-native", "cancellation-cleanup"),
+        );
+        cancel_request.sandbox = SandboxRequest::Required(cancel_spec);
+        cancel_request.cancellation = cancellation.clone();
+        let task = tokio::spawn(ManagedProcessService::run(cancel_request));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancellation.cancel();
+        let cancelled = task
+            .await
+            .expect("cancelled native child task")
+            .expect("cancelled child is reaped");
+        assert_eq!(cancelled.termination, TerminationReason::Cancelled);
+        assert!(
+            !cancel_marker.exists(),
+            "target continued after managed cancellation cleanup"
+        );
     }
 
     #[cfg(target_os = "linux")]
