@@ -467,6 +467,15 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
     }
 
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("test runner HOME is available");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".rustup"));
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cargo"));
     let cargo =
         std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
             .map(|directory| directory.join("cargo"))
@@ -493,26 +502,39 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
             ],
         ),
     ] {
-        // SandboxConfig resolves executable symlinks to pin the target. Keep
-        // rustup's proxy dispatch explicit so the canonical binary receives
-        // `run <toolchain> cargo` rather than interpreting `check` as a
-        // rustup subcommand.
-        let (executable, launch_args) = if uses_rustup_shim {
-            let mut launch_args =
-                vec!["run".to_string(), "stable".to_string(), "cargo".to_string()];
-            launch_args.extend(args.iter().map(|arg| (*arg).to_string()));
-            (cargo_target.as_path(), launch_args)
+        // The protected launch intentionally gives the target HOME=/tmp and
+        // clears inherited environment. Re-establish only the runner's
+        // installed Rust toolchain and Cargo caches so rustup and Cargo do not
+        // look for an empty /tmp/.rustup.
+        let mut launch_script = format!(
+            "export RUSTUP_HOME={}; export CARGO_HOME={}; export CARGO_BUILD_JOBS=2; ",
+            shell_quote(&rustup_home.to_string_lossy()),
+            shell_quote(&cargo_home.to_string_lossy()),
+        );
+        if uses_rustup_shim {
+            launch_script.push_str(&format!(
+                "exec {} run stable cargo",
+                shell_quote(&cargo_target.to_string_lossy())
+            ));
         } else {
-            (
-                cargo.as_path(),
-                args.iter().map(|arg| (*arg).to_string()).collect(),
-            )
-        };
+            let cargo_dir = cargo_target
+                .parent()
+                .expect("Cargo executable has a parent directory");
+            launch_script.push_str(&format!(
+                "export PATH={}:$PATH; exec {}",
+                shell_quote(&cargo_dir.to_string_lossy()),
+                shell_quote(&cargo_target.to_string_lossy())
+            ));
+        }
+        for arg in args {
+            launch_script.push(' ');
+            launch_script.push_str(&shell_quote(arg));
+        }
         let spec = SandboxConfig::new()
             .with_enabled(true)
             .with_mode(SandboxMode::WorkspaceWrite)
             .with_linux_process_isolation(true)
-            .launch_spec(executable, &launch_args, Some(&workspace))
+            .launch_spec("/bin/sh", &["-c".into(), launch_script], Some(&workspace))
             .expect("M004 Cargo launch spec");
         let mut request = ManagedProcessRequest::new(
             [spec.target.as_os_str().to_owned()]
@@ -522,10 +544,6 @@ async fn process_tier_runs_workspace_check_and_managed_process_tests() {
             workspace.clone(),
             ProcessProvenance::new("linux-m004", operation),
         );
-        request.environment_policy = request
-            .environment_policy
-            .clone()
-            .with_var("CARGO_BUILD_JOBS", "2");
         request.timeout = Some(Duration::from_secs(15 * 60));
         request.sandbox = SandboxRequest::Required(spec);
         let result = ManagedProcessService::run(request)
