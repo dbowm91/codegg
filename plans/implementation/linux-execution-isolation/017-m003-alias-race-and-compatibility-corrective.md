@@ -141,7 +141,8 @@ The candidate is currently internal and opt-in through `SandboxConfig::with_linu
 - The workflow proves a real native protected-mount launch and the tested fixture's obtained visibility/denial behavior. It does not record `uname`/Bubblewrap facts for a broader host matrix or claim process, IPC, network, seccomp, or resource isolation.
 - Commit `6cdfee6662bdef3fedbd9e2f58a09ff160da6626` was tested by hosted run [`38672792308`](https://github.com/dbowm91/codegg/actions/runs/38672792308), job `116219548811`; conclusion: success. It passed the two protected-mount native tests and all 9 tests selected by the serial trusted-Git config filter; the full local egggit suite passed 96 tests.
 - The trusted-Git integration regression covers repository-configured external diff and textconv helpers; ordinary diff output remained available and the helper marker stayed absent. Hosted evidence is run `38672792308`.
-- The linked-worktree native fixture now also runs `python3` to write a file inside the selected workspace; the local opt-in native test passed with that addition. Exact-head hosted evidence for the Python compatibility extension is pending.
+- Commit `9dddcc5d7c69dd3117dc8eafd009881719dec63d` was tested by hosted run [`38674058393`](https://github.com/dbowm91/codegg/actions/runs/38674058393), job `116223507871`; conclusion: success. It again passed 2/2 protected-mount tests and 9/9 trusted-Git config tests.
+- The linked-worktree native fixture runs `python3` to write a file inside the selected workspace; the assertion passed locally and on the exact hosted head. This qualifies one normal Python write path, not general Python package installation or subprocess compatibility.
 
 ### Remaining acceptance work
 
