@@ -17656,6 +17656,7 @@ mod connection_rotation_tests {
             model_count: 0,
             catalog_revision: None,
             health: None,
+            credential_hint: None,
         }
     }
 

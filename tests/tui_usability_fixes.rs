@@ -90,6 +90,7 @@ fn connection_summary(id: &str) -> codegg::protocol::provider::ProviderConnectio
         model_count: 0,
         catalog_revision: None,
         health: None,
+        credential_hint: None,
     }
 }
 

@@ -272,13 +272,31 @@ a provider connection, and the code keeps them separate in the type system
   authenticated operation has accepted this credential yet".
 - `SetupProbeStrategy::credential_evidence()` declares what a strategy may
   prove. `ProviderCatalog` → `CredentialEvidence::CatalogOnly` (never
-  verification); `AuthenticatedCompatibleCatalog` →
-  `CredentialEvidence::Authenticated` (the strict `/models` request is a
-  genuinely authenticated, non-billable metadata call, so 2xx verifies).
-  `CredentialVerification::from_probe` is the only place provisioning may
-  derive a credential verdict from a probe.
-- No provider is ever billed to validate a credential; nothing on this path
-  issues an inference request.
+  verification). `CredentialVerification::from_probe` is the only place a
+  **catalog probe** may derive a credential verdict, and both strategies now
+  land on `Unverified` from it.
+- **Only a real completion verifies a credential.** No metadata request can,
+  however strictly it is authenticated. Measured against the real OpenCode Go
+  gateway (`https://opencode.ai/zen/go/v1`): `GET /models` with a bogus bearer
+  answers 401, but `GET /models` with **no** `Authorization` header answers
+  **200**. A key with no active entitlement therefore passes catalog discovery
+  and fails every completion with `403 An active OpenCode Go subscription is
+  required`. Verification is a separate bounded step
+  (`CompatibleCredentialProbe`), run against a model the same probe already
+  discovered, that spends one real completion with `max_tokens = 1` under a 10s
+  deadline and the caller's existing cancellation token. The request is built
+  for the surface the shared profile resolved for that model
+  (`provider_profile::resolve_route` → Chat / Responses / Messages), never a
+  hardcoded Chat body that the surface would reject before it evaluated the
+  credential. It is the only path that may produce `Verified`.
+- The verification step is deliberately asymmetric about failure:
+  a typed 401/403/407 fails the whole probe (`ProbeReason::AuthenticationFailed`),
+  so a rotation cannot commit a dead key; an empty catalog, an unresolved wire
+  mapping, a timeout, a cancellation, or any non-authentication status yields
+  `Unverified` — honestly unknown, never a promotion and never a rejection.
+- The verification step costs one token of a real completion. That is the
+  price of not billing a user for a false "verified", and it is bounded to one
+  token per rotate/refresh rather than per turn.
 
 Durable state: `provider_connection_health.credential_status` (migration v69,
 additive `ALTER TABLE ... ADD COLUMN` with a CHECK constraint mirroring the
@@ -298,15 +316,21 @@ verdict for a rotated-away credential is discarded. Inconclusive outcomes
 
 Policy on the other write paths:
 
-- **Provision**: catalog-only probes commit `unverified`; the authenticated
-  compatible probe commits `verified`.
+- **Provision**: catalog discovery alone commits `unverified`; the probe
+  commits `verified` only when its bounded verification completion is accepted.
 - **Rotate**: installs a new credential, so the verdict is re-derived from
-  the new probe rather than inherited.
+  the new probe rather than inherited. A completion-level rejection fails the
+  rotation with `RotationError::CredentialRejected` (reason code
+  `credential_authentication_failed`): the staged secret is dropped, the
+  rotation never commits, and the previously bound credential keeps its own
+  durable verdict.
 - **Refresh**: rediscovers the catalog for the *same* credential, so the
-  credential axis is preserved unless the refresh itself ran an authenticated
-  probe. A routine catalog refresh cannot erase a durable `verified` verdict
-  or a genuine `authentication_failed`. Refresh failures likewise only move
-  the credential axis on a typed 401/403 (`RefreshError::CredentialRejected`).
+  credential axis is preserved unless this refresh's own verification
+  completion was accepted. A routine catalog refresh cannot erase a durable
+  `verified` verdict or a genuine `authentication_failed`. Refresh failures
+  likewise only move the credential axis on a typed 401/403
+  (`RefreshError::CredentialRejected`); a cancelled or timed-out refresh
+  leaves `credential_status` byte-for-byte untouched.
 
 Operator-visible messaging must state the two axes separately
 (`connect_success_message`); a single unqualified "connected" message asserts

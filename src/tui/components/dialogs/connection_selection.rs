@@ -122,6 +122,51 @@ pub struct PendingSelectionUpdate {
     pub catalog_revision: String,
 }
 
+/// Number of leading connection-id characters shown on a row.
+///
+/// Eight is enough to separate two rows that are otherwise identical while
+/// staying short enough to leave room for the credential hint.
+const CONNECTION_ID_PREVIEW_LEN: usize = 8;
+
+/// Short, stable discriminator for one connection id.
+fn short_connection_id(id: &str) -> String {
+    id.chars().take(CONNECTION_ID_PREVIEW_LEN).collect()
+}
+
+/// Render one connection row.
+///
+/// A display name is not an identity: two connections can legitimately share
+/// one (`eggstackmain` twice on the same provider, differing only by id and
+/// bound key), and `R`/`d`/`e` act on whichever row is highlighted. The row
+/// therefore carries three discriminators — a short id, the masked credential
+/// tail when one is bound, and the current state — so the user can always say
+/// which key they are about to replace.
+///
+/// They come *before* the descriptive tail on purpose. The connections pane is
+/// half a narrow terminal, and a discriminator pushed behind the provider kind
+/// and model count is exactly the part that gets truncated away at 120 columns
+/// — reintroducing the ambiguity this row exists to remove.
+///
+/// The hint is exactly the four trailing characters the daemon computed; the
+/// dialog never sees, derives, or widens it. Connections with no binding simply
+/// omit it and fall back to the short id.
+fn connection_row_label(connection: &ProviderConnectionSummaryDto) -> String {
+    let mut label = format!(
+        "{} · {}",
+        connection.display_name,
+        short_connection_id(&connection.id),
+    );
+    if let Some(hint) = connection.credential_hint.as_deref() {
+        label.push_str(" · ");
+        label.push_str(hint);
+    }
+    label.push_str(&format!(
+        " · {} · ({}) · {} models",
+        connection.state, connection.provider_kind, connection.model_count
+    ));
+    label
+}
+
 impl Component for ConnectionSelectionDialog {
     fn handle_key(&mut self, key: KeyEvent) -> Option<crate::tui::app::TuiMsg> {
         // While the catalog is loading the dialog renders only the
@@ -282,14 +327,7 @@ impl Component for ConnectionSelectionDialog {
 
         let mut items = Vec::with_capacity(self.connections.len());
         for connection in &self.connections {
-            let label = format!(
-                "{} ({}) — {} models — {}",
-                connection.display_name,
-                connection.provider_kind,
-                connection.model_count,
-                connection.state,
-            );
-            items.push(ListItem::new(label));
+            items.push(ListItem::new(connection_row_label(connection)));
         }
         let mut list_state = ListState::default();
         list_state.select(Some(self.connection_idx));
@@ -388,5 +426,157 @@ impl Component for ConnectionSelectionDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::ConnectionSelection
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn connection(
+        id: &str,
+        name: &str,
+        state: &str,
+        hint: Option<&str>,
+    ) -> ProviderConnectionSummaryDto {
+        ProviderConnectionSummaryDto {
+            id: id.to_string(),
+            provider_kind: "other:opencode_go".to_string(),
+            display_name: name.to_string(),
+            endpoint: "https://opencode.ai/zen/go/v1".to_string(),
+            tls_policy: "required".to_string(),
+            scope: "personal:local-user".to_string(),
+            state: state.to_string(),
+            revision: 3,
+            model_count: 4,
+            catalog_revision: None,
+            health: None,
+            credential_hint: hint.map(ToOwned::to_owned),
+        }
+    }
+
+    fn render_rows(connections: Vec<ProviderConnectionSummaryDto>) -> String {
+        let theme = Arc::new(Theme::default());
+        let mut dialog =
+            ConnectionSelectionDialog::new("session-1".to_string(), Arc::clone(&theme));
+        dialog.loading = false;
+        dialog.connections = connections;
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, frame.area(), &theme))
+            .expect("dialog renders");
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The live complaint: two connections both named `eggstackmain`, both
+    /// `other:opencode_go`, differing only by id and bound credential. With
+    /// only the display name rendered they are the same row twice, so the user
+    /// cannot tell which key `R` is about to replace.
+    #[test]
+    fn connections_sharing_a_display_name_render_as_distinguishable_rows() {
+        let rendered = render_rows(vec![
+            connection(
+                "0f3c9a11-7b2e-4c55-9d0e-1a2b3c4d5e6f",
+                "eggstackmain",
+                "active",
+                Some("…LooA"),
+            ),
+            connection(
+                "9a1d2e33-84ff-4a0b-9c7d-6e5f4a3b2c1d",
+                "eggstackmain",
+                "disabled",
+                Some("…9xQb"),
+            ),
+        ]);
+
+        let row_lines: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.contains("eggstackmain"))
+            .collect();
+        assert_eq!(row_lines.len(), 2, "both rows must render");
+        assert_ne!(
+            row_lines[0], row_lines[1],
+            "two identical names must not produce identical rows"
+        );
+        assert!(
+            rendered.contains("…LooA"),
+            "the credential hint must render"
+        );
+        assert!(rendered.contains("…9xQb"));
+        assert!(
+            rendered.contains("0f3c9a11") && rendered.contains("9a1d2e33"),
+            "the short connection id must render"
+        );
+        assert!(rendered.contains("active") && rendered.contains("disabled"));
+    }
+
+    /// Even with no credential bound, two same-named rows stay separable by
+    /// their short id — the hint is a bonus, never the only discriminator.
+    #[test]
+    fn same_named_rows_without_a_hint_stay_distinguishable() {
+        let rendered = render_rows(vec![
+            connection("0f3c9a11-7b2e-4c55", "eggstackmain", "active", None),
+            connection("9a1d2e33-84ff-4a0b", "eggstackmain", "active", None),
+        ]);
+        let row_lines: Vec<&str> = rendered
+            .lines()
+            .filter(|line| line.contains("eggstackmain"))
+            .collect();
+        assert_eq!(row_lines.len(), 2);
+        assert_ne!(row_lines[0], row_lines[1]);
+        assert!(!rendered.contains('…'), "no binding means no ellipsis row");
+    }
+
+    /// The lifecycle legend and the error row must not be displaced by the
+    /// richer rows: an error the user cannot read is the same dead end as a
+    /// key they cannot find.
+    #[test]
+    fn legend_and_error_rows_still_render() {
+        let theme = Arc::new(Theme::default());
+        let mut dialog =
+            ConnectionSelectionDialog::new("session-1".to_string(), Arc::clone(&theme));
+        dialog.loading = false;
+        dialog.connections = vec![connection(
+            "0f3c9a11-7b2e-4c55",
+            "eggstackmain",
+            "active",
+            Some("…LooA"),
+        )];
+        dialog.set_error("rotation failed: credential rejected".to_string());
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|frame| dialog.render(frame, frame.area(), &theme))
+            .expect("dialog renders");
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("credential rejected"));
+        assert!(rendered.contains("p purge"));
+        assert!(rendered.contains("…LooA"));
+    }
+
+    #[test]
+    fn short_connection_id_is_bounded_to_eight_characters() {
+        assert_eq!(short_connection_id("0f3c9a11-7b2e"), "0f3c9a11");
+        assert_eq!(short_connection_id("abc"), "abc");
+        assert_eq!(short_connection_id(""), "");
     }
 }

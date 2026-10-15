@@ -570,6 +570,355 @@ impl CompatibleProbe {
     }
 }
 
+// ── Credential verification (bounded real completion) ──────────────
+//
+// `CompatibleProbe` above discovers a catalog. It does **not** verify a
+// credential, and this half of the module exists because that distinction is
+// not cosmetic: several real `/models` endpoints answer `200` to an
+// unauthenticated reader, so a catalog 2xx says the *catalog* is usable and
+// nothing at all about the key. Only a real completion can reject a credential
+// that a rotation just installed, so promotion to `verified` requires one.
+
+/// Smallest completion budget a credential-verification request may ask for.
+///
+/// One token is enough to prove the credential can *start* a real completion —
+/// exactly the fact a catalog probe cannot establish — and keeps the check free.
+pub const CREDENTIAL_PROBE_MAX_TOKENS: usize = 1;
+
+/// Prompt used by the verification completion.
+///
+/// Fixed and meaningless on purpose: the verdict is carried entirely by the
+/// status line, so the text must never be able to influence one.
+const CREDENTIAL_PROBE_PROMPT: &str = "ping";
+
+/// Response-body bound for the verification request.
+///
+/// The status line is the whole verdict, so nothing is retained and no model
+/// output can leak into a log line or a durable row.
+const CREDENTIAL_PROBE_BYTE_LIMIT: usize = 8 * 1024;
+
+const DEFAULT_CREDENTIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_CREDENTIAL_OVERALL_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Verdict of one bounded credential-verification completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialVerificationOutcome {
+    /// A real completion accepted the credential. This is the **only** positive
+    /// evidence that may promote a connection to `verified`.
+    Accepted,
+    /// A real completion rejected the credential with a typed 401/403/407.
+    Rejected,
+    /// The completion could not be judged: transport failure, timeout, a
+    /// non-authentication status, or a surface this probe cannot build.
+    ///
+    /// Says nothing whatsoever about the credential. It must never be read as
+    /// either acceptance or rejection — a network blip is not a bad key.
+    Inconclusive,
+}
+
+/// Bounded timeouts for the credential-verification completion.
+///
+/// Deliberately tighter than the catalog probe's budget: the catalog request is
+/// a cheap metadata read, while this one spends a real (if minimal)
+/// completion against the user's account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialProbeOptions {
+    pub connect_timeout: Duration,
+    pub request_timeout: Duration,
+    pub overall_timeout: Duration,
+}
+
+impl Default for CredentialProbeOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: DEFAULT_CREDENTIAL_REQUEST_TIMEOUT,
+            overall_timeout: DEFAULT_CREDENTIAL_OVERALL_TIMEOUT,
+        }
+    }
+}
+
+/// Where one verification request is actually sent.
+///
+/// Resolved before any socket is opened. For a provider the shared profile
+/// adapts, this is the profile's own model → surface → URL/auth resolution; for
+/// a plain OpenAI-compatible endpoint it is `{base}/chat/completions` with a
+/// bearer credential, matching the catalog probe on the same connection.
+#[derive(Debug, Clone)]
+struct VerificationRoute {
+    url: String,
+    surface: eggpool_wire::profile::WireSurface,
+    auth: crate::provider_profile::RouteAuth,
+    static_headers: Vec<(String, String)>,
+}
+
+/// Bounded, credential-verifying completion probe for a compatible endpoint.
+///
+/// Sibling of [`CompatibleProbe`] rather than a mode of it: catalog discovery
+/// and credential verification are different questions with different evidence
+/// and different failure handling, and collapsing them is what let a dead key
+/// report itself as verified.
+pub struct CompatibleCredentialProbe {
+    base_url: String,
+    api_key: EggpoolApiKey,
+    /// CodeGG provider id, when the connection is bound to a known provider.
+    ///
+    /// `None` (or an id the shared profile does not adapt) selects the generic
+    /// OpenAI-compatible route. An adapted provider whose model has no reviewed
+    /// wire mapping yields [`CredentialVerificationOutcome::Inconclusive`] —
+    /// never a silent default to Chat.
+    provider_id: Option<String>,
+    options: CredentialProbeOptions,
+    client: eggfetch_core::Client,
+}
+
+impl fmt::Debug for CompatibleCredentialProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompatibleCredentialProbe")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key)
+            .field("provider_id", &self.provider_id)
+            .field("options", &self.options)
+            .finish_non_exhaustive()
+    }
+}
+
+impl CompatibleCredentialProbe {
+    pub fn new(
+        base_url: impl AsRef<str>,
+        api_key: impl Into<EggpoolApiKey>,
+        provider_id: Option<&str>,
+        options: CredentialProbeOptions,
+    ) -> Result<Self, EggpoolProbeError> {
+        if options.connect_timeout.is_zero()
+            || options.request_timeout.is_zero()
+            || options.overall_timeout.is_zero()
+        {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+        }
+        let base_url = normalize_compatible_base_url(base_url.as_ref())?;
+        let api_key = api_key.into();
+        if api_key.0.chars().any(char::is_control) {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput));
+        }
+        let client = eggfetch_core::Client::builder()
+            .timeout(
+                eggfetch_core::Timeout::builder()
+                    .connect(options.connect_timeout)
+                    .total(options.request_timeout)
+                    .build(),
+            )
+            .follow_redirects(false)
+            .build();
+        Ok(Self {
+            base_url,
+            api_key,
+            provider_id: provider_id.map(ToOwned::to_owned),
+            options,
+            client,
+        })
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Run one minimal completion and report what it proved about the key.
+    ///
+    /// `model` must come from a catalog this connection already discovered. The
+    /// only hard error is cancellation; every other failure mode is reported as
+    /// [`CredentialVerificationOutcome::Inconclusive`] so an unreachable or
+    /// slow provider can never be mistaken for an invalid credential.
+    pub async fn verify(
+        &self,
+        model: &str,
+        cancellation: &EggpoolCancellationToken,
+    ) -> Result<CredentialVerificationOutcome, EggpoolProbeError> {
+        if cancellation.is_cancelled() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled));
+        }
+        // A connection with no credential has nothing for this probe to prove;
+        // sending an empty bearer would report an anonymous connection as
+        // credential-failed, which is a different fact entirely.
+        if self.api_key.0.is_empty() {
+            return Ok(CredentialVerificationOutcome::Inconclusive);
+        }
+        let Some(route) = self.route(model) else {
+            return Ok(CredentialVerificationOutcome::Inconclusive);
+        };
+        let body = match encode_verification_body(model, route.surface) {
+            Ok(body) => body,
+            Err(_) => return Ok(CredentialVerificationOutcome::Inconclusive),
+        };
+        match tokio::time::timeout(
+            self.options.overall_timeout,
+            self.verify_inner(&route, body, cancellation),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Ok(CredentialVerificationOutcome::Inconclusive),
+        }
+    }
+
+    async fn verify_inner(
+        &self,
+        route: &VerificationRoute,
+        body: Value,
+        cancellation: &EggpoolCancellationToken,
+    ) -> Result<CredentialVerificationOutcome, EggpoolProbeError> {
+        let mut request = self
+            .client
+            .post(&route.url)
+            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?
+            .max_decoded_body_size(CREDENTIAL_PROBE_BYTE_LIMIT)
+            .header("content-type", "application/json");
+        request = match credential_header(&route.auth, &self.api_key.0) {
+            Ok((name, value)) => request.header(&name, &value),
+            Err(reason) => return Err(EggpoolProbeError::new(reason)),
+        };
+        for (name, value) in &route.static_headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        request = request
+            .json(&body)
+            .map_err(|_| EggpoolProbeError::new(EggpoolProbeReasonCode::InvalidInput))?;
+
+        let response = select_cancel(cancellation, request.send()).await?;
+        if cancellation.is_cancelled() {
+            return Err(EggpoolProbeError::new(EggpoolProbeReasonCode::Cancelled));
+        }
+        let status = response.status();
+        if status == http::StatusCode::UNAUTHORIZED
+            || status == http::StatusCode::FORBIDDEN
+            || status == http::StatusCode::PROXY_AUTHENTICATION_REQUIRED
+        {
+            return Ok(CredentialVerificationOutcome::Rejected);
+        }
+        if status.is_success() {
+            return Ok(CredentialVerificationOutcome::Accepted);
+        }
+        // Everything else — 404 because the model is not on this surface, 429,
+        // 5xx — is a statement about the request, not the credential.
+        Ok(CredentialVerificationOutcome::Inconclusive)
+    }
+
+    /// Resolve the single surface this verification request may target.
+    ///
+    /// `None` means "no reviewed route exists", which is reported as
+    /// inconclusive rather than guessed around.
+    fn route(&self, model: &str) -> Option<VerificationRoute> {
+        use eggpool_wire::profile::WireSurface;
+
+        // An unknown provider identity is not an unresolved route — it is a
+        // plain OpenAI-compatible endpoint, which is exactly what the catalog
+        // probe on the same connection already speaks.
+        let Some(provider_id) = self.provider_id.as_deref() else {
+            return Some(self.compatible_route());
+        };
+        // Only a provider the shared profile actually adapts may resolve a
+        // route; everything else uses the generic compatible surface below.
+        if crate::provider_profile::shared_provider_id(provider_id).is_none() {
+            return Some(self.compatible_route());
+        }
+        let route = crate::provider_profile::resolve_route(provider_id, model).ok()?;
+        // Only the finite request surfaces can carry a minimal completion.
+        match route.surface {
+            WireSurface::OpenaiChatCompletions
+            | WireSurface::OpenaiResponses
+            | WireSurface::AnthropicMessages => {}
+            _ => return None,
+        }
+        Some(VerificationRoute {
+            url: route.url,
+            surface: route.surface,
+            auth: route.auth,
+            static_headers: route.static_headers,
+        })
+    }
+
+    /// Generic OpenAI-compatible route for an endpoint with no shared profile.
+    fn compatible_route(&self) -> VerificationRoute {
+        use eggpool_wire::profile::WireSurface;
+        VerificationRoute {
+            url: format!("{}/chat/completions", self.base_url),
+            surface: WireSurface::OpenaiChatCompletions,
+            // Same shape the catalog probe presents on this connection, so the
+            // two halves of one probe never disagree about the key.
+            auth: crate::provider_profile::RouteAuth::Bearer {
+                header: "authorization".to_owned(),
+                scheme: "Bearer".to_owned(),
+            },
+            static_headers: Vec::new(),
+        }
+    }
+}
+
+/// Render the resolved surface's credential shape into a header pair.
+///
+/// Rejects a surface that declares no credential rather than silently sending
+/// an unauthenticated request that would read as a rejection.
+fn credential_header(
+    auth: &crate::provider_profile::RouteAuth,
+    secret: &str,
+) -> Result<(String, String), EggpoolProbeReasonCode> {
+    use crate::provider_profile::RouteAuth;
+    let (name, value) = match auth {
+        RouteAuth::Bearer { header, scheme } => (header.clone(), format!("{scheme} {secret}")),
+        RouteAuth::ApiKeyHeader { header } | RouteAuth::RawAuthorization { header } => {
+            (header.clone(), secret.to_owned())
+        }
+        RouteAuth::None => return Err(EggpoolProbeReasonCode::InvalidInput),
+    };
+    if value.chars().any(|character| character.is_control()) {
+        return Err(EggpoolProbeReasonCode::InvalidInput);
+    }
+    Ok((name, value))
+}
+
+/// Build the smallest request the resolved surface accepts.
+///
+/// Mirrors the surface dispatch every streaming provider uses, so a model on
+/// Anthropic Messages or OpenAI Responses is verified through the grammar it
+/// actually runs on rather than a hardcoded Chat body that the surface would
+/// reject before it ever evaluated the credential.
+fn encode_verification_body(
+    model: &str,
+    surface: eggpool_wire::profile::WireSurface,
+) -> Result<Value, crate::ProviderError> {
+    use crate::provider_core::{ChatRequest, ContentPart, Message};
+    use eggpool_wire::profile::WireSurface;
+
+    let request = ChatRequest {
+        messages: vec![Message::User {
+            content: vec![ContentPart::Text {
+                text: Arc::new(CREDENTIAL_PROBE_PROMPT.to_owned()),
+            }],
+        }],
+        model: model.to_owned(),
+        tools: None,
+        system: None,
+        temperature: None,
+        top_p: None,
+        max_tokens: Some(CREDENTIAL_PROBE_MAX_TOKENS),
+        response_format: None,
+        thinking_budget: None,
+        reasoning_effort: None,
+        context: Default::default(),
+    };
+    match surface {
+        WireSurface::OpenaiChatCompletions => {
+            crate::wire::encode_openai_chat(&request, None, false)
+        }
+        WireSurface::OpenaiResponses => crate::wire::encode_openai_responses(&request, false),
+        WireSurface::AnthropicMessages => crate::wire::encode_anthropic_messages(&request),
+        other => Err(crate::ProviderError::api(
+            "wire_surface_unsupported",
+            format!("wire surface {other:?} cannot carry a verification completion"),
+        )),
+    }
+}
+
 fn validate_options(options: &EggpoolProbeOptions) -> Result<(), EggpoolProbeError> {
     if options.connect_timeout.is_zero()
         || options.request_timeout.is_zero()
@@ -738,6 +1087,48 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::OnceLock;
     use std::thread;
+
+    /// An unknown provider identity is a plain OpenAI-compatible endpoint, so
+    /// verification must fall back to the generic Chat route rather than
+    /// declaring itself unable to verify anything.
+    #[test]
+    fn verification_route_falls_back_to_chat_for_an_unknown_provider() {
+        for provider_id in [None, Some("custom"), Some("eggpool")] {
+            let probe = CompatibleCredentialProbe::new(
+                "http://127.0.0.1:9/v1",
+                EggpoolApiKey::new("k"),
+                provider_id,
+                CredentialProbeOptions::default(),
+            )
+            .expect("probe builds");
+            let route = probe
+                .route("some-model")
+                .expect("a compatible route exists");
+            assert_eq!(route.url, "http://127.0.0.1:9/v1/chat/completions");
+            assert_eq!(
+                route.surface,
+                eggpool_wire::profile::WireSurface::OpenaiChatCompletions
+            );
+        }
+    }
+
+    /// A provider the shared profile *does* adapt must resolve through the
+    /// profile — and a model with no reviewed wire mapping must fail closed
+    /// rather than silently defaulting to Chat.
+    #[test]
+    fn verification_route_fails_closed_for_an_unresolved_adapted_model() {
+        let probe = CompatibleCredentialProbe::new(
+            "http://127.0.0.1:9/v1",
+            EggpoolApiKey::new("k"),
+            Some(crate::opencode_go::PROVIDER_ID),
+            CredentialProbeOptions::default(),
+        )
+        .expect("probe builds");
+        assert!(
+            probe.route("no-such-model-in-the-profile").is_none(),
+            "an unreviewed model must not be guessed onto Chat"
+        );
+    }
 
     struct FakeServer {
         url: String,

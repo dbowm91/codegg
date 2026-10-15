@@ -337,6 +337,12 @@ fn legacy_resolution_to_dto(
 
 /// Build a redacted [`ProviderConnectionSummaryDto`] for a connection.
 /// The summary never includes credential material.
+///
+/// `credential_hint` is therefore absent here: this path has no credential
+/// store — decryption belongs to the provisioning service — so it reports no
+/// discriminator rather than reaching for the secret. The connections list,
+/// which is what the picker renders, is built by the provisioning service and
+/// does carry the bounded tail.
 async fn summary_dto_for(
     connection: &ProviderConnection,
     connection_store: &ProviderConnectionStore,
@@ -373,6 +379,7 @@ async fn summary_dto_for(
                 }
             },
         ),
+        credential_hint: None,
     })
 }
 

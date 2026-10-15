@@ -297,6 +297,7 @@ impl CoreClient for FakeConnectDaemon {
                             model_count: fake_models(&request.provider_id).len(),
                             catalog_revision: Some("rev-1".to_string()),
                             health: None,
+                            credential_hint: None,
                         },
                         models: fake_models(&request.provider_id),
                         catalog_revision: "rev-1".to_string(),

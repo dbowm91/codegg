@@ -86,13 +86,22 @@ to violate.
    `Provider::models()` call proves only that the catalog is usable — several
    built-ins return local/static arrays with no network I/O, generic
    compatible discovery falls back rather than proving auth, and some
-   provider `/models` endpoints are publicly readable. Only
-   `SetupProbeStrategy::AuthenticatedCompatibleCatalog` (a genuinely
-   authenticated, non-billable metadata request) may yield
-   `CredentialVerification::Verified`, and only
-   `CredentialVerification::from_probe` may derive a verdict from a probe.
-   Never derive one from a probe result, a model count, or a `healthy` health
-   row. `scripts/check_provider_qualification.py` enforces the naming and the
+   provider `/models` endpoints are publicly readable (the real OpenCode Go
+   gateway answers `200` to `GET /models` with *no* `Authorization` header at
+   all). `CredentialVerification::from_probe` is the only place a **catalog
+   probe** may derive a verdict, and every strategy now lands on `Unverified`
+   from it.
+   **Only a real completion produces `Verified`.** `CompatibleCredentialProbe`
+   is the sole promotion path: it spends one bounded completion
+   (`max_tokens = 1`, ~10s, reusing the caller's cancellation token) against a
+   model the probe already discovered, building the request for the surface the
+   shared profile resolved for that model rather than hardcoding Chat. A typed
+   401/403 fails the probe so a dead key can never be committed; an empty
+   catalog, an unresolved wire mapping, a timeout, a cancellation, or any
+   non-authentication status yields `Unverified`, never a promotion and never a
+   rejection. Never derive a verdict from a probe result, a model count, or a
+   `healthy` health row.
+   `scripts/check_provider_qualification.py` enforces the naming and the
    typed write path.
 8. **Credential verdicts are revision-scoped and monotonic in safety.** The
    only durable credential evidence is an authenticated request on the exact

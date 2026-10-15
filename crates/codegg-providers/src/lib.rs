@@ -36,9 +36,10 @@ pub mod vertex;
 pub mod wire;
 
 pub use auth_types::{
-    incompatible_credential_message, mask_secret, AuthConfig, AuthError, AuthResolver, Credential,
-    CredentialCapability, CredentialKind, CredentialStore, ExternalCommandProvider,
-    ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext, StoredCredentialRecord,
+    credential_tail_hint, incompatible_credential_message, mask_secret, AuthConfig, AuthError,
+    AuthResolver, Credential, CredentialCapability, CredentialKind, CredentialStore,
+    ExternalCommandProvider, ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext,
+    StoredCredentialRecord, CREDENTIAL_HINT_TAIL_LEN,
 };
 pub use circuit::{CircuitBreaker, CircuitError, CircuitState};
 pub use connection::{
@@ -49,9 +50,10 @@ pub use connection::{
 };
 pub use eggpool::{
     normalize_compatible_base_url, normalize_eggpool_base_url, parse_compatible_models_response,
-    CompatibleProbe, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary, EggpoolProbe,
-    EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode, EggpoolProbeSummary,
-    EGGPOOL_DEFAULT_PORT,
+    CompatibleCredentialProbe, CompatibleProbe, CredentialProbeOptions,
+    CredentialVerificationOutcome, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary,
+    EggpoolProbe, EggpoolProbeError, EggpoolProbeOptions, EggpoolProbeReasonCode,
+    EggpoolProbeSummary, CREDENTIAL_PROBE_MAX_TOKENS, EGGPOOL_DEFAULT_PORT,
 };
 pub use error::{ProviderError, RetryDisposition, StorageError, MAX_RETRY_AFTER_HINT};
 pub use opencode_go::{qualify_models, unresolved_models, OpenCodeGoProvider};
