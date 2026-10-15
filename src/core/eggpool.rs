@@ -91,6 +91,8 @@ pub enum RotationError {
     EndpointPolicy,
     #[error("rotation probe failed")]
     ProbeFailed,
+    #[error("credential was rejected by the provider")]
+    CredentialRejected,
     #[error("rotation cancelled")]
     Cancelled,
     #[error("rotation persistence failed")]
@@ -548,7 +550,12 @@ impl ProviderConnectionProvisioner {
         let probe = match spec.probe_strategy {
             SetupProbeStrategy::AuthenticatedCompatibleCatalog => tokio::time::timeout(
                 WORKFLOW_TIMEOUT,
-                probe(spec.endpoint.as_str(), secret, cancel.clone()),
+                probe(
+                    spec.endpoint.as_str(),
+                    secret,
+                    Some(spec.provider_id.as_str()),
+                    cancel.clone(),
+                ),
             )
             .await
             .map_err(|_| EggpoolError::Probe(ProbeReason::Timeout))?
@@ -750,16 +757,14 @@ impl ProviderConnectionProvisioner {
             .map_err(|_| EggpoolError::Storage)?;
             if let Some((provider_ref, account_ref)) = previous_binding {
                 if let Some(store) = self.credential_store.clone() {
-                    // Never remove the binding the new connection just claimed.
-                    if account_ref != account_id {
-                        if let Err(error) = store.remove(&provider_ref, Some(&account_ref)) {
-                            tracing::warn!(
-                                ?error,
-                                %existing_id,
-                                "eggpool superseded credential cleanup failed"
-                            );
-                        }
-                    }
+                    self.prune_superseded_credential(
+                        &store,
+                        &provider_ref,
+                        &account_ref,
+                        Some(existing_id),
+                        Some(account_id),
+                    )
+                    .await;
                 }
             }
         }
@@ -1149,12 +1154,22 @@ impl ProviderConnectionProvisioner {
         };
         let probe_result = tokio::time::timeout(
             WORKFLOW_TIMEOUT,
-            probe(endpoint.as_str(), &probe_secret, cancel),
+            probe(
+                endpoint.as_str(),
+                &probe_secret,
+                Some(current.provider_kind.as_str()),
+                cancel,
+            ),
         )
         .await
         .map_err(|_| RotationError::ProbeFailed)?
         .map_err(|error| match error {
             ProbeReason::Cancelled => RotationError::Cancelled,
+            // A real completion rejected the staged key. Report it as a
+            // credential rejection rather than a generic probe failure: the
+            // rotation never commits, the staged secret is dropped, and the
+            // previously bound credential keeps its own durable verdict.
+            ProbeReason::AuthenticationFailed => RotationError::CredentialRejected,
             _ => RotationError::ProbeFailed,
         });
         let probe_result = match probe_result {
@@ -1208,8 +1223,26 @@ impl ProviderConnectionProvisioner {
         .await
         .map_err(|_| RotationError::Storage)?
         .flatten();
-        let catalog_unchanged =
-            old_catalog.as_deref() == Some(probe_result.catalog_revision.as_str());
+        // The copy shortcut is only valid when the previous revision actually
+        // holds the catalog to copy. Matching digests alone are not enough: if
+        // the catalog was ever stranded behind a revision bump, `old_catalog`
+        // can still equal the probe digest (the upstream catalog genuinely did
+        // not change) while `expected_revision` holds no rows at all. The copy
+        // then inserts nothing, the catalog stays empty at the new revision,
+        // and no later rotate or refresh can ever rebuild it — `/connections`
+        // reports zero models forever. Observed live on a connection at
+        // revision 16 whose models were stranded at revisions 1-3, through a
+        // rotate that reported success.
+        let previous_catalog_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(expected_revision as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+        let catalog_unchanged = previous_catalog_rows > 0
+            && old_catalog.as_deref() == Some(probe_result.catalog_revision.as_str());
         if catalog_unchanged {
             sqlx::query(
                 "INSERT INTO provider_connection_models (connection_id, revision, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision) SELECT connection_id, ?, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
@@ -1273,11 +1306,14 @@ impl ProviderConnectionProvisioner {
 
         if staged_secret.is_some() && delete_previous_on_commit {
             if let Some(old) = old_binding {
-                if let Err(error) =
-                    credential_store.remove(&old.provider_ref, Some(&old.account_ref))
-                {
-                    tracing::warn!(?error, "eggpool previous credential cleanup failed");
-                }
+                self.prune_superseded_credential(
+                    &credential_store,
+                    &old.provider_ref,
+                    &old.account_ref,
+                    Some(connection_id.as_str()),
+                    Some(&binding.account_ref),
+                )
+                .await;
             }
         }
         Ok(ConnectionRotateStatusDto {
@@ -1445,27 +1481,83 @@ impl ProviderConnectionProvisioner {
     > {
         let store =
             codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        self.purge_with_store(&store, connection_id, expected_revision)
+            .await
+    }
+
+    /// One-step delete for the operator's `d` verb: tombstone, then purge.
+    ///
+    /// Sharing [`Self::purge`] keeps the two verbs on one removal boundary —
+    /// a deleted connection drops its credential binding exactly like a purged
+    /// one, and a `Blocked` outcome leaves the tombstone for `p` to finish.
+    pub async fn delete(
+        &self,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<
+        codegg_core::provider_connections::PurgeOutcome,
+        codegg_core::provider_connections::ProviderConnectionError,
+    > {
+        let store =
+            codegg_core::provider_connections::ProviderConnectionStore::new(self.pool.clone());
+        // Read the binding before the row goes away: purge removes the row,
+        // and the credential it referenced has to be dropped with it or it is
+        // orphaned with nothing left referencing it.
+        let binding = store
+            .get(connection_id)
+            .await?
+            .and_then(|connection| connection.secret_binding);
+        let outcome = store
+            .delete_permanently(connection_id, expected_revision)
+            .await?;
+        self.drop_credential_if_purged(binding, &outcome);
+        Ok(outcome)
+    }
+
+    async fn purge_with_store(
+        &self,
+        store: &codegg_core::provider_connections::ProviderConnectionStore,
+        connection_id: &ProviderConnectionId,
+        expected_revision: u64,
+    ) -> Result<
+        codegg_core::provider_connections::PurgeOutcome,
+        codegg_core::provider_connections::ProviderConnectionError,
+    > {
         let binding = store
             .get(connection_id)
             .await?
             .and_then(|connection| connection.secret_binding);
         let outcome = store.purge(connection_id, expected_revision).await?;
-        if matches!(
+        self.drop_credential_if_purged(binding, &outcome);
+        Ok(outcome)
+    }
+
+    /// Drop the credential a removed connection pointed at.
+    ///
+    /// Only on `Purged`: a `Blocked` outcome leaves the tombstone in place,
+    /// and a tombstoned row still needs its binding to be diagnosable and to
+    /// be purgeable once the references clear.
+    fn drop_credential_if_purged(
+        &self,
+        binding: Option<codegg_core::provider_connections::SecretBindingLocator>,
+        outcome: &codegg_core::provider_connections::PurgeOutcome,
+    ) {
+        if !matches!(
             outcome,
             codegg_core::provider_connections::PurgeOutcome::Purged
         ) {
-            if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
-                if let Err(error) =
-                    credentials.remove(&binding.provider_ref, Some(&binding.account_ref))
-                {
-                    tracing::warn!(
-                        ?error,
-                        "eggpool purge credential cleanup failed; reconciliation will retry"
-                    );
-                }
+            return;
+        }
+        if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
+            if let Err(error) =
+                credentials.remove(&binding.provider_ref, Some(&binding.account_ref))
+            {
+                tracing::warn!(
+                    ?error,
+                    "eggpool purge credential cleanup failed; reconciliation will retry"
+                );
             }
         }
-        Ok(outcome)
     }
 
     async fn refresh_inner(
@@ -1521,7 +1613,13 @@ impl ProviderConnectionProvisioner {
         };
         let probe_result = tokio::time::timeout(
             Duration::from_millis(refresh_config.refresh_overall_timeout_ms),
-            probe_with_options(current.endpoint.as_str(), &api_key, cancel, probe_options),
+            probe_with_options(
+                current.endpoint.as_str(),
+                &api_key,
+                Some(current.provider_kind.as_str()),
+                cancel,
+                probe_options,
+            ),
         )
         .await
         .map_err(|_| RefreshError::Timeout)?
@@ -1546,8 +1644,23 @@ impl ProviderConnectionProvisioner {
         .await
         .map_err(|_| RefreshError::Storage)?
         .flatten();
-        let catalog_changed =
-            old_catalog.as_deref() != Some(probe_result.catalog_revision.as_str());
+        // A matching digest means the upstream catalog did not change, so there is
+        // nothing to promote. It does NOT mean this connection already holds
+        // its catalog: when the local rows are missing at the current revision
+        // — the state a stranded catalog leaves behind — refresh took the
+        // no-op branch, wrote no models, and could never repair it no matter
+        // how many times it was pressed. An absent catalog counts as changed so
+        // refresh rebuilds it.
+        let current_catalog_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(current.revision as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| RefreshError::Storage)?;
+        let catalog_changed = current_catalog_rows == 0
+            || old_catalog.as_deref() != Some(probe_result.catalog_revision.as_str());
         let revision = if catalog_changed {
             let next = current.revision.saturating_add(1);
             sqlx::query("UPDATE provider_connections SET revision = ?, time_updated = ? WHERE id = ? AND revision = ?")
@@ -1576,14 +1689,15 @@ impl ProviderConnectionProvisioner {
         } else {
             current.revision
         };
-        // A refresh rediscovers the catalog for the *same* credential, so a
-        // catalog-only probe learns nothing new about that credential. The
-        // credential axis is therefore preserved unless this refresh ran an
-        // authenticated metadata probe that positively verified it —
-        // otherwise a routine catalog refresh would erase a durable
-        // `verified` verdict (or a genuine `authentication_failed`) that came
-        // from real inference. Rotation is different: it installs a new
-        // credential, so the verdict is re-derived below.
+        // A refresh rediscovers the catalog for the *same* credential, so it
+        // only promotes the credential axis when this refresh's own bounded
+        // completion accepted the key. `Unverified` (empty catalog, timeout,
+        // cancellation, an unresolvable surface, a non-auth status) must leave
+        // the stored verdict exactly as it was: a routine catalog refresh, or a
+        // bad network day, must never erase a durable `verified` (or a genuine
+        // `authentication_failed`) that came from real inference. Rotation is
+        // different: it installs a new credential, so the verdict is re-derived
+        // from that probe.
         sqlx::query("UPDATE provider_connection_health SET revision = ?, status = 'healthy', credential_status = CASE WHEN ? THEN ? ELSE credential_status END, reason_code = NULL, duration_ms = ?, checked_at = ?, catalog_revision = ? WHERE connection_id = ?")
             .bind(revision as i64)
             .bind(i64::from(probe_result.credential.is_verified()))
@@ -1651,6 +1765,7 @@ impl ProviderConnectionProvisioner {
             .fetch_one(&self.pool)
             .await
             .map_err(|_| EggpoolError::Storage)?;
+        let credential_hint = self.credential_hint(connection).await;
         Ok(ProviderConnectionSummaryDto {
             id: connection.id.to_string(),
             provider_kind: connection.provider_kind.as_str().to_owned(),
@@ -1667,7 +1782,123 @@ impl ProviderConnectionProvisioner {
                 .map(ToOwned::to_owned)
                 .or(catalog_from_health),
             health,
+            credential_hint,
         })
+    }
+
+    /// Bounded, non-secret discriminator for the bound credential.
+    ///
+    /// Decryption happens here, in the root crate, because `codegg-core` must
+    /// stay credential-free and `codegg-protocol` must never see plaintext.
+    /// Only [`codegg_providers::credential_tail_hint`]'s `…abcd` tail reaches
+    /// the wire, and only when a binding exists — the plaintext itself is
+    /// dropped immediately and is never logged.
+    ///
+    /// Remove the credential record a rotation or replacement just superseded.
+    ///
+    /// Scoping, deliberately narrow:
+    ///
+    /// - Only the *previous* binding of the connection being rotated or
+    ///   replaced is considered. Records that no connection ever bound (a
+    ///   key added by hand, or a leftover from an older build) are never
+    ///   swept here: nothing proves they are disposable, and deleting them
+    ///   would destroy credentials an unbound session still needs.
+    /// - The record is removed only when it is **provably unreferenced** by
+    ///   any other connection row. A credential two connections share is
+    ///   kept and reported; deleting it would silently break the second
+    ///   connection.
+    /// - `keep_account` is the binding the just-committed write claimed, so a
+    ///   rotation can never delete the credential it just installed.
+    /// - An unreadable connection store counts as "still referenced": the
+    ///   default is to keep the record and say so.
+    async fn prune_superseded_credential(
+        &self,
+        store: &codegg_providers::CredentialStore,
+        provider_ref: &str,
+        account_ref: &str,
+        rotated_connection_id: Option<&str>,
+        keep_account: Option<&str>,
+    ) {
+        if keep_account == Some(account_ref) {
+            return;
+        }
+        let referenced = self
+            .credential_account_referenced(provider_ref, account_ref, rotated_connection_id)
+            .await;
+        if referenced {
+            tracing::warn!(
+                provider_ref,
+                account_ref,
+                "superseded credential is still bound by another connection; keeping it"
+            );
+            return;
+        }
+        if let Err(error) = store.remove(provider_ref, Some(account_ref)) {
+            tracing::warn!(
+                ?error,
+                provider_ref,
+                account_ref,
+                "eggpool superseded credential cleanup failed"
+            );
+        }
+    }
+
+    /// `true` when a connection other than `except` still binds this account.
+    ///
+    /// Raw SQL stays inside this store: pruning a credential is only safe once
+    /// no connection row can point at it.
+    async fn credential_account_referenced(
+        &self,
+        provider_ref: &str,
+        account_ref: &str,
+        except: Option<&str>,
+    ) -> bool {
+        let count = match except {
+            Some(except) => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connections WHERE secret_provider_ref = ? AND secret_account_ref = ? AND id <> ?",
+                )
+                .bind(provider_ref)
+                .bind(account_ref)
+                .bind(except)
+                .fetch_one(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connections WHERE secret_provider_ref = ? AND secret_account_ref = ?",
+                )
+                .bind(provider_ref)
+                .bind(account_ref)
+                .fetch_one(&self.pool)
+                .await
+            }
+        };
+        match count {
+            Ok(count) => count > 0,
+            // A read failure must never authorize a deletion.
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    provider_ref,
+                    account_ref,
+                    "credential reference check failed; keeping the superseded credential"
+                );
+                true
+            }
+        }
+    }
+
+    /// Best-effort by design: an absent hint is a missing discriminator, never
+    /// a provisioning error, so an unreadable credential store degrades the
+    /// picker instead of failing a connection list.
+    async fn credential_hint(&self, connection: &ProviderConnection) -> Option<String> {
+        let store = self.credential_store.as_ref()?;
+        let binding = connection.secret_binding.as_ref()?;
+        let plaintext = store
+            .get_plaintext(&binding.provider_ref, Some(&binding.account_ref), |_| true)
+            .ok()??;
+        codegg_providers::credential_tail_hint(&plaintext)
     }
 
     async fn reconcile_once(&self) {
@@ -2081,20 +2312,31 @@ fn normalize_endpoint(
 async fn probe(
     endpoint: &str,
     api_key: &str,
+    provider_id: Option<&str>,
     cancel: CancellationToken,
 ) -> Result<ProbeResult, ProbeReason> {
     probe_with_options(
         endpoint,
         api_key,
+        provider_id,
         cancel,
         codegg_providers::EggpoolProbeOptions::default(),
     )
     .await
 }
 
+/// Bounded credential-verification budget.
+///
+/// The catalog half of this probe is a metadata read; this half spends a real
+/// (one-token) completion, so it gets a tighter budget than the caller's
+/// workflow timeout and never inherits a refresh's long read timeout.
+const CREDENTIAL_VERIFY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CREDENTIAL_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn probe_with_options(
     endpoint: &str,
     api_key: &str,
+    provider_id: Option<&str>,
     cancel: CancellationToken,
     options: codegg_providers::EggpoolProbeOptions,
 ) -> Result<ProbeResult, ProbeReason> {
@@ -2118,27 +2360,190 @@ async fn probe_with_options(
         }
         result = probe.probe(&provider_cancel) => result.map_err(|error| map_probe_reason(error.reason_code()))?
     };
-    Ok(ProbeResult {
-        models: summary
-            .models
-            .into_iter()
-            .map(|model| ProbedModel {
-                id: model.id,
-                name: model.name,
-                context_window: 128_000,
-                max_output_tokens: None,
-                supports_tools: true,
-                supports_vision: false,
+    let discovered: Vec<ProbedModel> = summary
+        .models
+        .into_iter()
+        .map(|model| ProbedModel {
+            id: model.id,
+            name: model.name,
+            context_window: 128_000,
+            max_output_tokens: None,
+            supports_tools: true,
+            supports_vision: false,
+        })
+        .collect();
+    if discovered.is_empty() {
+        return Err(ProbeReason::EmptyCatalog);
+    }
+    let models = qualify_routable_models(provider_id, discovered)?;
+    // A catalog revision identifies the rows this connection actually stores,
+    // so it is computed *after* qualification. Provision already digests the
+    // qualified list; digesting the raw discovery here would make every
+    // refresh report "catalog changed" against a freshly provisioned
+    // connection and bump its revision for no change a user can observe.
+    let catalog_revision = codegg_providers::eggpool::digest_models(
+        &models
+            .iter()
+            .map(|model| codegg_providers::EggpoolModelSummary {
+                id: model.id.clone(),
+                name: model.name.clone(),
             })
-            .collect(),
-        catalog_revision: summary.digest,
+            .collect::<Vec<_>>(),
+    );
+    // A `/models` 2xx is a **catalog** fact. It is not credential evidence:
+    // several real endpoints answer an unauthenticated reader with 200, and a
+    // key with no active entitlement sails through the catalog only to fail
+    // every completion. So `Verified` is earned here, by a real completion,
+    // and never by the catalog request above.
+    let credential = verify_probe_credential(
+        endpoint,
+        api_key,
+        provider_id,
+        &models,
+        &cancel,
+        &provider_cancel,
+    )
+    .await?;
+    Ok(ProbeResult {
+        models,
+        catalog_revision,
         duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-        // The strict compatible `/models` probe authenticates the credential
-        // upstream: a 2xx means the endpoint evaluated and accepted it. An
-        // authentication rejection returns `Err` above, so reaching this point
-        // with a usable catalog is genuine positive evidence.
-        credential: CredentialVerification::Verified,
+        credential,
     })
+}
+
+/// Keep only the models the shared wire profile can actually route.
+///
+/// Refresh and rotate discover through the provider-neutral `CompatibleProbe`,
+/// which reads `/models` and nothing else. That is the right *availability*
+/// source and the wrong *selectability* one: the shared profile has a reviewed
+/// wire mapping for only some of the ids an upstream advertises, and a model
+/// with no mapping fails closed at `wire_unresolved` before a request is ever
+/// built. Provision already filters — it goes through `Provider::models()` —
+/// but refresh and rotate did not, so the first refresh replaced a correctly
+/// qualified catalog with an unqualified one and promoted a never-dispatchable
+/// entry to the top of the picker. Measured on OpenCode Go: `cat-jam-free`
+/// sorts first, has no reviewed wire mapping, and every turn bound to it fails
+/// without reaching the network.
+///
+/// Providers the shared profile does not adapt are returned untouched: there is
+/// no reviewed contract to qualify against, and inventing one here would
+/// silently strip models from every generic OpenAI-compatible upstream.
+fn qualify_routable_models(
+    provider_id: Option<&str>,
+    models: Vec<ProbedModel>,
+) -> Result<Vec<ProbedModel>, ProbeReason> {
+    let Some(provider_id) = provider_id else {
+        return Ok(models);
+    };
+    if codegg_providers::provider_profile::shared_provider_id(provider_id).is_none() {
+        return Ok(models);
+    }
+    let routable: Vec<ProbedModel> = models
+        .into_iter()
+        .filter(|model| {
+            codegg_providers::provider_profile::resolve_route(provider_id, &model.id).is_ok()
+        })
+        .collect();
+    // Qualification emptied a non-empty upstream catalog: every model this
+    // provider offers is unroutable. Committing that as an empty catalog would
+    // strand the connection at a revision with no rows and leave `/connections`
+    // reporting zero models — a silent lie that is harder to diagnose than the
+    // failure. Fail the probe and keep the catalog the connection already holds.
+    if routable.is_empty() {
+        return Err(ProbeReason::EmptyCatalog);
+    }
+    Ok(routable)
+}
+
+/// Run the bounded credential-verification completion for one probed catalog.
+///
+/// Returns the durable credential verdict:
+///
+/// * a real completion accepted the key → `Verified`;
+/// * a completion 401/403 → the probe fails with
+///   [`ProbeReason::AuthenticationFailed`], so a dead key can never be
+///   committed by a rotation;
+/// * an empty catalog, an unresolvable surface, a transport failure, or a
+///   non-authentication status → `Unverified`. Honestly unknown, never a
+///   promotion and never a rejection.
+async fn verify_probe_credential(
+    endpoint: &str,
+    api_key: &str,
+    provider_id: Option<&str>,
+    models: &[ProbedModel],
+    cancel: &CancellationToken,
+    provider_cancel: &codegg_providers::EggpoolCancellationToken,
+) -> Result<CredentialVerification, ProbeReason> {
+    // An empty catalog leaves nothing to run a completion against. Reporting
+    // that as unverified is the honest answer; claiming `Verified` from a
+    // catalog that produced no model would be the exact defect being fixed.
+    let Some(model) = pick_verification_model(provider_id, models) else {
+        return Ok(CredentialVerification::Unverified);
+    };
+    let verifier = codegg_providers::CompatibleCredentialProbe::new(
+        endpoint,
+        codegg_providers::EggpoolApiKey::from(api_key),
+        provider_id,
+        codegg_providers::CredentialProbeOptions {
+            connect_timeout: CREDENTIAL_VERIFY_CONNECT_TIMEOUT,
+            request_timeout: CREDENTIAL_VERIFY_TIMEOUT,
+            overall_timeout: CREDENTIAL_VERIFY_TIMEOUT,
+        },
+    )
+    .map_err(|error| map_probe_reason(error.reason_code()))?;
+    let outcome = tokio::select! {
+        _ = cancel.cancelled() => {
+            provider_cancel.cancel();
+            return Err(ProbeReason::Cancelled);
+        }
+        result = verifier.verify(model, provider_cancel) => result
+            .map_err(|error| map_probe_reason(error.reason_code()))?
+    };
+    match outcome {
+        codegg_providers::CredentialVerificationOutcome::Accepted => {
+            Ok(CredentialVerification::Verified)
+        }
+        // A typed 401/403 from a real completion is the one positive proof of a
+        // bad key. It must abort the probe so the rotation fails loudly rather
+        // than committing a credential that cannot work.
+        codegg_providers::CredentialVerificationOutcome::Rejected => {
+            Err(ProbeReason::AuthenticationFailed)
+        }
+        codegg_providers::CredentialVerificationOutcome::Inconclusive => {
+            Ok(CredentialVerification::Unverified)
+        }
+    }
+}
+
+/// Choose the model to spend a verification completion on.
+///
+/// A model that the shared wire profile cannot route is useless here: the
+/// probe resolves a route per model and gives up when none exists, so picking
+/// an unroutable entry turns every verification into a silent `Inconclusive`
+/// and a credential can never be proven. Measured live: OpenCode Go's catalog
+/// lists `cat-jam-free` first, it has no reviewed wire mapping, and choosing
+/// it made every rotation report `unverified` regardless of the key.
+///
+/// Preference order: a tool-capable model that also routes (the same class of
+/// request the agent loop issues), any routable model, then a tool-capable
+/// model, then anything. Returns `None` only for an empty catalog.
+fn pick_verification_model<'a>(
+    provider_id: Option<&str>,
+    models: &'a [ProbedModel],
+) -> Option<&'a str> {
+    let routes = |model: &ProbedModel| {
+        provider_id
+            .and_then(|id| codegg_providers::provider_profile::resolve_route(id, &model.id).ok())
+            .is_some()
+    };
+    models
+        .iter()
+        .find(|model| model.supports_tools && routes(model))
+        .or_else(|| models.iter().find(|model| routes(model)))
+        .or_else(|| models.iter().find(|model| model.supports_tools))
+        .or_else(|| models.first())
+        .map(|model| model.id.as_str())
 }
 
 fn map_probe_reason(reason: codegg_providers::EggpoolProbeReasonCode) -> ProbeReason {
@@ -2375,6 +2780,7 @@ fn rotation_error_code(error: &RotationError) -> &'static str {
         RotationError::SecretUnavailable => "secret_unavailable",
         RotationError::EndpointPolicy => "endpoint_policy",
         RotationError::ProbeFailed => "probe_failed",
+        RotationError::CredentialRejected => "credential_authentication_failed",
         RotationError::Cancelled => "cancelled",
         RotationError::Storage => "storage",
     }
@@ -2458,28 +2864,64 @@ mod tests {
         }
     }
 
-    /// Fake Eggpool endpoint that serves `count` sequential probes, so a test can
-    /// exercise replacement (a second `/connect` against the same identity) without
-    /// the second probe hitting a dead socket. Returns the address; the join handle
-    /// completes once every response has been written.
-    fn fake_eggpool_repeating(
+    /// Number of HTTP requests one successful probe now makes: the catalog
+    /// read, then the bounded credential-verification completion.
+    ///
+    /// A fixture that serves only the first turns the completion into a
+    /// transport error, which is indistinguishable from an unreachable provider
+    /// — so every "probe succeeds" fixture must serve both.
+    const PROBE_REQUEST_COUNT: usize = 2;
+
+    /// Idle window a fake endpoint waits for an *additional* request before
+    /// giving up.
+    ///
+    /// The first request keeps the long readiness barrier; every later one only
+    /// has to beat the gap between the catalog response and the immediately
+    /// following completion, so a probe that legitimately stops after its first
+    /// request does not park the test thread for seconds.
+    const EXTRA_REQUEST_IDLE: Duration = Duration::from_millis(750);
+
+    /// Raw HTTP response for one request head.
+    fn http_response(status: u16, body: &str) -> String {
+        let reason = if status == 200 { "OK" } else { "ERROR" };
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Serve `count` sequential requests, answering each through `responder`.
+    ///
+    /// `responder` receives the request line (e.g. `GET /v1/models HTTP/1.1`)
+    /// so a fixture can serve a catalog and a completion differently — which is
+    /// the whole point of the credential-verification tests: a catalog that
+    /// answers 200 for a key every completion rejects.
+    fn spawn_fake_endpoint<F>(
+        label: &str,
         count: usize,
         delay: Duration,
-    ) -> (String, thread::JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Eggpool");
+        responder: F,
+    ) -> (String, thread::JoinHandle<String>)
+    where
+        F: Fn(&str) -> String + Send + 'static,
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake endpoint");
         listener
             .set_nonblocking(true)
-            .expect("configure fake Eggpool listener");
-        let address = listener.local_addr().expect("fake Eggpool address");
+            .expect("configure fake endpoint listener");
+        let address = listener.local_addr().expect("fake endpoint address");
         let join = thread::spawn(move || {
-            let mut requests = Vec::new();
-            for _ in 0..count {
-                let Ok((mut stream, _)) = accept_with_backoff(&listener) else {
+            let mut log = String::new();
+            for index in 0..count {
+                let deadline = std::time::Instant::now()
+                    + if index == 0 {
+                        Duration::from_secs(5)
+                    } else {
+                        EXTRA_REQUEST_IDLE
+                    };
+                let Ok((mut stream, _)) = accept_until(&listener, deadline) else {
                     break;
                 };
-                // The listener is non-blocking so `accept` can be polled; the
-                // accepted stream must be switched back to blocking or `read`
-                // would return WouldBlock and serve an empty response.
                 if stream.set_nonblocking(false).is_err() {
                     break;
                 }
@@ -2498,90 +2940,67 @@ mod tests {
                 if !delay.is_zero() {
                     thread::sleep(delay);
                 }
-                let body = r#"{"data":[{"id":"eggpool-model","name":"Eggpool Model"}]}"#;
-                let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-                let _ = stream.write_all(response.as_bytes());
-                requests.push(String::from_utf8_lossy(&request).into_owned());
+                let text = String::from_utf8_lossy(&request).into_owned();
+                let request_line = text.lines().next().unwrap_or_default();
+                let _ = stream.write_all(responder(request_line).as_bytes());
+                log.push_str(&text);
+                log.push('\n');
             }
-            requests
+            log
         });
+        let _ = label;
         (format!("http://{address}"), join)
     }
 
-    fn accept_with_backoff(
+    /// Accept one connection until `deadline`.
+    fn accept_until(
         listener: &TcpListener,
+        deadline: std::time::Instant,
     ) -> std::io::Result<(std::net::TcpStream, std::net::SocketAddr)> {
-        for _ in 0..200 {
+        loop {
             match listener.accept() {
                 Ok(pair) => return Ok(pair),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(10));
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "fake endpoint accept timed out",
+                        ));
+                    }
+                    // Sleep rather than spin: several fixtures deliberately sit
+                    // out their second-request window, and a pure yield loop
+                    // would burn a core for the whole window doing it.
+                    std::thread::sleep(Duration::from_millis(1));
                 }
                 Err(error) => return Err(error),
             }
         }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "fake endpoint accept timed out",
-        ))
     }
 
+    /// Catalog body the fake endpoints serve for `/models`.
+    const FAKE_CATALOG_BODY: &str = r#"{"data":[{"id":"eggpool-model","name":"Eggpool Model"}]}"#;
+
+    /// Fake Eggpool endpoint that serves `count` requests, so a test can
+    /// exercise replacement (a second `/connect` against the same identity)
+    /// without the second probe hitting a dead socket.
+    ///
+    /// `count` is a *request* count, not a probe count: one probe is
+    /// [`PROBE_REQUEST_COUNT`] requests. Returns the address; the join handle
+    /// completes once every response has been written, yielding the full
+    /// request log.
+    fn fake_eggpool_repeating(
+        count: usize,
+        delay: Duration,
+    ) -> (String, thread::JoinHandle<String>) {
+        spawn_fake_endpoint("eggpool", count, delay, |_| {
+            http_response(200, FAKE_CATALOG_BODY)
+        })
+    }
+
+    /// Fake endpoint that answers every request with `200` plus a one-model
+    /// catalog, for both the catalog read and the verification completion.
     fn fake_eggpool(delay: Duration) -> (String, thread::JoinHandle<String>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake Eggpool");
-        listener
-            .set_nonblocking(true)
-            .expect("configure fake Eggpool listener");
-        let address = listener.local_addr().expect("fake Eggpool address");
-        let join = thread::spawn(move || {
-            // Binding the listener before returning the address is the
-            // readiness barrier. Yield-only polling avoids fixed sleeps while
-            // retaining a bounded exit when a cancellation test deliberately
-            // drops the detached fixture before a request arrives.
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok((stream, _address)) => {
-                        stream
-                            .set_nonblocking(false)
-                            .expect("configure fake Eggpool stream");
-                        break (stream, address);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            return "no-request".to_string();
-                        }
-                        thread::yield_now();
-                    }
-                    Err(error) => panic!("accept fake Eggpool request: {error}"),
-                }
-            };
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = stream.read(&mut buffer).expect("read fake request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            if !delay.is_zero() {
-                thread::sleep(delay);
-            }
-            let body = r#"{"data":[{"id":"eggpool-model","name":"Eggpool Model"}]}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-            String::from_utf8_lossy(&request).into_owned()
-        });
-        (format!("http://{address}"), join)
+        fake_eggpool_repeating(PROBE_REQUEST_COUNT, delay)
     }
 
     async fn migrated_pool() -> sqlx::SqlitePool {
@@ -2636,62 +3055,46 @@ mod tests {
         }
     }
 
-    /// Single-request fake endpoint with a configurable status/body. Mirrors
-    /// `fake_eggpool` so error-shape cases (auth, oversized) run against the
-    /// same generic service without live providers.
+    /// Fake endpoint with a configurable status/body. Mirrors `fake_eggpool`
+    /// so error-shape cases (auth, oversized) run against the same generic
+    /// service without live providers.
+    ///
+    /// Serves [`PROBE_REQUEST_COUNT`] requests, but a probe that legitimately
+    /// stops at the catalog simply leaves the fixture idle rather than failing.
     fn fake_status_server(
         status: u16,
         body: String,
         delay: Duration,
     ) -> (String, thread::JoinHandle<String>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake status server");
-        listener
-            .set_nonblocking(true)
-            .expect("configure fake status listener");
-        let address = listener.local_addr().expect("fake status address");
-        let join = thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok((stream, _address)) => {
-                        stream
-                            .set_nonblocking(false)
-                            .expect("configure fake status stream");
-                        break (stream, address);
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
-                            return "no-request".to_string();
-                        }
-                        thread::yield_now();
-                    }
-                    Err(error) => panic!("accept fake status request: {error}"),
+        spawn_fake_endpoint("status", PROBE_REQUEST_COUNT, delay, move |_| {
+            http_response(status, &body)
+        })
+    }
+
+    /// The defect this whole fixture exists for: a catalog endpoint that serves
+    /// `200` to *any* key — including a bogus one — while every completion
+    /// rejects it.
+    ///
+    /// This is the real OpenCode Go shape, and it is why a catalog 2xx is not
+    /// credential evidence.
+    fn fake_catalog_ok_completion_forbidden(
+        catalog_body: String,
+    ) -> (String, thread::JoinHandle<String>) {
+        spawn_fake_endpoint(
+            "catalog-ok-completion-forbidden",
+            PROBE_REQUEST_COUNT,
+            Duration::ZERO,
+            move |request_line| {
+                if request_line.ends_with("/models HTTP/1.1") {
+                    http_response(200, &catalog_body)
+                } else {
+                    http_response(
+                        403,
+                        r#"{"error":"An active OpenCode Go subscription is required"}"#,
+                    )
                 }
-            };
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = stream.read(&mut buffer).expect("read fake request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            if !delay.is_zero() {
-                thread::sleep(delay);
-            }
-            let reason = if status == 200 { "OK" } else { "ERROR" };
-            let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-            String::from_utf8_lossy(&request).into_owned()
-        });
-        (format!("http://{address}"), join)
+            },
+        )
     }
 
     fn closed_port_url() -> String {
@@ -2890,8 +3293,9 @@ mod tests {
                 .expect("credential store"),
         );
         let pool = migrated_pool().await;
-        // Two probes: the initial connect and the replacement below.
-        let (host, server) = fake_eggpool_repeating(2, Duration::ZERO);
+        // Two probes (the initial connect and the replacement below), each of
+        // which is a catalog request plus a verification completion.
+        let (host, server) = fake_eggpool_repeating(2 * PROBE_REQUEST_COUNT, Duration::ZERO);
         let provisioner =
             EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
         let mut create_request = request(&host);
@@ -2964,9 +3368,21 @@ mod tests {
         );
 
         let raw_requests = server.join().expect("fake server joins");
-        assert_eq!(raw_requests.len(), 2, "both probes must have been served");
-        assert!(raw_requests[0].contains("/v1/models"));
-        assert!(raw_requests[0].contains("authorization: Bearer test-key"));
+        let served = raw_requests
+            .lines()
+            .filter(|line| line.starts_with("GET ") || line.starts_with("POST "))
+            .count();
+        assert_eq!(
+            served,
+            2 * PROBE_REQUEST_COUNT,
+            "both probes must have been served, catalog plus verification each"
+        );
+        assert!(raw_requests.contains("/v1/models"));
+        assert!(raw_requests.contains("authorization: Bearer test-key"));
+        assert!(
+            raw_requests.contains("/v1/chat/completions"),
+            "a credential verdict must come from a real completion, not the catalog"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3231,6 +3647,523 @@ mod tests {
         assert_eq!(stored.revision, result.connection.revision + 1);
         assert_eq!(stored.endpoint.as_str(), format!("{rotated_host}/v1"));
         assert_eq!(stored.display_name, "Rotated Eggpool");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rotation_never_prunes_a_credential_another_connection_still_binds() {
+        // Pruning exists so a rotation cannot leave an orphan behind, but a
+        // credential two connections share is not an orphan: deleting it
+        // would silently break the second connection. Fixture the shared
+        // binding by cloning the connection row onto a second id, which is
+        // what two connections provisioned against one account look like.
+        let _master = MasterKeyGuard::new("eggpool-rotation-shared-credential-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let shared_account = credential_store.list()[0]
+            .account_id
+            .clone()
+            .expect("provisioned connection has an account");
+        let shared_provider = credential_store.list()[0].provider_id.clone();
+
+        // A second connection shares the account the rotation is about to
+        // supersede. Two connections provisioned against one account look
+        // exactly like this.
+        let other_id = ProviderConnectionId::new();
+        sqlx::query(
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) SELECT ?, provider_kind, 'Shared', endpoint, tls_policy, 'personal', 'shared-scope', 'shared-secret', ?, ?, 'active', 1, ?, ? FROM provider_connections WHERE id = ?",
+        )
+        .bind(other_id.as_str())
+        .bind(&shared_provider)
+        .bind(shared_account.as_str())
+        .bind(now_millis())
+        .bind(now_millis())
+        .bind(connection_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("shared-connection row inserts");
+
+        let (rotated_host, rotated_server) = fake_eggpool(Duration::ZERO);
+        let secret_ref = SecretInputRef::new("shared-rotation-handle").unwrap();
+        assert!(provisioner.register_rotation_secret(secret_ref.clone(), "rotated-key".to_owned()));
+        let status = provisioner
+            .rotate(
+                "rotation-shared-credential",
+                &connection_id,
+                result.connection.revision,
+                ConnectionRotateChange::CredentialAndEndpoint {
+                    endpoint: format!("{rotated_host}/v1"),
+                    tls_policy: "disabled".to_owned(),
+                    display_name: None,
+                },
+                secret_ref,
+                true,
+            )
+            .await
+            .expect("rotation succeeds");
+        rotated_server.join().expect("rotation fake server joins");
+        assert_eq!(status.state, "committed");
+
+        // The superseded account is still bound by `other_id`, so it survived
+        // and still decrypts.
+        assert!(
+            credential_store
+                .find_record(&shared_provider, Some(&shared_account))
+                .is_some(),
+            "a credential another connection binds must never be pruned"
+        );
+        assert!(credential_store
+            .get_credential(&shared_provider, Some(&shared_account))
+            .expect("decrypt")
+            .is_some());
+
+        // The rotation installed exactly one new record and pruned nothing
+        // else: the shared account plus the record it just claimed.
+        let accounts: Vec<String> = credential_store
+            .list()
+            .into_iter()
+            .map(|record| record.account_id.unwrap_or_default())
+            .collect();
+        assert_eq!(
+            accounts.len(),
+            2,
+            "the rotation must add one record and keep the shared one: {accounts:?}"
+        );
+        assert!(
+            accounts.contains(&shared_account),
+            "the shared record must remain in {accounts:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rotation_refuses_a_credential_the_endpoint_catalog_but_not_completion_rejects() {
+        // The live failure this exists for: a rotation committed, health read
+        // `verified`, and the next turn 403'd. A key that passes catalog
+        // discovery and fails a real completion must not be installable.
+        let _master = MasterKeyGuard::new("eggpool-rotation-credential-rejected-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        assert_eq!(
+            credential_status_of(&pool, &result.connection.id, result.connection.revision).await,
+            Some("verified".to_string()),
+            "precondition: the working credential is verified"
+        );
+
+        let (rotated_host, rotated_server) = fake_catalog_ok_completion_forbidden(
+            r#"{"data":[{"id":"eggpool-model","name":"Eggpool Model"}]}"#.to_string(),
+        );
+        let secret_ref = SecretInputRef::new("rotation-dead-key").unwrap();
+        assert!(provisioner.register_rotation_secret(secret_ref.clone(), "dead-key".to_owned()));
+        let error = provisioner
+            .rotate(
+                "rotation-dead-credential",
+                &connection_id,
+                result.connection.revision,
+                // The endpoint moves to the fixture that rejects completions;
+                // `CredentialOnly` would keep pointing at the original host,
+                // whose fake has already exited.
+                ConnectionRotateChange::CredentialAndEndpoint {
+                    endpoint: format!("{rotated_host}/v1"),
+                    tls_policy: "disabled".to_owned(),
+                    display_name: None,
+                },
+                secret_ref,
+                true,
+            )
+            .await
+            .expect_err("a completion-rejected key must not rotate");
+        rotated_server.join().expect("rotation fake server joins");
+
+        assert_eq!(error, RotationError::CredentialRejected);
+        assert_eq!(
+            rotation_error_code(&RotationError::CredentialRejected),
+            "credential_authentication_failed",
+            "the operator needs a reason code that names the credential"
+        );
+        assert_eq!(
+            provisioner
+                .rotation_status("rotation-dead-credential")
+                .map(|status| status.error_code),
+            Some(Some("credential_authentication_failed".to_owned()))
+        );
+        assert_eq!(
+            codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone())
+                .get(&connection_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            result.connection.revision,
+            "a rejected rotation must not commit a revision"
+        );
+        assert_eq!(
+            credential_store.list().len(),
+            1,
+            "the staged secret must be dropped, leaving the previous binding"
+        );
+        assert_eq!(
+            credential_status_of(&pool, &result.connection.id, result.connection.revision).await,
+            Some("verified".to_string()),
+            "the previously installed credential keeps its own verdict"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_refresh_leaves_a_verified_credential_untouched() {
+        // A cancellation is not evidence about the credential. Erasing a
+        // durable `verified` because the user hit ctrl-c — or because the
+        // network blipped — is exactly the false negative this axis must not
+        // produce.
+        let _master = MasterKeyGuard::new("eggpool-refresh-cancel-verdict-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let revision = result.connection.revision;
+
+        let (refresh_host, refresh_server) = fake_eggpool(Duration::from_millis(400));
+        sqlx::query("UPDATE provider_connections SET endpoint = ? WHERE id = ?")
+            .bind(format!("{refresh_host}/v1"))
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let running = provisioner.clone();
+        let running_id = connection_id.clone();
+        let task = tokio::spawn(async move {
+            running
+                .refresh_with_operation("refresh-cancelled", &running_id, revision)
+                .await
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if provisioner
+                .refresh_status("refresh-cancelled")
+                .is_some_and(|status| status.state == "running")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            provisioner.cancel("refresh-cancelled"),
+            "the refresh must be cancellable while it runs"
+        );
+        let outcome = task.await.unwrap();
+        assert!(
+            matches!(outcome, Err(RefreshError::Cancelled)),
+            "a cancelled refresh reports cancellation, got {outcome:?}"
+        );
+        let _ = refresh_server.join();
+
+        assert_eq!(
+            credential_status_of(&pool, &result.connection.id, revision).await,
+            Some("verified".to_string()),
+            "cancellation must leave the credential axis exactly as it was"
+        );
+    }
+
+    fn probed(ids: &[&str]) -> Vec<ProbedModel> {
+        ids.iter()
+            .map(|id| ProbedModel {
+                id: (*id).to_string(),
+                name: (*id).to_string(),
+                context_window: 128_000,
+                max_output_tokens: None,
+                supports_tools: true,
+                supports_vision: false,
+            })
+            .collect()
+    }
+
+    fn kept(result: Result<Vec<ProbedModel>, ProbeReason>) -> Vec<String> {
+        result
+            .expect("qualification keeps at least one model")
+            .into_iter()
+            .map(|model| model.id)
+            .collect()
+    }
+
+    /// A refresh must not advertise a model the agent loop cannot dispatch.
+    ///
+    /// Provision discovers through `Provider::models()`, which drops every id
+    /// the shared wire profile has no reviewed mapping for. Refresh and rotate
+    /// discovered through the provider-neutral `CompatibleProbe`, which kept
+    /// them all — so the first refresh a connection ever ran replaced a correct
+    /// 30-model catalog with an unqualified 37-model one. Observed live on
+    /// OpenCode Go: `/connections` then offered 9 models that can only ever
+    /// fail closed at `wire_unresolved`, with `cat-jam-free` — alphabetically
+    /// first, and therefore the row a user lands on first — among them.
+    #[test]
+    fn refresh_qualification_drops_models_with_no_reviewed_wire_mapping() {
+        let qualified = kept(qualify_routable_models(
+            Some("opencode_go"),
+            probed(&["cat-jam-free", "mimo-v2.6-flash", "omen-alpha"]),
+        ));
+        assert_eq!(qualified, vec!["mimo-v2.6-flash".to_string()]);
+    }
+
+    /// Qualification is scoped to providers the shared profile adapts.
+    ///
+    /// For every other upstream there is no reviewed contract to qualify
+    /// against. Filtering there would strip models from generic
+    /// OpenAI-compatible providers that dispatch perfectly well.
+    #[test]
+    fn unadapted_providers_keep_every_discovered_model() {
+        let models = probed(&["some-model", "another-model"]);
+        assert_eq!(
+            kept(qualify_routable_models(
+                Some("generalcompute"),
+                models.clone()
+            )),
+            vec!["some-model".to_string(), "another-model".to_string()]
+        );
+        assert_eq!(
+            kept(qualify_routable_models(None, models)),
+            vec!["some-model".to_string(), "another-model".to_string()]
+        );
+    }
+
+    /// A provider whose entire catalog is unroutable fails instead of stranding.
+    ///
+    /// Committing an empty catalog would bump the revision, write zero rows,
+    /// and leave `/connections` reporting zero models — indistinguishable from
+    /// the stranded-catalog defect. Refusing keeps the rows already held.
+    #[test]
+    fn a_catalog_with_nothing_routable_is_refused_not_committed_as_empty() {
+        assert!(matches!(
+            qualify_routable_models(Some("opencode_go"), probed(&["cat-jam-free"])),
+            Err(ProbeReason::EmptyCatalog)
+        ));
+    }
+
+    /// Exactly one active connection is the authority for its provider.
+    ///
+    /// This is the rule that lets `codegg exec`, `codegg models`, and `/models`
+    /// find a provider at all. They have no session and no turn, so without a
+    /// connection they fall back to counting credential-store records — and a
+    /// rotation leaves the live record beside the orphan it replaced, the count
+    /// reaches two, and the provider disappears with `Provider not found` while
+    /// a healthy `active` connection holds its working key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_active_connection_is_the_authority_for_its_provider() {
+        let _master = MasterKeyGuard::new("eggpool-connection-authority-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store.clone()));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let store = codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone());
+        let provider_kind = store
+            .get(&connection_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_kind
+            .as_str()
+            .to_string();
+
+        let locators = crate::core::session_selection::connection_credential_locators(&store).await;
+        assert_eq!(locators.len(), 1, "one active connection is authority");
+        assert_eq!(locators[0].0, provider_kind);
+        assert_eq!(
+            locators[0].1.account_ref,
+            credential_store.list()[0]
+                .account_id
+                .clone()
+                .expect("provisioned connection has an account")
+        );
+
+        // A second *active* connection for the same provider is a real
+        // ambiguity. Picking one would be a coin flip, so the rule yields
+        // nothing and the existing refusal stands.
+        let second_id = ProviderConnectionId::new();
+        sqlx::query(
+            "INSERT INTO provider_connections (id, provider_kind, display_name, endpoint, tls_policy, scope_kind, scope_ref, secret_ref, secret_provider_ref, secret_account_ref, state, revision, time_created, time_updated) SELECT ?, provider_kind, 'Second', endpoint, tls_policy, 'personal', 'second-scope', 'second-secret', secret_provider_ref, secret_account_ref, 'active', 1, ?, ? FROM provider_connections WHERE id = ?",
+        )
+        .bind(second_id.as_str())
+        .bind(now_millis())
+        .bind(now_millis())
+        .bind(connection_id.as_str())
+        .execute(&pool)
+        .await
+        .expect("second-connection row inserts");
+        assert!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .is_empty(),
+            "two active connections for one provider must not be guessed between"
+        );
+
+        // Only `active` speaks. Disabling one restores a single answer, which
+        // is what the user reaches for when they disable a duplicate.
+        sqlx::query("UPDATE provider_connections SET state = 'disabled' WHERE id = ?")
+            .bind(second_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("disable second connection");
+        assert_eq!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .len(),
+            1,
+            "a disabled connection is not authority"
+        );
+
+        // And with none active there is nothing to say.
+        sqlx::query("UPDATE provider_connections SET state = 'disabled' WHERE id = ?")
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .expect("disable first connection");
+        assert!(
+            crate::core::session_selection::connection_credential_locators(&store)
+                .await
+                .is_empty()
+        );
+    }
+
+    /// A catalog stranded behind a revision bump must be rebuildable.
+    ///
+    /// Both the rotate copy-shortcut and the refresh no-op branch used to trust
+    /// a matching upstream digest as proof that this connection already held its
+    /// models. When the rows are absent at the current revision that assumption
+    /// is false and both branches do nothing, so the catalog stays empty through
+    /// any number of rotations and refreshes and `/connections` reports zero
+    /// models forever. Observed live: revision 16, rows stranded at 1-3, a
+    /// rotate that reported success.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_rebuilds_a_catalog_stranded_behind_a_revision_bump() {
+        let _master = MasterKeyGuard::new("eggpool-stranded-catalog-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let seeded = result.connection.revision;
+
+        let models_at = |revision: u64| {
+            let pool = pool.clone();
+            let id = connection_id.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+                )
+                .bind(id.as_str())
+                .bind(revision as i64)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert!(
+            models_at(seeded).await > 0,
+            "provision seeds the catalog at the connection revision"
+        );
+
+        // Stranding: rows survive only at older revisions while the connection
+        // has moved on -- the state a revision bump that forgot to carry them
+        // leaves behind.
+        sqlx::query(
+            "DELETE FROM provider_connection_models WHERE connection_id = ? AND revision >= ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(seeded as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let stranded = seeded + 3;
+        sqlx::query("UPDATE provider_connections SET revision = ? WHERE id = ?")
+            .bind(stranded as i64)
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            models_at(stranded).await,
+            0,
+            "the catalog is now absent at the current revision"
+        );
+
+        // The upstream serves the same model list, so the catalog digest is
+        // unchanged. That alone previously sent refresh down its no-op branch.
+        let (refresh_host, refresh_server) = fake_eggpool(Duration::ZERO);
+        sqlx::query("UPDATE provider_connections SET endpoint = ? WHERE id = ?")
+            .bind(format!("{refresh_host}/v1"))
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let outcome = provisioner
+            .refresh_with_operation("refresh-stranded", &connection_id, stranded)
+            .await
+            .expect("refresh succeeds");
+        refresh_server.join().expect("refresh fake server joins");
+
+        let refreshed_to = outcome.revision.expect("refresh reports a revision");
+        let rebuilt = models_at(refreshed_to).await;
+        assert!(
+            rebuilt > 0,
+            "refresh must rebuild a missing catalog even when the upstream digest is unchanged; revision {refreshed_to} holds no models"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3840,6 +4773,101 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn connection_summary_carries_a_bounded_masked_credential_tail() {
+        // Two connections can share a display name and differ only by bound
+        // key, so the picker needs a discriminator. It must be a hint, not the
+        // key: exactly four trailing characters, computed daemon-side, never
+        // crossing the wire in full and never logged.
+        let _master = MasterKeyGuard::new("summary-credential-hint-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("provision succeeds");
+        server.join().expect("fake server joins");
+
+        // `request()` stages "test-key"; only its last four characters hint.
+        let secret = "test-key";
+        let summary = provisioner
+            .list()
+            .await
+            .expect("connection list renders")
+            .into_iter()
+            .find(|connection| connection.id == result.connection.id)
+            .expect("the provisioned connection is listed");
+
+        let hint = summary
+            .credential_hint
+            .clone()
+            .expect("a bound credential hints");
+        assert_eq!(hint, "…-key");
+        assert_eq!(
+            hint.trim_start_matches('\u{2026}').chars().count(),
+            codegg_providers::CREDENTIAL_HINT_TAIL_LEN
+        );
+        assert!(
+            !storage_rows_contain(&pool, secret).await,
+            "the plaintext must never reach a durable row"
+        );
+        let wire = serde_json::to_string(&summary).expect("summary serializes");
+        assert!(wire.contains("credential_hint"));
+        assert!(
+            !wire.contains(secret),
+            "only the bounded tail may cross the wire, never the key"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn connection_summary_omits_the_hint_without_a_credential_binding() {
+        let _master = MasterKeyGuard::new("summary-no-hint-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("provision succeeds");
+        server.join().expect("fake server joins");
+
+        // `secret_ref` is NOT NULL, so "no usable binding" is modelled as a
+        // binding that resolves to nothing — the same state a purged credential
+        // leaves behind.
+        sqlx::query("UPDATE provider_connections SET secret_ref = 'ref-absent', secret_account_ref = 'account-absent' WHERE id = ?")
+            .bind(result.connection.id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let summary = provisioner
+            .list()
+            .await
+            .expect("connection list renders without a binding")
+            .into_iter()
+            .find(|connection| connection.id == result.connection.id)
+            .expect("the provisioned connection is listed");
+
+        assert_eq!(summary.credential_hint, None, "no binding means no hint");
+        let wire = serde_json::to_string(&summary).expect("summary serializes");
+        assert!(
+            !wire.contains("credential_hint"),
+            "an absent hint must be omitted from the wire, not sent as null or empty"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn static_catalog_connection_is_never_reported_as_verified() {
         // `openai` catalog discovery proves only that the catalog is usable.
         // The M010 defect was that this also claimed the credential was valid.
@@ -3887,10 +4915,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn authenticated_metadata_probe_verifies_the_credential() {
-        // `custom` uses the strict authenticated compatible `/models` probe:
-        // the endpoint evaluates the presented credential, so a 2xx is proof.
-        let _master = MasterKeyGuard::new("m010-authenticated-probe-master");
+    async fn accepted_completion_is_the_only_thing_that_verifies_the_credential() {
+        // `custom` uses the strict compatible `/models` probe plus a bounded
+        // verification completion. Only the completion proves the key: the
+        // catalog 2xx on its own is worth nothing (see the sibling test).
+        let _master = MasterKeyGuard::new("m010-verified-completion-master");
         let directory = tempdir().expect("credential tempdir");
         let credential_store = Arc::new(
             codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
@@ -3912,9 +4941,17 @@ mod tests {
         let result = provisioner
             .create_connection(request)
             .await
-            .expect("authenticated compatible provision succeeds");
-        server.join().expect("fake server joins");
+            .expect("compatible provision succeeds");
+        let raw = server.join().expect("fake server joins");
 
+        assert!(
+            raw.contains("/models"),
+            "the catalog request must still be made"
+        );
+        assert!(
+            raw.contains("/chat/completions"),
+            "verification must spend a real completion, not a metadata read"
+        );
         assert_eq!(
             result
                 .connection
@@ -3922,8 +4959,107 @@ mod tests {
                 .as_ref()
                 .and_then(|health| health.credential_status.as_deref()),
             Some("verified"),
-            "a genuinely authenticated metadata probe must verify"
+            "an accepted completion is genuine positive credential evidence"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_catalog_that_answers_any_key_never_verifies_the_credential() {
+        // The measured defect: the real OpenCode Go gateway answers `200` to
+        // `GET /models` even with no `Authorization` header, so a key with no
+        // active entitlement sails through catalog discovery and then fails
+        // every completion with 403. Provisioning must refuse it rather than
+        // record `verified` and let the user find out nineteen seconds later.
+        let _master = MasterKeyGuard::new("m010-catalog-is-not-credential-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_catalog_ok_completion_forbidden(
+            r#"{"data":[{"id":"opencode-go-model"}]}"#.to_string(),
+        );
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        let mut request = generic_request("custom");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.credential_kind = ProviderCredentialKind::Bearer;
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("a completion-rejected credential must not provision");
+        let raw = server.join().expect("fake server joins");
+
+        assert!(
+            raw.contains("/models"),
+            "the catalog endpoint really did answer 200"
+        );
+        assert!(
+            raw.contains("/chat/completions"),
+            "the rejection has to come from a real completion"
+        );
+        assert!(
+            matches!(
+                error,
+                EggpoolError::Probe(ProbeReason::AuthenticationFailed)
+            ),
+            "a completion-level 401/403 must surface as a credential failure, got {error:?}"
+        );
+        let verified: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_health WHERE credential_status = 'verified'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("verified count");
+        assert_eq!(
+            verified, 0,
+            "a catalog 2xx must never persist as a verified credential"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_empty_catalog_never_claims_a_verified_credential() {
+        // With no model there is nothing to run a verification completion on.
+        // The honest verdict is "no evidence", never `Verified`.
+        let _master = MasterKeyGuard::new("m010-empty-catalog-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_status_server(200, r#"{"data":[]}"#.to_string(), Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+
+        let mut request = generic_request("custom");
+        request.endpoint = Some(host);
+        request.tls_policy = Some(ProviderTlsPolicy::Disabled);
+        request.credential_kind = ProviderCredentialKind::Bearer;
+        let error = provisioner
+            .create_connection(request)
+            .await
+            .expect_err("an empty catalog must not provision");
+        server.join().expect("fake server joins");
+
+        assert!(
+            matches!(error, EggpoolError::Probe(ProbeReason::EmptyCatalog)),
+            "an empty catalog is a catalog fact, got {error:?}"
+        );
+        assert_eq!(
+            pick_verification_model(Some("openai_compatible"), &[]),
+            None
+        );
+        let verified: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_health WHERE credential_status = 'verified'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("verified count");
+        assert_eq!(verified, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

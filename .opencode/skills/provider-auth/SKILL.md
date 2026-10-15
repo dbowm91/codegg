@@ -32,22 +32,34 @@ to violate.
 
 ## Hard Rules
 
-1. **Two registration paths only.** `register_builtin`
-   (`provider_core.rs:498`) is the pure env-var sweep over 15 providers
+1. **Three registration entry points, one implementation.** `register_builtin`
+   (`provider_core.rs`) is the pure env-var sweep over 15 providers
    (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …); `register_builtin_with_config`
-   (`provider_core.rs:890`) is the production path and explicitly calls
+   is the non-turn production path and explicitly calls
    `register_config_provider`/`register_api_key_provider`/`register_credential_provider`
    for all 17 built-ins
-   (`builtin_registration_order()`, `provider_core.rs:592`). Each of those
+   (`builtin_registration_order()`). Each of those
    helpers resolves that provider's own config entry first, then its
    conventional env var. **Declaring one provider in config does NOT disable
    env-var auto-registration for the others** — resolution is per-provider
    and independent. The trailing
    `if registry.list().is_empty() { register_builtin(registry) }`
-   (`provider_core.rs:1088`) is a redundant safety net that only fires when
+   is a redundant safety net that only fires when
    config-based registration produced zero results; do not treat it as the
    mechanism that supplies the other providers. Do not "fix" registration by
    registering providers ad hoc.
+   `register_builtin_with_config_for_turn` is the **turn** entry point: same
+   pass, plus the connection pin and a typed error for an unresolvable
+   credential (rule 4a). `register_builtin_with_config_connections` is the
+   **process-wide** entry point (`codegg exec`, `codegg models`, `/models`,
+   the pickers): it pins *every* provider that has exactly one `Active`
+   connection with a secret binding, via
+   `session_selection::connection_credential_locators`, because those surfaces
+   have no session and no turn and would otherwise refuse any provider whose
+   rotation left an orphan record. Both delegate to
+   `register_builtins_with_store(registry, config, store, pins)`, which every
+   other entry point shares — add a built-in through the three helpers, never
+   a fourth path, so a new provider inherits the pin automatically.
    Exact totals are `builtin_registration_order()` / the catalog, not this
    contract.
 2. **`ExternalCommand` auth is unsupported.** Never add it as a production
@@ -57,8 +69,35 @@ to violate.
    documented production paths; other typed modes are schema-only until
    runtime-complete.
 4. **Single credential resolution path.** Env → config inline → encrypted
-   config → user store → legacy fields via `AuthResolver`. No parallel
-   lookup chains.
+   config → user store → legacy fields via `AuthResolver`, then the
+   provider-id store fallback. No parallel lookup chains.
+4a. **A turn authenticates with its connection's credential, and nothing
+   else.** The store is unsorted, so a first-match pick over a provider's
+   records authenticates with whatever was stored first — after a rotation,
+   the key the user replaced. A turn bound to a durable connection therefore
+   resolves that connection's `secret_binding` account by **exact**
+   `(provider_ref, account_ref)` and pins it, ahead of config, env, and the
+   store: rotation exists precisely so the connection's key changes while
+   those still hold the old one. Plumb the locator through
+   `TurnRunInput::credential_locator` (never plaintext) and build the turn's
+   registry with `register_builtin_with_config_for_turn`.
+   With no connection, several usable records for the turn's provider are
+   `AuthError::AmbiguousCredential` / `TurnCredentialError::Ambiguous`, naming
+   every candidate account; one record is unchanged; expired records are not
+   candidates. A bound-but-missing record is a hard
+   `TurnCredentialError::Missing`, never a fallback to another record for the
+   same provider. Never add a "pick the first/most recent record" shortcut,
+   and never let a turn fall back to `register_builtin_with_config`.
+4c. **Every persisted catalog is wire-qualified.** Provision discovers through
+   `Provider::models()` (already filtered by `qualify_models`); refresh and
+   rotate discover through the provider-neutral `CompatibleProbe` and must
+   apply `qualify_routable_models` themselves. An unqualified catalog
+   advertises models that fail closed at `wire_unresolved` before any request
+   is built, and alphabetical order puts the worst offenders first — on OpenCode
+   Go, `cat-jam-free` sorts first with no reviewed mapping, so the very first
+   row a user lands on could never work. Scope the filter to providers
+   `shared_provider_id` adapts; leave every other upstream untouched. Digest
+   the *stored* rows so "catalog changed" means what a user can select changed.
 4b. **Setup catalog owns onboarding metadata.** New built-in providers need
    a `setup_catalog` definition (explicit connectable disposition) plus a
    durable-builder arm — never a second name list, and never a fake
@@ -73,17 +112,54 @@ to violate.
 6. **Semantic routing validates against the selected connection.** See the
    `agent` skill; provider selection itself is durable
    session/connection state, not a routing decision.
+6b. **Deletion removes the row, through the provisioner.** `d` in
+   `/connections` is `ProviderConnectionStore::delete_permanently` via
+   `ProviderConnectionProvisioner::delete`: tombstone, then purge, then drop
+   the credential binding. Never implement a new removal path directly on the
+   store — the provisioner is where credential cleanup lives, and a
+   store-only delete orphans the credential with no row left to reference it.
+   A `Blocked` outcome must be reported with its concrete blockers and must
+   leave the tombstone so `p` can finish; `purge` stays revision-checked and
+   transactional.
+6b-1. **Session references never block a delete.** `delete_permanently` calls
+   `detach_sessions` first, clearing `session.provider_connection_id` and the
+   matching `selected_session` reference rows in one transaction. A session
+   pinned to a connection is history, not a live handle, and treating it as a
+   blocker makes a connection permanently undeletable with no operator action
+   that can clear it. Only `active_runtime` and `provisioning_operation`
+   describe in-flight work and must still block; do not widen detachment to
+   those. `purge_eligibility` still reports session counts for callers that ask
+   before deleting.
+6c. **Rotation prunes only what it can prove is dead.**
+   `prune_superseded_credential` removes a rotation's own superseded record,
+   and only when no other `provider_connections` row shares its
+   `(secret_provider_ref, secret_account_ref)`; a shared record is kept and
+   warned about, and a failed reference read counts as "still referenced" so a
+   storage error can never authorize a deletion. Never sweep records a
+   rotation did not produce — a hand-added key, or an orphan from an older
+   build, is not attributable and is surfaced through the ambiguity error
+   instead. Any new credential-deletion path belongs in the provisioner and
+   behind the same reference check.
 7. **Catalog discovery is never credential verification.** A successful
    `Provider::models()` call proves only that the catalog is usable — several
    built-ins return local/static arrays with no network I/O, generic
    compatible discovery falls back rather than proving auth, and some
-   provider `/models` endpoints are publicly readable. Only
-   `SetupProbeStrategy::AuthenticatedCompatibleCatalog` (a genuinely
-   authenticated, non-billable metadata request) may yield
-   `CredentialVerification::Verified`, and only
-   `CredentialVerification::from_probe` may derive a verdict from a probe.
-   Never derive one from a probe result, a model count, or a `healthy` health
-   row. `scripts/check_provider_qualification.py` enforces the naming and the
+   provider `/models` endpoints are publicly readable (the real OpenCode Go
+   gateway answers `200` to `GET /models` with *no* `Authorization` header at
+   all). `CredentialVerification::from_probe` is the only place a **catalog
+   probe** may derive a verdict, and every strategy now lands on `Unverified`
+   from it.
+   **Only a real completion produces `Verified`.** `CompatibleCredentialProbe`
+   is the sole promotion path: it spends one bounded completion
+   (`max_tokens = 1`, ~10s, reusing the caller's cancellation token) against a
+   model the probe already discovered, building the request for the surface the
+   shared profile resolved for that model rather than hardcoding Chat. A typed
+   401/403 fails the probe so a dead key can never be committed; an empty
+   catalog, an unresolved wire mapping, a timeout, a cancellation, or any
+   non-authentication status yields `Unverified`, never a promotion and never a
+   rejection. Never derive a verdict from a probe result, a model count, or a
+   `healthy` health row.
+   `scripts/check_provider_qualification.py` enforces the naming and the
    typed write path.
 8. **Credential verdicts are revision-scoped and monotonic in safety.** The
    only durable credential evidence is an authenticated request on the exact
@@ -169,3 +245,18 @@ source and that doc. Counts confirmed empirically: 17 entries in
 calls in `register_builtin_with_config`, versus 15 env vars in
 `register_builtin` (`provider_core.rs:498-563`).
 Claims without a traceable source were removed rather than guessed.
+
+**Added the turn credential-authority and pruning contracts (2026-10-15).**
+Rules 1, 4a, and 6c are new; `architecture/provider.md` was corrected in the
+same change, because its "provider resolution picks a single record per
+provider" phrasing described the file-order bug this work removed. Verified
+against `crates/codegg-providers/src/provider_core.rs`
+(`register_builtin_with_config_for_turn`, `resolve_provider_credential`,
+`RegistrationScope`), `crates/codegg-providers/src/auth_types.rs`
+(`AuthError::AmbiguousCredential`, `ResolvedAuthSource::ConnectionBinding`,
+`CredentialStore::records_for_provider`), `src/agent/turn_runtime.rs`
+(`TurnRunInput::credential_locator`), `src/core/daemon_turns.rs` (locator
+derivation from the selected connection), and `src/core/eggpool.rs`
+(`prune_superseded_credential`, `credential_account_referenced`). The
+`provider_core.rs` line numbers in rules 1, 4 and in the older verification
+note below were dropped rather than re-pinned, since this change moved them.

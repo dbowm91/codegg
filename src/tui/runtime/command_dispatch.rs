@@ -1101,7 +1101,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     // rather than maintaining a second TUI-only provider
                     // list. No-ops unless the management surface is open.
                     if let Some(tx) = app.tui_cmd_tx.clone() {
-                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
                     }
                 }
                 Err(error) => {
@@ -1130,21 +1135,47 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.dialog_state.connect_dialog = None;
                     app.close_dialog();
                     if let Some(tx) = app.tui_cmd_tx.clone() {
-                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
+                        let _ = send_tui(
+                            &tx,
+                            TuiCommand::SessionSelectionRefresh {
+                                focus_connection_id: None,
+                            },
+                        );
                     }
                 }
                 Err(error) => {
                     app.messages_state
                         .toasts
                         .error(&format!("Provider credential rotation failed: {error}"));
+                    // Clearing the secret is required — the failed attempt's
+                    // credential must not stay in memory — but it used to
+                    // leave the dialog on `EnterApiKey` with an empty masked
+                    // field and no explanation, which reads as a silent
+                    // re-prompt for the same key. Say what failed and that the
+                    // field is now empty on purpose.
+                    let message = format!(
+                        "Rotation failed: {error}. The credential field is now empty — enter it again."
+                    );
                     if let Some(dialog) = app.dialog_state.connect_dialog.as_mut() {
                         dialog.operation_id = None;
                         dialog.clear_secret();
+                        dialog.set_error(message.clone());
                     }
+                    app.focus_manager
+                        .with_dialog_mut::<crate::tui::components::dialogs::connect::ConnectDialog, _>(
+                            crate::tui::components::component::DialogType::Connect,
+                            |live| {
+                                live.operation_id = None;
+                                live.clear_secret();
+                                live.set_error(message);
+                            },
+                        );
                 }
             }
         }
-        TuiCommand::SessionSelectionRefresh => {
+        TuiCommand::SessionSelectionRefresh {
+            focus_connection_id,
+        } => {
             // The dialog was opened (or the user requested a refresh).
             // Drive a fresh selection fetch through the daemon.
             if app.dialog_state.connection_selection_dialog.is_some() {
@@ -1155,12 +1186,25 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|d| d.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id,
+                        },
+                    );
                 }
             }
         }
-        TuiCommand::SessionSelectionLoad { session_id } => {
-            crate::tui::commands::session_selection::start_selection_refresh(app, session_id);
+        TuiCommand::SessionSelectionLoad {
+            session_id,
+            focus_connection_id,
+        } => {
+            crate::tui::commands::session_selection::start_selection_refresh(
+                app,
+                session_id,
+                focus_connection_id,
+            );
         }
         TuiCommand::ModelSelectPersist { session_id, model } => {
             crate::tui::commands::session_selection::start_model_select_persist(
@@ -1195,7 +1239,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|dialog| dialog.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(
+                        &tx,
+                        TuiCommand::SessionSelectionLoad {
+                            session_id,
+                            focus_connection_id: None,
+                        },
+                    );
                 }
             }
         }
@@ -1937,13 +1987,31 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             app.apply_shell_promotions_submitted(&promotions, error);
         }
         TuiCommand::TurnSubmissionFinished { request_id, error } => {
-            if error.is_none()
-                && app
-                    .pending_turn_submission
-                    .as_ref()
-                    .is_some_and(|pending| pending.request_id == request_id)
-            {
-                app.pending_turn_submission = None;
+            let is_current = app
+                .pending_turn_submission
+                .as_ref()
+                .is_some_and(|pending| pending.request_id == request_id);
+            match error {
+                None => {
+                    if is_current {
+                        app.pending_turn_submission = None;
+                    }
+                }
+                Some(message) => {
+                    // The daemon refused the submit, or the socket is gone.
+                    // This arm used to discard the reason entirely: the only
+                    // thing that recorded it was a `tracing::debug!`, so the
+                    // composer kept its message in the transcript, stayed
+                    // pinned on `Working`, and produced no output and no error
+                    // until the 5-minute stall watchdog fired with a generic
+                    // "the core produced no event". The user had a named reason
+                    // in hand the whole time and it was thrown away. Report it
+                    // now, and release the composer so a retry is possible.
+                    if is_current {
+                        app.pending_turn_submission = None;
+                    }
+                    app.fail_unstarted_turn(&format!("Turn not submitted: {message}"));
+                }
             }
         }
         TuiCommand::TurnCancelRequested {

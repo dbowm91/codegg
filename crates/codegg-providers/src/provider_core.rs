@@ -658,7 +658,26 @@ pub(crate) fn resolve_provider_credential(
     cfg: Option<&codegg_config::schema::ProviderConfig>,
     env_var: Option<&str>,
     store: Option<&std::sync::Arc<CredentialStore>>,
+    pins: &[TurnCredentialPin],
 ) -> Result<Option<ResolvedAuth>, crate::auth_types::AuthError> {
+    // A resolved provider connection is the authority for its own provider. This
+    // check runs before config, env, and the store on purpose: rotation exists
+    // precisely so a connection's key changes while the rest of the machine
+    // (config, env, other stored records) still holds the old one, and any
+    // later source could silently undo the rotation the user just performed.
+    if let Some(pin) = pins.iter().find(|pin| pin.provider_id == provider_id) {
+        if pin.credential.secret.is_empty() {
+            return Ok(None);
+        }
+        tracing::debug!(
+            "resolve_provider_credential: provider '{}' resolved from its bound provider connection account",
+            provider_id
+        );
+        return Ok(Some(ResolvedAuth {
+            credential: pin.credential.clone(),
+            source: crate::auth_types::ResolvedAuthSource::ConnectionBinding,
+        }));
+    }
     let resolver = AuthResolver::new();
     // Decrypt any legacy `encrypted_api_key` so the resolver can prefer it
     // over a plaintext `api_key` when no env var or typed auth is configured.
@@ -745,29 +764,43 @@ pub(crate) fn resolve_provider_credential(
     // the TUI appeared to have no effect at all: `/connect` reported success
     // while `/models` stayed empty.
     //
-    // Config and env keep priority; this only supplies the missing case, and an
-    // empty/expired record is treated as absent rather than as a bad key.
+    // Config and env keep priority; this only supplies the missing case.
+    // Expired records are treated as absent rather than as a bad key.
+    //
+    // Records are counted, not raced: `CredentialStore::list` is unsorted, so
+    // taking the first match for a provider would authenticate with whatever
+    // key was stored first — for a provider holding a superseded rotation
+    // record plus a live one, the dead key wins every turn. One usable record
+    // is unambiguous; two or more are refused with the candidate accounts
+    // named so the operator can bind or remove one.
     let Some(store) = store else {
         return Ok(None);
     };
-    let records = store.list();
-    let chosen = records
-        .iter()
-        .find(|record| record.provider_id == provider_id && record.account_id.is_some())
-        .or_else(|| {
-            records
+    let now = chrono::Utc::now();
+    let usable: Vec<crate::auth_types::StoredCredentialRecord> = store
+        .records_for_provider(provider_id)
+        .into_iter()
+        .filter(|record| record.expires_at.is_none_or(|expires_at| expires_at > now))
+        .collect();
+    let chosen = match usable.as_slice() {
+        [] => return Ok(None),
+        [only] => only,
+        ambiguous => {
+            let candidates = ambiguous
                 .iter()
-                .find(|record| record.provider_id == provider_id)
-        });
-    let Some(chosen) = chosen else {
-        return Ok(None);
+                .map(|record| match &record.account_id {
+                    Some(account) => account.as_str(),
+                    None => "no-account",
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(crate::auth_types::AuthError::AmbiguousCredential {
+                provider_id: provider_id.to_string(),
+                candidates,
+            });
+        }
     };
-    if chosen
-        .expires_at
-        .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
-    {
-        return Ok(None);
-    }
+    let chosen = chosen.clone();
     let Ok(Some(secret)) = store.get_plaintext(provider_id, chosen.account_id.as_deref(), |_| true)
     else {
         return Ok(None);
@@ -819,7 +852,7 @@ fn register_credential_provider<F>(
     disabled: Option<&Vec<String>>,
     name: &str,
     env_var: &str,
-    store: Option<&std::sync::Arc<CredentialStore>>,
+    scope: &RegistrationScope<'_>,
     factory: F,
 ) where
     F: FnOnce(Credential) -> Box<dyn Provider>,
@@ -829,7 +862,7 @@ fn register_credential_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, Some(env_var), store) {
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if !resolved.credential.secret.is_empty() {
                     tracing::debug!(
@@ -862,6 +895,7 @@ fn register_credential_provider<F>(
                     name,
                     e
                 );
+                scope.failures.borrow_mut().push((name.to_string(), e));
             }
         }
     }
@@ -880,7 +914,7 @@ fn register_api_key_provider<F>(
     disabled: Option<&Vec<String>>,
     name: &str,
     env_var: &str,
-    store: Option<&std::sync::Arc<CredentialStore>>,
+    scope: &RegistrationScope<'_>,
     factory: F,
 ) where
     F: FnOnce(String) -> Box<dyn Provider>,
@@ -890,7 +924,7 @@ fn register_api_key_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, Some(env_var), store) {
+        match resolve_provider_credential(name, cfg_opt, Some(env_var), scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if let Some(cred) = ensure_api_key_credential(name, &resolved) {
                     tracing::debug!(
@@ -914,6 +948,7 @@ fn register_api_key_provider<F>(
                     name,
                     e
                 );
+                scope.failures.borrow_mut().push((name.to_string(), e));
             }
         }
     }
@@ -934,7 +969,7 @@ fn register_config_provider<F>(
     providers: Option<&std::collections::HashMap<String, codegg_config::schema::ProviderConfig>>,
     disabled: Option<&Vec<String>>,
     name: &str,
-    store: Option<&std::sync::Arc<CredentialStore>>,
+    scope: &RegistrationScope<'_>,
     factory: F,
 ) where
     F: FnOnce(String, Option<String>) -> Box<dyn Provider>,
@@ -944,7 +979,7 @@ fn register_config_provider<F>(
         .unwrap_or(true)
     {
         let cfg_opt = providers.and_then(|p| p.get(name));
-        match resolve_provider_credential(name, cfg_opt, None, store) {
+        match resolve_provider_credential(name, cfg_opt, None, scope.store, scope.pins) {
             Ok(Some(resolved)) => {
                 if let Some(cred) = ensure_api_key_credential(name, &resolved) {
                     tracing::debug!(
@@ -968,37 +1003,141 @@ fn register_config_provider<F>(
                     name,
                     e
                 );
+                scope.failures.borrow_mut().push((name.to_string(), e));
             }
         }
     }
 }
 
+/// Register every built-in provider from config, env, and the user store.
+///
+/// Surfaces are that cannot speak for a session (model listing, provider
+/// pickers) use this entry point: a provider whose credential cannot be
+/// resolved is logged and skipped, exactly as before. A turn must not use it
+/// — [`register_builtin_with_config_for_turn`] is the turn-scoped authority
+/// and reports an unresolvable credential instead of skipping it.
 pub fn register_builtin_with_config(
     registry: &mut ProviderRegistry,
     config: &codegg_config::schema::Config,
 ) {
+    // Resolution errors are already logged by the per-provider helpers.
+    let _ = register_builtins_with_store(registry, config, None, &[]);
+}
+
+/// Register the built-ins with connection authority for **every** provider.
+///
+/// [`register_builtin_with_config_for_turn`] binds exactly one provider because
+/// a turn names exactly one. Process-wide paths — `codegg exec`, `/models`,
+/// `codegg models`, the model pickers — have no turn and no session, so they used
+/// to fall straight through to the credential-store fallback, which counts every
+/// usable record for a provider and refuses once more than one exists.
+///
+/// That made a rotation permanently break those paths for the rotated provider:
+/// the live record sits beside the orphan the rotation replaced, the count
+/// reaches two, and the provider disappears from `codegg models` with
+/// `Provider not found` even though a healthy `active` connection holds its
+/// working key. Supplying every connection's locator here restores exactly the
+/// rule a turn already obeys — a connection is the authority for its own
+/// provider — so the same setup works from the CLI and the TUI.
+///
+/// Locators for providers the shared profile does not adapt are ignored, as is
+/// any provider with no locator: those keep the pre-existing resolution order.
+pub fn register_builtin_with_config_connections(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    locators: &[(String, TurnCredentialLocator)],
+    store: Option<std::sync::Arc<CredentialStore>>,
+) -> Vec<(String, crate::auth_types::AuthError)> {
+    if locators.is_empty() {
+        return register_builtin_with_config_failures(registry, config, store);
+    }
+    let resolved = match store {
+        Some(store) => Some(store),
+        None => CredentialStore::at_default_location().map(Arc::new).ok(),
+    };
+    let Some(resolved) = resolved else {
+        // Without a store there is nothing to pin from. Falling back to the
+        // unbound pass is strictly better than registering nothing: it
+        // reproduces the exact pre-existing behaviour, ambiguity refusal and all.
+        return register_builtin_with_config_failures(registry, config, None);
+    };
+    let mut pins: Vec<TurnCredentialPin> = Vec::with_capacity(locators.len());
+    for (provider_id, locator) in locators {
+        let Ok(Some(credential)) =
+            resolved.get_credential(&locator.provider_ref, Some(&locator.account_ref))
+        else {
+            continue;
+        };
+        // An expired bound record is dead material. It is left unpinned so the
+        // ordinary resolution order reports it as missing rather than letting a
+        // turn fail later as an opaque upstream 401.
+        if credential
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+        {
+            continue;
+        }
+        pins.push(TurnCredentialPin {
+            provider_id: provider_id.clone(),
+            credential,
+        });
+    }
+    if pins.is_empty() {
+        return register_builtin_with_config_failures(registry, config, None);
+    }
+    register_builtins_with_store(registry, config, Some(resolved), &pins)
+}
+
+fn register_builtin_with_config_failures(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    store: Option<std::sync::Arc<CredentialStore>>,
+) -> Vec<(String, crate::auth_types::AuthError)> {
+    register_builtins_with_store(registry, config, store, &[])
+}
+
+/// One registration pass, returning every `(provider, error)` it hit so a
+/// caller that owns user-facing error reporting can decide what to say.
+///
+/// `store` is the shared [`CredentialStore`]; `None` opens the default user
+/// location, which is what every non-test caller wants. `pin` carries the
+/// connection-bound credential for one provider (see [`TurnCredentialPin`]).
+pub(crate) fn register_builtins_with_store(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    store: Option<std::sync::Arc<CredentialStore>>,
+    pins: &[TurnCredentialPin],
+) -> Vec<(String, crate::auth_types::AuthError)> {
     let providers = config.provider.as_ref();
     let disabled = config.disabled_providers.as_ref();
 
     // Build a single, shared credential store. A failure to construct the
     // store does not abort registration: env-var and inline API-key paths
     // still work without it; only `AuthConfig::Stored` becomes unavailable.
-    let store: Option<std::sync::Arc<CredentialStore>> = CredentialStore::at_default_location()
-        .map(std::sync::Arc::new)
-        .map_err(|e| {
-            tracing::warn!(
-                "register_builtin_with_config: could not open user credential store: {e}"
-            );
-            e
-        })
-        .ok();
+    let store: Option<std::sync::Arc<CredentialStore>> = match store {
+        Some(store) => Some(store),
+        None => CredentialStore::at_default_location()
+            .map(std::sync::Arc::new)
+            .map_err(|e| {
+                tracing::warn!(
+                    "register_builtin_with_config: could not open user credential store: {e}"
+                );
+                e
+            })
+            .ok(),
+    };
+    let scope = RegistrationScope {
+        store: store.as_ref(),
+        pins,
+        failures: std::cell::RefCell::new(Vec::new()),
+    };
 
     register_config_provider(
         registry,
         providers,
         disabled,
         "anthropic",
-        store.as_ref(),
+        &scope,
         |key, base_url| {
             let mut p = crate::anthropic::AnthropicProvider::new(key);
             if let Some(url) = base_url {
@@ -1013,7 +1152,7 @@ pub fn register_builtin_with_config(
         providers,
         disabled,
         "openai",
-        store.as_ref(),
+        &scope,
         |key, base_url| {
             let mut cfg = crate::openai::OpenAiConfig::default_with_key(key);
             if let Some(url) = base_url {
@@ -1028,7 +1167,7 @@ pub fn register_builtin_with_config(
         providers,
         disabled,
         "google",
-        store.as_ref(),
+        &scope,
         |key, _base_url| Box::new(crate::google::GoogleProvider::new(key)),
     );
 
@@ -1037,7 +1176,7 @@ pub fn register_builtin_with_config(
         providers,
         disabled,
         "openrouter",
-        store.as_ref(),
+        &scope,
         |key, _base_url| Box::new(crate::openrouter::OpenRouterProvider::new(key)),
     );
 
@@ -1047,7 +1186,7 @@ pub fn register_builtin_with_config(
         disabled,
         "opencode_zen",
         "OPENCODE_ZEN_API_KEY",
-        store.as_ref(),
+        &scope,
         |key| Box::new(crate::opencode_zen::OpencodeZenProvider::new(key)),
     );
 
@@ -1057,7 +1196,7 @@ pub fn register_builtin_with_config(
         disabled,
         "mistral",
         "MISTRAL_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_mistral(cred)),
     );
 
@@ -1067,7 +1206,7 @@ pub fn register_builtin_with_config(
         disabled,
         "groq",
         "GROQ_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_groq(cred)),
     );
 
@@ -1077,7 +1216,7 @@ pub fn register_builtin_with_config(
         disabled,
         "deepinfra",
         "DEEPINFRA_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_deepinfra(cred)),
     );
 
@@ -1087,7 +1226,7 @@ pub fn register_builtin_with_config(
         disabled,
         "cerebras",
         "CEREBRAS_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_cerebras(cred)),
     );
 
@@ -1097,7 +1236,7 @@ pub fn register_builtin_with_config(
         disabled,
         "cohere",
         "COHERE_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_cohere(cred)),
     );
 
@@ -1107,7 +1246,7 @@ pub fn register_builtin_with_config(
         disabled,
         "together",
         "TOGETHERAI_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_together(cred)),
     );
 
@@ -1117,7 +1256,7 @@ pub fn register_builtin_with_config(
         disabled,
         "perplexity",
         "PERPLEXITY_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_perplexity(cred)),
     );
 
@@ -1127,7 +1266,7 @@ pub fn register_builtin_with_config(
         disabled,
         "xai",
         "XAI_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_xai(cred)),
     );
 
@@ -1137,7 +1276,7 @@ pub fn register_builtin_with_config(
         disabled,
         "venice",
         "VENICE_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_venice(cred)),
     );
 
@@ -1147,7 +1286,7 @@ pub fn register_builtin_with_config(
         disabled,
         "minimax",
         "MINIMAX_API_KEY",
-        store.as_ref(),
+        &scope,
         |key| Box::new(crate::additional::create_minimax(key)),
     );
 
@@ -1157,7 +1296,7 @@ pub fn register_builtin_with_config(
         disabled,
         "opencode_go",
         "OPENCODE_GO_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_opencode_go(cred)),
     );
 
@@ -1167,13 +1306,181 @@ pub fn register_builtin_with_config(
         disabled,
         "generalcompute",
         "GENERALCOMPUTE_API_KEY",
-        store.as_ref(),
+        &scope,
         |cred| Box::new(crate::additional::create_generalcompute(cred)),
     );
 
     if registry.list().is_empty() {
         register_builtin(registry);
     }
+    scope.failures.into_inner()
+}
+
+/// One provider's credential, already read from the store by the caller that
+/// owns the durable connection.
+///
+/// Built by [`register_builtin_with_config_for_turn`] and threaded through
+/// every registration helper so that a resolved connection wins for its own
+/// provider regardless of what config, env, or record ordering say.
+pub(crate) struct TurnCredentialPin {
+    /// Registry provider id this credential is authoritative for.
+    pub provider_id: String,
+    pub credential: Credential,
+}
+
+/// Shared inputs for one [`register_builtins_with_store`] pass.
+///
+/// `failures` collects every provider whose credential could not be resolved
+/// so a turn-scoped caller can report the one it cares about instead of
+/// losing the distinction between "skipped" and "refused".
+struct RegistrationScope<'a> {
+    store: Option<&'a std::sync::Arc<CredentialStore>>,
+    pins: &'a [TurnCredentialPin],
+    failures: std::cell::RefCell<Vec<(String, crate::auth_types::AuthError)>>,
+}
+
+/// A durable provider connection's own credential-store account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnCredentialLocator {
+    /// `provider_connections.secret_provider_ref` — the store's provider key.
+    pub provider_ref: String,
+    /// `provider_connections.secret_account_ref` — the store's account key.
+    pub account_ref: String,
+}
+
+/// Why one turn could not be given a provider credential.
+///
+/// Each variant is a distinct user-facing failure. Like
+/// `crate::core::session_selection::ModelSelectResolveError`, they are never
+/// collapsed: a bound-but-missing credential, an ambiguous store, and an
+/// unreadable store are three different problems with three different fixes.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TurnCredentialError {
+    #[error(
+        "provider connection credential '{}' for provider '{provider_id}' is missing from the credential store; re-run /connect or rotate this connection to restore it",
+        account_id
+    )]
+    Missing {
+        provider_id: String,
+        account_id: String,
+    },
+    #[error(
+        "no provider connection is bound to this session, and several credentials are stored for provider '{provider_id}' (accounts: {candidates}); bind one with /connect or remove the unused accounts"
+    )]
+    Ambiguous {
+        provider_id: String,
+        candidates: String,
+    },
+    #[error("credential for provider '{provider_id}' could not be resolved: {reason}")]
+    Unresolved { provider_id: String, reason: String },
+}
+
+impl TurnCredentialError {
+    /// Stable wire code for the failure, mirroring the split the daemon
+    /// already uses for connection-state errors.
+    pub fn code(&self) -> &'static str {
+        match self {
+            TurnCredentialError::Missing { .. } => "connection_credential_missing",
+            TurnCredentialError::Ambiguous { .. } => "provider_credential_ambiguous",
+            TurnCredentialError::Unresolved { .. } => "provider_credential_unresolved",
+        }
+    }
+}
+
+/// Register the built-ins for one turn, under that turn's credential authority.
+///
+/// `provider_id` is the registry id this turn will actually call. `locator`
+/// is the account the session's resolved connection is bound to:
+///
+/// - `Some` — the bound record is the only admissible credential. It is read
+///   by exact `(provider_ref, account_ref)`, pinned for the pass, and a
+///   missing record is a hard error: no other record for this provider is a
+///   legitimate substitute for the one the user selected.
+/// - `None` — nothing binds this turn to an account, so a store holding more
+///   than one usable record for `provider_id` is ambiguous rather than a
+///   file-order coin flip. One usable record resolves exactly as before.
+///
+/// `store` is `None` for production callers, which use the default user
+/// location; tests pass their own store.
+pub fn register_builtin_with_config_for_turn(
+    registry: &mut ProviderRegistry,
+    config: &codegg_config::schema::Config,
+    provider_id: &str,
+    locator: Option<&TurnCredentialLocator>,
+    store: Option<&std::sync::Arc<CredentialStore>>,
+) -> Result<(), TurnCredentialError> {
+    let store: Option<std::sync::Arc<CredentialStore>> = match store {
+        Some(store) => Some(Arc::clone(store)),
+        None => CredentialStore::at_default_location().map(Arc::new).ok(),
+    };
+    let pin = match locator {
+        Some(locator) => {
+            let store = store
+                .as_ref()
+                .ok_or_else(|| TurnCredentialError::Unresolved {
+                    provider_id: provider_id.to_string(),
+                    reason: "the user credential store could not be opened".to_string(),
+                })?;
+            let credential = store
+                .get_credential(&locator.provider_ref, Some(&locator.account_ref))
+                .map_err(|error| TurnCredentialError::Unresolved {
+                    provider_id: provider_id.to_string(),
+                    reason: error.to_string(),
+                })?
+                .ok_or_else(|| TurnCredentialError::Missing {
+                    provider_id: provider_id.to_string(),
+                    account_id: locator.account_ref.clone(),
+                })?;
+            // An expired bound record is dead material, not a usable one. It
+            // is reported as missing rather than pinned, because sending it
+            // would fail later as an opaque provider 401 instead of naming the
+            // binding the operator has to rotate.
+            if credential
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= chrono::Utc::now())
+            {
+                return Err(TurnCredentialError::Missing {
+                    provider_id: provider_id.to_string(),
+                    account_id: locator.account_ref.clone(),
+                });
+            }
+            Some(TurnCredentialPin {
+                provider_id: provider_id.to_string(),
+                credential,
+            })
+        }
+        None => None,
+    };
+    let pins = pin.as_slice();
+    let failures = register_builtins_with_store(registry, config, store, pins);
+    if let Some((_, error)) = failures.into_iter().find(|(name, _)| name == provider_id) {
+        return Err(match error {
+            crate::auth_types::AuthError::AmbiguousCredential { candidates, .. } => {
+                TurnCredentialError::Ambiguous {
+                    provider_id: provider_id.to_string(),
+                    candidates,
+                }
+            }
+            other => TurnCredentialError::Unresolved {
+                provider_id: provider_id.to_string(),
+                reason: other.to_string(),
+            },
+        });
+    }
+    let explicitly_disabled = config
+        .disabled_providers
+        .as_ref()
+        .is_some_and(|disabled| disabled.iter().any(|entry| entry == provider_id));
+    if pin.is_some() && !explicitly_disabled && registry.get(provider_id).is_none() {
+        // A bound credential that cannot build a provider (wrong credential
+        // kind for this transport, empty secret) must not degrade into "no
+        // provider configured", which would send the turn to another key.
+        return Err(TurnCredentialError::Unresolved {
+            provider_id: provider_id.to_string(),
+            reason: "the bound credential could not build this provider".to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1876,9 +2183,10 @@ mod tests {
         let prev = std::env::var("RESOLVE_TEST_PROVIDER_API_KEY").ok();
         std::env::remove_var("RESOLVE_TEST_PROVIDER_API_KEY");
         let cfg = make_provider_config();
-        let resolved = resolve_provider_credential("resolve_test_provider", Some(&cfg), None, None)
-            .expect("ok")
-            .expect("some");
+        let resolved =
+            resolve_provider_credential("resolve_test_provider", Some(&cfg), None, None, &[])
+                .expect("ok")
+                .expect("some");
         assert_eq!(resolved.credential.secret, "inline-key");
         assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
         if let Some(v) = prev {
@@ -1915,10 +2223,15 @@ mod tests {
             }),
             ..Default::default()
         };
-        let resolved =
-            resolve_provider_credential("resolve_test_provider", Some(&cfg), None, Some(&store))
-                .expect("ok")
-                .expect("some");
+        let resolved = resolve_provider_credential(
+            "resolve_test_provider",
+            Some(&cfg),
+            None,
+            Some(&store),
+            &[],
+        )
+        .expect("ok")
+        .expect("some");
         assert_eq!(resolved.credential.secret, "stored-key");
         assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
         assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
@@ -1970,7 +2283,7 @@ mod tests {
 
         // No config entry at all — exactly what `/connect` leaves behind.
         let resolved =
-            resolve_provider_credential("connect_fallback_test", None, None, Some(&store))
+            resolve_provider_credential("connect_fallback_test", None, None, Some(&store), &[])
                 .expect("ok")
                 .expect("the stored credential must be found without config or env");
         assert_eq!(resolved.credential.secret, "connect-added-key");
@@ -2012,6 +2325,7 @@ mod tests {
             None,
             Some("CONNECT_PRECEDENCE_TEST_API_KEY"),
             Some(&store),
+            &[],
         )
         .expect("ok")
         .expect("env must resolve");
@@ -2307,7 +2621,7 @@ mod tests {
             encrypted_api_key: Some(encrypted),
             ..Default::default()
         };
-        let resolved = resolve_provider_credential("legacy_enc_test", Some(&cfg), None, None)
+        let resolved = resolve_provider_credential("legacy_enc_test", Some(&cfg), None, None, &[])
             .expect("ok")
             .expect("some");
         assert_eq!(resolved.credential.secret, "decrypted-legacy-key");
@@ -2340,7 +2654,7 @@ mod tests {
         };
         // No master key, no env override -> no credential resolved.
         let resolved =
-            resolve_provider_credential("no_master_test", Some(&cfg), None, None).expect("ok");
+            resolve_provider_credential("no_master_test", Some(&cfg), None, None, &[]).expect("ok");
         assert!(resolved.is_none());
 
         if let Some(v) = prev_master {
@@ -2459,7 +2773,7 @@ mod tests {
             ..Default::default()
         };
         let resolved =
-            resolve_provider_credential("xai", Some(&cfg), Some("XAI_API_KEY"), Some(&store))
+            resolve_provider_credential("xai", Some(&cfg), Some("XAI_API_KEY"), Some(&store), &[])
                 .expect("ok")
                 .expect("some");
         assert_eq!(resolved.credential.kind, CredentialKind::BearerToken);
@@ -2510,6 +2824,7 @@ mod tests {
                 Some(&cfg),
                 Some(env_var),
                 Some(&store),
+                &[],
             ) {
                 Ok(_) => panic!("bearer for '{provider}' must fail"),
                 Err(err) => err,
@@ -2553,6 +2868,7 @@ mod tests {
             Some(&cfg),
             Some("GROQ_API_KEY"),
             Some(&store),
+            &[],
         ) {
             Ok(_) => panic!("expired bearer must fail"),
             Err(err) => err,
@@ -2590,6 +2906,7 @@ mod tests {
             Some(&cfg),
             Some("MINIMAX_API_KEY"),
             Some(&store),
+            &[],
         )
         .expect("ok")
         .expect("some");
@@ -2601,5 +2918,282 @@ mod tests {
         } else {
             std::env::remove_var("CODEGG_MASTER_KEY");
         }
+    }
+
+    // ---- Turn credential authority ----
+
+    /// Account ids shaped like a real rotated credential, so a regression that
+    /// silently returns to file order has to pick a *different* key and fails
+    /// loudly rather than passing by coincidence.
+    const TURN_DEAD_ACCOUNT: &str = "d04e5c1e-8b22-4691-b9e9-7d44dda3b7be";
+    const TURN_STALE_ACCOUNT: &str = "rot-10dc54e4-2a6f-4c1e-9f0b-1d2e3f4a5b6c";
+    const TURN_BOUND_ACCOUNT: &str = "rot-b3c68955-77d1-4f0e-9a3c-2b5e6d7c8a90";
+
+    fn turn_store(records: &[(&str, &str, &str)]) -> (tempfile::TempDir, Arc<CredentialStore>) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = Arc::new(CredentialStore::at_path(dir.path().join("c.json")).expect("store"));
+        for (provider, account, secret) in records {
+            store
+                .put(
+                    provider,
+                    Some(account),
+                    CredentialKind::ApiKey,
+                    *secret,
+                    None,
+                    vec![],
+                )
+                .expect("put");
+        }
+        (dir, store)
+    }
+
+    /// Build a turn registry with every process-global effect reverted before
+    /// returning: a std mutex guard must never be held across an await.
+    fn turn_registry(
+        records: &[(&str, &str, &str)],
+        provider_id: &str,
+        locator: Option<&TurnCredentialLocator>,
+        config: &codegg_config::schema::Config,
+    ) -> (ProviderRegistry, Result<(), TurnCredentialError>) {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "turn-credential-authority-master");
+        let saved = m010_clear_env(&[
+            "OPENAI_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "OPENCODE_GO_API_KEY",
+        ]);
+        let (_dir, store) = turn_store(records);
+        let mut registry = ProviderRegistry::new();
+        let outcome = register_builtin_with_config_for_turn(
+            &mut registry,
+            config,
+            provider_id,
+            locator,
+            Some(&store),
+        );
+        m010_restore_env(saved);
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        (registry, outcome)
+    }
+
+    fn openai_pointed_at(base_url: &str) -> codegg_config::schema::Config {
+        let mut provider = ProviderConfig {
+            base_url: Some(base_url.to_string()),
+            ..Default::default()
+        };
+        provider.api_key = None;
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("openai".to_string(), provider);
+        codegg_config::schema::Config {
+            provider: Some(providers),
+            ..Default::default()
+        }
+    }
+
+    /// One model-listing server that reports the Authorization header it
+    /// received, so a test can prove *which key* the registered provider sends.
+    fn capture_models_server() -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buffer = [0u8; 4096];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let authorization = request
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                .map(|line| {
+                    line[line.find(':').expect("colon") + 1..]
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let _ = tx.send(authorization);
+            let body = "{\"data\":[{\"id\":\"probe-model\"}]}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        (base, rx)
+    }
+
+    /// The regression guard: a turn bound to one connection must authenticate
+    /// with that connection's account while two other records for the same
+    /// provider sit in the store, one of them first on disk. Reading the key
+    /// back off the wire is what makes this a real guard — the first record's
+    /// dead key would be sent here if the binding were ignored.
+    #[tokio::test]
+    async fn turn_authenticates_with_the_credential_its_connection_is_bound_to() {
+        let (base_url, authorization) = capture_models_server();
+        let config = openai_pointed_at(&base_url);
+        let locator = TurnCredentialLocator {
+            provider_ref: "openai".to_string(),
+            account_ref: TURN_BOUND_ACCOUNT.to_string(),
+        };
+        let (registry, outcome) = turn_registry(
+            &[
+                ("openai", TURN_DEAD_ACCOUNT, "dead-first-key"),
+                ("openai", TURN_STALE_ACCOUNT, "stale-rotated-key"),
+                ("openai", TURN_BOUND_ACCOUNT, "bound-live-key"),
+            ],
+            "openai",
+            Some(&locator),
+            &config,
+        );
+        outcome.expect("a bound connection must resolve its own credential");
+        let provider = registry.get("openai").expect("openai must be registered");
+        provider
+            .models()
+            .await
+            .expect("model listing against the capture server");
+        let sent =
+            tokio::task::spawn_blocking(move || authorization.recv_timeout(Duration::from_secs(5)))
+                .await
+                .expect("join")
+                .expect("captured authorization header");
+        assert_eq!(
+            sent, "Bearer bound-live-key",
+            "the turn must authenticate with the bound account, not the first record on disk"
+        );
+    }
+
+    /// A bound turn whose record is gone fails with a typed error naming the
+    /// account. It must not quietly use one of the other records for the same
+    /// provider — that is how a rotation appears to do nothing.
+    #[test]
+    fn turn_with_a_missing_bound_credential_fails_instead_of_using_another_key() {
+        let locator = TurnCredentialLocator {
+            provider_ref: "opencode_go".to_string(),
+            account_ref: TURN_BOUND_ACCOUNT.to_string(),
+        };
+        let (registry, outcome) = turn_registry(
+            &[
+                ("opencode_go", TURN_DEAD_ACCOUNT, "dead-first-key"),
+                ("opencode_go", TURN_STALE_ACCOUNT, "stale-rotated-key"),
+            ],
+            "opencode_go",
+            Some(&locator),
+            &codegg_config::schema::Config::default(),
+        );
+        let error = outcome.expect_err("a missing bound credential must fail");
+        assert_eq!(error.code(), "connection_credential_missing");
+        assert!(
+            matches!(&error, TurnCredentialError::Missing { account_id, .. } if account_id == TURN_BOUND_ACCOUNT),
+            "the error must name the missing account, got {error:?}"
+        );
+        assert!(
+            registry.get("opencode_go").is_none(),
+            "no provider may be built from an unrelated record"
+        );
+        let message = error.to_string();
+        assert!(message.contains(TURN_BOUND_ACCOUNT), "message: {message}");
+        assert!(!message.contains("dead-first-key"), "message: {message}");
+    }
+
+    /// No connection resolved, several records stored: refuse to guess and
+    /// name every candidate so the operator can bind or remove one.
+    #[test]
+    fn unbound_turn_with_several_records_reports_the_candidates() {
+        let (registry, outcome) = turn_registry(
+            &[
+                ("opencode_go", TURN_DEAD_ACCOUNT, "dead-first-key"),
+                ("opencode_go", TURN_STALE_ACCOUNT, "stale-rotated-key"),
+                ("opencode_go", TURN_BOUND_ACCOUNT, "live-key"),
+            ],
+            "opencode_go",
+            None,
+            &codegg_config::schema::Config::default(),
+        );
+        let error = outcome.expect_err("file order must not pick the credential");
+        assert_eq!(error.code(), "provider_credential_ambiguous");
+        let message = error.to_string();
+        assert!(message.contains("opencode_go"), "message: {message}");
+        for account in [TURN_DEAD_ACCOUNT, TURN_STALE_ACCOUNT, TURN_BOUND_ACCOUNT] {
+            assert!(message.contains(account), "missing {account} in: {message}");
+        }
+        assert!(
+            !message.contains("dead-first-key"),
+            "a secret must never appear in the message: {message}"
+        );
+        assert!(
+            registry.get("opencode_go").is_none(),
+            "an ambiguous provider must not be registered with a guessed key"
+        );
+    }
+
+    /// One record for the provider and no connection: the ordinary
+    /// single-record store keeps working exactly as before.
+    #[test]
+    fn unbound_turn_with_one_record_still_resolves() {
+        let (registry, outcome) = turn_registry(
+            &[("opencode_go", TURN_BOUND_ACCOUNT, "only-key")],
+            "opencode_go",
+            None,
+            &codegg_config::schema::Config::default(),
+        );
+        outcome.expect("a single stored record is unambiguous");
+        assert!(registry.get("opencode_go").is_some());
+    }
+
+    /// Expired records are not candidates. A store holding one dead-by-date
+    /// and one live record resolves the live one instead of reporting the
+    /// pair as ambiguous.
+    #[test]
+    fn unbound_turn_ignores_expired_records() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "turn-expired-record-master");
+        let saved = m010_clear_env(&["OPENCODE_GO_API_KEY"]);
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = Arc::new(CredentialStore::at_path(dir.path().join("c.json")).expect("store"));
+        store
+            .put(
+                "opencode_go",
+                Some(TURN_DEAD_ACCOUNT),
+                CredentialKind::ApiKey,
+                "expired-key",
+                Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
+                vec![],
+            )
+            .expect("put expired");
+        store
+            .put(
+                "opencode_go",
+                Some(TURN_BOUND_ACCOUNT),
+                CredentialKind::ApiKey,
+                "live-key",
+                None,
+                vec![],
+            )
+            .expect("put live");
+        let mut registry = ProviderRegistry::new();
+        let outcome = register_builtin_with_config_for_turn(
+            &mut registry,
+            &codegg_config::schema::Config::default(),
+            "opencode_go",
+            None,
+            Some(&store),
+        );
+        m010_restore_env(saved);
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+        outcome.expect("an expired record must not make the pair ambiguous");
+        assert!(registry.get("opencode_go").is_some());
     }
 }

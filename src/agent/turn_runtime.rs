@@ -174,6 +174,17 @@ pub struct TurnRunInput {
     /// C001 daemon-scoped singleton watch service. Same lifetime rules as
     /// the notifier above; closing one turn must leave watchers live.
     pub shared_ci_watch_service: Option<Arc<crate::scheduler::ci_watch::CiWatchService>>,
+    /// Credential-store locator for the durable provider connection this turn
+    /// resolved to, when the session has one.
+    ///
+    /// `Some` makes that account the turn's only admissible credential:
+    /// config, env, and other stored records are ignored for the provider the
+    /// connection names, so rotating a connection takes effect on the next
+    /// turn instead of being undone by whichever record sits first in
+    /// `credentials.json`. `None` (no durable selection) leaves the store
+    /// fallback in place, where several usable records for the turn's provider
+    /// are refused as ambiguous rather than picked by file order.
+    pub credential_locator: Option<crate::provider::TurnCredentialLocator>,
 }
 
 /// Minimal output from a turn execution.
@@ -252,6 +263,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             credential_observer,
             shared_job_notification_service,
             shared_ci_watch_service,
+            credential_locator,
         } = input;
 
         let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
@@ -315,9 +327,6 @@ impl TurnRuntime for DefaultTurnRuntime {
         let workspace_locks = workspace_service_lease.as_ref().map(|lease| lease.locks());
 
         // ── Provider resolution ──────────────────────────────────────
-        let mut registry = crate::provider::ProviderRegistry::new();
-        crate::provider::register_builtin_with_config(&mut registry, &config);
-
         let semantic_router = crate::agent::semantic_router::SemanticRouter::from_config(&config)
             .map_err(|error| {
             AppError::Config(crate::error::ConfigError::Invalid(error.to_string()))
@@ -345,6 +354,31 @@ impl TurnRuntime for DefaultTurnRuntime {
             Some((_, model_id)) => model_id.to_string(),
             None => execution_model.clone(),
         };
+
+        // The registry is built under this turn's credential authority, so
+        // registration happens after the provider this turn will actually
+        // call is known: the connection binding pins its own account, and an
+        // unbound turn refuses an ambiguous store instead of guessing.
+        let mut registry = crate::provider::ProviderRegistry::new();
+        crate::provider::register_builtin_with_config_for_turn(
+            &mut registry,
+            &config,
+            &provider_name,
+            credential_locator.as_ref(),
+            None,
+        )
+        .map_err(|error| {
+            tracing::warn!(
+                provider = %provider_name,
+                code = error.code(),
+                "turn credential resolution failed"
+            );
+            AppError::Provider(crate::error::ProviderError::Auth(format!(
+                "{} ({})",
+                error,
+                error.code()
+            )))
+        })?;
 
         let base_provider = registry.get(&provider_name).ok_or_else(|| {
             AppError::Provider(crate::error::ProviderError::NotFound(format!(

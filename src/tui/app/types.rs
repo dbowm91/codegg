@@ -487,6 +487,14 @@ pub enum TuiMsg {
         catalog_revision: Option<String>,
         models: Vec<crate::protocol::provider::SelectedModelDto>,
     },
+    /// The connection highlight moved in the selection dialog. The model
+    /// pane is scoped to one connection, so the app refetches that
+    /// connection's catalog; without this the previously focused
+    /// connection's models stayed on screen and Enter could pair them with
+    /// the wrong connection.
+    ConnectionFocusChanged {
+        connection_id: String,
+    },
     OpenConnectionRotation {
         connection_id: String,
         expected_revision: u64,

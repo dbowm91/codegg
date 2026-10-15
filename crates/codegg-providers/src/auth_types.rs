@@ -19,6 +19,24 @@ pub enum AuthError {
     #[error("credential expired for provider '{0}'")]
     Expired(String),
 
+    /// Several usable records exist for one provider and nothing binds this
+    /// lookup to one of them.
+    ///
+    /// The store keeps every record a rotation or `/connect` ever wrote, so a
+    /// provider can hold an orphaned key beside the live one. Picking the
+    /// first record would inherit on-disk insertion order and silently
+    /// authenticate with a key the user replaced, so the choice is refused
+    /// and every candidate is named instead. `candidates` is a
+    /// comma-separated account-id list (or the literal `no-account` for a
+    /// legacy account-less record); no secret is ever rendered here.
+    #[error(
+        "several credentials are stored for provider '{provider_id}' with no provider connection bound to one of them (accounts: {candidates}); bind one with /connect or remove the unused accounts"
+    )]
+    AmbiguousCredential {
+        provider_id: String,
+        candidates: String,
+    },
+
     #[error(
         "no usable master key for new credential material; fresh installs bootstrap a managed key automatically, otherwise restore the historical CODEGG_MASTER_KEY (CODEGG_ENCRYPTION_KEY / OPENCODE_ENCRYPTION_KEY aliases) that encrypted the existing store; refusing to generate a replacement key over existing ciphertext"
     )]
@@ -183,6 +201,41 @@ pub fn mask_secret(secret: &str) -> String {
     }
 }
 
+/// Number of trailing credential characters a connection hint may reveal.
+///
+/// Four is the whole budget. A hint is a disclosure, and it is only ever
+/// justified as a *last-characters* discriminator for two otherwise identical
+/// rows in an interactive picker.
+pub const CREDENTIAL_HINT_TAIL_LEN: usize = 4;
+
+/// Render a bounded, non-secret discriminator for a stored credential.
+///
+/// Returns `…LooA`-style text: an ellipsis followed by **exactly**
+/// [`CREDENTIAL_HINT_TAIL_LEN`] trailing characters, and nothing else. The
+/// leading characters of a key are never rendered — a prefix is far more
+/// identifying than a tail, because vendor key formats share prefixes.
+///
+/// # Scope
+///
+/// This is for the **interactive connection picker only**, where two
+/// connections can share a display name and the user must be able to say
+/// which key they are about to rotate. It is deliberately *not* wired into
+/// `codegg auth status`, which reports "no plaintext, no ciphertext, no
+/// fingerprint" and must keep doing so.
+///
+/// `None` when there is no credential to hint at, or when the secret is shorter
+/// than the tail budget — hinting would then disclose the entire value.
+pub fn credential_tail_hint(secret: &str) -> Option<String> {
+    let tail: Vec<char> = secret.chars().collect();
+    if tail.len() < CREDENTIAL_HINT_TAIL_LEN {
+        return None;
+    }
+    let rendered: String = tail[tail.len() - CREDENTIAL_HINT_TAIL_LEN..]
+        .iter()
+        .collect();
+    Some(format!("…{rendered}"))
+}
+
 // --- AuthConfig ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -290,6 +343,9 @@ pub enum ResolvedAuthSource {
     InlineValue,
     EncryptedConfig,
     UserStore,
+    /// A durable provider connection's own bound account. Wins over every
+    /// other source for the turn that connection speaks for.
+    ConnectionBinding,
     LegacyApiKey,
     LegacyDecrypted,
     ExternalCommand,
@@ -303,6 +359,7 @@ impl ResolvedAuthSource {
             ResolvedAuthSource::InlineValue => "config(inline)",
             ResolvedAuthSource::EncryptedConfig => "config(encrypted)",
             ResolvedAuthSource::UserStore => "user_store",
+            ResolvedAuthSource::ConnectionBinding => "connection_binding",
             ResolvedAuthSource::LegacyApiKey => "legacy(api_key)",
             ResolvedAuthSource::LegacyDecrypted => "legacy(decrypted)",
             ResolvedAuthSource::ExternalCommand => "external_command",
@@ -684,6 +741,22 @@ impl CredentialStore {
             .clone()
     }
 
+    /// Every record stored for one provider, in on-disk order.
+    ///
+    /// Selection code that cannot name a single account must use this to
+    /// prove a choice is unambiguous. [`Self::list`] is deliberately
+    /// unsorted, so "first match" here is insertion order — which is exactly
+    /// the coin flip callers must not inherit.
+    pub fn records_for_provider(&self, provider_id: &str) -> Vec<StoredCredentialRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|record| record.provider_id == provider_id)
+            .cloned()
+            .collect()
+    }
+
     pub fn get_plaintext(
         &self,
         provider_id: &str,
@@ -849,6 +922,65 @@ mod tests {
         let rendered = format!("{credential:?}");
         assert!(!rendered.contains("sk-super-secret-value"));
         assert!(rendered.contains("Credential"));
+    }
+
+    /// A connection hint is a disclosure. It is exactly four trailing
+    /// characters behind one ellipsis, and nothing else.
+    #[test]
+    fn credential_tail_hint_is_exactly_four_trailing_characters() {
+        let hint = credential_tail_hint("sk-live-LooA").expect("a long enough key hints");
+        assert_eq!(hint, "…LooA");
+        assert_eq!(
+            hint.chars().count(),
+            5,
+            "one ellipsis plus exactly four chars"
+        );
+        assert_eq!(
+            hint.trim_start_matches('…').chars().count(),
+            CREDENTIAL_HINT_TAIL_LEN
+        );
+    }
+
+    /// A prefix is far more identifying than a tail — vendor key formats share
+    /// prefixes, tails do not — so nothing but the tail may ever appear.
+    #[test]
+    fn credential_tail_hint_never_leaks_a_prefix() {
+        let secret = "sk-live-proj-9f2a-secret-LooA";
+        let hint = credential_tail_hint(secret).expect("hint");
+        let rendered_tail = hint.trim_start_matches('…');
+
+        // The load-bearing invariant: the rendered characters are a *suffix* of
+        // the secret, exactly the tail budget wide, and the hint is that suffix
+        // behind one ellipsis with nothing else added.
+        assert_eq!(rendered_tail, "LooA");
+        assert_eq!(rendered_tail.chars().count(), CREDENTIAL_HINT_TAIL_LEN);
+        assert!(
+            secret.ends_with(rendered_tail),
+            "a hint must be a suffix of the secret, never a prefix or an interior slice"
+        );
+        assert_eq!(
+            hint,
+            format!("…{}", &secret[secret.len() - CREDENTIAL_HINT_TAIL_LEN..]),
+            "the hint carries the tail and nothing else"
+        );
+        for forbidden in ["sk-live", "proj-9f2a", "secret"] {
+            assert!(
+                !hint.contains(forbidden),
+                "hint {hint:?} leaked the prefix fragment {forbidden:?}"
+            );
+        }
+    }
+
+    /// Absent, never an empty string and never a short secret rendered whole.
+    #[test]
+    fn credential_tail_hint_is_absent_when_it_would_disclose_the_secret() {
+        assert_eq!(credential_tail_hint(""), None, "no credential, no hint");
+        assert_eq!(
+            credential_tail_hint("abc"),
+            None,
+            "a secret shorter than the tail budget must not be rendered whole"
+        );
+        assert_eq!(credential_tail_hint("abcd"), Some("…abcd".to_owned()));
     }
 
     #[test]

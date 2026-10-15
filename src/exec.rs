@@ -95,7 +95,18 @@ impl ExecMode {
 
         let config = Config::load().map_err(|e| AppError::Config(e.into()))?;
         let mut registry = crate::provider::ProviderRegistry::new();
-        crate::provider::register_builtin_with_config(&mut registry, &config);
+        // A resolved provider connection is the authority for its own provider,
+        // here as in a turn. Without this the registry falls back to counting
+        // credential-store records, and any provider whose rotation left an
+        // orphan behind has two — so the provider simply vanishes with
+        // `Provider not found` even though a healthy connection holds its key.
+        let locators = crate::core::session_selection::user_connection_credential_locators().await;
+        crate::provider::register_builtin_with_config_connections(
+            &mut registry,
+            &config,
+            &locators,
+            None,
+        );
 
         let default_model = config
             .model

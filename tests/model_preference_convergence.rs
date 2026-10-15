@@ -393,6 +393,7 @@ fn durable_selection_projects_to_canonical_runtime_string() {
             model_count: 1,
             catalog_revision: Some("cat-v1".into()),
             health: None,
+            credential_hint: None,
         }),
         model: Box::new(codegg_protocol::provider::SelectedModelDto {
             connection_id: "conn-1".into(),

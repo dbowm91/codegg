@@ -598,6 +598,9 @@ const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 /// Per-stream adapter that keeps SSE framing, canonical decoding, and bounded
 /// completed-call accumulation in one request-owned value.
 pub struct SharedStreamDecoder {
+    /// Which dialect this stream speaks. Identity repair below is Chat-only:
+    /// every other surface already carries an identity on every fragment.
+    adapter: eggpool_wire::codec::StreamAdapterKind,
     decoder: eggpool_wire::stream::StreamEventDecoder,
     calls: CanonicalToolCallAccumulator,
     terminal: bool,
@@ -610,11 +613,27 @@ pub struct SharedStreamDecoder {
     /// that opened a tool call describes a tool call, so the decoder records
     /// which indices actually opened one and routes only those.
     tool_call_indices: BTreeSet<usize>,
+    /// Chat tool calls this bridge has opened and not yet closed.
+    ///
+    /// Used only to attribute a fragment that arrives with no identity at all
+    /// to the single call that could own it. Empty when the dialect always
+    /// keys its fragments.
+    chat_inflight: Vec<ChatInflightCall>,
+    /// Counter behind the synthetic ids minted for unkeyed Chat openings.
+    chat_synthetic: usize,
+}
+
+/// One Chat tool call the bridge has opened and not yet closed.
+#[derive(Debug, Clone)]
+struct ChatInflightCall {
+    call_id: Option<String>,
+    index: Option<usize>,
 }
 
 impl SharedStreamDecoder {
     pub fn new(adapter: eggpool_wire::codec::StreamAdapterKind) -> Self {
         Self {
+            adapter,
             decoder: eggpool_wire::stream::StreamEventDecoder::with_limit(
                 adapter,
                 MAX_SSE_FRAME_BYTES,
@@ -624,6 +643,8 @@ impl SharedStreamDecoder {
             finish_reason: None,
             usage: None,
             tool_call_indices: BTreeSet::new(),
+            chat_inflight: Vec::new(),
+            chat_synthetic: 0,
         }
     }
 
@@ -710,7 +731,15 @@ impl SharedStreamDecoder {
             // one, which is what flushes completed tool calls.
             let duplicate_terminator =
                 event.event_type == CanonicalEventType::ResponseComplete && self.terminal;
-            if event.event_type == CanonicalEventType::ToolCallStart {
+            // Chat upstreams repeat `"id": ""` / `"name": ""` on every
+            // continuation fragment instead of omitting the keys. The shared
+            // decoder reads presence, so each continuation looks like a fresh
+            // tool-call start with no usable identity and the turn is rejected
+            // as corrupt. Repair before the accumulator sees any of it.
+            let mut owned = event.clone();
+            let forwards = self.repair_chat_identity(&mut owned);
+            let event = &owned;
+            if event.event_type == CanonicalEventType::ToolCallStart && forwards {
                 if let Some(index) = event.index {
                     self.tool_call_indices.insert(index);
                 }
@@ -733,19 +762,133 @@ impl SharedStreamDecoder {
                 }
                 _ => true,
             };
-            if !duplicate_terminator && closes_a_tool_call {
-                output.extend(push_event(&mut self.calls, event)?);
+            if !duplicate_terminator && closes_a_tool_call && forwards {
+                let produced = push_event(&mut self.calls, event);
+                match produced {
+                    Ok(events) => {
+                        self.track_chat_closure(event);
+                        output.extend(events);
+                    }
+                    Err(error) => {
+                        // The accumulator latches terminal and drops every
+                        // in-flight call on any push error. Mirror that here so
+                        // a later fragment can never be attributed to a call
+                        // the accumulator has already discarded.
+                        self.chat_inflight.clear();
+                        return Err(error);
+                    }
+                }
             }
             if event.event_type == CanonicalEventType::ResponseComplete {
                 self.terminal = true;
+                self.chat_inflight.clear();
                 // Keep the first non-empty stop reason: the trailing
                 // `message_stop`-derived event carries none.
                 if event.finish_reason.is_some() {
                     self.finish_reason = event.finish_reason.clone();
                 }
             }
+            if matches!(
+                event.event_type,
+                CanonicalEventType::ResponseIncomplete | CanonicalEventType::Error
+            ) {
+                self.chat_inflight.clear();
+            }
         }
         Ok(output)
+    }
+
+    /// Normalize OpenAI-Chat tool-call identity before the accumulator sees it.
+    ///
+    /// Returns whether the event still describes a tool-call boundary that
+    /// should be forwarded.
+    ///
+    /// OpenCode Go's Chat surface encodes an absent field as an **empty
+    /// string**, not as an omitted key: every continuation fragment carries
+    /// `"id": ""` and `"name": ""` alongside its arguments. The shared
+    /// decoder decides "this opens a tool call" from *presence* of `id` or
+    /// `name`, so each continuation is decoded as a second `ToolCallStart`
+    /// for a call that already exists. The accumulator then rejects the turn
+    /// — `tool call identity conflicts with an active call`, or
+    /// `tool call has no stable identity` once the empty id is filtered out —
+    /// which is a regression against the pre-shared-wire parser that keyed
+    /// fragments by array position.
+    ///
+    /// The repair is deliberately narrow and Chat-only:
+    /// - An empty or whitespace-only `call_id`/`name` is treated as absent,
+    ///   matching how every other dialect spells "not supplied".
+    /// - A `ToolCallStart` that then carries neither a name nor a call id is
+    ///   a continuation, not an opening, and is dropped. Its sibling
+    ///   `ToolCallArgumentsDelta` still carries the payload.
+    /// - A fragment with no identity at all is attributed to the single
+    ///   in-flight call, and only then. With zero or several in flight it is
+    ///   left alone so ambiguous multi-call turns still fail closed instead of
+    ///   merging one call's arguments into another.
+    fn repair_chat_identity(&mut self, event: &mut CanonicalEvent) -> bool {
+        if self.adapter != eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse {
+            return true;
+        }
+        for field in [&mut event.call_id, &mut event.name] {
+            if field
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+            {
+                *field = None;
+            }
+        }
+        match event.event_type {
+            CanonicalEventType::ToolCallStart => {
+                if event.name.is_none() && event.call_id.is_none() {
+                    // A repeated empty fragment. Dropping it is what keeps the
+                    // turn's single call from being opened a second time.
+                    return false;
+                }
+                if event.call_id.is_none() && event.index.is_none() {
+                    // A named opening that arrives with no key at all. The
+                    // pre-kernel parser keyed these by position in the
+                    // frame's `tool_calls` array; minting one identity per
+                    // opening reproduces that without inventing a position.
+                    self.chat_synthetic += 1;
+                    event.call_id = Some(format!("chat_fallback_{}", self.chat_synthetic));
+                }
+                self.chat_inflight.push(ChatInflightCall {
+                    call_id: event.call_id.clone(),
+                    index: event.index,
+                });
+                true
+            }
+            CanonicalEventType::ToolCallArgumentsDelta | CanonicalEventType::ToolCallStop => {
+                if event.call_id.is_none() && event.index.is_none() {
+                    if let [only] = self.chat_inflight.as_slice() {
+                        event.call_id = only.call_id.clone();
+                        event.index = only.index;
+                    }
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    /// Retire a Chat call once the accumulator has accepted its boundary.
+    fn track_chat_closure(&mut self, event: &CanonicalEvent) {
+        if !matches!(
+            event.event_type,
+            CanonicalEventType::ToolCallStop | CanonicalEventType::ContentStop
+        ) {
+            return;
+        }
+        let identity = event
+            .call_id
+            .clone()
+            .or_else(|| event.index.map(|i| i.to_string()));
+        self.chat_inflight.retain(|call| {
+            let candidate = call
+                .call_id
+                .clone()
+                .or_else(|| call.index.map(|i| i.to_string()));
+            candidate != identity
+        });
     }
 }
 
@@ -1302,6 +1445,134 @@ mod tests {
         let gemini = encode(&canonical, WireSurface::GeminiGenerateContent, false).unwrap();
         assert!(gemini.get("contents").is_some());
         assert!(gemini.get("systemInstruction").is_some());
+    }
+
+    /// Byte-exact shape OpenCode Go returns on its Chat surface for `glm-5.3`
+    /// narrating (`reasoning_content`) and then calling one tool.
+    ///
+    /// Captured live from `https://opencode.ai/zen/go/v1/chat/completions`.
+    /// The dialect is ordinary OpenAI Chat: the opening fragment carries
+    /// `index` + `id` + `name` + an empty `arguments` string, continuation
+    /// fragments carry `index` + `arguments` only, and the turn ends on
+    /// `finish_reason` with an empty `delta`.
+    const OPENCODE_GO_CHAT_NARRATE_THEN_ACT: &str = concat!(
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"reasoning_content\":\"I'll use the tool.\"}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"chatcmpl-tool-973edb93891824d4\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\": \\\"\"}}]}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"Paris\"}}]}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"}\"}}]}}]}\n\n",
+        "data: {\"id\":\"chatcmpl-b63ecc93\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    #[test]
+    fn opencode_go_chat_tool_call_survives_the_real_dialect() {
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        let mut output = decoder
+            .push(OPENCODE_GO_CHAT_NARRATE_THEN_ACT.as_bytes())
+            .expect("a textbook Chat tool-call stream must decode");
+        output.extend(decoder.finish().expect("finish"));
+
+        let call = output
+            .iter()
+            .find_map(|event| match event {
+                ChatEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .expect("the tool call must survive to a ToolCall event");
+        assert_eq!(call.name.as_str(), "get_weather");
+        assert_eq!(call.arguments["city"], "Paris");
+    }
+
+    /// Byte-exact shape OpenCode Go returns on its Chat surface for
+    /// `mimo-v2.5-pro`: every continuation fragment repeats `"id": ""` and
+    /// `"name": ""` as **empty strings** rather than omitting them.
+    ///
+    /// Captured live. An empty string is present-but-empty, so a decoder that
+    /// tests `is_some()` treats each continuation as a fresh tool-call start
+    /// carrying no usable identity, and the accumulator rejects the turn.
+    const OPENCODE_GO_CHAT_EMPTY_ID_CONTINUATIONS: &str = concat!(
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_8495c783195f4e03930ac8b0\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"{\\\"city\\\": \"}}]}}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\\\"Paris\"}}]}}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"\\\"\"}}]}}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"}\"}}]}}]}\n\n",
+        "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    #[test]
+    fn opencode_go_chat_empty_id_continuations_still_decode_as_one_call() {
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        let mut output = decoder
+            .push(OPENCODE_GO_CHAT_EMPTY_ID_CONTINUATIONS.as_bytes())
+            .expect("empty-string id/name continuations are a dialect, not corruption");
+        output.extend(decoder.finish().expect("finish"));
+
+        let call = output
+            .iter()
+            .find_map(|event| match event {
+                ChatEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .expect("the tool call must survive to a ToolCall event");
+        assert_eq!(call.name.as_str(), "get_weather");
+        assert_eq!(call.arguments["city"], "Paris");
+    }
+
+    /// A Chat upstream that omits `index` entirely: the opening fragment
+    /// carries only a function name, and continuations carry only arguments.
+    ///
+    /// With no index and no id the shared accumulator cannot key the fragments
+    /// at all and answers `tool call has no stable identity`. The pre-kernel
+    /// parser keyed by array position, so a single-tool turn used to decode.
+    #[test]
+    fn opencode_go_chat_fragments_without_index_or_id_still_resolve() {
+        let bytes = concat!(
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\"}\"}}]}}]}\n\n",
+            "data: {\"id\":\"c2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        let mut output = decoder
+            .push(bytes.as_bytes())
+            .expect("a single identity-less tool call is unambiguous and must decode");
+        output.extend(decoder.finish().expect("finish"));
+
+        let call = output
+            .iter()
+            .find_map(|event| match event {
+                ChatEvent::ToolCall(call) => Some(call),
+                _ => None,
+            })
+            .expect("the tool call must survive to a ToolCall event");
+        assert_eq!(call.name.as_str(), "get_weather");
+        assert_eq!(call.arguments["city"], "Paris");
+    }
+
+    /// Two calls in flight with an unkeyed fragment is ambiguous: the fragment
+    /// cannot be attributed, so it must fail closed rather than merge one
+    /// call's arguments into the other.
+    #[test]
+    fn opencode_go_chat_ambiguous_identity_less_fragment_still_fails_closed() {
+        let bytes = concat!(
+            "data: {\"id\":\"c3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"function\":{\"name\":\"one\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"c3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"function\":{\"name\":\"two\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"c3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":null,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"id\":\"c3\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut decoder =
+            SharedStreamDecoder::new(eggpool_wire::codec::StreamAdapterKind::OpenaiChatSse);
+        assert!(
+            decoder.push(bytes.as_bytes()).is_err(),
+            "an unkeyed fragment between two open calls must fail closed, not misattribute"
+        );
     }
 
     #[test]

@@ -100,8 +100,8 @@ so the caller gets an actionable state instead of a silent pick.
 
 ### Credential Resolution
 
-`resolve_provider_credential(provider_id, cfg, env_var, store)`
-(`provider_core.rs:625`) is the single resolution path. It builds a
+`resolve_provider_credential(provider_id, cfg, env_var, store, pin)`
+(`provider_core.rs`) is the single resolution path. It builds a
 `ResolverContext` with `capability = credential_capability_for(provider_id)`
 and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 `ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
@@ -109,6 +109,8 @@ and calls `AuthResolver::resolve`. Stored bearer records resolve only for
 reinterpretation). Expired records return `AuthError::Expired` before
 transport. Resolution order:
 
+0. **`pin` — the turn's connection binding** (a turn only; see below). This
+   precedes every other source, including config and env.
 1. Explicit `auth.env` env var
 2. Conventional `{PROVIDER}_API_KEY`
 3. Inline `auth.value`
@@ -116,19 +118,89 @@ transport. Resolution order:
 5. User-level `CredentialStore` lookup (by `account_id`)
 6. Legacy `api_key` / `encrypted_api_key` fields
 
-**Store fallback (steps 1–6 all miss).** When the resolver returns `None`,
+**Store fallback (steps 0–6 all miss).** When the resolver returns `None`,
 `resolve_provider_credential` makes one final attempt against the
-`CredentialStore` by provider id — preferring an account-scoped record, then
-any record for that provider. An expired or empty record is treated as absent
-rather than as a bad key. This exists because a credential added through the
-TUI `/connect` flow is written *only* to the credential store: it appears in
-neither config nor the environment. Without the fallback such a provider
-resolved to `None`, was skipped at registration (`NO KEY for provider ...`),
-and contributed no models — so `/connect` reported success while `/models`
-stayed empty. The fallback never displaces the precedence above: config and env
-still win whenever they resolve. Covered by
-`resolve_provider_credential_falls_back_to_store_without_config_entry` and
-`env_still_wins_over_the_store_fallback` in `provider_core.rs`.
+`CredentialStore` by provider id. It *counts* usable records instead of racing
+them: expired records are not candidates, one usable record resolves, and two
+or more return typed `AuthError::AmbiguousCredential` naming every candidate
+account. This exists because a credential added through the TUI `/connect` flow
+is written *only* to the credential store: it appears in neither config nor the
+environment. Without the fallback such a provider resolved to `None`, was skipped
+at registration (`NO KEY for provider ...`), and contributed no models — so
+`/connect` reported success while `/models` stayed empty. The fallback never
+displaces the precedence above: config and env still win whenever they resolve.
+Covered by `resolve_provider_credential_falls_back_to_store_without_config_entry`
+and `env_still_wins_over_the_store_fallback` in `provider_core.rs`.
+
+**The store is unsorted, so "first match" is a coin flip.** `CredentialStore::list`
+returns the on-disk vector in insertion order. A provider that has been rotated
+holds the superseded `rot-<uuid>` record beside the live one, so a first-match
+pick authenticates with the key the user replaced — the rotation appears to do
+nothing. Refusing the ambiguous case is what makes the store a safe source; a
+`no-account` label in a candidate list means a legacy account-less record.
+
+### Turn Credential Authority (connection binding)
+
+A turn bound to a durable connection authenticates with *that connection's*
+account. This is the rule the store fallback cannot express, so it is threaded
+explicitly:
+
+- `daemon_turns.rs` reads the selected connection's `secret_binding` and hands
+  the turn a `TurnCredentialLocator { provider_ref, account_ref }` through
+  `TurnRunInput::credential_locator`. A session with no durable selection falls
+  back to `unbound_turn_credential_locator`. Plaintext never crosses this
+  boundary: the locator is a store address, and the credential is resolved
+  inside the turn's own registration pass.
+- **An unbound session still has connection authority.** Having no durable
+  *model* selection is not the same as having no connection: the user connected
+  the provider, and that connection names the exact account the turn must use.
+  `unbound_turn_credential_locator` finds it — only `Active` connections, only
+  those whose `ProviderKind::as_str` equals the turn's registry `provider_id`
+  (so `other:opencode_go` matches the `opencode_go` registry entry), and only
+  when **exactly one** qualifies and it carries a secret binding. Two active
+  connections for one provider is a genuine ambiguity and returns `None`,
+  leaving the refusal below in place rather than picking a winner.
+  Without this, a rotation left the live record beside the orphan it replaced,
+  the store count reached two, and *every* turn for that provider died with
+  `provider_credential_ambiguous` while the connection holding the working key
+  sat `active` in the database.
+- **Process-wide paths carry the same authority.** `codegg exec`, `codegg
+  models`, `/models`, and the model pickers have no session and no turn, so they
+  used to fall straight through to the store fallback and refused any provider
+  with more than one stored record — which is exactly what a rotation leaves
+  behind. `connection_credential_locators` applies the identical rule to every
+  provider at once (same `Active`-only, exactly-one, secret-binding-required
+  exclusions) and `register_builtin_with_config_connections` pins them all, so
+  those surfaces resolve the same provider set a turn does. The turn-scoped
+  `register_builtin_with_config_for_turn` binds one provider because a turn names
+  one; both share `TurnCredentialPin` and the same before-config/env/store
+  ordering. When no locator can be read the call degrades to the pre-existing
+  unbound order rather than registering nothing.
+- The turn calls `register_builtin_with_config_for_turn(registry, config,
+  provider_id, locator, store)`, which reads the bound record by **exact**
+  `(provider_ref, account_ref)`, pins it for that provider's registration, and
+  returns `ResolvedAuthSource::ConnectionBinding`. The pin is checked before
+  config, env, and the store because rotation exists precisely so a connection's
+  key changes while config, env, and other records still hold the old one.
+- `provider_id` is the registry id the turn actually calls, resolved from the
+  connection's provider kind (`resolve_turn_provider`) — not the client-supplied
+  model string. The locator is still read from the *store* by
+  `secret_provider_ref`, so a storage-key namespace (`other:opencode_go`) and a
+  registry id never have to agree.
+- A bound-but-missing record is a hard failure
+  (`TurnCredentialError::Missing`, code `connection_credential_missing`), never
+  a fallback to another record for the same provider. The same holds for a bound
+  credential that cannot build the provider at all.
+- With no binding, several usable records for the turn's provider are
+  `TurnCredentialError::Ambiguous` (code `provider_credential_ambiguous`) and the
+  provider is *not* registered. A single record is unchanged. Resolution
+  failures surface as `AppError::Provider(ProviderError::Auth(..))`, so HTTP
+  surfaces report `401` rather than a transport error.
+
+`register_builtin_with_config` remains the non-turn entry point (model
+listing, pickers, work orders): it logs and skips a provider it cannot
+resolve. It never picks between competing store records — that choice now
+returns a typed error the caller may surface.
 
 `ExternalCommand` and `OAuthDevice` auth modes are parsed but return
 `AuthError::Unsupported`. The previous `std::process::Command` shell-out
@@ -138,13 +210,39 @@ path has been removed.
 
 Durable connections use states: `active`, `disabled`,
 `credential_missing`, `provisioning_rotating`, `tombstoned`, `error`,
-`stale`. Only `active` is selectable. Tombstones preserve identity until
-purge succeeds with no references.
+`stale`. Only `active` is selectable. Delete removes the row outright; a
+tombstone survives only while references still block removal, and purge
+finishes it once they clear.
 
 Rotation stages a new credential binding, validates the endpoint, runs
 the bounded compatible model probe, and commits metadata in one SQLite
 transaction. Connection refresh is explicit, single-flight, and bounded
 by provider probe limits.
+
+**Superseded-credential pruning (`prune_superseded_credential`).** A credential
+rotation writes a fresh `rot-<uuid>` account and, for credential-bearing
+rotations (`delete_previous_on_commit`, set by `ConnectionRotateBegin` for
+`CredentialOnly` / `CredentialAndEndpoint`), drops the connection's previous
+record so a rotation never accumulates an orphan. Replacement (`replace:
+superseded`) prunes the same way. The rule is deliberately narrow:
+
+- **Removed:** the *previous* binding of the connection being rotated or
+  replaced, and only when it is provably unreferenced — no other
+  `provider_connections` row carries the same
+  `(secret_provider_ref, secret_account_ref)`. The account the just-committed
+  write claimed is never a candidate.
+- **Kept, and reported:** a superseded record another connection still binds.
+  Deleting it would silently break that connection, so the prune is skipped
+  with a warning naming the account. An unreadable connection store counts as
+  "still referenced" — a failed read must never authorize a deletion.
+- **Never swept:** records that no rotation produced. A key added by hand, or an
+  orphan from an older build, is not attributable to any rotation, so nothing
+  here deletes it. Those records surface through the ambiguity error above,
+  which is what makes them visible and actionable.
+
+Covered by `rotation_commits_new_revision_and_removes_only_previous_credential`
+and `rotation_never_prunes_a_credential_another_connection_still_binds` in
+`src/core/eggpool.rs`.
 
 **`provider_connection_lifecycle` wins on read, and that is deliberate.**
 `ProviderConnectionStore::apply_lifecycle_state` overwrites
@@ -193,10 +291,10 @@ concerns:
   CHECK only admits `active`/`disabled`/`credential_missing`, so the row moves
   to `disabled` while the authoritative tombstone is recorded in
   `provider_connection_lifecycle` (+ `provider_connection_tombstones` and a
-  `replace:superseded` audit event). Its credential binding is dropped after
-  commit: leaving it would leave two records for one provider, and provider
-  resolution picks a single record per provider — the stale key could win and
-  silently undo the rotation.
+  `replace:superseded` audit event). Its credential record is pruned after
+  commit, subject to the rule below: leaving it would leave two records for one
+  provider, and the turn resolver refuses such a store as ambiguous rather than
+  picking one.
 - **In-flight operation** — a `provider_provisioning` row in a *non-terminal*
   state (`staged`, `probing`) for the same idempotency key means an equivalent
   operation is already running, and returns `Conflict`.
@@ -271,13 +369,31 @@ a provider connection, and the code keeps them separate in the type system
   authenticated operation has accepted this credential yet".
 - `SetupProbeStrategy::credential_evidence()` declares what a strategy may
   prove. `ProviderCatalog` → `CredentialEvidence::CatalogOnly` (never
-  verification); `AuthenticatedCompatibleCatalog` →
-  `CredentialEvidence::Authenticated` (the strict `/models` request is a
-  genuinely authenticated, non-billable metadata call, so 2xx verifies).
-  `CredentialVerification::from_probe` is the only place provisioning may
-  derive a credential verdict from a probe.
-- No provider is ever billed to validate a credential; nothing on this path
-  issues an inference request.
+  verification). `CredentialVerification::from_probe` is the only place a
+  **catalog probe** may derive a credential verdict, and both strategies now
+  land on `Unverified` from it.
+- **Only a real completion verifies a credential.** No metadata request can,
+  however strictly it is authenticated. Measured against the real OpenCode Go
+  gateway (`https://opencode.ai/zen/go/v1`): `GET /models` with a bogus bearer
+  answers 401, but `GET /models` with **no** `Authorization` header answers
+  **200**. A key with no active entitlement therefore passes catalog discovery
+  and fails every completion with `403 An active OpenCode Go subscription is
+  required`. Verification is a separate bounded step
+  (`CompatibleCredentialProbe`), run against a model the same probe already
+  discovered, that spends one real completion with `max_tokens = 1` under a 10s
+  deadline and the caller's existing cancellation token. The request is built
+  for the surface the shared profile resolved for that model
+  (`provider_profile::resolve_route` → Chat / Responses / Messages), never a
+  hardcoded Chat body that the surface would reject before it evaluated the
+  credential. It is the only path that may produce `Verified`.
+- The verification step is deliberately asymmetric about failure:
+  a typed 401/403/407 fails the whole probe (`ProbeReason::AuthenticationFailed`),
+  so a rotation cannot commit a dead key; an empty catalog, an unresolved wire
+  mapping, a timeout, a cancellation, or any non-authentication status yields
+  `Unverified` — honestly unknown, never a promotion and never a rejection.
+- The verification step costs one token of a real completion. That is the
+  price of not billing a user for a false "verified", and it is bounded to one
+  token per rotate/refresh rather than per turn.
 
 Durable state: `provider_connection_health.credential_status` (migration v69,
 additive `ALTER TABLE ... ADD COLUMN` with a CHECK constraint mirroring the
@@ -297,20 +413,56 @@ verdict for a rotated-away credential is discarded. Inconclusive outcomes
 
 Policy on the other write paths:
 
-- **Provision**: catalog-only probes commit `unverified`; the authenticated
-  compatible probe commits `verified`.
+- **Provision**: catalog discovery alone commits `unverified`; the probe
+  commits `verified` only when its bounded verification completion is accepted.
 - **Rotate**: installs a new credential, so the verdict is re-derived from
-  the new probe rather than inherited.
+  the new probe rather than inherited. A completion-level rejection fails the
+  rotation with `RotationError::CredentialRejected` (reason code
+  `credential_authentication_failed`): the staged secret is dropped, the
+  rotation never commits, and the previously bound credential keeps its own
+  durable verdict.
 - **Refresh**: rediscovers the catalog for the *same* credential, so the
-  credential axis is preserved unless the refresh itself ran an authenticated
-  probe. A routine catalog refresh cannot erase a durable `verified` verdict
-  or a genuine `authentication_failed`. Refresh failures likewise only move
-  the credential axis on a typed 401/403 (`RefreshError::CredentialRejected`).
+  credential axis is preserved unless this refresh's own verification
+  completion was accepted. A routine catalog refresh cannot erase a durable
+  `verified` verdict or a genuine `authentication_failed`. Refresh failures
+  likewise only move the credential axis on a typed 401/403
+  (`RefreshError::CredentialRejected`); a cancelled or timed-out refresh
+  leaves `credential_status` byte-for-byte untouched.
 
 Operator-visible messaging must state the two axes separately
 (`connect_success_message`); a single unqualified "connected" message asserts
 credential validity that catalog discovery never established.
 `scripts/check_provider_qualification.py` guards the contract.
+
+**Every persisted catalog is wire-qualified.** Provision and refresh/rotate
+discover through *different* probes and both must apply the same filter:
+
+- Provision goes through `probe_provider_catalog` → `build_durable_provider` →
+  `Provider::models()`, which already drops every id the shared profile has no
+  reviewed wire mapping for (`qualify_models`).
+- Refresh and rotate go through `probe_with_options` → the provider-neutral
+  `CompatibleProbe`, which is a pure `GET /models` availability read.
+  `qualify_routable_models` applies the filter there.
+
+The filter is scoped to providers the shared profile adapts
+(`shared_provider_id` is `Some`); every other upstream keeps all its models,
+because there is no reviewed contract to qualify against and inventing one would
+strip models from generic OpenAI-compatible providers.
+
+The observable consequence of getting this wrong is severe and quiet: an
+unqualified catalog advertises models that fail closed at `wire_unresolved`
+before any request is built, and alphabetical order puts the worst offenders
+first. Measured on OpenCode Go: upstream advertises 37 models, the profile
+routes 30, and `cat-jam-free` sorts first while having no mapping — so the very
+first row a user lands on could never work. Qualification that empties a
+non-empty upstream catalog fails the probe with `ProbeReason::EmptyCatalog`
+rather than committing an empty catalog, which would strand the connection at a
+revision with no rows and report zero models.
+
+The catalog revision digests the **stored (qualified)** rows on both paths, so
+"catalog changed" means what a user can actually select changed, and a refresh
+against a freshly provisioned connection does not bump the revision for a
+difference nobody can observe.
 - Built-in endpoint dispositions (C002, first-party review 2026-10-02):
   OpenCode Go corrected to `https://opencode.ai/zen/go/v1` (chat,
   responses, messages, and `/models` under that prefix per
@@ -326,7 +478,56 @@ credential validity that catalog discovery never established.
   factory.
 
 Operator flow: connect -> select -> rotate -> refresh -> disable -> delete
-(tombstone) -> restore -> purge.
+(removes the row) -> purge (finishes a delete that references blocked).
+
+**Delete is one action, not two.** `d` tombstones and immediately purges
+(`ProviderConnectionStore::delete_permanently`, reached through
+`ProviderConnectionProvisioner::delete` so the credential binding is dropped
+exactly as `p` drops it). The tombstone stays the first step because the
+compatibility projection in `provider_connections` may not hold a state its
+CHECK rejects, and because a racing reader must see a tombstoned row rather
+than a vanished one. `Blocked` is reported with the concrete blockers
+(provisioning operation ids, active runtime ids) and leaves
+the tombstone for `p`; the previous tombstone-only behaviour reported nothing
+and left the user with a row that looked deleted.
+
+**A delete detaches its sessions; only in-flight work blocks it.** A
+`selected_session` reference is bookkeeping, not a live handle: nothing is
+executing and the session outlives the connection it was pinned to. Counting it
+as a hard blocker made a connection permanently undeletable as soon as any
+session had ever selected it, with no operator action that could clear it — one
+`eggstackmain` row accumulated 43 genuine references and became unreachable in
+the UI while still listed. `detach_sessions` therefore clears
+`session.provider_connection_id` and drops the matching
+`provider_connection_references` rows in one transaction, so the session comes
+back unbound and may re-select any other connection. `active_runtime` and
+`provisioning_operation` describe work that is still running, so `purge` keeps
+blocking on those, and `purge_eligibility` still reports session counts for
+callers that ask before deleting.
+
+**Every lifecycle verb is bound *and* printed.** `/connections` binds
+`e` enable/disable, `d` delete (confirm), `R` rotate, `r` refresh, `u` restore,
+and `p` purge (finishing a delete that references blocked), and the dialog
+renders all of them on a legend row. Enter selects
+the highlighted connection/model pair for the session and nothing else, so a
+dialog that hid its verbs read as model-picking with no way to repair a bad
+credential — the exact situation a user reaches *because* their key stopped
+working.
+
+**Rotation names the connection being rotated.** `App::open_connection_rotation_dialog`
+derives its `ProviderInfo` from the target connection's `provider_kind`
+(stripping the `other:` prefix, which is how `other:opencode_go` is stored) and
+its `display_name`. It used to construct a fixed `eggpool`/`Eggpool` row, so
+rotating an OpenCode Go credential prompted for an Eggpool one — the correct
+action against the wrong subject, with nothing on screen to contradict it.
+`App::rotation_provider_label` applies the same derivation to the "Rotating
+`<provider>` credential (probe in progress)…" toast, which was left hardcoded to
+Eggpool after the dialog label was fixed.
+
+**A failed rotation says so.** The completion arm clears the failed credential
+(out of memory hygiene) and sets a dialog error naming the failure and the now
+empty field. Clearing alone left the masked input blank on `EnterApiKey` with no
+message, which read as a silent re-prompt for the same key.
 
 ### Provider-Neutral `/connect` TUI (M003)
 
@@ -709,6 +910,30 @@ knows the wire surface it is decoding:
   canonical `ResponseComplete`. The accumulator treats the second terminal event
   as post-terminal corruption, so `SharedStreamDecoder::consume_events` folds
   the duplicate and keeps the first non-empty `finish_reason`.
+- **Chat identity repair** — the shared Chat decoder decides "this opens a tool
+  call" from the *presence* of `id` or `name`, but OpenCode Go's Chat surface
+  encodes an absent field as an **empty string**, not an omitted key: every
+  continuation fragment carries `"id": ""` and `"name": ""` beside its
+  arguments. Each continuation was therefore decoded as a second `ToolCallStart`
+  for a call that already existed, and the turn failed closed as
+  `tool call identity conflicts with an active call` or
+  `tool call has no stable identity` — a regression against the pre-shared-wire
+  parser, which keyed fragments by position in the frame's `tool_calls` array.
+  `SharedStreamDecoder::repair_chat_identity` is the Chat-only seam that closes
+  it, and it is deliberately narrow:
+  - An empty or whitespace-only `call_id`/`name` is read as absent.
+  - A `ToolCallStart` left with neither a name nor a call id is a continuation,
+    not an opening, and is dropped. Its sibling `ToolCallArgumentsDelta` still
+    carries the payload and resolves by `index`.
+  - A named opening that arrives with no `id` **and** no `index` gets one
+    synthetic identity, reproducing the old positional key without inventing a
+    position.
+  - A fragment with no identity is attributed to the single in-flight call, and
+    only then. With zero or several in flight it is left untouched, so an
+    ambiguous multi-call turn still fails closed instead of merging one call's
+    arguments into another.
+
+  Other surfaces are untouched and keep failing closed on a missing identity.
 
 **Decoder errors are never collapsed.** `SharedStreamDecoder::push` and the
 tool-call accumulation path embed the underlying `eggpool_wire` error in the

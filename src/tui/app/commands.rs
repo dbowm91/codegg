@@ -392,12 +392,22 @@ pub enum TuiCommand {
     /// Provider Connections Milestone 3: trigger the connection
     /// selection dialog refresh flow. Emitted when the dialog opens or
     /// when the user requests an explicit reload.
-    SessionSelectionRefresh,
+    ///
+    /// `focus_connection_id` names the connection whose catalog the user is
+    /// looking at. It is set when the highlight moves, because the model
+    /// pane is per-connection: without it the dialog would keep rendering
+    /// the previously focused connection's models under a different
+    /// highlighted row, and Enter would bind that model to the wrong
+    /// connection.
+    SessionSelectionRefresh {
+        focus_connection_id: Option<String>,
+    },
     /// Provider Connections Milestone 3: trigger an explicit
     /// selection-list load for a specific session ID. Handlers in the
     /// command runner spawn the actual `CoreRequest` calls.
     SessionSelectionLoad {
         session_id: String,
+        focus_connection_id: Option<String>,
     },
     /// Persist an explicit model choice made in the `/model` dialog to
     /// the daemon's durable session selection.

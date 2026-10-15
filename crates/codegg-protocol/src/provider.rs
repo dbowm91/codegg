@@ -256,6 +256,27 @@ pub struct ProviderConnectionSummaryDto {
     pub model_count: usize,
     pub catalog_revision: Option<String>,
     pub health: Option<ConnectionHealthDto>,
+    /// Masked tail of the bound credential, computed daemon-side as
+    /// `…` + **exactly four** trailing characters (e.g. `…LooA`).
+    ///
+    /// Two connections may legitimately share a display name and differ only
+    /// by id and bound key, which makes them indistinguishable in an
+    /// interactive picker. This is the discriminator for exactly that case.
+    ///
+    /// A hint is a disclosure, so it is deliberately minimal: never longer
+    /// than four characters, never the *leading* characters of a key (vendor
+    /// formats share prefixes, a tail does not), and never derived from
+    /// anything but the stored credential's own tail. The full secret never
+    /// crosses the wire and is never logged.
+    ///
+    /// Absent — not empty — when the connection has no credential binding, or
+    /// when the stored value is shorter than the tail budget.
+    ///
+    /// Scope: the interactive connection dialog only. `codegg auth status`
+    /// deliberately reports "no plaintext, no ciphertext, no fingerprint" and
+    /// is unaffected by this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
