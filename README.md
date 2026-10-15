@@ -29,8 +29,9 @@ cargo install --locked --path .
 
 This installs `codegg` and its sandbox helper. It does **not** install the
 pinned `codegg-eggsearch` sidecar, which powers web and repository search —
-build it from eggsearch tag `v0.3.9` and place it next to the `codegg` binary,
-or override it in config. `codegg doctor` tells you if it is missing.
+build it from eggsearch tag `v0.4.3` (commit
+`5e7b853e7eebf29c58f84959805c8774279d7ea4`) and place it next to the `codegg`
+binary, or override it in config. `codegg doctor` tells you if it is missing.
 
 Optional Cargo features: `server` (HTTP/WebSocket server), `plugins` (WASM
 plugin runtime), `image` (terminal images).
@@ -77,6 +78,10 @@ codegg doctor                 # what is wired up and what is missing?
 `doctor` reports the search backend, MCP servers, language servers,
 deterministic tools, providers, stored credentials, and the installation
 itself. It exits 0 even when it reports problems, so read the output.
+External search and fetch use the managed Eggsearch sidecar as their sole
+provider execution owner; if it is unavailable, CodeGG reports an actionable
+error instead of switching to another provider implementation. Set
+`search.backend = "disabled"` to disable the external search surface.
 
 ### 4. Run it
 

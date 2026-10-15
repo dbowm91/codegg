@@ -24,8 +24,7 @@
 #
 # Upstream eggsearch provenance (M001 pin):
 #   source  https://github.com/eggstack/eggsearch (stable MCP/CLI contract)
-#   tag     v0.3.9 / version 0.3.9 (baseline; bump by changing the pin below
-#           together with RELEASING.md and the release notices)
+#   tag     v0.4.3 / version 0.4.3 / commit 5e7b853e7eebf29c58f84959805c8774279d7ea4
 #   license MIT (as published upstream; redistributed under upstream terms)
 # The sidecar is installed under the CodeGG-owned name `codegg-eggsearch`
 # so a managed install never resolves an unrelated PATH `eggsearch`.
@@ -53,11 +52,12 @@ CODEGG_CHECKSUM_FILE="checksums.txt"
 CODEGG_ARCHIVE_MEMBER="codegg"
 
 # Pinned upstream eggsearch provenance for the managed sidecar.
-# Baseline 0.3.9 per the self-contained-installation corrective addendum.
+# Adopted immutable release for CodeGG M001 paired development compatibility.
 # Upstream documents MCP/CLI as the stable application contract; CodeGG
 # must not compile against eggsearch internal modules to ease packaging.
-CODEGG_EGGSEARCH_PINNED_VERSION="0.3.9"
-CODEGG_EGGSEARCH_UPSTREAM_TAG="v0.3.9"
+CODEGG_EGGSEARCH_PINNED_VERSION="0.4.3"
+CODEGG_EGGSEARCH_UPSTREAM_TAG="v0.4.3"
+CODEGG_EGGSEARCH_UPSTREAM_COMMIT="5e7b853e7eebf29c58f84959805c8774279d7ea4"
 CODEGG_EGGSEARCH_SOURCE="https://github.com/eggstack/eggsearch"
 CODEGG_EGGSEARCH_LICENSE="MIT"
 
@@ -204,7 +204,7 @@ codegg_release_is_notice_member() {
 # version. The output must mention eggsearch and contain the exact
 # expected dotted version; anything else fails closed.
 codegg_release_check_eggsearch_version_output() {
-    local output="$1" expected="$2"
+    local output="$1" expected="$2" token
     case "$output" in
         *eggsearch* | *Eggsearch* | *EGGSEARCH*) ;;
         *)
@@ -212,11 +212,10 @@ codegg_release_check_eggsearch_version_output() {
             return 1
             ;;
     esac
-    case "$output" in
-        *"$expected"*) return 0 ;;
-        *)
-            printf 'error: eggsearch version mismatch: expected %s, got: %s\n' "$expected" "$output" >&2
-            return 1
-            ;;
-    esac
+    token="$(printf '%s\n' "$output" | awk 'NR == 1 { for (i = 1; i < NF; i++) if (tolower($i) == "eggsearch") { print $(i + 1); exit } }')"
+    token="${token#v}"
+    token="${token#V}"
+    [ "$token" = "$expected" ] && return 0
+    printf 'error: eggsearch version mismatch: expected %s, got: %s\n' "$expected" "$output" >&2
+    return 1
 }

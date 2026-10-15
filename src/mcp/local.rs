@@ -810,4 +810,67 @@ mod tests {
             .expect("noisy MCP stderr must not deadlock initialization");
         client.shutdown().await.expect("shutdown noisy MCP fixture");
     }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn hung_discovery_times_out_and_child_is_reaped() {
+        let mut client = LocalClient::new(
+            "sh",
+            vec!["-c".to_string(), "exec sleep 30".to_string()],
+            HashMap::new(),
+            100,
+        );
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(1), client.initialize())
+            .await
+            .expect("mcp_initialize timeout should be bounded");
+        assert!(
+            matches!(result, Err(McpError::ToolCall(ref message)) if message.contains("timed out")),
+            "expected timed-out discovery, got {result:?}"
+        );
+        client
+            .shutdown()
+            .await
+            .expect("teardown hung discovery child");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn hung_tool_call_times_out_and_child_is_reaped() {
+        let script = r#"
+            while IFS= read -r line; do
+                case "$line" in
+                    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}' ;;
+                    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"hang","inputSchema":{"type":"object"}}]}}' ;;
+                    *tools/call*) exec sleep 30 ;;
+                esac
+            done
+        "#;
+        let mut client = LocalClient::new(
+            "sh",
+            vec!["-c".to_string(), script.to_string()],
+            HashMap::new(),
+            150,
+        );
+        client
+            .initialize()
+            .await
+            .expect("fixture handshake and discovery should succeed");
+        client
+            .discover_tools()
+            .await
+            .expect("fixture tool discovery");
+        let started = std::time::Instant::now();
+        let result = client.call_tool_structured("hang", json!({})).await;
+        assert!(
+            matches!(result, Err(McpError::ToolCall(ref message)) if message.contains("timed out")),
+            "expected timed-out tool call, got {result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        client
+            .shutdown()
+            .await
+            .expect("teardown hung tool-call child");
+    }
 }

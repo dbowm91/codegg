@@ -5,6 +5,82 @@ use chrono::Utc;
 
 use crate::research::types::*;
 
+/// Render retrieval completeness separately from claims so failed or
+/// indeterminate collection cannot be mistaken for a negative finding.
+pub fn render_retrieval_status(receipts: &[ResearchRetrievalReceipt]) -> String {
+    if receipts.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("## Retrieval Status\n\n");
+    for receipt in receipts {
+        let label = match receipt.state {
+            RetrievalState::Complete => "complete",
+            RetrievalState::Partial => "partial",
+            RetrievalState::Failed => "failed",
+            RetrievalState::Skipped => "skipped",
+            RetrievalState::Unknown => "unknown",
+            RetrievalState::Truncated => "truncated",
+        };
+        let _ = writeln!(
+            out,
+            "- **{}:** {label}; {} source(s).",
+            receipt.adapter, receipt.source_count
+        );
+        if let Some(coverage) = &receipt.coverage {
+            let _ = writeln!(out, "  Coverage: {coverage}.");
+        }
+        if !receipt.failed_providers.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Providers failed: {}.",
+                receipt.failed_providers.join(", ")
+            );
+        }
+        if !receipt.warning_codes.is_empty() {
+            let _ = writeln!(out, "  Warnings: {}.", receipt.warning_codes.join(", "));
+        }
+        if !receipt.trust_markers.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Upstream trust markers: {} (descriptive only).",
+                receipt.trust_markers.join(", ")
+            );
+        }
+        if matches!(receipt.state, RetrievalState::Complete) && receipt.source_count == 0 {
+            out.push_str("  No sources matched within the represented retrieval scope; this does not establish global absence.\n");
+        }
+        if !matches!(receipt.state, RetrievalState::Complete) {
+            out.push_str("  Evidence coverage is incomplete or unconfirmed; absence of results is not a negative finding.\n");
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod retrieval_status_tests {
+    use super::*;
+
+    #[test]
+    fn retrieval_report_distinguishes_confirmed_empty_from_incomplete_empty() {
+        let receipt = |state| ResearchRetrievalReceipt {
+            adapter: "eggsearch".into(),
+            state,
+            source_count: 0,
+            coverage: None,
+            warning_codes: vec![],
+            trust_markers: vec![],
+            failed_providers: vec![],
+            sources: vec![],
+        };
+        let complete = render_retrieval_status(&[receipt(RetrievalState::Complete)]);
+        let failed = render_retrieval_status(&[receipt(RetrievalState::Failed)]);
+        assert!(complete.contains("complete; 0 source(s)"));
+        assert!(!complete.contains("absence of results is not a negative finding"));
+        assert!(failed.contains("failed; 0 source(s)"));
+        assert!(failed.contains("absence of results is not a negative finding"));
+    }
+}
+
 /// Render a human-facing full report from claims, evidence, and sources.
 pub fn render_human_full_report(
     request: &ResearchRequest,

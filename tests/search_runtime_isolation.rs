@@ -27,7 +27,6 @@ use tokio::sync::Mutex;
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
-        fallback_to_builtin: Some(false),
         eggsearch: Some(EggsearchConfig {
             server_name: Some("eggsearch".to_string()),
             ..Default::default()
@@ -170,9 +169,9 @@ async fn reconstructed_context_observes_no_stale_config() {
 }
 
 #[tokio::test]
-async fn eggsearch_without_service_is_unavailable_not_builtin() {
+async fn eggsearch_without_service_is_unavailable_without_provider_fallback() {
     // Explicit eggsearch config with no MCP handle: actionable
-    // unavailable error, never a silent builtin fallback.
+    // unavailable error, never a provider switch.
     let ctx = SearchRuntimeContext::new(eggsearch_config());
     let err = ctx
         .dispatch_web_search(&serde_json::json!({"query": "x"}))
@@ -216,25 +215,21 @@ async fn registries_with_different_contexts_are_independent() {
 fn provenance_reflects_each_context_backend() {
     let enabled = SearchRuntimeContext::new(eggsearch_config());
     let disabled = SearchRuntimeContext::disabled();
-    let builtin = SearchRuntimeContext::new(SearchConfig {
-        backend: Some(SearchBackendConfig::Builtin),
-        ..Default::default()
-    });
+    let eggsearch = SearchRuntimeContext::new(SearchConfig::default());
     assert_eq!(enabled.provenance_for_search(None).unwrap().backend, "mcp");
     assert_eq!(
         disabled.provenance_for_search(None).unwrap().implementation,
         "disabled"
     );
     assert_eq!(
-        builtin.provenance_for_search(None).unwrap().implementation,
-        "codegg/legacy"
+        eggsearch.provenance_for_search(None).unwrap().backend,
+        "mcp"
     );
 }
 
 #[test]
-fn failing_mock_does_not_fall_back_without_opt_in() {
-    // Failing upstream + fallback disabled => the eggsearch error
-    // surfaces; no silent backend switch.
+fn eggsearch_failure_surfaces_without_provider_fallback() {
+    // A failed upstream call stays failed; no alternate provider is tried.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -202,7 +202,6 @@ mod real_build_tool_definitions_tests {
         SearchConfig {
             backend: Some(SearchBackendConfig::Eggsearch),
             expose_raw_mcp_tools: Some(expose_raw),
-            fallback_to_builtin: Some(false),
             max_search_output_chars: Some(12_000),
             max_fetch_output_chars: Some(20_000),
             eggsearch: Some(EggsearchConfig {

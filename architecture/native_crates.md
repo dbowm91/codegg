@@ -8,7 +8,7 @@ adapter binaries without changing the model-facing tool names.
 External search is the explicit exception: eggsearch is the shared
 MCP-owned service for provider routing, credentials, and retrieval.
 Codegg's wrappers consume that boundary rather than add provider clients
-under `src/search/*`.
+in CodeGG. The previous in-tree provider implementation has been retired.
 
 This document describes the runtime contract, backend-selection policy,
 and per-crate boundaries. See `architecture/tool.md` for the tool

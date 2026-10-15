@@ -12,8 +12,7 @@
 //!   expected argument mapping.
 //! - Output is wrapped in `external_untrusted` framing before being
 //!   returned.
-//! - The legacy built-in path is not invoked when eggsearch is
-//!   configured.
+//! - Eggsearch is the sole external-search execution owner.
 //!
 //! The tests do not require a real `eggsearch` binary or any
 //! network access. The mock is constructed directly into the
@@ -48,24 +47,16 @@ use codegg::tool::websearch::WebSearchTool;
 use codegg::tool::Tool;
 use tokio::sync::Mutex;
 
-fn eggsearch_config(expose_raw: bool, fallback: bool) -> SearchConfig {
+fn eggsearch_config(expose_raw: bool) -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
         expose_raw_mcp_tools: Some(expose_raw),
-        fallback_to_builtin: Some(fallback),
         max_search_output_chars: Some(12_000),
         max_fetch_output_chars: Some(20_000),
         eggsearch: Some(EggsearchConfig {
             server_name: Some("eggsearch".to_string()),
             ..Default::default()
         }),
-        ..Default::default()
-    }
-}
-
-fn builtin_config() -> SearchConfig {
-    SearchConfig {
-        backend: Some(SearchBackendConfig::Builtin),
         ..Default::default()
     }
 }
@@ -382,7 +373,7 @@ async fn websearch_dispatches_to_mcp_web_search() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let out = ctx
         .dispatch_web_search(&serde_json::json!({
@@ -414,7 +405,7 @@ async fn webfetch_dispatches_to_mcp_web_fetch() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let out = ctx
         .dispatch_web_fetch(&serde_json::json!({
@@ -446,7 +437,7 @@ async fn provider_status_dispatches_via_doctor_helper() {
     let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
         &calls,
     ))));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let mcp_handle = ctx.mcp();
     let out = codegg::search_backend::eggsearch::call_provider_status_with_service(
@@ -472,7 +463,7 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
     // Empty service: no "eggsearch" server registered.
     let svc = McpService::new();
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    let ctx = SearchRuntimeContext::new(eggsearch_config(false, false)).with_mcp(svc);
+    let ctx = SearchRuntimeContext::new(eggsearch_config(false)).with_mcp(svc);
 
     let res = ctx
         .dispatch_web_search(&serde_json::json!({"query": "x"}))
@@ -485,29 +476,6 @@ async fn dispatch_eggsearch_server_missing_returns_actionable_error() {
                 || msg.contains("not found")
                 || msg.contains("not advertised")),
         "expected actionable eggsearch error, got: {msg}"
-    );
-}
-
-/// With `backend = builtin`, dispatch should not touch MCP at all.
-#[tokio::test]
-async fn builtin_backend_does_not_invoke_mcp() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let svc = Arc::new(tokio::sync::RwLock::new(build_mock_eggsearch(Arc::clone(
-        &calls,
-    ))));
-    let ctx = SearchRuntimeContext::new(builtin_config()).with_mcp(svc);
-
-    // Force the legacy path to fail (no providers configured in
-    // test env) to make the assertion deterministic. We assert
-    // that the *MCP* was not called regardless of legacy success.
-    let _ = ctx
-        .dispatch_web_search(&serde_json::json!({"query": "x"}))
-        .await;
-    let recorded = calls.lock().await;
-    assert!(
-        recorded.is_empty(),
-        "builtin backend should not call MCP, got: {:?}",
-        *recorded
     );
 }
 
@@ -685,10 +653,11 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     ));
     assert!(calls.lock().await.is_empty());
 
-    let sources = source
-        .collect(&request(true), &plan)
+    let collection = source
+        .collect_with_receipt(&request(true), &plan)
         .await
         .expect("network-enabled research should use eggsearch");
+    let sources = collection.sources;
     assert_eq!(sources.len(), 3);
     assert_eq!(sources[0].uri, "https://example.org/paper-1");
     assert_eq!(sources[1].uri, "https://example.org/paper-2");
@@ -705,6 +674,18 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     assert_eq!(
         sources[2].source_quality,
         codegg::research::types::SourceQuality::OfficialDocs
+    );
+    assert_eq!(collection.receipts.len(), 1);
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Unknown,
+        "legacy text-only eggsearch responses cannot establish complete coverage"
+    );
+    assert_eq!(
+        collection.receipts[0].sources[0]
+            .upstream_stable_id
+            .as_deref(),
+        Some("paper-1")
     );
     let recorded = calls.lock().await;
     assert_eq!(recorded.len(), 1);
@@ -786,6 +767,144 @@ async fn security_research_source_uses_structured_security_evidence() {
     assert_eq!(recorded[0].1["workflow"], "security_review");
 }
 
+fn build_tagged_retrieval_mock(research: String, security: String) -> McpService {
+    let mut service = McpService::new();
+    let names = [
+        "web_search",
+        "web_fetch",
+        "provider_status",
+        "research_search",
+        "security_search",
+    ];
+    let tools = names
+        .iter()
+        .map(|name| McpTool {
+            name: (*name).to_string(),
+            description: format!("Mock {name}"),
+            input_schema: serde_json::json!({"type":"object","properties":{}}),
+            server: "eggsearch".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    service.register_mock_server(
+        "eggsearch",
+        tools,
+        Box::new(move |tool, args| {
+            validate_current_eggsearch_request(tool, &args)?;
+            match tool {
+                "research_search" => Ok(research.clone()),
+                "security_search" => Ok(security.clone()),
+                "web_search" => Ok("{}".to_string()),
+                "web_fetch" => Ok("".to_string()),
+                "provider_status" => Ok("{}".to_string()),
+                _ => Err(McpError::Server(format!("unexpected tool {tool}"))),
+            }
+        }),
+    );
+    service
+}
+
+fn research_request(mode: ResearchMode) -> ResearchRequest {
+    ResearchRequest {
+        id: "tagged-retrieval-test".into(),
+        question: "test query".into(),
+        mode,
+        audience: ResearchAudience::AgentReviewer,
+        depth: ResearchDepth::Medium,
+        output_profiles: vec![],
+        constraints: vec![],
+        sources: vec![],
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources: 4,
+            max_chunks_per_source: 1,
+            max_evidence_spans: 1,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network: true,
+        },
+        created_at: chrono::Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn fake_mcp_tagged_completed_empty_receipt_survives_report_path() {
+    let completed =
+        include_str!("fixtures/eggsearch/v0.4.1/research_search-completed-empty.json").to_string();
+    let service = Arc::new(tokio::sync::RwLock::new(build_tagged_retrieval_mock(
+        completed,
+        include_str!("fixtures/eggsearch/v0.4.1/research_search-dimension-failure.json")
+            .to_string(),
+    )));
+    let context = SearchRuntimeContext::new(eggsearch_config_all_caps()).with_mcp(service);
+    let source = EggsearchSource::new().with_search_runtime(context);
+    let plan = ResearchPlan {
+        scope: "test".into(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let collection = source
+        .collect_with_receipt(&research_request(ResearchMode::Landscape), &plan)
+        .await
+        .unwrap();
+    assert!(collection.sources.is_empty());
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Complete
+    );
+    let report = codegg::research::synthesis::render_retrieval_status(&collection.receipts);
+    assert!(report.contains("complete; 0 source(s)"));
+    assert!(report.contains("represented retrieval scope"));
+    assert!(!report.contains("not a negative finding"));
+}
+
+#[tokio::test]
+async fn fake_mcp_tagged_dimension_only_failure_remains_failed_and_reported() {
+    let failed = include_str!("fixtures/eggsearch/v0.4.1/research_search-dimension-failure.json")
+        .to_string();
+    let service = Arc::new(tokio::sync::RwLock::new(build_tagged_retrieval_mock(
+        failed.clone(),
+        include_str!("fixtures/eggsearch/v0.4.1/security_search-dimension-failure.json")
+            .to_string(),
+    )));
+    let context = SearchRuntimeContext::new(eggsearch_config_all_caps()).with_mcp(service);
+    let source = EggsearchSource::new().with_search_runtime(context);
+    let plan = ResearchPlan {
+        scope: "test".into(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let collection = source
+        .collect_with_receipt(&research_request(ResearchMode::Landscape), &plan)
+        .await
+        .unwrap();
+    assert!(collection.sources.is_empty());
+    assert_eq!(
+        collection.receipts[0].state,
+        codegg::research::types::RetrievalState::Failed
+    );
+    assert_eq!(collection.receipts[0].failed_providers, ["exa"]);
+    let report = codegg::research::synthesis::render_retrieval_status(&collection.receipts);
+    assert!(report.contains("failed; 0 source(s)"));
+    assert!(report.contains("Providers failed: exa"));
+    assert!(report.contains("not a negative finding"));
+    let security = source
+        .collect_with_receipt(&research_request(ResearchMode::SecurityReview), &plan)
+        .await
+        .unwrap();
+    assert_eq!(
+        security.receipts[0].state,
+        codegg::research::types::RetrievalState::Failed
+    );
+    assert_eq!(security.receipts[0].failed_providers, ["osv"]);
+}
+
 /// Build a mock with ALL upstream tools registered.
 fn build_full_mock_eggsearch(
     recorded_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
@@ -844,7 +963,6 @@ fn eggsearch_config_all_caps() -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
         expose_raw_mcp_tools: Some(false),
-        fallback_to_builtin: Some(false),
         max_search_output_chars: Some(12_000),
         max_fetch_output_chars: Some(20_000),
         max_repo_output_chars: Some(16_000),
@@ -1364,6 +1482,7 @@ async fn missing_upstream_tool_fails_clearly() {
 fn evidence_disabled_config() -> codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
     codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
         enabled: false,
+        backend: "disabled".to_string(),
         ..Default::default()
     }
 }
@@ -1400,6 +1519,8 @@ fn disabled_evidence_backend_omits_expanded_tools() {
             "tool '{tool}' should NOT be in definitions when evidence backend is disabled"
         );
     }
+    assert!(names.contains(&"websearch"));
+    assert!(names.contains(&"webfetch"));
 }
 
 /// With evidence backend enabled, expanded evidence wrapper tools
@@ -1465,40 +1586,4 @@ fn websearch_webfetch_always_registered() {
                 .map(|e| e.enabled),
         );
     }
-}
-
-/// With evidence backend set to builtin, expanded evidence wrapper tools
-/// should NOT appear in model-facing definitions (they are eggsearch-only).
-#[test]
-fn builtin_evidence_backend_omits_expanded_tools() {
-    let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
-        evidence_config: Some(
-            codegg::tool::integrated_config::EvidenceBackendRuntimeConfig {
-                enabled: true,
-                backend: "builtin".to_string(),
-                ..Default::default()
-            },
-        ),
-        ..Default::default()
-    });
-    let defs = registry.definitions();
-    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-
-    for tool in &[
-        "repo_search",
-        "repo_fetch",
-        "security_search",
-        "research_search",
-        "repo_map",
-        "batch_fetch",
-        "evidence_bundle",
-    ] {
-        assert!(
-            !names.contains(tool),
-            "tool '{tool}' should NOT be in definitions when evidence backend is builtin"
-        );
-    }
-    // websearch/webfetch are always present
-    assert!(names.contains(&"websearch"));
-    assert!(names.contains(&"webfetch"));
 }

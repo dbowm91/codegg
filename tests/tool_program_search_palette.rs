@@ -29,7 +29,6 @@ use serde_json::json;
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
-        fallback_to_builtin: Some(false),
         eggsearch: Some(EggsearchConfig {
             server_name: Some("eggsearch".to_string()),
             ..Default::default()
@@ -632,12 +631,12 @@ async fn unavailable_backend_yields_typed_tool_failure() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn builtin_backend_requires_eggsearch() {
+async fn disabled_backend_rejects_repository_search() {
     let workspace = tempfile::tempdir().unwrap();
     let registry = search_registry(
         workspace.path(),
         SearchRuntimeContext::new(SearchConfig {
-            backend: Some(SearchBackendConfig::Builtin),
+            backend: Some(SearchBackendConfig::Disabled),
             ..Default::default()
         }),
     );
@@ -661,7 +660,7 @@ async fn builtin_backend_requires_eggsearch() {
         ToolTerminalStatus::InfrastructureError
     );
     assert!(
-        result.value.display.contains("eggsearch"),
+        result.value.display.contains("disabled"),
         "unexpected: {}",
         result.value.display
     );

@@ -106,6 +106,18 @@ impl ResearchStore {
         Ok(())
     }
 
+    pub async fn write_retrieval_receipts(
+        &self,
+        run_id: &str,
+        receipts: &[ResearchRetrievalReceipt],
+    ) -> Result<PathBuf> {
+        let dir = self.run_dir(run_id).await;
+        let path = dir.join("retrieval.json");
+        let data = serde_json::to_string_pretty(receipts)?;
+        fs::write(&path, data).await?;
+        Ok(path)
+    }
+
     pub async fn write_report(
         &self,
         run_id: &str,
@@ -151,6 +163,13 @@ impl ResearchStore {
         let evidence = read_jsonl(&dir.join("evidence.jsonl")).await?;
         let claims = read_jsonl(&dir.join("claims.jsonl")).await?;
         let contradictions = read_jsonl(&dir.join("contradictions.jsonl")).await?;
+        let retrieval_path = dir.join("retrieval.json");
+        let retrieval_receipts = if retrieval_path.exists() {
+            let data = fs::read_to_string(&retrieval_path).await?;
+            serde_json::from_str(&data)?
+        } else {
+            Vec::new()
+        };
 
         Ok(ResearchBundle {
             request,
@@ -160,6 +179,7 @@ impl ResearchStore {
             evidence,
             claims,
             contradictions,
+            retrieval_receipts,
         })
     }
 
@@ -490,6 +510,37 @@ mod tests {
         assert!(tmp.path().join("test-run-1").exists());
         assert!(tmp.path().join("test-run-1/request.json").exists());
         assert!(tmp.path().join("test-run-1/run.json").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retrieval_receipts_roundtrip_and_legacy_runs_default_empty() {
+        let tmp = TempDir::new().unwrap();
+        let store = ResearchStore::new(tmp.path().to_path_buf());
+        let request = make_request("receipt-run");
+        store.create_run(&request).await.unwrap();
+        let receipt = ResearchRetrievalReceipt {
+            adapter: "eggsearch".into(),
+            state: RetrievalState::Partial,
+            source_count: 0,
+            coverage: Some("2 of 3 providers".into()),
+            warning_codes: vec!["provider_failed".into()],
+            trust_markers: vec!["injection_detected".into()],
+            failed_providers: vec!["exa".into()],
+            sources: vec![],
+        };
+        store
+            .write_retrieval_receipts("receipt-run", std::slice::from_ref(&receipt))
+            .await
+            .unwrap();
+        let bundle = store.load_run_bundle("receipt-run").await.unwrap();
+        assert_eq!(bundle.retrieval_receipts.len(), 1);
+        assert_eq!(bundle.retrieval_receipts[0].state, RetrievalState::Partial);
+        assert_eq!(bundle.retrieval_receipts[0].sources.len(), 0);
+
+        let legacy = make_request("legacy-run");
+        store.create_run(&legacy).await.unwrap();
+        let old_bundle = store.load_run_bundle("legacy-run").await.unwrap();
+        assert!(old_bundle.retrieval_receipts.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

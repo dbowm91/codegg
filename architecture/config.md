@@ -372,11 +372,13 @@ Gated active context policy. First use: tool-palette reduction driven
 by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
 `Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-### SearchConfig (`schema.rs:774`)
+### SearchConfig (`schema.rs:790`)
 
-Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
-`expose_raw_mcp_tools`, `fallback_to_builtin`, output caps per domain,
-`eggsearch` sub-config (command, args, timeouts, env vars).
+Web search/fetch backend: `backend` (Eggsearch/Disabled),
+`expose_raw_mcp_tools`, output caps per domain, and the `eggsearch`
+sub-config (command, args, timeouts, env vars). Removed `backend = "builtin"`
+and `fallback_to_builtin` settings fail during config parsing with migration
+guidance.
 
 ## Configuration Surface
 
