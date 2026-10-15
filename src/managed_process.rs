@@ -2432,6 +2432,143 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_git_metadata_replacement_after_lease() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        for replacement in ["git-pointer", "gitdir", "common-dir"] {
+            let fixture = tempfile::tempdir().expect("fixture");
+            let repository = fixture.path().join("repository");
+            let workspace = fixture.path().join("linked-worktree");
+            std::fs::create_dir(&repository).expect("repository root");
+            let git = |cwd: &Path, args: &[&str]| {
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(cwd)
+                    .output()
+                    .expect("fixture Git command")
+            };
+            assert!(
+                git(&repository, &["init", "--quiet", "--initial-branch=main"])
+                    .status
+                    .success()
+            );
+            assert!(git(&repository, &["config", "user.name", "C009 Race"])
+                .status
+                .success());
+            assert!(git(
+                &repository,
+                &["config", "user.email", "c009-race@example.invalid"]
+            )
+            .status
+            .success());
+            std::fs::write(repository.join("tracked.txt"), "content\n")
+                .expect("write tracked fixture");
+            assert!(git(&repository, &["add", "tracked.txt"]).status.success());
+            assert!(git(&repository, &["commit", "--quiet", "-m", "seed"])
+                .status
+                .success());
+            let linked = std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&repository)
+                .args(["worktree", "add", "--quiet", "--detach"])
+                .arg(&workspace)
+                .arg("HEAD")
+                .status()
+                .expect("create linked worktree");
+            assert!(linked.success());
+
+            let marker = workspace.join("target-must-not-run");
+            let config = SandboxConfig::new()
+                .with_enabled(true)
+                .with_mode(SandboxMode::WorkspaceWrite)
+                .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+                .with_linux_protected_mount_view(true);
+            let spec = config
+                .launch_spec(
+                    "/bin/sh",
+                    &["-c".into(), format!("touch {}", marker.display())],
+                    Some(&workspace),
+                )
+                .expect("linked-worktree lease");
+
+            let pointer = std::fs::read_to_string(workspace.join(".git"))
+                .expect("read linked-worktree pointer");
+            let gitdir_text = pointer
+                .lines()
+                .find_map(|line| line.strip_prefix("gitdir: "))
+                .expect("gitdir pointer line");
+            let gitdir_path = PathBuf::from(gitdir_text);
+            let gitdir = if gitdir_path.is_absolute() {
+                gitdir_path
+            } else {
+                workspace.join(gitdir_path)
+            }
+            .canonicalize()
+            .expect("canonical gitdir");
+            let common_value =
+                std::fs::read_to_string(gitdir.join("commondir")).expect("read common-dir pointer");
+            let common_path = PathBuf::from(common_value.trim());
+            let common_dir = if common_path.is_absolute() {
+                common_path
+            } else {
+                gitdir.join(common_path)
+            }
+            .canonicalize()
+            .expect("canonical common dir");
+
+            match replacement {
+                "git-pointer" => {
+                    let replacement_gitdir = fixture.path().join("replacement-gitdir");
+                    std::fs::create_dir(&replacement_gitdir).expect("replacement gitdir");
+                    std::fs::write(
+                        workspace.join(".git"),
+                        format!("gitdir: {}\n", replacement_gitdir.display()),
+                    )
+                    .expect("replace linked-worktree pointer");
+                }
+                "gitdir" => {
+                    let displaced = fixture.path().join("displaced-gitdir");
+                    std::fs::rename(&gitdir, displaced).expect("displace gitdir");
+                    std::fs::create_dir(&gitdir).expect("replace gitdir");
+                }
+                "common-dir" => {
+                    let displaced = fixture.path().join("displaced-common-dir");
+                    std::fs::rename(&common_dir, displaced).expect("displace common dir");
+                    std::fs::create_dir(&common_dir).expect("replace common dir");
+                }
+                _ => unreachable!("listed replacement case"),
+            }
+
+            let mut argv = vec![spec.target.as_os_str().to_owned()];
+            argv.extend(spec.args.iter().map(OsString::from));
+            let mut request = ManagedProcessRequest::new(
+                argv,
+                workspace,
+                ProcessProvenance::new("c009-race", format!("{replacement}-replacement")),
+            );
+            request.sandbox = SandboxRequest::Required(spec);
+            let helper = std::env::current_exe()
+                .expect("test executable")
+                .parent()
+                .and_then(Path::parent)
+                .expect("target debug directory")
+                .join(crate::install::sandbox_helper_name());
+            let error = run_inner(request, None, Some(&helper))
+                .await
+                .expect_err("Git metadata replacement must fail before target launch");
+            assert!(
+                matches!(error, ManagedProcessError::SandboxFailed(_)),
+                "unexpected {replacement} replacement result: {error:?}"
+            );
+            assert!(
+                !marker.exists(),
+                "target ran after {replacement} replacement"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn hardlinked_denied_path_fails_before_target_launch() {
@@ -2774,6 +2911,82 @@ mod tests {
             "python-ok\n"
         );
         assert_eq!(std::fs::read_to_string(marker).unwrap(), "target-ran");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_view_denied_path_replacement_stays_hidden() {
+        if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
+            eprintln!(
+                "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
+            );
+            return;
+        }
+
+        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+
+        fn shell_quote(path: &Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        let outside = fixture.path().join("other-granted-root");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&outside).expect("other granted root");
+        let denied = workspace.join("denied-alias");
+        let displaced = workspace.join("denied-original");
+        std::fs::write(&denied, "original denied content\n").expect("denied fixture");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "synthetic secret\n").expect("outside secret");
+        let marker = workspace.join("target-ran");
+        let script = format!(
+            "set -eu\nif [ \"$(cat {} 2>/dev/null || true)\" = 'synthetic secret' ]; then exit 91; fi\nprintf target-ran > {}",
+            shell_quote(&denied),
+            shell_quote(&marker),
+        );
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![
+                workspace.to_string_lossy().into_owned(),
+                outside.to_string_lossy().into_owned(),
+            ])
+            .with_deny_paths(vec![denied.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
+            .expect("protected mount lease");
+
+        std::fs::rename(&denied, &displaced).expect("replace denied path");
+        std::os::unix::fs::symlink(&secret, &denied).expect("link denied path to other grant");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace.clone(),
+            ProcessProvenance::new("c009-native", "denied-path-replacement"),
+        );
+        request.timeout = Some(Duration::from_secs(15));
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .expect("denied path replacement launch");
+        assert!(
+            result.exit_status.success(),
+            "denied alias was readable: {}",
+            result.stderr.to_string_lossy()
+        );
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
+        ));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "target-ran");
+        assert_eq!(
+            std::fs::read_to_string(&secret).unwrap(),
+            "synthetic secret\n"
+        );
     }
 
     #[cfg(target_os = "linux")]
