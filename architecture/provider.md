@@ -147,10 +147,23 @@ explicitly:
 
 - `daemon_turns.rs` reads the selected connection's `secret_binding` and hands
   the turn a `TurnCredentialLocator { provider_ref, account_ref }` through
-  `TurnRunInput::credential_locator`. A session with no durable selection
-  passes `None`. Plaintext never crosses this boundary: the locator is a store
-  address, and the credential is resolved inside the turn's own registration
-  pass.
+  `TurnRunInput::credential_locator`. A session with no durable selection falls
+  back to `unbound_turn_credential_locator`. Plaintext never crosses this
+  boundary: the locator is a store address, and the credential is resolved
+  inside the turn's own registration pass.
+- **An unbound session still has connection authority.** Having no durable
+  *model* selection is not the same as having no connection: the user connected
+  the provider, and that connection names the exact account the turn must use.
+  `unbound_turn_credential_locator` finds it — only `Active` connections, only
+  those whose `ProviderKind::as_str` equals the turn's registry `provider_id`
+  (so `other:opencode_go` matches the `opencode_go` registry entry), and only
+  when **exactly one** qualifies and it carries a secret binding. Two active
+  connections for one provider is a genuine ambiguity and returns `None`,
+  leaving the refusal below in place rather than picking a winner.
+  Without this, a rotation left the live record beside the orphan it replaced,
+  the store count reached two, and *every* turn for that provider died with
+  `provider_credential_ambiguous` while the connection holding the working key
+  sat `active` in the database.
 - The turn calls `register_builtin_with_config_for_turn(registry, config,
   provider_id, locator, store)`, which reads the bound record by **exact**
   `(provider_ref, account_ref)`, pins it for that provider's registration, and

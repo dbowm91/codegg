@@ -189,19 +189,34 @@ async fn fetch_models(
         .await
         .map_err(|e| e.to_string())?;
     match response {
-        CoreResponse::ProviderConnectionModels { models, .. } => Ok(models
-            .into_iter()
-            .map(|m| SelectedModelDto {
-                connection_id: connection_id.to_string(),
-                model_id: m.id,
-                model_name: m.name,
-                context_window: m.context_window,
-                max_output_tokens: m.max_output_tokens,
-                supports_tools: m.supports_tools,
-                supports_vision: m.supports_vision,
-                catalog_revision: "0".to_string(),
-            })
-            .collect()),
+        // The daemon's `catalog_revision` is the authority for this catalog:
+        // it is the value `update_selection` compares `expected_catalog_revision`
+        // against, and it is what the rendered model list must be able to prove
+        // it came from. Discarding it for a literal `"0"` made every Enter a
+        // guaranteed `selection_catalog_stale` — the dialog could list a
+        // connection's models and then never bind one, because the placeholder
+        // never equals the store's digest. A refresh or a daemon restart could
+        // not help: the wrong value was minted locally, not observed stale.
+        CoreResponse::ProviderConnectionModels {
+            catalog_revision,
+            models,
+            ..
+        } => {
+            let catalog_revision = catalog_revision.unwrap_or_else(|| "0".to_string());
+            Ok(models
+                .into_iter()
+                .map(|m| SelectedModelDto {
+                    connection_id: connection_id.to_string(),
+                    model_id: m.id,
+                    model_name: m.name,
+                    context_window: m.context_window,
+                    max_output_tokens: m.max_output_tokens,
+                    supports_tools: m.supports_tools,
+                    supports_vision: m.supports_vision,
+                    catalog_revision: catalog_revision.clone(),
+                })
+                .collect())
+        }
         CoreResponse::Error { code, message } => Err(format!("{code}: {message}")),
         _ => Err("Unexpected models response".to_string()),
     }
@@ -333,4 +348,86 @@ pub(crate) fn start_model_select_persist(app: &mut App, session_id: String, mode
             })
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::CoreClient;
+    use crate::error::AppError;
+    use codegg_protocol::core::{CoreEvent, EventEnvelope};
+    use codegg_protocol::provider::ProviderModelDto;
+
+    /// Replies to `SessionSelectionModels` with one model under a non-zero
+    /// catalog revision, and records nothing else.
+    struct CatalogDaemon {
+        catalog_revision: Option<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl CoreClient for CatalogDaemon {
+        async fn request(
+            &self,
+            _request: RequestEnvelope<CoreRequest>,
+        ) -> Result<CoreResponse, AppError> {
+            Ok(CoreResponse::ProviderConnectionModels {
+                connection_id: "conn-1".to_string(),
+                catalog_revision: self.catalog_revision.clone(),
+                models: vec![ProviderModelDto {
+                    id: "mimo-v2.6-flash".to_string(),
+                    name: "Mimo v2.6 Flash".to_string(),
+                    context_window: 200_000,
+                    max_output_tokens: Some(8_192),
+                    supports_tools: true,
+                    supports_vision: false,
+                }],
+            })
+        }
+
+        fn subscribe(&self) -> tokio::sync::mpsc::Receiver<EventEnvelope<CoreEvent>> {
+            let (_tx, rx) = tokio::sync::mpsc::channel(1);
+            rx
+        }
+    }
+
+    /// The daemon's catalog revision must reach the model rows the dialog
+    /// renders, because `pending_update` forwards it verbatim as
+    /// `expected_catalog_revision` and `update_selection` refuses the bind
+    /// when it disagrees with the store.
+    ///
+    /// The TUI used to mint a literal `"0"` here instead, which made every
+    /// Enter a guaranteed `selection_catalog_stale`: the dialog could list a
+    /// connection's models and still never bind one. No refresh and no daemon
+    /// restart could change that, because the wrong value was manufactured
+    /// locally rather than observed as stale.
+    #[tokio::test]
+    async fn fetched_models_carry_the_daemons_catalog_revision() {
+        let client: Arc<dyn CoreClient> = Arc::new(CatalogDaemon {
+            catalog_revision: Some(
+                "821b5774ea14568654a16e19fe2b02eae16685db03a5dbda1ebf6bf33ff2b069".to_string(),
+            ),
+        });
+        let models = fetch_models(&client, "sess-1", "conn-1")
+            .await
+            .expect("model fetch");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].catalog_revision,
+            "821b5774ea14568654a16e19fe2b02eae16685db03a5dbda1ebf6bf33ff2b069"
+        );
+    }
+
+    /// A connection with no catalog yet keeps the `"0"` placeholder rather
+    /// than failing the fetch: an empty catalog is a legitimate state, and the
+    /// store treats a missing revision and `"0"` alike.
+    #[tokio::test]
+    async fn a_connection_without_a_catalog_still_reports_a_revision() {
+        let client: Arc<dyn CoreClient> = Arc::new(CatalogDaemon {
+            catalog_revision: None,
+        });
+        let models = fetch_models(&client, "sess-1", "conn-1")
+            .await
+            .expect("model fetch");
+        assert_eq!(models[0].catalog_revision, "0");
+    }
 }

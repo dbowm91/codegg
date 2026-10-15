@@ -290,6 +290,22 @@ impl CoreDaemon {
                             Err(_) => None,
                         }
                     }
+                    // No durable model selection. The session was never bound
+                    // to a connection, but the provider may still have exactly
+                    // one `active` connection, and that connection is the
+                    // credential authority for this turn. Without it the turn
+                    // falls through to the ambiguity-checked store fallback,
+                    // where the live record sits beside the orphan its rotation
+                    // replaced and *every* turn for the provider is refused.
+                    (_, Some(selection_service)) => {
+                        let provider_name =
+                            crate::core::session_selection::runtime_model_provider_segment(&model);
+                        crate::core::session_selection::unbound_turn_credential_locator(
+                            selection_service.connection_store.as_ref(),
+                            provider_name,
+                        )
+                        .await
+                    }
                     _ => None,
                 };
                 // Validate the provider exists before delegating to the turn

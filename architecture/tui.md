@@ -3444,3 +3444,17 @@ newly highlighted row; without it the dialog kept the previous connection's
 models on screen while `pending_update` paired them with the newly
 highlighted connection, so Enter would have bound one connection's model to
 another connection.
+
+**The pane's `catalog_revision` must be the daemon's, never a local
+placeholder.** `fetch_models` used to discard the `catalog_revision` the daemon
+returned and mint a literal `"0"` for every row. `pending_update` forwards that
+value verbatim as `expected_catalog_revision`, and `update_selection` compares
+it against `catalog_revision_for(current revision)`, so the bind failed with
+`selection_catalog_stale` every single time — the dialog could list a
+connection's models and still never bind one. The value was manufactured
+locally rather than observed as stale, so no refresh (`r`) and no daemon
+restart could change the outcome. Guarded by
+`fetched_models_carry_the_daemons_catalog_revision`.
+
+Model navigation is `Tab`/`BackTab` (`move_model`), while `Up`/`Down` move the
+connection highlight.

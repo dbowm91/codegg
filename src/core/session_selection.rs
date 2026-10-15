@@ -918,6 +918,58 @@ pub async fn resolve_turn_provider(
     Ok(connection.provider_kind.as_str().to_string())
 }
 
+/// The credential locator for a turn whose session carries **no** durable model
+/// selection, resolved from the provider connections themselves.
+///
+/// A session is not bound to a provider connection until the user picks a model
+/// in `/connections`, but that is not the same as having *no* connection
+/// authority: the user connected this provider, and that connection names the
+/// exact credential-store account the turn must authenticate with. Without this
+/// the turn passes `None` down to the credential-store fallback, which counts
+/// every usable record for the provider and refuses when more than one exists.
+/// A rotated connection therefore made its own store permanently unusable: the
+/// live record sat beside the orphan the rotation replaced, the count reached
+/// two, and *every* turn for that provider died with `provider_credential_ambiguous`
+/// while the connection carrying the working key sat `active` in the database.
+///
+/// The rule is deliberately narrow, and it is the same rule the credential-store
+/// fallback already applies to unbound records — one usable answer, otherwise a
+/// typed refusal rather than a guess:
+///
+/// - Only [`ProviderConnectionState::Active`] connections speak. A disabled,
+///   tombstoned, error, or credential-missing row is not authority for a turn.
+/// - Only connections whose [`ProviderKind::as_str`] equals the turn's registry
+///   provider id, so `other:opencode_go` matches the `opencode_go` registry entry.
+/// - Exactly one such connection, and it must carry a secret binding. Two active
+///   connections for one provider is a genuine ambiguity and returns `None`,
+///   leaving the existing refusal in place rather than picking a winner.
+pub async fn unbound_turn_credential_locator(
+    connection_store: &ProviderConnectionStore,
+    provider_name: &str,
+) -> Option<crate::provider::TurnCredentialLocator> {
+    let connections = connection_store.list().await.ok()?;
+    let mut active = connections
+        .into_iter()
+        .filter(|connection| {
+            connection.state == ProviderConnectionState::Active
+                && connection.provider_kind.as_str() == provider_name
+        })
+        .filter_map(|connection| connection.secret_binding);
+    let only = active.next()?;
+    if active.next().is_some() {
+        tracing::debug!(
+            target: "codegg::core::session_selection",
+            provider = %provider_name,
+            "several active connections speak for this provider; the turn resolves its credential without connection authority"
+        );
+        return None;
+    }
+    Some(crate::provider::TurnCredentialLocator {
+        provider_ref: only.provider_ref,
+        account_ref: only.account_ref,
+    })
+}
+
 /// Turn-path classification of a session's durable model selection.
 ///
 /// [`get_selection`] reports a persisted `selected_model_id` that is absent
