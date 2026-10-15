@@ -1223,8 +1223,26 @@ impl ProviderConnectionProvisioner {
         .await
         .map_err(|_| RotationError::Storage)?
         .flatten();
-        let catalog_unchanged =
-            old_catalog.as_deref() == Some(probe_result.catalog_revision.as_str());
+        // The copy shortcut is only valid when the previous revision actually
+        // holds the catalog to copy. Matching digests alone are not enough: if
+        // the catalog was ever stranded behind a revision bump, `old_catalog`
+        // can still equal the probe digest (the upstream catalog genuinely did
+        // not change) while `expected_revision` holds no rows at all. The copy
+        // then inserts nothing, the catalog stays empty at the new revision,
+        // and no later rotate or refresh can ever rebuild it — `/connections`
+        // reports zero models forever. Observed live on a connection at
+        // revision 16 whose models were stranded at revisions 1-3, through a
+        // rotate that reported success.
+        let previous_catalog_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(expected_revision as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| RotationError::Storage)?;
+        let catalog_unchanged = previous_catalog_rows > 0
+            && old_catalog.as_deref() == Some(probe_result.catalog_revision.as_str());
         if catalog_unchanged {
             sqlx::query(
                 "INSERT INTO provider_connection_models (connection_id, revision, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision) SELECT connection_id, ?, model_id, model_name, context_window, max_output_tokens, supports_tools, supports_vision FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
@@ -1626,8 +1644,23 @@ impl ProviderConnectionProvisioner {
         .await
         .map_err(|_| RefreshError::Storage)?
         .flatten();
-        let catalog_changed =
-            old_catalog.as_deref() != Some(probe_result.catalog_revision.as_str());
+        // A matching digest means the upstream catalog did not change, so there is
+        // nothing to promote. It does NOT mean this connection already holds
+        // its catalog: when the local rows are missing at the current revision
+        // — the state a stranded catalog leaves behind — refresh took the
+        // no-op branch, wrote no models, and could never repair it no matter
+        // how many times it was pressed. An absent catalog counts as changed so
+        // refresh rebuilds it.
+        let current_catalog_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(current.revision as i64)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| RefreshError::Storage)?;
+        let catalog_changed = current_catalog_rows == 0
+            || old_catalog.as_deref() != Some(probe_result.catalog_revision.as_str());
         let revision = if catalog_changed {
             let next = current.revision.saturating_add(1);
             sqlx::query("UPDATE provider_connections SET revision = ?, time_updated = ? WHERE id = ? AND revision = ?")
@@ -3802,6 +3835,102 @@ mod tests {
             credential_status_of(&pool, &result.connection.id, revision).await,
             Some("verified".to_string()),
             "cancellation must leave the credential axis exactly as it was"
+        );
+    }
+
+    /// A catalog stranded behind a revision bump must be rebuildable.
+    ///
+    /// Both the rotate copy-shortcut and the refresh no-op branch used to trust
+    /// a matching upstream digest as proof that this connection already held its
+    /// models. When the rows are absent at the current revision that assumption
+    /// is false and both branches do nothing, so the catalog stays empty through
+    /// any number of rotations and refreshes and `/connections` reports zero
+    /// models forever. Observed live: revision 16, rows stranded at 1-3, a
+    /// rotate that reported success.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_rebuilds_a_catalog_stranded_behind_a_revision_bump() {
+        let _master = MasterKeyGuard::new("eggpool-stranded-catalog-master");
+        let directory = tempdir().expect("credential tempdir");
+        let credential_store = Arc::new(
+            codegg_providers::CredentialStore::at_path(directory.path().join("credentials.json"))
+                .expect("credential store"),
+        );
+        let pool = migrated_pool().await;
+        let (host, server) = fake_eggpool(Duration::ZERO);
+        let provisioner =
+            EggpoolProvisioner::with_credential_store(pool.clone(), Some(credential_store));
+        let result = provisioner
+            .create(request(&host))
+            .await
+            .expect("initial provision succeeds");
+        server.join().expect("initial fake server joins");
+        let connection_id = ProviderConnectionId::parse(&result.connection.id).unwrap();
+        let seeded = result.connection.revision;
+
+        let models_at = |revision: u64| {
+            let pool = pool.clone();
+            let id = connection_id.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM provider_connection_models WHERE connection_id = ? AND revision = ?",
+                )
+                .bind(id.as_str())
+                .bind(revision as i64)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert!(
+            models_at(seeded).await > 0,
+            "provision seeds the catalog at the connection revision"
+        );
+
+        // Stranding: rows survive only at older revisions while the connection
+        // has moved on -- the state a revision bump that forgot to carry them
+        // leaves behind.
+        sqlx::query(
+            "DELETE FROM provider_connection_models WHERE connection_id = ? AND revision >= ?",
+        )
+        .bind(connection_id.as_str())
+        .bind(seeded as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let stranded = seeded + 3;
+        sqlx::query("UPDATE provider_connections SET revision = ? WHERE id = ?")
+            .bind(stranded as i64)
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            models_at(stranded).await,
+            0,
+            "the catalog is now absent at the current revision"
+        );
+
+        // The upstream serves the same model list, so the catalog digest is
+        // unchanged. That alone previously sent refresh down its no-op branch.
+        let (refresh_host, refresh_server) = fake_eggpool(Duration::ZERO);
+        sqlx::query("UPDATE provider_connections SET endpoint = ? WHERE id = ?")
+            .bind(format!("{refresh_host}/v1"))
+            .bind(connection_id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let outcome = provisioner
+            .refresh_with_operation("refresh-stranded", &connection_id, stranded)
+            .await
+            .expect("refresh succeeds");
+        refresh_server.join().expect("refresh fake server joins");
+
+        let refreshed_to = outcome.revision.expect("refresh reports a revision");
+        let rebuilt = models_at(refreshed_to).await;
+        assert!(
+            rebuilt > 0,
+            "refresh must rebuild a missing catalog even when the upstream digest is unchanged; revision {refreshed_to} holds no models"
         );
     }
 
