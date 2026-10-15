@@ -2813,7 +2813,7 @@ mod tests {
         SecretInputRef,
     };
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
     use tempfile::tempdir;
 
@@ -2880,6 +2880,9 @@ mod tests {
     /// following completion, so a probe that legitimately stops after its first
     /// request does not park the test thread for seconds.
     const EXTRA_REQUEST_IDLE: Duration = Duration::from_millis(750);
+    /// Reconnection fixtures deliberately exercise sequential probes and need
+    /// to tolerate concurrent CI load between the two creates.
+    const REPEATED_PROBE_REQUEST_IDLE: Duration = Duration::from_secs(5);
 
     /// Raw HTTP response for one request head.
     fn http_response(status: u16, body: &str) -> String {
@@ -2923,6 +2926,11 @@ mod tests {
             .set_nonblocking(true)
             .expect("configure fake endpoint listener");
         let address = listener.local_addr().expect("fake endpoint address");
+        let additional_request_idle = if count > PROBE_REQUEST_COUNT {
+            REPEATED_PROBE_REQUEST_IDLE
+        } else {
+            extra_request_idle
+        };
         let join = thread::spawn(move || {
             let mut log = String::new();
             for index in 0..count {
@@ -2930,7 +2938,7 @@ mod tests {
                     + if index == 0 {
                         Duration::from_secs(5)
                     } else {
-                        extra_request_idle
+                        additional_request_idle
                     };
                 let Ok((mut stream, _)) = accept_until(&listener, deadline) else {
                     break;
@@ -2938,18 +2946,12 @@ mod tests {
                 if stream.set_nonblocking(false).is_err() {
                     break;
                 }
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 1024];
-                loop {
-                    let read = stream.read(&mut buffer).expect("read fake request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
+                // Read the complete request body before closing the socket.
+                // Returning after headers races POST body writes and can
+                // produce a TCP reset when the fixture drops a socket with
+                // unread bytes, which the provider correctly reports as an
+                // unreachable endpoint.
+                let request = read_fake_http_request(&mut stream).expect("read fake request");
                 if !delay.is_zero() {
                     thread::sleep(delay);
                 }
@@ -2963,6 +2965,54 @@ mod tests {
         });
         let _ = label;
         (format!("http://{address}"), join)
+    }
+
+    fn read_fake_http_request(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+        const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let mut body_len = None;
+        let mut header_end = None;
+        loop {
+            if let (Some(header_end), Some(body_len)) = (header_end, body_len) {
+                if request.len() >= header_end + 4 + body_len {
+                    return Ok(request);
+                }
+            }
+            if request.len() >= MAX_REQUEST_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "fake HTTP request exceeds test bound",
+                ));
+            }
+            let count = stream.read(&mut buffer)?;
+            if count == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "fake HTTP request ended before its declared body",
+                ));
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if header_end.is_none() {
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    header_end = Some(index);
+                    let headers = String::from_utf8_lossy(&request[..index]);
+                    body_len = Some(
+                        headers
+                            .lines()
+                            .skip(1)
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0),
+                    );
+                }
+            }
+        }
     }
 
     /// Accept one connection until `deadline`.
@@ -3342,10 +3392,17 @@ mod tests {
         // Re-adding the same provider replaces the existing connection rather
         // than refusing: re-running /connect is how a credential is rotated.
         let first_id = result.connection.id.clone();
-        let replacement = provisioner
-            .create(request(&host))
-            .await
-            .expect("an equivalent connection must replace, not conflict");
+        let replacement = match provisioner.create(request(&host)).await {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                let requests = server
+                    .join()
+                    .expect("fake server joins after replacement error");
+                panic!(
+                    "an equivalent connection must replace, not conflict: {error}; served requests:\n{requests}"
+                );
+            }
+        };
         assert_ne!(
             replacement.connection.id, first_id,
             "replacement must publish a new connection id"
