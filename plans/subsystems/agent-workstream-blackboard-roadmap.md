@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M003 closed; M004 strict-closure corrective M009 active; M005–M008 remain gated as listed. ADR-0032 remains proposed until M004 strict closure.
+Status: active; M001–M004 closed (M004 strict closure through corrective M009); M005–M008 remain gated as listed. ADR-0032 acceptance is recorded separately; M005 still requires verified writer-path containment.
 
 Repository planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (main inspected 2026-10-15). Re-inspect exact working branch before implementation.
 
@@ -63,7 +63,7 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
        |
        +-- M003 atomic task claims, dependencies, handoff       [closed]
             |
-            +-- M004 peer observation and model-facing tools    [conditionally closed]
+            +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
                  +-- M005 explicit group checkout placement     [blocked: strict M004, ADR-0032 accepted, writer containment]
                       |
@@ -100,14 +100,14 @@ Implement typed task/path claims with revision-CAS, overlap and dependency check
 Plan: plans/implementation/agent-workstream-blackboard/003-task-claims-and-dependencies.md
 Closure: plans/closure/agent-workstream-blackboard/003-status.md. Migration v79 adds bounded durable claims, dependencies and provenance; M002 now has an authorized storage-backed consumer. Claims remain advisory and do not grant shared-write access.
 
-### M004 — Peer action observations and bounded agent integration (conditionally closed)
+### M004 — Peer action observations and bounded agent integration (strictly closed via M009)
 
 Host-computed, redactable observations from commits/status/test jobs/changed paths at safe loop boundaries; explicit read/claim/request-handoff tool actions and push-on-meaningful-change without per-agent polling. Bounded incremental state, relevance filtering, project/group privacy, hostile tool output tests. Preserve existing direct-parent control authorization.
 
 Plan: plans/implementation/agent-workstream-blackboard/004-peer-observation-and-tools.md
-Closure: `plans/closure/agent-workstream-blackboard/004-status.md`. Bounded result/claim peer hints, model actions, and read-only TUI display are implemented; strict before-next-mutation timing and the full fake-provider/Git acceptance harness remain unproven.
+Historical closure: `plans/closure/agent-workstream-blackboard/004-status.md` (conditional, preserved unchanged). Current strict status: `plans/closure/agent-workstream-blackboard/009-status.md`. Bounded result/claim peer hints, model actions, and read-only TUI display are implemented; a post-provider fence refuses the complete returned tool batch when relevant peer evidence or a continuity gap arrived in flight.
 
-### Corrective M009 — Peer evidence before mutation (active)
+### Corrective M009 — Peer evidence before mutation (closed)
 
 Close M004's named timing and qualification findings without changing the
 in-flight provider transcript or adding mutation/control authority. Recheck
@@ -115,8 +115,10 @@ bounded same-group peer observations after a provider response and before
 dispatching the returned tool batch; fence the batch if new evidence or a
 continuity gap must be shown to the model. Add scripted two-worktree/provider
 acceptance coverage for event timing, relevance, recovery, isolation, bounds,
-and the single-agent path. The original 004 closure remains immutable
-historical evidence; strict status is controlled by corrective closure 009.
+and the single-agent path. The deterministic harness represents two group
+members and host-owned fake Git evidence; physical worktree allocation remains
+outside M004. The original 004 closure remains immutable historical evidence;
+strict status is controlled by corrective closure 009.
 
 Plan: `plans/implementation/agent-workstream-blackboard/009-peer-observation-before-mutation-corrective.md`.
 Closure: `plans/closure/agent-workstream-blackboard/009-status.md`.
@@ -162,4 +164,4 @@ Stop and create a new corrective plan if acceptance needs a second admission aut
 
 ## Registry/unblock responsibility
 
-After M001 closure M005 remains blocked on M004 and ADR-0032. After M002 closure M003 becomes ready; after M003, M004 becomes ready. M004 strict closure through M009 still leaves M005 blocked until ADR-0032 acceptance and verified writer-path containment. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.
+After M001 closure M005 remained blocked on M004 and ADR-0032. After M002 closure M003 became ready; after M003, M004 became ready. M004 is now strictly closed through M009. M005 remains blocked until ADR-0032 acceptance and verified writer-path containment. M006/M007 depend on M005; M008 depends on M004/M006/M007. Registry updates must occur in the same closure commit as milestone transitions, not based on plans merely being written.

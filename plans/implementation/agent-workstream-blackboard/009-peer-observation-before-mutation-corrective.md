@@ -1,13 +1,13 @@
 # Agent Workstream Blackboard Corrective 009 — Peer Evidence Before Mutation
 
-Status: active
+Status: closed — strict M004 timing closure; see `plans/closure/agent-workstream-blackboard/009-status.md`.
 
 Planning baseline: `6f3c9c91bac5d0e3a46c930d2d992d8f7b7ce790` (2026-10-15)
 
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#corrective-m009--peer-evidence-before-mutation`
 Original milestone: `plans/implementation/agent-workstream-blackboard/004-peer-observation-and-tools.md`
 Original closure: `plans/closure/agent-workstream-blackboard/004-status.md`
-Applicable ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0031; ADR-0032 remains proposed until M004 strict closure.
+Applicable ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0031; ADR-0032 remained proposed at this corrective's closure point and its acceptance is recorded separately.
 Primary class: invariant / capability corrective.
 
 ## 1. Objective
