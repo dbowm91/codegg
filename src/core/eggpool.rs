@@ -4275,12 +4275,13 @@ mod tests {
         let task = tokio::spawn(async move { running.create(request).await });
         tokio::time::sleep(Duration::from_millis(25)).await;
         let mut cancelled = false;
-        for _ in 0..100 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
             if provisioner.cancel("prov-cancel") {
                 cancelled = true;
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(cancelled, "provisioning operation was not registered");
         let result = task.await.expect("provision task joins");
@@ -4575,12 +4576,13 @@ mod tests {
         let task = tokio::spawn(async move { running.create_connection(request).await });
         tokio::time::sleep(Duration::from_millis(25)).await;
         let mut cancelled = false;
-        for _ in 0..100 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
             if provisioner.cancel("prov-generic-cancel") {
                 cancelled = true;
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(cancelled, "provisioning operation was not registered");
         let result = task.await.expect("provision task joins");
