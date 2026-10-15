@@ -93,13 +93,14 @@ Derive a group-scoped peer board from existing run, task, group, worktree and jo
 Plan: plans/implementation/agent-workstream-blackboard/002-durable-workstream-state.md
 Closure: plans/closure/agent-workstream-blackboard/002-status.md. No persistence migration was necessary; facts remain derived from canonical stores and absent job/worktree records are explicit.
 
-### M003 — Atomic responsibility claims, handoffs and dependency state (ready)
+### M003 — Atomic responsibility claims, handoffs and dependency state (closed)
 
 Implement typed task/path claims with revision-CAS, overlap and dependency checks, ownership transfer, lease expiry and cancellation, preserving provenance, audit and no-respawn semantics. Advisory task intent may be visible under isolated worktrees; claims do NOT themselves authorize writes or imply sandbox enforcement. No new workflow scheduler.
 
 Plan: plans/implementation/agent-workstream-blackboard/003-task-claims-and-dependencies.md
+Closure: plans/closure/agent-workstream-blackboard/003-status.md. Migration v79 adds bounded durable claims, dependencies and provenance; M002 now has an authorized storage-backed consumer. Claims remain advisory and do not grant shared-write access.
 
-### M004 — Peer action observations and bounded agent integration (blocked: M003)
+### M004 — Peer action observations and bounded agent integration (ready)
 
 Host-computed, redactable observations from commits/status/test jobs/changed paths at safe loop boundaries; explicit read/claim/request-handoff tool actions and push-on-meaningful-change without per-agent polling. Bounded incremental state, relevance filtering, project/group privacy, hostile tool output tests. Preserve existing direct-parent control authorization.
 
