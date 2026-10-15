@@ -280,6 +280,14 @@ pub fn compile(
             continue;
         }
         let path = canonical_or_future(path)?;
+        if write_roots.iter().any(|write| path.starts_with(write)) {
+            // A file mask over a writable host bind can be detached when the
+            // host-backed directory entry is renamed after mount setup. Fail
+            // closed rather than claiming a deny that the child can bypass.
+            return Err(
+                "protected mount view cannot isolate a denied path inside a writable grant".into(),
+            );
+        }
         if write_roots.iter().any(|write| write.starts_with(&path))
             || read_roots.iter().any(|read| read.starts_with(&path))
         {

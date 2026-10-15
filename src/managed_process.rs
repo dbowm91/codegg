@@ -2903,7 +2903,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn protected_mount_view_denied_path_replacement_stays_hidden() {
+    async fn protected_mount_rejects_deny_alias_into_writable_grant() {
         if std::env::var("CODEGG_RUN_C009_BWRAP_NATIVE").as_deref() != Ok("1") {
             eprintln!(
                 "skipped: set CODEGG_RUN_C009_BWRAP_NATIVE=1 for native Bubblewrap qualification"
@@ -2911,7 +2911,7 @@ mod tests {
             return;
         }
 
-        use crate::security::sandbox::{BackendId, SandboxConfig, SandboxMode};
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
 
         fn shell_quote(path: &Path) -> String {
             format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
@@ -2954,26 +2954,69 @@ mod tests {
         let mut request = ManagedProcessRequest::new(
             argv,
             workspace.clone(),
-            ProcessProvenance::new("c009-native", "denied-path-replacement"),
+            ProcessProvenance::new("c009-native", "deny-alias-into-writable-grant"),
         );
         request.timeout = Some(Duration::from_secs(15));
         request.sandbox = SandboxRequest::Required(spec);
-        let result = ManagedProcessService::run(request)
+        let error = ManagedProcessService::run(request)
             .await
-            .expect("denied path replacement launch");
+            .expect_err("deny alias into a writable grant must refuse setup");
         assert!(
-            result.exit_status.success(),
-            "denied alias was readable: {}",
-            result.stderr.to_string_lossy()
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("cannot isolate a denied path inside a writable grant")),
+            "unexpected deny-alias disposition: {error:?}"
         );
-        assert!(matches!(
-            result.sandbox,
-            SandboxExecutionOutcome::Enforced { backend, .. } if backend == BackendId::BUBBLEWRAP
-        ));
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "target-ran");
+        assert!(
+            !marker.exists(),
+            "target ran with an unenforceable deny alias"
+        );
         assert_eq!(
             std::fs::read_to_string(&secret).unwrap(),
             "synthetic secret\n"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_rejects_denied_descendant_of_writable_root() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let workspace = fixture.path().join("workspace");
+        std::fs::create_dir(&workspace).expect("workspace");
+        let denied = workspace.join("denied-content");
+        std::fs::write(&denied, "denied content\n").expect("denied fixture");
+        let marker = workspace.join("target-must-not-run");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_deny_paths(vec![denied.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("protected mount lease");
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace,
+            ProcessProvenance::new("c009-native", "deny-descendant-refusal"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let error = ManagedProcessService::run(request)
+            .await
+            .expect_err("denied descendants of writable roots must refuse setup");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(ref reason) if reason.contains("cannot isolate a denied path inside a writable grant")),
+            "unexpected denial disposition: {error:?}"
+        );
+        assert!(
+            !marker.exists(),
+            "target ran with an unenforceable deny rule"
         );
     }
 
@@ -3145,13 +3188,10 @@ mod tests {
             "protected hook",
         )
         .expect("Git hook fixture");
-        std::fs::write(workspace.path().join(".secret"), "synthetic secret")
-            .expect("denied secret fixture");
         let outside_secret = outside.path().join("outside.secret");
         std::fs::write(&outside_secret, "outside secret").expect("outside secret fixture");
         std::os::unix::fs::symlink(&outside_secret, workspace.path().join("outside-link"))
             .expect("external symlink fixture");
-        let future_secret = workspace.path().join("future-secret");
 
         let script = format!(
             "set -eu\nworkspace={}\nprintf allowed > \"$workspace/allowed.txt\"\n\
@@ -3159,26 +3199,18 @@ mod tests {
              test \"$(git -C \"$workspace\" config --local c006.fixture)\" = 'protected config'\n\
              if printf changed > \"$workspace/.git/config\" 2>/dev/null; then exit 71; fi\n\
              if printf changed > \"$workspace/.git/hooks/pre-commit\" 2>/dev/null; then exit 72; fi\n\
-             if grep -q 'synthetic secret' \"$workspace/.secret\" 2>/dev/null; then exit 73; fi\n\
-             if printf changed > \"$workspace/.secret\" 2>/dev/null; then exit 74; fi\n\
-             if printf changed > {}; then exit 75; fi\n\
+             if printf changed > {}; then exit 73; fi\n\
              if cat \"$workspace/outside-link\" >/dev/null 2>&1; then exit 76; fi\n\
-             if printf future > {}; then exit 77; fi\n\
              test ! -e /proc/self/root && test ! -e /sys/kernel\n\
              test \"$(python3 -c 'print(\"python-ok\")')\" = python-ok\n\
              printf target-ran > \"$workspace/marker\"",
             shell_quote(workspace.path()),
             shell_quote(&outside_secret),
-            shell_quote(&future_secret),
         );
         let config = SandboxConfig::new()
             .with_enabled(true)
             .with_mode(SandboxMode::WorkspaceWrite)
             .with_allowed_paths(vec![workspace.path().to_string_lossy().into_owned()])
-            .with_deny_paths(vec![
-                workspace.path().join(".secret").display().to_string(),
-                future_secret.display().to_string(),
-            ])
             .with_linux_protected_mount_view(true);
         let spec = config
             .launch_spec("/bin/sh", &["-c".into(), script], Some(workspace.path()))
