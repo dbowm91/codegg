@@ -81,10 +81,10 @@ impl EggsearchResolution {
 /// Resolve the installation directory for a given executable path.
 ///
 /// Canonicalizes the executable, takes its parent, and canonicalizes the
-/// parent. In test builds, Cargo places test executables under
-/// `target/<profile>/deps`; the parent is then lifted one level so tests
-/// resolve the same `target/<profile>` directory that holds the real
-/// sibling helper built by `cargo build`.
+/// parent. Cargo places test executables under `target/<profile>/deps`; the
+/// parent is lifted one level so integration tests (whose library dependency
+/// is not compiled with `cfg(test)`) resolve the same `target/<profile>`
+/// directory that holds the real sibling helper built by `cargo build`.
 pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
     let current = current
         .canonicalize()
@@ -94,15 +94,12 @@ pub fn installation_dir_for(current: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|e| format!("CodeGG installation directory could not be resolved: {e}"))?;
-    #[cfg(test)]
-    {
-        if install_root.file_name().is_some_and(|name| name == "deps") {
-            return install_root
-                .parent()
-                .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
-                .canonicalize()
-                .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
-        }
+    if install_root.file_name().is_some_and(|name| name == "deps") {
+        return install_root
+            .parent()
+            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
+            .canonicalize()
+            .map_err(|e| format!("Cargo target directory could not be resolved: {e}"));
     }
     Ok(install_root)
 }
@@ -472,6 +469,23 @@ mod tests {
                 .expect("egg perms");
         }
         dir
+    }
+
+    #[test]
+    fn installation_dir_lifts_cargo_deps_executables_for_integration_tests() {
+        let target = tempfile::tempdir().expect("target directory fixture");
+        let deps = target.path().join("deps");
+        std::fs::create_dir(&deps).expect("deps directory");
+        let test_executable = deps.join("integration-test-123");
+        std::fs::write(&test_executable, b"test executable").expect("test executable fixture");
+
+        assert_eq!(
+            installation_dir_for(&test_executable).expect("Cargo test installation directory"),
+            target
+                .path()
+                .canonicalize()
+                .expect("canonical target directory")
+        );
     }
 
     #[test]

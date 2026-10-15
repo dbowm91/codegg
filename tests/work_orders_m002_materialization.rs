@@ -4,8 +4,9 @@
 //! Exactly-once claim/materialization through the existing global scheduler
 //! boundary: one occurrence creates at most one canonical session and one
 //! canonical initial `AgentTurn` submission; restart/duplicate wakes cannot
-//! duplicate side effects; managed worktrees isolate concurrent Git mutation;
-//! model/policy resolution never silently falls back or widens.
+//! duplicate side effects; managed worktree creation fails closed when Git
+//! containment is unavailable; model/policy resolution never silently falls
+//! back or widens.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -454,7 +455,7 @@ async fn canonical_session_creation_uses_the_deterministic_key() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn concurrent_git_mutation_gets_distinct_managed_worktrees() {
+async fn managed_worktree_creation_fails_closed_without_git_containment_backend() {
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -485,38 +486,38 @@ async fn concurrent_git_mutation_gets_distinct_managed_worktrees() {
     );
     let project_id = project();
     let repository_id = codegg_core::identity::RepositoryId::new();
-    let workspace_a = codegg_core::workspace::WorkspaceId::new_unchecked("ws-a");
-    let workspace_b = codegg_core::workspace::WorkspaceId::new_unchecked("ws-b");
-    let request_a = codegg_core::worktree_service::CreateWorktreeRequest {
+    let workspace = codegg_core::workspace::WorkspaceId::new_unchecked("ws-a");
+    let request = codegg_core::worktree_service::CreateWorktreeRequest {
         project_id: project_id.clone(),
         repository_id: repository_id.clone(),
-        workspace_id: workspace_a,
+        workspace_id: workspace,
         node_id: None,
         repository_root: repo_dir.path().to_path_buf(),
         base_commit: None,
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
-    let request_b = codegg_core::worktree_service::CreateWorktreeRequest {
-        project_id: project_id.clone(),
-        repository_id: repository_id.clone(),
-        workspace_id: workspace_b,
-        node_id: None,
-        repository_root: repo_dir.path().to_path_buf(),
-        base_commit: None,
-        base_path: None,
-        owner_run_id: codegg_core::identity::AgentRunId::new(),
-    };
-    let (record_a, _) = service.create(&request_a).await.expect("worktree a");
-    let (record_b, _) = service.create(&request_b).await.expect("worktree b");
-    assert_ne!(record_a.worktree_id, record_b.worktree_id);
-    assert_ne!(record_a.path, record_b.path);
-    let canonical_managed = managed_root
-        .path()
-        .canonicalize()
-        .unwrap_or_else(|_| managed_root.path().to_path_buf());
-    assert!(record_a.path.starts_with(&canonical_managed));
-    assert!(record_b.path.starts_with(&canonical_managed));
+    let error = service
+        .create(&request)
+        .await
+        .expect_err("worktree mutation needs a contained Git backend");
+    assert!(error.to_string().contains("Git backend unavailable"));
+    assert!(error.to_string().contains("CleanSmudgeFilter"));
+
+    let records = service
+        .list(codegg_core::worktree_service::WorktreeQuery::default())
+        .await
+        .expect("list reserved worktrees");
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].state,
+        codegg_core::worktree_service::ManagedWorktreeState::Orphaned
+    );
+    assert_eq!(
+        records[0].health,
+        codegg_core::worktree_service::WorktreeHealth::GitError
+    );
+    assert!(!records[0].path.exists());
 }
 
 #[tokio::test(flavor = "current_thread")]
