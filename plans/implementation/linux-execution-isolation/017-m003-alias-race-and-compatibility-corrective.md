@@ -147,10 +147,18 @@ The candidate is currently internal and opt-in through `SandboxConfig::with_linu
 - A direct trust-boundary regression creates a nested repository after the outer repository has been selected, gives its local config an outside `core.worktree` and executable fsmonitor, then runs trusted outer `git status`. Local and exact-head hosted results pass: Git reports the nested repository as ordinary untracked content, does not reveal the outside marker, and does not execute the nested fsmonitor.
 - The final workflow-filter/docs head `d3e6cb8c76d8647747f9a627bd6148b9ab1e5291` was also tested by hosted run [`38675775638`](https://github.com/dbowm91/codegg/actions/runs/38675775638), job `116228913415`; conclusion: success. It passed the same 2/2 native and 10/10 trusted-Git tests, including the nested-repository regression.
 
+### Additional local evidence — hosted qualification pending
+
+- The native linked-worktree fixture now also creates and checks out a real nested submodule. The hosted Bubblewrap child read the submodule worktree and ran trusted `git status` inside it while writes to the outer common config, common hook, and submodule gitdir config were denied. The local fixture removes test-created hardlinks from the Git metadata tree; production still refuses hardlinked protected metadata.
+- The native managed-process handoff now creates malformed and oversized nested `.git` pointer fixtures. Both setup attempts fail before their target marker is created.
+- Trusted-Git tests now exercise a repository clean filter and a shell executable alias. The trusted route returns the typed `BackendUnavailable` capability result before spawn; neither helper marker appears and the filter attempt creates no index.
+- Local verification passed: `cargo test -p egggit --locked -- --test-threads=1` (99 passed), `cargo test -p codegg --test sandbox_containment -- --test-threads=1` (15 passed), `cargo test -p codegg --test sandbox_landlock -- --test-threads=1` (3 passed), the sandbox contract/policy wiring, execution ownership, and forbidden Git-pattern guards, plus `scripts/verify.sh quick`.
+- Native local command: `CODEGG_RUN_C006_BWRAP_NATIVE=1 CODEGG_RUN_C009_BWRAP_NATIVE=1 cargo test -p codegg --lib protected_mount_view -- --test-threads=1 --nocapture`; 2 passed. This is local evidence only; the updated source still requires the hosted exact-head run before the C009 record or M003 disposition can rely on these additions.
+
 ### Remaining acceptance work
 
-- Expand native layouts: nested repositories/submodules, malformed and unsupported pointers, and other supported alias topologies.
+- Expand native layouts beyond the now-covered linked worktree with nested submodule and malformed/oversized nested pointers: unsupported aliases, pointer/common-dir edge cases, and other supported topology variants still need allowed/denied assertions.
 - Expand deterministic replacement coverage across `.git` pointer, gitdir, common-dir, denied path, and ancestor setup barriers; current tests cover mount-source pinning and workspace replacement before target start, not every requested race boundary.
-- Extend trusted Git adversarial config coverage beyond the current `includeIf`/`core.worktree`/fsmonitor fixture to hooks, filters, diff/textconv, and helper routes, and prove those routes stay gated.
+- Keep the trusted Git matrix aligned with its tests: `includeIf`, `core.worktree`, fsmonitor, hooks, diff/textconv, filters, and executable aliases are now covered. Remaining helper/config precedence cases must be selected from the classified Git execution capabilities and shown either harmless on the trusted route or refused before spawn.
 - Qualify installed rustup/toolchain behavior, Python, LSP or test children, PTY, bounded `cargo test`, startup timings, cancellation/timeout cleanup, and concurrent isolated launches where supported.
 - M003 remains blocked; C009 remains active. No backend registration, production routing, or default change follows from this partial hosted pass.
