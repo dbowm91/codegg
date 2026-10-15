@@ -2325,6 +2325,60 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread")]
+    async fn protected_mount_rejects_workspace_ancestor_replacement_before_target_start() {
+        use crate::security::sandbox::{SandboxConfig, SandboxMode};
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let parent = fixture.path().join("parent");
+        let outside_parent = fixture.path().join("outside-parent");
+        let workspace = parent.join("workspace");
+        let outside_workspace = outside_parent.join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace root");
+        std::fs::create_dir_all(&outside_workspace).expect("outside workspace root");
+        let marker = outside_workspace.join("target-ran");
+        let config = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_allowed_paths(vec![workspace.to_string_lossy().into_owned()])
+            .with_linux_protected_mount_view(true);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &["-c".into(), format!("touch {}", marker.display())],
+                Some(&workspace),
+            )
+            .expect("workspace launch lease");
+
+        let displaced_parent = fixture.path().join("displaced-parent");
+        std::fs::rename(&parent, &displaced_parent).expect("replace leased ancestor");
+        std::os::unix::fs::symlink(&outside_parent, &parent).expect("redirect ancestor");
+
+        let mut argv = vec![spec.target.as_os_str().to_owned()];
+        argv.extend(spec.args.iter().map(OsString::from));
+        let mut request = ManagedProcessRequest::new(
+            argv,
+            workspace,
+            ProcessProvenance::new("c009-race", "ancestor-replacement"),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(Path::parent)
+            .expect("target debug directory")
+            .join(crate::install::sandbox_helper_name());
+        let error = run_inner(request, None, Some(&helper))
+            .await
+            .expect_err("ancestor replacement must fail before target launch");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(_)),
+            "unexpected ancestor replacement result: {error:?}"
+        );
+        assert!(!marker.exists(), "target ran through replacement ancestor");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread")]
     async fn protected_mount_rejects_git_metadata_replacement_after_lease() {
         use crate::security::sandbox::{SandboxConfig, SandboxMode};
 
