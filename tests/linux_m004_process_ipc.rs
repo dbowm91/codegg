@@ -524,7 +524,7 @@ async fn concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn process_tier_runs_a_real_cargo_check_and_core_test_workflow() {
+async fn process_tier_runs_workspace_check_and_managed_process_tests() {
     if std::env::var("CODEGG_RUN_M004_CARGO_NATIVE").as_deref() != Ok("1") {
         eprintln!("skipped: set CODEGG_RUN_M004_CARGO_NATIVE=1 for Cargo compatibility probes");
         return;
@@ -541,12 +541,19 @@ async fn process_tier_runs_a_real_cargo_check_and_core_test_workflow() {
             .expect("Cargo is installed by the Rust test toolchain");
     for (operation, args) in [
         (
-            "cargo-check",
-            vec!["check", "--locked", "-p", "codegg-core"],
+            "cargo-workspace-check",
+            vec!["check", "--locked", "--workspace"],
         ),
         (
-            "cargo-test",
-            vec!["test", "--locked", "-p", "codegg-core", "--lib"],
+            "cargo-managed-process-tests",
+            vec![
+                "test",
+                "--locked",
+                "-p",
+                "codegg",
+                "--lib",
+                "managed_process",
+            ],
         ),
     ] {
         let spec = SandboxConfig::new()
