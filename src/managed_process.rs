@@ -2166,7 +2166,7 @@ fn interpret_bubblewrap_status(
             "PID namespace with a private procfs mounted after namespace creation".into(),
             "IPC namespace isolates System V IPC objects".into(),
             "Landlock ABI 6 scopes outgoing signals and abstract Unix socket connections to the sandbox domain".into(),
-            "architecture-checked seccomp filter denies namespace changes, tracing, and selected kernel control interfaces".into(),
+            "architecture-checked seccomp filter denies namespace and mount changes, tracing, and selected kernel control interfaces".into(),
         ]);
         vec![
             "network isolation not requested; outbound networking retains its existing policy"
