@@ -1276,6 +1276,100 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn trusted_git_status_ignores_new_nested_repository_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("selected-repository");
+        let nested = root.join("new-nested-repository");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir_all(&nested).expect("nested repo root");
+        std::fs::create_dir(&outside).expect("outside root");
+        let raw_git = |cwd: &Path, args: &[&str]| {
+            StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("fixture Git command")
+        };
+
+        assert!(raw_git(&root, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        assert!(
+            raw_git(&root, &["config", "user.email", "test@example.invalid"])
+                .status
+                .success()
+        );
+        assert!(raw_git(&root, &["config", "user.name", "C009 Test"])
+            .status
+            .success());
+        std::fs::write(root.join("selected.txt"), "selected root\n")
+            .expect("write selected repository file");
+        assert!(raw_git(&root, &["add", "selected.txt"]).status.success());
+        assert!(raw_git(&root, &["commit", "-m", "selected root"])
+            .status
+            .success());
+
+        std::fs::write(outside.join("host-secret-name.txt"), "outside\n")
+            .expect("write outside marker");
+        let marker = fixture.path().join("nested-fsmonitor-ran");
+        let fsmonitor = fixture.path().join("nested-fsmonitor.sh");
+        std::fs::write(
+            &fsmonitor,
+            format!(
+                "#!/bin/sh\ntouch '{}'\nprintf 'token\\n'\n",
+                marker.display()
+            ),
+        )
+        .expect("write nested fsmonitor");
+        std::fs::set_permissions(&fsmonitor, std::fs::Permissions::from_mode(0o755))
+            .expect("make nested fsmonitor executable");
+        assert!(raw_git(&nested, &["init", "--initial-branch=main"])
+            .status
+            .success());
+        assert!(raw_git(
+            &nested,
+            &[
+                "config",
+                "core.worktree",
+                outside.to_str().expect("outside path"),
+            ],
+        )
+        .status
+        .success());
+        assert!(raw_git(
+            &nested,
+            &[
+                "config",
+                "core.fsmonitor",
+                fsmonitor.to_str().expect("fsmonitor path"),
+            ],
+        )
+        .status
+        .success());
+
+        let status = run(&["status".to_string()], &root)
+            .await
+            .expect("trusted outer status");
+        assert!(status.status.success());
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(
+            stdout.contains("new-nested-repository/"),
+            "nested repository should remain ordinary untracked workspace content: {stdout}"
+        );
+        assert!(
+            !stdout.contains("host-secret-name.txt"),
+            "nested repository configuration must not redirect the selected worktree: {stdout}"
+        );
+        assert!(
+            !marker.exists(),
+            "nested repository fsmonitor must not execute on the trusted outer route"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn trusted_git_diff_does_not_run_repository_external_diff_or_textconv() {
         use std::os::unix::fs::PermissionsExt;
 
