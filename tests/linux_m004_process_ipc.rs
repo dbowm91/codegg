@@ -182,8 +182,14 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
          try: os.kill({signal_pid}, signal.SIGUSR1); print('signal-allowed'); sys.exit(12)\n\
          except (PermissionError, ProcessLookupError): print('signal-denied')\n\
          print('host-proc-hidden' if not os.path.exists('/proc/{host_pid}') else 'host-proc-visible')\n\
+         print('host-proc-environ-hidden' if not os.path.exists('/proc/{host_pid}/environ') else 'host-proc-environ-visible')\n\
+         print('host-proc-fd-hidden' if not os.path.exists('/proc/{host_pid}/fd') else 'host-proc-fd-visible')\n\
          print('ambient-fd-closed' if not os.path.exists('/proc/self/fd/{ambient_fd}') else 'ambient-fd-open')\n\
          import ctypes; libc=ctypes.CDLL(None, use_errno=True)\n\
+         ctypes.set_errno(0); ptrace_result=libc.ptrace(16, {host_pid}, 0, 0); ptrace_error=ctypes.get_errno()\n\
+         ctypes.set_errno(0); readv_result=libc.process_vm_readv({host_pid}, None, 0, None, 0, 0); readv_error=ctypes.get_errno()\n\
+         ctypes.set_errno(0); writev_result=libc.process_vm_writev({host_pid}, None, 0, None, 0, 0); writev_error=ctypes.get_errno()\n\
+         print('seccomp-denied-tracing' if ptrace_result == -1 and ptrace_error == 38 and readv_result == -1 and readv_error == 38 and writev_result == -1 and writev_error == 38 else 'seccomp-tracing-allowed')\n\
          seccomp_mode=libc.prctl(21, 0, 0, 0, 0)\n\
          result=libc.unshare(0x10000000); unshare_error=ctypes.get_errno()\n\
          mount_result=libc.mount(None, None, None, 0, None); mount_error=ctypes.get_errno()\n\
@@ -242,7 +248,10 @@ async fn process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket
     assert!(stdout.contains("pathname-socket-denied"), "{stdout}");
     assert!(stdout.contains("signal-denied"), "{stdout}");
     assert!(stdout.contains("host-proc-hidden"), "{stdout}");
+    assert!(stdout.contains("host-proc-environ-hidden"), "{stdout}");
+    assert!(stdout.contains("host-proc-fd-hidden"), "{stdout}");
     assert!(stdout.contains("ambient-fd-closed"), "{stdout}");
+    assert!(stdout.contains("seccomp-denied-tracing"), "{stdout}");
     assert!(
         stdout.contains("seccomp-denied-namespace-change"),
         "{stdout}"
@@ -290,7 +299,7 @@ async fn process_tier_cancellation_kills_namespace_descendants() {
     let started = workspace.path().join("descendant-started");
     let marker = workspace.path().join("descendant-survived-cancel");
     let child_script = format!(
-        "import subprocess,time; subprocess.Popen(['/bin/sh','-c',\"touch {}; sleep 1; touch {}\"]); time.sleep(30)",
+        "import subprocess,time; subprocess.Popen(['/bin/sh','-c',\"touch {}; sleep 1; touch {}\"], start_new_session=True); time.sleep(30)",
         shell_quote(&started.to_string_lossy()),
         shell_quote(&marker.to_string_lossy()),
     );
