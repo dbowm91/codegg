@@ -29,8 +29,20 @@ pub struct ConnectionSelectionDialog {
     pub models: Vec<SelectedModelDto>,
     pub connection_idx: usize,
     pub model_idx: usize,
+    /// Which pane `j`/`k` and the arrows currently move inside.
+    ///
+    /// Defaults to [`ConnectionColumn::Connections`] so the pre-existing
+    /// `j`/`k` connection navigation is unchanged until the user presses `l`.
+    pub column: ConnectionColumn,
     pub last_error: Option<String>,
     pub loading: bool,
+}
+
+/// The pane that owns vertical navigation in the connection dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionColumn {
+    Connections,
+    Models,
 }
 
 impl ConnectionSelectionDialog {
@@ -43,6 +55,7 @@ impl ConnectionSelectionDialog {
             models: Vec::new(),
             connection_idx: 0,
             model_idx: 0,
+            column: ConnectionColumn::Connections,
             last_error: None,
             loading: true,
         }
@@ -108,6 +121,24 @@ impl ConnectionSelectionDialog {
         self.model_idx = next as usize;
     }
 
+    /// Move vertically inside the column that currently owns the focus.
+    ///
+    /// A connection move also refetches, because the model pane is scoped to
+    /// one connection; a model move needs no refetch, so it returns no message
+    /// and the rendered highlight is the only thing that changes.
+    fn move_within_column(&mut self, delta: i64) -> Option<crate::tui::app::TuiMsg> {
+        match self.column {
+            ConnectionColumn::Connections => {
+                self.move_connection(delta);
+                self.focus_changed()
+            }
+            ConnectionColumn::Models => {
+                self.move_model(delta);
+                None
+            }
+        }
+    }
+
     /// Build the optimistic-revision update request for the currently
     /// highlighted connection + model pair. The dialog does not know
     /// the current revisions; the daemon will detect any conflict.
@@ -145,6 +176,27 @@ const CONNECTION_ID_PREVIEW_LEN: usize = 8;
 /// Short, stable discriminator for one connection id.
 fn short_connection_id(id: &str) -> String {
     id.chars().take(CONNECTION_ID_PREVIEW_LEN).collect()
+}
+
+/// Title for one pane, marking which column owns `j`/`k` right now.
+///
+/// Both panes keep their own `▶` highlight row, so without a title-level
+/// marker two highlighted rows are on screen at once and the user cannot tell
+/// which one `j` will move.
+fn column_title(
+    label: &str,
+    active: ConnectionColumn,
+    column: ConnectionColumn,
+    theme: &Arc<Theme>,
+) -> Line<'static> {
+    if active == column {
+        Line::from(Span::styled(
+            format!("▸ {label} ◂"),
+            ratatui::style::Style::default().fg(theme.primary),
+        ))
+    } else {
+        Line::from(Span::raw(format!("  {label}  ")))
+    }
 }
 
 /// Render one connection row.
@@ -214,12 +266,30 @@ impl Component for ConnectionSelectionDialog {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => Some(crate::tui::app::TuiMsg::CloseDialog),
             KeyCode::Down | KeyCode::Char('j') => {
-                self.move_connection(1);
+                self.move_within_column(1);
                 self.focus_changed()
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.move_connection(-1);
+                self.move_within_column(-1);
                 self.focus_changed()
+            }
+            // `h`/`l` switch columns; `j`/`k` (and the arrows) move inside
+            // whichever column owns the focus.
+            //
+            // `Tab` was the only model-navigation binding this dialog had, and
+            // it was unreachable: `FocusManager::handle_key` consumes `Tab` and
+            // `Shift+Tab` for dialog focus traversal before dispatching to the
+            // component, so `move_model` never ran. The model pane could be
+            // rendered and could never be selected from — Enter always bound
+            // whatever sat at index 0. Column focus is bound to keys the focus
+            // manager does not intercept.
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.column = ConnectionColumn::Connections;
+                None
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.column = ConnectionColumn::Models;
+                None
             }
             KeyCode::Tab => {
                 self.move_model(1);
@@ -346,7 +416,12 @@ impl Component for ConnectionSelectionDialog {
         let mut list_state = ListState::default();
         list_state.select(Some(self.connection_idx));
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Connections"))
+            .block(Block::default().borders(Borders::ALL).title(column_title(
+                "Connections",
+                self.column,
+                ConnectionColumn::Connections,
+                theme,
+            )))
             .highlight_style(ratatui::style::Style::default().fg(theme.primary))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(list, chunks[0], &mut list_state);
@@ -362,7 +437,12 @@ impl Component for ConnectionSelectionDialog {
         let mut model_state = ListState::default();
         model_state.select(Some(self.model_idx));
         let models_list = List::new(model_items)
-            .block(Block::default().borders(Borders::ALL).title("Models"))
+            .block(Block::default().borders(Borders::ALL).title(column_title(
+                "Models",
+                self.column,
+                ConnectionColumn::Models,
+                theme,
+            )))
             .highlight_style(ratatui::style::Style::default().fg(theme.primary))
             .highlight_symbol("▶ ");
         frame.render_stateful_widget(models_list, chunks[1], &mut model_state);
@@ -407,7 +487,7 @@ impl Component for ConnectionSelectionDialog {
         // `R`, `u` and `p` are discoverable without reading the source.
         let legend = Paragraph::new(Line::from(vec![
             Span::styled(
-                "↑↓ conn · ←→ model · Enter use · ",
+                "h/l column · j/k move · Enter use · ",
                 Style::default().fg(theme.muted),
             ),
             Span::styled(
@@ -469,6 +549,90 @@ mod tests {
             health: None,
             credential_hint: hint.map(ToOwned::to_owned),
         }
+    }
+
+    fn model(id: &str) -> SelectedModelDto {
+        SelectedModelDto {
+            connection_id: "conn-1".to_string(),
+            model_id: id.to_string(),
+            model_name: id.to_string(),
+            context_window: 200_000,
+            max_output_tokens: Some(8_192),
+            supports_tools: true,
+            supports_vision: false,
+            catalog_revision: "rev-19".to_string(),
+        }
+    }
+
+    fn loaded_dialog() -> ConnectionSelectionDialog {
+        let theme = Arc::new(Theme::default());
+        let mut dialog =
+            ConnectionSelectionDialog::new("session-1".to_string(), Arc::clone(&theme));
+        dialog.loading = false;
+        dialog.connections = vec![connection(
+            "8b8622d5-9866-4b41-807e-837cc15b69a7",
+            "opencode-go",
+            "active",
+            Some("…94e6"),
+        )];
+        dialog.set_models(vec![
+            model("cat-jam-free"),
+            model("mimo-v2.6-flash"),
+            model("glm-5.3"),
+        ]);
+        dialog
+    }
+
+    /// The model pane must be reachable without `Tab`.
+    ///
+    /// `Tab` was the only model-navigation binding this dialog had and it never
+    /// fired: `FocusManager::handle_key` consumes `Tab`/`Shift+Tab` for dialog
+    /// focus traversal before dispatching to the component, so `move_model` was
+    /// unreachable. The pane rendered 37 models and Enter bound index 0 every
+    /// time, which happened to be `cat-jam-free` — a model with no wire
+    /// mapping — so no model could ever actually be selected.
+    #[test]
+    fn the_model_pane_is_reachable_without_tab() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut dialog = loaded_dialog();
+        assert_eq!(dialog.model_idx, 0);
+        assert_eq!(dialog.pending_update().unwrap().model_id, "cat-jam-free");
+
+        // `l` moves focus into the model column...
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(dialog.column, ConnectionColumn::Models);
+
+        // ...and `j` then moves the highlight that Enter will commit.
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(dialog.model_idx, 1);
+        assert_eq!(dialog.pending_update().unwrap().model_id, "mimo-v2.6-flash");
+
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(dialog.model_idx, 2);
+
+        // `h` returns focus to the connections column, where `j` moves rows
+        // again — the pre-existing behaviour, unchanged while that column owns
+        // the focus.
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(dialog.column, ConnectionColumn::Connections);
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(
+            dialog.model_idx, 0,
+            "a model move does not reset on its own"
+        );
+    }
+
+    /// The dialog opens with the connections column focused, so `j`/`k` keep
+    /// meaning what they always meant until the user presses `l`.
+    #[test]
+    fn vertical_navigation_starts_on_the_connections_column() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut dialog = loaded_dialog();
+        assert_eq!(dialog.column, ConnectionColumn::Connections);
+        dialog.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(dialog.model_idx, 0, "j must not move models before `l`");
     }
 
     fn render_rows(connections: Vec<ProviderConnectionSummaryDto>) -> String {
