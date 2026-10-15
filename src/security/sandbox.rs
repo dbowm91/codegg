@@ -30,6 +30,8 @@ pub mod landlock;
 pub mod linux_launch;
 #[cfg(target_os = "linux")]
 pub mod linux_mount_view;
+#[cfg(target_os = "linux")]
+pub mod linux_seccomp;
 pub mod policy;
 pub mod seatbelt;
 

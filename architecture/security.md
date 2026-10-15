@@ -189,11 +189,16 @@ composes the mount view with Bubblewrap's PID and IPC namespaces and a private
 `/proc` mount. It requires Landlock ABI 6 signal and abstract-Unix-socket scopes
 before starting Bubblewrap, which keeps the existing outbound-network policy
 separate from M005's offline intent. This scoped path is intentionally
-fail-closed on hosts without those ABI features. A native managed-child probe
-now covers host-PID invisibility, same-UID signal denial, and abstract-socket
-denial; its positive hosted run is pending. It does not claim seccomp,
-inherited-FD closure, pathname-socket denial, or resource enforcement. The
-process tier is not production-admitted while those M004 gates remain open.
+fail-closed on hosts without those ABI features. The helper closes inherited
+descriptors except stdio and its private status/ack descriptors before exec,
+and passes an architecture-checked `seccompiler` denylist to Bubblewrap for
+installation before target exec. The filter blocks namespace changes, tracing,
+selected kernel control interfaces, and namespace flags passed to `clone`; it
+does not implement network denial. A native managed-child probe covers host-PID
+invisibility, same-UID signal denial, abstract-socket denial, descriptor
+closure, and blocked namespace syscalls; its positive hosted run is pending.
+Pathname-socket denial and resource enforcement are not claimed. The process
+tier is not production-admitted while those M004 gates remain open.
 
 ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
