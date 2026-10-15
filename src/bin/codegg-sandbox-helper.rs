@@ -413,7 +413,7 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
 fn seccomp_filter_file(bytes: &[u8]) -> Result<File, String> {
     use std::ffi::CString;
 
-    if bytes.is_empty() || bytes.len() > 32 * 1024 || bytes.len() % 8 != 0 {
+    if bytes.is_empty() || bytes.len() > 32 * 1024 || !bytes.len().is_multiple_of(8) {
         return Err("compiled seccomp filter has an invalid size".into());
     }
     let name = CString::new("codegg-m004-seccomp").expect("static memfd name");

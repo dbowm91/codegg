@@ -456,6 +456,78 @@ async fn concurrent_process_tiers_receive_distinct_pid_and_ipc_namespaces() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_tier_runs_workspace_check_and_managed_process_tests() {
+    if std::env::var("CODEGG_RUN_M004_CARGO_NATIVE").as_deref() != Ok("1") {
+        eprintln!("skipped: set CODEGG_RUN_M004_CARGO_NATIVE=1 for Cargo compatibility probes");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("Cargo compatibility probe requires the positive M004 host profile: {reason}");
+    }
+
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cargo =
+        std::env::split_paths(&std::env::var_os("PATH").expect("test runner PATH is available"))
+            .map(|directory| directory.join("cargo"))
+            .find(|candidate| candidate.is_file())
+            .expect("Cargo is installed by the Rust test toolchain");
+    for (operation, args) in [
+        (
+            "cargo-workspace-check",
+            vec!["check", "--locked", "--workspace"],
+        ),
+        (
+            "cargo-managed-process-tests",
+            vec![
+                "test",
+                "--locked",
+                "-p",
+                "codegg",
+                "--lib",
+                "managed_process",
+            ],
+        ),
+    ] {
+        let spec = SandboxConfig::new()
+            .with_enabled(true)
+            .with_mode(SandboxMode::WorkspaceWrite)
+            .with_linux_process_isolation(true)
+            .launch_spec(
+                &cargo,
+                &args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>(),
+                Some(&workspace),
+            )
+            .expect("M004 Cargo launch spec");
+        let mut request = ManagedProcessRequest::new(
+            [spec.target.as_os_str().to_owned()]
+                .into_iter()
+                .chain(spec.args.iter().map(OsString::from))
+                .collect(),
+            workspace.clone(),
+            ProcessProvenance::new("linux-m004", operation),
+        );
+        request.environment_policy = request
+            .environment_policy
+            .clone()
+            .with_var("CARGO_BUILD_JOBS", "2");
+        request.timeout = Some(Duration::from_secs(15 * 60));
+        request.sandbox = SandboxRequest::Required(spec);
+        let result = ManagedProcessService::run(request)
+            .await
+            .unwrap_or_else(|error| panic!("M004 {operation} failed to launch: {error}"));
+        assert!(
+            result.exit_status.success(),
+            "M004 {operation} failed (status {:?}); stderr: {}",
+            result.exit_status,
+            result.stderr.to_string_lossy()
+        );
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }

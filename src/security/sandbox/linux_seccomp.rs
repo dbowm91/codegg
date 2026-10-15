@@ -17,6 +17,12 @@ use seccompiler::{
 
 const MAX_FILTER_BYTES: usize = 32 * 1024;
 
+/// Normalize libc's architecture-specific syscall constant type for seccompiler.
+#[allow(clippy::unnecessary_cast)]
+fn seccomp_syscall_number(syscall: libc::c_long) -> i64 {
+    syscall as i64
+}
+
 pub fn compile_filter() -> Result<Vec<u8>, String> {
     let architecture: TargetArch = std::env::consts::ARCH
         .try_into()
@@ -65,7 +71,7 @@ pub fn compile_filter() -> Result<Vec<u8>, String> {
         // ENOSYS makes libc fall back to clone on runtimes that support both.
         libc::SYS_clone3,
     ] {
-        rules.insert(syscall as i64, Vec::new());
+        rules.insert(seccomp_syscall_number(syscall), Vec::new());
     }
 
     // `clone` remains available for ordinary fork, process, and thread
@@ -93,7 +99,7 @@ pub fn compile_filter() -> Result<Vec<u8>, String> {
             .map_err(|error| format!("compile clone namespace rule: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    rules.insert(libc::SYS_clone as i64, clone_rules);
+    rules.insert(seccomp_syscall_number(libc::SYS_clone), clone_rules);
 
     let filter = SeccompFilter::new(
         rules,

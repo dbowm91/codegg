@@ -54,7 +54,7 @@ cargo test -p codegg --lib managed_process
 cargo test -p codegg --test managed_process_descendants -- --test-threads=1
 cargo test -p codegg --test sandbox_containment -- --test-threads=1
 CODEGG_RUN_M004_BWRAP_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_hides_host_proc_and_blocks_host_signal_and_abstract_socket -- --nocapture
-CODEGG_RUN_M004_CARGO_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_runs_a_real_cargo_check_and_core_test_workflow -- --nocapture
+CODEGG_RUN_M004_CARGO_NATIVE=1 cargo test --locked --test linux_m004_process_ipc process_tier_runs_workspace_check_and_managed_process_tests -- --nocapture
 CODEGG_RUN_M004_RESTRICTED_USERNS=1 cargo test --locked --test linux_m004_process_ipc required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
 python3 scripts/check_sandbox_contract.py
 scripts/verify.sh quick
@@ -63,10 +63,11 @@ The positive host filters require Landlock ABI 6 and usable namespaces. The
 restricted-userns filter runs on a separate ephemeral runner with
 `user.max_user_namespaces=0`, verifies a direct harmless Bubblewrap probe is
 denied, then proves that an M004 request leaves no target marker. The Cargo
-filter runs real `cargo check --locked -p codegg-core` and
-`cargo test --locked -p codegg-core --lib` commands as M004 children. Hosted
-exact-head results are required; compilation or a skipped opt-in test is not
-qualification.
+filter runs `cargo check --locked --workspace` and the root crate's managed-
+process unit tests as M004 children. This exercises workspace compilation,
+build-script/proc-macro execution, writable target artifacts, and tests of the
+service that owns the sandbox launch. Hosted exact-head results are required;
+compilation or a skipped opt-in test is not qualification.
 
 The `egglsp` launcher and `InteractiveProcessService` currently spawn children
 outside `ManagedProcessService` and do not consume the M004 policy. Their
