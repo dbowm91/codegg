@@ -147,9 +147,13 @@ kernel inputs, a fixed-location root-owned Bubblewrap candidate, Landlock,
 cgroup v2, and AppArmor/SELinux facts. These are host observations only; they
 do not prove a child obtained enforcement. The mount path builds a fresh root
 from explicit read/write grants, opens bind sources without following links,
-checks captured device/inode identities, overlays Git metadata read-only, and
-hides denied descendants. It omits host `/proc`, `/run`, and `/sys` and rejects
-nested mounts beneath granted roots. Bubblewrap's private JSON status is
+checks captured device/inode identities, and overlays Git metadata read-only.
+It omits host `/proc`, `/run`, and `/sys` and rejects nested mounts beneath
+granted roots. The opt-in Bubblewrap candidate also refuses deny paths beneath
+writable grants: a mask on a host-backed writable directory entry can be
+detached by renaming that entry after mount setup. Denies outside writable
+grants remain absent or masked according to the compiled path scope.
+Bubblewrap's private JSON status is
 not used as proof that the requested command has not already started. The
 trusted in-sandbox gate reports a framed setup receipt over the private status
 pipe and waits for an acknowledgment from `ManagedProcessService` before it
