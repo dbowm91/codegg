@@ -1778,6 +1778,30 @@ impl App {
         self.session_state.session_status = status;
     }
 
+    /// Release a turn that never started, with a reason the user can act on.
+    ///
+    /// `send_prompt` optimistically moves the session to `Working`, adds the
+    /// message to the transcript, and clears the composer *before* the daemon
+    /// has accepted anything. Every way that acceptance can fail — a refused
+    /// `turn.submit`, a dead socket, no core client, no session bound — must
+    /// therefore undo that optimistic state explicitly. Otherwise the composer
+    /// sits on a spinner for a turn that does not exist, and the only thing the
+    /// user ever learns is the stall watchdog's generic five-minute message.
+    pub fn fail_unstarted_turn(&mut self, reason: &str) {
+        self.session_state.working_since = None;
+        self.session_state.active_turn_id = None;
+        self.set_session_status(SessionStatus::Error);
+        self.status_bar.set_thinking(false, None);
+        self.messages_state.messages.finalize_streaming();
+        self.messages_state.messages.end_activity();
+        // A refused submit must not block the next one: `pending_send` is the
+        // guard that refuses a second prompt while the first is in flight, and
+        // there is no in-flight turn to guard.
+        self.prompt_state.pending_send = false;
+        self.prompt_state.prompt.set_waiting(false);
+        self.messages_state.toasts.error(reason);
+    }
+
     /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
     ///
     /// Returns `true` when the watchdog fired and the caller should redraw. The
@@ -2464,9 +2488,18 @@ impl App {
 
     pub fn dispatch_turn_submit_request(&mut self, text: String) {
         let Some(client) = self.core_client.clone() else {
+            // No core client means nothing can carry this prompt. Returning
+            // silently left the session pinned on `Working` for a turn that
+            // was never even attempted.
+            self.fail_unstarted_turn(
+                "No connection to the core daemon; the prompt was not submitted",
+            );
             return;
         };
         let Some(session_id) = self.session_state.session.as_ref().map(|s| s.id.clone()) else {
+            self.fail_unstarted_turn(
+                "No session is bound to this view; the prompt was not submitted",
+            );
             return;
         };
         // Belt and braces: make sure the session filter is registered before
@@ -2566,7 +2599,10 @@ impl App {
                     );
                 }
             } else if let Some(error) = error {
-                tracing::debug!("core facade turn.submit failed: {}", error);
+                // No TUI command channel means this process cannot show
+                // anything, but `debug!` buried a submission failure so deep
+                // that a refused turn looked identical to a slow one.
+                tracing::warn!("core facade turn.submit failed: {}", error);
             }
         });
     }

@@ -635,6 +635,37 @@ thinking renders as ordinary assistant prose with no `Thought for` header and
 no way to collapse it. `apply_core_event`'s `TurnReasoningDelta` arm previously
 did exactly that while the standalone `AppEvent::ReasoningDelta` arm did not.
 
+### A refused submit is not a stall
+
+`TurnFailed` covers a turn the daemon *accepted* and then failed. It does not
+cover a turn the daemon never took. `send_prompt` is optimistic: it stamps
+`Working`, appends the message to the transcript, and clears the composer
+before the daemon has acknowledged anything, so **every** way acceptance can
+fail has to undo that state explicitly. There are three such paths, and all
+three used to be silent:
+
+| Failure | Carrier | Before |
+|---|---|---|
+| `turn.submit` refused / socket dead | `TuiCommand::TurnSubmissionFinished { error }` | the arm handled `error.is_none()` and discarded `Some(_)`, recording it only in a `tracing::debug!` |
+| No core client | `dispatch_turn_submit_request` | bare `return` |
+| No session bound | `dispatch_turn_submit_request` | bare `return` |
+
+The result was identical in all three: the composer kept its message, the
+session stayed pinned on `Working`, and the user saw no output and no error
+until `check_turn_stall` fired five minutes later with a generic "the core
+produced no event" — a diagnosis that named none of the three actual causes.
+
+`App::fail_unstarted_turn` is the single release path: it clears
+`working_since` (so the watchdog stops counting a turn that never started),
+drops `active_turn_id`, sets `SessionStatus::Error`, stops the thinking
+indicator, finalizes streaming, **releases `pending_send` so a retry is
+possible**, clears the prompt waiting flag, and toasts the reason. The
+`TurnSubmissionFinished` arm calls it with the daemon's own message.
+
+The stall watchdog remains the backstop for the case where the daemon accepted
+the turn and then went quiet — a different failure, and still measured by
+silence.
+
 ### Turn-stall watchdog vs. long tool calls
 
 `check_turn_stall` measures *silence*, and `bash` is silent by construction —

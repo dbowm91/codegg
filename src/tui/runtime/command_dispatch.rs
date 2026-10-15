@@ -1987,13 +1987,31 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             app.apply_shell_promotions_submitted(&promotions, error);
         }
         TuiCommand::TurnSubmissionFinished { request_id, error } => {
-            if error.is_none()
-                && app
-                    .pending_turn_submission
-                    .as_ref()
-                    .is_some_and(|pending| pending.request_id == request_id)
-            {
-                app.pending_turn_submission = None;
+            let is_current = app
+                .pending_turn_submission
+                .as_ref()
+                .is_some_and(|pending| pending.request_id == request_id);
+            match error {
+                None => {
+                    if is_current {
+                        app.pending_turn_submission = None;
+                    }
+                }
+                Some(message) => {
+                    // The daemon refused the submit, or the socket is gone.
+                    // This arm used to discard the reason entirely: the only
+                    // thing that recorded it was a `tracing::debug!`, so the
+                    // composer kept its message in the transcript, stayed
+                    // pinned on `Working`, and produced no output and no error
+                    // until the 5-minute stall watchdog fired with a generic
+                    // "the core produced no event". The user had a named reason
+                    // in hand the whole time and it was thrown away. Report it
+                    // now, and release the composer so a retry is possible.
+                    if is_current {
+                        app.pending_turn_submission = None;
+                    }
+                    app.fail_unstarted_turn(&format!("Turn not submitted: {message}"));
+                }
             }
         }
         TuiCommand::TurnCancelRequested {

@@ -535,6 +535,18 @@ model to the wrong connection.
   `Thought for` header. Both the daemon (`TurnReasoningDelta`) and standalone
   (`ReasoningDelta`) arms must call `add_reasoning`, or the two transports
   silently disagree.
+- **A refused submit is not a stall — release it immediately.**
+  `send_prompt` is optimistic: it stamps `Working`, appends the message, and
+  clears the composer before the daemon acknowledges anything. So every path
+  where acceptance fails must undo that explicitly, or the user watches an
+  eternal spinner and learns nothing for five minutes. The three carriers are
+  `TuiCommand::TurnSubmissionFinished { error }` (daemon refused it or the
+  socket is dead), and `dispatch_turn_submit_request`'s no-core-client and
+  no-session early returns. Route all of them through
+  `App::fail_unstarted_turn`, which clears `working_since` (so the watchdog
+  stops counting a turn that never started), sets `Error`, stops the thinking
+  indicator, and **releases `pending_send` so a retry is possible**. Never
+  record a submission failure in a log line and return; the log is not the UI.
 - **The stall watchdog measures silence, and long tools are silent.**
   `bash` delivers its output only on completion, so a multi-minute build emits
   no events at all. `SessionState::running_tool` (set on `ToolStarted`, cleared

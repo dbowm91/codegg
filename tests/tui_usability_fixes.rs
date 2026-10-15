@@ -857,3 +857,60 @@ async fn a_session_bound_before_the_command_channel_still_refreshes_git() {
         "the self-heal probe must not immediately record a failure"
     );
 }
+
+/// A turn the daemon refused must name its reason, not sit on a spinner.
+///
+/// `send_prompt` is optimistic: it stamps the session `Working`, puts the
+/// message in the transcript, and clears the composer before the daemon has
+/// accepted anything. `TurnSubmissionFinished` carried the rejection reason and
+/// then dropped it on the floor, so a refused turn looked exactly like an
+/// accepted-but-silent one — no output, no error — until the stall watchdog
+/// fired five minutes later with a generic "the core produced no event".
+#[test]
+fn a_refused_turn_names_its_reason_instead_of_spinning_forever() {
+    let mut app = test_app();
+    // The state `send_prompt` leaves behind when the daemon is unreachable.
+    app.set_session_status(codegg::tui::app::SessionStatus::Working);
+    app.prompt_state.pending_send = true;
+    app.prompt_state.prompt.set_waiting(true);
+
+    app.fail_unstarted_turn("Turn not submitted: no provider connection is bound");
+
+    assert_eq!(
+        app.session_state.session_status,
+        codegg::tui::app::SessionStatus::Error,
+        "a refused turn must leave Working immediately"
+    );
+    assert!(
+        !app.prompt_state.pending_send,
+        "the composer must be released so the user can retry"
+    );
+    assert!(
+        !app.prompt_state.prompt.waiting,
+        "the waiting indicator must not survive a refused turn"
+    );
+    assert!(
+        app.session_state.working_since.is_none(),
+        "the stall watchdog must not keep counting a turn that never started"
+    );
+}
+
+/// A submit with no core client and no session has no carrier at all. Both
+/// used to `return` silently, leaving the session on `Working` for a turn that
+/// was never attempted.
+#[test]
+fn a_submit_with_nothing_to_carry_it_reports_instead_of_returning_silently() {
+    let mut app = test_app();
+    app.set_session_status(codegg::tui::app::SessionStatus::Working);
+    app.prompt_state.pending_send = true;
+
+    // `new_for_testing` holds no core client, so this exercises the
+    // no-carrier arm directly.
+    app.dispatch_turn_submit_request("run the build".into());
+
+    assert_eq!(
+        app.session_state.session_status,
+        codegg::tui::app::SessionStatus::Error
+    );
+    assert!(!app.prompt_state.pending_send);
+}
