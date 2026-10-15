@@ -1,6 +1,6 @@
 # Async Background Jobs Corrective C006 — Model-Facing Tool to Idle Resume Lifecycle Qualification
 
-Status: **active** — lifecycle harness and model-facing integration qualification in progress.
+Status: **implemented** — closed with strict local model-facing lifecycle evidence; exact latest-main hosted qualification is owned by C007.
 Planning baseline: `247edec5f37851ca3f67db5943675c896d19e9d9` (`work/async-background-jobs-production-wiring-c004-plans`, 2026-10-15 review).
 Active corrective addendum: `plans/subsystems/async-background-jobs-integration-qualification-corrective-addendum.md`.
 Historical closures: M001–M004 `plans/closure/async-background-jobs/`; C001–C005 `plans/closure/async-background-jobs-corrective/001-status.md` through `005-status.md`. C005 is **historically closed** and must not be rewritten.
