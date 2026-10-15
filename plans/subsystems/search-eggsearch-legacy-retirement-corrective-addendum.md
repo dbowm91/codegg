@@ -1,6 +1,6 @@
 # Search / Eggsearch Development Integration and Legacy Backend Retirement
 
-Status: active (M001 closed; pair C001 historical conditional; pair C002 active; M002 blocked on strict C002)
+Status: active (M001 closed; pair C002 strict-closed; M002 ready for implementation)
 
 Repository planning baseline: `78e4914a588ac80a3e95616452d4073140567cb4`
 
@@ -213,7 +213,7 @@ Outcome:
 
 ### M002 — Builtin external-search backend retirement
 
-Status: **blocked** on CodeGG paired-compatibility **C002 strict closure**. Original M001 closure remains accepted, and C001 remains historically conditional. Upstream eggsearch v0.4.3 is published and qualified; only CodeGG's new pinned-child local-only proof can authorize destructive legacy deletion.
+Status: **ready**. Original M001 closure remains accepted. The historical C001 conditional finding is discharged by strict CodeGG C002 closure (`plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`); M002 may now begin its separately scoped legacy deletion work. This readiness does not assert that M002 implementation or deletion has happened.
 
 Plan:
 
@@ -305,4 +305,4 @@ The workstream closes when:
 | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|
 | M001 pinned development adoption + paired contract | closed | `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`; closure `plans/closure/search-eggsearch-legacy-retirement/001-status.md` | Implementation `9dd8a1c8`; exact v0.4.1 paired process and quick verification passed |
-| M002 builtin backend retirement | blocked | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 closed; C001 historically conditional; upstream v0.4.3 published. CodeGG paired-compatibility **C002** `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` is active and must strictly close before deletion. |
+| M002 builtin backend retirement | ready | `plans/implementation/search-eggsearch-legacy-retirement/002-builtin-search-backend-retirement.md` | Historical M001 remains closed; C002 strictly closed at `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`. M002 implementation, deletion, and its own closure remain outstanding. |

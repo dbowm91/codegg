@@ -1,6 +1,6 @@
 # Plan 002 — Builtin Search Backend Retirement
 
-Status: blocked (M001 closed; C001 historically conditional; C002 v0.4.3 paired qualification ready, not closed)
+Status: ready (M001 closed; strict C002 v0.4.3 paired qualification closed)
 
 Source roadmap:
 
@@ -21,15 +21,16 @@ Hard dependency:
 - Post-closure paired-compatibility **C001** is *historically conditionally closed*
   at `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md`;
   its local-only upstream dispatch finding has been corrected in immutable
-  eggsearch **v0.4.3**, but that correction alone does not supply CodeGG evidence.
-- **Hard outstanding gate: strict CodeGG C002 closure** at
+  eggsearch **v0.4.3** and discharged by strict CodeGG successor C002 evidence;
+  C001's historical record remains unchanged.
+- **Satisfied prerequisite: strict CodeGG C002 closure** at
   `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`
-  (not yet present). Handoff plan:
+  (implementation `9ed08996`, qualification candidate `aaa9d3e`). Handoff plan:
   `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md`.
-  Verify CodeGG's actual v0.4.3 pinned child, real native repo_search with
-  fixture-bound local sources under Mode Off, no remote provider routing,
-  existing web/security denials, isolated environment and process cleanup.
-  Do not begin destructive backend/provider deletion until strict C002 closure.
+  It verifies CodeGG's actual v0.4.3 child, native local repo_search under Mode
+  Off, no remote provider routing, web/security denials, isolated child
+  environment, and process cleanup. M002 is now ready for its separately scoped
+  backend retirement implementation.
 
 Relevant predecessor evidence:
 

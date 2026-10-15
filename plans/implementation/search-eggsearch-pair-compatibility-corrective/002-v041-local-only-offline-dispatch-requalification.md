@@ -1,6 +1,6 @@
 # Search / Eggsearch Pair Compatibility C002 — v0.4.3 Local-Only Requalification
 
-Status: **active** (v0.4.3 pin and paired qualification implementation in progress)
+Status: implemented; closed in `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`
 Class: post-closure corrective / development compatibility / safety
 Source roadmap: `plans/subsystems/search-eggsearch-pair-compatibility-post-closure-corrective-addendum.md`
 Predecessor C001: `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` (historically conditionally closed; do not rewrite).

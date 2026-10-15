@@ -1,6 +1,6 @@
 # Search / Eggsearch Paired Compatibility — M001 Post-Closure Corrective
 
-Status: active (C001 historically conditional; C002 ready against immutable eggsearch v0.4.3)
+Status: closed (C002 strictly closes the local-only dispatch corrective; historical C001 record retained)
 Primary class: development integration verification / test isolation
 Planning baseline: CodeGG `agent/eggsearch-evidence-workflow-20261013` after M001 implementation `9dd8a1c89253630b1c4ca556f276042325f19836`.
 
@@ -8,7 +8,7 @@ Controlling governance: `plans/003-planning-process.md#7-corrective-passes`.
 Original source roadmap: `plans/subsystems/search-eggsearch-legacy-retirement-corrective-addendum.md`.
 Original plan: `plans/implementation/search-eggsearch-legacy-retirement/001-eggsearch-parity-adoption-and-provider-contract.md`.
 Original strict historical closure: `plans/closure/search-eggsearch-legacy-retirement/001-status.md` — **retain unchanged**.
-Historical C001 upstream baseline: immutable `eggstack/eggsearch` `v0.4.1` at `32769d684417567dfb30fc5adea1475cee7f0ed0`. Corrected C002 upstream contract: immutable **`v0.4.3`** at `5e7b853e7eebf29c58f84959805c8774279d7ea4`, published 2026-10-13 after zero-remote M001 regressions and seven-target qualification/provenance. C002's own CodeGG qualification remains open.
+Historical C001 upstream baseline: immutable `eggstack/eggsearch` `v0.4.1` at `32769d684417567dfb30fc5adea1475cee7f0ed0`. Corrected C002 upstream contract: immutable **`v0.4.3`** at `5e7b853e7eebf29c58f84959805c8774279d7ea4`, published 2026-10-13 after zero-remote M001 regressions and seven-target qualification/provenance. CodeGG C002 strictly closes that finding; the historical C001 record remains unchanged.
 
 ## 1. Purpose and scope
 
@@ -39,11 +39,11 @@ These are **test-qualification gaps**, not evidence of a production CodeGG/eggse
 | ID | Milestone | Status | Plan | Dependencies |
 |---|---|---|---|---|
 | C001 | Real native-wrapper MCP dispatch and private-child isolation proof | **conditionally closed** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/001-real-wrapper-and-private-child-qualification.md`; closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` | Two native wrappers cross the pinned process and child isolation is demonstrated. Strict closure is withheld because exploratory `repo_search(include_local=true)` under Mode Off initiated remote provider dispatch. |
-| C002 | Correct and requalify Mode-Off local repository search | **active** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md` (historical filename retained) | Upstream v0.4.3 release satisfies the external gate; CodeGG pin/harness changes and real child qualification are in progress. Strict C002 closure is still required. |
+| C002 | Correct and requalify Mode-Off local repository search | **closed** | `plans/implementation/search-eggsearch-pair-compatibility-corrective/002-v041-local-only-offline-dispatch-requalification.md`; closure `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md` | Implementation `9ed08996`, qualification candidate `aaa9d3e`; immutable v0.4.3 child and private local fixture pass with no remote attempts. |
 
 C001 executed without working CodeGG full agent inference or publishing any release. Evidence-workflows M002–M004 retain their existing status; this pair-qualification stream does not change their dependencies.
 
-**Gate:** Legacy-retirement M002 (delete duplicate CodeGG HTTP/provider backend) remains blocked. C001 proves two wrapper policy-denial trajectories and child isolation, but its exploratory local repository probe exposed a remote-dispatch defect in the pinned upstream. The corrected upstream tag **v0.4.3 now exists**, so C002 is ready; M002 must wait for **CodeGG's strict C002 paired requalification and closure**, not for any additional upstream release. After retirement, rerun the same-unit test. Evidence-workflow M005 retains its existing M002+M004 dependencies.
+**Gate:** Strict C002 closure satisfies the local-only pair gate and makes legacy-retirement M002 **ready**; it does not implement or authorize skipping M002's own source deletion, tests, or closure. The conditional finding in C001 is discharged by this successor evidence without editing C001's historical record. After retirement, rerun the same-unit test. Evidence-workflow M005 remains blocked on actual M002 completion and M004.
 
 ## 5. Corrective completion definition
 
@@ -53,4 +53,4 @@ C001 executed without working CodeGG full agent inference or publishing any rele
 - One offline script invokes real-process and fake-MCP controls; typed failures return nonzero with stage-specific diagnostics. The offline test suite can be rerun after retirement M002 without reintroducing legacy search.
 - Closure `plans/closure/search-eggsearch-pair-compatibility-corrective/001-status.md` supplies exact tested CodeGG revision, eggsearch binary provenance/digest, negative trajectories, command results, non-run evidence and a decision on unblocking legacy-retirement M002.
 
-C001 implementation and local verification are recorded in its closure. Upstream eggsearch owns and has published the correctness fix (v0.4.3); C002 now owns the outstanding **CodeGG** pin/real-process requalification. C001's historical conditional status does not unblock legacy-retirement M002. Closure must use a successor C002 record.
+C001 implementation and local verification remain recorded in its immutable historical closure. Upstream eggsearch owns the correctness fix (v0.4.3); CodeGG C002 now records the strict successor pin/real-process requalification at `plans/closure/search-eggsearch-pair-compatibility-corrective/002-status.md`. That evidence unblocks legacy-retirement M002 to ready. The separate Evidence-workflows M005 dependency on completed M002 and M004 is unchanged.
