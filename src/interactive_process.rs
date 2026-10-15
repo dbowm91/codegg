@@ -1614,4 +1614,103 @@ mod tests {
         assert_eq!(service.session_count(), 0);
         assert_eq!(admission.used_process_slots(), 0);
     }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_mount_pty_first_hop_preserves_terminal_and_workspace_write() {
+        if std::env::var_os("CODEGG_RUN_C006_BWRAP_NATIVE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+
+        let fixture = tempfile::tempdir().expect("PTY protected-mount fixture");
+        let workspace = fixture.path().canonicalize().expect("canonical workspace");
+        let marker = workspace.join("pty-write-marker");
+        let ctx = test_context(&workspace).await;
+        let service = InteractiveProcessService::new(test_admission(2));
+        let script = format!(
+            "import os, pathlib; assert os.isatty(0) and os.isatty(1) and os.isatty(2); pathlib.Path({:?}).write_text('ok'); print('PTY_BWRAP_OK', flush=True)",
+            marker.to_string_lossy()
+        );
+        let argv = [
+            "bwrap",
+            "--unshare-user",
+            "--die-with-parent",
+            "--tmpfs",
+            "/",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/usr",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--dir",
+            "/lib",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--dir",
+            "/lib64",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--dir",
+            workspace.to_str().expect("UTF-8 workspace"),
+            "--bind",
+            workspace.to_str().expect("UTF-8 workspace"),
+            workspace.to_str().expect("UTF-8 workspace"),
+            "--chdir",
+            workspace.to_str().expect("UTF-8 workspace"),
+            "--clearenv",
+            "--setenv",
+            "PATH",
+            "/usr/bin",
+            "--setenv",
+            "HOME",
+            workspace.to_str().expect("UTF-8 workspace"),
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            &script,
+        ]
+        .map(OsString::from)
+        .to_vec();
+        let handle = service
+            .spawn(&ctx, SpawnSpec::new(argv))
+            .await
+            .expect("spawn Bubblewrap first hop through PTY service");
+
+        let output = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let read = service
+                    .read_output(&handle, 0, MAX_READ_BYTES)
+                    .await
+                    .expect("read PTY output");
+                let text = String::from_utf8_lossy(&read.bytes).into_owned();
+                let snapshot = service.snapshot(&handle).await.expect("PTY snapshot");
+                if snapshot.state == SessionState::Exited {
+                    break text;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Bubblewrap PTY child should finish promptly");
+        assert!(output.contains("PTY_BWRAP_OK"), "PTY output: {output:?}");
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("workspace marker"),
+            "ok"
+        );
+        let snapshot = service
+            .snapshot(&handle)
+            .await
+            .expect("completed PTY snapshot");
+        assert_eq!(snapshot.state, SessionState::Exited);
+        assert_eq!(snapshot.exit.and_then(|exit| exit.code), Some(0));
+        service.remove(&handle).await.expect("remove completed PTY");
+    }
 }
