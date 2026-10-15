@@ -28,6 +28,10 @@ D. Group blackboard. Publish coarse verified build status (job ID, kind, phase, 
 
 E. Cleanup. Retention/disk pressure surfaces report checkout and build output footprint separately. Build cache cleanup follows bounded policy, skips active jobs and never calls indiscriminate cargo clean on other users' worktrees. Keep no new permanent cross-process cache service.
 
+## Stop conditions
+
+Stop and retain existing build/test behavior if the scheduler cannot prove source/environment compatibility for deduplication, if cache reuse would cross principal or sandbox trust boundaries, if an arbitrary shell build can evade resource admission, or if target sharing amplifies disk/CPU without a positive measured outcome. Do not silently mark a build successful because a related job completed. File a focused corrective with negative evidence instead of adding global environment changes.
+
 ## Tests and comparative evidence
 
 - Two isolated Rust worktrees with equivalent dependency graph; distinguish download cache, compiler cache, incremental artifacts and Cargo target reuse. Collect measured CPU time, wall time, peak disk, job contention for strategies.
