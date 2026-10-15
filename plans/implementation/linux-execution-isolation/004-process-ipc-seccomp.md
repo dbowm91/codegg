@@ -76,7 +76,14 @@ not qualification.
 The `egglsp` launcher and `InteractiveProcessService` currently spawn children
 outside `ManagedProcessService` and do not consume the M004 policy. Their
 production integration is a hard M004 closure gate; a PTY first-hop fixture or
-standalone LSP smoke does not satisfy it.
+standalone LSP smoke does not satisfy it. Routing follows the daemon-resolved
+execution policy: unconstrained (`FullHost`) launches preserve the current
+path, while a constrained profile must carry trusted policy from the daemon to
+the launch owner and either use the qualified M004 boundary or refuse before
+target execution. The request payload must not gain a client-controlled
+"constrained" switch. Qualification must exercise both branches so an
+unconstrained launch remains compatible and a requested constrained launch
+cannot escape through a specialized protocol owner.
 
 ## 9. Acceptance criteria
 
