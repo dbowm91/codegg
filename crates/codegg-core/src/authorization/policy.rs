@@ -706,6 +706,27 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::AuditRead),
         ),
+        // C005 (ADR-0031, accepted): idle-continuation grant management.
+        // Create/revoke carry `agent.invoke` — creating a future owner
+        // turn requires the authority sufficient to submit that turn —
+        // scoped `via_session` so the project resolves through the owning
+        // session row server-side. The status read is a project-keyed
+        // read like `job_get` and stays on the read capability.
+        R::ContinuationGrantCreate { .. } => OperationDescriptor::new(
+            "continuation_grant_create",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::ContinuationGrantRevoke { .. } => OperationDescriptor::new(
+            "continuation_grant_revoke",
+            ScopeKind::ViaSession,
+            Some(Capability::AgentInvoke),
+        ),
+        R::ContinuationGrantStatus { .. } => OperationDescriptor::new(
+            "continuation_grant_status",
+            ScopeKind::ViaSession,
+            Some(Capability::SessionRead),
+        ),
         R::ProjectionCapabilities => {
             OperationDescriptor::new("projection_capabilities", ScopeKind::Global, None)
         }
@@ -1747,6 +1768,25 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::JobRetry {
             job_id: String::new(),
+        },
+        R::ContinuationGrantCreate {
+            session_id: String::new(),
+            notice_job_id: String::new(),
+            allowed_model: None,
+            allowed_connection: None,
+            max_continuations: None,
+            max_tokens: None,
+            max_tool_calls: None,
+            max_duration_ms: None,
+            ttl_ms: None,
+        },
+        R::ContinuationGrantRevoke {
+            session_id: String::new(),
+            grant_id: String::new(),
+        },
+        R::ContinuationGrantStatus {
+            session_id: String::new(),
+            grant_id: String::new(),
         },
         R::JobAttempts {
             job_id: String::new(),

@@ -342,6 +342,41 @@ No runtime configuration. All limits, versions, and caps are
 compile-time constants. The projection protocol version is bumped
 when additive changes land that the reducer MUST interpret.
 
+## Background job visibility (M003)
+
+Background jobs need no new projection variant and no TUI polling task as
+a source of truth. The bounded job list is the existing `JobList` protocol
+surface (filtered by owning session); pending completion notices are the
+existing `SessionEvent::JobTerminalNotification` rows, visible on reconnect,
+restart, and next-turn replay with the same authoritative state as the
+daemon. The `job` model tool provides cancel/wait/inspect over the same
+store. Out-of-order events, multi-client scoped visibility, reconnect
+snapshots, and TUI shutdown are covered by the existing event-log and
+`JobStore` durability (one logical notice per terminal; redacted bounds).
+
+C004 adds one additive live hint on the same durability: a persisted,
+session-scoped `CoreEvent::BackgroundJobCompleted` (identity, kind,
+terminal status, bounded redacted summary; `Safe` publication) published
+immediately after the notice commits, without waiting for the next turn.
+Reconnect and daemon restart replay the identical notice id/status exactly
+once via `core_event_log`; the notice row (plus next-turn session event)
+remains the authority and the toast is never a second database.
+
+The hint adapts to the existing session job list for projection
+consumers (ADR-0031 slice): `projection_events_from_core` maps
+`BackgroundJobCompleted` to `ProjectionEvent::JobUpserted` (terminal
+state/summary, session-scoped; `workspace_id` empty by the same
+convention as the `JobStarted`/`JobCompleted` arms — the envelope
+carries no workspace and adapters must not fabricate one), so
+desktop/remote clients observe the terminal on their authorized
+`ProjectionSubscribe`/`Resume` stream with no new event type and no new
+authority. The native TUI renders the same event as a session-scoped
+info toast (`apply_core_event`; foreign sessions never toast). Crash
+between the notice commit and the hint publish heals by bounded startup
+reconciliation (`reconcile_idle_completion_hints`, deduped by notice
+id — never a second notice, never a turn); the forwarder skips hints
+already persisted (cross-instance duplicate absorption).
+
 ## Invariants & Gotchas
 
 1. **Derived, not authoritative**: The projection is never a second

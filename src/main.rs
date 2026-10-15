@@ -3971,6 +3971,8 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         daemon_id.clone(),
         guard.generation.clone(),
     ));
+    // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
+    daemon.attach_idle_wake();
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
@@ -4218,6 +4220,8 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
         Some(subagent_pool),
         Some(memory_store),
     ));
+    // C005 (ADR-0031): the serving daemon owns its delegated idle wake.
+    daemon.attach_idle_wake();
 
     daemon.start_event_bridge();
     daemon.recover_state().await;

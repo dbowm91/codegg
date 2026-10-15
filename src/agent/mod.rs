@@ -27,6 +27,7 @@ pub mod file_agents;
 mod follow_up;
 mod habit_observation;
 pub mod instructions;
+pub mod job_notification_recovery;
 pub mod r#loop;
 mod loop_output;
 pub mod mention;

@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod daemon_assets;
 pub mod daemon_bootstrap;
 pub mod daemon_construct;
+pub mod daemon_continuation;
 pub mod daemon_control;
 pub mod daemon_documents;
 pub mod daemon_family;
@@ -107,6 +108,8 @@ impl InprocCoreClient {
     ) -> Self {
         let pool = deps.pool.clone();
         let daemon = Arc::new(daemon::CoreDaemon::with_deps(deps));
+        // C005 (ADR-0031): the in-process daemon owns its fanout wake.
+        daemon.attach_idle_wake();
         Self {
             daemon: Some(daemon),
             pool,
@@ -456,6 +459,7 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::ToolProgramCompleted { .. } => "tool_program_completed",
         CoreEvent::ToolProgramFailed { .. } => "tool_program_failed",
         CoreEvent::ToolProgramUpdated { .. } => "tool_program_updated",
+        CoreEvent::BackgroundJobCompleted { .. } => "background_job_completed",
         CoreEvent::Error { .. } => "error",
         _ => "other",
     }

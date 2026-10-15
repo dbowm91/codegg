@@ -2082,6 +2082,33 @@ impl App {
                 self.show_question_dialog(questions, id);
                 true
             }
+            E::BackgroundJobCompleted {
+                session_id,
+                kind,
+                status,
+                summary,
+                ..
+            } => {
+                // Session-scope it like `TodoListUpdated`: the daemon
+                // broadcasts to every attached frontend, and this screen
+                // renders exactly one session. A foreign session's
+                // completion stays in the daemon router history; only the
+                // visible session toasts. The toast names kind/status plus
+                // the bounded redacted summary — the actionable handle is
+                // the existing `job.status` / CI-watch surface, not a new
+                // control (ADR-0031: no new authority in the frontend
+                // slice).
+                if let Some(active_id) = self.session_state.session.as_ref().map(|s| &s.id) {
+                    if active_id != &session_id {
+                        return false;
+                    }
+                }
+                self.messages_state.messages.finalize_streaming();
+                self.messages_state
+                    .toasts
+                    .info(&format!("Background {kind} {status}: {summary}"));
+                true
+            }
             _ => false,
         }
     }

@@ -52,7 +52,13 @@ entrypoint = "JobSubmissionService::submit"
 [[site]]
 path = "src/tool/test.rs"
 owner = "scheduler"
-reason = "TestTool submits JobKind::Test via JobSubmissionService"
+reason = "TestTool submits JobKind::Test via JobSubmissionService; background mode subscribes via JobNotificationService before returning the JobHandle"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/tool/job.rs"
+owner = "scheduler"
+reason = "JobTool status/wait/cancel/output adapter over the scheduler JobStore/scheduler; exact-owner session scope, no new execution owner"
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]

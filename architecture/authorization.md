@@ -69,6 +69,47 @@ in-memory daemons without a pool decide under the same broad policy.
   session). `lsp_preview_apply` uses this scope so team authorization
   resolves through the owning session project before checked mutation.
 - `via_job` — `job_id` locator resolved through the job's session.
+- `job exact-owner` (M001) — the `job` model tool adds a session-equality
+  check on top of `via_job`: the caller's `ToolExecutionContext.session_id`
+  must equal the job/notice owning session. Knowledge of a `JobId` alone
+  confers no rights; forged session/turn, guessed ids, and second-principal
+  access return the same denied message as not-found without leaking
+  existence. Authorized callers cannot choose untrusted session/turn ids;
+  background lineage is host-resolved, never model-supplied.
+- `ci_watch exact-owner` (M004, C001) — same rule for watches: caller session
+  must equal the watch's owning session for status/cancel/list; stolen
+  handles read as not-found. Watch targets carry no credential or URL
+  authority (base URLs from daemon configuration, tokens resolved per poll
+  from process env and never stored); GitHub output is data, and external
+  event URLs render as inert links, never instructions. C001 adds no new
+  principal: the idle driver observes with the watch's frozen session/
+  principal/workspace/repo lineage, and the persisted CAS lease
+  (`claim_owner` = daemon service identity, never a user principal) confers
+  no read rights — cross-session notification stays forbidden.
+- `continuation-grant` (C002) — idle resume never follows a model-supplied
+  flag alone. `ContinuationService::authorize` requires host-resolved
+  job/session ids; dispatch re-validates session/principal/workspace lineage,
+  expiry, budgets, resumable terminal status, owner-idle, and provider
+  availability, then CAS-claims exactly one `(notice, grant)` intent. An
+  observer with a guessed job/watch id holds no grant and stays notify-only;
+  revocation/expiry/budget exhaustion suppress before invocation.
+- `continuation-grant` (C005, ADR-0031 accepted) — authenticated grant
+  workflow plus daemon-internal delegated admission. Grant management is
+  three `CoreRequest` variants through this gate (`via_session` +
+  `agent.invoke` for create/revoke, `session.read` for status): the
+  handler re-resolves principal/session/workspace/model server-side,
+  captures immutable `continuation_grant` origin attribution
+  (first-write-wins, migration v78), and audits create/revoke as
+  `agent_delegate`. Dispatch is never a wire operation:
+  `submit_idle_continuation_turn` (exactly two callers — the post-commit
+  fanout wake and the bounded restart twin, enforced by
+  `check_idle_continuation_callsites.py`) revalidates the grant against
+  current team/session/provider state, CAS-claims the `(notice, grant)`
+  intent, and admits through the canonical `TurnSubmit` path attributed
+  to the reconstructed grant owner with an `idle:<grant_id>` client
+  marker (metadata only). Legacy rows without stored origin stay
+  non-autonomous; revocation/expiry/budget/mismatch suppress before
+  inference; ambiguity after admission becomes `needs_attention`.
 - `enumeration` — bounded listing; `project_list` is privacy-filtered
   post-read, redacted connection lists are authenticated-only.
 - `opaque` — no project linkage in the DTO. Team principals fail closed
@@ -386,6 +427,9 @@ not a Core operation):
 | `connection_rotate_cancel` | opaque | `project.configure` |
 | `connection_rotate_secret_stage` | opaque | `project.configure` |
 | `connection_rotate_status` | opaque | `project.read` |
+| `continuation_grant_create` | via_session | `agent.invoke` |
+| `continuation_grant_revoke` | via_session | `agent.invoke` |
+| `continuation_grant_status` | via_session | `session.read` |
 | `document_capabilities` | global | `none` |
 | `document_modify` | direct_project | `file.modify` |
 | `document_read` | direct_project | `file.read` |

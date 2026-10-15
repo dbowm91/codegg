@@ -44,6 +44,21 @@ impl CoreDaemon {
         if let Some(handle) = self._worktree_reconcile_handle.take() {
             handle.abort();
         }
+        // C001 idle driver: request cooperative shutdown first so the loop
+        // finishes its current bounded tick, then abort the handle.
+        if let Some(driver) = self.ci_watch_driver.take() {
+            driver.request_shutdown();
+        }
+        if let Some(handle) = self._ci_watch_driver_handle.take() {
+            handle.abort();
+        }
+        // C004 completion fanout: abort the forwarder; the unbounded
+        // channel is dropped with the notifier, so in-flight terminals
+        // already committed stay durable and are recovered via the notice
+        // row + next-turn session event on restart.
+        if let Some(handle) = self._idle_completion_handle.take() {
+            handle.abort();
+        }
     }
 
     /// Canonical shutdown phase names in execution order.

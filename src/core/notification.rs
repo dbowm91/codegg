@@ -15,6 +15,7 @@ pub enum NotificationKind {
     SubagentCompleted,
     SubagentFailed,
     Error,
+    BackgroundJobCompleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -635,6 +636,9 @@ fn kind_phrase_plural(kind: &NotificationKind, count: usize) -> String {
             format!("{} subagents failed", number_word(count))
         }
         NotificationKind::Error => format!("{} sessions errored", number_word(count)),
+        NotificationKind::BackgroundJobCompleted => {
+            format!("{} background jobs completed", number_word(count))
+        }
     }
 }
 
@@ -648,6 +652,7 @@ fn kind_verb_phrase(kind: &NotificationKind) -> &'static str {
         NotificationKind::SubagentCompleted => "subagent completed",
         NotificationKind::SubagentFailed => "subagent failed",
         NotificationKind::Error => "errored",
+        NotificationKind::BackgroundJobCompleted => "background job completed",
     }
 }
 
@@ -661,6 +666,7 @@ fn parse_notification_kind(s: &str) -> Option<NotificationKind> {
         "subagent_completed" => Some(NotificationKind::SubagentCompleted),
         "subagent_failed" => Some(NotificationKind::SubagentFailed),
         "error" => Some(NotificationKind::Error),
+        "background_job_completed" => Some(NotificationKind::BackgroundJobCompleted),
         _ => None,
     }
 }
@@ -675,6 +681,7 @@ fn parse_notification_kind_from_db(s: &str) -> Option<NotificationKind> {
         "SubagentCompleted" => Some(NotificationKind::SubagentCompleted),
         "SubagentFailed" => Some(NotificationKind::SubagentFailed),
         "Error" => Some(NotificationKind::Error),
+        "BackgroundJobCompleted" => Some(NotificationKind::BackgroundJobCompleted),
         _ => parse_notification_kind(s),
     }
 }

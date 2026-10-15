@@ -136,6 +136,34 @@ pub struct ToolProgramNotificationEvent {
     pub content: String,
 }
 
+/// Durable insertion of a generic background job terminal notice into its
+/// owning session (async-background-jobs M001).
+///
+/// `injection_key` is the job-notification store's stable idempotency
+/// identity (`job-notify:<job_id>:<session_id>`) and anchors the event ID
+/// as `job-event:<injection_key>`, mirroring the Tool Program
+/// `tp-event:<injection_key>` convention without sharing its table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobTerminalNotificationEvent {
+    pub meta: EventMeta,
+    pub injection_key: String,
+    pub notice_id: String,
+    pub job_id: String,
+    pub content: String,
+}
+
+impl JobTerminalNotificationEvent {
+    /// Semantic equality that ignores `meta.created_at`.
+    pub fn semantic_equals(&self, other: &Self) -> bool {
+        self.meta.id == other.meta.id
+            && self.meta.session_id == other.meta.session_id
+            && self.injection_key == other.injection_key
+            && self.notice_id == other.notice_id
+            && self.job_id == other.job_id
+            && self.content == other.content
+    }
+}
+
 impl ToolProgramNotificationEvent {
     /// Semantic equality that ignores `meta.created_at`.
     ///
@@ -328,6 +356,7 @@ pub enum SessionEvent {
     PlanItemUpdated(PlanItemUpdatedEvent),
     AgentMessage(AgentMessageEvent),
     ToolProgramNotification(ToolProgramNotificationEvent),
+    JobTerminalNotification(JobTerminalNotificationEvent),
     UserMessage(UserMessageEvent),
     ToolCallStarted(ToolCallStartedEvent),
     ToolCallFinished(ToolCallFinishedEvent),
@@ -354,6 +383,7 @@ impl SessionEvent {
             SessionEvent::PlanItemUpdated(_) => "plan_item_updated",
             SessionEvent::AgentMessage(_) => "agent_message",
             SessionEvent::ToolProgramNotification(_) => "tool_program_notification",
+            SessionEvent::JobTerminalNotification(_) => "job_terminal_notification",
             SessionEvent::UserMessage(_) => "user_message",
             SessionEvent::ToolCallStarted(_) => "tool_call_started",
             SessionEvent::ToolCallFinished(_) => "tool_call_finished",
@@ -380,6 +410,7 @@ impl SessionEvent {
             SessionEvent::PlanItemUpdated(e) => &e.meta,
             SessionEvent::AgentMessage(e) => &e.meta,
             SessionEvent::ToolProgramNotification(e) => &e.meta,
+            SessionEvent::JobTerminalNotification(e) => &e.meta,
             SessionEvent::UserMessage(e) => &e.meta,
             SessionEvent::ToolCallStarted(e) => &e.meta,
             SessionEvent::ToolCallFinished(e) => &e.meta,

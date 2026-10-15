@@ -162,7 +162,7 @@ impl OriginAttributionStore {
 }
 
 fn validate_attribution_scope(scope_kind: &str, scope_id: &str) -> Result<(), StorageError> {
-    const ALLOWED_KINDS: [&str; 7] = [
+    const ALLOWED_KINDS: [&str; 8] = [
         "session",
         "turn",
         "run",
@@ -170,6 +170,11 @@ fn validate_attribution_scope(scope_kind: &str, scope_id: &str) -> Result<(), St
         "worktree",
         "provider",
         "work_order",
+        // C005 (ADR-0031): host-approved idle-continuation grants carry
+        // immutable server-resolved origin. First-write-wins, like every
+        // other scope: a grant row without a stored origin is
+        // non-autonomous and can never admit a delegated turn.
+        "continuation_grant",
     ];
     if !ALLOWED_KINDS.contains(&scope_kind) {
         return Err(StorageError::Database(format!(

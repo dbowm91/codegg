@@ -723,6 +723,37 @@ pub struct ScheduleRecordDto {
     pub updated_at_ms: i64,
 }
 
+/// C005 (ADR-0031): durable host grant for one background wait, as
+/// projected to clients. Identity fields are server-resolved at grant
+/// time; the client never supplies them, so the request shapes carry
+/// only locators and bounds (see `CoreRequest::ContinuationGrantCreate`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinuationGrantDto {
+    pub grant_id: String,
+    pub notice_job_id: String,
+    pub session_id: String,
+    pub owner_principal: String,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub allowed_model: Option<String>,
+    #[serde(default)]
+    pub allowed_connection: Option<String>,
+    pub max_continuations: u32,
+    #[serde(default)]
+    pub used_continuations: u32,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
+    #[serde(default)]
+    pub max_duration_ms: Option<i64>,
+    pub status: String,
+    pub expiry_ms: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
 /// Query parameters for `JobList`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]

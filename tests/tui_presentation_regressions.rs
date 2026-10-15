@@ -450,3 +450,63 @@ async fn configured_theme_is_applied_at_startup() {
         "no theme.name must resolve to DEFAULT_THEME_ID"
     );
 }
+
+// ------------------------------------------------- background completion
+
+/// `BackgroundJobCompleted` for the visible session must surface as a
+/// live toast naming kind/status/summary (the real TUI half of idle
+/// delivery); a foreign session's completion must not toast or redraw
+/// this screen. The actionable handle stays the existing `job.status` /
+/// CI-watch surface — the toast carries no new control (ADR-0031).
+#[test]
+fn background_job_completion_toasts_for_own_session_only() {
+    use codegg::protocol::core::CoreEvent;
+
+    fn completion(session: &str) -> CoreEvent {
+        CoreEvent::BackgroundJobCompleted {
+            session_id: session.into(),
+            notice_id: "job-bg-toast-1".into(),
+            job_id: "job-bg-toast-1".into(),
+            kind: "test".into(),
+            status: "completed".into(),
+            summary: "build green".into(),
+        }
+    }
+
+    let mut app = App::new_for_testing("/tmp/codegg-regression-bg-toast".to_string());
+    app.session_state.session = Some(bound_session("s-bg"));
+
+    assert!(
+        app.apply_core_event(completion("s-bg")),
+        "own-session completion must request a redraw"
+    );
+    assert_eq!(
+        app.messages_state.toasts.len(),
+        1,
+        "own-session completion must toast exactly once"
+    );
+    let shown: Vec<String> = app
+        .messages_state
+        .toasts
+        .iter()
+        .map(|t| t.message.clone())
+        .collect();
+    assert_eq!(shown.len(), 1);
+    assert!(
+        shown[0].contains("test")
+            && shown[0].contains("completed")
+            && shown[0].contains("build green"),
+        "toast must name kind/status/summary, got {:?}",
+        shown[0]
+    );
+
+    assert!(
+        !app.apply_core_event(completion("other-session")),
+        "a foreign session's completion must not redraw this screen"
+    );
+    assert_eq!(
+        app.messages_state.toasts.len(),
+        1,
+        "a foreign completion must not add a toast"
+    );
+}

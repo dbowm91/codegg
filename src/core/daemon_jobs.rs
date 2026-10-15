@@ -520,6 +520,54 @@ impl CoreDaemon {
                     }),
                 }
             }
+            // ── C005 (ADR-0031): authenticated idle-continuation grants ──
+            // Grant management is ordinary principal-authorized project
+            // mutation on the daemon-owned continuation store. The gate
+            // already resolved principal/project/capability; the handlers
+            // re-resolve every identity field server-side. Dispatch itself
+            // is never a wire operation (see `daemon_continuation.rs`).
+            CoreRequest::ContinuationGrantCreate {
+                session_id,
+                notice_job_id,
+                allowed_model,
+                allowed_connection,
+                max_continuations,
+                max_tokens,
+                max_tool_calls,
+                max_duration_ms,
+                ttl_ms,
+            } => {
+                self.handle_continuation_grant_create(
+                    super::daemon_continuation::GrantCreateInput {
+                        session_id,
+                        notice_job_id,
+                        allowed_model,
+                        allowed_connection,
+                        max_continuations,
+                        max_tokens,
+                        max_tool_calls,
+                        max_duration_ms,
+                        ttl_ms,
+                    },
+                    &authority,
+                    &authz_decision,
+                )
+                .await
+            }
+            CoreRequest::ContinuationGrantRevoke {
+                session_id,
+                grant_id,
+            } => {
+                self.handle_continuation_grant_revoke(session_id, grant_id)
+                    .await
+            }
+            CoreRequest::ContinuationGrantStatus {
+                session_id,
+                grant_id,
+            } => {
+                self.handle_continuation_grant_status(session_id, grant_id)
+                    .await
+            }
             CoreRequest::SchedulerSnapshot => {
                 let Some(scheduler) = self.deps.scheduler.as_ref() else {
                     return Ok(CoreResponse::Error {

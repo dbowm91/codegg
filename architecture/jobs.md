@@ -372,6 +372,142 @@ persisted on the attempt. If RunStore begin fails, the job/attempt
 record is kept and a structured persistence warning is recorded — the
 process is never retried solely to obtain a `RunId`.
 
+### Background jobs and terminal notices (M001)
+
+`test.execution_mode=background` submits the same canonical `JobKind::Test`
+through `JobSubmissionService` with a `SubmissionKey test-bg:<digest>` (same
+key + same fingerprint reuses the job; same key + different payload
+conflicts; distinct calls stay distinct), then durably subscribes
+`(job_id, session, turn, invocation_key)` before returning a stable
+`JobHandle { job_id, kind, status, submitted_at, inspect_ref, cancel_ref }`.
+Foreground behavior is unchanged. Background requires a real
+host-originated session context or fails without spawning.
+
+One `JobTerminalNotice` per subscribed job is persisted from the final
+outcome only (`Completed|Failed|Cancelled|TimedOut|Expired`; `Interrupted`
+is retryable, never final). The notice carries kind, status, bounded
+summary (2,048 chars), and RunStore link — never stdout dumps or secrets.
+The `job` model tool (`status|wait|cancel|output`) reuses the
+`JobGet/JobWait/JobCancel` authority plus exact-owner session scope;
+`wait` timeout means still-running. See `architecture/scheduler.md`
+"Generic job terminal notices" and `architecture/authorization.md" for the
+owner rule.
+
+### GitHub Actions watching (M004)
+
+`src/scheduler/ci_watch.rs` registers one immutable watch target
+(`github_actions` + owner/repo + exact run id, or commit SHA resolving to
+exactly one run) and returns a stable `ciw-<digest>` handle. Observations
+are short bounded GETs (15s timeout, 256KiB cap, ETag revalidation,
+Retry-After honored, exponential backoff + deterministic jitter, attempt
+budget, TTL) advanced at daemon-owned points — explicit `ci_watch` tool
+calls, turn-boundary advancement (max 2 per boundary), and since C001 the
+canonical idle coordinator (`CiWatchIdleDriver`: earliest-due wake, bounded
+global advancement, empty queue sleeps). No per-watch interval, no
+per-watch worker, no process/CPU permit held across polls; a dormant
+watcher is one durable row (`ci_watch`, migration v75, C001 lease columns
+in v76) plus at most one persisted CAS lease per due occurrence. Two
+service handles never double-poll the same due lease; expired leases are
+recoverable; terminal transitions release the lease and never re-poll.
+Terminal `completed` maps every GitHub conclusion explicitly (`success` →
+pass; `failure/cancelled/timed_out/action_required/startup_failure` →
+typed failure with a bounded failing-step summary; `neutral/skipped/stale/
+unknown` → attention, never passed). Transport failures (401/403/404/429/
+5xx, redirects, malformed bodies) back off within budget and never become
+"CI failed"; ambiguous/multiple runs, SHA drift, repo mismatch, and
+cross-origin redirects fail closed as attention. Watch cancellation stops
+watching only, never the remote workflow. Exactly one terminal M001 notice
+(kind `ci_watch`, `notice_id = ciwatch:<watch_id>`) follows the persisted
+final; terminal targets are never re-polled; M003 delivers notify/resume
+from there. Base URLs come from daemon configuration
+(`CODEGG_GITHUB_API_ALLOWLIST`, default api.github.com) and are never
+model-supplied; credentials resolve per poll from `GITHUB_TOKEN`/`GH_TOKEN`
+(never stored — rows keep `credential_ref` only) and never enter logs.
+
+### Safe continuation and visibility (M003)
+
+Background submission accepts `on_complete: notify_only|resume_owner`
+(default `notify_only`). `resume_owner` creates one single-use continuation
+lease (`job_continuation_lease`, migration v74) bound to the host-resolved
+session/turn/principal/workspace ancestry with a bounded TTL (default 30m,
+max 4h) and exactly one wake. Delivery consumes the lease once per logical
+terminal at the next safe, user-authorized turn boundary — never a second
+continuation under duplicates or concurrent frontends. Cancel/expiry/
+revocation/foreign-owner suppresses the lease before any invocation.
+Delivery states (`Pending → SessionEventCommitted →
+AvailableToOwner/ResumeQueued → Consumed/Expired/Suppressed`) are queryable;
+crash at each boundary reconstructs without duplicate inference. Ended turns
+spend no tokens; the durable notice remains visible on reconnect/restart/
+next turn. See `architecture/agent.md` "Background job continuation" and
+`architecture/projection.md` "Background job visibility".
+
+### Explicit idle owner continuation (C002)
+
+C002 adds the opt-in idle leg on top of M003 without changing its next-turn
+marker: a host-trusted `ContinuationGrant` (`continuation_grant`, migration
+v77) authorizes at most one bounded owner turn for one background wait
+(`notice_job_id` = scheduler `job_id` or `ciwatch:<watch_id>`), bound to
+principal/session/workspace/origin-turn, allowed model/connection, budgets,
+expiry, and max continuations (default 1). A model setting `resume_owner`
+without a grant stays notify-only for idle (explicit denial); legacy leases
+without a grant never auto-resume. Dispatch is exactly-once per
+`(notice, grant)` via `idle_continuation` intents (`Pending → Eligible →
+Claimed → TurnAccepted → Started → Completed`, plus
+`Suppressed/Expired/NeedsAttention`, `UNIQUE(notice_id, grant_id)`):
+the accepted turn id + cause `completed_background_job` persist before
+provider dispatch, and ambiguity after provider submission becomes
+`needs_attention` (never blind replay). Only host-authored compact
+status/result refs enter authorized prompt context. Grant/queued/resumed/
+declined/expired status is visible through existing session/attention
+projections (no TUI polling); user cancel always wins before invocation.
+
+### Production idle delivery (C004, delivery slice)
+
+C004 wires the daemon-owned delivery leg without changing the next-turn
+marker above: one `ContinuationService` singleton per daemon lifetime
+(`CoreRuntimeDeps::shared_continuation_service`, `CoreDaemon::
+continuation_service`; pointer identity is the singleton proof), plus a
+single post-commit completion fanout. `JobNotificationService::
+record_notice` sends each newly stored terminal (machine jobs and CI
+watches share this one path; idempotent duplicates never send) over an
+unbounded channel after its durable commit; a daemon-owned forwarder
+publishes one owner-scoped `CoreEvent::BackgroundJobCompleted`
+(session/notice/job identity, kind, terminal status, bounded redacted
+summary — never stdout, credentials, raw CI logs, or remote
+instructions) via the existing `EventLog` + projection/replay path, plus
+an ephemeral `NotificationRouter` toast (dedupe-keyed by notice id, never
+a second completion database). The event is persisted (`should_persist`,
+`core_event_type = background_job_completed`, `Safe` publication), so
+live subscribers and `Resume`/replay observe the identical notice
+id/status without starting an agent turn, and a restarted daemon over the
+same pool replays the same notice. Crash between the notice commit and
+the hint publish heals by bounded startup reconciliation
+(`CoreDaemon::reconcile_idle_completion_hints`, wired into
+`recover_jobs`): durable notices missing from `core_event_log` get
+exactly their hint republished, deduped by notice id — never a second
+notice, never a turn. The forwarder checks
+`EventLog::has_persisted_background_completion` before publishing, so a
+second daemon over the same pool (stale `flock`, divergent
+`CODEGG_DAEMON_HOME`) absorbs rather than duplicates hints; the residual
+same-id race is benign (consumers dedupe by notice id). No per-job poller, no second
+scheduler, no model tokens spent by delivery. C005 (ADR-0031, accepted)
+closes the resume half the slice left blocked: an authenticated grant
+workflow (`ContinuationGrantCreate`/`Revoke`/`Status` through daemon
+request authority, server-resolved origin, immutable
+`continuation_grant` attribution in migration v78) plus the
+daemon-internal delegated entry `submit_idle_continuation_turn`
+(post-commit fanout wake + bounded restart twin
+`reconcile_idle_continuation_wakes` in `recover_jobs`; call-site guard
+`scripts/check_idle_continuation_callsites.py`). The wake revalidates
+the grant against current team/session/provider state, CAS-claims the
+`(notice, grant)` intent, and admits through the canonical `TurnSubmit`
+path attributed to the grant owner (`idle:<grant_id>` client marker).
+Legacy rows without stored origin stay non-autonomous; one logical
+terminal admits at most one owner turn (deterministic delegation
+submission id + receipt before provider entry; ambiguity becomes
+`needs_attention`); store caches never overwrite (DB-fresh grant loads
+for authority decisions, never-overwrite intent fills).
+
 ### Boundary Enforcement
 
 `crates/codegg-core/src/jobs/` is UI-, server-, plugin-, and auth-free:

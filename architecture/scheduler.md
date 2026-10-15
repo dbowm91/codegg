@@ -485,6 +485,71 @@ durable queued jobs. Schedule occurrence uniqueness is enforced by
 to `ScheduleStore`, while standalone compatibility task loops remain
 explicitly outside daemon guarantees.
 
+### Generic job terminal notices (M001)
+
+`src/scheduler/job_notifications.rs` owns one logical notice per
+subscribed background job (`notice_id = job_id`). The scheduler holds an
+optional `JobNotificationService` (installed by the daemon turn runtime);
+after every durable terminal transition — executor completion,
+unschedulable validation failure, and queued cancellation — it attempts
+one idempotent `record_terminal` for explicitly subscribed jobs only.
+`Interrupted` never notifies; running/progress and wait timeouts are not
+terminals. Notification failure never fails the job; `recover_from_store`
+backfills completion-before-subscribe and restart gaps. Delivery uses the
+same claim/append/mark/ack + `SessionEvent::JobTerminalNotification`
+mechanics as Tool Program M017, with a separate `job_notification` /
+`job_background_subscription` table pair (migration v73).
+
+### CI watch observation authority (M004, C001)
+
+CI polls are sub-second network reads, not process executions: admitting
+them as scheduler jobs would occupy process permits and queue capacity for
+the wrong resource class. The durable/timer authority for watches is the
+narrow `ci_watch` record adapter itself (`next_check_at`, backoff, ETag,
+attempt budget, expiry) plus — since C001 — one daemon-lifecycle-owned
+cancellable idle coordinator (`src/scheduler/ci_watch_idle.rs`).
+
+C001 freezes the timer/admission decision: the canonical idle wake is the
+earliest-due persisted row driving `CiWatchIdleDriver` (a service-shared
+`Notify` + timer loop, bounded `IDLE_DRIVER_BATCH = 8` observations per tick,
+empty queue sleeps without busy polling). Accepting a watch wakes the idle
+driver after its durable row and terminal subscription are committed, so a
+watch created while the empty queue is asleep is observed promptly.
+Turn-boundary `advance_due_watches`
+(cap 2) and explicit `ci_watch status` remain as safe-boundary views, not
+the idle authority. No per-watch timer, no second scheduler, no new jobs
+queue; the remote wait holds no process/CPU permit. The durable completion
+path reuses the scheduler-owned notification authority (persist final, then
+exactly one M001 notice, then M003 delivery). Routing finite adaptive watch
+sequences through `ScheduleStore` recurring schedules was deliberately
+rejected (namespace clutter, overlap mis-semantics); see
+`src/scheduler/ci_watch.rs` header and `ci_watch_idle.rs` ownership notes.
+Watch rows live in `ci_watch` (migration v75, C001 lease columns
+`claim_owner/claim_until/generation` in v76); single-use resume leases reuse
+the M003 `job_continuation_lease` table via matching M001 subscriptions
+(`ciwatch:<watch_id>`).
+
+C001 cross-service safety is the persisted CAS lease: each due observation
+atomically claims `(claim_owner, claim_until, generation+1)`; a live lease
+reports `Busy`, an expired lease is recoverable, and terminal transitions
+release the lease. Process-local `in_flight` mutexes are a fast-path
+optimization only. Watch acceptance and M001 subscription are reconciled by
+`repair_registrations()` (startup + driver): a watch without its
+`ciwatch:<watch_id>` subscription is re-subscribed, or failed closed to
+`needs_attention` on conflict — never an orphan forever in `Pending`.
+One daemon-scoped `Arc<JobNotificationService>` + `Arc<CiWatchService>`
+(created in `CoreRuntimeDeps`/`CoreDaemon` startup, injected into
+`TurnRunInput`) is the lifetime authority; per-turn construction is the
+legacy fallback only.
+
+C004 adds the delivery leg on the same authority: one daemon-scoped
+`Arc<ContinuationService>` (fail-closed store ownership, no dispatch) and
+one post-commit fanout channel. `record_notice` sends only first-write
+terminals after the durable commit; a daemon-owned forwarder publishes the
+live `BackgroundJobCompleted` hint. No per-job task, no busy poll, no
+long-held CPU permit; shutdown aborts the forwarder while committed
+notices stay durable for notice-row + next-turn recovery.
+
 ### Shutdown (`scheduler.rs:1503`)
 
 Three shutdown modes:
