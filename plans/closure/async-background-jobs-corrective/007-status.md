@@ -26,7 +26,7 @@ Implementation commits or pull requests:
 
 ## 1. Executive finding
 
-C007 completed integration and hosted qualification of PR #119 against current main. The exact merged-tree candidate passed root CI with every workspace test executed, Desktop E2E, the Windows native-probe contract, and the Windows process-launcher workflow. Migration upgrade and rollback coverage is present. The PR is still draft and no independent review has been recorded; an SBC-class daemon startup benchmark was unavailable. Therefore the milestone is **conditionally closed**, and no merge-ready or merge authorization is claimed.
+C007 completed integration and hosted qualification of PR #119 against current main. The exact merged-tree candidate passed root CI with every workspace test executed, Desktop E2E, the Windows native-probe contract, and the Windows process-launcher workflow. Migration upgrade and rollback coverage is present. The PR is still draft and no independent review has been recorded. The previously proposed SBC-class daemon startup benchmark was expressly removed from scope by the project owner on 2026-10-15 (§13); its absence is not a finding or merge gate. The milestone remains **conditionally closed** pending independent review and any required approvals; no merge-ready or merge authorization is claimed.
 
 Prerequisite closures remain intact: C006 [`006-status.md`](006-status.md) demonstrates model-facing `ci_watch` and scheduler-backed Bash lifecycles; tool-advisor C001 [`001-status.md`](../tool-advisor-m003-receipt-ci-corrective/001-status.md) preserves the historical M003 receipt while restoring hosted CI.
 
@@ -43,7 +43,7 @@ Prerequisite closures remain intact: C006 [`006-status.md`](006-status.md) demon
 | Applicable Windows native probe evidence | [Run 38735363733](https://github.com/dbowm91/codegg/actions/runs/38735363733) | pass | C019 actual-child matrix and timeout/cancellation/descendant coverage passed. |
 | Windows process launcher | [Run 38735365742](https://github.com/dbowm91/codegg/actions/runs/38735365742) | pass with skips | Launcher and listed ACL/AppContainer checks passed; synthetic-root feasibility, C044 differential, and c014 negative reproduction were skipped. No `Enforced` claim. |
 | Review and branch-protection state | PR API on 2026-10-15: draft, CLEAN, no reviews, no review requests | partial | Independent review and any approval requirement remain outstanding. |
-| SBC-class startup bound | No SBC-class host available for this run | not run | Must be recorded on representative hardware before merge readiness is decided. |
+| SBC-class startup benchmark (withdrawn requirement) | No SBC benchmark was run. Original closure treated it as required, before 2026-10-15 owner correction. | **not applicable — out of scope** | No Raspberry Pi/SBC build, startup benchmark, release binary, or distribution setup is required for C007 or PR #119. See §13. |
 
 ## 3. Production implementation evidence
 
@@ -119,17 +119,21 @@ The successful Windows jobs qualify only their named tests. The synthetic-root `
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | Low | Independent review and branch-protection approval state are unresolved; PR has no reviews or review requests. | Merge-readiness is not established. | Arrange an authorized independent review, resolve objections, and recheck exact-head status. |
-| Low | SBC-class daemon startup benchmark was not run. | Bounded startup on representative low-resource hardware remains unqualified. | Run and record the benchmark on an SBC-class host before deciding merge readiness. |
+Owner scope correction: the former low-severity SBC startup item is **withdrawn**, not an unresolved risk or deferred gate. No hardware benchmark was run or is now required (see §13).
 | Low | Windows synthetic-root feasibility, C044 differential, and c014 negative reproduction were skipped. | Those specific Windows scopes remain unqualified. | Do not claim these results; run later only if that platform evidence is required. |
 
 No known high or critical finding remains from the completed integration qualification. There is no claim of live paid-provider behavior, public GitHub API service-level behavior, general Windows sandbox enforcement, or universal native macOS portability.
 
 ## 11. Roadmap disposition
 
-**Milestone conditionally closed with named operational evidence outstanding.** Implementation, latest-main integration, migration regression, exact-head CI and Desktop E2E are complete. C007 is not declared merge-ready: independent review and SBC-class startup evidence must be recorded first. PR #119 remains draft and unmerged; this closure does not authorize a merge.
+**Milestone conditionally closed with named operational evidence outstanding.** Implementation, latest-main integration, migration regression, exact-head CI and Desktop E2E are complete. C007 is not declared merge-ready: independent security/concurrency review and applicable branch-protection approvals must be recorded first. SBC benchmarking is explicitly out of scope. PR #119 remains draft and unmerged; this closure does not authorize a merge.
 
 ## 12. Registry updates and unblock audit
 
 - Mark C007 conditionally closed and link this record from the integration addendum and registry.
 - Preserve the historical C006 closure's statement that C007 was blocked on tool-advisor C001 at the time C006 closed; C001 later closed and C007 advanced.
 - No registered downstream async plan depends on C007. No plan became newly eligible or unblocked; `Milestones eligible for fresh planning` remains empty. Existing unrelated blocked rows are unchanged.
+
+## 13. Owner-directed scope correction — SBC benchmark withdrawn (2026-10-15)
+
+This is a prospective scope correction to the C007 merge-readiness checklist, **not** evidence that an SBC benchmark was performed. The original closure recorded a missing SBC-class daemon startup benchmark as a low-severity finding and required it before merge readiness. The project owner explicitly withdrew that requirement: Codegg is not being benchmarked primarily on SBC hardware, native Raspberry Pi compilation could take disproportionate time or run out of memory, and producing precompiled SBC binaries/release architecture is not justified for this feature. **No SBC build, timing run, hardware qualification, release artifact, or associated plan is required for PR #119**, and no failure or postponed work should be inferred from its absence. No production code, test evidence, or historical workflow result changed under this correction. C007 remains conditionally closed **solely** pending independent security/concurrency code review and any applicable branch-protection approvals; maintainers retain the merge decision.
