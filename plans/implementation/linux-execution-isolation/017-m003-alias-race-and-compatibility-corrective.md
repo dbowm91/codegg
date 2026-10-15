@@ -143,6 +143,7 @@ The candidate is currently internal and opt-in through `SandboxConfig::with_linu
 - The trusted-Git integration regression covers repository-configured external diff and textconv helpers; ordinary diff output remained available and the helper marker stayed absent. Hosted evidence is run `38672792308`.
 - Commit `9dddcc5d7c69dd3117dc8eafd009881719dec63d` was tested by hosted run [`38674058393`](https://github.com/dbowm91/codegg/actions/runs/38674058393), job `116223507871`; conclusion: success. It again passed 2/2 protected-mount tests and 9/9 trusted-Git config tests.
 - The linked-worktree native fixture runs `python3` to write a file inside the selected workspace; the assertion passed locally and on the exact hosted head. This qualifies one normal Python write path, not general Python package installation or subprocess compatibility.
+- A direct trust-boundary regression now creates a nested repository after the outer repository has been selected, gives its local config an outside `core.worktree` and executable fsmonitor, then runs trusted outer `git status`. The focused local test passes: Git reports the nested repository as ordinary untracked content, does not reveal the outside marker, and does not execute the nested fsmonitor. Exact-head hosted qualification is pending.
 
 ### Remaining acceptance work
 
