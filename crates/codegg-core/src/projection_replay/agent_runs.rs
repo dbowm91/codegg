@@ -155,6 +155,9 @@ pub fn run_group_summary(
             .map(ToString::to_string),
         cancel_remaining_on_satisfaction: summary.group.cancel_remaining_on_satisfaction,
         updated_at,
+        workstream_claims: Vec::new(),
+        workstream_dependencies: Vec::new(),
+        workstream_claims_updated_at: None,
     };
     projection.normalise();
     projection

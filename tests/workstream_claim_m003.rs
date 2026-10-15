@@ -219,6 +219,39 @@ async fn simultaneous_overlapping_claims_have_one_winner_and_stale_cas_fails() {
         codegg_core::workstream_claim::ClaimState::Claimed
     );
     assert_eq!(accepted.version, 3);
+    store
+        .request_handoff(&accepted.claim_id, &ClaimActor::Run(members[2].0.clone()))
+        .await
+        .unwrap();
+    let after_request = store
+        .list_group(
+            &group,
+            &accepted.project_id,
+            &accepted.workspace_id,
+            &ClaimActor::Run(members[2].0.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        after_request
+            .iter()
+            .find(|claim| claim.claim_id == accepted.claim_id)
+            .unwrap()
+            .owner,
+        accepted.owner
+    );
+    let events = store
+        .list_events(
+            &group,
+            &accepted.project_id,
+            &accepted.workspace_id,
+            &ClaimActor::Run(members[2].0.clone()),
+        )
+        .await
+        .unwrap();
+    assert!(events.iter().any(|event| {
+        event.claim_id == accepted.claim_id && event.action == "handoff_requested"
+    }));
 
     let mut snapshot = SessionProjectionSnapshot::empty(
         "session-test",

@@ -373,6 +373,71 @@ impl WorkstreamClaimStore {
             .collect()
     }
 
+    /// Record a sibling's bounded handoff request without changing ownership.
+    /// Only the current claim owner can reassign it through `Handoff`.
+    pub async fn request_handoff(
+        &self,
+        claim_id: &WorkstreamClaimId,
+        actor: &ClaimActor,
+    ) -> Result<(), WorkstreamClaimError> {
+        let mut conn = self.pool.acquire().await.map_err(storage_error)?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *conn)
+            .await
+            .map_err(storage_error)?;
+        let result = self
+            .request_handoff_locked(&mut conn, claim_id, actor)
+            .await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT")
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(storage_error)?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn request_handoff_locked(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+        claim_id: &WorkstreamClaimId,
+        actor: &ClaimActor,
+    ) -> Result<(), WorkstreamClaimError> {
+        let row = sqlx::query(
+            "SELECT claim_id, project_id, workspace_id, group_id, claim_kind, target, state, \
+             owner_kind, owner_id, version, lease_generation, lease_expires_at, created_at, updated_at \
+             FROM workstream_claim WHERE claim_id=?",
+        )
+        .bind(claim_id.as_str())
+        .fetch_optional(&mut **conn)
+        .await
+        .map_err(storage_error)?
+        .ok_or(WorkstreamClaimError::NotFound)?;
+        let claim = row_to_claim(&row)?;
+        validate_group_actor(
+            conn,
+            &claim.group_id,
+            &claim.project_id,
+            &claim.workspace_id,
+            actor,
+        )
+        .await?;
+        if claim.owner == *actor
+            || !matches!(claim.state, ClaimState::Claimed | ClaimState::Blocked)
+        {
+            return Err(WorkstreamClaimError::InvalidTransition);
+        }
+        let mut event_claim = claim.clone();
+        event_claim.updated_at = now_ms();
+        insert_claim_event(conn, &event_claim, actor, "handoff_requested").await
+    }
+
     pub async fn list_dependencies(
         &self,
         group_id: &AgentRunGroupId,

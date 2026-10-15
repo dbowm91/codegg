@@ -40,7 +40,7 @@ pub struct GlobalEventBus {
 
 ### AppEvent Enum
 
-58 variants across these categories:
+60 variants across these categories:
 
 | Category | Count | Variants |
 |----------|-------|----------|
@@ -53,7 +53,7 @@ pub struct GlobalEventBus {
 | Streaming | 3 | `TextDelta`, `ReasoningDelta`, `AgentFinished` |
 | Subagent | 4 | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
 | AgentRun | 4 | `AgentRunUpdated`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
-| Worktree/Group | 2 | `WorktreeUpdated`, `AgentRunGroupUpdated` |
+| Worktree/Group | 4 | `WorktreeUpdated`, `AgentRunGroupUpdated`, `WorkstreamClaimUpdated`, `AgentRunEvidenceObserved` |
 | Convergence | 1 | `ConvergenceUpdated` |
 | TestRun | 3 | `TestRunStarted`, `TestRunProgress`, `TestRunCompleted` |
 | Diff | 2 | `DiffPending`, `DiffResponded` |
@@ -66,6 +66,12 @@ pub struct GlobalEventBus {
 Each variant has an `event_type()` method returning a `&'static str`
 discriminator for SSE filtering (e.g. `"session:created"`,
 `"tool_call:started"`, `"permission:pending"`, `"provider_attempt:failed"`).
+
+`WorkstreamClaimUpdated` and `AgentRunEvidenceObserved` are internal hints;
+the Core projection adapter intentionally does not expose them as client
+events. Evidence hints are built from bounded durable run results and carry
+relative changed paths plus validation kind/status only. Peer loops apply
+same-group membership and claim-overlap filtering before user-message delivery.
 
 Events use `Arc<str>` for hot-path fields: `session_id` and `delta` on
 `TextDelta`, and `session_id` on `ReasoningDelta` (whose `delta` remains a

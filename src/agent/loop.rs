@@ -130,6 +130,16 @@ pub struct AgentLoop {
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    /// Push hints only; idle runs are never woken by peer observations.
+    pub(super) peer_observation_rx:
+        Option<tokio::sync::broadcast::Receiver<crate::bus::events::AppEvent>>,
+    /// Originating parent session used by durable group bus events. A child
+    /// loop's private transcript session ID is intentionally different.
+    pub(super) peer_observation_session_id: Option<String>,
+    pub(super) peer_group_members: HashMap<String, Vec<String>>,
+    pub(super) peer_claim_targets: HashMap<String, Vec<String>>,
+    pub(super) peer_observation_seen: std::collections::HashSet<String>,
+    pub(super) peer_observation_gap: bool,
     /// Host-owned habit observation state. Only allowlisted structural action
     /// metadata reaches this collector; raw calls/results remain in the
     /// ordinary model execution path and are never persisted here.
@@ -436,6 +446,12 @@ impl AgentLoop {
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
+            peer_observation_rx: None,
+            peer_observation_session_id: None,
+            peer_group_members: HashMap::new(),
+            peer_claim_targets: HashMap::new(),
+            peer_observation_seen: std::collections::HashSet::new(),
+            peer_observation_gap: false,
             habit_project_namespace,
             habit_actions: Vec::new(),
             habit_had_failure: false,
@@ -826,6 +842,16 @@ impl AgentLoop {
     ) {
         self.services.run_control = Some(service);
         self.run_id = Some(run_id);
+        self.peer_observation_rx = Some(crate::bus::global::GlobalEventBus::subscribe());
+        self.peer_observation_gap = true;
+    }
+
+    pub fn set_peer_group_memberships(&mut self, groups: Vec<(String, Vec<String>)>) {
+        self.peer_group_members = groups.into_iter().take(16).collect();
+    }
+
+    pub fn set_peer_observation_session_id(&mut self, session_id: String) {
+        self.peer_observation_session_id = Some(session_id);
     }
 
     pub fn set_steer_receiver(&mut self, rx: mpsc::Receiver<String>) {
@@ -1052,6 +1078,8 @@ impl AgentLoop {
                     tracing::info!("Turn steer received: {}", text);
                 }
             }
+
+            self.inject_peer_observations(&mut request.messages);
 
             // Controls are consumed before the provider request is built.
             // This is a stable boundary: no in-flight provider transcript is

@@ -627,6 +627,17 @@ pub struct AgentRunGroupSummaryProjection {
     pub winner_run_id: Option<String>,
     pub cancel_remaining_on_satisfaction: bool,
     pub updated_at: i64,
+    /// Bounded M003 responsibility claims carried by authorized group
+    /// projection updates. Older clients decode an empty list.
+    #[serde(default)]
+    pub workstream_claims: Vec<crate::projection::workstream::WorkstreamClaimProjection>,
+    #[serde(default)]
+    pub workstream_dependencies: Vec<crate::projection::workstream::WorkstreamDependencyProjection>,
+    /// Presence marks a complete claim/dependency refresh. Group lifecycle
+    /// updates omit this marker so reducers retain the latest board, including
+    /// an explicitly empty board after claims are released.
+    #[serde(default)]
+    pub workstream_claims_updated_at: Option<i64>,
 }
 
 pub type RunGroupSummaryProjection = AgentRunGroupSummaryProjection;

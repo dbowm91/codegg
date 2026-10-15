@@ -300,6 +300,17 @@ group reader. It filters them to the source project/workspace/group and caps
 claims at 128 and projected dependency edges at 512. This is a derived view;
 the daemon claim store remains authoritative for revisions and ownership.
 
+M004 adds claim/dependency summaries to authorized run-group projection
+updates for display. A complete refresh carries `workstream_claims_updated_at`;
+ordinary group lifecycle updates preserve the last complete board, while an
+explicit refresh with empty lists clears released claims. These fields confer
+no authority. Child loops receive same-group global-bus events only as
+push hints, reduced to an allowlist and injected as untrusted user data at a
+provider boundary. They restore membership from the durable group store after
+restart, filter by the originating session, and emit a continuity-gap notice
+when the bounded event stream has a gap. The task board remains the canonical
+read path and identifies itself as snapshot-only when no replay cursor exists.
+
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events
 and `task get` remain compatibility adapters for the migration window; new

@@ -808,6 +808,27 @@ policies. `spawn_many`, `status_group`, `wait_group`, and `cancel_group` are
 bounded additions to the existing task tool; single `spawn` remains the
 normal path.
 
+The blackboard extends this same `task` surface with `board`, `claim`,
+`release_claim`, and `request_handoff`. `board` returns an authorized bounded
+group projection, stored claims/dependencies, and at most 16 handoff requests.
+Its freshly assembled tool snapshot explicitly reports `snapshot_only` because
+it has no replay cursor; consumers must use the existing projection stream
+when stable replay continuity is required. Claim and release actions use the
+M003 CAS contract. `request_handoff` appends a structured request and never
+changes claim ownership; direct parent/child control remains in RunControl.
+
+Active run loops subscribe to the bounded global event bus for group, terminal,
+progress, worktree, claim, and durable result-evidence hints. A result hint
+contains only a bounded relative changed-path list, commit ID, and typed
+validation kind/status pairs from `AgentRunResult`; it is delivered only when
+the paths overlap another member's active path claim. Unsupported path and
+standalone test-job sources are marked unavailable. At each provider boundary
+the loop emits at most 16 allowlisted same-session/same-group facts (8 KiB) in
+a user message explicitly marked as untrusted data. The loop never wakes an
+idle session. A broadcast gap or new process marks continuity unavailable;
+the model can re-read the canonical board. Raw tool output, terminal prose,
+prompts, and credentials are never promoted into system/developer instructions.
+
 - **Singleton daemon**: Exactly one daemon per OS user. `AgentLoop` runs
   inside the daemon; it does not hold the daemon lock itself.
 - **Workspace root is immutable**: `workspace_root` is captured at

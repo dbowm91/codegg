@@ -260,6 +260,11 @@ pub fn build_session_tool_registry(
         } else {
             task_tool
         };
+        let task_tool = task_tool
+            .with_workspace_id(Some(execution.workspace_id.clone()))
+            .with_workstream_claim_store(pool.as_ref().map(|pool| {
+                codegg_core::workstream_claim::WorkstreamClaimStore::new(pool.clone())
+            }));
         tool_registry.register(task_tool);
     }
 

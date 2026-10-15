@@ -1279,6 +1279,7 @@ async fn execute_agent_task(
                     task.repository_id,
                     task.originating_turn_id,
                 )
+                .with_workspace_id(Some(task.workspace_id))
                 .with_max_depth(
                     run.budget
                         .max_depth
@@ -1305,6 +1306,10 @@ async fn execute_agent_task(
             Some(groups) => task_tool.with_run_group_service(Some(groups)),
             None => task_tool,
         };
+        let task_tool =
+            task_tool.with_workstream_claim_store(subagent_pool.pool.as_ref().map(|pool| {
+                codegg_core::workstream_claim::WorkstreamClaimStore::new(pool.clone())
+            }));
         tool_registry.register(task_tool);
     }
 
@@ -1414,6 +1419,33 @@ async fn execute_agent_task(
         let control = subagent_pool.durable_run_control.lock().await.clone();
         if let Some(control) = control {
             agent_loop.set_run_control(control.clone(), run_id.clone());
+            if let Some(runs) = subagent_pool.durable_agent_runs.lock().await.clone() {
+                if let Ok(Some(run)) = runs.get_run(&run_id).await {
+                    if let Ok(Some(task)) = runs.get_task(&run.task_id).await {
+                        agent_loop.set_peer_observation_session_id(task.originating_session_id);
+                    }
+                }
+            }
+            if let Some(groups) = subagent_pool.durable_run_groups.lock().await.clone() {
+                if let Ok(groups) = groups.groups_for_member(&run_id).await {
+                    agent_loop.set_peer_group_memberships(
+                        groups
+                            .into_iter()
+                            .take(16)
+                            .map(|group| {
+                                (
+                                    group.group_id.to_string(),
+                                    group
+                                        .member_run_ids
+                                        .into_iter()
+                                        .map(|member| member.to_string())
+                                        .collect(),
+                                )
+                            })
+                            .collect(),
+                    );
+                }
+            }
             control
                 .register_live(
                     run_id.clone(),
