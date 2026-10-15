@@ -1653,6 +1653,17 @@ mod lsp_profile_isolation_tests {
         assert!(registry.contains("lsp_read"));
         assert!(registry.lsp_service_identity().is_none());
         assert!(registry.lsp_preview_registry().is_none());
+        let lsp = registry.get("lsp").expect("constrained LSP stub");
+        assert!(lsp.description().contains("language server"));
+        assert_eq!(
+            registry
+                .backend_report(None)
+                .into_iter()
+                .find(|row| row.domain == "lsp")
+                .expect("LSP report row")
+                .status,
+            RegistryBackendStatusKind::ConfiguredButUnavailable
+        );
     }
 
     #[test]
@@ -1813,13 +1824,17 @@ mod backend_report_tests {
     fn build_with_backends(backends: ToolBackendConfig) -> ToolRegistry {
         ToolRegistry::with_options(ToolRegistryOptions {
             tool_backends: backends,
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
             ..ToolRegistryOptions::default()
         })
     }
 
     #[test]
     fn all_native_with_default_registry_reports_active_for_registered_domains() {
-        let registry = ToolRegistry::with_defaults();
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+            ..ToolRegistryOptions::default()
+        });
         let report = registry.backend_report(None);
         assert_eq!(report.len(), 3);
         // lsp and security are real tools; context is not a wrapper
