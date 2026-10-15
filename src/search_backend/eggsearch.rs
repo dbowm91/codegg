@@ -1197,7 +1197,7 @@ pub(crate) fn translate_provider_hint(
 pub fn eggsearch_unavailable(detail: &str) -> ToolError {
     ToolError::Execution(format!(
         "eggsearch backend is configured but unavailable: {detail}. \
-         Install eggsearch or set [search].backend = \"builtin\" / \"disabled\"."
+         Configure the managed eggsearch sidecar or set [search].backend = \"disabled\"."
     ))
 }
 
@@ -1627,7 +1627,8 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("eggsearch"));
         assert!(msg.contains("test detail"));
-        assert!(msg.contains("builtin") || msg.contains("disabled"));
+        assert!(msg.contains("managed eggsearch sidecar"));
+        assert!(msg.contains("[search].backend = \"disabled\""));
     }
 
     #[test]
