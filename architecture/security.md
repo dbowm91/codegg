@@ -99,6 +99,17 @@ metadata on a trusted route. See
 `architecture/git.md` and the Linux execution-isolation corrective closure
 records for current evidence and open items.
 
+Trusted `egggit` preflight also rejects a repository whose `.git/objects` or
+linked-worktree common object store already contains `objects/info/alternates`.
+Git follows this data file independently of environment and config overrides,
+so trusted reads can otherwise resolve objects from outside the selected
+repository. The check happens before process launch while repository metadata
+remains writable; it does not prevent an alternate file or object-store path
+from being replaced after preflight. Treat it as a fail-closed compatibility
+guard, not race-safe isolation. A complete M003 trust-boundary claim still
+requires enforcement that prevents trusted Git from reading through a mutable
+external object-store alias for the full process lifetime.
+
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the
   running binary (inherited env/PATH/cwd cannot select it)
