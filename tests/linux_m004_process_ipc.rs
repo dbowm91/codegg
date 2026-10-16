@@ -248,6 +248,90 @@ else:
     drop((tcp4, tcp6, inherited_stream));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_network_runs_cargo_metadata_and_check_without_network() {
+    if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
+        eprintln!("skipped: set {M005_OPT_IN}=1 for the native M005 toolchain probe");
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("M005 offline toolchain probe requires qualified M004 setup: {reason}");
+    }
+
+    let workspace = tempfile::tempdir().expect("offline toolchain workspace");
+    let source = workspace.path().join("src");
+    std::fs::create_dir(&source).expect("create fixture source directory");
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname = \"offline-toolchain-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write fixture manifest");
+    std::fs::write(
+        source.join("main.rs"),
+        "fn main() { println!(\"offline\"); }\n",
+    )
+    .expect("write fixture source");
+    std::fs::write(
+        workspace.path().join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"offline-toolchain-probe\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write dependency-free lockfile");
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("test runner HOME is available");
+    let rustup_home = std::env::var_os("RUSTUP_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".rustup"));
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cargo"));
+    let rustup = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("rustup"))
+        .find(|candidate| candidate.is_file())
+        .expect("Rustup is installed by the Linux test toolchain")
+        .canonicalize()
+        .expect("resolve rustup executable");
+
+    let rustup_home = shell_quote(&rustup_home.to_string_lossy());
+    let cargo_bin = shell_quote(&cargo_home.join("bin").to_string_lossy());
+    let cargo_home = shell_quote(&cargo_home.to_string_lossy());
+    let target_dir = shell_quote(&workspace.path().join("target").to_string_lossy());
+    let manifest = shell_quote(&workspace.path().join("Cargo.toml").to_string_lossy());
+    let rustup = shell_quote(&rustup.to_string_lossy());
+    let script = format!(
+        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_TARGET_DIR={target_dir}; export PATH={cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --manifest-path {manifest}"
+    );
+
+    let spec = SandboxConfig::new()
+        .with_enabled(true)
+        .with_mode(SandboxMode::WorkspaceWrite)
+        .with_linux_offline_network(true)
+        .launch_spec("/bin/sh", &["-c".into(), script], Some(workspace.path()))
+        .expect("offline M005 toolchain launch spec");
+    let mut request = ManagedProcessRequest::new(
+        [spec.target.as_os_str().to_owned()]
+            .into_iter()
+            .chain(spec.args.iter().map(OsString::from))
+            .collect(),
+        workspace.path().to_path_buf(),
+        ProcessProvenance::new("linux-m005", "offline-cargo-toolchain"),
+    );
+    request.timeout = Some(Duration::from_secs(120));
+    request.sandbox = SandboxRequest::Required(spec);
+
+    let result = ManagedProcessService::run(request)
+        .await
+        .expect("required offline toolchain namespace should launch");
+    assert!(
+        result.exit_status.success(),
+        "offline Cargo compatibility failed (status {:?}); stdout: {}; stderr: {}",
+        result.exit_status,
+        result.stdout.to_string_lossy(),
+        result.stderr.to_string_lossy()
+    );
+}
+
 fn stop(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
