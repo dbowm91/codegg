@@ -147,6 +147,14 @@ impl SubagentNameRegistry {
 /// march in lockstep through the same prefix, then applies the `-N` suffix
 /// rule for the unlucky ones that land on a held base name.
 fn draw(active: &HashMap<u64, String>) -> String {
+    // Clippy evaluates `SUBAGENT_NAMES` as a const and sees 46 entries, so it
+    // reports this branch as dead. It is not permanently dead: the pool is
+    // generated from an authored TOML, and emptying that file would make the
+    // const empty — at which point clippy's own evaluation stops flagging it.
+    // The guard is kept so a future empty pool degrades to a fallback name
+    // instead of dividing by zero in the `% SUBAGENT_NAMES.len()` below and
+    // panicking a worker thread over a cosmetic detail.
+    #[allow(clippy::const_is_empty)]
     if SUBAGENT_NAMES.is_empty() {
         return FALLBACK.to_string();
     }
@@ -486,6 +494,9 @@ mod tests {
             pool_entry(&name).is_none(),
             "an exhausted pool must not claim a pool identity"
         );
-        assert!(is_taken(&name, &active) == false);
+        assert!(
+            !is_taken(&name, &active),
+            "{name} collided with a held name"
+        );
     }
 }
