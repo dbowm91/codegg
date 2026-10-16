@@ -721,6 +721,34 @@ impl CoreDaemon {
                         ) as crate::agent::provider_qualification::SharedProviderCredentialObserver
                     })
                 });
+                // Delegated mutating runs derive their managed worktree from
+                // the authoritative repository binding of the session's
+                // workspace. Carry that identity into TaskTool so the
+                // scheduler can provision isolated child checkouts instead
+                // of treating a repository-backed session as repo-less.
+                let repository_id = match self.pool.clone() {
+                    Some(pool) => {
+                        let storage = codegg_core::project_storage::ProjectStorage::new(pool);
+                        match storage.workspace_binding(&runtime.workspace_id).await {
+                            Ok(Some(binding))
+                                if binding.status
+                                    == codegg_core::project_storage::BindingStatus::Resolved =>
+                            {
+                                binding.repository_id
+                            }
+                            Ok(_) => None,
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    workspace_id = %runtime.workspace_id,
+                                    "workspace repository binding lookup failed for delegated runs"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -1947,15 +1975,17 @@ mod tests {
     /// call ever leaving the process.
     struct RecordingTurnRuntime {
         called: AtomicBool,
+        repository_id: tokio::sync::Mutex<Option<codegg_core::identity::RepositoryId>>,
     }
 
     #[async_trait::async_trait]
     impl crate::agent::turn_runtime::TurnRuntime for RecordingTurnRuntime {
         async fn run_turn(
             &self,
-            _input: crate::agent::turn_runtime::TurnRunInput,
+            input: crate::agent::turn_runtime::TurnRunInput,
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, Ordering::SeqCst);
+            *self.repository_id.lock().await = input.repository_id;
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
             let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
@@ -1991,6 +2021,7 @@ mod tests {
     async fn daemon(pool: sqlx::SqlitePool) -> (CoreDaemon, Arc<RecordingTurnRuntime>) {
         let runtime = Arc::new(RecordingTurnRuntime {
             called: AtomicBool::new(false),
+            repository_id: tokio::sync::Mutex::new(None),
         });
         let deps = CoreRuntimeDeps::new(Some(pool), None, None)
             .with_turn_runtime(
@@ -2045,6 +2076,67 @@ mod tests {
             CoreResponse::Session { session } => session.id,
             other => panic!("expected Session, got {other:?}"),
         }
+    }
+
+    async fn create_repository_session(daemon: &CoreDaemon) -> (String, tempfile::TempDir) {
+        use std::process::Command;
+
+        let workspace_dir = tempfile::tempdir().expect("workspace temp dir");
+        // execution-ownership: test_only
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace_dir.path())
+            .status()
+            .expect("git init");
+        // execution-ownership: test_only
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/turns-test.git",
+            ])
+            .current_dir(workspace_dir.path())
+            .status()
+            .expect("git remote add");
+        let workspace = daemon
+            .workspaces
+            .get_or_register(workspace_dir.path())
+            .await
+            .expect("register repository workspace");
+        let project = codegg_core::project_catalog::ProjectCatalog::new(
+            daemon.pool.clone().expect("daemon pool"),
+        )
+        .register_local_project(
+            codegg_core::project_catalog::RegisterLocalProject {
+                display_name: "Turns repository test project".to_string(),
+                description: None,
+                tags: Vec::new(),
+                primary_repository_id: None,
+            },
+            &workspace.id,
+            "turns-test",
+        )
+        .await
+        .expect("register repository project");
+        let path = workspace_dir.path().to_path_buf();
+        let session_id = match daemon
+            .handle_request(crate::core::new_request(
+                "req-create-repository-session".into(),
+                CoreRequest::SessionCreate {
+                    directory: path.to_string_lossy().into_owned(),
+                    title: None,
+                    project_id: Some(project.project_id.as_str().to_string()),
+                    workspace_id: Some(workspace.id.as_str().to_string()),
+                },
+            ))
+            .await
+            .expect("create repository session")
+        {
+            CoreResponse::Session { session } => session.id,
+            other => panic!("expected Session, got {other:?}"),
+        };
+        (session_id, workspace_dir)
     }
 
     async fn seed_connection(pool: &sqlx::SqlitePool, kind: ProviderKind) -> ProviderConnectionId {
@@ -2229,6 +2321,84 @@ mod tests {
                 "the turn must reach the runtime for {model} once the provider resolves",
             );
         }
+
+        if let Some(value) = previous {
+            std::env::set_var("OPENCODE_GO_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENCODE_GO_API_KEY");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(clippy::await_holding_lock)]
+    async fn repository_binding_reaches_turn_runtime_for_isolated_delegation() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous = std::env::var("OPENCODE_GO_API_KEY").ok();
+        std::env::set_var("OPENCODE_GO_API_KEY", "test-key-not-used");
+
+        let pool = pool().await;
+        let (daemon, runtime) = daemon(pool.clone()).await;
+        let (session_id, _workspace_dir) = create_repository_session(&daemon).await;
+        let session = SessionStore::new(pool.clone())
+            .get(&session_id)
+            .await
+            .expect("load repository session")
+            .expect("repository session exists");
+        let workspace_id = codegg_core::identity::WorkspaceId::parse(
+            session
+                .workspace_id
+                .as_deref()
+                .expect("session workspace binding"),
+        )
+        .expect("workspace id parses");
+        let binding = codegg_core::project_storage::ProjectStorage::new(pool.clone())
+            .workspace_binding(&workspace_id)
+            .await
+            .expect("load workspace binding")
+            .expect("workspace binding exists");
+        assert_eq!(
+            binding.status,
+            codegg_core::project_storage::BindingStatus::Resolved
+        );
+        let expected_repository = binding
+            .repository_id
+            .clone()
+            .expect("repository lineage was resolved");
+
+        let connection_id =
+            seed_connection(&pool, ProviderKind::Other("opencode_go".to_string())).await;
+        seed_catalog(&pool, &connection_id, &["minimax-m3"]).await;
+        let connection = ProviderConnectionStore::new(pool.clone())
+            .get(&connection_id)
+            .await
+            .expect("get connection")
+            .expect("connection row");
+        write_durable_selection(
+            &pool,
+            &session_id,
+            &connection_id,
+            connection.revision,
+            "minimax-m3",
+        )
+        .await;
+
+        let response = daemon
+            .handle_request(turn_request(&session_id, "opencode_go/minimax-m3"))
+            .await
+            .expect("submit repository-backed turn");
+        assert!(
+            matches!(
+                response,
+                CoreResponse::TurnAdmissionReceipt { ref receipt } if receipt.status == "accepted"
+            ),
+            "repository-backed turn should be accepted: {response:?}"
+        );
+        assert!(runtime.called.load(Ordering::SeqCst));
+        assert_eq!(
+            *runtime.repository_id.lock().await,
+            Some(expected_repository),
+            "the resolved workspace repository identity must reach TaskTool"
+        );
 
         if let Some(value) = previous {
             std::env::set_var("OPENCODE_GO_API_KEY", value);
