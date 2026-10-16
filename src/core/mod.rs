@@ -324,7 +324,7 @@ pub(crate) fn core_event_metadata(
             turn_id,
             ..
         } => (Some(session_id.clone()), turn_id.clone()),
-        CoreEvent::SessionUpdated { session_id } => (Some(session_id.clone()), None),
+        CoreEvent::SessionUpdated { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::SubagentStarted { session_id, .. }
         | CoreEvent::SubagentProgress { session_id, .. }
         | CoreEvent::SubagentCompleted { session_id, .. }
@@ -696,11 +696,15 @@ pub(crate) fn map_app_event_to_core_event(
             },
         }),
         crate::bus::events::AppEvent::SessionCreated { id, .. } => {
-            Some(CoreEvent::SessionUpdated { session_id: id })
+            Some(CoreEvent::SessionUpdated {
+                session_id: id,
+                title: None,
+            })
         }
-        crate::bus::events::AppEvent::SessionUpdated { id } => {
-            Some(CoreEvent::SessionUpdated { session_id: id })
-        }
+        crate::bus::events::AppEvent::SessionUpdated { id } => Some(CoreEvent::SessionUpdated {
+            session_id: id,
+            title: None,
+        }),
         crate::bus::events::AppEvent::FileChanged { path, action, .. } => {
             Some(CoreEvent::FileChanged { path, action })
         }
@@ -1176,10 +1180,14 @@ mod tests {
         // SessionUpdated has no turn_id and should be returned unchanged.
         let ev = CoreEvent::SessionUpdated {
             session_id: "s1".into(),
+            title: Some("Titled".into()),
         };
         let out = set_turn_id_on_event(ev.clone(), "turn-x".into());
         match out {
-            CoreEvent::SessionUpdated { session_id } => assert_eq!(session_id, "s1"),
+            CoreEvent::SessionUpdated { session_id, title } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(title.as_deref(), Some("Titled"));
+            }
             other => panic!("expected SessionUpdated, got {:?}", other),
         }
 

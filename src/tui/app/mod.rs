@@ -2039,12 +2039,27 @@ impl App {
                 }
                 true
             }
-            E::SessionUpdated { session_id } => {
-                // The daemon auto-titler writes the new title and publishes
-                // this event, but the event carries only an id — so the
-                // title has to be re-read. Without this the UI kept showing
-                // "Untitled" until a manual session reload.
-                crate::tui::commands::sessions::start_refresh_session(self, session_id);
+            E::SessionUpdated { session_id, title } => {
+                // The daemon auto-titler writes the new title and carries
+                // it on the event when it knows it — apply directly with
+                // no round trip. Id-only events (agent/model selection,
+                // legacy publishers) fall back to a bounded refetch, which
+                // is what kept the UI on "Untitled" until a manual reload.
+                match title.filter(|t| !t.trim().is_empty()) {
+                    Some(title) => {
+                        let request_id = self.dialog_state.session_refresh_request.begin();
+                        crate::tui::commands::sessions::apply_session_refreshed(
+                            self,
+                            request_id,
+                            session_id,
+                            Some(title),
+                            None,
+                        );
+                    }
+                    None => {
+                        crate::tui::commands::sessions::start_refresh_session(self, session_id);
+                    }
+                }
                 true
             }
             E::TurnFailed { message, .. } => {
@@ -5693,6 +5708,9 @@ impl App {
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
+            }
+            B::Projects => {
+                self.open_project_picker();
             }
             B::Stop => {
                 crate::tui::commands::turn_control::stop(self);
@@ -11983,8 +12001,8 @@ impl App {
     /// Kick off an async refresh of the project catalog.
     ///
     /// This is the public entry point for the catalog client
-    /// (Multi-Project TUI milestone 1). Callers (e.g. the eventual
-    /// `Space f` picker, startup, or a `/projects` slash command)
+    /// (Multi-Project TUI milestone 1). Callers (e.g. the `Ctrl+\`
+    /// picker, startup, or a `/projects` slash command)
     /// dispatch this through the normal event loop so the result
     /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
     /// completion. The method itself never blocks.

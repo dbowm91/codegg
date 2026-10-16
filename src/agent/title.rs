@@ -2,10 +2,12 @@
 //!
 //! The `title` built-in agent (`assets/agents/title.toml`,
 //! `runtime_kind = "title"`) exists so turns can produce a concise
-//! human-readable session title. After a turn completes, the turn runtime
-//! fires a best-effort background task that generates a title from the
-//! turn's in-memory user request + assistant outcome and persists it when
-//! the session is still `"Untitled"` (see `maybe_auto_title_session`).
+//! human-readable session title. At turn start, the turn runtime fires a
+//! best-effort background task that generates a title from the turn's
+//! in-memory user request and persists it when the session is still
+//! `"Untitled"` (see `maybe_auto_title_session`), so naming does not wait
+//! for a minutes-long turn to finish. A post-completion trigger retries
+//! with the full assistant outcome when the early attempt loses.
 //! Failures are logged and never fail the turn; the next completed turn
 //! in the same session retries naturally, since the title is still the
 //! creation default.
@@ -503,6 +505,7 @@ pub(crate) async fn maybe_auto_title_session(
                     None,
                     crate::protocol::core::CoreEvent::SessionUpdated {
                         session_id: session_id.clone(),
+                        title: Some(title.clone()),
                     },
                 )
                 .await;
@@ -976,6 +979,87 @@ mod tests {
             request.context.session_id.as_deref(),
             Some("session-1"),
             "the session identity must survive the request projection"
+        );
+    }
+
+    /// A successful auto-title publishes `SessionUpdated` carrying the new
+    /// title, so the TUI can apply it directly with no refetch round trip.
+    #[tokio::test]
+    async fn auto_title_publishes_session_updated_with_title() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let url = format!(
+            "file:title_event_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str(&url)
+                    .expect("valid sqlite options")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("connect in-memory sqlite");
+        crate::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+
+        let store = crate::session::SessionStore::new(pool.clone());
+        let created = store
+            .create(crate::session::CreateSession {
+                project_id: "legacy-projection".to_string(),
+                directory: "/tmp".to_string(),
+                title: None,
+                ..Default::default()
+            })
+            .await
+            .expect("create untitled session");
+        assert_eq!(created.title, "Untitled");
+
+        let log = Arc::new(crate::core::event_log::EventLog::new(16));
+        let mut rx = log.subscribe();
+        let title = maybe_auto_title_session(
+            pool.clone(),
+            created.id.clone(),
+            Box::new(FakeTitleProvider {
+                text: "Fix login redirect loop".to_string(),
+            }),
+            "fake/model".to_string(),
+            "the login redirect is broken".to_string(),
+            "fixed the redirect target".to_string(),
+            Some(Arc::clone(&log)),
+        )
+        .await
+        .expect("auto-title succeeds");
+        assert_eq!(title, "Fix login redirect loop");
+
+        let envelope = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("event arrives")
+            .expect("broadcast stays open");
+        match envelope.payload {
+            crate::protocol::core::CoreEvent::SessionUpdated { session_id, title } => {
+                assert_eq!(session_id, created.id);
+                assert_eq!(
+                    title.as_deref(),
+                    Some("Fix login redirect loop"),
+                    "the event must carry the title for direct TUI apply"
+                );
+            }
+            other => panic!("expected SessionUpdated, got {other:?}"),
+        }
+
+        let stored = store
+            .get(&created.id)
+            .await
+            .expect("reload")
+            .expect("session row");
+        assert_eq!(stored.title, "Fix login redirect loop");
+        assert_eq!(
+            stored.slug, "fix-login-redirect-loop",
+            "the slug must move with the title"
         );
     }
 }

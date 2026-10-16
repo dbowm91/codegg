@@ -827,6 +827,42 @@ impl TurnRuntime for DefaultTurnRuntime {
         let title_user_excerpt = latest_user_question(&messages_dto).unwrap_or_default();
         let title_is_specialized = selected_agent.name == crate::agent::title::TITLE_AGENT_NAME
             || selected_agent.runtime_kind == Some(crate::agent::AgentRuntimeKind::Title);
+
+        // Early async title: name the session while the turn still runs.
+        // A long agentic turn can take minutes; waiting for `Ok(events)`
+        // would leave every fresh session "Untitled" for the whole run.
+        // This attempt uses the user excerpt only and never blocks or
+        // fails the turn. The post-completion trigger below retries with
+        // the full assistant output if this attempt loses: the helper
+        // re-checks the stored title before writing, so the loser is a
+        // silent no-op and a raced manual rename always wins.
+        if !title_is_specialized {
+            if let Some(pool) = title_pool.clone() {
+                if !title_user_excerpt.trim().is_empty() {
+                    let session_id = session_id.clone();
+                    let event_log = Some(event_log.clone());
+                    let early_provider = title_provider.clone_box();
+                    let early_model = if is_semantic_model {
+                        model.clone()
+                    } else {
+                        model_name.clone()
+                    };
+                    let early_excerpt = title_user_excerpt.clone();
+                    tokio::spawn(async move {
+                        crate::agent::title::maybe_auto_title_session(
+                            pool,
+                            session_id,
+                            early_provider,
+                            early_model,
+                            early_excerpt,
+                            String::new(),
+                            event_log,
+                        )
+                        .await;
+                    });
+                }
+            }
+        }
         let agent_loop_input = AgentLoopBuildInput {
             agents,
             provider,
@@ -995,10 +1031,12 @@ impl TurnRuntime for DefaultTurnRuntime {
                             },
                         )
                         .await;
-                    // Title-agent auto-naming: best-effort background
-                    // title when the session still carries the creation
-                    // default. Never blocks or fails the turn; the
-                    // title helper re-checks the stored title before
+                    // Title-agent auto-naming retry: best-effort
+                    // background title when the session still carries
+                    // the creation default (i.e. the early turn-start
+                    // attempt above did not win). Retries with the full
+                    // assistant output. Never blocks or fails the turn;
+                    // the title helper re-checks the stored title before
                     // writing so a raced manual rename wins.
                     if !title_is_specialized {
                         if let Some(pool) = title_pool {

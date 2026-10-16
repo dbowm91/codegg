@@ -348,10 +348,10 @@ pub enum TuiCommand {
     },
     /// Completion: a single session's metadata was refreshed.
     ///
-    /// Auto-title writes the new title in the daemon and publishes
-    /// `CoreEvent::SessionUpdated`, but that event carries only a session id,
-    /// so the title itself has to be re-read. Without this the sidebar and
-    /// header kept showing "Untitled" until a manual session reload.
+    /// Fallback for id-only `CoreEvent::SessionUpdated` events. Auto-title
+    /// events carry the title itself and are applied directly without this
+    /// round trip. Without either path the sidebar and header kept showing
+    /// "Untitled" until a manual session reload.
     SessionRefreshed {
         request_id: u64,
         session_id: String,

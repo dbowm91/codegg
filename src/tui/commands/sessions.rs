@@ -18,17 +18,24 @@ use std::sync::Arc;
 
 /// Re-read one session's metadata after the daemon reported an update.
 ///
-/// The daemon-side auto-titler writes the title and publishes
-/// `CoreEvent::SessionUpdated { session_id }`, which carries only an id.
-/// Without this refetch the UI keeps rendering the pre-title value
-/// ("Untitled") until the user manually reloads sessions.
+/// Fallback for id-only `CoreEvent::SessionUpdated` events (agent/model
+/// selection, legacy publishers). Auto-title events carry the title itself
+/// and are applied directly by the event arm without calling this.
 ///
 /// Bounded and generation-guarded: a stale completion is dropped rather than
-/// overwriting a newer title.
+/// overwriting a newer title. Skipped outright when there is no active
+/// project context — the daemon rejects an empty `project_id` with
+/// `project_context_required`, so sending one is a guaranteed failure.
 pub(crate) fn start_refresh_session(app: &mut App, session_id: String) {
     if session_id.is_empty() {
         return;
     }
+    // Same source as `start_reload_sessions`: the active tab's project key,
+    // never process cwd. `None` (no tab/context yet) means skip, not `""`.
+    let Some(project_id) = app.active_project_key().filter(|key| !key.is_empty()) else {
+        tracing::debug!(%session_id, "session refresh skipped: no active project context");
+        return;
+    };
     let request_id = app.dialog_state.session_refresh_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -53,7 +60,7 @@ pub(crate) fn start_refresh_session(app: &mut App, session_id: String) {
             let request = crate::core::new_request(
                 format!("session-refresh-{}", uuid::Uuid::new_v4()),
                 CoreRequest::SessionList {
-                    project_id: String::new(),
+                    project_id,
                     show_archived: true,
                     limit: 200,
                 },
@@ -2812,6 +2819,152 @@ mod tests {
             Some("Untitled"),
             "another session's title must not overwrite the bound session"
         );
+    }
+
+    /// Regression (011): `start_refresh_session` sent
+    /// `SessionList { project_id: "" }`, which the daemon always rejects
+    /// with `project_context_required`, so the completion carried an error
+    /// and the UI stayed on "Untitled" until a manual reload. The request
+    /// must carry the active tab's project key instead.
+    #[tokio::test]
+    async fn refresh_session_sends_active_project_context() {
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct RecordingClient {
+            seen_project_id: Mutex<Option<String>>,
+        }
+
+        #[async_trait]
+        impl crate::core::CoreClient for RecordingClient {
+            async fn request(
+                &self,
+                request: crate::protocol::core::RequestEnvelope<CoreRequest>,
+            ) -> Result<CoreResponse, crate::error::AppError> {
+                match request.payload {
+                    CoreRequest::SessionList { project_id, .. } => {
+                        *self.seen_project_id.lock().unwrap() = Some(project_id);
+                        Ok(CoreResponse::SessionList {
+                            sessions: vec![crate::protocol::dto::Session {
+                                id: "sess-1".into(),
+                                title: "Fix login redirect loop".into(),
+                                ..Default::default()
+                            }],
+                        })
+                    }
+                    other => panic!("unexpected core request: {other:?}"),
+                }
+            }
+
+            fn subscribe(
+                &self,
+            ) -> tokio::sync::mpsc::Receiver<
+                crate::protocol::core::EventEnvelope<crate::protocol::core::CoreEvent>,
+            > {
+                let (_tx, rx) = tokio::sync::mpsc::channel(1);
+                rx
+            }
+        }
+
+        let client = std::sync::Arc::new(RecordingClient {
+            seen_project_id: Mutex::new(None),
+        });
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        app.tui_cmd_tx = Some(tx);
+        app.set_core_client(client.clone());
+
+        start_refresh_session(&mut app, "sess-1".into());
+
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("refresh completion arrives")
+            .expect("channel stays open");
+        match completion {
+            TuiCommand::SessionRefreshed { title, error, .. } => {
+                assert!(error.is_none(), "refresh must succeed, got {error:?}");
+                assert_eq!(title.as_deref(), Some("Fix login redirect loop"));
+            }
+            other => panic!("expected SessionRefreshed, got {other:?}"),
+        }
+        let seen = client.seen_project_id.lock().unwrap().clone();
+        assert!(
+            seen.as_deref().is_some_and(|key| !key.is_empty()),
+            "refresh must carry the active project key, not an empty id (got {seen:?})"
+        );
+    }
+
+    /// An empty session id must not spawn background work.
+    #[test]
+    fn refresh_session_with_empty_id_spawns_nothing() {
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        let before = app.task_registry.active_count();
+        start_refresh_session(&mut app, String::new());
+        assert_eq!(
+            app.task_registry.active_count(),
+            before,
+            "an empty session id must not spawn a refresh task"
+        );
+    }
+
+    /// An event-carried title applies directly with no `SessionList` round
+    /// trip: the bound session, the App-owned dialog, and the painted
+    /// focus-manager clone all move together.
+    #[test]
+    fn session_updated_event_with_title_applies_without_round_trip() {
+        use crate::protocol::core::CoreEvent;
+
+        let mut app = crate::tui::app::App::new_for_testing("/tmp".to_string());
+        let untitled = crate::session::Session {
+            id: "sess-1".into(),
+            title: "Untitled".into(),
+            ..Default::default()
+        };
+        app.session_state.session = Some(untitled.clone());
+        // Seed the dialog before opening so the focus-manager clone holds
+        // the stale title too — both copies must move.
+        app.dialog_state
+            .session_dialog
+            .load_sessions(vec![untitled]);
+        app.open_dialog(crate::tui::Dialog::Session);
+
+        let handled = app.apply_core_event(CoreEvent::SessionUpdated {
+            session_id: "sess-1".into(),
+            title: Some("Fix login redirect loop".into()),
+        });
+
+        assert!(handled, "SessionUpdated must be consumed");
+        assert_eq!(
+            app.task_registry.active_count(),
+            0,
+            "an event-carried title must not spawn a refetch task"
+        );
+        assert_eq!(
+            app.session_state.session.as_ref().map(|s| s.title.as_str()),
+            Some("Fix login redirect loop"),
+            "the bound session must show the auto-title immediately"
+        );
+        assert!(
+            app.dialog_state
+                .session_dialog
+                .sessions
+                .iter()
+                .any(|s| s.id == "sess-1" && s.title == "Fix login redirect loop"),
+            "the App-owned dialog copy must move"
+        );
+        let painted = app
+            .focus_manager
+            .with_dialog::<crate::tui::components::dialogs::session::SessionDialog, _>(
+                crate::tui::components::component::DialogType::Session,
+                |dialog| {
+                    dialog
+                        .sessions
+                        .iter()
+                        .any(|s| s.id == "sess-1" && s.title == "Fix login redirect loop")
+                },
+            )
+            .expect("session dialog is on the focus stack");
+        assert!(painted, "the painted focus-manager clone must move too");
     }
 }
 

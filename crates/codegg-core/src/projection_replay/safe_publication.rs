@@ -389,6 +389,7 @@ mod tests {
             },
             CoreEvent::SessionUpdated {
                 session_id: "s".into(),
+                title: None,
             },
             CoreEvent::ProjectRegistered {
                 project_id: "p".into(),

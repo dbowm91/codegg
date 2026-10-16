@@ -5178,6 +5178,7 @@ mod tests {
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
                     session_id: "s1".into(),
+                    title: None,
                 },
             )
             .await;
@@ -5217,6 +5218,7 @@ mod tests {
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
                     session_id: "s1".into(),
+                    title: None,
                 },
             )
             .await;
@@ -5260,6 +5262,7 @@ mod tests {
                 None,
                 crate::protocol::core::CoreEvent::SessionUpdated {
                     session_id: "s1".into(),
+                    title: None,
                 },
             )
             .await;

@@ -41,7 +41,7 @@ failure exist **only** on this stream.
 | `TurnFailed` | `Error` + the daemon message as a toast |
 | `Error` | `Error` + `code: message` as a toast |
 | `PermissionPending` / `QuestionPending` | open the matching dialog |
-| `SessionUpdated` | spawn a bounded single-session metadata refresh (title) |
+| `SessionUpdated` | apply the carried title directly; id-only events fall back to a bounded single-session metadata refresh |
 
 Usage reaches the footer on `TurnCompleted`, not on
 `AppEvent::AgentFinished`: that bus event is intentionally not mapped across
@@ -65,9 +65,12 @@ confident percentage against a window the selected model may not have. The
 number is deliberately the one that gates compaction, so the meter cannot
 disagree with the behaviour it describes.
 
-`SessionUpdated` carries only a session id, so the daemon-side auto-titler
-(which writes the title and publishes the event) still requires a re-read.
-That re-read is the `SessionRefreshed` command: it is generation-guarded,
+`SessionUpdated` carries an optional title: auto-title events publish
+`Some(title)` and the TUI applies it directly with no round trip.
+Id-only events (`title: None` — agent/model selection, legacy publishers)
+still require a re-read. That re-read is the `SessionRefreshed` command:
+it is generation-guarded, carries the active tab's project key (an empty
+id is never sent — the daemon rejects it with `project_context_required`),
 updates only the title, and deliberately avoids `App::set_session` — that
 would navigate and re-arm the event stream on a background metadata refresh.
 It must write to both `dialog_state.session_dialog` and the focus-manager

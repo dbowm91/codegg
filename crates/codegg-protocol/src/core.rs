@@ -3747,6 +3747,11 @@ pub enum CoreEvent {
     },
     SessionUpdated {
         session_id: String,
+        /// New title when the publisher knows it (daemon auto-title).
+        /// `None` preserves the old id-only shape: receivers fall back to
+        /// a bounded metadata refetch. Serde-defaulted for wire compat.
+        #[serde(default)]
+        title: Option<String>,
     },
     FileChanged {
         path: String,
