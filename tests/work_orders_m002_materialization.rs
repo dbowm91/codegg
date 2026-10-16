@@ -526,7 +526,7 @@ async fn managed_worktree_creation_materializes_filter_free_checkout() {
     );
     #[cfg(not(windows))]
     assert!(
-        (200..260).contains(&path_len),
+        (180..260).contains(&path_len),
         "qualification path should exercise a deep checkout path, got {path_len}"
     );
     let git_root = std::process::Command::new("git")

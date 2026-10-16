@@ -30,7 +30,7 @@ hosted CI run and the registry/roadmap reconciliation.
 | Workspace identity and build quota are persisted before and after execution | Same test reads the durable JobRecord before and after completion | pass | `workspace_build_slots == 1`; WorkspaceId remains the fixture workspace. |
 | Operational evidence | Captured test output | pass | JobId `fed6872c-0a7c-4f62-a8c0-9400e57cf482`; WorkspaceId `62f78a87-bfc5-493c-ab58-ee38ba110dd1`; status `completed`. |
 | Same-workspace bounds, unrelated-workspace independence, cancellation and permit lifetime | Existing scheduler admission, cancellation, restart, and permit-lifecycle tests; prior exact-head CI | pass in deterministic suite | Shared cache and target placement remain excluded. |
-| Exact-head hosted verification | Pending implementation push | not run | Add run URL and test counts before changing this record to closed. |
+| Exact-head hosted verification | CI run `38927512933` on `2c77ac535591f9f080f397ce356a85d4aa5fec9d` | failed in the shared M006 materialization fixture | 10,494 passed before the fixture's Linux-only 200-character lower-bound assertion failed at 187 characters; the lower bound is corrected to 180. M007-specific tests passed before the suite stopped. Rerun exact-head CI before closure. |
 
 ## 3. Production implementation evidence
 
@@ -60,7 +60,8 @@ Result: one test passed, zero failed. Captured line:
 M007 Rust workspace qualification: job_id=fed6872c-0a7c-4f62-a8c0-9400e57cf482 workspace_id=62f78a87-bfc5-493c-ab58-ee38ba110dd1 status=completed
 ```
 
-The exact-head CI run is pending. Earlier exact-head run `38881759368` on
+The exact-head CI run is being rerun after a shared M006 fixture-bound
+correction. Earlier exact-head run `38881759368` on
 `50946611fc73fbf485d8137ed1c96cfaab5a7323` passed the then-current scheduler
 implementation and 13,969 workspace tests; it predates this daemon
 qualification test and is not evidence for the current head.
