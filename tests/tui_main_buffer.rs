@@ -53,6 +53,26 @@ fn buffer_text(buf: &Buffer) -> String {
         .join("\n")
 }
 
+/// Text of the working-strip rows only.
+///
+/// The live toast column is a 60x10 overlay pinned to the top right, so
+/// `buffer_text` cannot distinguish "the status row says this" from "a toast
+/// that happens to be on screen right now says this". Reading the strip's own
+/// rect is the only way to assert on the record rather than the notification.
+fn strip_text(app: &App, buf: &Buffer) -> String {
+    let Some(strip) = app.ui_state.working_area else {
+        return String::new();
+    };
+    (strip.y..strip.y + strip.height)
+        .map(|y| {
+            (strip.x..strip.x + strip.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn click(app: &mut App, column: u16, row: u16) {
     app.on_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -203,15 +223,205 @@ fn a_working_turn_draws_a_throbber_above_the_composer() {
 }
 
 #[test]
-fn an_idle_buffer_reclaims_the_strip_rows() {
+fn the_status_row_is_reserved_in_every_state_so_the_transcript_never_reflows() {
+    // The strip's height is subtracted from the transcript viewport, so a strip
+    // that appears and disappears moves everything the user is reading. It used
+    // to be gated on "there is something to say", which meant the transcript
+    // jumped on every submit and again on every completion.
+    //
+    // Row 0 is reserved unconditionally now, so the invariant to defend is not
+    // "idle shows no strip" — it is that the viewport is the same size in every
+    // state. That is the stronger claim and the one actually worth a test.
+    let mut strip_heights = Vec::new();
+    let mut prompt_tops = Vec::new();
+    for status in [
+        SessionStatus::Idle,
+        SessionStatus::Working,
+        SessionStatus::Error,
+        SessionStatus::Idle,
+    ] {
+        let mut app = test_app();
+        app.session_state.session_status = status;
+        render_to_buffer(&mut app, 100, 30);
+        let strip = app
+            .ui_state
+            .working_area
+            .expect("the status row is reserved in every state");
+        strip_heights.push(strip.height);
+        prompt_tops.push(app.prompt_area.expect("prompt area recorded").y);
+    }
+
+    assert!(
+        strip_heights.iter().all(|h| *h == 1),
+        "the status row must stay exactly one row tall, got {strip_heights:?}"
+    );
+    assert!(
+        prompt_tops.windows(2).all(|w| w[0] == w[1]),
+        "the composer must not move between session states, got {prompt_tops:?}"
+    );
+}
+
+#[test]
+fn an_idle_buffer_names_idle_rather_than_claiming_to_work() {
     let mut app = test_app();
     app.session_state.session_status = SessionStatus::Idle;
     let buffer = render_to_buffer(&mut app, 100, 30);
+    let text = buffer_text(&buffer);
+
     assert!(
-        app.ui_state.working_area.is_none(),
-        "an idle turn must not reserve a strip"
+        text.contains("idle"),
+        "the reserved status row must still say something when nothing is running:\n{text}"
     );
-    assert!(!buffer_text(&buffer).contains("working 0s"));
+    assert!(
+        !text.contains("working"),
+        "an idle session must never claim to be working:\n{text}"
+    );
+    assert!(
+        !text.contains("stop"),
+        "an idle session must not advertise a stop key it cannot honour:\n{text}"
+    );
+}
+
+#[test]
+fn a_failed_turn_keeps_saying_why_until_the_agent_resumes() {
+    use codegg::protocol::core::CoreEvent;
+
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Session(
+            "session-under-test".to_string(),
+        ));
+    app.session_state.session_status = SessionStatus::Working;
+
+    app.apply_core_event(CoreEvent::TurnFailed {
+        session_id: "s1".into(),
+        turn_id: Some("t1".into()),
+        message: "Agent error: provider error: 529 overloaded".into(),
+    });
+
+    // The reason must be readable from the main buffer alone. A toast is the
+    // notification; this is the record, and it is the only surface that survives
+    // long enough to be read after the fact. Read from the strip's own rect so
+    // a toast that happens to be on screen cannot satisfy this.
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("529 overloaded"),
+        "the failure reason must stay on screen:\n{strip}"
+    );
+    assert_eq!(
+        app.session_state.last_error.as_deref(),
+        Some("Agent error: provider error: 529 overloaded"),
+        "the latch holds the reason independently of any toast"
+    );
+
+    // Resuming clears it: the user has acted on it and has moved on.
+    app.apply_core_event(CoreEvent::TurnStarted {
+        session_id: "s1".into(),
+        turn_id: "t2".into(),
+    });
+    assert_eq!(
+        app.session_state.last_error, None,
+        "a resumed agent must stop reporting the previous failure"
+    );
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let resumed = strip_text(&app, &buffer);
+    assert!(
+        !resumed.contains("529 overloaded"),
+        "a resumed agent must not keep reporting the previous failure:\n{resumed}"
+    );
+}
+
+#[test]
+fn an_error_outranks_a_running_phase_so_the_reason_is_never_buried() {
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Session(
+            "session-under-test".to_string(),
+        ));
+    app.session_state.session_status = SessionStatus::Working;
+    app.report_turn_error("Agent error: provider error: 429 rate_limit");
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let strip = strip_text(&app, &buffer);
+    assert!(
+        strip.contains("429 rate_limit"),
+        "reason must show:\n{strip}"
+    );
+    // A spinner beside a failure would claim work is still progressing.
+    assert!(
+        !strip.contains('⠋') && !strip.contains('⠙') && !strip.contains('⠹'),
+        "a latched failure must not animate as though work continues:\n{strip}"
+    );
+}
+
+#[test]
+fn the_phase_enum_names_the_states_that_used_to_be_silent() {
+    use codegg::tui::components::messages::ActivityPhase;
+
+    assert_eq!(ActivityPhase::Thinking.label(), "thinking");
+    assert_eq!(ActivityPhase::Writing.label(), "writing");
+    assert_eq!(
+        ActivityPhase::WaitingForApproval {
+            tool: "bash".into()
+        }
+        .label(),
+        "awaiting your approval · bash"
+    );
+    assert_eq!(
+        ActivityPhase::Retrying {
+            attempt: 2,
+            total: 3,
+            class: "rate_limit".into(),
+        }
+        .label(),
+        "retrying 2/3 · rate_limit",
+        "a silent backoff is the state that read as a hang; it must name itself"
+    );
+    assert_eq!(
+        ActivityPhase::RunningTool {
+            name: "bash".into(),
+            summary: String::new(),
+        }
+        .label(),
+        "running bash",
+        "an unparseable argument must not lose the tool name"
+    );
+}
+
+#[test]
+fn a_pending_permission_names_the_tool_the_user_is_being_asked_about() {
+    use codegg::protocol::core::CoreEvent;
+
+    let mut app = test_app();
+    app.ui_state
+        .routes
+        .navigate_to(codegg::tui::route::Route::Session(
+            "session-under-test".to_string(),
+        ));
+    app.session_state.session_status = SessionStatus::Working;
+
+    app.apply_core_event(CoreEvent::PermissionPending {
+        session_id: "s1".into(),
+        id: "p1".into(),
+        tool: "bash".into(),
+        path: None,
+        turn_id: Some("t1".into()),
+    });
+
+    let phase = app
+        .messages_state
+        .messages
+        .activity
+        .as_ref()
+        .expect("a pending permission is an activity phase, not silence");
+    assert!(
+        phase.phase.label().contains("awaiting your approval"),
+        "waiting on a human must not read as a stall, got {:?}",
+        phase.phase
+    );
 }
 
 #[test]

@@ -1499,6 +1499,7 @@ fn evidence_enabled_config() -> codegg::tool::integrated_config::EvidenceBackend
 #[test]
 fn disabled_evidence_backend_omits_expanded_tools() {
     let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         evidence_config: Some(evidence_disabled_config()),
         ..Default::default()
     });
@@ -1528,6 +1529,7 @@ fn disabled_evidence_backend_omits_expanded_tools() {
 #[test]
 fn enabled_evidence_backend_includes_expanded_tools() {
     let registry = codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         evidence_config: Some(evidence_enabled_config()),
         ..Default::default()
     });
@@ -1561,6 +1563,7 @@ fn websearch_webfetch_always_registered() {
     ] {
         let registry =
             codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+                git_read_only: None,
                 evidence_config: cfg,
                 ..Default::default()
             });

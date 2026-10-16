@@ -7,6 +7,9 @@ color = "magenta"
 runtime_kind = "research"
 prompt_file = "prompts/agents/research.md"
 
+# Read-only git inspection; see the note in `explore.toml`.
+git_read_only = true
+
 [agent.permissions]
 read = "allow"
 glob = "allow"
@@ -24,10 +27,12 @@ todoread = "allow"
 bash = "deny"
 apply_patch = "deny"
 edit = "deny"
+replace = "deny"
 lsp_preview_apply = "deny"
 write = "deny"
 terminal = "deny"
 commit = "deny"
+git = "deny"
 image = "deny"
 plan_enter = "deny"
 plan_exit = "deny"

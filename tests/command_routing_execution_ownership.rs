@@ -379,7 +379,13 @@ async fn bash_tool_artifacts_are_never_safe_for_model() {
 #[tokio::test]
 async fn python_script_tool_owns_record_as_delegated_backend() {
     let store = Arc::new(MemRunStore::new());
-    let tool = PythonScriptTool::with_run_store(store.clone());
+    // Production always threads the session workspace root, and the tool
+    // refuses an omitted `workdir` without one rather than guessing the
+    // process cwd. Mirror that here so the assertion below is about scheduler
+    // admission rather than about path authority.
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let tool = PythonScriptTool::with_run_store(store.clone())
+        .with_workspace_root(root.path().to_path_buf());
 
     // Without a scheduler, PythonScriptTool returns Disabled (fail-closed)
     let result = tool

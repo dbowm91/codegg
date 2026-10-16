@@ -778,6 +778,7 @@ mod tests {
     #[test]
     fn validate_agent_select_rejects_hidden() {
         let hidden_agent = crate::agent::Agent {
+            git_read_only: false,
             name: "compaction".to_string(),
             hidden: true,
             mode: crate::agent::AgentMode::Primary,

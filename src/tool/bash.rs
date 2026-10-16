@@ -80,6 +80,16 @@ pub struct BashTool {
         Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     pub(crate) routing_disabled_override: Option<bool>,
     pub(crate) workspace_root: Option<PathBuf>,
+    /// Root of the isolated child-Git worktree, when the child Git policy is
+    /// active. This is the ceiling `validate_child_workspace_command`
+    /// enforces, and it is deliberately **separate** from `workspace_root`:
+    /// that field is the ordinary session workspace (default `workdir`,
+    /// command-intent context) and is populated for every session, whereas the
+    /// ceiling is a child-Git-only lexical restriction. Deriving the ceiling
+    /// from `workspace_root` made every ordinary `bash` call reject any
+    /// absolute path outside the workspace — including `/dev/null`,
+    /// `/tmp/…`, and `/usr/bin/git`.
+    pub(crate) child_workspace_ceiling: Option<PathBuf>,
     pub(crate) windows_shell: Option<crate::config::schema::WindowsShellKind>,
 }
 
@@ -103,6 +113,7 @@ impl BashTool {
             asset_pin: None,
             routing_disabled_override: None,
             workspace_root: None,
+            child_workspace_ceiling: None,
             windows_shell: None,
         }
     }
@@ -124,6 +135,13 @@ impl BashTool {
 
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.workspace_root = Some(root);
+        self
+    }
+
+    /// Bound the isolated child-Git worktree ceiling. Only meaningful when the
+    /// child Git policy is configured; see `child_workspace_ceiling`.
+    pub fn with_child_workspace_ceiling(mut self, root: PathBuf) -> Self {
+        self.child_workspace_ceiling = Some(root);
         self
     }
 
@@ -526,7 +544,12 @@ impl BashTool {
         };
 
         // 2. authorize/path/child policy (all fail-closed, all pre-spawn).
-        if let Some(root) = self.workspace_root.as_ref() {
+        // The isolated child-Git worktree ceiling applies only when that policy
+        // is active. It is a lexical "stays inside the child worktree" check,
+        // not a general sandbox, so applying it to ordinary sessions would
+        // reject every absolute path outside the workspace — most visibly
+        // `2>/dev/null`, which tokenizes to `/dev/null`.
+        if let Some(root) = self.child_workspace_ceiling.as_ref() {
             policy::validate_child_workspace_command(command, &[], root)?;
         }
 

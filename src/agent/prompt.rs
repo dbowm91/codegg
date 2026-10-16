@@ -603,6 +603,7 @@ mod tests {
 
     fn test_agent_with_role(name: &str, role: Option<&str>) -> Agent {
         Agent {
+            git_read_only: false,
             name: name.to_string(),
             role: role.map(|r| r.to_string()),
             description: format!("Test {name} agent"),

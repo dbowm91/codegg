@@ -562,6 +562,19 @@ validation alone is not OS containment. Guard:
 `scripts/check_sandbox_policy_wiring.py`; integration:
 `tests/sandbox_policy_wiring.rs`.
 
+**Workspace root vs. child worktree ceiling:** `BashTool` keeps two
+independent roots. `workspace_root` is the ordinary session workspace —
+the default `workdir` when the model omits one, the command-intent
+classifier/planner context — and is populated for every registry that has
+one, because `allowed_paths` is derived from it and an unqualified `workdir`
+is otherwise rejected. `child_workspace_ceiling` is the separate lexical
+"stay inside the isolated child-Git worktree" restriction enforced by
+`policy::validate_child_workspace_command`, and it is armed only when
+`child_git_policy` is configured. It must not be inferred from
+`workspace_root`: it rejects *any* absolute path outside its root, so
+applying it to ordinary sessions rejected every such command — most visibly
+`2>/dev/null`, which tokenizes to the absolute path `/dev/null`.
+
 **M002 accepted execution context:** the agent loop carries the accepted
 `ExecutionPolicySnapshot`, permission receipt, and bounded command-preflight
 summary through `ToolExecutionContext` and the broker invocation. Every broker
@@ -708,16 +721,47 @@ Status values: `ready`, `disabled`, `unavailable`, `error(<msg>)`.
 
 All file operations use utility functions from `src/tool/util.rs`:
 
-- **`validate_path(path, allowed_root)`**: Symlink check + canonical
-  root enforcement.
-- **`canonicalize_path(path)`**: Symlink check + canonicalize.
-- **`check_path_for_symlinks(path)`**: Walks components, rejects
-  any symlink.
+- **`validate_path(path, allowed_root)`**: Resolves the path against
+  `allowed_root` when relative, symlink check + canonical root enforcement.
+- **`validate_target_path(path, allowed_root)`**: Same rule for a target whose
+  leaf and/or parents may not exist yet; the missing suffix is resolved
+  lexically.
+- **`canonicalize_path(path)`**: Symlink check + canonicalize. No root exists at
+  this seam, so it is only for `unrestricted` callers.
+- **`check_path_for_symlinks(path)`**: Walks components, rejects any symlink.
 
 Key invariants:
 - Symlinks rejected at every component
 - Allowed root enforcement via canonical prefix check
+- **A relative path is relative to `allowed_root`, never to the process
+  working directory.** CodeGG executes turns inside a long-lived user-scoped
+  daemon whose cwd is wherever it happened to be launched, so canonicalizing a
+  raw relative path resolved it against that unrelated directory. A session
+  rooted at one repository then failed to read a file that sat at the expected
+  workspace path, while the failure hint — which *did* join the root — suggested
+  the very file it reported as missing. `validate_path` and
+  `validate_target_path` must stay in agreement: when only the latter joined the
+  root, a `write` of a relative path landed correctly and the matching `read`
+  could not read it back.
+- The two root-bound helpers report the path **the caller sent**, not the
+  derived absolute one, so a failure stays actionable.
+- **Walk what you validated.** `glob` and `list` each computed a validated path
+  and then discarded it, walking the raw request instead — `glob` starting from
+  `.` and `list` starting from the *process* cwd. The containment filter then
+  removed every match, so `glob` answered "No files matching …" for a workspace
+  full of matches. A validation result that is computed, asserted, and thrown
+  away authorizes one directory while the work happens in another. Use the
+  canonical path returned by the helper as the thing you operate on.
 - All file I/O in `tokio::task::spawn_blocking()`
+
+### Tools that default a working directory
+
+`TestTool` and `PythonScriptTool` take the registry's `workspace_root` as the
+default `workdir`, the base a relative `workdir` resolves against, and (for
+Python) the containment root. With no workspace authority they **refuse** an
+omitted `workdir` rather than inventing one. Both previously had no workspace
+root at all and fell back to `std::env::current_dir()`, so a session's tests and
+scripts ran in the daemon's launch directory.
 
 ## ToolContracts and the Canonical Broker
 

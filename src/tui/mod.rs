@@ -2250,6 +2250,250 @@ mod async_cmd_tests {
         );
     }
 
+    /// Regression: a permission answer from the socket-daemon frontend must
+    /// reach the daemon through `core_client`.
+    ///
+    /// `SubmitPermission` used to branch on `AppMode::RemoteCore` alone, which
+    /// the socket path also sets. That routed the answer into
+    /// `send_remote_message`, whose `None` arm dropped it after only a
+    /// `tracing::warn!`. The dialog was torn down, the daemon-side waiter
+    /// stayed parked on an unbounded human wait, and the turn hung forever
+    /// with no visible error — approving did nothing.
+    ///
+    /// The local path is observable: with no core client it reports a visible
+    /// delivery failure instead of silently discarding the answer. Reaching
+    /// that toast proves the answer took the local route; before the fix this
+    /// app took the remote route and produced no toast at all.
+    #[test]
+    fn socket_daemon_permission_answer_takes_the_local_delivery_path() {
+        let mut app = socket_daemon_app_with_tab();
+        app.core_client = None;
+        app.dialog_state.permission_perm_id =
+            Some("perm:sess:turn:chatcmpl-tool-abc-bash".to_string());
+
+        app.process_msg(crate::tui::app::TuiMsg::SubmitPermission { choice_index: 0 });
+
+        let toasts: Vec<String> = app
+            .messages_state
+            .toasts
+            .iter()
+            .map(|t| t.message.clone())
+            .collect();
+        assert!(
+            toasts.iter().any(|m| m.contains("Cannot deliver approval")),
+            "the socket path must route the answer locally; toasts were {toasts:?}"
+        );
+        assert!(
+            app.dialog_state.permission_perm_id.is_none(),
+            "the dialog must still be torn down after answering"
+        );
+    }
+
+    fn approval(
+        tool: &str,
+        args: Option<serde_json::Value>,
+    ) -> crate::permission::PermissionRequest {
+        crate::permission::PermissionRequest {
+            tool: tool.to_string(),
+            path: None,
+            args,
+        }
+    }
+
+    /// Regression: a batch of tools can raise several approvals at once, and
+    /// `show_permission_dialog` assigned straight into `permission_dialog`.
+    /// The second request therefore destroyed the first along with its
+    /// `perm_id`, leaving a daemon waiter parked on a human answer that no
+    /// longer had any UI pointing at it.
+    #[test]
+    fn a_second_approval_does_not_evict_the_one_on_screen() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.show_permission_dialog("perm-2".into(), approval("edit", None));
+
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the request the user is looking at must not be replaced"
+        );
+        assert_eq!(
+            app.dialog_state
+                .permission_queue
+                .iter()
+                .map(|p| p.perm_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["perm-2"],
+            "the later request must be held, not dropped"
+        );
+    }
+
+    /// Answering one approval hands the screen to the next instead of leaving
+    /// the rest of the batch with no visible way back.
+    #[test]
+    fn answering_promotes_the_next_queued_approval() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.show_permission_dialog("perm-2".into(), approval("edit", None));
+
+        app.dialog_state.permission_dialog = None;
+        app.dialog_state.permission_perm_id = None;
+        app.close_dialog();
+        app.promote_next_permission();
+
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-2")
+        );
+        assert!(
+            app.dialog_state.permission_queue.is_empty(),
+            "the promoted request must leave the queue exactly once"
+        );
+    }
+
+    /// Regression: `close_dialog` had no `Dialog::Permission` arm, so a
+    /// dismissal popped the dialog while leaving `permission_perm_id` set. The
+    /// next approval then queued behind a dialog that no longer existed, and
+    /// nothing could ever be answered again.
+    #[test]
+    fn a_dismissed_approval_is_requeued_rather_than_lost() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        app.close_dialog();
+
+        assert!(
+            app.dialog_state.permission_dialog.is_none(),
+            "the dismissed dialog must actually close"
+        );
+        assert!(
+            app.dialog_state.permission_perm_id.is_none(),
+            "a dismissed dialog must not keep claiming the screen"
+        );
+        assert_eq!(
+            app.pending_permission_for_tool("bash").as_deref(),
+            Some("perm-1"),
+            "the unanswered request must still be answerable"
+        );
+
+        app.promote_next_permission();
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the requeued request must come back on demand"
+        );
+    }
+
+    /// A duplicate resend of the same request must not double-queue it.
+    #[test]
+    fn a_resent_approval_is_ignored_rather_than_queued_twice() {
+        let mut app = make_test_app();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.close_dialog();
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        assert_eq!(app.dialog_state.permission_queue.len(), 1);
+    }
+
+    /// `CoreEvent::PermissionPending` carries no arguments, so an approval that
+    /// crossed the daemon used to render "No additional details" — you cannot
+    /// meaningfully approve a command you cannot read. The transcript already
+    /// holds them.
+    #[test]
+    fn a_reopened_approval_shows_the_command_it_is_about() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "rm -rf build" }),
+        );
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+
+        let dialog = app
+            .dialog_state
+            .permission_dialog
+            .as_ref()
+            .expect("the approval must be on screen");
+        let command = dialog
+            .request
+            .args
+            .as_ref()
+            .and_then(|a| a.get("command"))
+            .and_then(|c| c.as_str());
+        assert_eq!(
+            command,
+            Some("rm -rf build"),
+            "the dialog must carry the command being approved"
+        );
+    }
+
+    /// The backup path the missing dialog left no alternative to: activating
+    /// the queued row in the transcript reopens its approval.
+    #[test]
+    fn activating_a_queued_row_reopens_its_approval() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "ls" }),
+        );
+        app.show_permission_dialog("perm-1".into(), approval("bash", None));
+        app.close_dialog();
+        assert!(app.dialog_state.permission_dialog.is_none());
+
+        assert!(
+            app.open_pending_permission_for_message(0),
+            "the queued row must be actionable"
+        );
+        assert_eq!(
+            app.dialog_state.permission_perm_id.as_deref(),
+            Some("perm-1"),
+            "the approval behind the row must be the one that opens"
+        );
+    }
+
+    /// A row with nothing pending keeps its old text — the affordance must
+    /// only appear when there is genuinely something to approve.
+    #[test]
+    fn a_row_with_no_approval_offers_no_action() {
+        let mut app = make_test_app();
+        app.messages_state.messages.add_tool_call(
+            "call-1".into(),
+            "bash".into(),
+            serde_json::json!({ "command": "ls" }),
+        );
+        assert!(
+            !app.open_pending_permission_for_message(0),
+            "nothing is waiting, so the row must fall through to disclosure"
+        );
+    }
+
+    /// The WebSocket attach frontend is the one that owns `remote_send_tx`, so
+    /// its permission answers must keep going out over that channel.
+    #[test]
+    fn ws_attach_permission_answer_still_uses_the_remote_channel() {
+        let mut app = make_test_app();
+        app.ui_state.mode = crate::tui::app::state::AppMode::RemoteCore {
+            endpoint: "ws://127.0.0.1:8080".into(),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        app.remote_send_tx = Some(tx);
+        app.dialog_state.permission_perm_id =
+            Some("perm:sess:turn:chatcmpl-tool-abc-bash".to_string());
+
+        app.process_msg(crate::tui::app::TuiMsg::SubmitPermission { choice_index: 0 });
+
+        let sent = rx
+            .try_recv()
+            .expect("the attach frontend must send the answer");
+        match sent {
+            crate::protocol::tui::TuiMessage::PermissionResponse { id, choice } => {
+                assert_eq!(id, "perm:sess:turn:chatcmpl-tool-abc-bash");
+                assert_eq!(choice, "allow");
+            }
+            other => panic!("expected a PermissionResponse, got {other:?}"),
+        }
+    }
+
     #[test]
     fn attach_mode_with_a_remote_channel_still_uses_the_remote_input_path() {
         let mut app = make_test_app();

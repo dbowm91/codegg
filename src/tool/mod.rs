@@ -355,6 +355,12 @@ pub struct ToolRegistryOptions {
     pub workspace_root: Option<std::path::PathBuf>,
     /// Restrict a child Git tool to local staging and commit operations.
     pub child_git_policy: Option<crate::tool::git::ChildGitPolicy>,
+    /// Restrict the Git tool to read-only invocations for the named agent.
+    ///
+    /// Distinct from `child_git_policy`: that one governs an *isolated child
+    /// worktree's* git authority, this one governs what a read-only agent may
+    /// run. Carries the agent name so a refusal names who was refused.
+    pub git_read_only: Option<String>,
     /// Immutable runtime-asset snapshot captured for the current turn.
     pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
     /// Shared path-free audit identity for recording skill activations.
@@ -514,14 +520,27 @@ impl ToolRegistry {
         } else {
             bash_tool
         };
-        let bash_tool = if options.child_git_policy.is_some() {
-            if let Some(root) = workspace_root.clone() {
-                bash_tool.with_workspace_root(root)
-            } else {
-                bash_tool
-            }
-        } else {
-            bash_tool
+        // `BashTool::workspace_root` is the authoritative workspace root for
+        // three independent concerns: the default `workdir` when the model
+        // omits one, the pre-spawn child-workspace command policy, and the
+        // command-intent classifier/planner context. Gating it on
+        // `child_git_policy` left all three unset in ordinary sessions, so a
+        // `bash` call that omitted `workdir` resolved to `None` and was then
+        // rejected by the `allowed_paths` check ("workdir must be specified
+        // when allowed_paths is set") even though `allowed_paths` had just
+        // been populated from this same root.
+        let bash_tool = match workspace_root.clone() {
+            Some(root) => bash_tool.with_workspace_root(root),
+            None => bash_tool,
+        };
+        // The isolated child-Git worktree ceiling is a *separate* concept and
+        // stays keyed on the child Git policy, which is what activates it. It
+        // is a lexical "stay inside the child worktree" restriction, so it must
+        // not be inferred from the ordinary workspace root — doing so rejected
+        // every absolute path outside the workspace in normal sessions.
+        let bash_tool = match (&options.child_git_policy, workspace_root.as_ref()) {
+            (Some(_), Some(root)) => bash_tool.with_child_workspace_ceiling(root.clone()),
+            _ => bash_tool,
         };
         let bash_tool = if let Some(command_intent) = options.command_intent.clone() {
             bash_tool.with_command_intent_config(command_intent)
@@ -789,6 +808,14 @@ impl ToolRegistry {
         } else {
             test_tool
         };
+        // The test workdir defaults to the session workspace root. Without
+        // this the tool had no workspace authority at all and fell back to the
+        // daemon process cwd, so a session's tests ran in whatever tree the
+        // daemon was launched from.
+        let test_tool = match workspace_root.as_ref() {
+            Some(root) => test_tool.with_workspace_root(root.clone()),
+            None => test_tool,
+        };
         registry.register(test_tool);
         // M001: bounded job status/wait/cancel/output adapter. Same auth as
         // CoreRequest::JobGet/JobWait/JobCancel plus exact-owner session
@@ -821,6 +848,12 @@ impl ToolRegistry {
             options.run_store.clone(),
             options.submission.clone(),
         );
+        // Same workspace authority as the test tool: the script runs in, and is
+        // contained to, the session's workspace rather than the daemon's cwd.
+        let python_tool = match workspace_root.as_ref() {
+            Some(root) => python_tool.with_workspace_root(root.clone()),
+            None => python_tool,
+        };
         registry.register(python_tool);
         let tool_program_tool = if let Some(submission) = options.submission.clone() {
             let mut tool =
@@ -839,6 +872,11 @@ impl ToolRegistry {
         };
         let git_tool = if let Some(policy) = options.child_git_policy {
             git_tool.with_child_policy(policy)
+        } else {
+            git_tool
+        };
+        let git_tool = if let Some(agent) = options.git_read_only {
+            git_tool.with_read_only_only(true, agent)
         } else {
             git_tool
         };
@@ -1126,6 +1164,7 @@ impl ToolRegistry {
         let tool_backends = ToolBackendConfig::from_config(config);
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_advisor: config.tool_advisor.clone(),
             decision_engine: config.decision_engine.clone(),
             tool_backends,
@@ -1157,6 +1196,7 @@ impl ToolRegistry {
         let tool_backends = ToolBackendConfig::from_config(config);
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_advisor: config.tool_advisor.clone(),
             decision_engine: config.decision_engine.clone(),
             tool_backends,
@@ -1261,6 +1301,7 @@ impl ToolRegistry {
     ) -> Self {
         let integrated = integrated_config::resolve_integrated_config(config);
         Self::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_advisor: config.tool_advisor.clone(),
             decision_engine: config.decision_engine.clone(),
             todo_state: Some(todo_state),
@@ -1317,6 +1358,7 @@ impl ToolRegistry {
         session_id: Option<String>,
     ) -> Self {
         Self::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_advisor: None,
             decision_engine: None,
             todo_state: Some(todo_state),
@@ -1743,10 +1785,21 @@ mod python_submission_wiring_tests {
     /// `deps.submission` into `ToolRegistryOptions`).
     #[tokio::test]
     async fn python_tool_is_constructed_with_submission_service() {
+        // Both halves share a workspace root so the submission service stays
+        // the only variable: the tool refuses an omitted `workdir` when it has
+        // no workspace authority, and that refusal would otherwise pre-empt
+        // the scheduler-admission signature this control exists to pin.
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let workspace_root = Some(root.path().to_path_buf());
+
         // Negative control: without a service the tool fails closed with the
         // scheduler-admission message. This is the exact state production was
         // stuck in, so it pins the signature of the defect.
-        let unwired = ToolRegistry::with_options(ToolRegistryOptions::default());
+        let unwired = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: workspace_root.clone(),
+            ..ToolRegistryOptions::default()
+        });
         let unwired_result = unwired
             .get("python_script")
             .expect("registered")
@@ -1766,6 +1819,8 @@ mod python_submission_wiring_tests {
 
         let submission = submission_service_for_test().await;
         let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root,
             submission: Some(submission),
             ..ToolRegistryOptions::default()
         });
@@ -1815,6 +1870,291 @@ mod python_submission_wiring_tests {
 }
 
 #[cfg(test)]
+mod bash_workdir_wiring_tests {
+    use super::*;
+    use codegg_core::approval::SandboxProfile;
+
+    /// `BashTool::workspace_root` used to be populated only when
+    /// `child_git_policy` was configured, while `allowed_paths` was populated
+    /// from the same root for every registry. A `bash` call that omitted
+    /// `workdir` — the normal case, since models rarely pass one — therefore
+    /// resolved to `None` and was rejected by the `allowed_paths` check before
+    /// spawning anything:
+    ///
+    ///     workdir must be specified when allowed_paths is set
+    ///
+    /// The approval handshake completed normally, the tool never ran, and the
+    /// turn ended. `FullHost` is used only so the assertion is about workdir
+    /// resolution rather than the platform containment helper.
+    #[tokio::test]
+    async fn bash_without_workdir_runs_in_the_configured_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            sandbox_profile: Some(SandboxProfile::FullHost),
+            ..ToolRegistryOptions::default()
+        });
+
+        let result = registry
+            .get("bash")
+            .expect("bash must be registered")
+            .execute(serde_json::json!({ "command": "pwd" }))
+            .await;
+
+        let output = match result {
+            Ok(output) => output,
+            Err(error) => panic!(
+                "bash must default its workdir to the workspace root rather than \
+                 reject the call: {error:?}"
+            ),
+        };
+        let canonical_root =
+            std::fs::canonicalize(root.path()).expect("canonicalize workspace root");
+        assert!(
+            output.contains(canonical_root.to_string_lossy().as_ref()),
+            "bash must execute in the workspace root {}, got: {output}",
+            canonical_root.display()
+        );
+    }
+
+    /// The reported defect, end to end through the registry a real turn uses:
+    /// a session rooted at one repository asked to read a relative path, and
+    /// the tool resolved it against the daemon process cwd instead. The
+    /// workspace root here is a tempdir, so any cwd-based resolution misses.
+    ///
+    /// The failure was self-contradicting — the hint joined the workspace root
+    /// and so suggested the very file the lookup claimed was missing — which is
+    /// why it read as "file not found" for a file that plainly existed.
+    #[tokio::test]
+    async fn a_relative_read_resolves_under_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(root.path().join("src/http")).expect("fixture layout");
+        std::fs::write(
+            root.path().join("src/http/ratelimit.rs"),
+            b"fn limited() {}",
+        )
+        .expect("fixture file");
+
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..ToolRegistryOptions::default()
+        });
+
+        let output = registry
+            .get("read")
+            .expect("read must be registered")
+            .execute(serde_json::json!({ "path": "src/http/ratelimit.rs" }))
+            .await
+            .expect("a relative read must resolve inside the workspace root");
+
+        assert!(
+            output.contains("fn limited()"),
+            "the read must return the workspace file's contents; got: {output}"
+        );
+    }
+
+    /// The same rule covers every tool that validates an existing path through
+    /// the shared helper. `glob`/`list`/`grep` all took the `allowed_root` but
+    /// resolved a relative path against the process cwd, so a model working in
+    /// one repository could not search it.
+    #[tokio::test]
+    async fn relative_search_paths_resolve_under_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(root.path().join("src")).expect("fixture layout");
+        std::fs::write(root.path().join("src/needle.rs"), b"fn needle() {}").expect("fixture file");
+
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..ToolRegistryOptions::default()
+        });
+
+        let glob = registry
+            .get("glob")
+            .expect("glob must be registered")
+            .execute(serde_json::json!({ "pattern": "**/*.rs" }))
+            .await
+            .expect("a relative glob must search the workspace root");
+        assert!(
+            glob.contains("needle.rs"),
+            "glob must search the workspace, not the daemon cwd; got: {glob}"
+        );
+
+        let listing = registry
+            .get("list")
+            .expect("list must be registered")
+            .execute(serde_json::json!({ "path": "src" }))
+            .await
+            .expect("a relative list must resolve inside the workspace root");
+        assert!(
+            listing.contains("needle.rs"),
+            "list must resolve under the workspace root; got: {listing}"
+        );
+    }
+
+    /// `glob` validated the search root against the workspace but then walked
+    /// the *raw* request path — `.` when `path` is omitted. The walk therefore
+    /// started at the process cwd and every canonical match was discarded by the
+    /// containment filter, so the tool answered "No files matching ..." for a
+    /// workspace full of matches. The old validate-against-cwd behavior had
+    /// been rejecting that walk outright, which masked the split entirely.
+    #[tokio::test]
+    async fn a_glob_with_no_path_searches_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(root.path().join("src")).expect("fixture layout");
+        std::fs::write(root.path().join("src/needle.rs"), b"fn needle() {}").expect("fixture file");
+
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..ToolRegistryOptions::default()
+        });
+
+        let output = registry
+            .get("glob")
+            .expect("glob must be registered")
+            .execute(serde_json::json!({ "pattern": "**/*.rs" }))
+            .await
+            .expect("an omitted path must mean the workspace root");
+
+        assert!(
+            output.contains("needle.rs"),
+            "glob must walk the workspace root; got: {output}"
+        );
+    }
+
+    /// `list` had the same split plus a cwd default: an omitted `path` listed
+    /// `std::env::current_dir()`, and even an explicit relative `path` was
+    /// validated and then discarded in favour of the raw directory.
+    #[tokio::test]
+    async fn a_list_with_no_path_lists_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        std::fs::create_dir_all(root.path().join("src")).expect("fixture layout");
+        std::fs::write(root.path().join("src/needle.rs"), b"fn needle() {}").expect("fixture file");
+
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..ToolRegistryOptions::default()
+        });
+
+        let output = registry
+            .get("list")
+            .expect("list must be registered")
+            .execute(serde_json::json!({}))
+            .await
+            .expect("an omitted path must mean the workspace root");
+
+        assert!(
+            output.contains("needle.rs"),
+            "list must walk the workspace root, not the daemon cwd; got: {output}"
+        );
+    }
+
+    /// Negative control: the join must not have weakened containment. An
+    /// absolute path outside the workspace is still a permission error.
+    #[tokio::test]
+    async fn a_relative_read_still_cannot_escape_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, b"nope").expect("outside file");
+
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..ToolRegistryOptions::default()
+        });
+
+        let result = registry
+            .get("read")
+            .expect("read must be registered")
+            .execute(serde_json::json!({ "path": outside_file.to_string_lossy() }))
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::error::ToolError::Permission(_))),
+            "an absolute path outside the workspace must stay refused; got {:?}",
+            result.err()
+        );
+    }
+
+    /// Negative control pinning the exact failure signature the regression
+    /// above guards against: `allowed_paths` set with no resolvable
+    /// `workspace_root` rejects an unqualified `workdir` instead of running.
+    #[tokio::test]
+    async fn allowed_paths_without_any_workdir_authority_is_rejected() {
+        let tool = crate::tool::bash::BashTool::new()
+            .with_allowed_paths(vec!["/definitely/not/a/real/path".to_string()]);
+
+        let result = tool.execute(serde_json::json!({ "command": "pwd" })).await;
+
+        assert!(
+            matches!(&result, Err(ToolError::Permission(message))
+                if message.contains("workdir must be specified when allowed_paths is set")),
+            "expected the no-workdir-authority rejection, got {result:?}"
+        );
+    }
+
+    /// Negative control for the child-Git worktree ceiling: it is a
+    /// child-Git-only lexical restriction, so an ordinary session that merely
+    /// has a workspace root must still accept an absolute path outside it.
+    /// Deriving the ceiling from `workspace_root` made every such session
+    /// reject `/dev/null`, which tokenizes to an out-of-worktree absolute path
+    /// and failed the run with
+    ///
+    ///     isolated child shell path is outside worktree: /dev/null
+    #[tokio::test]
+    async fn dev_null_redirect_is_not_treated_as_a_child_worktree_escape() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            sandbox_profile: Some(SandboxProfile::FullHost),
+            ..ToolRegistryOptions::default()
+        });
+
+        let result = registry
+            .get("bash")
+            .expect("bash must be registered")
+            .execute(serde_json::json!({ "command": "printf ok 2>/dev/null" }))
+            .await;
+
+        match result {
+            Ok(output) => assert!(
+                output.contains("ok"),
+                "the redirect must be honoured, got: {output}"
+            ),
+            Err(error) => panic!(
+                "a 2>/dev/null redirect must not be rejected as a worktree escape: {error:?}"
+            ),
+        }
+    }
+
+    /// The ceiling stays armed when the child Git policy is what activates it.
+    #[tokio::test]
+    async fn child_git_policy_still_arms_the_worktree_ceiling() {
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let tool = crate::tool::bash::BashTool::new()
+            .with_workspace_root(root.path().to_path_buf())
+            .with_child_workspace_ceiling(root.path().to_path_buf())
+            .with_allowed_paths(vec![root.path().to_string_lossy().into_owned()]);
+
+        let result = tool
+            .execute(serde_json::json!({ "command": "cat /etc/hosts" }))
+            .await;
+
+        assert!(
+            matches!(&result, Err(ToolError::Permission(message))
+                if message.contains("isolated child shell path is outside worktree")),
+            "expected the child worktree ceiling to reject /etc/hosts, got {result:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod backend_report_tests {
     use super::*;
     use crate::tool::backend::{
@@ -1823,6 +2163,7 @@ mod backend_report_tests {
 
     fn build_with_backends(backends: ToolBackendConfig) -> ToolRegistry {
         ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_backends: backends,
             sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
             ..ToolRegistryOptions::default()
@@ -2140,6 +2481,7 @@ mod compatibility_surface_tests {
             ..Default::default()
         };
         let registry = ToolRegistry::with_options(ToolRegistryOptions {
+            git_read_only: None,
             tool_advisor: Some(advisor),
             ..ToolRegistryOptions::default()
         });

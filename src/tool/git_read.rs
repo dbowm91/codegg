@@ -40,6 +40,7 @@ use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProve
 use crate::tool::contract::{
     IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
 };
+use crate::tool::util::tolerant_opt_u32;
 use crate::tool::{Tool, ToolCategory};
 
 /// Maximum display bytes returned to a program before truncation.
@@ -68,7 +69,7 @@ struct GitReadInput {
     operation: String,
     #[serde(default)]
     base_ref: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tolerant_opt_u32")]
     max_count: Option<u32>,
 }
 
@@ -396,7 +397,8 @@ impl Tool for GitReadTool {
                     "description": "Optional base revision for diff (e.g. HEAD~1). Alphanumeric start, max 128 chars."
                 },
                 "max_count": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "Maximum log entries (default 20, max 50)."
                 }
             },

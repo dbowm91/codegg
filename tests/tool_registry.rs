@@ -62,6 +62,7 @@ fn supplied_lsp_service_and_preview_registry_are_retained_by_registry() {
     ));
     let expected_service = std::sync::Arc::as_ptr(&service) as usize;
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         lsp_service: Some(service),
         lsp_preview_registry: Some(preview_registry.clone()),
         sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
@@ -157,6 +158,7 @@ fn disabled_lsp_backend_keeps_stub_but_hides_from_definitions() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         ..Default::default()
     });
@@ -185,6 +187,7 @@ fn disabled_security_backend_keeps_stub_but_hides_from_definitions() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         ..Default::default()
     });
@@ -206,6 +209,7 @@ fn mcp_lsp_with_fallback_keeps_lsp_in_definitions() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
@@ -229,6 +233,7 @@ fn mcp_lsp_without_fallback_hides_lsp_from_definitions() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
@@ -320,6 +325,7 @@ fn disabling_lsp_does_not_remove_other_tools() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         ..Default::default()
     });

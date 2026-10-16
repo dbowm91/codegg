@@ -89,6 +89,7 @@ fn search_runtime_with_mock(
 /// Registry whose `repo_search` executes against the mock eggsearch service.
 fn search_registry(workspace: &Path, ctx: SearchRuntimeContext) -> ToolRegistry {
     ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(workspace.to_path_buf()),
         search_runtime: Some(ctx),
         ..Default::default()
@@ -467,6 +468,7 @@ async fn isolated_default_reports_unavailable_never_global() {
     // report actionable unavailable, never a silent global slot.
     let workspace = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(workspace.path().to_path_buf()),
         ..Default::default()
     });
@@ -884,6 +886,7 @@ async fn cancelled_program_search_is_typed_not_success() {
 fn repo_search_cache_disabled_as_nondeterministic_declaration() {
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         ..Default::default()
     });

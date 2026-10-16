@@ -45,12 +45,33 @@ pub struct AgentLoopBuildInput {
         Option<crate::agent::provider_qualification::SharedProviderCredentialObserver>,
 }
 
+/// Permission rules declared by the agent this loop will treat as current.
+///
+/// `AgentLoop::new` seeds `state.current_agent` with the built-in `build`
+/// agent (`src/agent/loop.rs:156`), and the checker is built once, so the
+/// rules come from that same agent identity the rest of the loop already
+/// reports — the `agent_id` on tool calls, todo policy, and snapshot
+/// capture all read `state.current_agent`. Anything else would be a guess
+/// about which agent "should" be active.
+pub fn active_agent_rules(agents: &[crate::agent::Agent]) -> crate::permission::PermissionRuleset {
+    agents
+        .iter()
+        .find(|agent| agent.name == "build")
+        .map(crate::agent::Agent::permission_ruleset)
+        .unwrap_or_default()
+}
+
 /// Build a fully initialized loop from the daemon-resolved turn identity.
 pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop {
     let permission_checker = crate::permission::PermissionChecker::new(
         Some(&input.config),
         crate::permission::approval::canonical_permission_store_path(),
     )
+    // An agent's own declaration is authoritative while the operator has not
+    // spoken for that tool. Wired before `with_active_mode` so an active
+    // built-in mode still narrows a tool the agent allowed
+    // (`merge_rulesets` lets the later ruleset win a tie).
+    .with_agent_rules(active_agent_rules(&input.agents))
     .with_active_mode(&input.config);
     let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
         input.agents,

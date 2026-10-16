@@ -2,7 +2,7 @@ use crate::error::ToolError;
 use crate::tool::contract::{
     IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
 };
-use crate::tool::util::validate_path;
+use crate::tool::util::{canonicalize_path, tolerant_opt_usize, validate_path};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use ignore::WalkBuilder;
@@ -13,7 +13,7 @@ use tokio::task;
 #[derive(Debug, Deserialize)]
 struct ListInput {
     path: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tolerant_opt_usize")]
     max_files: Option<usize>,
 }
 
@@ -63,10 +63,11 @@ impl Tool for ListTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory to list (default: current directory)"
+                    "description": "Directory to list (default: the session workspace root). A relative path resolves against that root."
                 },
                 "max_files": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "Maximum number of files to list (default: 300)"
                 }
             }
@@ -106,27 +107,43 @@ impl Tool for ListTool {
         let parsed: ListInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid list input: {e}")))?;
 
-        let dir = parsed
-            .path
-            .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        // An omitted `path` lists the session's workspace. It used to default
+        // to the daemon process's own current directory, which under the
+        // daemon is whatever tree the daemon was launched from — so a session
+        // listing "its" directory could be reading an unrelated repository.
+        let root = self.allowed_root.clone();
+        let dir = match parsed.path.as_ref() {
+            Some(raw) => PathBuf::from(raw),
+            None => root.clone().ok_or_else(|| {
+                ToolError::Execution(
+                    "no workspace root is bound to this tool; pass 'path' explicitly".to_string(),
+                )
+            })?,
+        };
 
-        if !self.unrestricted {
-            let default_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let root = self.allowed_root.as_deref().unwrap_or(&default_root);
-            validate_path(&dir, root)?;
-        }
+        // Walk the *validated* path. This used to validate `dir` and then
+        // discard the result, walking the raw request instead — so the
+        // containment check authorized one directory while the listing came
+        // from another.
+        let dir_for_task = if self.unrestricted {
+            canonicalize_path(&dir)?
+        } else {
+            let root = root.ok_or_else(|| {
+                ToolError::Execution(
+                    "no workspace root is bound to this tool; pass 'path' explicitly".to_string(),
+                )
+            })?;
+            validate_path(&dir, &root)?
+        };
 
-        if !dir.is_dir() {
+        if !dir_for_task.is_dir() {
             return Err(ToolError::Execution(format!(
                 "not a directory: {}",
-                dir.display()
+                dir_for_task.display()
             )));
         }
 
         let max_files = parsed.max_files.unwrap_or(300);
-        let dir_for_task = dir.clone();
 
         let (entries, truncated) = task::spawn_blocking(move || {
             let canonical_dir = match std::fs::canonicalize(&dir_for_task) {

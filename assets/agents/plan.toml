@@ -4,6 +4,13 @@ role = "planner"
 description = "Read-only agent for planning"
 mode = "Primary"
 
+# Read-only git inspection. `[agent.permissions]` is per tool, so `git =
+# "allow"` would also authorize `git push` and `git = "deny"` would cost this
+# agent the repository facts it needs. `git_read_only` is the middle: every
+# invocation `codegg-git` does not classify read-only is refused at the tool
+# boundary, which can see the argv and so separates `branch` from `branch -d`.
+git_read_only = true
+
 [agent.permissions]
 write = "deny"
 edit = "deny"

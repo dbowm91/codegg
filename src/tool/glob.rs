@@ -64,7 +64,7 @@ impl Tool for GlobTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (default: current directory)"
+                    "description": "Directory to search in (default: the session workspace root). A relative path resolves against that root."
                 }
             },
             "required": ["pattern"]
@@ -135,14 +135,21 @@ impl Tool for GlobTool {
 
         let matcher = glob.compile_matcher();
 
-        let walk = WalkBuilder::new(search_path)
+        // Walk the validated root, never the raw request path. `path` defaults
+        // to "." and a relative `path` resolves against the workspace root,
+        // but this walk started from the process cwd — so it traversed a
+        // directory the session does not own and the containment filter below
+        // then discarded every match, surfacing as "No files matching ...".
+        // The old validate-against-the-process-cwd behavior had been rejecting
+        // that walk outright, which masked the split.
+        let canonical_search = canonical_search.clone();
+        let walk_root = canonical_search.clone();
+
+        let walk = WalkBuilder::new(&walk_root)
             .hidden(false)
             .git_ignore(true)
             .follow_links(false)
             .build();
-
-        let canonical_search = canonical_search.clone();
-        let search_path = search_path.to_path_buf();
 
         let (matches, truncated) = tokio::task::spawn_blocking(move || {
             let mut matches = Vec::new();
@@ -157,7 +164,7 @@ impl Tool for GlobTool {
                         continue;
                     }
                     let path = entry.into_path();
-                    if !unrestricted && !path.starts_with(&search_path) {
+                    if !unrestricted && !path.starts_with(&walk_root) {
                         continue;
                     }
                     if !matcher.is_match(&path) {

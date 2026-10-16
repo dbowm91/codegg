@@ -45,7 +45,7 @@ VALID_RUNTIME_KINDS = {"standard", "security_review", "research", "compaction", 
 KNOWN_AGENT_KEYS = {
     "name", "role", "description", "mode", "hidden",
     "temperature", "steps", "color", "prompt_file", "permissions",
-    "model", "fallback_model", "runtime_kind",
+    "model", "fallback_model", "runtime_kind", "git_read_only",
 }
 
 
@@ -137,6 +137,7 @@ def _validate_agent(agent: dict, toml_path: Path, agent_dir: Path) -> list[str]:
 
     # --- Description required for non-hidden agents ---
     hidden = agent.get("hidden", False)
+    git_read_only = agent.get("git_read_only", False)
     if not hidden and not agent.get("description"):
         errors.append(f"{prefix} agent '{name}': missing 'description' (required for visible agents)")
 
@@ -189,6 +190,7 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     description = agent.get("description", "")
     mode_str = agent.get("mode", "Primary")
     hidden = agent.get("hidden", False)
+    git_read_only = agent.get("git_read_only", False)
     role = agent.get("role")
     permissions = agent.get("permissions", {})
     temperature = agent.get("temperature")
@@ -243,6 +245,7 @@ def _build_agent_entry(agent: dict, prompt_content: str | None) -> str:
     lines.append("            thinking_budget: None,")
     lines.append("            reasoning_effort: None,")
     lines.append(f"            runtime_kind: {_format_runtime_kind(runtime_kind)},")
+    lines.append(f"            git_read_only: {'true' if git_read_only else 'false'},")
     lines.append("        }")
 
     return "\n".join(lines)

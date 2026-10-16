@@ -32,6 +32,7 @@ use serde_json::json;
 fn workspace_registry() -> (tempfile::TempDir, ToolRegistry) {
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         // This suite qualifies the historical active LSP adapter catalog.
         // Constrained defaults intentionally replace lsp/lsp_read with
@@ -398,6 +399,7 @@ async fn lsp_read_matches_canonical_tool_for_every_allowed_read() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()

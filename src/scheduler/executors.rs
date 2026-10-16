@@ -802,86 +802,92 @@ impl JobExecutor for SubagentJobExecutor {
                         )
                     }
                 };
-                let Some(repository_id) = task.repository_id else {
-                    let message = "mutating delegated run has no repository identity";
-                    if let Err(error) = store
-                        .finish(
-                            run_id,
-                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
-                            None,
-                            Some("isolation_unavailable".into()),
-                            Some(message.into()),
-                        )
-                        .await
-                    {
-                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository identity)");
-                    }
-                    return failure_completion(started, ExecutorStatus::Failed, message.into());
-                };
-                let Some(repository_root) = workspace_root.clone() else {
-                    let message = "mutating delegated run has no repository root";
-                    if let Err(error) = store
-                        .finish(
-                            run_id,
-                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
-                            None,
-                            Some("isolation_unavailable".into()),
-                            Some(message.into()),
-                        )
-                        .await
-                    {
-                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository root)");
-                    }
-                    return failure_completion(started, ExecutorStatus::Failed, message.into());
-                };
-                let request = codegg_core::worktree_service::CreateWorktreeRequest {
-                    project_id: task.project_id,
-                    repository_id,
-                    workspace_id: task.workspace_id,
-                    node_id: None,
-                    repository_root: repository_root.clone(),
-                    base_commit,
-                    base_path: Some(repository_root.clone()),
-                    owner_run_id: run_id.clone(),
-                };
-                let (record, lease) = match worktree_service.create(&request).await {
-                    Ok(value) => value,
-                    Err(error) => {
-                        if let Err(finish_error) = store
+                // No repository identity means the workspace root is not a git
+                // repository, or carries no usable unique remote evidence — there
+                // is simply no worktree to isolate in. That is a different
+                // situation from isolation being *unavailable*, and it used to
+                // be reported identically: every delegated run in a non-repo
+                // workspace failed `isolation_unavailable` with an empty
+                // result and no explanation to the parent model.
+                //
+                // A workspace that IS a repository now gets real repository
+                // identity at registration (see
+                // `ProjectCatalog::resolve_repository_lineage`), so this arm is
+                // reached only for genuinely repo-less roots. Such a run
+                // executes in place. The sandbox profile and the permission
+                // layer are unchanged: they are orthogonal to isolation.
+                if task.repository_id.is_none() {
+                    tracing::info!(
+                        run_id = ?run_id,
+                        "delegated mutating run has no repository identity; executing in place without worktree isolation",
+                    );
+                }
+                if let Some(repository_id) = task.repository_id.clone() {
+                    let Some(repository_root) = workspace_root.clone() else {
+                        let message = "mutating delegated run has no repository root";
+                        if let Err(error) = store
                             .finish(
                                 run_id,
                                 codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                                 None,
-                                Some("worktree_create_failed".into()),
-                                Some(error.to_string()),
+                                Some("isolation_unavailable".into()),
+                                Some(message.into()),
                             )
                             .await
                         {
-                            tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree create failed)");
+                            tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository root)");
                         }
+                        return failure_completion(started, ExecutorStatus::Failed, message.into());
+                    };
+                    let request = codegg_core::worktree_service::CreateWorktreeRequest {
+                        project_id: task.project_id.clone(),
+                        repository_id,
+                        workspace_id: task.workspace_id.clone(),
+                        node_id: None,
+                        repository_root: repository_root.clone(),
+                        base_commit,
+                        base_path: Some(repository_root.clone()),
+                        owner_run_id: run_id.clone(),
+                    };
+                    let (record, lease) = match worktree_service.create(&request).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            if let Err(finish_error) = store
+                                .finish(
+                                    run_id,
+                                    codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                    None,
+                                    Some("worktree_create_failed".into()),
+                                    Some(error.to_string()),
+                                )
+                                .await
+                            {
+                                tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree create failed)");
+                            }
+                            return failure_completion(
+                                started,
+                                ExecutorStatus::Failed,
+                                format!("worktree allocation failed: {error}"),
+                            );
+                        }
+                    };
+                    if let Err(error) = store
+                        .attach_worktree(run_id, record.worktree_id.clone())
+                        .await
+                    {
+                        let _ = worktree_service
+                            .release_lease(&record.worktree_id, run_id, lease.generation)
+                            .await;
                         return failure_completion(
                             started,
                             ExecutorStatus::Failed,
-                            format!("worktree allocation failed: {error}"),
+                            format!("worktree linkage failed: {error}"),
                         );
                     }
-                };
-                if let Err(error) = store
-                    .attach_worktree(run_id, record.worktree_id.clone())
-                    .await
-                {
-                    let _ = worktree_service
-                        .release_lease(&record.worktree_id, run_id, lease.generation)
-                        .await;
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        format!("worktree linkage failed: {error}"),
-                    );
+                    allowed_paths = vec![record.path.to_string_lossy().into_owned()];
+                    workspace_root = Some(record.path.clone());
+                    owned_worktree = Some((record, lease));
                 }
-                allowed_paths = vec![record.path.to_string_lossy().into_owned()];
-                workspace_root = Some(record.path.clone());
-                owned_worktree = Some((record, lease));
             }
             if let Some(control) = &self.run_control {
                 if let Err(error) = control

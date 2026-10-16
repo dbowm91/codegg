@@ -433,6 +433,11 @@ pub struct ProjectCatalog {
     pool: SqlitePool,
 }
 
+struct RepositoryLineage {
+    lineage_key: String,
+    remote_identity: Option<String>,
+}
+
 impl ProjectCatalog {
     /// Create a new catalog service from an existing pool.
     pub fn new(pool: SqlitePool) -> Self {
@@ -557,23 +562,73 @@ impl ProjectCatalog {
             )
         })?;
 
+        let canonical_root: String = workspace_row.get("canonical_root");
+
+        // Probe lineage before deciding anything, but DO NOT create the
+        // `repository` row yet.
+        //
+        // Registration used to record `status = 'resolved'` with a NULL
+        // repository and never probe Git at all, so the `repository` table
+        // stayed empty for every TUI-launched project. Because the
+        // existing-binding branch returned early, and
+        // `ProjectStorage::reconcile_workspace_once` treats a `resolved`
+        // binding as authoritative and never re-probes, that empty identity
+        // was permanent: a delegated run needing managed isolation then failed
+        // with `isolation_unavailable` in a repository with perfectly good
+        // lineage evidence.
+        let lineage = Self::probe_repository_lineage(std::path::Path::new(&canonical_root));
+
         // Check if workspace is already bound to a project
-        let existing_binding =
-            sqlx::query("SELECT project_id FROM workspace_project_binding WHERE workspace_id = ?")
-                .bind(workspace_id.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(catalog_db_error)?;
+        let existing_binding = sqlx::query(
+            "SELECT project_id, repository_id FROM workspace_project_binding WHERE workspace_id = ?",
+        )
+        .bind(workspace_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(catalog_db_error)?;
 
         if let Some(row) = existing_binding {
             let existing_project_id: String = row.get("project_id");
             let project_id =
                 ProjectId::parse(&existing_project_id).map_err(catalog_identity_error)?;
+            // A binding that already carries a repository is authoritative:
+            // return it unchanged and create nothing at all.
+            let bound_repository: Option<String> = row.get("repository_id");
+            if bound_repository.is_none() {
+                let healed = match input.primary_repository_id.clone() {
+                    Some(explicit) => Some(explicit),
+                    None => match &lineage {
+                        Some(lineage) => Some(self.ensure_repository_row(lineage, &source).await?),
+                        None => None,
+                    },
+                };
+                if let Some(repository_id) = healed {
+                    self.heal_repository_binding(
+                        workspace_id,
+                        &project_id,
+                        &repository_id,
+                        &source,
+                    )
+                    .await?;
+                }
+            }
             return self.get_project(&project_id).await;
         }
 
-        // Check if the primary repository already links to an existing project
-        if let Some(repo_id) = &input.primary_repository_id {
+        // No binding yet: resolve the repository identity for real. An explicit
+        // operator-supplied repository wins over probed lineage.
+        let repository_id = match input.primary_repository_id.clone() {
+            Some(explicit) => Some(explicit),
+            None => match &lineage {
+                Some(lineage) => Some(self.ensure_repository_row(lineage, &source).await?),
+                None => None,
+            },
+        };
+
+        // Check if the primary repository already links to an existing project.
+        // Identity follows lineage, not path: a rename, a move, or a second
+        // worktree of the same remote lands on the same logical project.
+        if let Some(repo_id) = &repository_id {
             let existing = sqlx::query(
                 "SELECT project_id FROM project_repository WHERE repository_id = ? AND relation_kind = 'primary' ORDER BY project_id LIMIT 2",
             )
@@ -587,13 +642,8 @@ impl ProjectCatalog {
                     ProjectId::parse(existing[0].get::<String, _>("project_id").as_str())
                         .map_err(catalog_identity_error)?;
                 // Bind workspace to existing project
-                self.bind_workspace_to_project(
-                    workspace_id,
-                    &project_id,
-                    input.primary_repository_id.as_ref(),
-                    &source,
-                )
-                .await?;
+                self.bind_workspace_to_project(workspace_id, &project_id, Some(repo_id), &source)
+                    .await?;
                 return self.get_project(&project_id).await;
             }
         }
@@ -623,7 +673,7 @@ impl ProjectCatalog {
         .map_err(catalog_db_error)?;
 
         // Create project_repository if repository is provided
-        if let Some(repo_id) = &input.primary_repository_id {
+        if let Some(repo_id) = &repository_id {
             sqlx::query(
                 "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
             )
@@ -636,7 +686,7 @@ impl ProjectCatalog {
         }
 
         // Bind workspace
-        let locator_root = workspace_row.get::<String, _>("canonical_root");
+        let locator_root = canonical_root;
         sqlx::query(
             r#"INSERT INTO workspace_project_binding
                (workspace_id, project_id, repository_id, worktree_id, node_id,
@@ -653,7 +703,7 @@ impl ProjectCatalog {
         )
         .bind(workspace_id.as_str())
         .bind(project_id.as_str())
-        .bind(input.primary_repository_id.as_ref().map(|r| r.as_str()))
+        .bind(repository_id.as_ref().map(|r| r.as_str()))
         .bind(&locator_root)
         .bind(&source)
         .bind(now.timestamp_millis())
@@ -664,6 +714,174 @@ impl ProjectCatalog {
 
         tx.commit().await.map_err(catalog_db_error)?;
         self.get_project(&project_id).await
+    }
+
+    /// Usable repository lineage evidence for one workspace root.
+    ///
+    /// The local Git probe runs BEFORE any write transaction is opened — the same
+    /// discipline `ProjectStorage::reconcile_workspace_path` uses — so a slow or
+    /// failing probe never holds the SQLite write lock. Only unique, usable remote
+    /// evidence produces a key: a root that is not a repository, carries no remote,
+    /// or presents ambiguous/unsafe remote evidence yields `None` and keeps a
+    /// project-only binding. Lineage is never inferred from the path, and a probe
+    /// that cannot run at all is not treated as evidence about the repository.
+    fn probe_repository_lineage(root: &std::path::Path) -> Option<RepositoryLineage> {
+        let evidence = crate::repository_lineage::inspect_repository_lineage(root).ok()?;
+        let lineage_key = evidence.equality_key()?;
+        let remote_identity = match &evidence {
+            crate::repository_lineage::RepositoryLineageEvidence::Unique { remote } => {
+                Some(remote.equality_key())
+            }
+            _ => None,
+        };
+        Some(RepositoryLineage {
+            lineage_key,
+            remote_identity,
+        })
+    }
+
+    /// Fetch the durable repository id for a lineage, creating the
+    /// `repository` row the first time that lineage is seen.
+    ///
+    /// Called only once the caller knows it will actually bind the identity.
+    /// Probing eagerly would leave an orphan `repository` row behind whenever
+    /// an existing binding already carried an identity and was returned
+    /// unchanged.
+    async fn ensure_repository_row(
+        &self,
+        lineage: &RepositoryLineage,
+        source: &str,
+    ) -> Result<crate::identity::RepositoryId, CatalogError> {
+        let existing =
+            sqlx::query("SELECT id FROM repository WHERE vcs_kind = 'git' AND lineage_key = ?")
+                .bind(&lineage.lineage_key)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(catalog_db_error)?;
+        if let Some(row) = existing {
+            return crate::identity::RepositoryId::parse(row.get::<String, _>("id").as_str())
+                .map_err(catalog_identity_error);
+        }
+
+        let repository_id = crate::identity::RepositoryId::new();
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO repository (id, vcs_kind, lineage_key, remote_identity, common_directory, default_branch, head, provenance, status, time_created, time_updated) VALUES (?, 'git', ?, ?, NULL, NULL, NULL, ?, 'resolved', ?, ?)",
+        )
+        .bind(repository_id.as_str())
+        .bind(&lineage.lineage_key)
+        .bind(lineage.remote_identity.as_deref())
+        .bind(source)
+        .bind(now.timestamp_millis())
+        .bind(now.timestamp_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(catalog_db_error)?;
+        Ok(repository_id)
+    }
+
+    /// Attach repository identity to an existing binding that was recorded
+    /// without one.
+    ///
+    /// Only strictly more informative evidence is applied. A binding that
+    /// already carries a repository is never touched, and a repository already
+    /// primary-bound to a *different* project is recorded as an
+    /// `ambiguous` diagnostic instead of merging two logical projects — the
+    /// identity layer never merges records on a guess. The UPDATE is guarded
+    /// on `repository_id IS NULL` so a concurrent writer that already bound an
+    /// identity wins rather than being overwritten.
+    async fn heal_repository_binding(
+        &self,
+        workspace_id: &WorkspaceId,
+        project_id: &ProjectId,
+        repository_id: &crate::identity::RepositoryId,
+        source: &str,
+    ) -> Result<(), CatalogError> {
+        let conflicting = sqlx::query(
+            "SELECT project_id FROM project_repository WHERE repository_id = ? AND relation_kind = 'primary' AND project_id <> ? LIMIT 1",
+        )
+        .bind(repository_id.as_str())
+        .bind(project_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(catalog_db_error)?;
+
+        if let Some(row) = conflicting {
+            let other_project: String = row.get("project_id");
+            self.record_identity_diagnostic(
+                Some(workspace_id.as_str()),
+                Some(project_id.as_str()),
+                "repository_project_conflict",
+                crate::project_storage::BindingStatus::Ambiguous,
+                &format!(
+                    "repository {repository_id} is already primary-bound to project {other_project}; workspace {workspace_id} keeps its unbound repository rather than merging projects"
+                ),
+                source,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await.map_err(catalog_db_error)?;
+        sqlx::query(
+            "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
+        )
+        .bind(project_id.as_str())
+        .bind(repository_id.as_str())
+        .bind(now.timestamp_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(catalog_db_error)?;
+
+        sqlx::query(
+            "UPDATE workspace_project_binding SET repository_id = ?, source = ?, revision = revision + 1, time_updated = ? WHERE workspace_id = ? AND repository_id IS NULL",
+        )
+        .bind(repository_id.as_str())
+        .bind(source)
+        .bind(now.timestamp_millis())
+        .bind(workspace_id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(catalog_db_error)?;
+
+        tx.commit().await.map_err(catalog_db_error)?;
+        Ok(())
+    }
+
+    async fn record_identity_diagnostic(
+        &self,
+        workspace_id: Option<&str>,
+        project_id: Option<&str>,
+        code: &str,
+        status: crate::project_storage::BindingStatus,
+        message: &str,
+        source: &str,
+    ) -> Result<(), CatalogError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let message = bounded_text(message, MAX_CATALOG_TEXT_LENGTH, "diagnostic message")
+            .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
+        let code = bounded_text(code, MAX_REGISTRATION_SOURCE_LENGTH, "diagnostic code")
+            .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
+        let source = bounded_text(source, MAX_REGISTRATION_SOURCE_LENGTH, "diagnostic source")
+            .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO identity_diagnostic (id, workspace_id, session_id, project_id, code, status, message, source, time_created, time_updated) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(workspace_id)
+        .bind(project_id)
+        .bind(&code)
+        .bind(status.as_str())
+        .bind(&message)
+        .bind(&source)
+        .bind(now.timestamp_millis())
+        .bind(now.timestamp_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(catalog_db_error)?;
+        Ok(())
     }
 
     /// Archive a project (logical, non-destructive).
@@ -1591,6 +1809,316 @@ fn locator_from_row(row: sqlx::sqlite::SqliteRow) -> Result<CatalogLocatorRecord
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::schema;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::process::Command;
+
+    /// In-memory pool with the canonical schema applied. Mirrors the storage
+    /// test harness: migrations run inside, never added a second time.
+    async fn catalog_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        schema::migrate(&pool).await.unwrap();
+        pool
+    }
+
+    fn workspace_record(root: &std::path::Path) -> WorkspaceRecord {
+        let now = Utc::now();
+        WorkspaceRecord {
+            id: WorkspaceId::new(),
+            canonical_root: root.to_path_buf(),
+            display_name: root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.to_string_lossy().into_owned()),
+            created_at: now,
+            last_opened_at: now,
+            archived_at: None,
+        }
+    }
+
+    async fn register_workspace(pool: &SqlitePool, workspace: &WorkspaceRecord) {
+        sqlx::query(
+            "INSERT INTO workspace (id, canonical_root, display_name, time_created, time_last_opened, time_archived) VALUES (?, ?, ?, ?, ?, NULL)",
+        )
+        .bind(workspace.id.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(&workspace.display_name)
+        .bind(workspace.created_at.timestamp_millis())
+        .bind(workspace.last_opened_at.timestamp_millis())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    fn input(name: &str) -> RegisterLocalProject {
+        RegisterLocalProject {
+            display_name: name.to_string(),
+            description: None,
+            tags: Vec::new(),
+            primary_repository_id: None,
+        }
+    }
+
+    /// Create a real repository with exactly one remote so the local lineage
+    /// probe has usable evidence. Uses the same direct-git approach as the
+    /// `repository_lineage` tests.
+    fn init_repo_with_remote(root: &std::path::Path, remote: &str) {
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()
+            .expect("git is installed");
+        Command::new("git")
+            .args(["remote", "add", "origin", remote])
+            .current_dir(root)
+            .status()
+            .expect("git remote add");
+    }
+
+    fn init_repo_without_remote(root: &std::path::Path) {
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .status()
+            .expect("git is installed");
+    }
+
+    async fn bound_repository(pool: &SqlitePool, workspace_id: &WorkspaceId) -> Option<String> {
+        sqlx::query("SELECT repository_id FROM workspace_project_binding WHERE workspace_id = ?")
+            .bind(workspace_id.as_str())
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .get::<Option<String>, _>("repository_id")
+    }
+
+    /// Regression: local registration used to record `status = 'resolved'`
+    /// with a NULL repository and never probe Git, so the `repository` table
+    /// stayed empty for every TUI-launched project. A delegated run that needs
+    /// managed isolation then failed `isolation_unavailable` even though the
+    /// root had unique remote evidence.
+    #[tokio::test(flavor = "current_thread")]
+    async fn registration_binds_repository_identity_from_lineage() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo_with_remote(root.path(), "https://example.com/team/alpha.git");
+        let workspace = workspace_record(root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &workspace).await;
+        let catalog = ProjectCatalog::new(pool.clone());
+
+        let project = catalog
+            .register_local_project(input("alpha"), &workspace.id, "tui-launch")
+            .await
+            .unwrap();
+
+        let repository_id = bound_repository(&pool, &workspace.id).await;
+        assert!(
+            repository_id.is_some(),
+            "a unique remote must produce a repository identity"
+        );
+        let repository_id = repository_id.unwrap();
+        let linked: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM project_repository WHERE project_id = ? AND repository_id = ? AND relation_kind = 'primary'")
+                .bind(project.project_id.as_str())
+                .bind(&repository_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(linked, 1, "project must claim the repository as primary");
+    }
+
+    /// A root that is not a repository still registers a project — it simply
+    /// has no repository identity. This is what lets a mutating delegated run
+    /// execute in place instead of failing for want of a worktree.
+    #[tokio::test(flavor = "current_thread")]
+    async fn non_repository_root_registers_without_repository_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = workspace_record(root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &workspace).await;
+        let catalog = ProjectCatalog::new(pool.clone());
+
+        let project = catalog
+            .register_local_project(input("plain"), &workspace.id, "tui-launch")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            project.project_id.to_string(),
+            project.project_id.to_string()
+        );
+        assert_eq!(bound_repository(&pool, &workspace.id).await, None);
+    }
+
+    /// A repository with no remote is not lineage evidence. It must not be
+    /// invented from the path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn repository_without_remote_is_not_given_an_identity() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo_without_remote(root.path());
+        let workspace = workspace_record(root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &workspace).await;
+        let catalog = ProjectCatalog::new(pool.clone());
+
+        catalog
+            .register_local_project(input("no-remote"), &workspace.id, "tui-launch")
+            .await
+            .unwrap();
+
+        assert_eq!(bound_repository(&pool, &workspace.id).await, None);
+        let repositories: i64 = sqlx::query_scalar("SELECT count(*) FROM repository")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repositories, 0,
+            "no lineage evidence means no repository row"
+        );
+    }
+
+    /// The binding that started this bug is permanently `resolved` with a NULL
+    /// repository, and `ProjectStorage::reconcile_workspace_once` treats a
+    /// resolved binding as authoritative and never re-probes. A later launch
+    /// must therefore heal it, or existing workspaces stay broken forever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn existing_binding_without_repository_is_healed() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo_with_remote(root.path(), "https://example.com/team/heal.git");
+        let workspace = workspace_record(root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &workspace).await;
+
+        // Reproduce the poisoned binding the launch bootstrap used to write.
+        let seeded = ProjectId::new();
+        sqlx::query(
+            "INSERT INTO logical_project (id, display_name, lifecycle, registration_source, time_created, time_updated) VALUES (?, 'seeded', 'active', 'tui-launch', 0, 0)",
+        )
+        .bind(seeded.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, NULL, NULL, NULL, ?, 'resolved', 'tui-launch', 1, 0, 0)",
+        )
+        .bind(workspace.id.as_str())
+        .bind(seeded.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = ProjectCatalog::new(pool.clone());
+        let project = catalog
+            .register_local_project(input("heal"), &workspace.id, "tui-launch")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            project.project_id, seeded,
+            "healing must attach identity to the existing project, not churn it"
+        );
+        assert!(
+            bound_repository(&pool, &workspace.id).await.is_some(),
+            "a resolved binding with no repository must gain one"
+        );
+    }
+
+    /// Identity follows lineage, not path: a second workspace with the same
+    /// remote (a worktree, or a renamed directory) lands on the same project.
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_lineage_reuses_one_project_across_workspaces() {
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        init_repo_with_remote(first_root.path(), "https://example.com/team/shared.git");
+        init_repo_with_remote(second_root.path(), "https://example.com/team/shared.git");
+        let first = workspace_record(first_root.path());
+        let second = workspace_record(second_root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &first).await;
+        register_workspace(&pool, &second).await;
+        let catalog = ProjectCatalog::new(pool.clone());
+
+        let a = catalog
+            .register_local_project(input("shared"), &first.id, "tui-launch")
+            .await
+            .unwrap();
+        let b = catalog
+            .register_local_project(input("shared"), &second.id, "tui-launch")
+            .await
+            .unwrap();
+
+        assert_eq!(a.project_id, b.project_id);
+    }
+
+    /// A binding that already carries a repository is authoritative; healing
+    /// must not overwrite it with a different one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn existing_repository_identity_is_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        init_repo_with_remote(root.path(), "https://example.com/team/keep.git");
+        let workspace = workspace_record(root.path());
+        let pool = catalog_pool().await;
+        register_workspace(&pool, &workspace).await;
+
+        let seeded_project = ProjectId::new();
+        let seeded_repository = crate::identity::RepositoryId::new();
+        let now = Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO logical_project (id, display_name, lifecycle, registration_source, time_created, time_updated) VALUES (?, 'seeded', 'active', 'tui-launch', ?, ?)",
+        )
+        .bind(seeded_project.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO repository (id, vcs_kind, lineage_key, remote_identity, common_directory, default_branch, head, provenance, status, time_created, time_updated) VALUES (?, 'git', 'git:example.com/pinned', 'git:example.com/pinned', NULL, NULL, NULL, 'test', 'resolved', ?, ?)",
+        )
+        .bind(seeded_repository.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, ?, NULL, NULL, ?, 'resolved', 'tui-launch', 1, ?, ?)",
+        )
+        .bind(workspace.id.as_str())
+        .bind(seeded_project.as_str())
+        .bind(seeded_repository.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = ProjectCatalog::new(pool.clone());
+        catalog
+            .register_local_project(input("keep"), &workspace.id, "tui-launch")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            bound_repository(&pool, &workspace.id).await,
+            Some(seeded_repository.to_string()),
+            "an existing repository identity must be retained"
+        );
+        let repositories: i64 = sqlx::query_scalar("SELECT count(*) FROM repository")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            repositories, 1,
+            "re-probing must not create a second repository for the same root"
+        );
+    }
 
     #[test]
     fn locator_is_local_only_for_local_variant() {

@@ -435,6 +435,50 @@ local commits in the owned worktree while continuing to reject push, remote and
 credential configuration, history rewrites, broad clean/reset, and other
 network/destructive operations through their independent policy gates.
 
+Mutation-capable is decided by `requires_isolation`, which asks whether the
+agent leaves any mutating tool available: a read-only agent has to deny *all*
+of them or it is classified as mutating. The list includes `git`, which can
+`commit`/`push`/`reset_hard` — so a read-only agent must deny it, not just
+`bash`, unless it declares `git_read_only` (below). A delegated run whose
+workspace has **no repository identity** executes
+in place instead of failing: there is no worktree to isolate in, and reporting
+that as `isolation_unavailable` blocked all mutating subagents outside a repo.
+Sandbox containment and the permission layer are orthogonal to isolation and
+still apply. A repository that *does* have identity but no available worktree
+still fails — that is isolation being unavailable, a different condition.
+
+### Read-only Git (`git_read_only`)
+
+`[agent.permissions]` is keyed by *tool*, so it cannot express "git, but only
+to look": `git = "allow"` also authorises `git push`, and `git = "deny"` costs a
+read-only agent the repository facts it needs to do its job. `explore`, `plan`,
+and `research` therefore declare `git_read_only = true`, which `GitTool`
+enforces per invocation (`read_only_only`): an argv `codegg-git` does not
+classify read-only is refused with a `ToolError::Permission` naming the agent.
+
+The classifier is `GitOperation::is_read_only()`, which is the typed risk model
+(`RiskSet::is_read_only()` — every class is `ReadOnly`, not merely *contains*
+it). It answers per **invocation**, which a subcommand-name check cannot:
+`branch` lists and `branch -d` deletes, `remote` lists and `remote add` writes
+repository config, `tag`/`stash` behave the same way. The previous name-only
+list in `GitTool::is_read_only` classified all of those names as read-only,
+which is why `git remote add` and `git stash` passed a read-only gate.
+
+An argv the typed parser cannot classify is treated as **not** read-only. A
+gate that degrades open on input it does not understand is not a gate.
+
+`requires_isolation` and `has_explicit_git_write` both treat `git_read_only` as
+*not* write authority — otherwise the declaration would immediately
+reintroduce the isolation regression that `git = "deny"` was added to fix.
+
+Where a decision has only the subcommand name and no argv, the name-level
+allow-list `codegg_git::READ_ONLY_SUBCOMMANDS` is deliberately narrower than
+what the typed model can decide: it contains only names that are read-only in
+*every* modelled form. `read_only_subcommands_stay_read_only` fails if any of
+them ever gains a mutating variant, so the list cannot drift into authorising a
+mutation. `permission/mod.rs`'s `default_ruleset` builds its auto-Allow rules
+from that constant rather than from a hand-maintained name list.
+
 The child result is persisted as a bounded, machine-readable
 `codegg_core::run_result::AgentRunResult`. Its base/result commits, changed
 paths, repository state, and findings are collected from Git facts rather than

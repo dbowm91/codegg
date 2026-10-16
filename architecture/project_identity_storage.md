@@ -37,6 +37,31 @@ marks sessions without a resolvable workspace as `rebind_required`. It is
 safe to rerun: resolved workspace bindings and resolved session bindings are
 retained, and uniqueness constraints prevent duplicate authority.
 
+## Launch registration
+
+A TUI launch registers its directory through `ProjectCatalog::register_local_project`
+(`CoreRequest::ProjectRegister`), **not** through `reconcile_workspace_path`.
+That path applies the same lineage rules directly:
+
+- The local Git probe runs before any write transaction, and only unique
+  usable remote evidence produces a `repository` row.
+- A binding that already carries a repository is authoritative and is returned
+  unchanged; nothing is created for it.
+- A binding recorded with `status = 'resolved'` but a NULL repository is
+  **healed**: the probed lineage is attached to the existing project, which is
+  never churned. The `UPDATE` is guarded on `repository_id IS NULL`.
+- A repository already primary-bound to a *different* project is recorded as an
+  `ambiguous` `identity_diagnostic` instead of merging two projects.
+- Without a binding, a repository whose lineage already maps to exactly one
+  project reuses that project, so a rename, a move, or a second worktree of the
+  same remote lands on one logical project.
+
+Healing matters because `reconcile_workspace_once` deliberately treats a
+`resolved` binding as authoritative and never re-probes. A binding written
+without a repository would otherwise stay empty forever, and a delegated run
+needing managed isolation would fail `isolation_unavailable` in a repository
+with perfectly good lineage evidence.
+
 ## Legacy import
 
 `migrate_legacy_project_database` first establishes the canonical workspace

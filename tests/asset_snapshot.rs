@@ -241,6 +241,7 @@ async fn pinned_skill_activation_records_the_captured_digest() {
         3, &snapshot,
     )));
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         asset_snapshot: Some(snapshot.clone()),
         asset_pin: Some(Arc::clone(&pin)),
         ..ToolRegistryOptions::default()

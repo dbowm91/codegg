@@ -34,6 +34,14 @@ pub struct NotificationEvent {
     pub kind: NotificationKind,
     pub priority: NotificationPriority,
     pub message: String,
+    /// The session's human-readable name at emit time.
+    ///
+    /// A speech announcement is read aloud, and a raw id is both meaningless
+    /// to a listener and jarring to hear. The producer already knows which
+    /// session it is announcing, so it resolves the title here rather than the
+    /// speech layer looking it up later. `None` means "not resolved"; the
+    /// renderer then falls back to a short id prefix.
+    pub session_title: Option<String>,
     pub dedupe_key: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -213,6 +221,7 @@ impl NotificationRouter {
                     message: merged_message,
                     dedupe_key: event.dedupe_key.clone(),
                     created_at: event.created_at,
+                    session_title: None,
                 };
                 queue.pop_back();
                 queue.push_back(merged);
@@ -326,6 +335,7 @@ impl NotificationRouter {
             message,
             dedupe_key: None,
             created_at: Utc::now(),
+            session_title: None,
         })
     }
 
@@ -420,6 +430,7 @@ impl NotificationRouter {
                     message,
                     dedupe_key: None,
                     created_at,
+                    session_title: None,
                 })
             })
             .collect()
@@ -548,14 +559,42 @@ pub async fn stop_speech() {
 ///
 /// Multiple kinds: `"<N> sessions need attention. <name1> <verb1>. <name2> <verb2>. ..."`
 /// with events emitted in priority order (urgent first).
+///
+/// Session names come from [`display_name`]; no title source is available on
+/// [`NotificationEvent`] yet, so every name falls back to an id prefix. See
+/// [`render_speech_batch_named`] for the title-aware form.
 pub fn render_speech_batch(events: &[NotificationEvent]) -> String {
+    // Resolve the title from the event itself: a batch's synthetic outer event
+    // has no session, so each inner event carries the name for the speech it
+    // contributes.
+    render_speech_batch_named(events, |id| {
+        events
+            .iter()
+            .find(|event| event.session_id.as_deref() == Some(id))
+            .and_then(|event| event.session_title.clone())
+    })
+}
+
+/// [`render_speech_batch`], naming each session through `title_of`.
+///
+/// `title_of` receives a session id and returns that session's stored title
+/// (`None`/blank/`"Untitled"` all fall back to the id prefix).
+pub fn render_speech_batch_named(
+    events: &[NotificationEvent],
+    title_of: impl Fn(&str) -> Option<String>,
+) -> String {
+    let name_for = |event: &NotificationEvent| {
+        // Borrowed, not moved: `name_for` is a `Fn` closure used once per event.
+        let title = event.session_id.as_deref().and_then(&title_of);
+        display_name(event.session_id.as_deref(), title.as_deref())
+    };
     if events.is_empty() {
         return String::new();
     }
 
     if events.len() == 1 {
         let event = &events[0];
-        let name = display_name(event.session_id.as_deref());
+        let name = name_for(event);
         if name.is_empty() || event.message.is_empty() {
             return event.message.clone();
         }
@@ -567,7 +606,7 @@ pub fn render_speech_batch(events: &[NotificationEvent]) -> String {
     // corresponds to its highest-priority event.
     let mut groups: Vec<(NotificationKind, Vec<String>)> = Vec::new();
     for event in events {
-        let name = display_name(event.session_id.as_deref());
+        let name = name_for(event);
         if let Some(last) = groups.last_mut() {
             if last.0 == event.kind {
                 last.1.push(name);
@@ -591,9 +630,56 @@ pub fn render_speech_batch(events: &[NotificationEvent]) -> String {
     }
 }
 
-fn display_name(session_id: Option<&str>) -> String {
+/// How many characters of a raw session id are spoken when no usable title
+/// is available. Long enough to tell two sessions apart, short enough that a
+/// synthesized voice does not read a whole identifier.
+const SPEAKABLE_ID_PREFIX_CHARS: usize = 8;
+
+/// Best-effort session-title lookup for an announcement.
+///
+/// A notification is a best-effort signal: if the store is unavailable or the
+/// row cannot be read, the announcement still happens and falls back to an id
+/// prefix. It must never propagate a storage error into the emit path — a
+/// speech failure is not worth losing the event over.
+pub async fn resolve_session_title(
+    pool: Option<&sqlx::SqlitePool>,
+    session_id: &str,
+) -> Option<String> {
+    let pool = pool?;
+    let store = codegg_core::session::SessionStore::new(pool.clone());
+    match store.get(session_id).await {
+        Ok(Some(session)) => Some(session.title),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+/// Name to speak for a session.
+///
+/// The session *title* is what a person recognizes; a raw id prefix is only a
+/// last resort. The storage default (`agent::title::UNTITLED_MARKER`) is not a
+/// name, so it is treated as absent — which is also why this fallback stays in
+/// place while auto-title is still failing to produce one.
+fn display_name(session_id: Option<&str>, title: Option<&str>) -> String {
+    spoken_session_name(title, session_id)
+}
+
+/// The name to speak for a session: its title when there is a real one,
+/// otherwise a short id prefix.
+///
+/// The storage default (`agent::title::UNTITLED_MARKER`) is not a name, so it
+/// is treated as absent — which is also why this fallback stays in place while
+/// auto-title is still failing to produce one.
+pub fn spoken_session_name(title: Option<&str>, session_id: Option<&str>) -> String {
+    let spoken_title = title
+        .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|title| {
+            !title.is_empty() && !title.eq_ignore_ascii_case(crate::agent::title::UNTITLED_MARKER)
+        });
+    if let Some(title) = spoken_title {
+        return title;
+    }
     match session_id {
-        Some(s) => s.chars().take(8).collect(),
+        Some(s) => s.chars().take(SPEAKABLE_ID_PREFIX_CHARS).collect(),
         None => String::new(),
     }
 }
@@ -740,6 +826,7 @@ mod tests {
             message: "done".into(),
             dedupe_key: Some("key-1".into()),
             created_at: Utc::now(),
+            session_title: None,
         };
         router.emit(event.clone()).await;
         router.emit(event).await;
@@ -761,6 +848,7 @@ mod tests {
                 message: "perm".into(),
                 dedupe_key: None,
                 created_at: Utc::now(),
+                session_title: None,
             })
             .await;
         router
@@ -773,6 +861,7 @@ mod tests {
                 message: "fail".into(),
                 dedupe_key: None,
                 created_at: Utc::now(),
+                session_title: None,
             })
             .await;
 
@@ -824,6 +913,60 @@ mod tests {
         assert!(NotificationPriority::Normal > NotificationPriority::Low);
     }
 
+    /// A spoken session name is the title a person recognizes, not an id.
+    #[test]
+    fn display_name_prefers_a_real_title() {
+        assert_eq!(
+            display_name(
+                Some("5f31a6f5-1234-4321-abcd-0123456789ab"),
+                Some("Fix login loop")
+            ),
+            "Fix login loop"
+        );
+    }
+
+    /// `"Untitled"` is the storage default, not a name: speaking it is as
+    /// useless as speaking the id, and auto-title may not have run yet.
+    #[test]
+    fn display_name_falls_back_to_the_id_prefix() {
+        assert_eq!(
+            display_name(Some("5f31a6f5-1234"), None),
+            "5f31a6f5",
+            "no title: the id prefix is the fallback"
+        );
+        assert_eq!(
+            display_name(Some("5f31a6f5-1234"), Some("Untitled")),
+            "5f31a6f5",
+            "the storage default is not a meaningful name"
+        );
+        assert_eq!(
+            display_name(Some("5f31a6f5-1234"), Some("   untitled  ")),
+            "5f31a6f5",
+            "case and padding must not promote the default into a name"
+        );
+        assert_eq!(display_name(None, None), "");
+        assert_eq!(display_name(None, Some("Fix login loop")), "Fix login loop");
+    }
+
+    /// Whatever is stored is spoken, so it has to be speakable: a title
+    /// written with stray newlines, padding, or tabs must not be read as
+    /// separate fragments or pause mid-word.
+    #[test]
+    fn display_name_normalizes_an_awkward_title() {
+        assert_eq!(
+            display_name(
+                Some("5f31a6f5-1234"),
+                Some("  Fix   login\n\tredirect   loop  ")
+            ),
+            "Fix login redirect loop"
+        );
+        assert_eq!(
+            display_name(Some("5f31a6f5-1234"), Some("   ")),
+            "5f31a6f5",
+            "a blank title is no title"
+        );
+    }
+
     fn policy_with_turn_completed() -> NotificationPolicy {
         let mut policy = NotificationPolicy::default();
         policy.speak_kinds.insert(NotificationKind::TurnCompleted);
@@ -847,6 +990,7 @@ mod tests {
             message: message.to_string(),
             dedupe_key: dedupe_key.map(str::to_string),
             created_at: Utc::now(),
+            session_title: None,
         }
     }
 
@@ -1167,5 +1311,45 @@ mod tests {
             message
         );
         assert!(message.contains("attention"), "got: {}", message);
+    }
+
+    /// The title-aware form is what the speak path will use once a title
+    /// source exists: names become the session titles, and only sessions
+    /// without one keep the id prefix.
+    #[test]
+    fn render_speech_batch_named_speaks_titles() {
+        let events = vec![
+            make_event(
+                "1",
+                NotificationKind::TurnCompleted,
+                NotificationPriority::Low,
+                Some("alpha-session"),
+                "done",
+                None,
+            ),
+            make_event(
+                "2",
+                NotificationKind::TurnCompleted,
+                NotificationPriority::Low,
+                Some("beta-session"),
+                "done",
+                None,
+            ),
+        ];
+        let titles = |id: &str| match id {
+            "alpha-session" => Some("Parser refactor".to_string()),
+            "beta-session" => Some("Untitled".to_string()),
+            _ => None,
+        };
+        let message = render_speech_batch_named(&events, titles);
+        assert!(message.contains("Parser refactor"), "got: {message}");
+        assert!(
+            message.contains("beta-ses"),
+            "an untitled session keeps the id fallback, got: {message}"
+        );
+        assert!(
+            !message.contains("alpha-ses"),
+            "a titled session must not speak its id, got: {message}"
+        );
     }
 }

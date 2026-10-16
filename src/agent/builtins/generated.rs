@@ -19,11 +19,14 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             color: None,
             steps: None,
             system_prompt: None,
-            permissions: HashMap::new(),
+            permissions: HashMap::from([
+                ("task".to_string(), "allow".to_string()),
+            ]),
             hidden: false,
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: None,
+            git_read_only: false,
         },
         Agent {
             name: "compaction".to_string(),
@@ -46,6 +49,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: Some(AgentRuntimeKind::Compaction),
+            git_read_only: false,
         },
         Agent {
             name: "explore".to_string(),
@@ -80,6 +84,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: None,
+            git_read_only: true,
         },
         Agent {
             name: "general".to_string(),
@@ -106,6 +111,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: None,
+            git_read_only: false,
         },
         Agent {
             name: "plan".to_string(),
@@ -135,6 +141,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: None,
+            git_read_only: true,
         },
         Agent {
             name: "research".to_string(),
@@ -156,6 +163,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
                 ("codesearch".to_string(), "allow".to_string()),
                 ("commit".to_string(), "deny".to_string()),
                 ("edit".to_string(), "deny".to_string()),
+                ("git".to_string(), "deny".to_string()),
                 ("glob".to_string(), "allow".to_string()),
                 ("grep".to_string(), "allow".to_string()),
                 ("image".to_string(), "deny".to_string()),
@@ -165,6 +173,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
                 ("plan_exit".to_string(), "deny".to_string()),
                 ("question".to_string(), "allow".to_string()),
                 ("read".to_string(), "allow".to_string()),
+                ("replace".to_string(), "deny".to_string()),
                 ("research".to_string(), "allow".to_string()),
                 ("skill".to_string(), "allow".to_string()),
                 ("task".to_string(), "allow".to_string()),
@@ -179,6 +188,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: Some(AgentRuntimeKind::Research),
+            git_read_only: true,
         },
         Agent {
             name: "security-review".to_string(),
@@ -219,6 +229,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: Some(AgentRuntimeKind::SecurityReview),
+            git_read_only: false,
         },
         Agent {
             name: "summary".to_string(),
@@ -244,6 +255,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: Some(AgentRuntimeKind::Summary),
+            git_read_only: false,
         },
         Agent {
             name: "title".to_string(),
@@ -269,6 +281,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: Some(AgentRuntimeKind::Title),
+            git_read_only: false,
         },
         Agent {
             name: "verifier".to_string(),
@@ -319,6 +332,7 @@ pub fn generated_builtin_agents() -> Vec<Agent> {
             thinking_budget: None,
             reasoning_effort: None,
             runtime_kind: None,
+            git_read_only: false,
         },
     ]
 }

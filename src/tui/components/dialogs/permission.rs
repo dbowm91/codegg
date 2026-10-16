@@ -14,6 +14,11 @@ use crate::session::events::ToolRisk;
 use crate::tool::risk::classify_tool_risk;
 use crate::tui::app::TuiMsg;
 
+/// Option index for `DenyOnce` in the dialog's fixed row order
+/// (`AllowOnce`, `AlwaysAllow`, `DenyOnce`, `AlwaysDeny`). Dismissing the
+/// dialog with `Esc` commits this row.
+const DENY_ONCE_CHOICE: usize = 2;
+
 #[derive(Clone)]
 pub struct PermissionDialog {
     pub request: PermissionRequest,
@@ -364,7 +369,15 @@ impl Component for PermissionDialog {
                     self.cancel_confirm();
                     None
                 } else {
-                    Some(TuiMsg::CloseDialog)
+                    // Esc is advertised as "cancel", so the tool must not
+                    // run. Closing the dialog alone only tore down the UI:
+                    // the daemon-side waiter stayed parked on an unbounded
+                    // human wait with no dialog left to answer it, so the
+                    // turn hung until it was cancelled. A dismissal is
+                    // therefore the same explicit `DenyOnce` that `n`
+                    // commits, routed through the one `commit` path so the
+                    // keys can never disagree about what Esc means.
+                    self.commit(DENY_ONCE_CHOICE)
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -506,9 +519,37 @@ mod tests {
     }
 
     #[test]
-    fn esc_still_closes_when_no_confirmation_is_armed() {
+    fn esc_denies_when_no_confirmation_is_armed() {
+        // Regression: Esc used to emit `CloseDialog`, which only tore down
+        // the UI. The daemon-side waiter stayed parked on an unbounded human
+        // wait with no dialog left to answer it, so the turn hung until it
+        // was cancelled. Esc is advertised as "cancel", so it must answer the
+        // request — identically to the `n` direct key.
         let mut d = dialog();
-        assert_eq!(d.handle_key(key(KeyCode::Esc)), Some(TuiMsg::CloseDialog));
+        assert_eq!(
+            d.handle_key(key(KeyCode::Esc)),
+            Some(TuiMsg::SubmitPermission {
+                choice_index: DENY_ONCE_CHOICE
+            })
+        );
+        // Esc must not arm the persistent-grant interstitial: a dismissal is
+        // never a standing grant, and it must not need a second keypress.
+        assert!(!d.confirm_persistent);
+        assert_eq!(d.selected_option, 0);
+    }
+
+    /// The interstitial keeps its own Esc: inside it, Esc backs out of the
+    /// "always" confirmation rather than answering the request at all.
+    #[test]
+    fn esc_backs_out_of_the_persistent_interstitial_without_answering() {
+        let mut d = dialog();
+        // `p` (Always Allow) is what arms the interstitial.
+        assert_eq!(d.handle_key(key(KeyCode::Char('p'))), None);
+        assert!(d.confirm_persistent);
+        // Esc abandons the interstitial without submitting anything.
+        assert_eq!(d.handle_key(key(KeyCode::Esc)), None);
+        assert!(!d.confirm_persistent);
+        assert_eq!(d.selected_option, 0);
     }
 
     /// Digits answer in one keypress, matching `y`/`p`/`n` — the whole

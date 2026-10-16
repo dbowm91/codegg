@@ -1,5 +1,6 @@
 use crate::error::ToolError;
 use crate::search_backend;
+use crate::tool::util::tolerant_usize;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -10,7 +11,7 @@ const MAX_QUERY_LENGTH: usize = 10000;
 #[derive(Debug, Deserialize)]
 struct CodeSearchInput {
     query: String,
-    #[serde(default = "default_tokens")]
+    #[serde(default = "default_tokens", deserialize_with = "tolerant_usize")]
     tokens_num: usize,
 }
 
@@ -89,7 +90,8 @@ impl Tool for CodeSearchTool {
                     "description": "Search query for code context"
                 },
                 "tokens_num": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "Number of tokens to return (1000-50000, default: 5000)"
                 }
             },

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use codegg_core::jobs::ExecutionTarget;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,6 +23,14 @@ pub struct TestTool {
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     session_id: Option<String>,
     job_notifications: Option<Arc<crate::scheduler::job_notifications::JobNotificationService>>,
+    /// The session's workspace root. This is the default test `workdir`, and
+    /// the base a relative `workdir` resolves against.
+    ///
+    /// Without it the tool fell back to `std::env::current_dir()`, which in a
+    /// daemon is the directory the daemon was launched from — so a session
+    /// rooted at one repository ran that repository's tests inside whatever
+    /// unrelated tree the user happened to start the daemon from.
+    workspace_root: Option<PathBuf>,
 }
 
 impl TestTool {
@@ -32,6 +40,7 @@ impl TestTool {
             submission: None,
             session_id: None,
             job_notifications: None,
+            workspace_root: None,
         }
     }
 
@@ -41,7 +50,17 @@ impl TestTool {
             submission: None,
             session_id: None,
             job_notifications: None,
+            workspace_root: None,
         }
+    }
+
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root = Some(root);
+        self
+    }
+
+    pub fn set_workspace_root(&mut self, root: PathBuf) {
+        self.workspace_root = Some(root);
     }
 
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
@@ -126,7 +145,7 @@ impl Tool for TestTool {
                 },
                 "workdir": {
                     "type": "string",
-                    "description": "Working directory. Defaults to current working directory."
+                    "description": "Working directory for the test command. Defaults to the session workspace root. A relative path resolves against that root."
                 },
                 "timeout": {
                     "type": "number",
@@ -172,7 +191,7 @@ impl Tool for TestTool {
                     .into(),
             ));
         }
-        let request = parse_test_request(&input)?;
+        let request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         let max_report_bytes = request.max_report_bytes;
         let (summary, _) = self.run_scheduled_test(request, None).await?;
         Ok(match max_report_bytes {
@@ -244,7 +263,7 @@ impl Tool for TestTool {
                 provenance: Some(provenance),
             });
         }
-        let mut request = parse_test_request(&input)?;
+        let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = request
             .session_id
             .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
@@ -350,7 +369,7 @@ impl TestTool {
                 .clone()
                 .or_else(|| c.principal_identity.clone())
         });
-        let mut request = parse_test_request(&input)?;
+        let mut request = parse_test_request_in(&input, self.workspace_root.as_deref())?;
         request.session_id = Some(session_id.clone());
         let resolved = crate::test_runner::resolve_test_command(&request)
             .map_err(|e| ToolError::Execution(format!("test command resolution failed: {e}")))?;
@@ -571,8 +590,28 @@ fn truncate_report_text(text: &str, cap: usize) -> String {
     format!("{}\n[report truncated]", &text[..end])
 }
 
-/// Parse JSON input into a `TestRunRequest`.
+/// Parse JSON input into a `TestRunRequest` with a synthetic workspace root.
+///
+/// Production callers must use [`parse_test_request_in`] with the real root.
+/// This wrapper gives the scope/timeout parser tests a root so they exercise
+/// the production shape; the rootless refusal is pinned separately by
+/// `a_rootless_parse_refuses_rather_than_inventing_a_workdir`.
+#[cfg(test)]
 fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolError> {
+    static FIXTURE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let root = FIXTURE_ROOT.get_or_init(std::env::temp_dir);
+    parse_test_request_in(input, Some(root.as_path()))
+}
+
+/// Parse JSON input, resolving `workdir` against `workspace_root`.
+///
+/// An omitted `workdir` defaults to the workspace root, and a relative
+/// `workdir` resolves against it. Neither falls back to the process working
+/// directory, which in a daemon is unrelated to the session.
+fn parse_test_request_in(
+    input: &serde_json::Value,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<TestRunRequest, ToolError> {
     let scope_str = input["scope"]
         .as_str()
         .ok_or_else(|| ToolError::Execution("missing required 'scope' parameter".to_string()))?;
@@ -627,10 +666,27 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         }
     };
 
-    let workdir = input["workdir"]
-        .as_str()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // Default to the session's workspace root, never the process cwd. A
+    // relative `workdir` resolves against that same root under the same
+    // containment rule every file path obeys, because `Command::current_dir`
+    // would otherwise have the OS resolve it against the daemon's cwd.
+    //
+    // Both branches go through the shared resolver so an omitted and an
+    // explicit root produce the *same* canonical spelling. Two spellings of
+    // one directory would let the job's derived `workspace_id` differ between
+    // two calls that mean the same thing.
+    let workdir = match (input["workdir"].as_str(), workspace_root) {
+        (Some(raw), Some(root)) => crate::tool::util::resolve_workdir(Path::new(raw), root)?,
+        (Some(raw), None) => PathBuf::from(raw),
+        (None, Some(root)) => crate::tool::util::resolve_workdir(root, root)?,
+        // No workspace authority: refuse rather than guess a directory.
+        // Guessing here is what put tests in the daemon's launch directory.
+        (None, None) => {
+            return Err(ToolError::Execution(
+                "no workspace root is bound to this tool; pass 'workdir' explicitly".to_string(),
+            ))
+        }
+    };
 
     let timeout_secs = parse_positive_seconds(input.get("timeout"), "timeout")?;
     let stall_timeout_secs = parse_positive_seconds(input.get("stall_timeout"), "stall_timeout")?;
@@ -1006,11 +1062,154 @@ mod tests {
         assert_eq!(req.scope, TestScope::PreviousFailures);
     }
 
+    /// An explicit absolute `workdir` is honored when it is inside the
+    /// workspace.
+    ///
+    /// This test previously accepted `/some/dir` — a path outside any
+    /// workspace — because the tool had no containment at all. It is now
+    /// refused, which is the intended change: `bash` already rejects a
+    /// `workdir` outside `allowed_paths`, and the job's `workspace_id` is
+    /// derived from this very directory, so an out-of-workspace test run would
+    /// register a workspace the session does not own.
     #[test]
-    fn test_parse_request_custom_workdir() {
-        let input = json!({"scope": "auto", "workdir": "/some/dir"});
-        let req = parse_test_request(&input).unwrap();
-        assert_eq!(req.workdir, PathBuf::from("/some/dir"));
+    fn an_explicit_workdir_inside_the_workspace_is_honored() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let nested = root.path().join("crates/inner");
+        std::fs::create_dir_all(&nested).expect("nested fixture dir");
+
+        let input = json!({"scope": "auto", "workdir": nested.to_string_lossy()});
+        let req = parse_test_request_in(&input, Some(root.path()))
+            .expect("an in-workspace workdir must be accepted");
+        assert_eq!(
+            req.workdir,
+            nested.canonicalize().expect("canonical nested")
+        );
+    }
+
+    #[test]
+    fn an_explicit_workdir_outside_the_workspace_is_refused() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let outside = tempfile::tempdir().expect("outside fixture");
+
+        let input = json!({"scope": "auto", "workdir": outside.path().to_string_lossy()});
+        let error = parse_test_request_in(&input, Some(root.path()))
+            .expect_err("a workdir outside the workspace must be refused");
+        assert!(
+            matches!(error, ToolError::Permission(_)),
+            "expected a permission error, got {error:?}"
+        );
+    }
+
+    /// Regression: the `test` tool had no workspace authority at all, so an
+    /// omitted `workdir` defaulted to the process cwd. Under the daemon that
+    /// is the directory the daemon was launched from, so a session's tests ran
+    /// in an unrelated tree.
+    #[test]
+    fn an_omitted_workdir_defaults_to_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let input = json!({"scope": "auto"});
+        let req = parse_test_request_in(&input, Some(root.path())).unwrap();
+        assert_eq!(
+            req.workdir,
+            root.path().canonicalize().expect("canonical root"),
+            "tests must default to the session workspace root"
+        );
+    }
+
+    /// A relative `workdir` has to resolve against the same root. Left
+    /// relative it would be handed to `Command::current_dir`, and the OS
+    /// resolves that against the process cwd.
+    ///
+    /// The comparison is against the *canonicalized* root: on macOS a tempdir
+    /// lives under `/var/...`, which is itself a symlink to `/private/var/...`,
+    /// so a lexical comparison would fail on a correct resolution.
+    #[test]
+    fn a_relative_workdir_resolves_against_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let input = json!({"scope": "auto", "workdir": "crates/inner"});
+        let req = parse_test_request_in(&input, Some(root.path())).unwrap();
+        assert_eq!(
+            req.workdir,
+            root.path()
+                .canonicalize()
+                .expect("canonical root")
+                .join("crates/inner")
+        );
+    }
+
+    /// A relative workdir must not be able to climb out of the workspace, and
+    /// it must be caught by containment rather than by a lexical prefix test
+    /// that a trailing `..` defeats.
+    #[test]
+    fn a_relative_workdir_cannot_traverse_out_of_the_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let input = json!({"scope": "auto", "workdir": "../elsewhere"});
+
+        let error = parse_test_request_in(&input, Some(root.path()))
+            .expect_err("traversal out of the workspace must be refused");
+        assert!(
+            matches!(error, ToolError::Permission(_)),
+            "a workdir outside the workspace is a permission error, not a path \
+             error; got {error:?}"
+        );
+
+        // A legitimate nested directory still resolves inside the root.
+        let nested = json!({"scope": "auto", "workdir": "crates/inner"});
+        let req = parse_test_request_in(&nested, Some(root.path())).expect("nested workdir");
+        assert!(
+            req.workdir
+                .starts_with(root.path().canonicalize().expect("canonical root")),
+            "a nested workdir stays inside the workspace; got {}",
+            req.workdir.display()
+        );
+    }
+
+    /// With no workspace authority the tool refuses rather than inventing a
+    /// directory. Guessing is precisely the behavior being removed.
+    #[test]
+    fn a_rootless_parse_refuses_rather_than_inventing_a_workdir() {
+        let input = json!({"scope": "auto"});
+        let error = parse_test_request_in(&input, None)
+            .expect_err("a rootless parse must not pick a directory for the caller");
+        assert!(
+            error.to_string().contains("no workspace root"),
+            "the error must say the workdir needs an explicit value; got {error}"
+        );
+
+        // An explicit workdir is still accepted without a root.
+        let explicit = json!({"scope": "auto", "workdir": "/some/dir"});
+        assert_eq!(
+            parse_test_request_in(&explicit, None)
+                .expect("an explicit workdir needs no workspace authority")
+                .workdir,
+            PathBuf::from("/some/dir")
+        );
+    }
+
+    /// The registry must hand the tool its workspace root. Before this the
+    /// tool was registered with run store, submission, and session id only,
+    /// so it had no root to default to.
+    #[test]
+    fn the_registered_test_tool_carries_a_workspace_root() {
+        let root = tempfile::tempdir().expect("workspace fixture");
+        let registry = crate::tool::ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+            git_read_only: None,
+            workspace_root: Some(root.path().to_path_buf()),
+            ..crate::tool::ToolRegistryOptions::default()
+        });
+        assert!(
+            registry.get("test").is_some(),
+            "test must be registered so the assertion is meaningful"
+        );
+
+        let tool =
+            crate::tool::test::TestTool::new().with_workspace_root(root.path().to_path_buf());
+        let req = parse_test_request_in(&json!({"scope": "auto"}), tool.workspace_root.as_deref())
+            .expect("a rooted tool parses");
+        assert_eq!(
+            req.workdir,
+            root.path().canonicalize().expect("canonical root")
+        );
     }
 
     #[test]

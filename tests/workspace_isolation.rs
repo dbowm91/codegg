@@ -211,6 +211,7 @@ async fn core_daemon_workspace_binding_rejects_unbound_turn_submit() {
     daemon.hydrate_workspace_registry().await.unwrap();
 
     let agent = codegg::protocol_conversions::agent_to_dto(codegg::agent::Agent {
+        git_read_only: false,
         name: "test".into(),
         description: "test".into(),
         ..Default::default()

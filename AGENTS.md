@@ -112,8 +112,68 @@ change-triggered (`ls scripts/check_*` for the full list):
 
 ## Gotchas
 
+- A **relative** path in any tool is relative to the session's `workspace_root`,
+  never to the process cwd. `validate_path`/`validate_target_path` join the
+  `allowed_root` first; `TestTool`/`PythonScriptTool` default `workdir` to it
+  and refuse rather than guess when there is none. This matters because turns
+  run in a user-scoped **daemon** whose cwd is wherever it was launched — so
+  resolving a relative path against it silently retargeted a whole session into
+  an unrelated tree. It stayed invisible while you worked in whichever repo the
+  daemon happened to start from. Two tell-tales of this class of bug: a tool
+  reporting a file missing that its own hint then suggests, and tests/scripts
+  executing "in the wrong workspace". **Walk the path you validated** — `glob`
+  and `list` both validated a root and then walked the raw request, the same bug
+  wearing a different hat. `check_daemon_cwd_usage.py` only rejects
+  *new* `current_dir()` calls, and its allowlist exempts the `Default::new()`
+  constructors — so "no new violations" is not proof the default is right.
 - `PermissionRegistry`/`QuestionRegistry` are sync (`register`/`respond`/`answer_question`
   are `fn`, not `async`); register the responder BEFORE publishing the Pending event.
+- One approval on screen, the rest in `DialogState::permission_queue`. `show_permission_dialog`
+  used to assign straight into `permission_dialog`, so each new `PermissionPending` destroyed
+  the previous request **together with its `perm_id`** — the daemon waiter stayed parked on a
+  human answer no UI pointed at, and the tool timed out denied for an invisible reason. Related:
+  `close_dialog` needs its `Dialog::Permission` arm calling `requeue_open_permission()`, because
+  anything still mounted at close time was dismissed *unanswered*; every answer path must
+  therefore clear the dialog fields **before** calling `close_dialog()` or it requeues what it
+  just answered. `CoreEvent::PermissionPending` carries no `args`, so `mount_permission_dialog`
+  recovers them from the transcript — approving a command you cannot read is not a decision.
+- An advisory must never create an escalation on its own: gate it on a **finding**
+  (`preflight_requires_escalation`), never on having run. Command preflight is wired by
+  default, so testing `CommandPreflightResult::is_some()` escalated every `bash` call — and
+  because that arm is reached from `PermissionResult::Allow` as well as `Ask`, it silently
+  discarded stored `AlwaysAllow` grants. That is the "the agent overrode my approval"
+  symptom; see `architecture/permission.md` "Command preflight is advisory".
+- Remembered bash approvals are **per segment**: `decision_scopes_for_shell_command` splits a
+  compound command on control operators outside quotes and combines the segments with
+  **intersection** semantics (all must Allow; any Deny denies). Anything whose interior the
+  splitter cannot see — `$( )`, `${ }`, heredoc, unbalanced quotes — stays one
+  `cmd:exact:` scope. Never resolve the intersection to "any segment is enough".
+- `BashTool` has two independent roots: `workspace_root` (default `workdir`, command-intent
+  context, every session) and `child_workspace_ceiling` (the isolated child-Git worktree
+  ceiling, armed only by `child_git_policy`). Never derive the ceiling from `workspace_root` —
+  it rejects *any* absolute path outside its root, including `/dev/null`.
+- Never route a TUI answer through `AppMode` alone: `RemoteCore` covers both the
+  WS-attach frontend (owns `remote_send_tx`) and the socket-daemon frontend (owns
+  `core_client` only). Use `App::is_ws_attach_transport()` — enforced by
+  `scripts/check_tui_transport_authority.py`. A mode-only gate drops the answer
+  into an absent channel, orphaning the daemon waiter on an unbounded human wait,
+  so approving a tool hangs the turn with no visible error.
+- Progress recovery keys every incident on the whole `action_key()` (tool **plus** normalized
+  arguments). An earlier `ShortCycle` arm compared `canonical_tool` alone, so it fired exactly
+  when a model reached for the same tool again with *different* arguments — reading a second
+  file, running a second grep — climbed the whole ladder and stalled the turn. That variant is
+  gone. Do not reintroduce a tool-name-only check, and do not forget that a successful read-only
+  call the turn has never made is `NewEvidence`: it cannot be a repeat, so it must never be
+  escalated. The outer run bound is `ExecutionLimits::max_turns`, not the recovery ladder.
+- The **working strip row 0 is reserved unconditionally** and is the main buffer's only
+  status surface. Its height is subtracted from the transcript (`session_layout` splits
+  `prompt_height` against `Min(10)`), so gating it on turn state reflowed the transcript
+  on every submit and completion. It reads `idle` when nothing runs. Put turn state here,
+  not on the hint line: there is one cadence (`tui::components::spinner`, one frame table,
+  100ms) and one `ActivityPhase` enum — a second spinner or a free-form label is how the
+  indicator a user watches became ten times slower than the one nobody looked at. Turn
+  failures are **latched** in `SessionState::last_error` and cleared only by `TurnStarted`;
+  `report_turn_error` is for turn failures alone, not for shell/clipboard/theme feedback.
 - `ToolBroker` is the only production tool-call boundary. Heavy work (tests, managed
   processes, subagent dispatch, tool programs) goes `JobSubmissionService` →
   `JobScheduler`, never direct executor calls.

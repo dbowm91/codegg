@@ -194,6 +194,7 @@ impl ToolProgramExecutor {
         }
         let registry = Arc::new(ToolRegistry::with_options(
             crate::tool::ToolRegistryOptions {
+                git_read_only: None,
                 workspace_root: Some(workspace_root.to_path_buf()),
                 sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
                 submission: self.submission.clone(),

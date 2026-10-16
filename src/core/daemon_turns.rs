@@ -2097,6 +2097,7 @@ mod tests {
 
     fn turn_request(session_id: &str, model: &str) -> RequestEnvelope<CoreRequest> {
         let agent = crate::agent::Agent {
+            git_read_only: false,
             name: "test".into(),
             description: "test agent".into(),
             ..Default::default()

@@ -90,6 +90,17 @@ pub struct Agent {
     pub steps: Option<usize>,
     pub system_prompt: Option<String>,
     pub permissions: HashMap<String, String>,
+    /// Grant `git` for inspection only: every invocation `codegg-git` does not
+    /// classify read-only is refused at the tool boundary.
+    ///
+    /// `[agent.permissions]` is per *tool*, so `git = "allow"` would also
+    /// authorize `git push`, and `git = "deny"` costs the agent the repository
+    /// facts it needs to do its job. This is the middle: read access without
+    /// write access. It never widens anything — an agent that declares it must
+    /// also be permitted to use `git` at all, and any `deny` on `git` still
+    /// wins.
+    #[serde(default)]
+    pub git_read_only: bool,
     pub hidden: bool,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
@@ -542,6 +553,7 @@ pub fn resolve_agents_with_context(
                 agents[pos] = agents[pos].clone().with_config_mode(mode_cfg, None);
             } else {
                 let mut agent = Agent {
+                    git_read_only: false,
                     name: key.clone(),
                     role: None,
                     description: mode_cfg.description.clone().unwrap_or_default(),
@@ -577,8 +589,14 @@ pub fn resolve_agents_with_context(
     // Session rules are empty here (resolved at load time), config rules
     // come from the loaded config, and hard_deny contains tools that must
     // always be denied (e.g., sandbox restrictions).
+    //
+    // Only *operator-written* config levels clamp an agent declaration.
+    // `config_ruleset` substitutes the built-in `default_ruleset()` Ask list
+    // when `[permission]` is absent, and merging that in here would rewrite an
+    // agent's `task = "allow"` back to `ask` without the operator ever
+    // choosing that — the same outcome as if they had.
     let session_rules = crate::permission::PermissionRuleset::default();
-    let config_rules = crate::permission::config_ruleset(Some(config));
+    let config_rules = crate::permission::explicit_config_ruleset(Some(config));
     let hard_deny = vec![
         "commit".to_string(),
         "todowrite".to_string(),
@@ -593,6 +611,7 @@ pub fn resolve_agents_with_context(
 
 pub(super) fn merge_agent_config(agent: &Agent, cfg: &AgentConfig) -> Result<Agent, AgentError> {
     Ok(Agent {
+        git_read_only: false,
         name: cfg.name.clone().unwrap_or_else(|| agent.name.clone()),
         role: cfg.role.clone().or_else(|| agent.role.clone()),
         description: cfg
@@ -664,6 +683,7 @@ pub(super) fn agent_from_config(key: &str, cfg: &AgentConfig) -> Result<Agent, A
     }
 
     Ok(Agent {
+        git_read_only: false,
         name,
         role: cfg.role.clone(),
         description: cfg.description.clone().unwrap_or_default(),
@@ -707,6 +727,7 @@ mod tests {
 
     fn make_test_agent(name: &str) -> Agent {
         Agent {
+            git_read_only: false,
             name: name.to_string(),
             role: None,
             description: "Test agent".to_string(),
@@ -871,6 +892,7 @@ mod tests {
     #[test]
     fn test_find_default_agent_fallback() {
         let agents = vec![Agent {
+            git_read_only: false,
             name: "custom".to_string(),
             role: None,
             description: "Custom".to_string(),
@@ -970,6 +992,7 @@ mod tests {
         permissions.insert("write".to_string(), "deny".to_string());
         permissions.insert("paths".to_string(), "/tmp/*".to_string());
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1000,6 +1023,7 @@ mod tests {
         let mut permissions = HashMap::new();
         permissions.insert("bash".to_string(), "allow".to_string());
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1560,6 +1584,7 @@ write = "deny"
     #[test]
     fn test_safety_envelope_restricts_permissions() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1621,6 +1646,7 @@ write = "deny"
         // When both deny and allow patterns exist for bash,
         // deny patterns should be listed first (evaluated first in ruleset)
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1669,6 +1695,7 @@ write = "deny"
     #[test]
     fn test_model_resolution_never_returns_empty() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1704,6 +1731,7 @@ write = "deny"
     #[test]
     fn test_model_resolution_explicit_model_wins() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1733,6 +1761,7 @@ write = "deny"
     #[test]
     fn test_model_resolution_parent_model_inherits() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1764,6 +1793,7 @@ write = "deny"
     #[test]
     fn test_model_resolution_fallback_model_used() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1796,6 +1826,7 @@ write = "deny"
     fn test_safety_envelope_prevents_escalation() {
         // Agent tries to allow bash, but session denies it
         let agent = Agent {
+            git_read_only: false,
             name: "custom-agent".to_string(),
             role: None,
             description: "Custom agent".to_string(),
@@ -1863,6 +1894,7 @@ write = "deny"
     fn test_safety_envelope_config_restricts_permissions() {
         // Agent tries to allow write, but config denies it
         let agent = Agent {
+            git_read_only: false,
             name: "custom-agent".to_string(),
             role: None,
             description: "Custom agent".to_string(),
@@ -1920,6 +1952,7 @@ write = "deny"
     fn test_safety_envelope_empty_rules_preserves_permissions() {
         // When no session/config/hard rules, agent permissions should be preserved
         let agent = Agent {
+            git_read_only: false,
             name: "custom-agent".to_string(),
             role: None,
             description: "Custom agent".to_string(),
@@ -1970,6 +2003,7 @@ write = "deny"
         // When both session and config have rules, session should take precedence
         // (session is more restrictive)
         let agent = Agent {
+            git_read_only: false,
             name: "custom-agent".to_string(),
             role: None,
             description: "Custom agent".to_string(),
@@ -2038,6 +2072,7 @@ write = "deny"
     #[test]
     fn test_resolve_profile_explicit_model_no_emergency_fallback() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -2065,6 +2100,7 @@ write = "deny"
     #[test]
     fn test_resolve_profile_no_model_uses_emergency_fallback() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -2092,6 +2128,7 @@ write = "deny"
     #[test]
     fn test_resolve_profile_config_model_takes_precedence() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),

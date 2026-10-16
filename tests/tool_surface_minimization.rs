@@ -438,6 +438,7 @@ fn runtime_unavailable_tools_are_not_advertised_as_merely_deferred() {
         ..Default::default()
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         ..Default::default()
     });
