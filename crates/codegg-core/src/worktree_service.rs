@@ -1563,6 +1563,68 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn stable_reservation_retries_same_checkout_and_retains_backend_failure() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let managed = TempDir::new().unwrap();
+        let (project, repository, workspace, run) = ids();
+        let service = WorktreeService::memory(
+            managed.path().to_path_buf(),
+            Arc::new(WorkspaceLockTable::new()),
+        );
+        let worktree_id = WorktreeId::new();
+        let request = CreateWorktreeRequest {
+            project_id: project.clone(),
+            repository_id: repository.clone(),
+            workspace_id: workspace.clone(),
+            node_id: None,
+            repository_root: repo.path().to_path_buf(),
+            base_commit: None,
+            base_path: None,
+            owner_run_id: run,
+        };
+
+        let reserved = service
+            .reserve_with_id(&request, worktree_id.clone())
+            .await
+            .unwrap();
+        let retried = service
+            .reserve_with_id(&request, worktree_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(reserved.path, retried.path);
+        assert_eq!(reserved.worktree_id, retried.worktree_id);
+
+        let error = service
+            .create_reserved(&worktree_id)
+            .await
+            .expect_err("contained Git backend is required for worktree add");
+        assert!(error.to_string().contains("CleanSmudgeFilter"));
+        let retained = service.get(&worktree_id).await.unwrap();
+        assert_eq!(retained.state, ManagedWorktreeState::Orphaned);
+        assert_eq!(retained.health, WorktreeHealth::GitError);
+        assert!(!retained.path.exists());
+
+        let retry_error = service
+            .create_reserved(&worktree_id)
+            .await
+            .expect_err("retry must fail closed while the backend is unavailable");
+        assert!(retry_error.to_string().contains("CleanSmudgeFilter"));
+        let records = service.list(WorktreeQuery::default()).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].worktree_id, worktree_id);
+
+        let conflicting = CreateWorktreeRequest {
+            project_id: ProjectId::new(),
+            ..request
+        };
+        assert!(matches!(
+            service.reserve_with_id(&conflicting, worktree_id).await,
+            Err(WorktreeServiceError::Collision(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn stale_generation_cannot_release_new_owner() {
         let store = Arc::new(InMemoryWorktreeStore::new());
         let now = Utc::now().timestamp_millis();
