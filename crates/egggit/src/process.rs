@@ -1216,7 +1216,7 @@ fn copy_object_files_descriptor_relative(
     source: &Path,
     destination: &Path,
 ) -> std::io::Result<u64> {
-    use rustix::fs::{open, Dir, Mode, OFlags};
+    use rustix::fs::{open, openat, Dir, FileType, Mode, OFlags};
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
@@ -1243,8 +1243,9 @@ fn copy_object_files_descriptor_relative(
         ));
     }
 
+    let mut copied = 0usize;
+    let mut bytes = 0u64;
     let mut directories = Dir::read_from(&source_file).map_err(rustix_io_error)?;
-    let mut tasks = Vec::new();
     for entry in &mut directories {
         let entry = entry.map_err(rustix_io_error)?;
         let raw_name = entry.file_name().to_bytes();
@@ -1266,137 +1267,77 @@ fn copy_object_files_descriptor_relative(
             // from this immutable view instead of failing trusted reads.
             continue;
         }
-        let target_dir = destination.join(name);
-        std::fs::create_dir(&target_dir)?;
-        tasks.push((name.to_os_string(), is_fanout));
-    }
-
-    const WORKERS: usize = 4;
-    let next_task = std::sync::atomic::AtomicUsize::new(0);
-    let copied_objects = std::sync::atomic::AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let worker_count = WORKERS.min(tasks.len()).max(1);
-        let mut workers = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            workers.push(scope.spawn(|| {
-                let mut bytes = 0u64;
-                loop {
-                    let task_index = next_task.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((name, is_fanout)) = tasks.get(task_index) else {
-                        return Ok::<u64, std::io::Error>(bytes);
-                    };
-                    bytes = bytes
-                        .checked_add(copy_object_subdirectory(
-                            &source_file,
-                            destination,
-                            name,
-                            *is_fanout,
-                            &copied_objects,
-                        )?)
-                        .ok_or_else(|| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "object byte count overflow",
-                            )
-                        })?;
-                }
-            }));
-        }
-
-        let mut bytes = 0u64;
-        for worker in workers {
-            let copied = worker
-                .join()
-                .map_err(|_| std::io::Error::other("Git object snapshot worker panicked"))??;
-            bytes = bytes.checked_add(copied).ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "object byte count overflow",
-                )
-            })?;
-        }
-        Ok(bytes)
-    })
-}
-
-#[cfg(unix)]
-fn copy_object_subdirectory(
-    source: &std::fs::File,
-    destination: &Path,
-    name: &std::ffi::OsStr,
-    is_fanout: bool,
-    copied_objects: &std::sync::atomic::AtomicUsize,
-) -> std::io::Result<u64> {
-    use rustix::fs::{openat, Dir, FileType, Mode, OFlags};
-    use std::os::unix::ffi::OsStrExt;
-
-    let source_subdir = openat(
-        source,
-        name,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(rustix_io_error)?;
-    let mut objects = Dir::read_from(&source_subdir).map_err(rustix_io_error)?;
-    let mut bytes = 0u64;
-    for object in &mut objects {
-        let object = object.map_err(rustix_io_error)?;
-        let raw_object_name = object.file_name().to_bytes();
-        if raw_object_name == b"." || raw_object_name == b".." {
-            continue;
-        }
-        let object_name = std::ffi::OsStr::from_bytes(raw_object_name);
-        if is_fanout {
-            let suffix = object_name.to_str().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "non-UTF-8 loose Git object name",
-                )
-            })?;
-            if !((suffix.len() == 38 || suffix.len() == 62)
-                && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            {
-                // Temporary names and unrelated files are outside Git's
-                // lookup namespace and are omitted from this view.
-                continue;
-            }
-        }
-        let object_fd = openat(
-            &source_subdir,
-            object_name,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        let source_subdir = openat(
+            &source_file,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
             Mode::empty(),
         )
         .map_err(rustix_io_error)?;
-        let object_file = std::fs::File::from(object_fd);
-        let object_metadata = rustix::fs::fstat(&object_file).map_err(rustix_io_error)?;
-        if FileType::from_raw_mode(object_metadata.st_mode) != FileType::RegularFile {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "unsupported entry in Git object fanout",
-            ));
-        }
-        bytes = bytes
-            .checked_add(object_metadata.st_size.max(0) as u64)
-            .ok_or_else(|| {
-                std::io::Error::new(
+        let target_dir = destination.join(name);
+        std::fs::create_dir(&target_dir)?;
+        let mut objects = Dir::read_from(&source_subdir).map_err(rustix_io_error)?;
+        for object in &mut objects {
+            let object = object.map_err(rustix_io_error)?;
+            let raw_object_name = object.file_name().to_bytes();
+            if raw_object_name == b"." || raw_object_name == b".." {
+                continue;
+            }
+            let object_name = OsStr::from_bytes(raw_object_name);
+            if is_fanout {
+                let suffix = object_name.to_str().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-UTF-8 loose Git object name",
+                    )
+                })?;
+                if !((suffix.len() == 38 || suffix.len() == 62)
+                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    // Temporary names and unrelated files cannot be looked
+                    // up as loose objects by Git.
+                    continue;
+                }
+            }
+            let object_fd = openat(
+                &source_subdir,
+                object_name,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(rustix_io_error)?;
+            let object_file = std::fs::File::from(object_fd);
+            let object_metadata = rustix::fs::fstat(&object_file).map_err(rustix_io_error)?;
+            if FileType::from_raw_mode(object_metadata.st_mode) != FileType::RegularFile {
+                return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "object byte count overflow",
-                )
+                    "unsupported entry in Git object fanout",
+                ));
+            }
+            bytes = bytes
+                .checked_add(object_metadata.st_size.max(0) as u64)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "object byte count overflow",
+                    )
+                })?;
+            copied = copied.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
             })?;
-        let copied = copied_objects.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        if copied > 1_000_000 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Git object snapshot exceeds entry bound",
-            ));
+            if copied > 1_000_000 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Git object snapshot exceeds entry bound",
+                ));
+            }
+            let target = destination.join(name).join(object_name);
+            let mut snapshot = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(target)?;
+            copy_object_snapshot(&object_file, &mut snapshot)?;
         }
-        let target = destination.join(name).join(object_name);
-        let mut snapshot = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)?;
-        copy_object_snapshot(&object_file, &mut snapshot)?;
     }
     Ok(bytes)
 }
