@@ -118,30 +118,40 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
     let workspace = tempfile::tempdir().expect("workspace");
     let marker = workspace.path().join("target-ran");
     let probe = format!(
-        "import os, socket\n\
-         probes = [\n\
-           (socket.AF_INET, ({:?}, {})),\n\
-           (socket.AF_INET6, ({:?}, {})),\n\
-         ]\n\
-         for family, address in probes:\n\
-           s = socket.socket(family, socket.SOCK_STREAM); s.settimeout(1)\n\
-           if s.connect_ex(address) == 0: raise SystemExit(41)\n\
-         for family, address in [(socket.AF_INET, ({:?}, {})), (socket.AF_INET6, ({:?}, {}))]:\n\
-           s = socket.socket(family, socket.SOCK_DGRAM)\n\
-           try: s.sendto(b'network-leak', address)\n\
-           except OSError: pass\n\
-         try:\n\
-         socket.getaddrinfo('example.com', 443, type=socket.SOCK_STREAM)\n\
-           raise SystemExit(42)\n\
-         except OSError: pass\n\
-         external = socket.socket(); external.settimeout(1)\n\
-         if external.connect_ex(('198.51.100.1', 443)) == 0: raise SystemExit(43)\n\
-         fd = {}\n\
-         try: os.fstat(fd)\n\
-         except OSError: open({:?}, 'w').write('offline')\n\
-         else:\n\
-           os.write(fd, b'inherited-socket-leak')\n\
-           raise SystemExit(44)",
+        r#"import os, socket
+probes = [
+    (socket.AF_INET, ({:?}, {})),
+    (socket.AF_INET6, ({:?}, {})),
+]
+for family, address in probes:
+    s = socket.socket(family, socket.SOCK_STREAM)
+    s.settimeout(1)
+    if s.connect_ex(address) == 0:
+        raise SystemExit(41)
+for family, address in [(socket.AF_INET, ({:?}, {})), (socket.AF_INET6, ({:?}, {}))]:
+    s = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        s.sendto(b'network-leak', address)
+    except OSError:
+        pass
+try:
+    socket.getaddrinfo('example.com', 443, type=socket.SOCK_STREAM)
+    raise SystemExit(42)
+except OSError:
+    pass
+external = socket.socket()
+external.settimeout(1)
+if external.connect_ex(('198.51.100.1', 443)) == 0:
+    raise SystemExit(43)
+fd = {}
+try:
+    os.fstat(fd)
+except OSError:
+    open({:?}, 'w').write('offline')
+else:
+    os.write(fd, b'inherited-socket-leak')
+    raise SystemExit(44)
+"#,
         tcp4_addr.ip().to_string(),
         tcp4_addr.port(),
         tcp6_addr.ip().to_string(),
