@@ -50,10 +50,14 @@ accepted.
 Long-lived PTY sessions retain a distinct `InteractiveProcessService` owner.
 Its internal Linux M004 candidate uses `ManagedProcessService` helper launch
 and setup acknowledgment before releasing the target, then retains status
-monitoring alongside PTY/session lifetime ownership. The daemon protocol keeps
-constrained PTY requests refused until exact-host qualification is accepted;
-do not add a direct-spawn fallback. Constrained LSP remains unavailable until
-its own duplex process owner is wired through the service-scoped launcher.
+monitoring alongside PTY/session lifetime ownership. For three terminal
+standard streams, the helper pins its own executable into the private mount
+view and runs it as an in-namespace bootstrap that creates a visible foreground
+process group, then execs the requested target in place. The daemon protocol
+keeps constrained PTY requests refused until exact-host qualification is
+accepted; do not add a direct-spawn fallback. Constrained LSP remains
+unavailable until its own duplex process owner is wired through the
+service-scoped launcher.
 Its Windows adapter starts unconstrained children suspended, assigns a
 kill-on-close Job Object before resume, and owns timeout/cancellation cleanup
 for the whole process tree. Job ownership is process supervision only; Windows

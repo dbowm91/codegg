@@ -586,6 +586,11 @@ qualified. Probe results never establish a child's obtained status. The
 long-lived interactive PTY owner uses the same helper receipt/ack path for an
 internal M004 candidate; it retains PTY and child lifetime ownership and stays
 unavailable through the daemon protocol until exact-host qualification passes.
+When all three inherited standard streams are terminals, the helper pins its
+own executable into the private mount view and uses it as an in-namespace
+bootstrap. The bootstrap creates a PID-namespace-visible foreground process
+group, then execs the requested target in place so the PTY owner continues to
+supervise the target process directly.
 Shell, TestRunner, and SubAgentPool retain
 their domain semantics behind typed executors; TestRunner is an
 explicit lifecycle exemption because it streams parser input into
