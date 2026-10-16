@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 004 — Rename and repath (rebind) via `e`
 
-Status: blocked — hard dependencies M2 interface stability (M1→M2 chain)
+Status: ready
 
 Repository baseline: `b4e9a92d` (rebase onto the M2 closure head before
 handoff — see stop conditions)
@@ -31,10 +31,11 @@ following the project and repath onto an already-bound root refused.
 
 ## 2. Why this milestone is ready
 
-Blocked, not ready: ADR-0033 is accepted (satisfied), but the edit form
-hangs on M2's dialog/key contract and shares row-hook seams with M3 —
-M2 must be stable first. M3 may land before or alongside; the plans are
-independent given M2.
+ADR-0033 is accepted, and M2 is strictly closed at
+`plans/closure/project-picker-rework/002-status.md`. The picker now has
+stable per-row selection context, a help-style dialog, and a documented
+Normal/Insert key contract for rename/repath actions to extend. M3 and
+M4 are independent after M2 and may be implemented sequentially.
 
 ## 3. Current implementation evidence
 

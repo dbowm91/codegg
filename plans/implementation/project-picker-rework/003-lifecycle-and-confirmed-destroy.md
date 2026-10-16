@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 003 — Deactivate/reactivate lifecycle plus confirmed destroy
 
-Status: blocked — hard dependencies M2 interface stability (M1→M2 chain)
+Status: ready
 
 Repository baseline: `b4e9a92d` (rebase onto the M2 closure head before
 handoff — see stop conditions)
@@ -32,9 +32,10 @@ names the affected session count — cascading to its sessions atomically.
 
 ## 2. Why this milestone is ready
 
-Blocked, not ready: ADR-0033 is accepted (satisfied), but the M2 picker
-interface (row selection context, help-style dialog, key contract) must
-be stable first — this milestone hangs actions on M2's per-row hooks.
+ADR-0033 is accepted, and M2 is strictly closed at
+`plans/closure/project-picker-rework/002-status.md`. The picker now has
+stable per-row selection context, a help-style dialog, and a documented
+Normal/Insert key contract for lifecycle actions to extend.
 
 ## 3. Current implementation evidence
 
