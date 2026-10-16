@@ -43,8 +43,9 @@ counts (only distinct tool names). Interpret all differences as descriptive.
 Each S0 agent reported both required test commands passing; the evaluator then
 reran both commands in each S0 worktree. Each S1 child reported its language
 test passing; the evaluator merged the independently committed Rust and
-Python branches and reran both suites. All eight per-language executions
-passed. Both integrated S1 trees were clean after verification.
+Python branches and reran both suites on each integrated tree. All eight
+agent-run language tests and all eight evaluator-run language tests passed.
+Both integrated S1 trees were clean after verification.
 
 S1 used 86.7% more tokens in A and 41.0% more in B. Its end-to-end time was
 30.3% slower in A and 50.1% faster in B. S0 varied from 20.29 to 51.66

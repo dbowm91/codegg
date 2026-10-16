@@ -283,7 +283,7 @@ after reconciling the search-backend retirement with current `main`.
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
 | Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
 | Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
-| Built-in slash commands | 161 | asserted by `built_in_command_count_matches_release_docs` |
+| Built-in slash commands | 165 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 29 (30 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |

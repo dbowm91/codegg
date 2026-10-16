@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked for broad qualification; the authorized S0/S1 isolated pilot is complete, and shared-checkout arms additionally require M005 closure
+Status: blocked for broad qualification; the authorized S0/S1 isolated pilot is complete, M006 NewManaged remains blocked, and shared-checkout arms additionally require M005 closure
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -70,4 +70,6 @@ Its two repetitions and limitations are recorded in
 sanitized per-trial measurements in the adjacent `008-pilot-data.json`.
 This advances only the isolated pilot scope. It does not qualify peer/task
 claims, the M007 daemon scheduler path, the broad M008 task strata, or shared
-checkout execution, and it does not close or generally unblock M008.
+checkout execution, and it does not close or generally unblock M008. M007 is
+now conditionally closed on scheduler implementation and CI, with its separate
+manual realistic Rust workspace consumer run still outstanding.
