@@ -1,7 +1,9 @@
 # Agent Workstream Blackboard M008 — Isolated S0/S1 Results
 
 Evidence status: exploratory partial result; M008 remains active and is not
-strictly closed.
+strictly closed. This record includes a completed frozen shared-interface S0
+and one completed isolated S1 pair; it does not establish a repeatable
+effectiveness advantage.
 
 Source plan: `plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md`
 CodeGG source: `a0d7acef8e428d55971514addf685741a25ce047`
@@ -204,3 +206,80 @@ performance denominators. It provides live evidence for same-session group
 continuation and normal cancellation, but no child completion or effectiveness
 result. M008 remains active; S2/S3 and the remaining acceptance strata remain
 open, and S4 remains gated on M005.
+
+## 10. Single-child runtime diagnostics (2026-10-16)
+
+Two read-only `explore` child diagnostics were run through the same
+daemon-backed TaskTool path. One standalone child remained running after 30
+seconds; a later top-level turn could not call run-scoped `task.wait` because
+run-control remains bound to the originating turn. A one-member group then
+remained running across two same-session `wait_group` calls over about 90
+seconds. Its journal reached seven `safe_boundary: before_provider_turn`
+events, then stopped advancing. Normal group cancellation was accepted, and
+isolated-daemon recovery marked the child interrupted. No source edits or
+worktree mutations occurred.
+
+Source tracing shows this boundary is recorded before AgentStart hooks and
+request preparation in `src/agent/loop.rs`; it does not establish that the
+provider stream was invoked or that a tool call began. The diagnostics
+therefore reproduce a child-run stall but do not isolate provider streaming
+from hooks, request preparation, or tool handling. They are not benchmark
+trials. Section 11 adds provider-attempt journal milestones and records the
+subsequent completed Rust/Python S1 pair. Tool-execution phase tracing remains
+useful for localizing future stalls. No performance conclusion follows from
+these diagnostics.
+
+## 11. Approval-mode propagation and completed isolated S1 (2026-10-16)
+
+Phase-level provider journal milestones identified the earlier child-run
+stall: delegated children ran under `Interactive` even when the parent
+headless session had explicitly selected `Yolo`. A child `git_query status`
+therefore entered `permission_pending` in its synthetic session, where a
+headless parent could not answer the request. The durable subagent payload now
+carries the approval mode from the authorized parent TaskTool invocation into
+the scheduled child loop. Historical payloads without the field default to
+`Interactive`. This changes only escalation handling: the child retains its
+own agent tool/path rules and the independently narrowed sandbox ceiling.
+Provider-attempt start/success/failure milestones were also added so future
+stalls can be localized without inferring provider activity from the earlier
+`before_provider_turn` boundary.
+
+The correction was built into the isolated arm64 daemon. A bounded `build`
+child successfully ran `git_query status` and read the fixture under the
+parent's `Yolo` mode. A fresh two-child S1 pair then completed from the frozen
+fixture digest `b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1`:
+
+| Arm | Run | Worktree | Result | Provider attempts | Elapsed |
+|---|---|---|---|---:|---:|
+| S1 Rust producer | `cda79ddf-6fdc-4bb5-8793-ce7bd85fdafc` | `cc2c2851-3e08-404a-9c9d-0249c6c35aef` | Completed; Rust workspace tests 7/7 | 23 started, 23 succeeded | 134.29 s |
+| S1 Python consumer | `5913d600-3234-404b-94d6-e70ee0e3fc57` | `351ea5e1-2821-4ae5-a1c9-634673afa95b` | Completed; Python tests 7/7 | 22 started, 22 succeeded | 129.18 s |
+
+Group `ecfc4e68-c4fc-4985-a1b0-d9063287858a` accepted both children and
+completed with two accepted, zero rejected. Both worktrees had the same
+resolved repository identity and a shared immutable base, while each child
+owned a separate managed checkout. A disposable evaluation copy combined only
+the Rust producer outputs and Python consumer outputs; its fixture matched the
+frozen digest. On that combined result, `cargo test --locked --workspace`
+passed all 7 integration tests, `python3 -m unittest discover -s python/tests
+-v` passed all 7 tests, and `python3 scripts/check_cross_language_golden.py`
+passed. The integrated result was evaluated only; child changes were not
+applied to the CodeGG source checkout.
+
+The group completed in 135.18 seconds from acceptance to terminal completion.
+The parent session contains 147 provider usage rows across the entire
+experiment and later follow-up turns. Synthetic child usage is not separately
+persisted in the usage table, so child-attributed token and cost totals are
+unavailable; the parent-session aggregate is not a valid substitute. The
+Rust child initially could not run the golden evaluator because its sibling
+had not finished; the combined evaluator copy resolves that dependency after
+both child results were available. No shared-checkout writes were used.
+
+This is one successful S1 against one completed S0 on the same frozen
+shared-interface task, in addition to earlier exploratory trials and
+incomplete attempts. It establishes that the daemon-backed isolated S1 route
+can complete both sides and integrate to a passing result after the
+approval-mode correction. It does not establish a repeatable improvement in
+quality, time, cost, or agent effectiveness. S2 peer-observation and S3
+claim-enforced comparisons, further task strata, resource attribution, and
+full sandbox writer/path qualification remain open. S4 remains unavailable
+pending M005.

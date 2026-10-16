@@ -1,5 +1,5 @@
 {
-  "evidence_kind": "partial exploratory measurement; not M008 closure",
+  "evidence_kind": "partial exploratory measurement; one completed S0 and one completed S1 shared-interface arm; not M008 closure",
   "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
   "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
   "binary": {
@@ -177,10 +177,12 @@
     "S4 serialized shared checkout (M005-gated)"
   ],
   "summary_limits": [
-    "S0 completed twice; S1 completed once and timed out once with manual recovery.",
+    "Earlier pilot S0/S1 counts remain separate; the post-correction frozen shared-interface task has one completed S0 and one completed isolated S1 pair, with additional incomplete S1 attempts.",
     "S1-B consumed 82.7% more tokens and took about 35% longer than the mean S0 wall time including integration, but that comparison is N=1 versus N=2 and is descriptive only.",
     "Sandbox containment was requested but not verified because each headless exec logged that no workspace root was available.",
-    "No S2/S3 peer-observation or claim benefit conclusion is supported."
+    "No S2/S3 peer-observation or claim benefit conclusion is supported.",
+    "The completed S1 is one descriptive pair and does not establish repeatable effectiveness, quality, time, or cost improvement.",
+    "Provider usage is not persisted per synthetic child; child token and cost totals are unavailable."
   ],
   "follow_up_trials_2026_10_16": {
     "fixture_v1_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
@@ -288,6 +290,86 @@
       "usage_attribution": "Session-level usage rows include parent follow-up turns and cannot be attributed to child progress.",
       "latest_observation": "Neither child produced a terminal agent result or worktree edits. No effectiveness conclusion is supported.",
       "classification": "incomplete; excluded from success and performance denominators"
+    },
+    "single_child_runtime_diagnostics": {
+      "standalone": {
+        "run_id": "96f292da-5d74-427a-8d29-49622a75bfbb",
+        "agent": "explore",
+        "wait_result": "remained running after 30000 ms",
+        "later_turn_run_control": "task.wait from a later top-level turn in the same session was denied because run-control remains scoped to the originating turn",
+        "terminal_state": "interrupted after isolated daemon recovery"
+      },
+      "single_member_group": {
+        "group_id": "d7cf6e61-8945-495b-9461-d0165b4ef09a",
+        "run_id": "1bddb149-8358-4925-a6ca-24f2ff3cd713",
+        "agent": "explore",
+        "same_session_wait_group_calls": 3,
+        "last_journal_sequence": 7,
+        "last_journal_event": "safe_boundary: before_provider_turn",
+        "outcome": "Remained running across approximately 90 seconds; cancel_group was accepted; isolated daemon recovery marked the child interrupted. No worktree changes."
+      },
+      "source_boundary_scope": "AgentLoop records before_provider_turn before AgentStart hooks and request preparation. It does not prove that ProviderTurnAdapter invoked the provider stream or that tool execution began.",
+      "classification": "diagnostic only; not included in benchmark arm counts or effectiveness denominators",
+      "finding": "Child-run execution stalls are reproducible outside parallel sibling groups. Current journal evidence is too coarse to distinguish provider streaming, hooks, request preparation, or tool handling. Add phase-specific trace evidence before another expensive Rust/Python S1 attempt."
+    },
+    "approval_mode_propagation_corrective": {
+      "source_changes": [
+        "crates/codegg-core/src/jobs/mod.rs",
+        "src/tool/task.rs",
+        "src/scheduler/executors.rs",
+        "src/agent/worker.rs",
+        "src/work_plan_eggplan.rs"
+      ],
+      "finding": "Delegated children defaulted to Interactive even when the authorized parent TaskTool invocation used Yolo. A git_query escalation entered permission_pending in a synthetic child session that the headless parent could not resolve.",
+      "correction": "Persist approval mode on the durable SubagentRun payload from the authorized parent invocation and apply it in the scheduled child loop. Historical missing values default to Interactive. Child agent tool/path rules and narrowed sandbox remain independent ceilings.",
+      "provider_milestones": "Journal provider_attempt_started, provider_attempt_succeeded, and provider_attempt_failed with attempt identifiers and bounded failure classification.",
+      "verification": "Source-built isolated daemon passed a bounded child git_query status plus workspace read under explicit parent Yolo; the following S1 children recorded only succeeded provider attempts. Focused cargo check and scheduler-bypass, approval-router, sandbox-contract, and core-boundary guards passed."
+    },
+    "S1_completed_shared_interface_2026_10_16": {
+      "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+      "session_id": "e8d937ee-8b37-470d-966e-ba5e30166a0a",
+      "group_id": "ecfc4e68-c4fc-4985-a1b0-d9063287858a",
+      "group_accepted": 2,
+      "group_rejected": 0,
+      "group_completed": true,
+      "group_elapsed_seconds": 135.18,
+      "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+      "children": [
+        {
+          "role": "Rust producer",
+          "run_id": "cda79ddf-6fdc-4bb5-8793-ce7bd85fdafc",
+          "worktree_id": "cc2c2851-3e08-404a-9c9d-0249c6c35aef",
+          "started_at_ms": 1792184705237,
+          "finished_at_ms": 1792184839527,
+          "elapsed_seconds": 134.29,
+          "provider_attempts_started": 23,
+          "provider_attempts_succeeded": 23,
+          "provider_attempts_failed": 0,
+          "rust_tests": "7 passed",
+          "child_result_cross_language_golden": "not run; Python consumer was unfinished at that point"
+        },
+        {
+          "role": "Python consumer",
+          "run_id": "5913d600-3234-404b-94d6-e70ee0e3fc57",
+          "worktree_id": "351ea5e1-2821-4ae5-a1c9-634673afa95b",
+          "started_at_ms": 1792184705237,
+          "finished_at_ms": 1792184834414,
+          "elapsed_seconds": 129.18,
+          "provider_attempts_started": 22,
+          "provider_attempts_succeeded": 22,
+          "provider_attempts_failed": 0,
+          "python_tests": "7 passed"
+        }
+      ],
+      "combined_disposable_evaluation_copy": {
+        "fixture_digest_verified": true,
+        "rust_workspace_tests": "7 passed",
+        "python_unittest": "7 passed",
+        "cross_language_golden": "passed",
+        "source_checkout_mutated": false
+      },
+      "provider_usage_attribution": "Unavailable per child. The parent session has 147 usage rows (2,131,250 input tokens; 22,583 output tokens) across the experiment and follow-up turns. These values are not attributed to the S1 children and are intentionally excluded from child cost totals.",
+      "classification": "completed isolated multi-agent shared-interface arm; one descriptive S1 pair, not an effectiveness conclusion"
     }
   }
 }

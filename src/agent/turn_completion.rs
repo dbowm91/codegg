@@ -604,6 +604,35 @@ impl AgentLoop {
             );
         }
     }
+
+    pub(super) async fn record_run_milestone(
+        &self,
+        milestone: &str,
+        metadata: impl IntoIterator<Item = (String, String)>,
+    ) {
+        let (Some(control), Some(run_id)) = (&self.services.run_control, &self.run_id) else {
+            return;
+        };
+        let mut fields = vec![("milestone".into(), milestone.into())];
+        fields.extend(metadata);
+        if let Err(error) = control
+            .append(
+                run_id.clone(),
+                codegg_core::agent_run_control::AgentRunJournalEventKind::ProgressMilestone,
+                None,
+                None,
+                fields,
+            )
+            .await
+        {
+            tracing::warn!(
+                run_id = %run_id,
+                milestone,
+                %error,
+                "failed to journal run progress milestone"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

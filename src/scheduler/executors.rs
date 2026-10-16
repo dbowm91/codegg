@@ -656,6 +656,7 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls,
             run_id,
             base_commit,
+            approval_mode,
         ) = match &ctx.job.payload {
             JobPayload::Subagent {
                 prompt,
@@ -675,6 +676,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 None,
                 None,
+                None,
             ),
             JobPayload::SubagentRun {
                 prompt,
@@ -686,6 +688,7 @@ impl JobExecutor for SubagentJobExecutor {
                 max_tool_calls,
                 run_id,
                 base_commit,
+                approval_mode,
                 ..
             } => (
                 prompt.clone(),
@@ -697,6 +700,7 @@ impl JobExecutor for SubagentJobExecutor {
                 *max_tool_calls,
                 Some(run_id.clone()),
                 base_commit.clone(),
+                *approval_mode,
             ),
             _ => {
                 return failure_completion(
@@ -1021,7 +1025,11 @@ impl JobExecutor for SubagentJobExecutor {
         let result = if run_id_for_lifecycle.is_some() {
             self.pool
                 .spawner()
-                .send_and_wait_scheduled(request, ctx.cancellation.clone())
+                .send_and_wait_scheduled_with_approval_mode(
+                    request,
+                    ctx.cancellation.clone(),
+                    approval_mode.unwrap_or_default(),
+                )
                 .await
         } else {
             self.pool.spawner().send_and_wait(request).await

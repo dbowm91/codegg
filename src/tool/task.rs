@@ -1962,6 +1962,9 @@ impl TaskTool {
                                     task_id,
                                     run_id,
                                     delegation_key,
+                                    approval_mode: ctx
+                                        .and_then(|ctx| ctx.permission_mode.as_deref())
+                                        .and_then(codegg_core::approval::ApprovalMode::parse),
                                     base_commit: explicit_base_commit.clone(),
                                 }
                             } else {

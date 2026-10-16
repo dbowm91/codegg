@@ -886,6 +886,15 @@ when stable replay continuity is required. Claim and release actions use the
 M003 CAS contract. `request_handoff` appends a structured request and never
 changes claim ownership; direct parent/child control remains in RunControl.
 
+Scheduled `SubagentRun` payloads retain the approval mode captured from the
+authorized parent TaskTool invocation, and the child loop applies that mode
+when resolving Ask escalations. This keeps an explicitly selected headless
+mode usable by synthetic child sessions that have no interactive responder.
+Historical payloads without an approval mode default to `Interactive`. The
+mode changes escalation handling only: each child still applies its resolved
+agent tool/path rules and independently narrowed sandbox ceiling. Do not
+inherit approval mode from untrusted task text or peer observations.
+
 Active run loops subscribe to the bounded global event bus for group, terminal,
 progress, worktree, claim, and durable result-evidence hints. A result hint
 contains only a bounded relative changed-path list, commit ID, and typed
