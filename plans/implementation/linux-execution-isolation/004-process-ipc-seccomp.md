@@ -84,6 +84,38 @@ service still refuses constrained profiles before `openpty`/spawn, and the
 LSP service still has no distinct daemon-owned constrained runtime. No M004
 production owner or M005 production network-enforcement claim is promoted.
 
+### Post-merge exact-head owner-boundary qualification (2026-10-16)
+
+After reconciling the feature branch with current `main`, hosted Linux run
+[`38935343767`](https://github.com/dbowm91/codegg/actions/runs/38935343767)
+on merge head `c01b2dfc` passed the process/IPC/offline target 9/9, protected
+mount regressions 11/11, and trusted-Git regressions 20/20. Its separate
+restricted-userns job passed refusal-before-target. The DNS endpoint,
+changing-answer resolver, offline Cargo workspace, process/IPC, and object-view
+cache regressions are included. Hosted macOS target compile
+[`38935350738`](https://github.com/dbowm91/codegg/actions/runs/38935350738)
+also passed. These are native mechanism and cross-platform compile results;
+they do not qualify production PTY/LSP owners or admit a host configuration.
+
+Exact-head full CI on follow-up test-fixture head `91a5407e` is
+[`38937869443`](https://github.com/dbowm91/codegg/actions/runs/38937869443).
+The ADR identity/link, sandbox contract, execution ownership, other workflow
+guards, formatting, Clippy, Eggwork fixture preparation, and trusted helper
+build passed. Workspace tests failed two command-routing ownership cases
+because their `BashTool` fixtures submitted relative `.` as the workspace
+root. Both cases passed after the test helper registered and bound its
+canonical repository root; the focused integration file passed 21/21 locally.
+A fresh full CI run for that correction is required before reconciliation is
+complete. The earlier hosted Git-log failure did not recur in the 6,704 tests
+run before fail-fast in `38937869443`; it remains classified as an earlier
+unreproduced failure, not a confirmed transient.
+
+The PTY service still refuses constrained profiles before `openpty`/spawn,
+and constrained LSP turns remain unbound from the shared FullHost service
+because no supervised duplex LSP process owner carries the M004 launch scope.
+No production PTY/LSP owner or M005 production network-enforcement claim is
+promoted. C010's no-admission decision remains unchanged.
+
 ## 3. Invariants
 
 User code is never launched before the requested PID/IPC/mount/proc/seccomp features are installed. No host procfs bind or leaking daemon socket from `/run`, `/tmp`, home or inherited environment is acceptable under process-isolated mode. Only explicitly documented device/pty I/O is exposed. Parent-facing stdin/stdout/stderr and the private status channel are the only narrowly inherited descriptors unless a typed operator-approved capability demands more. Signal behavior and child PID1 reaping do not break `ManagedProcessService` cancellation, timeout or worker accounting. No root privileges or daemon self-restriction.
