@@ -315,7 +315,7 @@ async fn offline_network_runs_cargo_metadata_and_check_without_network() {
     let manifest = shell_quote(&workspace.join("Cargo.toml").to_string_lossy());
     let rustup = shell_quote(&rustup.to_string_lossy());
     let script = format!(
-        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 CC={linker} HOST_CC={linker} {linker_env}={linker}; export PATH={linker_dir}:{cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --workspace --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --workspace --manifest-path {manifest}"
+        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 CC={linker} HOST_CC={linker} {linker_env}={linker}; export PATH={linker_dir}:{cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --workspace --manifest-path {manifest}"
     );
 
     let spec = SandboxConfig::new()
