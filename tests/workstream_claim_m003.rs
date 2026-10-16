@@ -231,9 +231,10 @@ async fn isolated_rust_and_python_workers_claim_build_test_and_integrate_indepen
         "import unittest\nfrom python_pkg.value import worker_value\n\nclass ValueTest(unittest.TestCase):\n    def test_worker_value(self):\n        self.assertEqual(worker_value(), 42)\n\nif __name__ == '__main__': unittest.main()\n",
     )
     .unwrap();
+    let python_base_source = std::fs::read_to_string(python_tree.join("src/lib.rs")).unwrap();
     assert!(
         !rust_tree.join("python_pkg/value.py").exists()
-            && !python_tree.join("src/lib.rs").exists()
+            && !python_base_source.contains("rust_worker_value")
             && !std::fs::read_to_string(repo.join("src/lib.rs"))
                 .unwrap()
                 .contains("rust_worker_value"),
