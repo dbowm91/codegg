@@ -1296,7 +1296,10 @@ async fn trigger_fire_wakes_coordinator_and_honors_closed_shared_mutation() {
         }
     }
     assert!(saw_trigger_fired, "fire publishes trigger event");
-    assert!(saw_occurrence, "closed materialization publishes occurrence event");
+    assert!(
+        saw_occurrence,
+        "closed materialization publishes occurrence event"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
