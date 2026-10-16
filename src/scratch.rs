@@ -95,14 +95,15 @@ fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), Scratch
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let mut matches = false;
+            let mut observed = Vec::new();
             for attempt in 0..20 {
                 let metadata = std::fs::symlink_metadata(&record_path)?;
                 if metadata.file_type().is_symlink() || !metadata.is_file() {
                     return Err(ScratchError::InvalidPath(record_path));
                 }
-                let mut existing = Vec::new();
-                std::fs::File::open(&record_path)?.read_to_end(&mut existing)?;
-                if existing == record {
+                observed.clear();
+                std::fs::File::open(&record_path)?.read_to_end(&mut observed)?;
+                if observed == record {
                     matches = true;
                     break;
                 }
@@ -111,7 +112,24 @@ fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), Scratch
                 }
             }
             if !matches {
-                return Err(ScratchError::InvalidPath(record_path));
+                // A daemon may stop after create_new but before the complete
+                // owner record reaches disk. Recover only an exact prefix of
+                // the host-computed record; malformed or foreign records stay
+                // fail-closed. The enclosing directory is already owner-only.
+                if !record.starts_with(&observed) || observed.len() >= record.len() {
+                    return Err(ScratchError::InvalidPath(record_path));
+                }
+                std::fs::remove_file(&record_path)?;
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    options.mode(0o600);
+                }
+                let mut file = options.open(&record_path)?;
+                file.write_all(&record)?;
+                file.sync_all()?;
             }
         }
         Err(error) => return Err(error.into()),
@@ -238,6 +256,20 @@ mod tests {
         let owner_record = std::fs::read_to_string(paths[0].join(OWNER_RECORD_NAME)).unwrap();
         assert!(owner_record.starts_with("codegg-session-scratch-v1\n"));
         std::fs::remove_dir_all(&paths[0]).unwrap();
+    }
+
+    #[test]
+    fn owner_record_recovers_from_an_interrupted_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let digest = Sha256::digest(b"interrupted-owner-record");
+        let record_path = root.path().join(OWNER_RECORD_NAME);
+        std::fs::write(&record_path, b"codegg-session-scratch-v1\n").unwrap();
+
+        ensure_owner_record(root.path(), &digest).unwrap();
+
+        let actual = std::fs::read(&record_path).unwrap();
+        assert!(actual.starts_with(b"codegg-session-scratch-v1\n"));
+        assert_eq!(actual.len(), b"codegg-session-scratch-v1\n".len() + 65);
     }
 
     #[test]
