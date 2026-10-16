@@ -63,30 +63,40 @@ claim is enabled.
 ### Offline toolchain candidate probe — 2026-10-16
 
 The opt-in native test `offline_network_runs_cargo_metadata_and_check_without_network`
-now runs a dependency-free Cargo fixture through the required offline M005
-namespace. It performs `cargo metadata --offline --locked --no-deps` followed
-by `cargo check --offline --locked`, with the pinned runner's Rustup and Cargo
-roots explicitly restored inside the child. This exercises ordinary Cargo and
-rustc without a registry dependency while the network namespace is active.
+runs the actual CodeGG workspace through the required offline M005 namespace.
+It performs `cargo metadata --offline --locked --no-deps` followed by
+`cargo check --offline --locked --workspace`, with the runner's Rustup and
+Cargo roots explicitly restored inside the child. The companion M004 test
+also performs an offline workspace check and runs managed-process regressions.
+This exercises workspace build scripts, cached third-party dependencies, Cargo,
+rustc, and the existing process test suite while the network namespace is active.
 
 Hosted M004/M005 run
-[38863777800](https://github.com/dbowm91/codegg/actions/runs/38863777800)
-passed all 9 native process/IPC/offline tests, including this new toolchain
-probe; the separate restricted-userns refusal check also passed. Protected
-mount and trusted-Git regressions passed 11/11 and 18/18. Exact-head full CI
-[38863791707](https://github.com/dbowm91/codegg/actions/runs/38863791707)
-passed 14,020 tests with 7 skipped.
+[38869606745](https://github.com/dbowm91/codegg/actions/runs/38869606745)
+on `7312acad74f4f6f10ee6b505a61fc9ce51f3f7ac` passed the complete
+`M004 managed-process host PID and IPC denial probes` step with the full
+workspace offline metadata/check probes. The separate restricted-userns
+refusal-before-target job also passed. The same run's protected-mount and
+trusted-Git regressions passed 11/11 and 18/18. Fresh full CI
+[38869639397](https://github.com/dbowm91/codegg/actions/runs/38869639397)
+passed 14,020 tests with 7 skipped; all ADR, sandbox, execution-ownership and
+other workflow guards, formatting, Clippy, and Eggwork fixture prebuild passed.
 
-The same opt-in test compiled locally but could not run because this workstation
-rejects the Landlock ABI 6 signal/abstract-socket scope request. That local
-host result is recorded as unsupported and is not counted as candidate
-evidence; the qualified hosted runner supplies the native result.
+The test target compiles locally, but the opt-in test cannot run on this
+workstation because it rejects the Landlock ABI 6 signal/abstract-socket scope
+request. That local host result is unsupported and is not counted as candidate
+evidence; the qualified hosted runner supplies the native result. The first
+full-workspace attempt, run `38867063304`, exposed an invalid `cargo metadata
+--workspace` argument; its workspace `cargo check` test passed. Commit `7312acad`
+removed that unsupported argument, and the corrected hosted process/IPC step
+passed all 9 tests, including both offline workspace checks and the contained
+managed-process regression suite. The exact-head native run also passed the
+protected-mount and trusted-Git regressions.
 
 This is internal candidate compatibility evidence only. It does not qualify
-offline workspace builds with external dependencies, DNS rebinding, every
-production launch owner, restricted host configurations, or a persisted
-`OfflineRequired` route. M005 remains unenforced and M004's PTY/LSP owner gates
-remain open.
+DNS rebinding, every production launch owner, supported-host admission, or a
+persisted `OfflineRequired` route. M005 remains unenforced and M004's PTY/LSP
+owner gates remain open.
 
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.

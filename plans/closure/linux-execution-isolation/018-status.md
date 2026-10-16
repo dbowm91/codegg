@@ -350,3 +350,32 @@ supervised duplex LSP ownership, and supported-host qualification close; M005
 remains an internal candidate without persisted `OfflineRequired` authority
 or enforced network status. No Linux host is admitted and no blocked plan is
 unblocked by this evidence.
+
+### Offline workspace qualification corrective (2026-10-16)
+
+The expanded M005 toolchain probe replaced its dependency-free fixture with
+offline workspace metadata and `cargo check --offline --locked --workspace`
+inside the M004/M005 namespace. Its first hosted attempt,
+[38867063304](https://github.com/dbowm91/codegg/actions/runs/38867063304),
+failed because Cargo metadata does not accept `--workspace`; the companion
+workspace check completed successfully. Commit `7312acad` removed that invalid
+argument.
+
+Corrected exact-head M004 run
+[38869606745](https://github.com/dbowm91/codegg/actions/runs/38869606745)
+passed all 9 process/IPC/offline tests, including the actual workspace metadata
+and offline check, a second contained workspace check plus managed-process
+regressions, and the offline network denial probes with host positive controls.
+Protected-mount tests passed 11/11, trusted-Git tests passed 18/18, and the
+separate restricted-userns job passed refusal-before-target. Exact-head full CI
+[38869639397](https://github.com/dbowm91/codegg/actions/runs/38869639397)
+passed 14,020 tests with 7 skipped, including the ADR identity/link guard,
+sandbox and execution-ownership guards, formatting, Clippy, and Eggwork fixture
+prebuild.
+
+This closes the specific gap for ordinary offline Cargo workspace metadata and
+builds on the qualified hosted runner. It does not qualify DNS rebinding, all
+production launch owners, or supported-host admission. C010's M003 no-admission
+decision remains in force; M004 PTY/LSP production ownership remains open; and
+M005 remains an internal candidate without persisted `OfflineRequired`
+authority or an enforced network status.
