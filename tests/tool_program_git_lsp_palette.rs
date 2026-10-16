@@ -33,6 +33,10 @@ fn workspace_registry() -> (tempfile::TempDir, ToolRegistry) {
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
         workspace_root: Some(dir.path().to_path_buf()),
+        // This suite qualifies the historical active LSP adapter catalog.
+        // Constrained defaults intentionally replace lsp/lsp_read with
+        // disabled entries and are covered by their own admission tests.
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
     });
     (dir, registry)
@@ -395,6 +399,7 @@ async fn lsp_read_matches_canonical_tool_for_every_allowed_read() {
     std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
         workspace_root: Some(dir.path().to_path_buf()),
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
     });
     let broker = ToolBroker::new(&registry);
@@ -1140,7 +1145,10 @@ fn contract_snapshot_admits_programmatic_only_and_hash_covers_policy() {
 #[test]
 fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
     use codegg::tool::disclosure;
-    let registry = ToolRegistry::with_defaults();
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+        ..Default::default()
+    });
     assert!(registry.contains("git_read"));
     assert!(registry.contains("lsp_read"));
 
@@ -1178,7 +1186,10 @@ fn adapters_are_hidden_and_ordinary_definitions_unchanged() {
 #[test]
 fn adapters_are_undiscoverable_via_tool_search() {
     use std::sync::Arc;
-    let registry = ToolRegistry::with_defaults();
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+        ..Default::default()
+    });
     // Hidden tools never surface, even without an allow-list.
     for name in ["git_read", "lsp_read"] {
         let search =
