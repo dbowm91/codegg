@@ -659,6 +659,9 @@ impl App {
             TuiMsg::MoveDirection(dir) => {
                 crate::tui::commands::panels::move_directionally(self, dir)
             }
+            TuiMsg::FocusPanelAt { placement } => {
+                crate::tui::commands::panels::focus_panel_at(self, placement)
+            }
             TuiMsg::TerminalPanelFocus { handle } => {
                 crate::tui::commands::interactive_terminal::focus_terminal_panel(self, &handle)
             }

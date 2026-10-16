@@ -232,10 +232,17 @@ impl App {
         // is selected: render is not allowed to move the keyboard, and the
         // gesture dispatcher reads `placement()` after this returns.
         self.sidebar_area = None;
+        // Every occupied column records its rect so a later mouse event can
+        // resolve a click to a *panel* rather than to nothing. The list is
+        // rebuilt each frame alongside `sidebar_area`, so it can never name a
+        // panel that is no longer painted — which is what would otherwise let
+        // a click focus a column that has moved or closed.
+        self.panel_areas.clear();
         for (placement, rect) in regions.occupied() {
             if rect.width == 0 || rect.height == 0 {
                 continue;
             }
+            self.panel_areas.push((placement, rect));
             if self.panel_host.panel_at(placement) == SidePanelId::Session {
                 self.sidebar_area = Some(rect);
             }

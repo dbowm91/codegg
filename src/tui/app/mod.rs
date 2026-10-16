@@ -243,8 +243,31 @@ pub enum ClickTarget {
     /// The working strip above the composer: the throbber row and the
     /// clickable subagent rows below it.
     Working,
+    /// A side-panel column.
+    ///
+    /// Recorded per placement during render so a click can both *focus* the
+    /// column and resolve a text selection inside it — the same two things a
+    /// click in the main buffer does. Without this the panels were keyboard-
+    /// only: a click over one resolved to `None`, and the wheel scrolled the
+    /// transcript behind a column the user was pointing at.
+    Panel {
+        placement: crate::tui::panels::PanelPlacement,
+    },
     None,
 }
+
+/// Which way a panel wheel event moves its own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Up,
+    Down,
+}
+
+/// Rows one wheel notch moves a panel's content.
+///
+/// Three, not one: a terminal column is narrow and often tall, and a
+/// single-row notch makes the wheel feel like it is not responding.
+const PANEL_WHEEL_LINES: i32 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderPanicInjection {
@@ -334,6 +357,15 @@ pub struct App {
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
+    /// Every panel column painted on the last frame, with the placement that
+    /// owns it.
+    ///
+    /// `sidebar_area` is one special case of this (it marks the Session panel
+    /// for its own hover/scroll handling); the list is what makes *every* other
+    /// column hit-testable, so a click can focus it and a drag can select the
+    /// text inside it. Rebuilt on each render, so a placement that is not on
+    /// screen is not clickable.
+    pub panel_areas: Vec<(crate::tui::panels::PanelPlacement, Rect)>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
     /// 1-row strip reserved for the TUI's outer bottom border (under
@@ -1074,6 +1106,7 @@ impl App {
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -1646,6 +1679,7 @@ impl App {
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -3483,17 +3517,25 @@ impl App {
             return;
         }
 
-        // The host takes keys when its overlay is up, or when a panel holds focus
-        // *in Normal mode*. The mode gate is load-bearing: the host claims
-        // `Esc`/`q` as focus-exit keys, so consulting it in Insert mode
-        // would make the letter `q` unfocusable and `Esc` unable to leave
-        // Insert. In Insert mode the composer owns the keyboard — which is
-        // what lets one bottom composer deliver to either target, because
+        // The host takes keys when its overlay is up, or when a panel holds focus.
+        // The mode gate is load-bearing for the ordinary case: the host
+        // claims `Esc`/`q` as focus-exit keys, so consulting a panel in
+        // Insert mode would make the letter `q` unfocusable and `Esc`
+        // unable to leave Insert. For a panel that renders its own text
+        // field the composer really is the right Insert target, which is
+        // what lets one bottom composer deliver to either target because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
+        //
+        // A panel that fronts something other than itself opts in through
+        // `claims_insert_keys`. The Terminal panel does: after `Shift+L`
+        // docks it, Insert has to mean "type into the PTY". Without the
+        // opt-in the keystrokes went to a composer the user was not looking
+        // at, and the terminal appeared to be frozen.
         let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
-            && self.ui_state.input_mode == InputMode::Normal;
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self));
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -8234,6 +8276,9 @@ impl App {
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
             ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
             ClickTarget::Scrollbar { .. } => "Click/drag: Jump | Scroll: Page up/down".to_string(),
+            ClickTarget::Panel { .. } => {
+                "Click: Focus panel | Drag: Select text | Ctrl+C: Copy".to_string()
+            }
             ClickTarget::None => String::new(),
         };
     }
@@ -8255,13 +8300,29 @@ impl App {
         // without this arm the output of a tool call cannot be copied at all.
         // Any other surface (sidebar, scrollbar, dialogs, completion popup,
         // prompt) keeps its immediate press behaviour.
-        let selecting = matches!(target, ClickTarget::Viewport)
+        //
+        // Panel columns join the viewport here. They are the same *kind* of
+        // region — text the user is reading and may want copied — and they are
+        // the densest output in the app when a terminal is docked. Excluding
+        // them is what made panels look unselectable next to a buffer that
+        // was not.
+        let selectable = matches!(target, ClickTarget::Viewport | ClickTarget::Panel { .. });
+        // The viewport's rect already excludes the TUI's outer border strips,
+        // so its rows start at or below 1 and the guard below can simply be
+        // skipped for it. A panel column is the *whole* frame height including
+        // its own block border, so its rect legitimately begins at row 0 —
+        // applying the viewport's guard to it refused the top row of every
+        // docked panel while still reporting that cell as the panel's own.
+        let inside_target = match target {
+            ClickTarget::Panel { .. } => true,
+            _ => event.column >= 1 && event.row >= 1,
+        };
+        let selecting = selectable
             && matches!(
                 event.kind,
                 MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
             )
-            && event.column >= 1
-            && event.row >= 1;
+            && inside_target;
         if selecting {
             match event.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -8476,6 +8537,16 @@ impl App {
                 return ClickTarget::Sidebar;
             }
         }
+        // Panel columns, tested after the Session panel so its existing
+        // hover/collapse/scroll behaviour is untouched. The rects come from
+        // the last render, so this cannot name a column that is not painted.
+        for (placement, rect) in &self.panel_areas {
+            if Self::in_rect(x, y, *rect) {
+                return ClickTarget::Panel {
+                    placement: *placement,
+                };
+            }
+        }
         ClickTarget::None
     }
 
@@ -8621,6 +8692,17 @@ impl App {
                     }
                 }
             }
+            ClickTarget::Panel { placement } => {
+                // Clicking a column focuses it — the same answer `Shift+H/J/K/L`
+                // gives — so the pointer and the keyboard agree on which panel
+                // owns the keyboard. Deliberately *focus only*: the selection
+                // that a drag builds is resolved on release above, and a click
+                // must not also fire a panel's row activation, which would
+                // make one press open something the user only pointed at.
+                self.process_msg(TuiMsg::FocusPanelAt {
+                    placement: *placement,
+                });
+            }
             ClickTarget::None => {}
         }
     }
@@ -8655,6 +8737,9 @@ impl App {
                     self.sidebar.scroll_up(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Up);
+            }
             ClickTarget::Dialog => {
                 let up_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Up,
@@ -8688,6 +8773,9 @@ impl App {
                     self.sidebar.scroll_down(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Down);
+            }
             ClickTarget::Dialog => {
                 let down_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Down,
@@ -8707,6 +8795,36 @@ impl App {
                 self.messages_state.messages.scroll_page_down();
             }
         }
+    }
+
+    /// Scroll the panel docked to `placement`.
+    ///
+    /// The wheel over a column has to scroll *that column*. Falling through to
+    /// the transcript — which is what an unhandled target did — moved a buffer
+    /// the user was not pointing at, so scrolling a terminal column looked like
+    /// scrolling the conversation.
+    ///
+    /// Only the Terminal panel has its own scrollback today; for the rest this
+    /// is a no-op rather than a fallback, because the wrong surface moving is
+    /// worse than nothing moving.
+    fn scroll_panel(&mut self, placement: crate::tui::panels::PanelPlacement, dir: Scroll) {
+        if self.panel_host.panel_at(placement) != crate::tui::panels::SidePanelId::Terminal {
+            return;
+        }
+        let Some(handle) = self
+            .panel_host
+            .terminal_handle_at(placement)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.interactive_terminals.scroll_by(
+            &handle,
+            match dir {
+                Scroll::Up => -PANEL_WHEEL_LINES,
+                Scroll::Down => PANEL_WHEEL_LINES,
+            },
+        );
     }
 
     fn on_scroll_left(&mut self, target: &ClickTarget) {
@@ -12041,7 +12159,7 @@ impl App {
         let agent_keys = self.llm_buffer_key_hints();
         let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref());
+            .composer_hints(self.chat_panel_project.as_deref(), self.ui_state.input_mode);
         match (agent_keys, panel) {
             (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
             (Some(agent_keys), None) => Some(agent_keys),

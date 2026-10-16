@@ -33,7 +33,8 @@
 //!   `d` is a no-op rather than a fallback. `C` rather than `d` for clear is
 //!   what frees `d` to mean delete.
 //! * **INS** — the PTY owns the keyboard. Every key is mapped by
-//!   [`map_key`] and gated by `classify_focused`; `Esc Esc` leaves.
+//!   [`map_key`] and gated by `classify_focused`; `Esc` leaves, `Ctrl+]` sends
+//!   a literal escape to the child.
 //!
 //! Focus lives on the *controller's* view rather than on the panel, so the
 //! box and the panel cannot disagree about whether the PTY is live.
@@ -60,7 +61,7 @@ use ratatui::{
 
 use crate::tui::app::TuiMsg;
 use crate::tui::commands::interactive_terminal::{apply_nav, map_key, NavOutcome};
-use crate::tui::input::InputAction;
+use crate::tui::input::{InputAction, InputMode};
 use crate::tui::interactive_terminal::TerminalKeyAction;
 use crate::tui::theme::Theme;
 
@@ -298,6 +299,8 @@ impl SidePanel for TerminalPanel {
             }
             // No `Esc` arm: the host claims `Esc`/`q` as panel exits before
             // the panel is consulted, so an Esc arm here would be unreachable.
+            // In INS the panel does claim `Esc` (see `owns_exit_key`), so the
+            // mode key does reach it — just through the host's first-refusal.
             // The selection survives the blur anyway — it lives on the
             // controller, not the panel — so stepping out and back keeps the
             // text the reader was about to copy.
@@ -321,9 +324,8 @@ impl SidePanel for TerminalPanel {
         };
 
         // INS. Every key is classified by the same gate the box uses, so
-        // the two cannot disagree about what is a control sequence — including
-        // the `Esc Esc` arming, which lives on the view this panel reads
-        // through `ctx` rather than in a private copy.
+        // the two cannot disagree about what is a control sequence. `Esc`
+        // leaves insert here, exactly as it does in the box.
         match ctx.terminal.classify_focused(&handle, map_key(key)) {
             TerminalKeyAction::EscapeFocus => {
                 PanelKey::Intent(TuiMsg::TerminalPanelBlur { handle })
@@ -335,26 +337,47 @@ impl SidePanel for TerminalPanel {
         }
     }
 
-    /// Claim `Esc`/`q` while the PTY is focused (INS).
+    /// Claim `Esc` while the PTY is focused (INS).
     ///
-    /// The host drops panel focus on either key *without consulting the
+    /// The host drops panel focus on `Esc`/`q` *without consulting the
     /// controller*, so a focused terminal that declined them left the two focus
     /// flags disagreeing: the panel was no longer focused, but the view still
-    /// read `TerminalFocus::Focused`. That is the reported "no key combo lets
-    /// you leave" — `q` did drop panel focus while the PTY kept the keyboard,
-    /// and refocusing the panel put the user straight back into INS with no
-    /// route out. Claiming the key routes it through [`Self::handle_key`],
-    /// which owns the `Esc Esc` rule and ends in
+    /// read `TerminalFocus::Focused`. Claiming the key routes it through
+    /// [`Self::handle_key`], which owns the mode rule and ends in
     /// `TuiMsg::TerminalPanelBlur` — the one call that clears the view's focus.
     ///
-    /// Only in INS: while viewing there is no PTY keyboard to protect, so the
+    /// `Esc` only, and **never `q`**. In INS the panel is a terminal, and `q`
+    /// is a character the user is typing — claiming it here meant the shell
+    /// could never receive a `q`, which is the most common letter in most
+    /// commands. `Esc` is claimed because it is the mode key: leaving the
+    /// keyboard has to come back through here to clear the controller flag too.
+    ///
+    /// Only in INS: while reading there is no PTY keyboard to protect, so the
     /// host's exit is the correct answer and keeps `q`/`Esc` cheap.
     fn owns_exit_key(&self, key: KeyEvent, ctx: &PanelCtx<'_>) -> bool {
-        matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
+        matches!(key.code, KeyCode::Esc)
             && self
                 .handle
                 .as_deref()
                 .is_some_and(|handle| ctx.terminal.is_focused(handle))
+    }
+
+    /// Take the keyboard in Insert mode whenever this panel is showing a
+    /// live PTY.
+    ///
+    /// This panel renders a process, not a text field, so Insert belongs to
+    /// the process. Without the opt-in, docking the terminal with `Shift+L`
+    /// and typing sent every keystroke to a composer the user was not looking
+    /// at — the panel looked frozen and the characters "disappeared".
+    ///
+    /// `is_focused` is the controller's own verdict, so a terminal that is
+    /// still attaching or has exited does **not** claim the keyboard: those
+    /// keys fall through to the composer, where they are at least visible and
+    /// recoverable instead of vanishing.
+    fn claims_insert_keys(&self, ctx: &PanelCtx<'_>) -> bool {
+        self.handle
+            .as_deref()
+            .is_some_and(|handle| ctx.terminal.is_focused(handle))
     }
 
     fn composer_hints(&self, hints: &PanelHints<'_>) -> Option<String> {
@@ -369,9 +392,10 @@ impl SidePanel for TerminalPanel {
         } else if self.handle.is_none() {
             "TERM · i start a shell · v chars · x lines · d delete · space+y copy · C clear"
                 .to_string()
+        } else if hints.input_mode == InputMode::Insert {
+            "TERM · INS typing to the shell · Esc read · Ctrl+] literal esc".to_string()
         } else {
-            "TERM · i type · Esc Esc stop · v chars · x lines · d delete · space+y copy · C clear"
-                .to_string()
+            "TERM · i type · hjkl move · v chars · x lines · space+y copy · C clear".to_string()
         })
     }
 

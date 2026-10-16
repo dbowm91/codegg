@@ -24,6 +24,7 @@ use codegg::tui::app::App;
 use codegg::tui::components::component::Component;
 use codegg::tui::components::dialogs::connection_selection::ConnectionSelectionDialog;
 use codegg::tui::components::messages::MsgPart;
+use codegg::tui::panels::SidePanelId;
 use codegg::tui::selection::{extract, TextSelection};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -383,6 +384,174 @@ fn ctrl_c_copies_a_live_selection_and_is_inert_otherwise() {
 
     let _ = KeyEvent::new(KeyCode::Null, KeyModifiers::NONE);
     let _ = Duration::from_secs(0);
+}
+
+// ---------------------------------------------------------------------------
+// 5. Side panels are mouse surfaces
+// ---------------------------------------------------------------------------
+
+/// Dock `panel` into the column and render, so it has a recorded rect.
+///
+/// `select_panel` is the seam the manager uses, so this follows the same path a
+/// user does rather than reaching into host internals.
+fn dock_panel(app: &mut App, panel: SidePanelId) {
+    app.process_msg(codegg::tui::app::TuiMsg::SelectPanel { panel });
+    let _ = render_to_buffer(app, 140, 40);
+}
+
+/// A click inside a panel column focuses that column.
+///
+/// Panels were keyboard-only: `clickable_area_at` had no panel arm, so a click
+/// resolved to `None` and did nothing. The main buffer already answered a click
+/// with an action, so the asymmetry read as panels being disabled.
+#[test]
+fn clicking_a_panel_column_focuses_it() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    // A non-Session panel: the Session column resolves to `ClickTarget::Sidebar`
+    // first, by design, and has its own hover/collapse behaviour to preserve.
+    dock_panel(&mut app, SidePanelId::Terminal);
+    let _ = render_to_buffer(&mut app, 140, 40);
+
+    let (placement, rect) = *app
+        .panel_areas
+        .last()
+        .expect("at least one panel column recorded");
+    // Inside the panel's own block border, not on it.
+    let point = (rect.x + 2, rect.y + 2);
+
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        app.on_mouse(MouseEvent {
+            kind,
+            column: point.0,
+            row: point.1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+    }
+
+    assert_eq!(
+        app.panel_host.placement(),
+        placement,
+        "a click inside a column must put the keyboard there"
+    );
+    assert!(
+        app.panel_host.is_focused(),
+        "clicking a panel column should focus it"
+    );
+}
+
+/// A drag across a panel column selects rendered text.
+///
+/// The viewport already did this; panels are the same kind of region and are
+/// often the densest output on screen (a docked terminal). They were excluded,
+/// so a docked terminal could not be copied from at all.
+#[test]
+fn drag_over_a_panel_column_selects_rendered_text() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    // A non-Session column, so this exercises the panel arm rather than the
+    // Session panel's own pre-existing click path.
+    dock_panel(&mut app, SidePanelId::Help);
+    let buffer = render_to_buffer(&mut app, 140, 40);
+
+    let (_, rect) = *app
+        .panel_areas
+        .last()
+        .expect("at least one panel column recorded");
+
+    // Find a row with real text so the assertion is about the selection
+    // machinery and not about whether a particular row happened to be blank.
+    let mut picked = None;
+    // Row 0 of the rect is the panel's own top border, so start inside it.
+    for y in (rect.y + 1)..(rect.y + rect.height) {
+        let row: String = (rect.x..rect.x + rect.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        let first_text = row.len() - row.trim_start().len();
+        if !row.trim().is_empty() && usize::from(rect.width) - first_text >= 6 {
+            picked = Some((rect.x + 1, y));
+            break;
+        }
+    }
+    let (x0, y0) = picked.unwrap_or_else(|| {
+        panic!(
+            "panel at {},{} {}x{} rendered no text to select",
+            rect.x, rect.y, rect.width, rect.height
+        )
+    });
+    let x1 = (x0 + 6).min(rect.x + rect.width - 1);
+
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x0,
+        row: y0,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+    assert_eq!(
+        app.selection_anchor,
+        Some((x0, y0)),
+        "a press inside a panel column must anchor a selection"
+    );
+
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: x1,
+        row: y0,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+
+    let text = extract(&buffer, TextSelection::new((x0, y0), (x1, y0)));
+    assert!(
+        !text.trim().is_empty(),
+        "a drag over a panel column resolved to no text"
+    );
+
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: x1,
+        row: y0,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+    assert!(
+        app.selection_anchor.is_none() && app.selection_focus.is_none(),
+        "release copies and clears, like the viewport"
+    );
+}
+
+/// The wheel over a panel column must not scroll the transcript.
+///
+/// An unhandled target fell through to `messages.scroll_up()`, so scrolling a
+/// terminal column moved the conversation the user was not pointing at.
+#[test]
+fn wheel_over_a_panel_does_not_scroll_the_transcript() {
+    use crossterm::event::{MouseEvent, MouseEventKind};
+
+    let mut app = test_app();
+    dock_panel(&mut app, SidePanelId::Help);
+    let _ = render_to_buffer(&mut app, 140, 40);
+
+    let (_, rect) = *app
+        .panel_areas
+        .last()
+        .expect("at least one panel column recorded");
+    let before = app.messages_state.messages.scroll;
+
+    app.on_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: rect.x + 2,
+        row: rect.y + 2,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+
+    assert_eq!(
+        app.messages_state.messages.scroll, before,
+        "the wheel over a panel column must not move the transcript"
+    );
 }
 
 #[test]
