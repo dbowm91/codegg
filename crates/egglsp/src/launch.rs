@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use async_trait::async_trait;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, error, info};
@@ -73,6 +74,27 @@ pub struct LspProcess {
     pub stdout: Option<tokio::process::ChildStdout>,
     pub stderr: Option<BufReader<tokio::process::ChildStderr>>,
     pub child: tokio::process::Child,
+}
+
+/// Process owner used by an `LspService` for every initial launch and restart.
+///
+/// Embedders can provide a daemon-owned launcher that applies execution policy
+/// while preserving the LSP's supervised stdin/stdout/stderr pipes. The
+/// default implementation retains egglsp's historical direct-spawn behavior.
+#[async_trait]
+pub trait LspProcessLauncher: Send + Sync {
+    async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError>;
+}
+
+/// Historical direct launcher used by existing FullHost services.
+#[derive(Debug, Default)]
+pub struct DirectLspProcessLauncher;
+
+#[async_trait]
+impl LspProcessLauncher for DirectLspProcessLauncher {
+    async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError> {
+        spawn_server_owned(&spec.command, &spec.args, &spec.env, Some(root)).await
+    }
 }
 
 pub async fn spawn_server(

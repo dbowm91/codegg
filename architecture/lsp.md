@@ -76,19 +76,26 @@ no LSP command or opaque workspace edit is enabled.
 The daemon-wide `LspService` owns long-lived child processes and is shared by
 turn registries. Its client/restart identity does not include a sandbox
 profile, and its launcher is not yet integrated with the M004 process/IPC
-boundary. A constrained turn therefore registers unavailable `lsp` and
-`lsp_read` tools, does not retain the shared service or preview adapter, and
-does not collect LSP prompt context. This prevents a constrained turn from
-creating or reusing a FullHost LSP process. FullHost turns preserve the current
-shared service behavior. Profile selection is daemon-owned; it must never be
-added as a client-controlled LSP request field. Positive constrained LSP
-support requires a separate daemon-owned `LspService` instance keyed by
-immutable profile, workspace, server identity, and generation. That owner must
-supervise every launch, restart, cancellation, and shutdown while preserving
-JSON-RPC pipes; it cannot borrow or restart a FullHost process. The current
-launcher cannot provide this duplex M004 contract. Until that owner is
-implemented and qualified, the constrained denial is an explicit compatibility
-limit, not containment evidence for the LSP child.
+boundary. The service now accepts one `LspProcessLauncher` at construction and
+uses it for initial launches and restart generations. Existing `new_arc`
+services retain the direct FullHost launcher; a constrained service can
+receive a daemon-owned adapter without allowing individual requests to select
+launch authority. This injection point does not itself implement or qualify
+M004 containment.
+
+A constrained turn therefore registers unavailable `lsp` and `lsp_read`
+tools, does not retain the shared service or preview adapter, and does not
+collect LSP prompt context. This prevents a constrained turn from creating or
+reusing a FullHost LSP process. FullHost turns preserve the current shared
+service behavior. Profile selection is daemon-owned; it must never be added as
+a client-controlled LSP request field. Positive constrained LSP support
+requires a separate daemon-owned `LspService` instance keyed by immutable
+profile, workspace, server identity, and generation. Its injected launcher
+must supervise every launch, restart, cancellation, and shutdown while
+preserving JSON-RPC pipes; it cannot borrow or restart a FullHost process.
+Until that adapter and per-scope service are implemented and qualified, the
+constrained denial is an explicit compatibility limit, not containment
+evidence for the LSP child.
 
 ### Tier 1 vs Tier 2 compatibility
 
