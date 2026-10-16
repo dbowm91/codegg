@@ -112,6 +112,13 @@ production-owner or supported-host gates. The code change is pending exact-head
 hosted M004/M005 verification before this paragraph is treated as qualification
 evidence.
 
+First exact-head attempt `38913230183` ran 8/9 native tests successfully,
+including the offline workspace checks, but the new Python probe received
+Rust's lowercase `false` literal for its IPv6-family selector and exited with a
+`NameError` before the resolver packet check. This is a fixture-formatting
+failure, not a network-boundary result. The selector now receives numeric
+`0`/`1`; the corrected test still requires exact-head hosted qualification.
+
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
 

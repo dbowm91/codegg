@@ -245,7 +245,7 @@ else:
         udp4_addr.port(),
         udp6_addr.ip().to_string(),
         udp6_addr.port(),
-        host_resolver.is_ipv6(),
+        u8::from(host_resolver.is_ipv6()),
         host_resolver.to_string(),
         inherited_fd.as_raw_fd(),
         marker.to_string_lossy(),
