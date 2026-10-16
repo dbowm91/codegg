@@ -112,6 +112,10 @@ cargo test --test tool_program_scenarios  # programmatic tool path through the l
 
 ## See Also
 
+Daemon turns derive delegated-task repository identity from the durable
+session workspace binding. See `architecture/agent.md` for the boundary and
+`src/core/daemon_turns.rs` for the source path.
+
 - `architecture/agent.md` — authoritative contract
 - `.opencode/skills/context/SKILL.md` — packer observation, tool-palette policy, volatile-tail
 - `.opencode/skills/jobs/SKILL.md` + `.opencode/skills/scheduler/SKILL.md` — durable runs and admission

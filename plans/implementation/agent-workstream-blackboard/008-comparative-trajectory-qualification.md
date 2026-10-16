@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed and independent of M005. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. `codegg headless --session <id>` submits through the production daemon TaskTool and session-resolved workspace; first establish a verified sandbox root and live smoke trajectory, then repeat S1 and proceed with isolated S2/S3 using managed sessions. The provider-backed comparison MUST include at least one substantial Rust workload and one substantial Python workload that implement or consume a shared, frozen interface; independent modules alone do not meet this criterion. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed and independent of M005; M011 corrected root-turn repository identity propagation after M008 exposed the gap. The frozen Rust/Python shared-interface S0 completed on 2026-10-16. Multiple S1 group attempts created isolated child worktrees after the correction, but children stalled before provider invocation and were cancelled through JobCancel; they are not successful trials. Evidence is in `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and its JSON companion. Darwin terminal sandbox smoke passed for the tested path; complete sandbox-root evidence for every writer and S2/S3 remain open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -161,5 +161,8 @@ wall-clock cap. Record the fixture tree digest before the first provider-backed
 trial. Fixture v1 tree digest (17 files, relative-path/content SHA-256 stream):
 `b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1`. The
 starter evaluator is intentionally red: Rust baseline 0/7 and Python baseline
-0/7; these are harness checks, not agent-trial results. No provider-backed
-comparison has started.
+0/7. One provider-backed S0 run completed and is recorded in
+`008-isolated-results.md`; S1 attempts after repository-identity correction
+allocated isolated children but stalled before provider calls. These do not
+yet establish a comparative outcome. Continue with a completed multi-agent
+arm before making effectiveness claims.

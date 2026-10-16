@@ -523,6 +523,12 @@ session existence through `SelectionService::update`
 runtime cache best-effort, only after durable success
 (`src/core/daemon_turns.rs:825-899`).
 
+For turn execution, the daemon also resolves the session workspace's durable
+repository binding. A resolved `RepositoryId` is carried in `TurnRunInput` so
+delegated tasks can enter the scheduler's managed isolated-worktree path;
+missing or unresolved bindings preserve repository-less behavior. This
+identity is sourced from `ProjectStorage`, not reconstructed from a path.
+
 **Storage**: workspace tables were introduced by migration v22 (a `workspace`
 table plus `workspace_id` index on `session`). The schema has advanced well
 past that; the current layout version is defined by
