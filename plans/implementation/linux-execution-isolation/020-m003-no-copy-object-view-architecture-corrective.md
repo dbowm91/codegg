@@ -15,6 +15,18 @@ Replace or materially optimize the cold-miss path in the daemon-owned private Gi
 
 C011 added a bounded daemon-lifetime cache of immutable private snapshots. Warm preparation is sub-millisecond for the measured packed and fragmented repositories, but cold-advised misses measured 3.689 s median / 4.482 s p95 / 7.637 s max for the fragmented store. C010's no-admission decision remains in force.
 
+The current snapshot copier already attempts Linux `FICLONE` per object file
+(`crates/egggit/src/process.rs::copy_object_snapshot`) and falls back to a
+byte copy when the filesystem rejects reflinks. The recorded ext4 cold-miss
+samples therefore qualify the fallback path; they do not qualify a
+reflink-capable filesystem. The next performance comparison must report
+whether reflinking is available and measure the same exact-content fixtures on
+a supported copy-on-write filesystem. A reflink snapshot is still private and
+safe against later source mutation, unlike a live read-only bind, but it may
+leave fragmented-store metadata traversal as a substantial cold cost. Keep
+the no-copy mount candidate separate until its source-generation mutation
+contract is enforced by the execution owner.
+
 An explicit environment redirect is not enough to safely avoid copying: a local probe confirmed that Git recursively follows the selected object store's own `objects/info/alternates` when that object store is supplied through `GIT_ALTERNATE_OBJECT_DIRECTORIES`. Any no-copy design must prevent a repository-controlled late alternate from influencing the child at the process boundary.
 
 The first process-boundary candidate to prototype is a helper-owned private mount namespace that presents the daemon-selected repository read-only and overlays its existing `objects/info` directory with a private tmpfs. This omits repository-controlled alternates without copying object payloads. If `objects/info` is absent, the fallback composes `objects` from read-only pack/fanout mounts and a private info directory. A simple `--ro-bind-data` overlay works only when the alternates file already exists: Bubblewrap cannot create the overlay target beneath a read-only whole-repository mount when the file was absent. The prototype must pin the real gitdir/common-dir, refuse a pre-existing alternate before launch, and establish whether source-object mutation can be excluded by the selected M003 profile or still requires a snapshot.
