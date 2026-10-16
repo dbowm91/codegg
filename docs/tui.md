@@ -49,7 +49,7 @@ Two consequences worth knowing:
 Switch tabs with `NextProjectTab` / `PreviousProjectTab` / `SelectProjectTabByIndex`
 and close one with `CloseProjectTab`. A local project picker (`WorkspaceRegister`
 then `ProjectRegister`) registers a new project into the catalog. Open it with
-`Ctrl+\` from anywhere, `Shift+F` in `NOR` mode, or the `/projects` command
+`Shift+F` in `NOR` mode or the `/projects` command
 (which also works mid-prompt).
 
 ## Sessions from the CLI

@@ -539,7 +539,7 @@ impl CommandRegistry {
                 .with_description("Switch session"),
             Command::new("/projects", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Projects))
                 .with_aliases(&["/project"])
-                .with_description("Open the project picker (Ctrl+\\, Shift+F in Normal mode)"),
+                .with_description("Open the project picker (Shift+F in Normal mode)"),
             Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),

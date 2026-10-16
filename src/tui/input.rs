@@ -829,13 +829,6 @@ fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> 
         ),
         InputAction::ToggleFullscreen,
     );
-    // Ctrl+\ opens the project picker (both Insert and Normal modes).
-    // Space f was infeasible due to insert-mode text binding; Ctrl+\ is
-    // the final chosen binding.
-    map.insert(
-        (KeyModifiers::CONTROL, KeyCode::Char('\\')),
-        InputAction::OpenProjectPicker,
-    );
     // Ctrl+Alt+n next project tab. A letter chord rather than the bracket
     // pair the chord contract rules out; see the CONTROL|ALT note above.
     map.insert(
@@ -1026,11 +1019,6 @@ fn vim_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
         InputAction::OpenDiff,
     );
 
-    // Ctrl+\ opens the project picker (same as insert mode).
-    map.insert(
-        (KeyModifiers::CONTROL, KeyCode::Char('\\')),
-        InputAction::OpenProjectPicker,
-    );
     // \ also opens the project picker in vim normal mode.
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('\\')),
@@ -1265,12 +1253,6 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         },
         HelpEntry {
             mode: HelpMode::Insert,
-            key: "Ctrl+\\",
-            action: "Open project picker",
-            condition: None,
-        },
-        HelpEntry {
-            mode: HelpMode::Insert,
             key: "Ctrl+Alt+N",
             action: "Next project tab",
             condition: None,
@@ -1431,12 +1413,6 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             key: "Q",
             action: "Close project tab",
             condition: Some("vim mode"),
-        },
-        HelpEntry {
-            mode: HelpMode::Normal,
-            key: "Ctrl+\\",
-            action: "Open project picker",
-            condition: None,
         },
         HelpEntry {
             mode: HelpMode::Normal,
@@ -1665,7 +1641,7 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Shift+F",
-            action: "Open the project picker (Ctrl+\\ works in every mode; /projects works mid-prompt)",
+            action: "Open the project picker; /projects also works mid-prompt",
             condition: None,
         },
         HelpEntry {
@@ -2289,9 +2265,7 @@ mod tests {
         assert_eq!(result, Some(InputAction::Char('k')));
     }
 
-    /// `Shift+F` opens the picker in Normal mode under both terminal
-    /// encodings, stays typeable text in Insert mode, and never disturbs
-    /// the `Ctrl+\` spelling that works in both modes.
+    /// Shift+F opens the picker in Normal mode and stays typeable text in Insert mode.
     #[test]
     fn shift_f_opens_picker_in_normal_only() {
         for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
@@ -2309,15 +2283,15 @@ mod tests {
             "Shift+F must type text while composing"
         );
         let chord = make_key(KeyCode::Char('\\'), KeyModifiers::CONTROL);
-        assert_eq!(
+        assert_ne!(
             handle_key_with_bindings(chord, None, InputMode::Insert),
             Some(InputAction::OpenProjectPicker),
-            "Ctrl+\\ must keep working in Insert mode"
+            "Ctrl+\\ must not open the picker in Insert mode"
         );
-        assert_eq!(
+        assert_ne!(
             handle_key_with_bindings(chord, None, InputMode::Normal),
             Some(InputAction::OpenProjectPicker),
-            "Ctrl+\\ must keep working in Normal mode"
+            "Ctrl+\\ must not open the picker in Normal mode"
         );
     }
 

@@ -1,6 +1,6 @@
 # Project Picker Rework Roadmap
 
-Status: proposed
+Status: active
 
 Long-term references:
 
@@ -315,7 +315,7 @@ carries unresolved high/medium findings.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 1 | ready | `plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md` | — | none |
+| 1 | closing | `plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md` | — | closure evidence |
 | 2 | blocked | `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md` | — | M1 strict closure |
 | 3 | blocked | `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` | — | M2 interface stability (ADR-0033 accepted) |
 | 4 | blocked | `plans/implementation/project-picker-rework/004-rename-and-repath.md` | — | M2 interface stability (ADR-0033 accepted) |

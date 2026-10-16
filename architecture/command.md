@@ -275,7 +275,7 @@ Representative built-ins:
 | `/themes` | | Switch theme |
 | `/help` | | Help |
 | `/sessions` | `resume`, `continue` | Switch session. `resume` stays the session-switch spelling; carrying on after a stopped turn is `/start` (below) |
-| `/projects` | `/project` | Open the project picker (`Ctrl+\`, `Shift+F` in Normal mode) |
+| `/projects` | `/project` | Open the project picker (`Shift+F` in Normal mode) |
 | `/new` | `clear` | New session |
 | `/stop` | | Interrupt the agent's running turn. Also `x` twice in Normal mode |
 | `/start` | | Carry on after a stopped turn. Re-submits: a cancelled turn cannot be resurrected |

@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 001 — Remove the `Ctrl+\` opener
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `b4e9a92d` (plus uncommitted worktree TUI picker
 work: `Shift+F` Normal binding, `/projects` command, event-carried
