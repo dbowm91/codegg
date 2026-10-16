@@ -317,6 +317,6 @@ carries unresolved high/medium findings.
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md` | `plans/closure/project-picker-rework/001-status.md` | none |
 | 2 | closed | `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md` | `plans/closure/project-picker-rework/002-status.md` | strict local evidence; M3 and M4 unblocked |
-| 3 | ready | `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` | — | M2 interface stable; ADR-0033 accepted |
-| 4 | ready | `plans/implementation/project-picker-rework/004-rename-and-repath.md` | — | M2 interface stable; ADR-0033 accepted |
+| 3 | closed | `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` | `plans/closure/project-picker-rework/003-status.md` | none |
+| 4 | active | `plans/implementation/project-picker-rework/004-rename-and-repath.md` | — | M2 interface stable; ADR-0033 accepted; sequential work underway |
 | 5 | blocked | `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` | — | M2–M4 closed (ADR-0033 accepted) |

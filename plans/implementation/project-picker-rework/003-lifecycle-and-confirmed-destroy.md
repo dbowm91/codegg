@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 003 — Deactivate/reactivate lifecycle plus confirmed destroy
 
-Status: implemented
+Status: closed
 
 Repository baseline: `a8325de7` (M002 strict closure; current handoff head)
 
