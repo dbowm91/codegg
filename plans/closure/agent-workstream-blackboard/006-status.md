@@ -3,7 +3,7 @@
 Status: blocked — ExistingManaged launch/fork is implemented, but NewManaged checkout materialization remains unavailable
 
 Source implementation plan: `plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md`
-Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#M006--isolated-sessionworktree-fork-and-launch-ux-active`
+Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#M006--isolated-sessionworktree-fork-and-launch-ux-blocked-newmanaged-checkout-materializer`
 Repository baseline reviewed: `3ee041db42e2f7cf4be681bd343b527f0881f92d`
 
 Implementation commits:
@@ -13,6 +13,11 @@ Implementation commits:
 - `239034b7` — provider deferral compatibility and launch-response fixes
 - `ed065038` — linked-worktree daemon fixture
 - `3ee041db` — fixture repository-lineage correction
+- `e8a33c11` — launch-command count/docs correction and closure audit
+- `b5b9defa` — exhaustive built-in action list correction
+- `d7419363` — Build workspace-mutation compatibility correction
+- `d1f942b1` — Build resource-profile assertion correction
+- `50946611` — core Build resource-profile assertion correction
 
 ## 1. Executive finding
 
@@ -81,9 +86,14 @@ rustup run 1.89-aarch64-apple-darwin cargo test --target aarch64-apple-darwin \
   Run `38872186777` passed those command checks but exposed the M007 Build
   profile regression in existing scheduler tests (Build no longer carried its
   workspace-mutation key). That key is restored, and the prior distinct-key
-  contention test explicitly uses a build limit of two. Focused local tests
-  pass; another exact-head hosted run is pending. Do not claim green hosted CI
-  until it passes.
+  contention test explicitly uses a build limit of two. Run `38875399307`
+  exposed a stale scheduler-profile assertion; run `38878790038` exposed the
+  same stale expectation in the core resource-profile test. Both now require
+  the restored key. Exact-head run
+  [38881759368](https://github.com/dbowm91/codegg/actions/runs/38881759368)
+  on `50946611fc73fbf485d8137ed1c96cfaab5a7323` passed formatting, all
+  configured repository guards, workspace Clippy, sandbox-helper build and
+  all 13,969 workspace tests (13,969 passed, 0 failed, 6 skipped).
 
 ## 5. Invariant review
 
@@ -145,8 +155,14 @@ Do not mark M005 closed or enabled as a workaround.
 
 - Keep M006 blocked on the contained NewManaged materializer. This is not a
   dependency on M005's shared-writer qualification.
+- Record exact-head CI run `38881759368` on `50946611` as green: 13,969
+  passed, 0 failed, 6 skipped, with formatting, guards, workspace Clippy and
+  sandbox-helper build passing. CI completion does not resolve the materializer
+  blocker.
 - M008 broad qualification remains blocked on M006 and M007 closure; its
   authorized S0/S1 pilot is separately recorded at
   `plans/closure/agent-workstream-blackboard/008-pilot-results.md`.
-- M005 remains active and shared mutation remains unavailable. No plan became
-  newly ready from this M006 review.
+- Registry Blocked work and the affected roadmap dependency graph were
+  audited: M008 remains blocked by M006 and its own uncompleted qualification;
+  no registered plan became ready from this review.
+- M005 remains active and shared mutation remains unavailable.

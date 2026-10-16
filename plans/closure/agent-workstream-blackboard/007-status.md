@@ -3,10 +3,10 @@
 Status: conditionally closed — scheduler admission is implemented and hosted qualification is recorded; the required realistic Rust workspace run remains outstanding
 
 Source implementation plan: `plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md`
-Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#M007--per-workspace-build-admission-active--independent-of-m005`
+Source subsystem roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#M007--per-workspace-build-admission-conditionally-closed-independent-of-m005`
 Implementation commit: `097cba5d`
-Exact-head qualification commit: `3ee041db42e2f7cf4be681bd343b527f0881f92d`
-Hosted CI: [run 38868243512](https://github.com/dbowm91/codegg/actions/runs/38868243512)
+Exact-head qualification commit: `50946611fc73fbf485d8137ed1c96cfaab5a7323`
+Hosted CI: [run 38881759368](https://github.com/dbowm91/codegg/actions/runs/38881759368)
 
 ## 1. Executive finding
 
@@ -60,9 +60,11 @@ authorized projection suites.
 
 On the implementation branch, `bash scripts/verify.sh quick`, focused
 M006/M007 tests, formatting, `git diff --check`, execution-ownership and
-scheduler-bypass guards passed. Exact-head hosted run 38868243512 passed
-formatting, all configured repository guards, workspace Clippy and sandbox
-helper build. Run 38868243512 failed the count assertion (165 runtime
+scheduler-bypass guards passed. Exact-head hosted run 38881759368 on
+`50946611fc73fbf485d8137ed1c96cfaab5a7323` passed formatting, all configured
+repository guards, workspace Clippy, sandbox-helper build and the complete
+workspace suite: 13,969 passed, 0 failed, 6 skipped. Run 38868243512 failed
+the count assertion (165 runtime
 commands vs. 163 expected); run 38869913826 passed the corrected count and
 command-doc assertions but failed the exhaustive built-in action list, which
 omitted the two M006 actions. Run 38872186777 passed those command tests, then
@@ -70,9 +72,11 @@ revealed two M007 compatibility issues: Build's legacy workspace-mutation
 exclusion key was dropped, and the old distinct-Cargo-target parallelism test
 did not raise the new default one-build-per-workspace limit. Build now retains
 the exclusion key and that test explicitly configures two build slots. The
-focused resource-profile, distinct-key contention and build-vs-mutation
-admission tests pass locally; a new exact-head hosted run is pending. Do not
-use this record as a green hosted-CI claim until it passes.
+focused resource-profile, distinct-key contention, build-vs-mutation
+admission, and `codegg-core` conservative Build-profile tests pass locally.
+Runs 38875399307 and 38878790038 then exposed stale assertions expecting the
+workspace-mutation key to be absent; both now enforce the restored contract.
+The final exact-head hosted run above is green.
 
 ## 5. Security and recovery review
 
@@ -95,7 +99,9 @@ use this record as a green hosted-CI claim until it passes.
 
 ## 7. Roadmap disposition and downstream unblocking audit
 
-M007 is conditionally closed. M005 remains active as a separate checkout-wide
+M007 is conditionally closed. The exact-head hosted CI run is green, but it
+does not substitute for the required daemon-backed Rust workspace consumer
+qualification. M005 remains active as a separate checkout-wide
 writer-containment initiative; M007 does not share checkout or Cargo output.
 M006 remains blocked because NewManaged launch lacks a contained Git
 materializer. M008 broad qualification therefore remains blocked, now by M006
@@ -104,15 +110,18 @@ S0/S1 pilot remains descriptive and shows no repeatable latency gain and
 higher token use in both repetitions; it does not qualify peer observations
 or claims as effectiveness improvements.
 
-No new plan became ready from this conditional closure. When the manual Rust
-consumer evidence is supplied, reassess M007's condition and re-audit M008;
-M005 shared-write qualification remains separately required for any shared
-checkout arm.
+The registry's Blocked work section and affected roadmap dependency graph
+were audited. No new plan became ready: M008 still requires M006 materializer
+closure, the M007 operational evidence condition, and its own remaining
+comparison strata. When the manual Rust consumer evidence is supplied,
+reassess M007 and re-audit M008; M005 shared-write qualification remains
+separately required for any shared-checkout arm.
 
 ## 8. Registry updates
 
 - M007 is listed as conditionally closed, with this record as its status
-  authority and the manual Rust workspace run named as the remaining condition.
+  authority, exact-head CI run `38881759368` recorded, and the manual Rust
+  workspace run named as the remaining condition.
 - M006 remains blocked independently on NewManaged materialization.
 - M008 broad comparison remains blocked; the completed isolated S0/S1 pilot is
   recorded separately in `008-pilot-results.md`.
