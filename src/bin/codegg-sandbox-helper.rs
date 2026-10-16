@@ -378,9 +378,20 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         .arg("--block-fd")
         .arg(codegg::security::sandbox::SANDBOX_ACK_FD.to_string())
         .arg("--json-status-fd")
-        .arg(status_fd.to_string())
-        .arg("--")
-        .arg(spec.target.as_os_str());
+        .arg(status_fd.to_string());
+    let target_env = validated_target_environment(&spec.env).unwrap_or_else(|reason| {
+        fail(
+            status_fd,
+            SandboxLaunchOutcome::SetupError {
+                reason: String::new(),
+            },
+            reason,
+        )
+    });
+    for (name, value) in target_env {
+        command.arg("--setenv").arg(name).arg(value);
+    }
+    command.arg("--").arg(spec.target.as_os_str());
     command.args(&spec.args);
     unsafe {
         command.pre_exec(move || {
@@ -407,6 +418,48 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
         },
         format!("exec trusted Bubblewrap: {error}"),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn validated_target_environment(env: &[(String, String)]) -> Result<Vec<(String, String)>, String> {
+    use std::collections::BTreeSet;
+
+    if env.len() > 64 {
+        return Err("sandbox target environment exceeds 64 entries".into());
+    }
+    let mut names = BTreeSet::new();
+    let mut total = 0usize;
+    let mut validated = Vec::with_capacity(env.len());
+    for (name, value) in env {
+        if name.is_empty()
+            || name.contains('=')
+            || name.contains('\0')
+            || value.contains('\0')
+            || name.len() > 32 * 1024
+            || value.len() > 32 * 1024
+            || !names.insert(name.as_str())
+        {
+            return Err("sandbox target environment contains an invalid or duplicate entry".into());
+        }
+        total = total
+            .checked_add(name.len())
+            .and_then(|length| length.checked_add(value.len()))
+            .ok_or_else(|| "sandbox target environment size overflowed".to_string())?;
+        if total > MAX_SANDBOX_SPEC_BYTES {
+            return Err("sandbox target environment exceeds the launch-spec bound".into());
+        }
+        // The helper owns these variables as part of its fixed contained
+        // runtime; caller policy may choose PATH, but cannot widen home,
+        // temporary, or Git configuration roots.
+        if matches!(
+            name.as_str(),
+            "HOME" | "TMPDIR" | "GIT_CONFIG_NOSYSTEM" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM"
+        ) {
+            continue;
+        }
+        validated.push((name.clone(), value.clone()));
+    }
+    Ok(validated)
 }
 
 #[cfg(target_os = "linux")]
@@ -500,7 +553,7 @@ fn main() {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_mount_source_tests {
-    use super::open_mount_source;
+    use super::{open_mount_source, validated_target_environment};
     use codegg::security::sandbox::SandboxPathIdentity;
     use std::os::unix::fs::MetadataExt;
 
@@ -548,5 +601,31 @@ mod linux_mount_source_tests {
         let metadata = pinned.metadata().expect("pinned handle metadata");
         assert_eq!(metadata.dev(), original.dev());
         assert_eq!(metadata.ino(), original.ino());
+    }
+
+    #[test]
+    fn target_environment_is_bounded_unique_and_keeps_helper_owned_roots_fixed() {
+        let env = vec![
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("HOME".to_string(), "/host/home".to_string()),
+            ("TMPDIR".to_string(), "/host/tmp".to_string()),
+            (
+                "GIT_CONFIG_GLOBAL".to_string(),
+                "/host/gitconfig".to_string(),
+            ),
+            ("TERM".to_string(), "xterm-256color".to_string()),
+        ];
+        assert_eq!(
+            validated_target_environment(&env).expect("bounded target env"),
+            vec![
+                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                ("TERM".to_string(), "xterm-256color".to_string()),
+            ]
+        );
+        assert!(validated_target_environment(&[
+            ("TERM".to_string(), "xterm".to_string()),
+            ("TERM".to_string(), "screen".to_string()),
+        ])
+        .is_err());
     }
 }

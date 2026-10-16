@@ -582,7 +582,10 @@ the internal composable launch contract owned by this service. Its host
 feature probe is diagnostic only: the service still selects the existing
 filesystem helper, and namespace, offline-network, seccomp, and cgroup
 dimensions remain unavailable until native enforcement is implemented and
-qualified. Probe results never establish a child's obtained status.
+qualified. Probe results never establish a child's obtained status. The
+long-lived interactive PTY owner uses the same helper receipt/ack path for an
+internal M004 candidate; it retains PTY and child lifetime ownership and stays
+unavailable through the daemon protocol until exact-host qualification passes.
 Shell, TestRunner, and SubAgentPool retain
 their domain semantics behind typed executors; TestRunner is an
 explicit lifecycle exemption because it streams parser input into

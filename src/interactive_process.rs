@@ -382,6 +382,10 @@ pub struct SpawnSpec {
     pub size: PtySize,
     /// Scrollback retention override (`None` = default).
     pub scrollback_bytes: Option<usize>,
+    /// Daemon-resolved profile for internal production-owner routing. Wire
+    /// requests cannot populate this field; constrained requests remain
+    /// refused by `InteractiveProcessProtocol` until native qualification.
+    pub(crate) constrained_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 impl SpawnSpec {
@@ -392,6 +396,7 @@ impl SpawnSpec {
             env_overrides: Vec::new(),
             size: PtySize::default(),
             scrollback_bytes: None,
+            constrained_profile: None,
         }
     }
 
@@ -530,10 +535,16 @@ struct LiveSession {
     size: Mutex<PtySize>,
     state: RwLock<SessionState>,
     exit: RwLock<Option<ExitInfo>>,
-    ring: Mutex<SequenceRing>,
+    ring: Arc<Mutex<SequenceRing>>,
     #[cfg(unix)]
     pty: Arc<AsyncFd<std::os::fd::OwnedFd>>,
     child: Mutex<Option<tokio::process::Child>>,
+    #[cfg(unix)]
+    pty_slave_keeper: Mutex<Option<OwnedFd>>,
+    reader_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    reader_cancel: CancellationToken,
+    #[cfg(target_os = "linux")]
+    sandbox_status_task: Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>,
     child_pid: Option<u32>,
     permit: Mutex<Option<ResourcePermitGuard>>,
     notify_exit: Notify,
@@ -614,6 +625,7 @@ impl InteractiveProcessService {
             .resolve_relative_cwd(spec.cwd.as_deref())
             .await
             .map_err(|error| InteractiveError::WorkspacePolicy(error.to_string()))?;
+        let sandbox_spec = build_m004_pty_spec(&spec, ctx, &cwd)?;
         if !is_supported() {
             return Err(InteractiveError::PlatformUnsupported {
                 platform: platform_name(),
@@ -647,17 +659,52 @@ impl InteractiveProcessService {
                 .first()
                 .map(|entry| entry.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let spawned = match spawn_unix_child(&spec, &cwd, ctx, handle.as_str(), spec.size) {
+            let scrollback = spec
+                .scrollback_bytes
+                .unwrap_or(DEFAULT_SCROLLBACK_BYTES)
+                .min(MAX_SCROLLBACK_BYTES);
+            let ring = SequenceRing::new(scrollback).map_err(|_| {
+                InteractiveError::SpawnFailed("scrollback validation raced spawn".to_string())
+            })?;
+            let (master_fd, slave_fd) = open_pty_pair(spec.size)
+                .map_err(|error| InteractiveError::SpawnFailed(error.to_string()))?;
+            let pty = Arc::new(
+                AsyncFd::new(master_fd)
+                    .map_err(|error| InteractiveError::SpawnFailed(error.to_string()))?,
+            );
+            let ring = Arc::new(Mutex::new(ring));
+            let reader_cancel = CancellationToken::new();
+            let child_started = Arc::new(AtomicBool::new(false));
+            let reader_task = spawn_reader_task(
+                pty.clone(),
+                ring.clone(),
+                reader_cancel.clone(),
+                child_started.clone(),
+            );
+            // Register the PTY master before the child can write. Before the
+            // slave is inherited, Linux reports EIO; the reader keeps polling
+            // through that initial state until spawn is complete.
+            tokio::task::yield_now().await;
+            let spawned = match spawn_unix_child(
+                &spec,
+                &cwd,
+                ctx,
+                handle.as_str(),
+                sandbox_spec,
+                &self.inner.shutdown,
+                slave_fd,
+            )
+            .await
+            {
                 Ok(spawned) => spawned,
                 Err(error) => {
+                    reader_cancel.cancel();
+                    reader_task.abort();
                     drop(permit);
                     return Err(InteractiveError::SpawnFailed(error.to_string()));
                 }
             };
-
-            let ring = SequenceRing::new(scrollback).map_err(|_| {
-                InteractiveError::SpawnFailed("scrollback validation raced spawn".to_string())
-            })?;
+            child_started.store(true, Ordering::Release);
             let session = Arc::new(LiveSession {
                 handle: handle.clone(),
                 workspace_id: ctx.workspace_id.clone(),
@@ -666,9 +713,14 @@ impl InteractiveProcessService {
                 size: Mutex::new(spec.size),
                 state: RwLock::new(SessionState::Running),
                 exit: RwLock::new(None),
-                ring: Mutex::new(ring),
-                pty: spawned.pty,
+                ring,
+                pty,
                 child: Mutex::new(Some(spawned.child)),
+                pty_slave_keeper: Mutex::new(Some(spawned.slave_keeper)),
+                reader_task: Mutex::new(Some(reader_task)),
+                reader_cancel,
+                #[cfg(target_os = "linux")]
+                sandbox_status_task: Mutex::new(spawned.status_task),
                 child_pid: spawned.pid,
                 permit: Mutex::new(Some(permit)),
                 notify_exit: Notify::new(),
@@ -678,7 +730,6 @@ impl InteractiveProcessService {
             self.inner
                 .sessions
                 .insert(handle.as_str().to_string(), session.clone());
-            spawn_reader_task(session.clone());
             spawn_waiter_task(session.clone());
             Ok(handle)
         }
@@ -1002,8 +1053,78 @@ fn validate_env_overrides(overrides: &[(OsString, OsString)]) -> Result<(), Inte
     Ok(())
 }
 
+fn build_m004_pty_spec(
+    spawn: &SpawnSpec,
+    ctx: &ExecutionContext,
+    cwd: &std::path::Path,
+) -> Result<Option<crate::security::sandbox::SandboxLaunchSpec>, InteractiveError> {
+    let Some(profile) = spawn.constrained_profile else {
+        return Ok(None);
+    };
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (profile, ctx, cwd);
+        return Err(InteractiveError::SpawnFailed(
+            "constrained PTY M004 launch is available only on Linux".into(),
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let roots = match profile {
+            codegg_core::approval::SandboxProfile::ReadOnly => ctx.allowed_read_roots.as_ref(),
+            codegg_core::approval::SandboxProfile::WorkspaceWrite => {
+                ctx.allowed_write_roots.as_ref()
+            }
+            codegg_core::approval::SandboxProfile::FullHost => return Ok(None),
+        };
+        let program = spawn.argv.first().ok_or_else(|| {
+            InteractiveError::InvalidArgument("interactive argv must not be empty".into())
+        })?;
+        let args = spawn.argv[1..]
+            .iter()
+            .map(|arg| {
+                arg.to_str().map(str::to_string).ok_or_else(|| {
+                    InteractiveError::InvalidArgument(
+                        "constrained PTY arguments must be valid UTF-8".into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let config =
+            crate::security::sandbox::sandbox_config_for_profile_with_roots(profile, roots)
+                .ok_or_else(|| {
+                    InteractiveError::SpawnFailed(
+                        "daemon-resolved profile did not produce a constrained sandbox".into(),
+                    )
+                })?
+                .with_linux_process_isolation(true);
+        let launch_spec = config
+            .launch_spec(program, &args, Some(cwd))
+            .map_err(|error| InteractiveError::SpawnFailed(error.to_string()))?;
+        use crate::security::sandbox::linux_launch::{
+            LinuxLaunchAdapter, LinuxLaunchPlan, LinuxLaunchRequest, ProductionLinuxLaunchAdapter,
+        };
+        match ProductionLinuxLaunchAdapter
+            .plan(&LinuxLaunchRequest::legacy_filesystem(&launch_spec))
+            .map_err(InteractiveError::SpawnFailed)?
+        {
+            LinuxLaunchPlan::ProtectedProcessIsolation => Ok(Some(launch_spec)),
+            LinuxLaunchPlan::EnhancedUnavailable { dimensions } => {
+                Err(InteractiveError::SpawnFailed(format!(
+                    "M004 PTY launch unavailable: {}",
+                    dimensions.join(", ")
+                )))
+            }
+            _ => Err(InteractiveError::SpawnFailed(
+                "M004 PTY launch did not select the required process isolation plan".into(),
+            )),
+        }
+    }
+}
+
 async fn finish_session(session: &Arc<LiveSession>) {
     session.cancel.cancel();
+    session.reader_cancel.cancel();
     // Releasing the permit is the scheduler-resource release proof: capacity
     // returns to the admission controller exactly once per session.
     session.permit.lock().await.take();
@@ -1012,14 +1133,19 @@ async fn finish_session(session: &Arc<LiveSession>) {
 }
 
 #[cfg(unix)]
-fn spawn_reader_task(session: Arc<LiveSession>) {
+fn spawn_reader_task(
+    pty: Arc<AsyncFd<std::os::fd::OwnedFd>>,
+    ring: Arc<Mutex<SequenceRing>>,
+    cancel: CancellationToken,
+    child_started: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buffer = vec![0_u8; 8192];
         loop {
-            if session.cancel.is_cancelled() {
+            if cancel.is_cancelled() {
                 break;
             }
-            let notified = session.pty.readable();
+            let notified = pty.readable();
             tokio::pin!(notified);
             tokio::select! {
                 result = &mut notified => {
@@ -1053,6 +1179,10 @@ fn spawn_reader_task(session: Arc<LiveSession>) {
                             Ok(Err(error))
                                 if error.raw_os_error() == Some(libc::EIO) =>
                             {
+                                if !child_started.load(Ordering::Acquire) {
+                                    tokio::time::sleep(Duration::from_millis(1)).await;
+                                    continue;
+                                }
                                 // Slave closed (child exited) surfaces as EIO
                                 // on Linux/macOS master reads: terminal output
                                 // is complete, not a failure.
@@ -1070,15 +1200,12 @@ fn spawn_reader_task(session: Arc<LiveSession>) {
                     if read == 0 {
                         break;
                     }
-                    session.ring.lock().await.push(&buffer[..read]);
+                    ring.lock().await.push(&buffer[..read]);
                 }
-                _ = session.cancel.cancelled() => break,
-            }
-            if matches!(*session.state.read().await, SessionState::Exited) {
-                break;
+                _ = cancel.cancelled() => break,
             }
         }
-    });
+    })
 }
 
 fn spawn_waiter_task(session: Arc<LiveSession>) {
@@ -1090,20 +1217,61 @@ fn spawn_waiter_task(session: Arc<LiveSession>) {
             };
             child.wait().await
         };
+        // Keep one slave descriptor until the direct child exits. Otherwise a
+        // very short command can close the final slave before the PTY master
+        // reader runs, and Linux may report EIO without delivering buffered
+        // output. Closing it now lets the reader drain queued bytes to EOF.
+        #[cfg(unix)]
+        session.pty_slave_keeper.lock().await.take();
+        #[cfg(target_os = "linux")]
+        let sandbox_status_ok = if let Some(task) = session.sandbox_status_task.lock().await.take()
+        {
+            match tokio::time::timeout(Duration::from_secs(2), task).await {
+                Ok(Ok(Ok(()))) => true,
+                Ok(Ok(Err(error))) => {
+                    tracing::error!("interactive M004 terminal status failed: {error}");
+                    false
+                }
+                Ok(Err(error)) => {
+                    tracing::error!("interactive M004 status task failed: {error}");
+                    false
+                }
+                Err(_) => {
+                    tracing::error!("interactive M004 status channel did not close");
+                    false
+                }
+            }
+        } else {
+            true
+        };
+        #[cfg(not(target_os = "linux"))]
+        let sandbox_status_ok = true;
+        if let Some(mut reader_task) = session.reader_task.lock().await.take() {
+            match tokio::time::timeout(Duration::from_millis(500), &mut reader_task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::debug!("interactive PTY reader task failed: {error}");
+                }
+                Err(_) => {
+                    session.cancel.cancel();
+                    reader_task.abort();
+                }
+            }
+        }
         let exit = match status {
             Ok(status) => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::process::ExitStatusExt;
                     ExitInfo {
-                        code: status.code(),
-                        signal: status.signal(),
+                        code: sandbox_status_ok.then(|| status.code()).flatten(),
+                        signal: sandbox_status_ok.then(|| status.signal()).flatten(),
                     }
                 }
                 #[cfg(not(unix))]
                 {
                     ExitInfo {
-                        code: status.code(),
+                        code: sandbox_status_ok.then(|| status.code()).flatten(),
                         signal: None,
                     }
                 }
@@ -1157,8 +1325,10 @@ async fn write_pty_bytes(pty: &Arc<AsyncFd<std::os::fd::OwnedFd>>, bytes: &[u8])
 #[cfg(unix)]
 struct SpawnedChild {
     child: tokio::process::Child,
-    pty: Arc<AsyncFd<std::os::fd::OwnedFd>>,
+    slave_keeper: OwnedFd,
     pid: Option<u32>,
+    #[cfg(target_os = "linux")]
+    status_task: Option<tokio::task::JoinHandle<Result<(), String>>>,
 }
 
 #[cfg(unix)]
@@ -1219,16 +1389,17 @@ fn set_nonblocking(fd: &OwnedFd) -> io::Result<()> {
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn spawn_unix_child(
+async fn spawn_unix_child(
     spec: &SpawnSpec,
     cwd: &std::path::Path,
     ctx: &Arc<ExecutionContext>,
     handle: &str,
-    size: PtySize,
+    sandbox_spec: Option<crate::security::sandbox::SandboxLaunchSpec>,
+    shutdown: &CancellationToken,
+    slave_fd: OwnedFd,
 ) -> io::Result<SpawnedChild> {
     use std::os::unix::ffi::OsStrExt;
 
-    let (master_fd, slave_fd) = open_pty_pair(size)?;
     let mut executable = spec.argv.iter();
     let program = executable.next().ok_or_else(|| {
         io::Error::new(
@@ -1258,58 +1429,114 @@ fn spawn_unix_child(
         policy = policy.with_var(name, value);
     }
 
-    let mut command = tokio::process::Command::new(program);
-    command
-        .args(executable)
-        .current_dir(cwd)
-        .env_clear()
-        .kill_on_drop(true);
-    policy.apply(&mut command);
-    // Interactive terminals need a real TERM (managed non-interactive work
-    // pins TERM=dumb). Workspace/handle provenance aids audit; no secrets.
-    command
-        .env("TERM", "xterm-256color")
-        .env("CODEGG_INTERACTIVE_PROCESS", "1")
-        .env("CODEGG_INTERACTIVE_HANDLE", handle)
-        .env("CODEGG_WORKSPACE_ID", ctx.workspace_id.as_str());
-
     let stdin_slave = slave_fd.try_clone().map_err(io::Error::other)?;
     let stdout_slave = slave_fd.try_clone().map_err(io::Error::other)?;
-    command
-        .stdin(std::process::Stdio::from(stdin_slave))
-        .stdout(std::process::Stdio::from(stdout_slave))
-        .stderr(std::process::Stdio::from(slave_fd));
-
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            // Attach the slave as the controlling terminal of the new
-            // session so job control, SIGWINCH, and line discipline behave
-            // like a real terminal.
-            let result = libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0);
-            if result == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = command.spawn()?;
+    let child_stdin = std::process::Stdio::from(stdin_slave);
+    let child_stdout = std::process::Stdio::from(stdout_slave);
+    let slave_keeper = slave_fd.try_clone()?;
+    let child_stderr = std::process::Stdio::from(slave_fd);
+    #[cfg(target_os = "linux")]
+    let (child, status_task) = if let Some(sandbox_spec) = sandbox_spec {
+        let sandbox_policy = policy
+            .clone()
+            .with_var("CODEGG_INTERACTIVE_PROCESS", "1")
+            .with_var("CODEGG_INTERACTIVE_HANDLE", handle)
+            .with_var("CODEGG_WORKSPACE_ID", ctx.workspace_id.as_str());
+        let owned = crate::managed_process::spawn_sandboxed_interactive_child(
+            sandbox_spec,
+            cwd,
+            &sandbox_policy,
+            child_stdin,
+            child_stdout,
+            child_stderr,
+            &ctx.cancellation,
+            shutdown,
+        )
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        (owned.child, Some(owned.status_task))
+    } else {
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(executable)
+            .current_dir(cwd)
+            .stdin(child_stdin)
+            .stdout(child_stdout)
+            .stderr(child_stderr)
+            .env_clear()
+            .kill_on_drop(true);
+        policy.apply(&mut command);
+        command
+            .env("TERM", "xterm-256color")
+            .env("CODEGG_INTERACTIVE_PROCESS", "1")
+            .env("CODEGG_INTERACTIVE_HANDLE", handle)
+            .env("CODEGG_WORKSPACE_ID", ctx.workspace_id.as_str());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                // Attach the slave as the controlling terminal of the new
+                // session so job control, SIGWINCH, and line discipline behave
+                // like a real terminal.
+                let result = libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0);
+                if result == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        (command.spawn()?, None)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let child = {
+        if sandbox_spec.is_some() {
+            return Err(io::Error::other(
+                "constrained PTY M004 launch is available only on Linux",
+            ));
+        }
+        let mut command = tokio::process::Command::new(program);
+        command
+            .args(executable)
+            .current_dir(cwd)
+            .stdin(child_stdin)
+            .stdout(child_stdout)
+            .stderr(child_stderr)
+            .env_clear()
+            .kill_on_drop(true);
+        policy.apply(&mut command);
+        command
+            .env("TERM", "xterm-256color")
+            .env("CODEGG_INTERACTIVE_PROCESS", "1")
+            .env("CODEGG_INTERACTIVE_HANDLE", handle)
+            .env("CODEGG_WORKSPACE_ID", ctx.workspace_id.as_str());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                let result = libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0);
+                if result == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn()?
+    };
     let pid = child.id();
-    let async_fd = AsyncFd::new(master_fd).map_err(io::Error::other)?;
     // Log only shapes, never environment content.
     tracing::info!(
         workspace_id = %ctx.workspace_id,
         child_pid = ?pid,
-        cols = size.cols,
-        rows = size.rows,
         "interactive PTY spawned"
     );
     Ok(SpawnedChild {
         child,
-        pty: Arc::new(async_fd),
+        slave_keeper,
         pid,
+        #[cfg(target_os = "linux")]
+        status_task,
     })
 }
 
@@ -1712,5 +1939,116 @@ mod tests {
         assert_eq!(snapshot.state, SessionState::Exited);
         assert_eq!(snapshot.exit.and_then(|exit| exit.code), Some(0));
         service.remove(&handle).await.expect("remove completed PTY");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn m004_live_owner_preserves_tty_and_private_process_view() {
+        if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        {
+            return;
+        }
+        if let Err(reason) = crate::security::sandbox::landlock::probe_process_scopes() {
+            panic!("M004 PTY probe requires the qualified process scopes: {reason}");
+        }
+
+        let fixture = tempfile::tempdir().expect("workspace");
+        let workspace = fixture.path().canonicalize().expect("canonical workspace");
+        let marker = workspace.join("m004-pty-marker");
+        let ctx = test_context(&workspace).await;
+        let service = InteractiveProcessService::new(test_admission(2));
+        let host_pid = std::process::id();
+        let script = format!(
+            "import os,pathlib,signal,struct,termios,fcntl,time; host={host_pid}; marker=pathlib.Path({:?}); assert all(os.isatty(fd) for fd in (0,1,2)); assert os.tcgetpgrp(0)>0; assert not os.path.exists(f'/proc/{{host}}/environ'); marker.write_text('ok'); print('M004_PTY_READY', flush=True); seen=[]; signal.signal(signal.SIGWINCH, lambda *_: seen.append(struct.unpack('HHHH', fcntl.ioctl(0,termios.TIOCGWINSZ,bytes(8)))[:2])); deadline=time.monotonic()+10;\nwhile not seen and time.monotonic()<deadline: time.sleep(.01)\nassert seen and seen[-1]==(33,111),seen; print('M004_PTY_RESIZED', flush=True)",
+            marker.to_string_lossy()
+        );
+        let mut spawn = SpawnSpec::new(vec![
+            OsString::from("/usr/bin/python3"),
+            OsString::from("-c"),
+            OsString::from(script),
+        ]);
+        spawn.constrained_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+        let handle = service.spawn(&ctx, spawn).await.expect("M004 PTY spawn");
+
+        let ready = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let output = service
+                    .read_output(&handle, 0, MAX_READ_BYTES)
+                    .await
+                    .expect("read PTY output");
+                if String::from_utf8_lossy(&output.bytes).contains("M004_PTY_READY") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("M004 PTY target reached setup marker");
+        let _ = ready;
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("workspace write"),
+            "ok"
+        );
+        service
+            .resize(&handle, PtySize::new(111, 33).expect("size"))
+            .await
+            .expect("resize contained PTY");
+        let output = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let output = service
+                    .read_output(&handle, 0, MAX_READ_BYTES)
+                    .await
+                    .expect("read resized PTY output");
+                if String::from_utf8_lossy(&output.bytes).contains("M004_PTY_RESIZED") {
+                    break String::from_utf8_lossy(&output.bytes).into_owned();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("PTY resize reached contained target");
+        assert!(output.contains("M004_PTY_RESIZED"));
+        let snapshot = service.snapshot(&handle).await.expect("PTY snapshot");
+        assert_eq!(snapshot.state, SessionState::Exited);
+        assert_eq!(snapshot.exit.and_then(|exit| exit.code), Some(0));
+        service.remove(&handle).await.expect("remove M004 PTY");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unsupported_m004_pty_setup_refuses_before_handle_or_target() {
+        if crate::security::sandbox::landlock::probe_process_scopes().is_ok() {
+            return;
+        }
+        let fixture = tempfile::tempdir().expect("workspace");
+        let workspace = fixture.path().canonicalize().expect("canonical workspace");
+        let marker = workspace.join("m004-pty-must-not-start");
+        let ctx = test_context(&workspace).await;
+        let admission = test_admission(2);
+        let service = InteractiveProcessService::new(admission.clone());
+        let mut spawn = SpawnSpec::new(vec![
+            OsString::from("/bin/sh"),
+            OsString::from("-c"),
+            OsString::from(format!("touch '{}'", marker.display())),
+        ]);
+        spawn.constrained_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
+
+        let refused = match service.spawn(&ctx, spawn).await {
+            Ok(handle) => {
+                service.terminate(&handle).await.expect("terminate PTY");
+                service.remove(&handle).await.expect("remove PTY");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                false
+            }
+            Err(_) => true,
+        };
+        assert!(refused, "unsupported M004 host started a PTY");
+        assert_eq!(service.session_count(), 0);
+        assert_eq!(admission.used_process_slots(), 0);
+        assert!(
+            !marker.exists(),
+            "target ran despite unsupported M004 setup"
+        );
     }
 }

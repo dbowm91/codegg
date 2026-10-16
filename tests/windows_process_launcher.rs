@@ -348,6 +348,7 @@ async fn required_filesystem_sandbox_fails_before_launch_on_windows() {
     ));
     process.sandbox = codegg::managed_process::SandboxRequest::Required(
         codegg::security::sandbox::SandboxLaunchSpec {
+            env: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
             linux_offline_network: false,

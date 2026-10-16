@@ -614,6 +614,7 @@ mod tests {
 
     fn legacy_request() -> LinuxLaunchRequest {
         LinuxLaunchRequest::legacy_filesystem(&super::super::SandboxLaunchSpec {
+            env: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
             linux_offline_network: false,

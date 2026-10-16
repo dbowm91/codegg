@@ -353,7 +353,7 @@ reason = "GitExecutionService is the canonical read executor; test fixtures in t
 [[site]]
 path = "src/interactive_process.rs"
 owner = "interactive"
-reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty, derives cwd/env from ExecutionContext, and cleans the child process group on terminate/shutdown"
+reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty, derives cwd/env from ExecutionContext, and cleans the child process group on terminate/shutdown. Internal M004 candidate routes through ManagedProcessService's helper receipt/ack owner; daemon constrained routing remains refused pending hosted PTY qualification"
 
 [[site]]
 path = "src/interactive_process_attach.rs"

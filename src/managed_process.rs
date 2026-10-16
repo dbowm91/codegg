@@ -176,6 +176,74 @@ impl EnvironmentPolicy {
         }
         entries
     }
+
+    fn sandbox_entries(
+        &self,
+        provenance: &ProcessProvenance,
+    ) -> Result<Vec<(String, String)>, ManagedProcessError> {
+        let mut entries = self.entries();
+        if !provenance.job_id.is_empty() {
+            entries.insert("CODEGG_JOB_ID".into(), provenance.job_id.clone().into());
+            entries.insert(
+                "CODEGG_SCHEDULER_JOB_ID".into(),
+                provenance.job_id.clone().into(),
+            );
+        }
+        if !provenance.attempt_id.is_empty() {
+            entries.insert(
+                "CODEGG_ATTEMPT_ID".into(),
+                provenance.attempt_id.clone().into(),
+            );
+            entries.insert(
+                "CODEGG_SCHEDULER_ATTEMPT_ID".into(),
+                provenance.attempt_id.clone().into(),
+            );
+        }
+        entries.insert("CODEGG_MANAGED_PROCESS".into(), "1".into());
+        if entries.len() > 64 {
+            return Err(ManagedProcessError::SandboxFailed(
+                "sandbox target environment exceeds 64 entries".into(),
+            ));
+        }
+        entries
+            .into_iter()
+            .map(|(name, value)| {
+                let name = name.into_string().map_err(|_| {
+                    ManagedProcessError::SandboxFailed(
+                        "sandbox target environment name is not UTF-8".into(),
+                    )
+                })?;
+                let value = value.into_string().map_err(|_| {
+                    ManagedProcessError::SandboxFailed(
+                        "sandbox target environment value is not UTF-8".into(),
+                    )
+                })?;
+                if name.is_empty()
+                    || name.contains('=')
+                    || name.len() > 32 * 1024
+                    || value.len() > 32 * 1024
+                {
+                    return Err(ManagedProcessError::SandboxFailed(
+                        "sandbox target environment contains an invalid entry".into(),
+                    ));
+                }
+                Ok((name, value))
+            })
+            .collect()
+    }
+
+    fn sandbox_interactive_entries(
+        &self,
+        provenance: &ProcessProvenance,
+    ) -> Result<Vec<(String, String)>, ManagedProcessError> {
+        let mut entries = self.sandbox_entries(provenance)?;
+        if let Some((_, value)) = entries.iter_mut().find(|(name, _)| name == "TERM") {
+            *value = "xterm-256color".into();
+        } else {
+            entries.push(("TERM".into(), "xterm-256color".into()));
+        }
+        Ok(entries)
+    }
 }
 
 /// Overflow behavior for a bounded output stream.
@@ -585,6 +653,127 @@ impl ManagedProcessService {
     }
 }
 
+/// A live Bubblewrap child whose target was released only after the helper's
+/// private setup status and acknowledgment exchange completed.
+#[cfg(target_os = "linux")]
+pub(crate) struct LiveSandboxChild {
+    pub child: Child,
+    pub status_task: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+/// Spawn a long-lived interactive child through the canonical helper owner.
+/// This is Linux/M004-only and always requires the full process-isolation
+/// composition; callers cannot request a degraded launch through this API.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(crate) async fn spawn_sandboxed_interactive_child(
+    mut spec: SandboxLaunchSpec,
+    cwd: &Path,
+    environment_policy: &EnvironmentPolicy,
+    stdin: std::process::Stdio,
+    stdout: std::process::Stdio,
+    stderr: std::process::Stdio,
+    cancellation: &CancellationToken,
+    shutdown: &CancellationToken,
+) -> Result<LiveSandboxChild, ManagedProcessError> {
+    use std::os::fd::AsRawFd;
+
+    if !spec.linux_protected_mount_view || !spec.linux_process_isolation {
+        return Err(ManagedProcessError::SandboxFailed(
+            "interactive M004 launch requires protected mounts and process isolation".into(),
+        ));
+    }
+    if cancellation.is_cancelled() {
+        return Err(ManagedProcessError::CancelledBeforeSpawn);
+    }
+    spec.env = environment_policy.sandbox_interactive_entries(&ProcessProvenance::default())?;
+    let executable = spec.target.as_os_str().to_os_string();
+    let argv = spec.args.iter().map(OsString::from).collect::<Vec<_>>();
+    let sandbox = SandboxRequest::Required(spec);
+    let (
+        launch_argv,
+        sandbox_file,
+        status_reader,
+        status_writer,
+        status_ack_reader,
+        status_ack_writer,
+    ) = prepare_launch_argv(
+        &executable,
+        &argv,
+        cwd,
+        &sandbox,
+        #[cfg(test)]
+        None,
+    )?;
+    let mut launch_argv = launch_argv.into_iter();
+    let launch_executable = launch_argv.next().ok_or(ManagedProcessError::EmptyArgv)?;
+    let mut command = Command::new(launch_executable);
+    command
+        .args(launch_argv)
+        .current_dir(cwd)
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr)
+        .kill_on_drop(true);
+    environment_policy.apply(&mut command);
+    ProcessProvenance::default().apply(&mut command);
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // The PTY slave is fd 0 in the helper. Keep it as this session's
+            // controlling terminal across helper and Bubblewrap execs.
+            if libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let status_writer = status_writer.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 status writer was not created".into())
+    })?;
+    let status_ack_reader = status_ack_reader.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 acknowledgment reader was not created".into())
+    })?;
+    configure_status_fds(
+        &mut command,
+        status_writer.as_raw_fd(),
+        Some(status_ack_reader.as_raw_fd()),
+        true,
+    );
+
+    let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
+    drop(status_writer);
+    drop(status_ack_reader);
+    let reader = status_reader.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 status reader was not created".into())
+    })?;
+    let ack_writer = status_ack_writer.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("M004 acknowledgment writer was not created".into())
+    })?;
+    let ready = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(30), await_bubblewrap_ready(reader, ack_writer)) => {
+            result.map_err(|_| ManagedProcessError::SandboxFailed("M004 setup receipt timed out".into()))?
+        }
+        _ = cancellation.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled during M004 setup")),
+        _ = shutdown.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "service shutdown during M004 setup")),
+    };
+    let (reader, first_status_line) = match ready {
+        Ok(ready) => ready,
+        Err(error) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(ManagedProcessError::SandboxFailed(format!(
+                "M004 helper handshake failed: {error}"
+            )));
+        }
+    };
+    drop(sandbox_file);
+    let status_task = tokio::spawn(read_bubblewrap_terminal_status(reader, first_status_line));
+    Ok(LiveSandboxChild { child, status_task })
+}
+
 pub async fn run(
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
@@ -703,6 +892,12 @@ async fn run_inner(
         spec.write_paths.push(scratch_path.clone());
         environment_policy = environment_policy.with_var("TMPDIR", scratch_path.as_os_str());
         sandbox_scratch = Some(scratch);
+    }
+
+    if let SandboxRequest::Required(spec) = &mut sandbox {
+        if spec.linux_protected_mount_view {
+            spec.env = environment_policy.sandbox_entries(&provenance)?;
+        }
     }
 
     let (
@@ -1738,6 +1933,80 @@ async fn read_bubblewrap_status_with_ack(
     Ok(bytes)
 }
 
+#[cfg(target_os = "linux")]
+async fn await_bubblewrap_ready(
+    mut reader: tokio::fs::File,
+    ack_writer: OwnedFd,
+) -> Result<(tokio::fs::File, Vec<u8>), io::Error> {
+    let mut line = Vec::new();
+    loop {
+        if line.len() >= MAX_SANDBOX_STATUS_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Bubblewrap setup receipt exceeds the status bound",
+            ));
+        }
+        let mut byte = [0_u8; 1];
+        if reader.read(&mut byte).await? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Bubblewrap closed status before setup receipt",
+            ));
+        }
+        line.push(byte[0]);
+        if byte[0] == b'\n' {
+            break;
+        }
+    }
+    let has_exit = decode_bubblewrap_json_status(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if has_exit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bubblewrap reported target exit before the setup acknowledgment",
+        ));
+    }
+    let status: serde_json::Value = serde_json::from_slice(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if !status
+        .as_object()
+        .is_some_and(|object| object.contains_key("child-pid"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Bubblewrap setup receipt did not identify its child",
+        ));
+    }
+
+    let mut writer = tokio::fs::File::from_std(std::fs::File::from(ack_writer));
+    writer.write_all(&[0xA5]).await?;
+    writer.flush().await?;
+    Ok((reader, line))
+}
+
+#[cfg(target_os = "linux")]
+async fn read_bubblewrap_terminal_status(
+    reader: tokio::fs::File,
+    mut bytes: Vec<u8>,
+) -> Result<(), String> {
+    let remaining = (MAX_SANDBOX_STATUS_BYTES + 1).saturating_sub(bytes.len());
+    let mut tail = Vec::new();
+    reader
+        .take(remaining as u64)
+        .read_to_end(&mut tail)
+        .await
+        .map_err(|error| format!("read Bubblewrap terminal status: {error}"))?;
+    bytes.extend_from_slice(&tail);
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err("Bubblewrap terminal status exceeds 16 KiB".into());
+    }
+    let has_exit = decode_bubblewrap_json_status(&bytes)?;
+    if !has_exit {
+        return Err("Bubblewrap closed without a terminal child status".into());
+    }
+    Ok(())
+}
+
 async fn read_bounded<R>(
     mut reader: R,
     cap: usize,
@@ -2295,6 +2564,7 @@ mod tests {
         let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
             linux_offline_network: false,
@@ -2594,6 +2864,7 @@ mod tests {
         let marker = directory.path().join("target-ran");
         let mut request = request("true");
         request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            env: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
             linux_offline_network: false,
@@ -2626,6 +2897,7 @@ mod tests {
         let outcome = interpret_sandbox_status(
             None,
             &SandboxRequest::Required(SandboxLaunchSpec {
+                env: Vec::new(),
                 linux_protected_mount_view: false,
                 linux_process_isolation: false,
                 linux_offline_network: false,
@@ -3901,6 +4173,7 @@ mod tests {
             );
             request.timeout = Some(Duration::from_secs(15));
             request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+                env: Vec::new(),
                 linux_protected_mount_view: false,
                 linux_process_isolation: false,
                 linux_offline_network: false,
