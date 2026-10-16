@@ -110,11 +110,23 @@ explicit sandbox-root evidence.
 ### Current live-run prerequisite (2026-10-16)
 
 The installed `codegg` on the current host predates `headless` and managed
-`--worktree` launch. Building this branch's `codegg` binary with the current
-x86_64 Homebrew Rust toolchain reaches final linking but fails with unresolved
-`zlib`, `iconv`, and `lzma` symbols. Therefore no live smoke or provider-backed
-trial has been started from the stale installed binary. Before collecting M008
-evidence, use a compatible source-built executable or repair the local native
-link setup, then verify the daemon-resolved session workspace and effective
-sandbox root with a harmless smoke trajectory. The prior exploratory runs do
-not satisfy this gate.
+`--worktree` launch. A source build succeeded with the explicit arm64 Rust
+1.98.1 toolchain and isolated target directory; the default x86_64 Homebrew
+toolchain failed because `/opt/local/lib/libz` is arm64. Use the source-built
+executable. Keep the live trial isolated from the active user daemon and its
+catalog by setting both `CODEGG_DAEMON_HOME` and `CODEGG_DATA_HOME` to
+trial-owned temporary roots; a daemon-home override alone shares the catalog
+database and can conflict with the active daemon. A successful harmless smoke
+trajectory and verified daemon-resolved workspace/sandbox root are still
+required before any provider-backed benchmark. The source binary and its
+Seatbelt helper are now present in the isolated build; `doctor installation`
+reports Seatbelt available on this Darwin host. The smoke setup still failed
+its prerequisites: the temporary Git checkout had no daemon-resolved
+repository binding, so `--worktree new` failed before creating a durable
+session, and `headless` correctly rejected the resulting non-durable session
+ID. The TUI policy snapshot also reported Landlock while the installation
+probe reported Seatbelt. Treat this backend-report mismatch as unverified
+containment; do not use it as sandbox evidence. Next, register a repository
+workspace with resolved lineage through the supported project flow, reconcile
+the policy snapshot with the actual child enforcement receipt, and only then
+retry the harmless headless smoke. No provider-backed trial has started.
