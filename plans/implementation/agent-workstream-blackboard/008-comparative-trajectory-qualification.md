@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. `codegg headless --session <id>` now submits through the production daemon TaskTool and session-resolved workspace; repeat S1 and proceed with isolated S2/S3 using managed sessions, while obtaining explicit sandbox-root evidence. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed and independent of M005. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. `codegg headless --session <id>` submits through the production daemon TaskTool and session-resolved workspace; first establish a verified sandbox root and live smoke trajectory, then repeat S1 and proceed with isolated S2/S3 using managed sessions. The provider-backed comparison MUST include at least one substantial Rust workload and one substantial Python workload that implement or consume a shared, frozen interface; independent modules alone do not meet this criterion. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -21,11 +21,11 @@ S3: isolated children with peer observations plus atomic task/dependency claims.
 S4: 2 children within an explicitly serialized shared worktree with observations, claims and compilation-aware resource coordination.
 Optional: read-only parallel specialists and N=3+ separately, only after N=2 stability; never imply previous PASC result generalizes to N=16.
 
-Keep model/provider choice, output budget, task input, tool availability, sandbox/approval and total token/time budget comparable. Report attempted tasks, denominator, random seeds/order, retries, tool-call counts, queue times and timeouts. If any configuration lacks supported OS shared-write containment, mark unrun/unavailable rather than substituting an unsafe emulation.
+Keep model/provider choice, output budget, task input, tool availability, sandbox/approval and total token/time budget comparable. Use real provider-backed CodeGG agents for the effectiveness comparison; scripted providers and deterministic fixtures qualify mechanics only. Freeze the task contract and evaluation tests before trials. At least one substantial Rust task and one substantial Python task MUST share a documented interface (for example, a versioned JSON schema or a Rust-produced artifact consumed by Python), with agent assignments that require coordination on that interface in S1/S2/S3. Include at least one substantial language-specific task in each language so the shared-interface case is not the whole sample. Report attempted tasks, denominator, random seeds/order, retries, tool-call counts, queue times and timeouts. If any configuration lacks supported OS shared-write containment, mark unrun/unavailable rather than substituting an unsafe emulation.
 
 ## Task strata and metrics
 
-Include real or deterministic captured tasks covering: (i) Python independent modules, (ii) Rust crates sharing heavy dependencies, (iii) Rust tightly coupled API/schema changes, (iv) disjoint edits vs intentionally overlapping paths, (v) sequential prerequisite chains, (vi) Git conflicts with branch drift, (vii) one read-only review+producer split, and (viii) interrupted background build.
+Include real or deterministic captured tasks covering: (i) Python independent modules, (ii) Rust crates sharing heavy dependencies, (iii) Rust tightly coupled API/schema changes, (iv) a substantial Rust/Python cross-language task with a frozen shared interface and coordinated producer/consumer changes, (v) disjoint edits vs intentionally overlapping paths, (vi) sequential prerequisite chains, (vii) Git conflicts with branch drift, (viii) one read-only review+producer split, and (ix) interrupted background build. The required provider-backed shared-interface workload must be run against S0 and at least one multi-agent isolated condition; report additional strata as unavailable when no qualified fixture or safe execution path exists.
 
 Primary outcomes: executable tests/task success and valid integrated result under the correct base, total wall time and cost/tokens. Secondary: duplicate work/edits, collisions, clobbers, false ownership claims, stale peer observations, task-claim contention, interface mismatch, integration retries/conflicts, build CPU-seconds, peak memory, disk growth, cache hit/miss, model turns triggered by peer updates, queue backlog, restart reconciliation and operator interventions.
 
@@ -56,6 +56,7 @@ Use existing tests as starting points: tests/worktree.rs; tests/subagent.rs; tes
 - Rust cache strategy does not silently amplify CPU/disk or accept stale artifact reuse without diagnostics.
 - Explicit integration works on supported targets or returns actionable recoverable conflict; no unqualified automatic success.
 - At least one measured comparison against S0 and S1 with published denominators, resource costs and negative cases. No mandatory win threshold, since honest result determines future default/policy.
+- Provider-backed S0 and multi-agent isolated results include both a substantial Rust workload and a substantial Python workload, including a shared-interface cross-language task; deterministic M010 evidence cannot substitute for these runs.
 - No unresolved high or medium security/correctness findings. File a corrective and leave conditionally closed/blocked where evidence is missing.
 
 ## Closure record
@@ -105,3 +106,15 @@ change the local semantics of `codegg exec`, and a client timeout does not
 cancel the durable turn. This removes the prior missing-TaskTool execution-context
 blocker for isolated S2/S3, subject to a successful live smoke trajectory and
 explicit sandbox-root evidence.
+
+### Current live-run prerequisite (2026-10-16)
+
+The installed `codegg` on the current host predates `headless` and managed
+`--worktree` launch. Building this branch's `codegg` binary with the current
+x86_64 Homebrew Rust toolchain reaches final linking but fails with unresolved
+`zlib`, `iconv`, and `lzma` symbols. Therefore no live smoke or provider-backed
+trial has been started from the stale installed binary. Before collecting M008
+evidence, use a compatible source-built executable or repair the local native
+link setup, then verify the daemon-resolved session workspace and effective
+sandbox root with a harmless smoke trajectory. The prior exploratory runs do
+not satisfy this gate.
