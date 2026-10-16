@@ -134,3 +134,34 @@ tests, with failures reaching the intentional TODO implementation points.
 These local evaluator baselines are not coding-agent trials. No provider-backed
 trial has started. Recompute the tree digest before each trial and reject any
 copy whose digest differs.
+
+## 7. Provider-backed shared-interface follow-up (2026-10-16)
+
+Fixture v1 was copied to an isolated repository with a resolved repository
+binding and launched through the source-built daemon-backed `headless` path.
+The S0 `build` agent completed both packages in 171.14 seconds. Its final
+Rust suite passed 7/7, Python suite passed 7/7, and Rust-produced JSON passed
+the Python consumer's golden check. The agent initially had a Python UTC
+validation failure, corrected the implementation, and reran the evaluator
+successfully. This is a completed S0 outcome, with the initial failure retained
+as part of the trajectory. It does not provide a comparison without a
+completed multi-agent arm.
+
+S1 orchestration attempts after the M011 repository-identity correction
+created children with separate managed worktree IDs and the resolved
+repository ID. The latest group (`7fa853fe-0c67-4fcd-968f-93ecb923d8db`)
+contained one Rust producer and one Python consumer. Both remained before the
+provider invocation boundary: no heartbeat, journal, or usage progress was
+observed after admission. The parent headless turn returned before the child
+group completed. Both child jobs were cancelled through normal scheduler
+`JobCancel`, and no changes were integrated. These are incomplete
+orchestration/provider attempts, excluded from success and performance
+denominators. Session/run/worktree identifiers and trial data are in
+`008-isolated-results.json`.
+
+M011 (`plans/closure/agent-workstream-blackboard/011-status.md`) records the
+corrective that enabled child worktree allocation: root `TurnRunInput` now
+carries the resolved repository identity from the session workspace binding.
+The S1 stalls remain unresolved and do not demonstrate whether multi-agent
+work is effective. M008 remains active; S2/S3 and the other task strata remain
+open. No effectiveness improvement is claimed.

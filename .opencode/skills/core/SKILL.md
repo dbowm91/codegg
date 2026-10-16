@@ -196,6 +196,10 @@ Phase 2 introduces workspace identity as a first-class daemon concept. The daemo
   it is a durable `SelectionService` adapter that validates session existence
   through `SessionStore` and only then projects the canonical model into the
   runtime cache best-effort.
+- For turn execution, the daemon resolves the session workspace's durable
+  repository binding and puts a resolved `RepositoryId` in `TurnRunInput`, so
+  delegated tasks can use the scheduler's isolated managed-worktree path.
+  See `architecture/core.md` and M011's closure record.
 
 ### Storage
 

@@ -34,7 +34,7 @@
       "result": "success",
       "agent_duration_ms": 71141,
       "agent_tokens": 14921,
-      "process_wall_seconds": 71.20,
+      "process_wall_seconds": 71.2,
       "process_max_rss_bytes": 119635968,
       "rust_child_commit": null,
       "python_child_commit": null,
@@ -135,7 +135,10 @@
     "cargo_jobs_per_process": 2,
     "condition_shared_target": {
       "processes": 2,
-      "exit_codes": [0, 0],
+      "exit_codes": [
+        0,
+        0
+      ],
       "wall_seconds": 211.23,
       "user_cpu_seconds": 286.09,
       "system_cpu_seconds": 44.25,
@@ -145,12 +148,18 @@
     },
     "condition_separate_targets": {
       "processes": 2,
-      "exit_codes": [0, 0],
+      "exit_codes": [
+        0,
+        0
+      ],
       "wall_seconds": 233.69,
       "user_cpu_seconds": 630.37,
       "system_cpu_seconds": 94.17,
       "time_reported_max_rss_bytes": 1435226112,
-      "target_sizes_kib": [1167808, 1167308],
+      "target_sizes_kib": [
+        1167808,
+        1167308
+      ],
       "observation": "Both independent targets compiled simultaneously; output size was approximately twice the shared-target arm."
     },
     "limitations": "One cold run per condition on a 24 GiB Mac under Rosetta, with no randomized order or repeated trials. The reported maximum RSS is the time(1) command's reported maximum, not a sampled sum of concurrent process-tree RSS. This measures Cargo behavior only; it does not qualify shared-checkout mutation or set a product cache policy."
@@ -172,5 +181,48 @@
     "S1-B consumed 82.7% more tokens and took about 35% longer than the mean S0 wall time including integration, but that comparison is N=1 versus N=2 and is descriptive only.",
     "Sandbox containment was requested but not verified because each headless exec logged that no workspace root was available.",
     "No S2/S3 peer-observation or claim benefit conclusion is supported."
-  ]
+  ],
+  "follow_up_trials_2026_10_16": {
+    "fixture_v1_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
+    "S0_source_commit": "809f1f5073d0fa4f1c61c796c1edab0b3e606fc0",
+    "corrective_source_commit": "3fbb3dab1121940ea4f5f19834e3bba9f9b06cdb",
+    "S0": {
+      "session_id": "af057d24-7ad8-4f99-8aba-3fd39bb9651d",
+      "managed_worktree_id": "a10fb9a9-4406-49bf-8a51-009ec0d621e9",
+      "wall_seconds": 171.14,
+      "provider": "opencode_go/gpt-6-luna",
+      "provider_request_rows": 24,
+      "input_tokens": 621571,
+      "output_tokens": 7702,
+      "rust_tests_final": "7/7 passed",
+      "python_tests_final": "7/7 passed",
+      "cross_language_golden": "passed",
+      "notes": "First Python evaluation exposed a UTC validation defect; the agent corrected it, reran Python tests and cross-language golden evaluation successfully. The retained initial failure is part of the trajectory evidence. No source-repository integration."
+    },
+    "S1_latest_attempt": {
+      "session_id": "e8d937ee-8b37-470d-966e-ba5e30166a0a",
+      "group_id": "7fa853fe-0c67-4fcd-968f-93ecb923d8db",
+      "children": [
+        {
+          "run_id": "eef32759-f00a-46ad-89f6-01c76139e7b2",
+          "worktree_id": "c07e88f9-e39b-49ed-af47-8fc74f44e719",
+          "assignment": "Rust producer"
+        },
+        {
+          "run_id": "3b11d36b-1b0c-4452-a922-d4fc1d363c85",
+          "worktree_id": "4663d4ed-4156-4f2e-879a-d03a149a0024",
+          "assignment": "Python consumer"
+        }
+      ],
+      "outcome": "Both children remained before provider invocation with no heartbeat, journal, or usage progress. Parent headless turn returned before child completion. Both were cancelled through scheduler JobCancel; no child edits were integrated.",
+      "repository_id_resolved_for_children": true,
+      "classification": "incomplete; excluded from success and comparative performance denominators"
+    },
+    "repository_identity_corrective": {
+      "finding": "Root daemon turns hardcoded TurnRunInput.repository_id to None, so TaskTool persisted repo-less child tasks even for repository-bound managed sessions.",
+      "correction": "M011 resolves the authoritative workspace binding and propagates its resolved repository ID into TurnRunInput.",
+      "verification": "core::daemon_turns::tests::repository_binding_reaches_turn_runtime_for_isolated_delegation passed 1/1."
+    },
+    "conclusion": "S0 proves the frozen shared-interface task can be completed by one provider-backed CodeGG agent. S1 has not completed after the repository identity correction; no single-agent versus multi-agent effectiveness conclusion is supported."
+  }
 }

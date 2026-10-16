@@ -146,6 +146,16 @@ No coordinator field reconstructs context-token policy, subprocess lifecycle,
 Git safety/provenance, provider transport, tool authorization, scheduler
 admission, or durable completion authority.
 
+### Delegated repository identity
+
+For daemon-backed turns, `CoreDaemon` resolves the session runtime's
+`WorkspaceId` through the durable workspace binding and carries its resolved
+`RepositoryId` into `TurnRunInput`. `TaskTool` persists that identity on
+delegated tasks; the scheduler executor uses it to allocate an isolated
+managed worktree. The repository identity is derived from stored workspace
+state, not prompt or caller path text. Repository-less sessions retain the
+repository-less task path. This does not grant shared-checkout write access.
+
 ### Provider-turn attempt safety (execution-reliability M001)
 
 Each logical turn runs at most 3 attempts under one UUID-scoped attempt
