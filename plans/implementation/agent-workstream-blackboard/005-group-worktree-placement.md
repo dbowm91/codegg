@@ -1,8 +1,8 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: blocked — M001/M004 and ADR-0032 acceptance satisfied; verified writer-path containment remains outstanding
+Status: active — M001/M004 and ADR-0032 gates are satisfied; checkout-scoped writer-containment design, source audit, and qualification are in progress. Shared mutation remains unavailable until every enabled CodeGG writer is mediated or denied and the native lifecycle matrix passes.
 
-Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
+Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
 Decision gate: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was accepted on 2026-10-15. Its shared-write mode is not qualified or enabled; ADR-0002 isolation remains the effective mutation contract until M005 proves complete writer containment and passes its acceptance gates.
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27, 29; plans/001-terminology-and-domain-model.md §§5, 7–8.
@@ -16,7 +16,7 @@ Allow explicit, authorized workspace placement for task spawn and spawn_many wit
 
 SubAgentPool::requires_isolation in src/agent/worker.rs identifies write-capable tool surfaces; src/scheduler/executors.rs allocates WorktreeService::CreateWorktreeRequest and replaces child workspace_root/allowed_paths with owned checkout. WorktreeService currently creates an owner_run_id lease with one active owner. src/tool/task.rs spawn_many permits at most 16 children and has no placement choice. WorkOrders have a distinct WorkspacePolicy corrected in M001. Nested allocation uses canonical common Git root and explicitly selected parent/base state.
 
-### Writer-path gate audit (2026-10-15)
+### Writer-path gate audit (2026-10-16)
 
 M001 and strict M004 are closed and ADR-0032 is accepted, but the required
 common writer reservation is not present:
@@ -48,9 +48,146 @@ restart/cancellation release, approval/lock ordering, platform-specific process
 containment, and denial of unmediated mutation surfaces. Do not call the
 existing scheduler keys a substitute: they are global and omit ordinary turns.
 
-Disposition: remain `blocked`. This audit does not authorize a code path that
-places group members in a shared checkout. M006 and M007 production remain
-blocked; M007 interface-only research is already recorded separately.
+Disposition: M005 is now `active` because its decision and strict M004
+prerequisites are satisfied. The shared-checkout capability itself remains
+blocked: this audit does not authorize a code path that places group members
+in a shared checkout. M006 and M007 production remain blocked; M007
+interface-only research is already recorded separately.
+
+### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
+
+This is the implementation design being qualified in M005; it is not
+implemented or platform-qualified and does not enable shared mutation.
+
+1. **Authority identity:** define the writer scope as the typed pair
+   `(WorktreeId, lease_generation)`. The daemon resolves this from the durable
+   AgentRun/group and WorktreeService records. Caller strings, a path, a
+   `WorkspaceId`, or knowledge of a WorktreeId cannot mint authority. Each
+   permit is additionally bound to the owning group, run, and effective job
+   attempt; stale generations and non-member runs are refused.
+2. **One permit owner:** add a daemon-owned `WorktreeWriterPermitService`
+   backed by a compare-and-swap durable lease and a per-worktree waiter. The
+   state is `Available -> Held(owner, generation, attempt) -> Releasing`;
+   uncertain restart/cancellation cleanup moves to `Quarantined`, which
+   refuses new writers until the old execution is proven quiescent. Lease
+   expiry alone never releases a permit while a process may still write.
+   This is a mutation lock, not a second job queue or scheduler resource
+   budget.
+3. **Acquire at the effective writer:** direct native file transactions
+   acquire around their complete transaction; Git, shell/Python, formatter,
+   Tool Program, and other finite process jobs acquire in their final
+   scheduler executor and hold through process-tree completion/reaping.
+   Child-job delegation is an explicit daemon-owned owner transfer bound to
+   parent/run lineage; the submitting caller must not hold a permit while
+   awaiting a child that needs the same permit. Reads remain concurrent.
+4. **Trusted context seam:** add an optional typed worktree execution scope
+   to the daemon-built tool/job execution context. `BrokerInvocationContext`
+   currently carries workspace/run/job strings but no WorktreeId or lease
+   generation; the typed ProjectBinding seam already has an optional
+   WorktreeId. Bridge those through authoritative store resolution, not a
+   client or model payload. `ToolEffectClass` can conservatively identify
+   mutating/process calls, but it is not itself a path-write proof and must
+   not authorize a writer.
+5. **Complete mediation or fail closed:** every effectful broker call and
+   every direct execution owner must either take the same permit or be
+   unavailable to shared-placement members. This includes native file edits,
+   Git mutation/recovery, scheduled jobs, human shell, PTYs, hooks, plugins,
+   LSP/MCP edit-capable requests, and Tool Programs. Long-lived services must
+   hold the permit for their effective lifetime or be denied in shared mode.
+   Do not add a generic `exclusive:worktree:<id>` scheduler string as the
+   security mechanism: persisted job admission is not the final writer for
+   inline tools, and a string key does not cover unmanaged process lifetimes.
+6. **Lock ordering and cleanup:** resolve authority and obtain approval before
+   waiting for the writer permit; do not hold a writer permit while waiting
+   for approval or unrelated scheduler capacity. A scheduled effect acquires
+   its permit only after it is admitted, then revalidates the worktree lease
+   generation before mutation. Cancellation and timeout must stop/reap the
+   effective writer before release. On daemon restart, reconcile job/process
+   ownership first; ambiguous active writers quarantine that checkout.
+7. **Platform boundary:** in-process permit checks serialize CodeGG-mediated
+   actions but cannot stop an unrelated same-user process from editing the
+   directory. Shared mode therefore cannot claim foreign-process exclusion
+   from a mutex, advisory file lock, Landlock/Seatbelt policy, or Windows Job
+   Object. Any execution surface that can escape CodeGG's supervised lifetime
+   must be denied unless a platform backend supplies and attests the required
+   stronger containment. Cross-node and network filesystems remain denied.
+
+#### Concrete enforcement seam inventory
+
+The source audit found no single existing seam that can provide this permit
+today. The following ownership boundaries must converge before shared mode can
+be qualified:
+
+| Mutation surface | Current owner / evidence | Required M005 disposition |
+|---|---|---|
+| Native model-facing file transactions | `ToolBatchExecutor` in `src/agent/tool_batch.rs`, reached through `ToolBroker`; checkpoints and overlap handling are batch-local. `BrokerInvocationContext` has session/workspace/job/attempt identity but no typed worktree generation. | Resolve daemon-owned worktree scope and acquire the common permit over the whole transaction. Reject the mutation before any filesystem effect when scope is missing or stale. |
+| Finite scheduled processes (shell, Python, tests, build, formatter, Tool Program) | Scheduler-owned executors receive `JobExecutionContext` and resource permits, but the context has no typed worktree identity. Existing `ResourceRequest` workspace/worktree keys are global capacity keys, not checkout-scoped writer authority. | Acquire in the final executor after admission; retain until the process tree is reaped. Explicitly delegate a held permit to nested child jobs rather than reacquiring it. |
+| Git mutation and recovery | Typed Git paths in `src/git_mutations.rs`, `src/git_recovery.rs`, and `src/git_network_ops.rs` retain deferred domain executors; repository locks and scheduler keys are not the worktree writer permit. | Carry the generation-fenced scope through the canonical Git mutation boundary or deny these operations in shared mode. Serialize index, branch, commit, recovery, and integration mutations together. |
+| Interactive PTY / terminal | `src/interactive_process.rs` owns a long-lived PTY; scheduler admission permits process capacity but the PTY can continue after its initiating tool request. | Hold the permit for the PTY lifetime with a supervised stop/reap path, or refuse PTY creation for shared-placement runs. |
+| LSP and MCP | `crates/egglsp/src/launch.rs` and `src/mcp/local.rs` own protocol-specialized persistent child lifetimes. A request-scoped broker permit would end while either process could still write. | Keep the permit for the complete service lifetime or deny edit-capable requests / service launch in shared mode. |
+| TUI, HTTP, IDE and project-file mutation APIs | Workspace-scoped mutation entry points also exist outside the model broker, including `src/tui/commands/file_tree.rs`, `src/server/routes/file.rs`, `src/ide/`, `src/lsp/mutation.rs`, and `src/document_service.rs`. These run under the daemon or client but can target a checkout while a shared group is active. | Route each project-rooted write through the same service, or deny it for a checkout with an active shared reservation. User-facing edit authority remains distinct from agent membership. |
+| Plugins, hooks, and other direct process adapters | `src/plugin/runtime/process.rs`, `src/hooks/`, and `src/tool/formatter.rs` have distinct or deferred owners in `docs/execution-ownership.toml`. | Route each through the same final permit owner and supervised lifetime, otherwise deny it before process start. |
+| Unrelated same-user processes | Editors and shell processes outside the daemon do not participate in CodeGG admission or cancellation. | Do not claim these are serialized. If the product requirement includes them, ordinary daemon-owned locks cannot satisfy it; shared mode needs a separately qualified OS identity / filesystem boundary or must remain unavailable. |
+
+This inventory narrows the qualification claim: “universal” means every
+CodeGG-mediated writer that can touch a shared-placement checkout. It does not
+mean CodeGG can serialize arbitrary external programs running as the same OS
+user. External edits must still be detected as conflicts at guarded transaction
+boundaries; detection is not protection from a concurrent external writer.
+
+A broad source scan of direct filesystem write APIs finds additional candidates
+in client/config/storage/artifact code as well as workspace mutation code. A
+textual hit is not by itself a workspace writer: qualification must trace the
+effective project root and caller authority to the actual write sink. The
+inventory above is a control-flow starting point, not a claim that every
+workspace-rooted writer has already been enumerated or covered.
+
+#### Qualification sequence
+
+- **Q1 — identity/state machine:** durable compare-and-swap contention across
+  separate run IDs; only one permit per `(WorktreeId, generation)`; independent
+  worktrees do not block; wrong group, stale generation, expiry, restart,
+  cancellation, panic and quarantine all have typed outcomes.
+- **Q2 — direct native writers:** two production-shaped AgentRuns in one
+  managed group checkout overlap at a barrier. Readers overlap; mutating
+  broker operations never overlap. Verify permit denial/refusal is returned
+  before filesystem effects and transaction rollback releases the permit.
+- **Q3 — every enabled writer owner:** run the same two-writer race through
+  each enabled Git/process/tool surface and audit that each disabled surface
+  is refused before spawn or mutation. Include child-job delegation without
+  reacquisition deadlock, cancellation, timeout, daemon restart and descendant
+  escape attempts.
+- **Q4 — native platform matrix:** qualify the exact supported backend on
+  Linux, macOS, and Windows separately. Where process-tree or filesystem
+  containment is not evidenced, mark that surface/platform unavailable; do
+  not infer support from mocked permits or a successful compile.
+- **Q5 — integration and recovery:** nested worktree base, shared-group
+  lifecycle, concurrent readers, successive writer handoff, Git state and
+  explicit parent integration, dirty/conflicted retention, and crash recovery
+  all pass against a real temporary Git repository. No platform enters
+  `SerializedShared` until every active write path for that platform passes
+  Q1–Q5 or is denied.
+
+Current qualification result: Q1–Q5 have not been run for this candidate.
+
+**Q0 — safe-default posture (pass; negative evidence only).** On merged head
+`c19a6c3c2ae1f77e5298cb3390035f0420140929`, the spawn surface still has no
+placement selector; `SubAgentPool::requires_isolation` treats write/edit,
+terminal, shell, Git and commit capability as requiring isolation, and the
+scheduler executor allocates the managed worktree before constructing the
+child. The M001 WorkOrder policy test proves serialized mutation reaches
+`NeedsAttention` with no session or job
+(`trigger_fire_wakes_coordinator_and_honors_closed_shared_mutation`). Hosted
+CI run `38833977755` passed the full suite on that exact source head. This
+qualifies preservation of the current safe posture only; it does not qualify a
+permit, shared placement, or any Q1–Q5 capability.
+
+Existing M004 two-run fake-provider tests qualify peer-observation refusal,
+not writer locking; existing WorktreeService lease generations do not qualify
+the proposed writer permit. ADR-0002's isolated mutation default remains
+effective. The next implementation slice is Q1's daemon-owned durable CAS
+state owner, bound to authoritative group/run/worktree generations; it must
+not be exposed to execution paths until Q2/Q3 complete mediation is in place.
 
 ## Work packages
 
