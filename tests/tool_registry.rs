@@ -64,6 +64,7 @@ fn supplied_lsp_service_and_preview_registry_are_retained_by_registry() {
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
         lsp_service: Some(service),
         lsp_preview_registry: Some(preview_registry.clone()),
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
     });
     assert_eq!(registry.lsp_service_identity(), Some(expected_service));
@@ -103,6 +104,7 @@ fn session_factory_threads_daemon_lsp_service_into_registry() {
         execution,
         codegg::tool::factory::SessionToolContext {
             lsp_service: Some(service),
+            sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
             ..Default::default()
         },
     );
@@ -112,7 +114,10 @@ fn session_factory_threads_daemon_lsp_service_into_registry() {
 
 #[test]
 fn default_tool_categories_are_consistent() {
-    let registry = ToolRegistry::with_defaults();
+    let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
+        ..Default::default()
+    });
     let read_only_expected = [
         "read", "grep", "glob", "list", "webfetch", "lsp", "security",
     ];
@@ -202,6 +207,7 @@ fn mcp_lsp_with_fallback_keeps_lsp_in_definitions() {
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
         tool_backends: backends,
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
     });
     // The native LspTool is registered and exposed to the model
@@ -224,6 +230,7 @@ fn mcp_lsp_without_fallback_hides_lsp_from_definitions() {
     });
     let registry = ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
         tool_backends: backends,
+        sandbox_profile: Some(codegg_core::approval::SandboxProfile::FullHost),
         ..Default::default()
     });
     let defs = registry.definitions();
