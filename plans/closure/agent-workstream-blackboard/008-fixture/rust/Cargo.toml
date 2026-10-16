@@ -1,0 +1,10 @@
+[package]
+name = "m008-retry-delay"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "m008_retry_delay"
+path = "src/lib.rs"
