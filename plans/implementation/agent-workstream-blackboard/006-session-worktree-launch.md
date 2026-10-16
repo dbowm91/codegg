@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: blocked for strict closure — ExistingManaged and filter-free NewManaged launch/fork pass focused daemon/service qualification on the development Mac. Revisions with active custom checkout filters fail closed and retain the reservation. Native Windows path-length and linked `.git`-file qualification remains outstanding. Shared-write placement is explicitly out of scope.
+Status: implemented; strictly closed — closure evidence is recorded in `plans/closure/agent-workstream-blackboard/006-newmanaged-materializer-addendum.md`. Native Windows path-length and linked `.git`-file qualification passed on exact source SHA `79cc725b223c8dbed399107f11679424c5eb4e7a`. Shared-write placement is explicitly out of scope.
 
 Planning baseline: 68f9358d92f0e501554dc6ebbc3f6f7ffd9180aa (PR #125 integrated into main; implementation branch started from this baseline)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006

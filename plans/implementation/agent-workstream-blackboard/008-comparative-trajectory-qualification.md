@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked for broad qualification; the authorized S0/S1 isolated pilot is complete, M006 NewManaged and M007 operational qualification are active predecessors, and shared-checkout arms additionally require M005 closure
+Status: active — M006 and M007 are strictly closed. Execute the isolated S0–S3 comparison and remaining deterministic trajectory strata. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -64,13 +64,13 @@ Write plans/closure/agent-workstream-blackboard/008-status.md with requirement�
 
 ### Partial S0/S1 pilot evidence
 
-The user authorized an isolated S0-versus-S1 pilot before M006/M007 closure.
+The user-authorized isolated S0-versus-S1 pilot was run before M006/M007
+closure.
 Its two repetitions and limitations are recorded in
 `plans/closure/agent-workstream-blackboard/008-pilot-results.md`, with
 sanitized per-trial measurements in the adjacent `008-pilot-data.json`.
-This advances only the isolated pilot scope. It does not qualify peer/task
-claims, the M007 daemon scheduler path, the broad M008 task strata, or shared
-checkout execution, and it does not close or generally unblock M008. M007 is
-active after scheduler implementation and CI, with its separate manual
-realistic Rust workspace consumer run still outstanding as the strict-closure
-condition.
+This remains pilot evidence only: it does not qualify peer/task claims, the
+broad M008 task strata, or shared-checkout execution. M006 and M007 have since
+closed through their strict platform and daemon-backed acceptance gates, so
+M008 is now active for its isolated S0–S3 scope. Any S4 shared-checkout arm
+remains separately gated on M005.

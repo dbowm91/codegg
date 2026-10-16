@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. User-directed priority (2026-10-16): M006, then M007, then M008; M005 feasibility design continues without writer-service implementation. M006's filter-free NewManaged materializer and daemon replay tests pass on macOS; strict closure remains blocked on native Windows path-length and linked `.git`-file qualification. M007's daemon-backed realistic Rust workspace consumer passed; exact-head hosted CI and registry reconciliation remain. Both are independent of M005. Shared mutation remains unavailable under M005; M008's broad comparison remains blocked on strict M006/M007 closure and its remaining task/performance strata; shared-checkout arms also require M005.
+Status: active; M001–M004, M006–M007, and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. M006 and M007 strict closures passed exact-head hosted CI and Windows native worktree qualification on `79cc725b`. M008 is active for isolated S0–S3 trajectory and economics qualification; S4 shared-checkout execution remains unavailable pending M005. M005 continues as a separately gated feasibility initiative with shared mutation disabled and no writer-permit implementation.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -65,14 +65,14 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             |
             +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
-            +-- M006 isolated session/worktree launch UX          [blocked: Windows native qualification; M005 not required]
-            +-- M007 per-workspace build admission                [closing: exact-head CI pending; M005 not required]
-            +-- M005 explicit group checkout placement     [architectural decision only; shared-write blocked]
+            +-- M006 isolated session/worktree launch UX          [closed; M005 not required]
+            +-- M007 per-workspace build admission                [closed; M005 not required]
+            +-- M005 explicit group checkout placement     [active feasibility; shared-write blocked]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
-            +-- M008 broad trajectory and economics                [blocked: M006, M007]
+            +-- M008 isolated trajectory/economics                [active: M006/M007 closed; S4 remains M005-gated]
 ~~~
 
-M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. Following user direction on 2026-10-16, execution priority is M006 then M007, followed by M008; M005 proceeds only through its restricted-capability architectural decision until that decision is resolved. M006's isolated session ownership and M007's per-workspace scheduler quota do not depend on shared writes. M010 qualifies the closed M003/M004 substrate on isolated checkouts. M008 retains broad comparative and economic requirements and remains gated on M006/M007. Any shared-checkout comparison arm remains separately gated on M005.
+M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. Following user direction on 2026-10-16, M006 and M007 were prioritized first and are now strictly closed. M008 is active for isolated S0–S3 trajectory/economics qualification; any S4 shared-checkout arm remains M005-gated. M005 continues only through its restricted-capability and process/platform feasibility decision until that decision and complete mediation evidence are resolved. M006 isolated session ownership and M007 per-workspace scheduler quota do not depend on shared writes. M010 qualifies the closed M003/M004 substrate on isolated checkouts. Original isolated subagent and conversation-fork semantics remain authoritative.
 
 ## Milestones / deliverables
 
@@ -121,23 +121,25 @@ strict status is controlled by corrective closure 009.
 Plan: `plans/implementation/agent-workstream-blackboard/009-peer-observation-before-mutation-corrective.md`.
 Closure: `plans/closure/agent-workstream-blackboard/009-status.md`.
 
-### M005 — Explicit group-owned worktree placement (architectural decision only; shared-write capability blocked)
+### M005 — Explicit group-owned worktree placement (active feasibility; shared-write capability blocked)
 
-Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers. Per user direction (2026-10-16), M005 proceeds only to resolve the restricted-capability contract and platform/process feasibility until M006 and M007 close; do not implement a writer-permit service before that decision is resolved.
+Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers. M006 and M007 are now closed; M005 continues to resolve the external-writer contract and platform/process feasibility. Do not implement a writer-permit service until the product boundary and complete mediation/native lifecycle evidence are accepted.
 
 Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
 
-### M006 — Isolated session/worktree fork-and-launch UX (blocked for strict closure; independent of M005)
+### M006 — Isolated session/worktree fork-and-launch UX (closed; independent of M005)
 
-Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. The restricted NewManaged materializer accepts filter-free pinned trees and refuses active custom checkout filters; focused macOS daemon/service and trajectory tests pass. Strict closure remains blocked on native Windows path-length and linked `.git`-file qualification. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
+Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. The restricted NewManaged materializer accepts filter-free pinned trees and refuses active custom checkout filters. Exact-head CI `38930928833` passed 13,971/13,971 tests (6 skipped); Windows native qualification `38930920042` passed deep-path linked `.git`-file materialization. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
 
 Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
+Closure: `plans/closure/agent-workstream-blackboard/006-newmanaged-materializer-addendum.md`. Exact-head CI `38930928833` passed 13,971/13,971 tests (6 skipped); native Windows worktree qualification `38930920042` passed the deep-path linked `.git`-file materialization test. Filter-bearing trees remain fail-closed.
 
-### M007 — Per-workspace build admission (closing; priority 2; independent of M005)
+### M007 — Per-workspace build admission (closed; independent of M005)
 
-Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. Admission implementation is recorded as conditionally closed at `plans/closure/agent-workstream-blackboard/007-status.md`; the daemon-backed realistic Rust workspace JobId consumer has now passed and is recorded in `plans/closure/agent-workstream-blackboard/007-daemon-rust-workspace-qualification.md`. Exact-head hosted CI and registry reconciliation remain before strict closure. No shared target, compiler cache, build coalescing, or shared checkout is introduced; those optimizations remain separate future work.
+Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. No shared target, compiler cache, build coalescing, or shared checkout is introduced.
 
-Plan: plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md
+Plan: `plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md`.
+Closure: `plans/closure/agent-workstream-blackboard/007-daemon-rust-workspace-qualification.md`; daemon-backed Rust `cargo check --offline` completed through JobSubmit/JobWait with durable JobId and workspace quota. Exact-head CI `38930928833` passed 13,971/13,971 tests (6 skipped).
 The plan's deferred cache note is research only and does not authorize target sharing or coalescing.
 
 ### Corrective M010 — Isolated Rust/Python coordination trajectory (closed)
@@ -147,7 +149,7 @@ M010 closed the deterministic claim/worktree/Rust/Python/integration trajectory.
 Plan: `plans/implementation/agent-workstream-blackboard/010-isolated-rust-python-trajectory.md`.
 Closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
 
-### M008 — Comparative validation and closure (broad qualification blocked: M006, M007; isolated S0/S1 pilot recorded)
+### M008 — Comparative validation and closure (active for isolated S0–S3; S4 unavailable pending M005)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm is unavailable until M005 qualifies it; never emulate shared writes unsafely. Deterministic traces support CI; provider-backed experiments are separately reported. Negative/no-improvement results must be reported without hiding them.
 

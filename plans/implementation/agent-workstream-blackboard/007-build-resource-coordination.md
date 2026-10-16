@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M007 — Per-Workspace Build Admission
 
-Status: closing — per-workspace scheduler admission is implemented independently of M005; the realistic Rust workspace qualification passed through the daemon-backed JobId consumer. Record exact-head CI and reconcile the registry before strict closure.
+Status: implemented; strictly closed — closure evidence is recorded in `plans/closure/agent-workstream-blackboard/007-daemon-rust-workspace-qualification.md`. The daemon-backed Rust workspace qualification and exact source SHA `79cc725b223c8dbed399107f11679424c5eb4e7a` CI passed. M005 shared-write execution remains excluded.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M007

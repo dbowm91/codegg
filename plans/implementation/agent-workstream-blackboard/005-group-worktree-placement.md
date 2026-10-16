@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — ADR-0032 is accepted. User direction on 2026-10-16 prioritizes M006 then M007 ahead of M005 implementation. Continue the checkout-writer feasibility and qualification design while those strict closures proceed; do not start a writer-permit service before that priority gate and the complete mediation/native lifecycle evidence are satisfied. Shared mutation remains unavailable.
+Status: active — ADR-0032 is accepted; M006 and M007 are now strictly closed and M008 proceeds on isolated worktrees. Continue the checkout-writer feasibility design; do not start a writer-permit service before the external-writer product boundary and complete mediation/native lifecycle evidence are accepted. Shared mutation remains unavailable.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
@@ -51,7 +51,7 @@ existing scheduler keys a substitute: they are global and omit ordinary turns.
 Disposition: M005 is active for architecture and qualification because its
 decision and strict M004 prerequisites are satisfied. Shared-checkout
 execution remains unavailable. M006 isolated session/worktree UX and M007
-per-workspace build admission are separately eligible and do not wait for this
+per-workspace build admission are strictly closed and did not require this
 writer-containment gate.
 
 ### M007 boundary update (2026-10-16)
@@ -73,8 +73,8 @@ pins hooks, fsmonitor, and submodule recursion off for the add command. The
 generic Git policy still refuses arbitrary `worktree add`. This is a
 per-operation checkout materializer profile, not permission to run arbitrary
 filters and not a checkout-wide shared-writer permit. It does not make M006 a
-dependency of the M005 shared-mutation decision, and it does not qualify any
-M005 writer path. Cross-platform M006 qualification remains open.
+dependency of the M005 shared-mutation decision and does not qualify any M005
+writer path. Cross-platform M006 qualification passed independently.
 
 ### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
 
