@@ -1,6 +1,6 @@
 # Managed Agent Scratch Spaces Roadmap
 
-Status: active planning — M001 ready for handoff; M002 and M003 blocked on predecessors.
+Status: active planning — M001 closed; M002 active; M003 blocked on M002.
 
 Planning baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (main inspected 2026-10-16).
 
@@ -74,10 +74,10 @@ Existing session/run, ManagedProcessService, ToolBroker, scheduler and
 accepted authorization boundaries [interface/closed]
        |
        v
-M001 — private managed session scratch, prompt/env, safe lifecycle [ready]
+M001 — private managed session scratch, prompt/env, safe lifecycle [closed]
        |
        v
-M002 — delegated private scratch + explicit shared ScratchId grants [blocked: M001]
+M002 — delegated private scratch + explicit shared ScratchId grants [active: M001 closed]
        |
        v
 M003 — actionable permission hints, cleanup hardening/qualification [blocked: M002]
@@ -89,14 +89,14 @@ M001 is an end-to-end single-agent vertical slice, not merely a directory alloca
 
 ### M001 — Private session scratch and canonical launch wiring
 
-Class: capability (with infrastructure). Status: **ready**.
+Class: capability (with infrastructure). Status: **closed**.
 Plan: `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md`.
 Dependencies: existing daemon session ownership + ManagedProcessService/ToolBroker interfaces (closed/interface).
-Exit: one session uses the **same** scratch across two independent model shell calls and a compatible Python call, another session uses a different root, a model prompt exposes it, conventional temp vars point there, existing sandbox rules and human-originated command semantics are unchanged, restart and cleanup are safe for active leases.
+Exit: one session uses the **same** scratch across two independent managed shell calls and a compatible Python call, another session uses a different root, a model prompt exposes it, conventional temp vars point there, existing sandbox rules and human-originated command semantics are unchanged, and deterministic identity plus bounded owner-record recovery survive daemon/process restart. M001 does not reclaim directories; scratch is disposable cache data and host cache maintenance may purge it. See `plans/closure/managed-agent-scratch/001-status.md` for exact runtime and platform qualification.
 
 ### M002 — Delegated scratch and explicitly shared resources
 
-Class: capability. Status: **blocked on M001 closure**.
+Class: capability. Status: **active; M001 closed**.
 Plan: `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md`.
 Exit: two child runs get distinct private roots, a parent can create/grant one shared scratch resource by ID to selected children, unauthorized children cannot obtain tool/OS grants, and background job lifetime prevents premature cleanup. No implicit cross-session sharing.
 
@@ -136,6 +136,6 @@ All three milestones have accepted `plans/closure/managed-agent-scratch/00N-stat
 
 | Milestone | Status | Plan | Closure | Blocker |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md` | — | none |
-| M002 | blocked | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | — | M001 strict closure |
+| M001 | closed | `plans/implementation/managed-agent-scratch/001-private-session-scratch-and-launch-wiring.md` | `plans/closure/managed-agent-scratch/001-status.md` | none |
+| M002 | active | `plans/implementation/managed-agent-scratch/002-delegated-shared-scratch-and-job-leases.md` | — | M001 strict closure recorded |
 | M003 | blocked | `plans/implementation/managed-agent-scratch/003-permission-guidance-and-lifecycle-qualification.md` | — | M002 strict closure |

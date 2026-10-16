@@ -1,6 +1,6 @@
 # Managed Agent Scratch M002 — Delegated Private and Explicitly Shared Scratch with Job Leases
 
-Status: blocked — M001 strict closure required
+Status: active — M001 strict closure recorded
 Repository baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (revalidate after M001).
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 16–18, 26–29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phases 9–10.
