@@ -882,10 +882,10 @@ fn prepare_private_object_view(
     argv: &[String],
     cwd: &Path,
 ) -> Result<Option<PrivateObjectView>, GitExecutionPolicyOutcome> {
-    let object_dir = trusted_object_directory(cwd)?;
     if !argv_reads_objects(argv) {
         return Ok(None);
     }
+    let object_dir = trusted_object_directory(cwd)?;
     let Some(object_dir) = object_dir else {
         return Ok(None);
     };
@@ -1138,6 +1138,16 @@ fn argv_reads_objects(argv: &[String]) -> bool {
         return false;
     };
     match subcommand {
+        // These ref-only forms do not inspect commit/tree/blob contents, so
+        // an object-store alias must not make them unavailable. Verbose and
+        // formatted listings can render object summaries and retain the
+        // private-view requirement.
+        "branch" => argv.iter().any(|arg| {
+            matches!(arg.as_str(), "-v" | "-vv" | "--verbose")
+                || arg == "--format"
+                || arg.starts_with("--format=")
+                || (arg.starts_with('-') && arg[1..].contains('v'))
+        }),
         "apply" => argv.iter().any(|arg| arg == "--3way"),
         "check-attr" => argv
             .iter()
@@ -2453,6 +2463,12 @@ mod tests {
             format!("{}\n", alternate.join(".git/objects").display()),
         )
         .expect("write repository alternate object directory");
+
+        let branch = run(&["branch".into(), "--show-current".into()], &selected)
+            .await
+            .expect("ref-only branch lookup does not read object data");
+        assert!(branch.status.success());
+        assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "main");
 
         assert!(matches!(
             run(&["cat-file".into(), "blob".into(), object], &selected).await,

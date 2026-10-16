@@ -102,9 +102,17 @@ because their `BashTool` fixtures submitted relative `.` as the workspace
 root. Both cases passed after the test helper registered and bound its
 canonical repository root; the focused integration file passed 21/21 locally.
 A fresh full CI run for that correction is required before reconciliation is
-complete. The earlier hosted Git-log failure did not recur in the 6,704 tests
-run before fail-fast in `38937869443`; it remains classified as an earlier
-unreproduced failure, not a confirmed transient.
+complete. The fresh run `38941049575` passed the corrected owner-test fixtures
+but failed `git_service::tests::execute_status_returns_structured_payload`:
+the structured branch lookup returned `unknown` while raw status succeeded.
+The ref-only `branch --show-current` request was unnecessarily subjected to
+object-store admission. It is now classified as not reading object contents,
+and object-store validation is deferred until a command actually needs an
+object view. The new alternate regression and the complete egggit suite pass
+locally (108 passed, 1 ignored), as does the focused structured-status test;
+fresh full CI remains required. The earlier hosted Git-log failure did not
+recur in the 6,704 tests run before fail-fast in `38937869443`; it remains
+classified as an earlier unreproduced failure, not a confirmed transient.
 
 The PTY service still refuses constrained profiles before `openpty`/spawn,
 and constrained LSP turns remain unbound from the shared FullHost service
