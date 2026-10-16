@@ -327,6 +327,12 @@ impl ObjectStoreWatcher {
 const OBJECT_VIEW_CACHE_ENTRIES: usize = 4;
 const OBJECT_VIEW_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 static OBJECT_VIEW_CACHE: OnceLock<Mutex<Option<ObjectViewCache>>> = OnceLock::new();
+#[cfg(all(test, target_os = "linux"))]
+static SNAPSHOT_FICLONE_SUCCESS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(all(test, target_os = "linux"))]
+static SNAPSHOT_FICLONE_FALLBACK: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Release cached trusted-Git object snapshots during the owning daemon's
 /// shutdown. A running child retains its `Arc` lease until it exits; cache
@@ -1344,8 +1350,12 @@ fn copy_object_snapshot(
     #[cfg(target_os = "linux")]
     {
         if rustix::fs::ioctl_ficlone(&*destination, source).is_ok() {
+            #[cfg(test)]
+            SNAPSHOT_FICLONE_SUCCESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
+        #[cfg(test)]
+        SNAPSHOT_FICLONE_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         destination.set_len(0)?;
         std::io::Seek::seek(destination, std::io::SeekFrom::Start(0))?;
     }
@@ -1788,11 +1798,22 @@ mod tests {
                 clear_cached_object_view(&object_dir);
                 evict_object_file_cache(&object_dir);
             }
+            #[cfg(target_os = "linux")]
+            {
+                SNAPSHOT_FICLONE_SUCCESS.store(0, std::sync::atomic::Ordering::Relaxed);
+                SNAPSHOT_FICLONE_FALLBACK.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
             let started = Instant::now();
             let view = prepare_private_object_view(&argv, &repository)
                 .expect("prepare trusted private object view");
             let preparation = started.elapsed();
             preparation_samples.push(preparation.as_secs_f64() * 1000.0);
+            #[cfg(target_os = "linux")]
+            eprintln!(
+                "sample {sample}: ficlone_success={} ficlone_fallback={}",
+                SNAPSHOT_FICLONE_SUCCESS.load(std::sync::atomic::Ordering::Relaxed),
+                SNAPSHOT_FICLONE_FALLBACK.load(std::sync::atomic::Ordering::Relaxed),
+            );
             drop(view);
 
             let started = Instant::now();
@@ -2712,6 +2733,11 @@ mod tests {
         assert!(object.status.success());
         let object = String::from_utf8_lossy(&object.stdout).trim().to_owned();
 
+        #[cfg(target_os = "linux")]
+        {
+            SNAPSHOT_FICLONE_SUCCESS.store(0, std::sync::atomic::Ordering::Relaxed);
+            SNAPSHOT_FICLONE_FALLBACK.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
         let mut command = GitEnvPolicy::default()
             .apply_sync(
                 &[
@@ -2723,6 +2749,13 @@ mod tests {
                 &selected,
             )
             .expect("trusted Git admission");
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("CODEGG_REQUIRE_OBJECT_VIEW_FICLONE").is_some() {
+            assert!(
+                SNAPSHOT_FICLONE_SUCCESS.load(std::sync::atomic::Ordering::Relaxed) > 0,
+                "the qualification filesystem did not provide a successful FICLONE"
+            );
+        }
         let object_path = selected
             .join(".git/objects")
             .join(&object[..2])
