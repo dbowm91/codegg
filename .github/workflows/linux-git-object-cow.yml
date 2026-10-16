@@ -1,0 +1,106 @@
+name: Linux Git object snapshot CoW qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/linux-git-object-cow.yml'
+      - 'crates/egggit/src/process.rs'
+      - 'crates/egggit/Cargo.toml'
+  push:
+    paths:
+      - '.github/workflows/linux-git-object-cow.yml'
+      - 'crates/egggit/src/process.rs'
+      - 'crates/egggit/Cargo.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-git-object-cow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  btrfs-snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: 4
+      CODEGG_OBJECT_VIEW_BENCH_CACHE_MODE: cold
+      CODEGG_OBJECT_VIEW_BENCH_SAMPLES: '30'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Btrfs tools
+        run: sudo apt-get update && sudo apt-get install --yes btrfs-progs
+
+      - name: Create disposable Btrfs benchmark filesystem
+        run: |
+          uname -a
+          git --version
+          sudo modprobe btrfs
+          truncate -s 8G /tmp/codegg-object-cow.img
+          sudo mkfs.btrfs --force /tmp/codegg-object-cow.img
+          sudo mkdir -p /mnt/codegg-object-cow
+          sudo mount -o loop /tmp/codegg-object-cow.img /mnt/codegg-object-cow
+          sudo chown "$USER":"$(id -gn)" /mnt/codegg-object-cow
+          mkdir -p /mnt/codegg-object-cow/tmp
+          findmnt -T /mnt/codegg-object-cow -o TARGET,FSTYPE,OPTIONS
+          btrfs filesystem show /mnt/codegg-object-cow
+          stat -f -c 'filesystem=%T block_size=%S' /mnt/codegg-object-cow
+
+      - name: Build exact-content packed and fragmented fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          cow=/mnt/codegg-object-cow
+          packed="$cow/packed"
+          fragmented="$cow/fragmented"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$packed"
+          git -C "$packed" repack --all --delete-redundant --window=0
+          cp -a "$packed" "$fragmented"
+          pack_dir="$fragmented/.git/objects/pack"
+          shopt -s nullglob
+          packs=("$pack_dir"/*.pack)
+          test "${#packs[@]}" -gt 0
+          for pack in "${packs[@]}"; do
+            git --git-dir="$fragmented/.git" unpack-objects -r < "$pack"
+          done
+          rm -f "$pack_dir"/*.pack "$pack_dir"/*.idx "$pack_dir"/*.rev "$pack_dir"/*.bitmap
+          packed_ids="$cow/packed-ids.txt"
+          fragmented_ids="$cow/fragmented-ids.txt"
+          git -C "$packed" cat-file --batch-all-objects --batch-check='%(objectname)' | LC_ALL=C sort > "$packed_ids"
+          git -C "$fragmented" cat-file --batch-all-objects --batch-check='%(objectname)' | LC_ALL=C sort > "$fragmented_ids"
+          diff -u "$packed_ids" "$fragmented_ids"
+          test "$(wc -l < "$packed_ids")" -ge 4000
+          git -C "$packed" count-objects -vH
+          git -C "$fragmented" count-objects -vH
+          echo "object_count=$(wc -l < "$packed_ids")"
+          echo "packed_head=$(git -C "$packed" rev-parse HEAD)"
+          echo "fragmented_head=$(git -C "$fragmented" rev-parse HEAD)"
+
+      - name: Prove CoW snapshot isolation from source mutation
+        env:
+          TMPDIR: /mnt/codegg-object-cow/tmp
+          CODEGG_REQUIRE_OBJECT_VIEW_FICLONE: '1'
+        run: cargo test --locked -p egggit trusted_git_read_view_is_immutable_after_admission -- --nocapture
+
+      - name: Measure cold immutable snapshot and trusted Git operations
+        env:
+          TMPDIR: /mnt/codegg-object-cow/tmp
+        shell: bash
+        run: |
+          set -euo pipefail
+          for shape in packed fragmented; do
+            echo "=== shape=$shape filesystem=$(stat -f -c %T "/mnt/codegg-object-cow/$shape/.git/objects") ==="
+            CODEGG_OBJECT_VIEW_BENCH_REPOSITORY="/mnt/codegg-object-cow/$shape" \
+              cargo test --locked -p egggit private_object_view_warm_performance_samples -- --ignored --nocapture
+          done
