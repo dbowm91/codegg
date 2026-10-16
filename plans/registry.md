@@ -90,6 +90,7 @@ Canonical direction remains in:
 
 | Project catalog activation test corrective | closed | `plans/subsystems/project-catalog-activation-test-corrective-addendum.md` | C001 closed (test-only, product semantics unchanged) | `concurrent_same_owner_activation_coalesces_scope_and_bundle` asserted same-owner coalescing while releasing each lease on task return, so the outcome depended on task scheduling: a lease held across a second activation coalesces, a released one leaves `active_count()==0` and the next activation mints a different id. A `Barrier(8)` now holds all eight leases until every task has acquired. `src/core/project_activation.rs` is absent from the diff. Surfaced only after the causal timing corrective let the sweep run past ~5,300. |
 | Tool-selection advisor retrieval-evaluation semantics corrective | closed | `plans/subsystems/tool-selection-advisor-retrieval-evaluation-semantics-corrective-addendum.md` | C001 closed (disposition B) | Inferable current-step retrieval target derived as `assets/tool-advisor/retrieval-relevance-v1.json` (fp `23edef17…`), ranker impact clean, unchanged BM25 rebaselined (46/53 inferable, 0 violations); M001R unblocked. |
+| Project picker rework | proposed | `plans/subsystems/project-picker-rework-roadmap.md` | M001 ready for handoff; M002–M005 planned, blocked | Help-style picker, per-project d/a/destroy/e actions, 1:1 directory identity, client working directory. ADR-0033 accepted 2026-10-16. |
 
 ## Eggplan integration planning reconciliation
 
@@ -297,6 +298,7 @@ non-passing evidence.
 | Tool-selection advisor late-interaction retriever experiment | M005 fresh v4 qualification | blocked (terminal — never opens; M004 never opens) | `plans/implementation/tool-selection-advisor-late-interaction-retriever-experiment/005-fresh-v4-preregistered-qualification.md` | Required positive M004; M004 never opens. No v4 consumed. |
 | Tool-selection advisor retrieval-signal experiment | M004 retrieval + promotion operating point | blocked (terminal — not reached) | `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/004-retrieval-and-promotion-operating-point.md` | Requires positive M002 or M003 (both negative); no eligible retrieval candidate exists. |
 | Tool-selection advisor retrieval-signal experiment | M005 fresh v4 qualification | blocked (terminal — not reached) | `plans/implementation/tool-selection-advisor-retrieval-signal-experiment/005-fresh-v4-preregistered-qualification.md` | Requires positive M004 (never opened). |
+| Project picker rework | M001 remove `Ctrl+\` opener | **ready** | `plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md` | No hard dependencies; assumes the worktree `Shift+F` + `/projects` surface. Class: polish. M2 unblocks on M001 strict closure. |
 
 ## Current execution order and dependency gates
 
@@ -391,6 +393,8 @@ One constraint was discovered while verifying the pin and is recorded because it
 
 Architecture convergence M009 and Runtime Safety C002 remain conditionally closed on the operational evidence listed under Blocked work. The new workstreams do not authorize a new daemon, scheduler, workflow engine, context-history service, authorization engine, sandbox framework, verification framework, release automation, or silent provider failover.
 
+**Project picker rework gate (proposed 2026-10-16; ADR-0033 accepted 2026-10-16):** Roadmap `plans/subsystems/project-picker-rework-roadmap.md` with accepted ADR-0033 (`plans/adrs/ADR-0033-directory-tied-project-identity-and-client-working-directory.md`). M001 (`plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md`) is dependency-ready; M002 (`plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md`) is written, blocked on M001; M003 (`003-lifecycle-and-confirmed-destroy.md`) and M004 (`004-rename-and-repath.md`) are written, blocked on M002 interface stability; M005 (`005-directory-identity-and-client-cwd.md`) is written, blocked on M002–M004. Unblock audit: ADR-0033 acceptance moved no plan to ready (M003/M004 still blocked on M002; M002 still on M001). The closed `tui-project-sessions` roadmap is history only: this workstream amends its cwd invariant narrowly (client working directory per tab; daemon cwd never moves) without rewriting it.
+
 ## Milestones eligible for fresh planning
 
 | Subsystem | Milestone | Status | Authority / handoff note |
@@ -432,6 +436,10 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 | Tool-selection advisor retrieval-signal experiment | M003-M005 | M002 closed negative-but-valid (receipt fp `f5f76a99…`, best union 51/53). M003 closed negatively (implementation `2df9a5f7`; receipt fp `67acca39…`; 0/288 clear; no artifact frozen). M004 requires positive M002/M003 (both negative, stays blocked); M005 requires positive M004 (stays blocked). |
 | Tool-selection advisor late-interaction retriever experiment | M001-M005 | M001 closed D (terminal); M002-M005 never open. Workstream closed negative; nothing unblocked. |
 | Tool-selection advisor causal frontier experiment | M003-M005 | M001-M005 are all closed (roadmap `Status: closed`; closures `001`–`005-status.md`). M003 closed D negative (`82fc5b40`), M004 closed positive on the selected M002 frontier (`635213bc`), M005 closed B (`019bf326`: all structural gates green, live trajectories unavailable). No milestone in this workstream is blocked or ready; it is recorded in the active-roadmap and dependency-ready tables instead. |
+| Project picker rework | M002 help-style picker + cwd/project surfaces | **Blocked:** M001 strict closure. Plan `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md` (status: blocked). TUI-only; no protocol change. |
+| Project picker rework | M003 d/a lifecycle + confirmed destroy | **Blocked:** M002 interface stability (ADR-0033 accepted 2026-10-16). Plan `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` (status: blocked). |
+| Project picker rework | M004 rename + repath rebind | **Blocked:** M002 interface stability (ADR-0033 accepted 2026-10-16). Plan `plans/implementation/project-picker-rework/004-rename-and-repath.md` (status: blocked). |
+| Project picker rework | M005 1:1 directory identity + auto-load + client cwd switch | **Blocked:** M002–M004 strict closure (ADR-0033 accepted 2026-10-16). Plan `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` (status: blocked). |
 
 ## Eggwork remote-execution control point
 
