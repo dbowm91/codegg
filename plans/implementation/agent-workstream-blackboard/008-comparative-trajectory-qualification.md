@@ -1,10 +1,10 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. Continue only in an execution context that exposes the production TaskTool and a verified workspace root. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. `codegg headless --session <id>` now submits through the production daemon TaskTool and session-resolved workspace; repeat S1 and proceed with isolated S2/S3 using managed sessions, while obtaining explicit sandbox-root evidence. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
-ADRs: accepted ADR-0001/0002/0004/0005/0031 and formally accepted ADR-0032 if shared mutation is included.
+ADRs: accepted ADR-0001/0002/0004/0005/0031/0032/0033; S4 remains gated by M005 qualification under ADR-0032/0033.
 Canonical: plans/000-long-term-specification.md §§16–17, 26–29; plans/001-terminology-and-domain-model.md §§5, 7–8.
 Primary class: invariant/capability closure and optional measured performance evaluation.
 
@@ -91,3 +91,17 @@ requested workspace-write profile had no workspace root, so those runs do
 not establish sandbox containment. These results do not qualify M008 or
 support an effectiveness-improvement claim. M008 remains active; no
 downstream plan is unblocked by this partial evidence.
+
+### Daemon-backed headless trajectory entry point (2026-10-16)
+
+`codegg headless --session <id> --prompt <text>` (or stdin) submits the
+prompt-only `SessionPromptSubmit` request through the singleton daemon and
+waits for that session's matching completion event. The session must already
+have a durable model selection and workspace binding; create/select it through
+the normal session workflow, including `--worktree new` when an isolated
+managed checkout is required. This path uses the daemon's production
+TaskTool/scheduler and session-bound authoritative workspace root. It does not
+change the local semantics of `codegg exec`, and a client timeout does not
+cancel the durable turn. This removes the prior missing-TaskTool execution-context
+blocker for isolated S2/S3, subject to a successful live smoke trajectory and
+explicit sandbox-root evidence.

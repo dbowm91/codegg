@@ -251,6 +251,23 @@ Without explicit policy flags, `exec` keeps its legacy permissive behavior for
 existing CI pipelines — set `--approval-mode` and `--sandbox` explicitly if you
 want a bounded run.
 
+For a durable daemon session, use the prompt-only `headless` command:
+
+```bash
+codegg headless --session <session-id> --prompt "Implement the requested change"
+cat task.txt | codegg headless --session <session-id> --json
+```
+
+The session must already have a durable provider/model selection and workspace
+binding. The daemon resolves the workspace and agent configuration, then routes
+the turn through its normal scheduler, permissions, sandbox, and coordination
+tools. Text deltas stream to stdout; `--json` emits one JSON result after
+completion. `--timeout-secs` bounds how long the client waits; a timeout does
+not cancel or discard the durable turn. This is the supported headless route
+for daemon-backed TaskTool coordination. It differs from `codegg exec`, which
+is a local one-shot loop and does not provide the daemon's durable TaskTool
+runtime.
+
 ## MCP, ACP and plugins
 
 ```bash

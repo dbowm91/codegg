@@ -1,6 +1,6 @@
 # ADR-0033: CodeGG-Mediated Checkout Writer Boundary for Shared Placement
 
-Status: proposed — maintainer acceptance required; no implementation or shared-write authorization
+Status: accepted — 2026-10-16; user authorization recorded in the work session. No implementation or shared-write authorization.
 
 Date: 2026-10-16
 
@@ -61,7 +61,7 @@ mutation/spawn. PTY and persistent LSP/MCP/plugin services remain denied until
 their effective lifetimes are supervised and reconciled. Finite processes
 remain denied on any platform that cannot prove descendant quiescence.
 
-This is the recommended candidate. It does not relax sandbox or approval
+This is the selected decision. It does not relax sandbox or approval
 ceilings, default isolation, or any existing WorkOrder policy.
 
 ### C — Add a scheduler resource key and call it serialization
@@ -69,9 +69,9 @@ ceilings, default isolation, or any existing WorkOrder policy.
 A scheduler key cannot cover inline AgentTurn edits, direct project-file
 APIs, or long-lived processes. Rejected as an incomplete authority boundary.
 
-## Proposed decision pending ratification
+## Decision
 
-If maintainers accept Option B, “serialized shared placement” will mean
+“Serialized shared placement” means
 serialization of *CodeGG-mediated* writers only. It will not promise
 exclusion of external same-user processes. Guarded CodeGG transactions must
 detect stale file state and return a typed conflict when an external edit is
@@ -84,7 +84,7 @@ that surface. Each supported operating-system backend must separately pass
 process-tree, cancellation, restart, and quarantine evidence. ADR acceptance
 alone will not qualify or enable shared placement.
 
-If maintainers reject the restricted boundary or require protection from
+If maintainers later reject the restricted boundary or require protection from
 external same-user writers, keep shared placement unavailable and retain
 isolated worktrees unless a separately qualified OS boundary is introduced.
 
@@ -93,13 +93,12 @@ isolated worktrees unless a separately qualified OS boundary is introduced.
 - ADR-0002 remains effective and no placement default changes.
 - M006 isolated launch and M007 build admission remain independent of M005.
 - No writer-permit service, public placement selector, or shared-write path is
-  authorized by this proposal.
-- If accepted, the M005 plan can proceed to per-platform complete-mediation
-  feasibility and Q1 only after the writer inventory and deny matrix are
-  bounded. Unsupported persistent capabilities remain unavailable.
+  authorized by this decision.
+- M005 can proceed to per-platform complete-mediation feasibility; Q1 remains
+  gated on the writer inventory and deny matrix. Unsupported persistent
+  capabilities remain unavailable.
 - M008 S4 remains gated on M005 Q1–Q5; this ADR does not unblock it.
 
 ## Supersession
 
-None. This proposal does not change ADR-0002 or accepted ADR-0032 unless
-maintainers ratify it.
+None. This decision does not change ADR-0002 or accepted ADR-0032.

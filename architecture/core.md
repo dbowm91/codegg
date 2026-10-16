@@ -274,13 +274,20 @@ pub trait CoreClient: Send + Sync {
     ) -> Result<CoreResponse, AppError>;
 
     fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>>;
+
+    async fn subscribe_session_events(
+        &self,
+        session_id: String,
+        from_event_seq: Option<u64>,
+    ) -> Result<(), AppError>;
 }
 ```
 
 `subscribe()` is event-capable for in-process and local-socket clients.
 Stdio currently exposes request/response transport and returns an empty
 receiver. `SocketCoreClient` adapts `codegg-client::LocalSocketClient` and
-forwards its bounded event stream.
+forwards its bounded event stream. `subscribe_session_events` narrows a socket
+client's delivery to one session and optionally resumes from an event sequence.
 
 ### Core Clients
 
@@ -289,6 +296,14 @@ forwards its bounded event stream.
 | `InprocCoreClient` | Runs the core in the current process. Constructed via `with_deps(CoreRuntimeDeps, Config)` (preferred) or the legacy convenience constructor. `subscribe()` reads from `daemon.event_log` when a daemon is present; falls back to `GlobalEventBus` in legacy no-daemon mode. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to the platform-local daemon endpoint and exchanges JSONL requests/responses |
+
+`codegg headless --session <id>` is a prompt-only automation client over
+`SocketCoreClient`. It submits `SessionPromptSubmit` and waits for the matching
+durable turn events. The daemon resolves provider/model, workspace, agent
+assets, permission/sandbox policy, scheduler admission, and TaskTool runtime
+from the existing session. A timeout bounds only the client's wait; it does
+not cancel the daemon-owned turn. Legacy `codegg exec` remains a local
+one-shot loop without this durable daemon TaskTool context.
 
 ### Protocol
 

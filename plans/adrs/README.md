@@ -152,11 +152,11 @@ capability by existing group membership. M005 is active for writer-containment
 design and qualification; shared-write execution remains unavailable pending
 real tool-path confinement and lifecycle recovery evidence.
 
-## ADR-0033 checkout writer boundary proposal (2026-10-16)
+## ADR-0033 checkout writer boundary (accepted 2026-10-16)
 
-`ADR-0033-codegg-mediated-checkout-writer-boundary.md` proposes a restricted
+`ADR-0033-codegg-mediated-checkout-writer-boundary.md` accepts a restricted
 M005 contract: serialize only CodeGG-mediated writers, treat external
 same-user edits as detectable checkout drift, and deny CodeGG effect owners
-without complete permit/lifecycle evidence. It is **proposed**, requires
-maintainer ratification, and authorizes no permit service or shared-write
-execution. ADR-0002 isolation remains effective.
+without complete permit/lifecycle evidence. The user authorized acceptance
+on 2026-10-16. It authorizes no permit service or shared-write execution;
+ADR-0002 isolation remains effective.

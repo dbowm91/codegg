@@ -117,6 +117,13 @@ service bus, or DI framework:
 | `InprocCoreClient` | Test/embedding mode; runs the core in the current process. Requires `--standalone`. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests over stdin/stdout. Requires `--stdio`. |
 
+The `codegg headless --session <id>` automation path sends prompt-only
+`SessionPromptSubmit` requests over `SocketCoreClient` and follows the durable
+turn to completion. The daemon resolves the selected provider/model, bound
+workspace and agent assets, then uses normal scheduler, permission, sandbox and
+TaskTool ownership. A client wait timeout leaves the durable turn running;
+it is not cancellation. `codegg exec` remains the legacy local one-shot path.
+
 ## Singleton Lifecycle
 
 Codegg runs exactly one user-scoped daemon per OS user. The lock and metadata live at:

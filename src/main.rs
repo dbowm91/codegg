@@ -384,6 +384,26 @@ enum Commands {
         #[command(flatten)]
         policy: ExecutionPolicyArgs,
     },
+    /// Submit a prompt to a durable daemon session and wait for its turn.
+    /// Unlike `exec`, this uses the session's daemon-resolved workspace,
+    /// scheduler, permissions, and coordination tools.
+    Headless {
+        /// Existing durable session ID. Its provider/model selection must be configured.
+        #[arg(long)]
+        session: String,
+        /// Prompt text to submit.
+        #[arg(long, conflicts_with = "prompt_file")]
+        prompt: Option<String>,
+        /// Read prompt text from a file (use `-` for stdin).
+        #[arg(long, conflicts_with = "prompt")]
+        prompt_file: Option<String>,
+        /// Maximum time to wait for the turn to finish.
+        #[arg(long, default_value_t = 1800)]
+        timeout_secs: u64,
+        /// Emit a JSON result instead of streaming assistant text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for (bash, zsh, fish, powershell)
@@ -993,6 +1013,52 @@ mod cli_surface_tests {
     }
 
     #[test]
+    fn headless_prompt_cli_requires_session_and_parses_prompt_sources() {
+        let cli = Cli::try_parse_from([
+            "codegg",
+            "headless",
+            "--session",
+            "session-123",
+            "--prompt",
+            "fix the failing test",
+            "--timeout-secs",
+            "45",
+            "--json",
+        ])
+        .expect("headless prompt parses");
+        match cli.command {
+            Some(Commands::Headless {
+                session,
+                prompt,
+                prompt_file,
+                timeout_secs,
+                json,
+            }) => {
+                assert_eq!(session, "session-123");
+                assert_eq!(prompt.as_deref(), Some("fix the failing test"));
+                assert_eq!(prompt_file, None);
+                assert_eq!(timeout_secs, 45);
+                assert!(json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["codegg", "headless", "--prompt", "missing session"]).is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "codegg",
+            "headless",
+            "--session",
+            "session-123",
+            "--prompt",
+            "inline",
+            "--prompt-file",
+            "task.txt",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn doctor_positional_and_compat_flag_parse() {
         let cli = Cli::try_parse_from(["codegg", "doctor", "search"]).expect("positional parses");
         match cli.command {
@@ -1467,6 +1533,23 @@ async fn main() -> Result<(), AppError> {
                     *quiet,
                     session.as_deref(),
                     policy,
+                )
+                .await?;
+            }
+            Commands::Headless {
+                session,
+                prompt,
+                prompt_file,
+                timeout_secs,
+                json,
+            } => {
+                cmd_headless_run(
+                    session,
+                    prompt.as_deref(),
+                    prompt_file.as_deref(),
+                    *timeout_secs,
+                    *json,
+                    cli.core_endpoint.as_deref(),
                 )
                 .await?;
             }
@@ -2893,6 +2976,189 @@ async fn cmd_exec(
     let output = exec_mode.run(input).await?;
     exec_mode.print_output(&output);
     std::process::exit(ExecMode::exit_code(&output));
+}
+
+/// Headless production turn path. The daemon resolves the durable model,
+/// workspace, permissions, scheduler, and TaskTool runtime from the supplied
+/// session; this client supplies only user prompt text.
+async fn cmd_headless_run(
+    session_id: &str,
+    prompt: Option<&str>,
+    prompt_file: Option<&str>,
+    timeout_secs: u64,
+    json: bool,
+    endpoint: Option<&str>,
+) -> Result<(), AppError> {
+    let prompt_text = if let Some(prompt) = prompt {
+        prompt.to_owned()
+    } else if let Some(path) = prompt_file {
+        if path == "-" {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            input
+        } else {
+            tokio::fs::read_to_string(path).await?
+        }
+    } else {
+        let mut input = String::new();
+        std::io::stdin().read_to_string(&mut input)?;
+        input
+    };
+    if prompt_text.trim().is_empty() {
+        return Err(AppError::Other(anyhow::anyhow!(
+            "headless prompt must not be empty"
+        )));
+    }
+    let parsed_session = codegg_core::context::SessionId::parse(session_id)
+        .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+    let session_id = parsed_session.as_str().to_owned();
+
+    let config = Config::load_or_default();
+    let paths = codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint);
+    let outcome = codegg::core::instance::connect_or_start_daemon_with_descriptor(
+        codegg::core::instance::ConnectOrStartOptions {
+            paths,
+            autostart: config
+                .daemon
+                .as_ref()
+                .and_then(|daemon| daemon.auto_start)
+                .unwrap_or(true),
+            startup_timeout: std::time::Duration::from_millis(
+                config
+                    .daemon
+                    .as_ref()
+                    .and_then(|daemon| daemon.startup_timeout_ms)
+                    .unwrap_or(10_000),
+            ),
+            poll_interval: std::time::Duration::from_millis(100),
+            executable: None,
+        },
+        codegg_client::FrontendDescriptor::new(
+            "codegg-headless",
+            codegg::protocol::frames::ClientKind::Automation,
+            codegg::protocol::frames::ClientCapabilities {
+                visual_notifications: false,
+                desktop_notifications: false,
+                audio: false,
+                tts: false,
+                multi_session_view: false,
+                plugin_ui_dialog: false,
+                plugin_ui_toast: false,
+                plugin_ui_panel: false,
+                plugin_ui_status_item: false,
+                plugin_ui_table: false,
+                plugin_ui_markdown: false,
+                plugin_ui_code: false,
+                plugin_ui_progress: false,
+                workspace_registration: false,
+                project_catalog: false,
+                session_projection: false,
+            },
+        ),
+    )
+    .await
+    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+    let client: Arc<dyn CoreClient> = Arc::new(outcome.client);
+    let mut events = client.subscribe();
+    client
+        .subscribe_session_events(session_id.clone(), None)
+        .await?;
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let response = client
+        .request(codegg::core::new_request(
+            request_id,
+            CoreRequest::SessionPromptSubmit {
+                session_id: session_id.clone(),
+                text: prompt_text,
+                plan_mode: false,
+                human_shell_promotion_ids: Vec::new(),
+            },
+        ))
+        .await?;
+    let turn_id = match response {
+        CoreResponse::TurnAdmissionReceipt { receipt } => receipt.turn_id,
+        CoreResponse::Error { code, message } => {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "daemon rejected headless turn ({code}): {message}"
+            )))
+        }
+        other => {
+            return Err(AppError::Other(anyhow::anyhow!(
+                "unexpected response to headless turn submission: {other:?}"
+            )))
+        }
+    };
+
+    #[derive(Serialize)]
+    struct HeadlessResult<'a> {
+        session_id: &'a str,
+        turn_id: &'a str,
+        status: &'a str,
+        result: &'a str,
+    }
+
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs.max(1));
+    let mut result = String::new();
+    let status = loop {
+        let envelope = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .map_err(|_| {
+                AppError::Other(anyhow::anyhow!(
+                    "headless turn {turn_id} timed out after {timeout_secs}s; session {session_id} remains durable and may still be running"
+                ))
+            })?
+            .ok_or_else(|| {
+                AppError::Other(anyhow::anyhow!(
+                    "headless event stream ended before turn {turn_id} completed"
+                ))
+            })?;
+        if envelope.session_id.as_deref() != Some(&session_id)
+            || envelope.turn_id.as_deref().is_some_and(|id| id != turn_id)
+        {
+            continue;
+        }
+        match envelope.payload {
+            codegg::protocol::core::CoreEvent::TurnTextDelta { delta, .. } => {
+                result.push_str(&delta);
+                if !json {
+                    use std::io::Write;
+                    std::io::stdout().write_all(delta.as_bytes())?;
+                    std::io::stdout().flush()?;
+                }
+            }
+            codegg::protocol::core::CoreEvent::TurnCompleted {
+                turn_id: completed, ..
+            } if completed == turn_id => break "completed",
+            codegg::protocol::core::CoreEvent::TurnFailed {
+                turn_id: failed,
+                message,
+                ..
+            } if failed.as_deref().is_none_or(|failed| failed == turn_id) => {
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "headless turn {turn_id} failed: {message}"
+                )))
+            }
+            _ => {}
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&HeadlessResult {
+                session_id: &session_id,
+                turn_id: &turn_id,
+                status,
+                result: &result,
+            })
+            .map_err(AppError::Json)?
+        );
+    } else {
+        println!();
+    }
+    Ok(())
 }
 
 async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {

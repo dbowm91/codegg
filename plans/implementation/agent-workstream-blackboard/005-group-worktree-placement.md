@@ -1,10 +1,10 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — ADR-0032 is accepted; M006 and M007 are strictly closed and M008 proceeds on isolated worktrees. Proposed ADR-0033 makes the restricted CodeGG-mediated writer boundary concrete but remains unaccepted. Continue feasibility review only; do not start a writer-permit service before maintainers accept the external-writer boundary and complete-mediation/native-lifecycle gates. Shared mutation remains unavailable.
+Status: active — ADR-0032 and ADR-0033 are accepted; M006 and M007 are strictly closed and M008 proceeds on isolated worktrees. ADR-0033 accepts the restricted CodeGG-mediated writer boundary, but complete-mediation/native-lifecycle gates remain open. Do not start a writer-permit service until those gates pass. Shared mutation remains unavailable.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
-Decision gate: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was accepted on 2026-10-15. Its shared-write mode is not qualified or enabled; ADR-0002 isolation remains the effective mutation contract until M005 proves complete writer containment and passes its acceptance gates.
+Decision gates: `plans/adrs/ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was accepted on 2026-10-15 and `plans/adrs/ADR-0033-codegg-mediated-checkout-writer-boundary.md` was accepted on 2026-10-16. Shared-write mode is not qualified or enabled; ADR-0002 isolation remains the effective mutation contract until M005 proves complete CodeGG-writer mediation and passes its acceptance gates.
 Canonical: plans/000-long-term-specification.md §§9, 16–17, 27, 29; plans/001-terminology-and-domain-model.md §§5, 7–8.
 Primary class: capability / invariant. No work may enable shared mutation before the decision and safety gates close.
 
@@ -235,38 +235,40 @@ operationally unusable, and current LSP/MCP lifecycle adapters cannot prove
 checkout-wide process quiescence. This is a design gate, not an implementation
 task for a generic worktree lock.
 
-Before a permit service is exposed, the next architecture decision must state
-whether M005's product boundary excludes non-CodeGG same-user writers. If it
-does not, stop: the current daemon architecture cannot provide universal
-writer protection. If it does, define a shared-placement capability profile
-that denies PTY and persistent LSP/MCP/plugin paths until they have a
-checkout-scoped lifecycle contract; separately prove descendant containment
-for finite processes. Only then is Q1 useful, and Q1 storage must never imply
-that a caller has permission to use a capability excluded by its profile.
+ADR-0033 resolves the product boundary by excluding non-CodeGG same-user
+writers from the serialization guarantee. Before a permit service is exposed,
+M005 must close the CodeGG writer inventory, define a per-capability allow/deny
+profile, and prove each allowed writer remains contained through quiescence.
+The initial profile must deny PTY and persistent LSP/MCP/plugin paths until
+they have checkout-scoped lifecycle contracts; finite processes need separate
+descendant containment evidence. Only then is Q1 useful, and Q1 storage must
+never imply that a caller has permission to use a capability excluded by its
+profile.
 
 This review does not qualify shared mutation and does not change ADR-0032 or
-ADR-0002. It records why scheduler exclusivity keys and request-scoped locks
-are insufficient and why persistent process ownership must be resolved before
-broad implementation.
+ADR-0002. ADR-0033 now accepts the external-writer boundary described below;
+that decision records why scheduler exclusivity keys and request-scoped locks
+are insufficient, but it does not prove complete mediation or persistent
+process ownership.
 
-#### External-writer boundary proposal (2026-10-16)
+#### Accepted external-writer boundary (2026-10-16)
 
-Proposed ADR-0033 records Option B for maintainer review: shared-placement
-serialization would cover CodeGG-mediated writers only. Unrelated same-user
+Accepted ADR-0033 records Option B: shared-placement
+serialization covers CodeGG-mediated writers only. Unrelated same-user
 processes are outside the serialization guarantee; guarded CodeGG writes must
 detect external checkout drift as conflict, without claiming protection from
 that writer. Any CodeGG mutation surface without a typed permit through
-verified effective-writer quiescence remains denied. The proposal authorizes
-no service or shared-write path, and M005 remains active pending ratification
-and per-platform feasibility evidence.
+verified effective-writer quiescence remains denied. ADR acceptance authorizes
+no service or shared-write path; M005 remains active pending per-platform
+feasibility evidence.
 
-#### Architecture options and recommendation
+#### Architecture options and decision
 
 | Option | Feasibility | Decision |
 |---|---|---|
 | Daemon mutex held around each tool/job request | Fails for detached descendants, idle PTYs, persistent LSP/MCP processes, and other CodeGG file APIs that bypass the permit. A request lifetime is not the writer lifetime. | Reject as a universal checkout guarantee. A mutex may remain an internal scheduling primitive only after all effect owners are mediated. |
 | OS identity/filesystem boundary around the shared checkout | This is the only plausible route if the guarantee must exclude arbitrary same-user writers. It requires separate native designs and adversarial lifecycle evidence on Linux, macOS, and Windows; current process-group and Job Object ownership alone is not filesystem isolation. | No implementation is qualified. Treat this as a new platform-security project, not a permit-store extension. |
-| Restricted CodeGG shared-placement capability profile | Potentially usable if the product boundary excludes external same-user writers and each CodeGG effect either receives a typed checkout permit through verified quiescence or is denied. Initial profile would deny PTY and persistent LSP/MCP/plugin paths and must prove descendant containment for finite shell/build/test jobs per platform. | Recommended candidate for a future ADR/implementation gate, with ADR-0002 isolated placement remaining the default. Do not start Q1 storage until the product boundary and per-platform capability matrix are accepted. |
+| Restricted CodeGG shared-placement capability profile | Potentially usable if the product boundary excludes external same-user writers and each CodeGG effect either receives a typed checkout permit through verified quiescence or is denied. Initial profile would deny PTY and persistent LSP/MCP/plugin paths and must prove descendant containment for finite shell/build/test jobs per platform. | Selected by ADR-0033, with ADR-0002 isolated placement remaining the default. Do not start Q1 storage until the writer inventory and per-platform capability matrix are complete. |
 
 The feasibility result is therefore conditional, not a blanket “add a lock.”
 If users require protection against arbitrary processes running as the same
@@ -275,6 +277,13 @@ shared checkout placement is a no-go until a qualified OS identity/filesystem
 boundary exists. If those external writers are explicitly outside the
 contract, a constrained profile may be pursued, but every enabled process and
 file-write route still needs native containment evidence.
+
+ADR-0033 accepted the restricted external-writer boundary on 2026-10-16. This
+unblocks the M005 feasibility/inventory work only. Q1 remains gated until the
+CodeGG-owned writer inventory is closed with a complete per-capability
+allow/deny matrix and the effective lifetime of every allowed writer can be
+attested. The broad-source-scan caveat above is still open; accepted ADR text
+does not upgrade it to a complete inventory.
 
 ## Work packages
 

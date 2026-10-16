@@ -119,6 +119,11 @@ printf '%s\n' '{"prompt":"Review this repository","model":"anthropic/claude-sonn
 `code`, and exits non-zero on failure. The full CLI surface is in
 [`docs/cli.md`](docs/cli.md).
 
+For a daemon-backed headless turn with durable workspace context and
+coordination tools, use `codegg headless --session <id> --prompt "..."`.
+Unlike `exec`, this submits through the selected session's normal daemon turn
+path; see [`docs/cli.md`](docs/cli.md) for setup and timeout behavior.
+
 ## What you get
 
 - **Terminal-first TUI** with persistent sessions, project tabs, model and
