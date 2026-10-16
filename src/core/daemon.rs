@@ -4639,6 +4639,21 @@ mod tests {
             .output()
             .expect("run git commit");
         assert!(commit.status.success(), "git commit failed: {:?}", commit);
+        // ProjectCatalog uses unique remote lineage as repository identity;
+        // this local fixture needs a deterministic, non-network remote so the
+        // managed-worktree binding exercises the production identity path.
+        // execution-ownership: test_only
+        let remote = Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/codegg/daemon-worktree-test.git",
+            ])
+            .current_dir(root)
+            .output()
+            .expect("configure fixture remote identity");
+        assert!(remote.status.success(), "git remote add failed: {remote:?}");
     }
 
     async fn prepare_existing_managed_worktree(
