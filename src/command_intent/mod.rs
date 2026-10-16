@@ -1360,11 +1360,10 @@ mod tests {
     }
 
     #[test]
-    fn git_remote_v_is_mutating() {
-        // The typed parser treats `-v` as an unrecognized sub-subcommand,
-        // falling back to ManagedGitArgv (RepositoryConfigMutation).
+    fn git_remote_v_is_readonly() {
+        // The typed Git parser recognizes verbose as the remote-list form.
         let intent = classify_command("git remote -v");
-        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
+        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
         assert!(!intent
             .risk
             .capabilities
