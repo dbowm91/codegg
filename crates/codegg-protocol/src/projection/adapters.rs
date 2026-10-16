@@ -463,6 +463,8 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             task_id,
             agent,
             description,
+            display_name,
+            run_id,
             ..
         } => {
             let mut node = AgentTreeNodeProjection {
@@ -474,6 +476,10 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 created_at: env.timestamp_ms,
                 completed_at: None,
                 result_summary: None,
+                // Copied from the event, never re-drawn: the reducer must be a
+                // pure function of its input or replay diverges from live.
+                display_name: display_name.clone(),
+                run_id: run_id.clone(),
             };
             node.normalise();
             events.push(ProjectionEvent::SubagentStarted { node });

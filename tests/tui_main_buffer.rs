@@ -432,6 +432,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
         SubagentRow {
             task_id: "1".into(),
             run_id: None,
+            display_name: Some("Sally".into()),
             agent: "explore".into(),
             description: "Map the auth flow".into(),
             status: "running".into(),
@@ -439,6 +440,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
         SubagentRow {
             task_id: "2".into(),
             run_id: None,
+            display_name: Some("Greg".into()),
             agent: "build".into(),
             description: "Warm the cargo cache".into(),
             status: "completed".into(),
@@ -463,6 +465,7 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
             .map(|i| SubagentRow {
                 task_id: i.to_string(),
                 run_id: None,
+                display_name: None,
                 agent: format!("agent{i}"),
                 description: format!("task {i}"),
                 status: "running".into(),
@@ -489,6 +492,7 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: Some("run-7".into()),
+        display_name: Some("Sally".into()),
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
@@ -529,6 +533,7 @@ fn clicking_the_throbber_row_opens_nothing() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: None,
+        display_name: None,
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
@@ -550,6 +555,7 @@ fn the_strip_is_hit_tested_before_the_composer() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: None,
+        display_name: None,
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),

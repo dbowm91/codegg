@@ -2063,11 +2063,11 @@ impl App {
     ///
     /// Reads the same `active_turn` (falling back to the newest
     /// `recent_turns`) tree the sidebar renders, so the two surfaces cannot
-    /// disagree about which delegated runs exist. Durable runs are joined by
-    /// exact canonical task id — the one identity both sides agree on — purely
-    /// to attach a `run_id` for the detail view; a task with no matching run
-    /// still gets a row rather than being hidden, because the agent tree is
-    /// the authoritative record that the task was dispatched.
+    /// disagree about which delegated runs exist. The durable `run_id` and the
+    /// human-readable `display_name` are read straight off the node, having
+    /// been carried there by the event; a task with no matching run still gets
+    /// a row rather than being hidden, because the agent tree is the
+    /// authoritative record that the task was dispatched.
     ///
     /// Returns `None` when there is no snapshot to read at all, which is not
     /// the same as an empty tree: the caller keeps the rows it already has
@@ -2094,13 +2094,17 @@ impl App {
                 .map(|node| {
                     let task_id = node.task_id.to_string();
                     SubagentRow {
-                        // Exact canonical join against `AgentRunSummary::task_id`.
-                        run_id: snapshot
-                            .agent_runs
-                            .iter()
-                            .find(|run| run.task_id == task_id)
-                            .map(|run| run.run_id.clone()),
+                        // The durable run id now arrives **in the event**
+                        // (`CoreEvent::SubagentStarted::run_id`) and is copied
+                        // onto the node verbatim. It used to be recovered by
+                        // joining this node's `task_id` against
+                        // `AgentRunSummary::task_id`, which could never match:
+                        // the node's is a daemon-local `u64` rendered in
+                        // decimal, the summary's is a UUID string. The field
+                        // was therefore permanently `None`.
+                        run_id: node.run_id.clone(),
                         task_id,
+                        display_name: node.display_name.clone(),
                         agent: node.agent.clone(),
                         description: node.description.clone(),
                         status: match node.status {

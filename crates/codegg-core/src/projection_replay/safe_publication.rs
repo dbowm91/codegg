@@ -276,6 +276,8 @@ mod tests {
                 task_id: 1,
                 agent: "a".into(),
                 description: "d".into(),
+                display_name: Some("Sally".into()),
+                run_id: None,
             },
             CoreEvent::SubagentProgress {
                 session_id: "s".into(),

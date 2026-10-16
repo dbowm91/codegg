@@ -695,6 +695,8 @@ mod tests {
                     created_at: 0,
                     completed_at: None,
                     result_summary: None,
+                    display_name: None,
+                    run_id: None,
                 }),
             );
         let mut snapshot = base_snapshot();

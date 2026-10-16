@@ -3789,6 +3789,19 @@ pub enum CoreEvent {
         task_id: u64,
         agent: String,
         description: String,
+        /// Human-readable name drawn from the curated pool at spawn.
+        ///
+        /// Carried in the event rather than re-drawn downstream so replay
+        /// reproduces the name the live view showed. `None` for a producer
+        /// that has no registry (an older recorded event, or a path that never
+        /// assigned one), in which case consumers fall back to `agent`.
+        display_name: Option<String>,
+        /// Durable run id when this subagent is scheduler-owned.
+        ///
+        /// The daemon-local `task_id` above is a `u64` and cannot be joined
+        /// against `AgentRunSummary::task_id`, which is a UUID string; this is
+        /// the identity that actually links the two.
+        run_id: Option<String>,
     },
     SubagentProgress {
         session_id: String,

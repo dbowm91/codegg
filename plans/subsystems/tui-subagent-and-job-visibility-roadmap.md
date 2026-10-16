@@ -300,10 +300,11 @@ keeps its current complete list.
 - **Objective:** every running subagent has a stable-for-its-lifetime,
   unique-among-active, human-readable display name carried in the projection.
 - **Dependencies:** none.
-- **Status:** **partially landed** at `5a109ab27`+. The curated name pool is built
-  and enforced (46 entries). **This is the pool only** — no name is assigned to
-  any subagent yet, and nothing renders one. The registry, the projection field,
-  and the dead-`run_id`-join fix below all remain.
+- **Status:** **landed (M001 scope)** on `feat/auto-20261016-845b613f`. The curated
+  pool, the active-scoped registry, the event-carried `display_name`/`run_id`, the
+  projection fields, and the dead-`run_id`-join fix are all in. Still open for a
+  later milestone: nothing *renders* a name yet — the sessions panel (M004) and the
+  tasks overlay (M002) are what make it user-visible.
 - **Deliverable boundary:**
   - *(landed)* `assets/subagent-names/*.toml` as the single authored source,
     compiled into `src/agent/subagent_names/generated.rs`. Names are validated at
@@ -312,27 +313,45 @@ keeps its current complete list.
     change needed to give a name a sprite later.
   - *(landed)* Drift guard via `scripts/generate_subagent_names.py --check` in
     `verify.sh quick` and CI.
-  - *(pending)* A name registry that draws from the compiled pool and, on
-    collision with a currently-active subagent, takes the first free of
-    `name`, `name-2`, `name-3`, … Releasing on completion/failure/cancel is
-    what makes the name ephemeral and bounded.
-  - `CoreEvent::SubagentStarted` and `CoreEvent::SubagentCompleted` /
-    `SubagentFailed` carry the name (additive).
-  - `AgentTreeNodeProjection` gains an additive `display_name` field, defaulted
-    so old snapshots and replays still decode.
-  - `SubagentRow` gains the same field, populated from the node.
+  - *(landed)* `SubagentNameRegistry` (`src/agent/subagent_names/registry.rs`)
+    draws from the compiled pool and, on collision with a currently-active
+    subagent, takes the first free of `name`, `name-2`, `name-3`, …. The lease
+    is an RAII `SubagentNameLease` bound to the spawn function's stack frame, so
+    completion, every early failure return, cancellation, and panic all release
+    through `Drop`. No call site has to remember, which is what stops the pool
+    draining under a path that forgets.
+  - *(landed)* `CoreEvent::SubagentStarted` and `AppEvent::SubagentStarted` carry
+    `display_name` and `run_id` (additive, `Option`).
+  - *(landed)* `AgentTreeNodeProjection` gains `display_name` and `run_id`, both
+    `#[serde(default)]` so old snapshots decode.
+  - *(landed)* `SubagentRow` gains `display_name` plus `label()`, which falls
+    back to the agent type when a node predates display names.
   - **No storage change and no migration.** The per-turn tree is not persisted.
 - **Exit conditions:**
   - Two concurrent subagents of the same agent type always display distinct
-    names; a third distinct one too.
-  - A finished subagent's name is released and can be re-drawn later.
+    names; a third distinct one too. *(covered by
+    `concurrent_subagents_never_share_a_name`, `draw_survives_a_pool_where_the_chosen_base_is_occupied`,
+    `a_fully_occupied_pool_walks_the_suffix_ladder`)*
+  - A finished subagent's name is released and can be re-drawn later. *(covered by
+    `lease_releases_on_drop`, `lease_releases_even_when_the_body_unwinds`,
+    `release_returns_the_name_to_the_pool`)*
   - Projection replay is byte-identical to live projection for the same event
     stream — the name travels **in the event**, never re-minted by the reducer,
-    because a re-minted random value would make replay non-deterministic.
-  - No row renders a name minted client-side (I1).
-- **Note:** D-a (the dead `run_id` join) is resolved here, by emitting the real
-  `run_id` alongside the name, or by removing the field. Leaving a provably
-  always-`None` field in place is not an acceptable outcome.
+    because a re-minted random value would make replay non-deterministic. The
+    replay path (`projection_replay/publication.rs`) copies the recorded name
+    verbatim; it does not draw one.
+  - No row renders a name minted client-side (I1). The TUI reads `node.display_name`
+    and never calls the registry.
+- **Resolved here — the dead `run_id` join (D5):** fixed by the *narrow* route, so
+  no ADR was needed. Rather than re-keying the per-turn tree onto durable run ids,
+  `run_id` is now carried **in the event** from `SubAgentRequest::run_id` (already
+  available at the publish site) and copied onto the node. The old code joined
+  `node.task_id.to_string()` (a `u64` in decimal) against `AgentRunSummary::task_id`
+  (a UUID string); those can never be equal, so `SubagentRow::run_id` was
+  permanently `None`. The join is deleted rather than left in place.
+- **Note:** a future producer that has no registry publishes `display_name: None`,
+  and `label()` degrades to the agent type. That is the intended fallback, not a
+  hole in the contract.
 
 ### M002 — Unified tasks overlay
 
@@ -514,7 +533,7 @@ Interaction with a subagent is **not** part of this definition.
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 ephemeral display name | partially landed (pool + drift guard; registry/projection pending) | — | — | none |
+| M001 ephemeral display name | landed (pool, registry, event-carried name, dead join fixed) | — | — | none |
 | M002 unified tasks overlay | not started | — | — | M001 |
 | M003 subagent buffer tabs | not started | — | — | M001 |
 | M004 sessions panel sections | not started | — | — | M001, M003 |

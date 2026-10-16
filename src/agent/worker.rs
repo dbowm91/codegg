@@ -304,6 +304,13 @@ pub struct SubAgentPool {
     durable_run_control: Arc<TokioMutex<Option<Arc<crate::agent::run_control::RunControlService>>>>,
     durable_run_groups:
         Arc<TokioMutex<Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>>>,
+    /// Active-scoped display names for delegated runs.
+    ///
+    /// Shared across every clone of the pool so a name is unique
+    /// among *all* live subagents, not merely among those one worker
+    /// happens to own. Held on the pool because the pool is the one
+    /// thing both the spawn site and the completion paths can reach.
+    name_registry: Arc<crate::agent::subagent_names::SubagentNameRegistry>,
 }
 
 impl SubAgentPool {
@@ -370,6 +377,7 @@ impl SubAgentPool {
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
             durable_run_control: Arc::new(TokioMutex::new(None)),
             durable_run_groups: Arc::new(TokioMutex::new(None)),
+            name_registry: Arc::new(crate::agent::subagent_names::SubagentNameRegistry::new()),
         };
 
         let pool_clone = pool_inst.clone();
@@ -441,6 +449,7 @@ impl SubAgentPool {
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
             durable_run_control: Arc::new(TokioMutex::new(None)),
             durable_run_groups: Arc::new(TokioMutex::new(None)),
+            name_registry: Arc::new(crate::agent::subagent_names::SubagentNameRegistry::new()),
         };
 
         let pool_clone = pool_inst.clone();
@@ -762,6 +771,9 @@ impl Clone for SubAgentPool {
             durable_agent_runs: Arc::clone(&self.durable_agent_runs),
             durable_run_control: Arc::clone(&self.durable_run_control),
             durable_run_groups: Arc::clone(&self.durable_run_groups),
+            // Shared, not re-created: a fresh registry per clone would let
+            // two workers hand out the same name simultaneously.
+            name_registry: Arc::clone(&self.name_registry),
         }
     }
 }
@@ -974,11 +986,27 @@ async fn run_subagent_task_with_cancel(
     let task_id = request.task_id;
     let session_id = request.parent_id.clone().unwrap_or_default();
 
+    // Draw the display name exactly once, here at spawn, and carry it in the
+    // event. The lease is bound to this function's stack frame, so *every*
+    // exit path below — success, each early failure return, cancellation, and
+    // a panic — releases the name back to the pool through `Drop`. No call
+    // site has to remember, which is what keeps the pool from slowly draining.
+    let name_lease = crate::agent::subagent_names::SubagentNameLease::acquire(
+        Arc::clone(&subagent_pool.name_registry),
+        task_id,
+    );
+
     GlobalEventBus::publish(AppEvent::SubagentStarted {
         session_id: session_id.clone(),
         task_id,
         agent: request.agent.clone(),
         description: request.description.clone(),
+        display_name: Some(name_lease.name_owned()),
+        // The durable run id travels with the event. The TUI cannot recover it
+        // by joining `task_id`: this node's `task_id` is a daemon-local `u64`
+        // while `AgentRunSummary::task_id` is a UUID string, so that join can
+        // never match.
+        run_id: request.run_id.as_ref().map(|id| id.to_string()),
     });
 
     task_store

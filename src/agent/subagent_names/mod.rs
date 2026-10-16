@@ -5,16 +5,18 @@
 //! [`generated`]. Run the generator to refresh, or pass `--check` to fail on
 //! drift.
 //!
-//! This module currently provides the **name pool only**. Assignment of a name
-//! to a running subagent — the active-scoped registry that holds a name while
-//! its subagent works and releases it on completion, appending `-2`, `-3`, …
-//! when a pool entry is already taken — is the deliverable of milestone M001 in
-//! `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md` and is not
-//! implemented yet. Nothing here mints a name on its own.
+//! This module provides the **name pool** and the **active-scoped registry**
+//! that hands a pool name to a running subagent and releases it when that
+//! subagent finishes (milestone M001 in
+//! `plans/subsystems/tui-subagent-and-job-visibility-roadmap.md`).
 //!
-//! Names are projection data, not client synthesis: a name is carried in the
-//! projection and released with its subagent, so the TUI never invents one.
+//! Names are projection data, not client synthesis: a name is drawn once at
+//! spawn, carried **in the event**, and released with its subagent, so the TUI
+//! never invents one and replay reproduces the same name the live view showed.
+//! See [`registry`] for why that ordering is load-bearing rather than stylistic.
 
 mod generated;
+pub mod registry;
 
 pub use generated::{subagent_names, SubagentName, SUBAGENT_NAMES};
+pub use registry::{pool_entry, SubagentNameLease, SubagentNameRegistry};

@@ -35,7 +35,16 @@ pub struct SubagentRow {
     /// Canonical task identity; the join key against durable runs.
     pub task_id: String,
     /// Durable run id when one exists, so the view can fetch run detail.
+    ///
+    /// Carried on the event rather than joined locally: the projection's
+    /// `task_id` is a daemon-local `u64` while `AgentRunSummary::task_id` is a
+    /// UUID string, so a local join on those two can never match.
     pub run_id: Option<String>,
+    /// Human-readable name drawn from the curated pool at spawn, e.g. `Sally`.
+    ///
+    /// `None` for a node recorded before display names existed; see
+    /// [`SubagentRow::label`].
+    pub display_name: Option<String>,
     /// The subagent's name, e.g. `explore`.
     pub agent: String,
     /// What the subagent was asked to do.
@@ -45,6 +54,19 @@ pub struct SubagentRow {
 }
 
 impl SubagentRow {
+    /// What to call this subagent in the UI.
+    ///
+    /// Prefers the curated display name (`Sally`) and falls back to the agent
+    /// type (`explore`) when the node predates display names. The fallback is
+    /// a real value rather than a placeholder so a replayed older snapshot
+    /// still reads correctly instead of showing an empty column.
+    pub fn label(&self) -> &str {
+        match self.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => self.agent.as_str(),
+        }
+    }
+
     /// Whether this row is still running.
     ///
     /// The projection spells statuses inconsistently across producers, so
@@ -69,6 +91,11 @@ impl SubagentRow {
     /// progress string: the projection adapter hardcodes `progress: None`, so
     /// there is no live progress text to show. The description is what the
     /// user can actually act on, and it is what identifies the work.
+    ///
+    /// The lead shows the curated display name when there is one. The agent
+    /// type still matters, so a name is shown *with* its type rather than
+    /// instead of it: `Sally (explore)` tells the user both which human label
+    /// to look for later and what the subagent actually is.
     pub fn summary_line(&self, width: usize) -> String {
         let glyph = if self.is_running() { "▸" } else { "·" };
         let status = self.status.trim().to_ascii_lowercase();
@@ -77,7 +104,12 @@ impl SubagentRow {
         } else {
             status
         };
-        let lead = format!("  {glyph} {}", self.agent);
+        let lead = match self.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() && name != self.agent => {
+                format!("  {glyph} {name} ({})", self.agent)
+            }
+            _ => format!("  {glyph} {}", self.agent),
+        };
         let tail = format!(" · {status}");
         let sep = " — ";
 
@@ -187,10 +219,42 @@ mod tests {
         SubagentRow {
             task_id: "t1".into(),
             run_id: Some("r1".into()),
+            display_name: Some("Sally".into()),
             agent: "explore".into(),
             description: "Find the auth flow".into(),
             status: status.into(),
         }
+    }
+
+    #[test]
+    fn label_prefers_the_display_name() {
+        assert_eq!(row("running").label(), "Sally");
+    }
+
+    #[test]
+    fn label_falls_back_to_the_agent_type() {
+        let mut r = row("running");
+        r.display_name = None;
+        assert_eq!(r.label(), "explore");
+        // A blank name is treated as absent rather than rendered as a gap.
+        r.display_name = Some("   ".into());
+        assert_eq!(r.label(), "explore");
+    }
+
+    #[test]
+    fn summary_line_shows_name_and_agent_together() {
+        let line = row("running").summary_line(60);
+        assert!(line.contains("Sally"), "{line}");
+        assert!(line.contains("explore"), "{line}");
+    }
+
+    #[test]
+    fn summary_line_does_not_duplicate_the_agent_as_a_parenthetical() {
+        let mut r = row("running");
+        // When the display name equals the agent type, print it once.
+        r.display_name = Some("explore".into());
+        let line = r.summary_line(60);
+        assert_eq!(line.matches("explore").count(), 1, "{line}");
     }
 
     #[test]

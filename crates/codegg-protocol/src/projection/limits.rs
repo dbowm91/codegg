@@ -66,6 +66,14 @@ pub const MAX_PROJECTION_NOTIFICATION_BOUND: usize = 16;
 /// session.
 pub const MAX_PROJECTION_SUBAGENTS: usize = 16;
 
+/// Maximum byte length of a subagent display name in the projection.
+///
+/// Display names are drawn from a validated pool whose entries are capped at
+/// 24 characters, so this only ever trims a name arriving from a producer that
+/// did not go through the registry. The pool's own bound is the contract; this
+/// is the projection's defence in depth.
+pub const MAX_PROJECTION_DISPLAY_NAME_BYTES: usize = 32;
+
 /// Maximum number of durable delegated runs retained in one session
 /// projection. Detached/background runs remain inspectable without making
 /// the projection an unbounded history store.

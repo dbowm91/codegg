@@ -582,11 +582,15 @@ pub(crate) fn map_app_event_to_core_event(
             task_id,
             agent,
             description,
+            display_name,
+            run_id,
         } => Some(CoreEvent::SubagentStarted {
             session_id,
             task_id,
             agent,
             description,
+            display_name,
+            run_id,
         }),
         crate::bus::events::AppEvent::SubagentProgress {
             session_id,

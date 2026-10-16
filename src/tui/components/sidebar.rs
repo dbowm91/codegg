@@ -1781,6 +1781,8 @@ mod tests {
             created_at: task_id as i64,
             completed_at: None,
             result_summary: None,
+            display_name: None,
+            run_id: None,
         }
     }
 
