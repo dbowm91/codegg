@@ -210,3 +210,39 @@ result. It does not establish full M004 production PTY/LSP integration,
 supported-host admission, or M005 IPv6/UDP/DNS/inherited-descriptor and
 offline-toolchain coverage. No enforcement status or production default is
 promoted by these runs.
+
+## Exact-head M004/M005 candidate qualification (2026-10-16)
+
+Reviewed implementation head: `b30ebdcd53f5ac3a411e3365fe7288ceff1a4acd`.
+
+Hosted Linux workflow
+[38829815162](https://github.com/dbowm91/codegg/actions/runs/38829815162)
+passed on Ubuntu 24.04, kernel `6.17.0-1022-azure`, Bubblewrap `0.9.0`, UID
+1001, with the runner's `kernel.apparmor_restrict_unprivileged_userns=1`
+relaxed to `0` only in that ephemeral VM for the positive namespace probes.
+The M004 native target passed 8/8, including host proc/signal/IPC denial,
+descendant cancellation, distinct concurrent PID/IPC namespaces, the M005
+offline child probe, and a contained workspace Cargo check plus managed-
+process tests. Protected-mount regressions passed 11/11 and trusted-Git
+regressions 18/18. The separate restricted-userns job passed its required
+launch refusal before target execution with `user.max_user_namespaces=0`.
+
+The M005 child probe could not connect to host IPv4/IPv6 loopback TCP
+listeners, deliver IPv4/IPv6 UDP datagrams to host listeners, resolve
+`example.com`, connect to `198.51.100.1:443`, or use a deliberately inherited
+host TCP descriptor. These are candidate denial observations, not a full
+network qualification: the test did not positively establish host-side DNS or
+external reachability before asserting child failure, did not exercise DNS
+rebinding, and did not test every production launch owner. No persisted
+`OfflineRequired` authority or `NetworkEnforcement::Enforced` status is
+introduced.
+
+The first run on `43329069` exposed malformed indentation in the generated
+Python probe. The test was corrected to use a raw multiline string and pushed
+as `b30ebdcd`; the successful run above includes that correction.
+
+M003 remains not admitted. Its controlled packed/fragmented object-view
+measurements still breach the agreed performance thresholds. M004 remains
+active because constrained PTY creation refuses before spawn and constrained
+LSP has no supervised duplex process owner. The passing native candidate
+matrix does not close those production-owner gates or certify a Linux host.
