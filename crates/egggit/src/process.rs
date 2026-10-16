@@ -887,10 +887,10 @@ fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> s
         let is_fanout =
             name_text.len() == 2 && name_text.bytes().all(|byte| byte.is_ascii_hexdigit());
         if name_text != "pack" && !is_fanout {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "unsupported Git object directory entry",
-            ));
+            // Git may leave temporary entries while another process writes
+            // objects. They are outside Git's lookup namespace, so omit them
+            // from this immutable view instead of failing trusted reads.
+            continue;
         }
         let source_subdir = openat(
             &source_file,
@@ -919,10 +919,9 @@ fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> s
                 if !((suffix.len() == 38 || suffix.len() == 62)
                     && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
                 {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "unsupported loose Git object name",
-                    ));
+                    // Temporary names and unrelated files cannot be looked
+                    // up as loose objects by Git.
+                    continue;
                 }
             }
             let object_fd = openat(
@@ -995,6 +994,12 @@ fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::R
         if name == "info" {
             continue;
         }
+        let name_text = name.to_string_lossy();
+        let is_fanout =
+            name_text.len() == 2 && name_text.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if name_text != "pack" && !is_fanout {
+            continue;
+        }
         let metadata = std::fs::symlink_metadata(entry.path())?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(std::io::Error::new(
@@ -1002,37 +1007,25 @@ fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::R
                 "unsupported entry in Git object directory",
             ));
         }
-        let name_text = name.to_string_lossy();
-        let is_fanout =
-            name_text.len() == 2 && name_text.bytes().all(|byte| byte.is_ascii_hexdigit());
-        if name_text != "pack" && !is_fanout {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "unsupported Git object directory entry",
-            ));
-        }
         let target_dir = destination.join(&name);
         std::fs::create_dir(&target_dir)?;
         for object in std::fs::read_dir(entry.path())? {
             let object = object?;
             let object_name = object.file_name();
+            if is_fanout {
+                let suffix = object_name.to_string_lossy();
+                if !((suffix.len() == 38 || suffix.len() == 62)
+                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    continue;
+                }
+            }
             let object_metadata = std::fs::symlink_metadata(object.path())?;
             if !object_metadata.is_file() || object_metadata.file_type().is_symlink() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "unsupported entry in Git object fanout",
                 ));
-            }
-            if is_fanout {
-                let suffix = object_name.to_string_lossy();
-                if !((suffix.len() == 38 || suffix.len() == 62)
-                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "unsupported loose Git object name",
-                    ));
-                }
             }
             copied = copied.checked_add(1).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
@@ -1348,6 +1341,30 @@ mod tests {
     use super::*;
 
     use std::path::PathBuf;
+
+    #[test]
+    fn private_object_view_omits_temporary_entries() {
+        let source = tempfile::tempdir().expect("object source");
+        let destination = tempfile::tempdir().expect("object view");
+        let fanout = source.path().join("ab");
+        std::fs::create_dir(&fanout).expect("fanout directory");
+        let valid_object = fanout.join("c".repeat(38));
+        std::fs::write(&valid_object, b"object").expect("valid loose object");
+        std::fs::write(fanout.join("tmp_obj_in_progress"), b"partial")
+            .expect("temporary loose object");
+        std::fs::write(source.path().join("tmp_pack_in_progress"), b"partial")
+            .expect("temporary object-store entry");
+
+        copy_object_files(source.path(), destination.path()).expect("copy valid object view");
+
+        assert_eq!(
+            std::fs::read(destination.path().join("ab").join("c".repeat(38)))
+                .expect("copied valid object"),
+            b"object"
+        );
+        assert!(!destination.path().join("ab/tmp_obj_in_progress").exists());
+        assert!(!destination.path().join("tmp_pack_in_progress").exists());
+    }
 
     #[test]
     #[ignore = "manual performance qualification; requires CODEGG_OBJECT_VIEW_BENCH_REPOSITORY"]
