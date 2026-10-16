@@ -368,3 +368,113 @@ fn is_direction(action: &Option<InputAction>) -> bool {
             | &Some(InputAction::DirectionDown)
     )
 }
+
+// ── Subagent tabs ─────────────────────────────────────────────────────
+//
+// `Shift+N` / `Shift+P` / `Shift+X` are the second family of Shift-qualified
+// letters after the pane directions, and they carry the same two constraints:
+// they must be bound under **both** legacy encodings, and they must stay
+// ordinary text while composing. The second is not a nicety here — `N` and `X`
+// are among the most common capitals in English prose, and `X` in particular is
+// what a user types when naming a variable.
+
+#[test]
+fn subagent_tab_letters_resolve_under_both_encodings() {
+    // Terminals disagree about whether a shifted letter carries SHIFT. Binding
+    // only one form would make the gesture work on one machine and silently do
+    // nothing on another.
+    for vim_mode in [false, true] {
+        let map = build_bindings(None, vim_mode);
+        let label = if vim_mode { "vim" } else { "default" };
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            for (letter, expected) in [
+                ('N', InputAction::NextSubagentTab),
+                ('P', InputAction::PreviousSubagentTab),
+                ('X', InputAction::CloseSubagentTab),
+            ] {
+                assert_eq!(
+                    map.get(&(modifiers, KeyCode::Char(letter))).cloned(),
+                    Some(expected.clone()),
+                    "{letter} with {modifiers:?} missing from the {label} map"
+                );
+                assert_eq!(
+                    press(KeyCode::Char(letter), modifiers, InputMode::Normal),
+                    Some(expected),
+                    "{letter} with {modifiers:?} must cycle tabs in Normal mode"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn subagent_tab_letters_are_ordinary_text_in_insert_mode() {
+    // If any of these fired while composing it would stop the agent mid-word.
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        for letter in ['N', 'P', 'X'] {
+            assert_eq!(
+                press(KeyCode::Char(letter), modifiers, InputMode::Insert),
+                Some(InputAction::Char(letter)),
+                "an uppercase {letter} while composing must type a {letter}, not drive a tab"
+            );
+        }
+    }
+}
+
+#[test]
+fn subagent_tab_letters_are_distinct_from_the_project_tab_chords() {
+    // Project tabs (header) and subagent tabs (main buffer) are independent
+    // axes. Reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` for both would have collapsed
+    // two navigations onto one gesture, so the letters must stay disjoint.
+    for (letter, chord_action) in [
+        ('n', InputAction::NextProjectTab),
+        ('b', InputAction::PreviousProjectTab),
+    ] {
+        let chord = press(
+            KeyCode::Char(letter),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+            InputMode::Normal,
+        );
+        assert_eq!(
+            chord,
+            Some(chord_action),
+            "Ctrl+Alt+{letter} must keep driving project tabs"
+        );
+        assert_ne!(chord, Some(InputAction::NextSubagentTab));
+        assert_ne!(chord, Some(InputAction::PreviousSubagentTab));
+    }
+
+    // And the Shift spellings must not have shadowed an existing bare letter.
+    for letter in ['n', 'p', 'x'] {
+        assert_ne!(
+            press(KeyCode::Char(letter), KeyModifiers::NONE, InputMode::Normal),
+            Some(InputAction::NextSubagentTab),
+            "lowercase {letter} must not open the tasks tab family"
+        );
+    }
+}
+
+#[test]
+fn no_subagent_tab_binding_is_reachable_as_a_control_shift_chord() {
+    // Covered structurally by `no_binding_map_contains_a_control_shift_entry`,
+    // but asserted here by name because this family is the one most likely to
+    // grow a chord later.
+    for bindings in [default_bindings(), build_bindings(None, true)] {
+        for (modifiers, code) in bindings.keys() {
+            let targets_a_tab = matches!(
+                bindings.get(&(*modifiers, *code)),
+                Some(InputAction::NextSubagentTab)
+                    | Some(InputAction::PreviousSubagentTab)
+                    | Some(InputAction::CloseSubagentTab)
+            );
+            if targets_a_tab {
+                assert!(
+                    !(modifiers.contains(KeyModifiers::SHIFT)
+                        && modifiers.contains(KeyModifiers::CONTROL)),
+                    "{code:?} drives a subagent tab with CONTROL|SHIFT, which legacy \
+                     xterm encoding cannot deliver"
+                );
+            }
+        }
+    }
+}

@@ -20,8 +20,10 @@
 
 use codegg::session::message::ToolStatus;
 use codegg::tui::app::state::subagents::SubagentRow;
+use codegg::tui::app::state::tasks::TaskRow;
 use codegg::tui::app::{App, SessionStatus};
 use codegg::tui::components::messages::MsgPart;
+use codegg::tui::input::InputMode;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -432,6 +434,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
         SubagentRow {
             task_id: "1".into(),
             run_id: None,
+            display_name: Some("Sally".into()),
             agent: "explore".into(),
             description: "Map the auth flow".into(),
             status: "running".into(),
@@ -439,6 +442,7 @@ fn active_subagents_are_listed_with_their_task_and_status() {
         SubagentRow {
             task_id: "2".into(),
             run_id: None,
+            display_name: Some("Greg".into()),
             agent: "build".into(),
             description: "Warm the cargo cache".into(),
             status: "completed".into(),
@@ -463,6 +467,7 @@ fn a_long_fan_out_is_truncated_with_an_honest_count() {
             .map(|i| SubagentRow {
                 task_id: i.to_string(),
                 run_id: None,
+                display_name: None,
                 agent: format!("agent{i}"),
                 description: format!("task {i}"),
                 status: "running".into(),
@@ -489,6 +494,7 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: Some("run-7".into()),
+        display_name: Some("Sally".into()),
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
@@ -501,13 +507,13 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
     assert_eq!(row_rect.y, strip.y + 1);
 
     click(&mut app, strip.x + 3, row_rect.y);
-    let open = app
+    let tab = app
         .ui_state
         .subagents
-        .open
-        .clone()
+        .active_tab()
+        .cloned()
         .expect("clicking a subagent row opens its buffer");
-    assert_eq!(open.row.agent, "explore");
+    assert_eq!(tab.row.agent, "explore");
 
     let buffer = render_to_buffer(&mut app, 100, 30);
     let text = buffer_text(&buffer);
@@ -517,7 +523,7 @@ fn clicking_a_subagent_row_opens_its_buffer_and_esc_returns_to_main() {
 
     app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
-        app.ui_state.subagents.open.is_none(),
+        app.ui_state.subagents.active_tab().is_none(),
         "Esc must return to the main buffer"
     );
 }
@@ -529,6 +535,7 @@ fn clicking_the_throbber_row_opens_nothing() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: None,
+        display_name: None,
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
@@ -537,7 +544,7 @@ fn clicking_the_throbber_row_opens_nothing() {
 
     let strip = app.ui_state.working_area.expect("strip drawn");
     click(&mut app, strip.x + 3, strip.y);
-    assert!(app.ui_state.subagents.open.is_none());
+    assert!(app.ui_state.subagents.active_tab().is_none());
 }
 
 #[test]
@@ -550,6 +557,7 @@ fn the_strip_is_hit_tested_before_the_composer() {
     app.ui_state.subagents.set_rows(vec![SubagentRow {
         task_id: "7".into(),
         run_id: None,
+        display_name: None,
         agent: "explore".into(),
         description: "Map the auth flow".into(),
         status: "running".into(),
@@ -563,7 +571,7 @@ fn the_strip_is_hit_tested_before_the_composer() {
         "the strip must not overlap the prompt rect"
     );
     click(&mut app, strip.x + 3, row_rect.y);
-    assert!(app.ui_state.subagents.open.is_some());
+    assert!(app.ui_state.subagents.active_tab().is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -889,4 +897,438 @@ fn an_idle_agent_shows_no_stop_affordance() {
         "nothing to stop and nothing stopped means no stop affordance. \
          Rendered:\n{text}"
     );
+}
+
+#[test]
+fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
+    // Forty todos, ten running subagents and ten running jobs on a 30-row
+    // terminal: far more work in flight than the pane has rows. The contract
+    // is not "the overlay always fits" - it is that the transcript keeps its
+    // `Min(10)` floor and the overlay yields instead of the layout
+    // over-committing. An overshooting overlay is not merely tall: it makes
+    // the carve yield, so `Shift+T` would read as a dead key.
+    use codegg::tui::app::state::subagents::SubagentRow;
+
+    for (width, height) in [(100u16, 30u16), (100, 50), (120, 24)] {
+        let mut app = test_app();
+        app.session_state.session_status = SessionStatus::Working;
+        app.set_todos(
+            (0..40)
+                .map(|i| codegg::tui::app::TodoEntry {
+                    content: format!("todo number {i}"),
+                    status: "pending".into(),
+                    priority: "medium".into(),
+                })
+                .collect(),
+        );
+        app.ui_state.subagents.set_rows(
+            (0..10)
+                .map(|i| SubagentRow {
+                    task_id: i.to_string(),
+                    run_id: None,
+                    display_name: Some(format!("Sally{i}")),
+                    agent: "explore".into(),
+                    description: format!("a long description for subagent {i}"),
+                    status: "running".into(),
+                })
+                .collect(),
+        );
+        app.tasks_expanded = true;
+
+        render_to_buffer(&mut app, width, height);
+
+        let viewport = app.viewport_area.expect("viewport area recorded");
+        assert!(
+            viewport.height >= 10,
+            "transcript fell to {} rows at {width}x{height}; the floor is 10",
+            viewport.height
+        );
+        // Whatever rows the overlay did take, the composer still has a box.
+        let prompt = app.prompt_area.expect("prompt area recorded");
+        assert!(
+            prompt.height >= 1,
+            "the composer vanished at {width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn the_overlay_appears_when_the_pane_has_room_for_it() {
+    use codegg::tui::app::state::subagents::SubagentRow;
+
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    app.set_todos(vec![codegg::tui::app::TodoEntry {
+        content: "ship the thing".into(),
+        status: "in_progress".into(),
+        priority: "high".into(),
+    }]);
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "1".into(),
+        run_id: None,
+        display_name: Some("Sally".into()),
+        agent: "explore".into(),
+        description: "Map the auth flow".into(),
+        status: "running".into(),
+    }]);
+    app.tasks_expanded = true;
+
+    render_to_buffer(&mut app, 100, 50);
+    let area = app
+        .tasks_area
+        .expect("the overlay reserves rows when there is room");
+    assert!(area.height > 0);
+
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 50));
+    // Both groups are labelled and named, so the reader can tell what each
+    // block is without inferring it from the rows.
+    assert!(text.contains("Todo list"), "{text}");
+    assert!(text.contains("Subagents"), "{text}");
+    assert!(text.contains("Sally"), "{text}");
+    assert!(text.contains("explore"), "{text}");
+}
+
+#[test]
+fn a_collapsed_tasks_overlay_reserves_nothing() {
+    let mut app = test_app();
+    app.set_todos(vec![codegg::tui::app::TodoEntry {
+        content: "a todo".into(),
+        status: "pending".into(),
+        priority: "medium".into(),
+    }]);
+    app.tasks_expanded = false;
+    assert_eq!(app.tasks_strip_height(), 0);
+    render_to_buffer(&mut app, 100, 30);
+    assert!(
+        app.tasks_area.is_none(),
+        "a collapsed overlay must not paint"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. Subagent tabs
+// ---------------------------------------------------------------------------
+//
+// Opening a subagent used to be a single slot: one `Option`, no way to keep two
+// runs side by side, no way to see how many were open. The tab set fixes both,
+// and the tests below pin the parts that are easy to get subtly wrong: the
+// cycle wrap, the capacity refusal, the "subject left the snapshot" terminal
+// state, and the one-row bar's width arithmetic.
+
+fn subagent(task_id: &str, name: &str, status: &str) -> SubagentRow {
+    SubagentRow {
+        task_id: task_id.into(),
+        run_id: Some(format!("run-{task_id}")),
+        display_name: Some(name.into()),
+        agent: "explore".into(),
+        description: format!("work for {task_id}"),
+        status: status.into(),
+    }
+}
+
+fn app_with_subagents(rows: Vec<SubagentRow>) -> App {
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    app.ui_state.subagents.set_rows(rows);
+    app
+}
+
+/// Text of the one row the subagent tab bar occupies.
+///
+/// Read from the bar's own row rather than from the whole buffer: the live
+/// toast column is an overlay pinned to the top right, so a whole-buffer scan
+/// cannot distinguish "the bar says this" from "a toast happens to say this".
+fn tab_bar_text(app: &App, buf: &Buffer) -> String {
+    let viewport = app.viewport_area.expect("viewport drawn");
+    // The bar is carved off the top of the viewport, so it is the row above it.
+    (0..buf.area.width)
+        .map(|x| buf[(x, viewport.y - 1)].symbol())
+        .collect()
+}
+
+#[test]
+fn shift_n_and_shift_p_cycle_the_tab_set_and_wrap_through_the_conversation() {
+    let mut app = app_with_subagents(vec![
+        subagent("1", "Sally", "running"),
+        subagent("2", "Bertha", "running"),
+    ]);
+    // `Shift+N` is Normal-only by contract — `N` is typed text while
+    // composing — so the test has to be in Normal to press it at all.
+    app.ui_state.input_mode = InputMode::Normal;
+    app.open_subagent_tab("1");
+    app.open_subagent_tab("2");
+
+    let press = |app: &mut App, letter: char| {
+        app.on_key(KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT));
+    };
+    let active = |app: &App| {
+        app.ui_state
+            .subagents
+            .active_tab()
+            .map(|tab| tab.tab_id.as_str().to_string())
+    };
+    assert_eq!(
+        active(&app).as_deref(),
+        Some("2"),
+        "the newest tab is active"
+    );
+
+    press(&mut app, 'N');
+    assert_eq!(
+        active(&app).as_deref(),
+        None,
+        "cycling forward off the last tab wraps to the conversation"
+    );
+    press(&mut app, 'P');
+    assert_eq!(
+        active(&app).as_deref(),
+        Some("2"),
+        "cycling backward from the conversation must land on the LAST tab"
+    );
+    press(&mut app, 'P');
+    assert_eq!(active(&app).as_deref(), Some("1"));
+    press(&mut app, 'P');
+    assert_eq!(
+        active(&app).as_deref(),
+        None,
+        "and wraps forward to the conversation from the first tab"
+    );
+    press(&mut app, 'N');
+    assert_eq!(
+        active(&app).as_deref(),
+        Some("1"),
+        "then forward into the first tab again"
+    );
+}
+
+#[test]
+fn shift_x_closes_the_active_tab_without_stopping_the_run() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.ui_state.input_mode = InputMode::Normal;
+    app.open_subagent_tab("1");
+
+    app.on_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT));
+    assert!(app.ui_state.subagents.active_tab().is_none());
+    // Closing a tab closes nothing else: the run is still advertised by the
+    // projection, so the working strip must keep showing it.
+    assert_eq!(
+        app.ui_state.subagents.rows.len(),
+        1,
+        "closing a tab must not clear the rows"
+    );
+    assert!(app.ui_state.subagents.running_count() == 1);
+}
+
+#[test]
+fn the_tab_bar_names_every_open_tab_and_marks_the_active_one() {
+    let mut app = app_with_subagents(vec![
+        subagent("1", "Sally", "running"),
+        subagent("2", "Bertha", "running"),
+    ]);
+    app.open_subagent_tab("1");
+    app.open_subagent_tab("2");
+
+    let buffer = render_to_buffer(&mut app, 100, 30);
+    let bar = tab_bar_text(&app, &buffer);
+    assert!(
+        bar.contains("Chat"),
+        "the conversation is always offered: {bar:?}"
+    );
+    assert!(bar.contains("Sally"), "{bar:?}");
+    assert!(bar.contains("Bertha"), "{bar:?}");
+}
+
+#[test]
+fn no_tab_bar_reserves_no_rows() {
+    let app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    assert_eq!(app.subagent_tab_strip_height(), 0);
+}
+
+/// `(baseline viewport rows, viewport rows with tabs open)`.
+///
+/// The rows are set *before* the baseline render on purpose. Adding subagent
+/// rows grows the working strip, so a test that opened tabs on an app whose
+/// rows only appeared at the same time would be measuring the strip too and
+/// would report a bar that costs five rows when it costs one.
+fn tab_bar_layout_cost(width: u16, height: u16) -> (u16, u16) {
+    let mut app = app_with_subagents(vec![
+        subagent("1", "Sally", "running"),
+        subagent("2", "Bertha", "running"),
+        subagent("3", "Cleo", "running"),
+    ]);
+    render_to_buffer(&mut app, width, height);
+    let baseline = app.viewport_area.expect("viewport drawn").height;
+
+    for task_id in ["1", "2", "3"] {
+        app.open_subagent_tab(task_id);
+    }
+    render_to_buffer(&mut app, width, height);
+    (baseline, app.viewport_area.expect("viewport drawn").height)
+}
+
+#[test]
+fn the_tab_bar_costs_exactly_one_row_whenever_it_renders() {
+    // Asserted across several sizes rather than one: a layout that only holds
+    // at 100x30 is not a layout.
+    for (width, height) in [(100u16, 30u16), (100, 50), (120, 24), (80, 20)] {
+        let (baseline, with_tabs) = tab_bar_layout_cost(width, height);
+        let delta = baseline as i32 - with_tabs as i32;
+        assert!(
+            delta == 0 || delta == 1,
+            "{width}x{height}: the tab bar cost {delta} rows; it is one row or none"
+        );
+    }
+}
+
+#[test]
+fn the_tab_bar_never_pushes_the_transcript_below_its_floor() {
+    // `Min(10)` in `session_layout` is a *soft* floor: ratatui yields it when
+    // the pane is oversubscribed, and the working strip is allowed to
+    // oversubscribe it — three subagent rows on a 20-line pane already claim
+    // their own. So the bar must be the thing that yields, not the transcript.
+    //
+    // On a pane with no room the bar is dropped entirely. That is the honest
+    // outcome and the one worth pinning: tabs stay reachable by `Shift+N`
+    // either way, whereas a truncated transcript is the loss the user cannot
+    // see coming.
+    for (width, height) in [(100u16, 30u16), (100, 50), (120, 24), (80, 20)] {
+        let (baseline, with_tabs) = tab_bar_layout_cost(width, height);
+        assert!(
+            with_tabs >= MIN_TRANSCRIPT_FLOOR,
+            "{width}x{height}: the tab bar pushed the transcript to {with_tabs} rows, \
+             below the floor of {MIN_TRANSCRIPT_FLOOR} (baseline was {baseline})"
+        );
+    }
+}
+
+/// The transcript's floor in `session_layout` (`Constraint::Min(10)`).
+const MIN_TRANSCRIPT_FLOOR: u16 = 10;
+
+#[test]
+fn a_tab_whose_subject_left_the_snapshot_says_so_instead_of_claiming_to_run() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+
+    // The turn ended: the per-turn agent tree was cleared and a snapshot with
+    // no tree arrived.
+    app.ui_state.subagents.set_rows(Vec::new());
+    let tab = app
+        .ui_state
+        .subagents
+        .active_tab()
+        .expect("the tab survives its subject");
+    assert!(
+        !tab.is_running(),
+        "a detached tab must not claim to be live"
+    );
+
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 30));
+    assert!(
+        text.contains("no longer in the session's projection"),
+        "the view must state the terminal state rather than leave a stale claim: {text}"
+    );
+    // It keeps showing what the run was, which is the point of detaching.
+    assert!(text.contains("work for 1"), "{text}");
+}
+
+#[test]
+fn a_detached_tab_returns_to_live_when_its_subject_comes_back() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.open_subagent_tab("1");
+    app.ui_state.subagents.set_rows(Vec::new());
+    assert!(!app
+        .ui_state
+        .subagents
+        .active_tab()
+        .expect("open")
+        .is_running());
+
+    app.ui_state
+        .subagents
+        .set_rows(vec![subagent("1", "Sally", "running")]);
+    assert!(app
+        .ui_state
+        .subagents
+        .active_tab()
+        .expect("open")
+        .is_running());
+}
+
+#[test]
+fn the_overlay_is_a_keyboard_path_into_a_tab() {
+    let mut app = app_with_subagents(vec![
+        subagent("1", "Sally", "running"),
+        subagent("2", "Bertha", "running"),
+    ]);
+    app.ui_state.input_mode = InputMode::Normal;
+    app.toggle_tasks_list();
+    assert!(app.tasks_expanded);
+
+    // One `j` from a fresh overlay lands on the *first* row, not the second.
+    assert!(app.move_tasks_selection(1));
+    assert_eq!(app.tasks_selected, Some(1), "j lands on the first body row");
+
+    assert!(app.open_selected_task());
+    assert_eq!(
+        app.ui_state
+            .subagents
+            .active_tab()
+            .map(|tab| tab.tab_id.as_str()),
+        Some("1")
+    );
+    assert!(!app.tasks_expanded, "opening closes the overlay");
+}
+
+#[test]
+fn the_overlay_cursor_walks_every_group_without_resting_on_a_heading() {
+    let mut app = app_with_subagents(vec![subagent("1", "Sally", "running")]);
+    app.set_todos(vec![codegg::tui::app::TodoEntry {
+        content: "a todo".into(),
+        status: "pending".into(),
+        priority: "medium".into(),
+    }]);
+    app.ui_state.input_mode = InputMode::Normal;
+    app.toggle_tasks_list();
+
+    // Rows are [Todo header, todo, Subagents header, subagent]. The cursor
+    // must visit both body rows and rest on neither heading — a cursor parked
+    // on `── Subagents ──` would make `Enter` a no-op the user has to learn to
+    // step over.
+    let mut visited = Vec::new();
+    for _ in 0..4 {
+        if !app.move_tasks_selection(1) {
+            break;
+        }
+        let index = app.tasks_selected.expect("cursor");
+        assert!(
+            !matches!(app.bounded_task_rows()[index], TaskRow::Header { .. }),
+            "the cursor rested on a group heading at {index}"
+        );
+        visited.push(index);
+    }
+    assert_eq!(visited, vec![1, 3], "both body rows, in display order");
+    // Clamped at the end rather than wrapping.
+    assert!(!app.move_tasks_selection(1));
+}
+
+#[test]
+fn the_overlay_cursor_never_rests_on_a_row_that_was_truncated_away() {
+    let mut app = test_app();
+    // Far more rows than the overlay's total budget.
+    let rows: Vec<SubagentRow> = (0..60)
+        .map(|index| subagent(&index.to_string(), &format!("n{index}"), "running"))
+        .collect();
+    app.ui_state.subagents.set_rows(rows);
+    app.toggle_tasks_list();
+
+    for _ in 0..40 {
+        app.move_tasks_selection(1);
+        let Some(index) = app.tasks_selected else {
+            continue;
+        };
+        assert!(
+            index < app.bounded_task_rows().len(),
+            "the cursor pointed past the bounded rows"
+        );
+    }
 }

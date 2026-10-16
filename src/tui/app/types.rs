@@ -259,6 +259,8 @@ pub enum TuiMsg {
         placement: crate::tui::panels::PanelPlacement,
     },
     ToggleTodoList,
+    /// Open the unified tasks overlay: todos, subagents, jobs.
+    ToggleTasksList,
     ToggleFullscreen,
     ToggleReasoning,
     ToggleTts,
@@ -522,6 +524,26 @@ pub enum TuiMsg {
     PreviousProjectTab,
     /// Close the active project tab.
     CloseProjectTab,
+    /// Open the subagent with this projection `task_id` as a tab in the main
+    /// buffer.
+    ///
+    /// Addressed by the projection's canonical id rather than a row index so
+    /// every surface that can open a tab — the tasks overlay today, the
+    /// sessions panel's subagent section from M004 — agrees on identity even
+    /// if the rows shift underneath between the keypress and the dispatch.
+    ///
+    /// Carries no authority: opening a tab reads state the projection already
+    /// published and sends nothing to the subagent. Interacting with a
+    /// subagent is M900, which is not approved for planning.
+    OpenSubagentTab {
+        task_id: String,
+    },
+    /// Move to the next subagent tab, wrapping through the conversation.
+    NextSubagentTab,
+    /// Move to the previous subagent tab, wrapping through the conversation.
+    PreviousSubagentTab,
+    /// Close the active subagent tab, returning to the main buffer.
+    CloseSubagentTab,
     /// Select a project tab by visible index.
     SelectProjectTabByIndex {
         index: usize,

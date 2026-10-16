@@ -265,9 +265,90 @@ completion popup, return from Insert to Normal mode, or discard a half-written
 prompt — and then stops. `Ctrl+C` unwinds the same layers before it exits, so a
 dialog needs a second press.
 
-Registry metadata — domain, scope, source, keywords — exists for palette and
-help presentation only. It does not bypass dispatch, observer mode, daemon
+Registry metadata — domain, scope, and source exist for palette and help
+presentation only. It does not bypass dispatch, observer mode, daemon
 authorization, or permission gates.
+
+## Subagents, jobs, and the tasks overlay
+
+When a turn fans out — several subagents, background jobs — CodeGG gives each
+subagent a short friendly name so you can refer to it, and shows **the same
+name** in every place it appears.
+
+Names are temporary. One is assigned while the subagent is running and released
+when it finishes, so two concurrent runs never share a name, and a name is not
+a durable handle for that run. Read it as "the subagent I was watching a minute
+ago", not as an identifier you can rely on later.
+
+Three surfaces show this, and all three read one projection:
+
+| Surface | Open it with | What it shows |
+|---|---|---|
+| Tasks overlay | `Shift+T` in `NOR` | Todos, subagents, and jobs together |
+| Session panel | the sidebar — `Ctrl+B` toggles it, `Shift+L` / `Shift+→` in `NOR` gives it the keyboard on the default layout | `Subagents` and `Jobs` sections under Todos |
+| Buffer tabs | `Shift+N` / `Shift+P` / `Shift+X` | One subagent's transcript per tab, in the main buffer |
+
+All four keys are `[NOR]`-only. In `[INS]` they are ordinary capital letters,
+so composing a word containing `T`, `N`, `P`, or `X` never triggers them — and
+neither does any other capital letter. `Shift+F` (project picker) and `Ctrl+O`
+(Workspace view) work the same way round: the shifted letter is `[NOR]`-only,
+the chord is live in both modes.
+
+### The tasks overlay
+
+`Shift+T` opens a single overlay listing **todos, then subagents, then jobs**,
+each under its own heading. A group with nothing in it is left out entirely —
+there are no empty headings. `j`/`k` move, `Enter` opens a subagent as a tab,
+and `Esc` closes the overlay.
+
+It shows what the turn is *waiting on*, not what it has done: finished
+subagents and completed jobs are filtered out. When a job reports a state this
+build does not recognise it is shown rather than hidden, because showing
+finished work costs a glance and hiding live work costs you the thing you
+asked for.
+
+The overlay is driven by `[NOR]` keys only, so you can press `i` and keep
+typing with it open.
+
+`Ctrl+T` is unaffected and still owns the compact todo strip above the input.
+The two surfaces overlap by design — todos appear in both — because the strip is
+a progress line that stays on screen at all times, and the overlay is a
+fuller list you open when you want it.
+
+### Subagent tabs
+
+`Shift+N` and `Shift+P` move between open subagent tabs and wrap around;
+`Shift+X` closes the active one. `Esc` also returns to the conversation. The
+cycle runs `Chat` first, then the subagent tabs in the order you opened them.
+
+With no subagent tabs open the keys do nothing rather than appearing to break —
+you stay on the conversation. Up to 16 subagent tabs can be open at once; at
+that point opening another is **refused** and says so, rather than closing a tab
+you were reading.
+
+A subagent tab shows that subagent's transcript. Closing it cancels nothing —
+the run keeps going whether or not you are watching it. When a run drops out of
+the projection the tab stays open and stops claiming to be live, so the buffer
+cannot show "running" for something the daemon has stopped vouching for.
+
+### Session panel sections
+
+The Session panel lists `Todos`, then `Subagents`, then `Jobs`, so the three
+"what is this waiting on" surfaces sit together. `j`/`k` and the arrow keys
+move through them, `Space` collapses a section, and `Enter` (or a click) acts on
+the selected row:
+
+- a **subagent** row opens that subagent's transcript as a tab in the main
+  buffer, the same tab `Shift+T` would have opened;
+- a **job** row does nothing. Jobs have no transcript to show yet, so the key
+  is consumed rather than sending you somewhere arbitrary;
+- the **Agent Runs tree** further down the panel keeps its own behaviour:
+  `Enter` there opens the run-detail dialog.
+
+Unlike the overlay, the panel keeps rows for finished subagents and marks their
+status. It is a persistent index, not a status light: a subagent that finishes
+should not vanish from the list you are reading. Sections are bounded, and a
+section with more rows than fit ends in a `… N more` line.
 
 ## Themes
 

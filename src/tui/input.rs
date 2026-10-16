@@ -25,6 +25,9 @@
 //! | n | NewSession (Normal only) |
 //! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTodoList |
+//! | Shift+T | ToggleTasksList (todos + subagents + jobs) |
+//! | Shift+N / Shift+P | Next / previous subagent tab (main buffer) |
+//! | Shift+X | Close subagent tab (main buffer) |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
@@ -154,6 +157,13 @@ pub enum InputAction {
     DirectionUp,
     DirectionDown,
     ToggleTodoList,
+    /// Expand the unified tasks overlay: todos, then in-flight
+    /// subagents, then jobs the session is waiting on.
+    ///
+    /// Distinct from the `/tasks` command, which governs *schedules*.
+    /// That overlap is deliberate but the help text must not call a
+    /// scheduled run a "task" beside a live subagent.
+    ToggleTasksList,
     ToggleSection,
     CloseSession,
     Help,
@@ -198,6 +208,19 @@ pub enum InputAction {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    /// Move to the next subagent tab in the main buffer (`Shift+N`).
+    ///
+    /// Cycle order runs `Chat` → subagent tabs in the order they were opened,
+    /// and wraps. A no-op with no subagent tabs open: the main conversation
+    /// stays selected rather than the key becoming visibly dead.
+    NextSubagentTab,
+    /// Move to the previous subagent tab (`Shift+P`). Mirrors
+    /// [`InputAction::NextSubagentTab`] in both directions and wrapping.
+    PreviousSubagentTab,
+    /// Close the active subagent tab (`Shift+X`), returning to the main
+    /// conversation. Never closes the main buffer itself, and cancels
+    /// nothing — the run keeps going whether or not its tab is open.
+    CloseSubagentTab,
     /// Project Work Orders M003 + C001: toggle the prompt composer between
     /// Session and Task submission modes. C001 owns bare Tab at root
     /// prompt focus (`Session <-> Task`); `SwitchAgent` lives on `Ctrl+A`
@@ -244,6 +267,13 @@ pub enum ActionKey {
     DirectionUp,
     DirectionDown,
     ToggleTodoList,
+    /// Expand the unified tasks overlay: todos, then in-flight
+    /// subagents, then jobs the session is waiting on.
+    ///
+    /// Distinct from the `/tasks` command, which governs *schedules*.
+    /// That overlap is deliberate but the help text must not call a
+    /// scheduled run a "task" beside a live subagent.
+    ToggleTasksList,
     ToggleSection,
     CloseSession,
     Help,
@@ -281,6 +311,9 @@ pub enum ActionKey {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    NextSubagentTab,
+    PreviousSubagentTab,
+    CloseSubagentTab,
     ToggleComposerMode,
     OpenWorkspaceDashboard,
 }
@@ -348,9 +381,13 @@ impl ActionKey {
             Self::NextProjectTab,
             Self::PreviousProjectTab,
             Self::CloseProjectTab,
+            Self::NextSubagentTab,
+            Self::PreviousSubagentTab,
+            Self::CloseSubagentTab,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
             Self::ToggleTodoList,
+            Self::ToggleTasksList,
         ]
     }
 
@@ -410,9 +447,13 @@ impl ActionKey {
             Self::NextProjectTab => InputAction::NextProjectTab,
             Self::PreviousProjectTab => InputAction::PreviousProjectTab,
             Self::CloseProjectTab => InputAction::CloseProjectTab,
+            Self::NextSubagentTab => InputAction::NextSubagentTab,
+            Self::PreviousSubagentTab => InputAction::PreviousSubagentTab,
+            Self::CloseSubagentTab => InputAction::CloseSubagentTab,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
             Self::ToggleTodoList => InputAction::ToggleTodoList,
+            Self::ToggleTasksList => InputAction::ToggleTasksList,
         }
     }
 
@@ -472,9 +513,13 @@ impl ActionKey {
             Self::NextProjectTab => "Next project tab",
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
+            Self::NextSubagentTab => "Next subagent tab (Shift+N)",
+            Self::PreviousSubagentTab => "Previous subagent tab (Shift+P)",
+            Self::CloseSubagentTab => "Close subagent tab (Shift+X)",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
             Self::ToggleTodoList => "Toggle todo list (expand above input)",
+            Self::ToggleTasksList => "Toggle tasks (todos, subagents, jobs) (Shift+T)",
         }
     }
 
@@ -525,11 +570,27 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // two-key arrangement with a chord that worked in Insert; the
             // chord is retired and this is now the only spelling, which
             // makes the mode gate the whole reason the key is safe.
-            // (`Shift+F` needs no entry here: the Insert branch below
-            // treats every text-modifier letter as typeable text, so the
-            // picker keeps its `Ctrl+\` Insert spelling while `Shift+F`
-            // stays Normal-only.)
+            // (`Shift+F` and `Shift+W` are deliberately **not** listed here.
+            // Both actions also own a `Ctrl` chord — `Ctrl+\` for the picker,
+            // `Ctrl+O` for Workspace — and `is_normal_only` is keyed on the
+            // action, so listing them here would have silently taken the
+            // chord out of Insert mode too. Built-in shifted capitals are
+            // handled in the Insert branch instead, at the key.)
             | InputAction::OpenPanelManager
+            // `Shift+T` claims an uppercase letter, which is text the user is
+            // actively typing. Without this entry Insert mode would treat a
+            // capital `T` mid-word as "open the overlay" instead of composing
+            // it — the same class of bug the `Shift+S` entry above prevents.
+            | InputAction::ToggleTasksList
+            // `Shift+N` / `Shift+P` / `Shift+X` claim three more uppercase
+            // letters, and `N` and `X` are among the most common capitals in
+            // ordinary prose. Without these entries Insert mode would read a
+            // capital `N` mid-word as "next subagent tab" instead of composing
+            // it — the same class of bug the `Shift+S` and `Shift+T` entries
+            // above prevent.
+            | InputAction::NextSubagentTab
+            | InputAction::PreviousSubagentTab
+            | InputAction::CloseSubagentTab
             // Already covered by the bare-char rule, but stated here because
             // it is load-bearing: `x` must never be claimed while composing,
             // or typing a word containing it would stop the agent.
@@ -603,6 +664,40 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
         (KeyModifiers::NONE, KeyCode::Char('F')),
         InputAction::OpenProjectPicker,
     );
+    // `Shift+T` opens the unified tasks overlay (todos, subagents, jobs).
+    // Under both encodings for the same legacy reason as the letters above.
+    //
+    // It deliberately does NOT reuse `Ctrl+T`, which stays with the todo
+    // strip. The two surfaces overlap by design — todos appear in both — but
+    // collapsing them would take away the compact progress line that `Ctrl+T`
+    // keeps on screen at all times.
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('T')),
+        InputAction::ToggleTasksList,
+    );
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('T')),
+        InputAction::ToggleTasksList,
+    );
+    // `Shift+N` / `Shift+P` / `Shift+X` drive the subagent tab set in the main
+    // buffer: next, previous, close. All three are uppercase letters that were
+    // unbound in every keymap, and all three are bound under both encodings for
+    // the same legacy reason as `Shift+S`/`Shift+F`/`Shift+T` above.
+    //
+    // They are separate letters rather than a reused chord on purpose. These
+    // names the buffer itself, adjacent to `Tab` for project tabs — but they
+    // are a different axis entirely (subagents inside one session, versus
+    // projects beside it), so reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` would have
+    // collapsed two independent navigations onto one gesture and made the
+    // project-tab muscle memory fire a subagent switch instead.
+    for (letter, action) in [
+        ('N', InputAction::NextSubagentTab),
+        ('P', InputAction::PreviousSubagentTab),
+        ('X', InputAction::CloseSubagentTab),
+    ] {
+        map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
+        map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
+    }
 }
 
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
@@ -1327,7 +1422,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Enter",
-            action: "Inspect sidebar selection",
+            // One key, three outcomes by row kind: an agent-tree row opens the
+            // run-detail dialog, a subagent row opens its transcript as a main
+            // buffer tab, and a job row opens nothing (it has no transcript).
+            // A job row is deliberately inert rather than routed somewhere
+            // arbitrary — see `a_job_row_is_read_only_and_never_reaches_the_composer`.
+            action: "Inspect sidebar selection (a subagent row opens its transcript tab)",
             condition: Some("sidebar focus"),
         },
         HelpEntry {
@@ -1642,6 +1742,30 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "Shift+F",
             action: "Open the project picker; /projects also works mid-prompt",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+T",
+            action: "Open the tasks overlay: todos, subagents, and jobs together, with empty groups hidden",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+N",
+            action: "Next subagent tab in the main buffer (cycles through the conversation)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+P",
+            action: "Previous subagent tab in the main buffer",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+X",
+            action: "Close the active subagent tab; the run keeps going either way",
             condition: None,
         },
         HelpEntry {
@@ -1978,12 +2102,33 @@ pub(crate) fn handle_key_with_bindings(
             // key still fires (custom bindings win over text).
             let is_text_key = matches!(key.code, KeyCode::Char(c)
                 if is_text_modifier(key.modifiers) && is_printable_char(c));
-            // The consulted map is the default one exactly when no custom
-            // bindings were passed.
-            let is_default_map = bindings.is_none();
+            // A **built-in** text-modifier letter is composed text, not an
+            // action, even when the caller passed its own resolved map. This
+            // used to be gated on `is_default_map` (i.e. `bindings.is_none()`),
+            // which is dead in the real app: `App::on_key` always passes
+            // `Some(&self.ui_state.bindings)`. So typing a capital `F`
+            // mid-word opened the project picker instead of composing, in the
+            // default configuration — `Shift+F` had been waved through as
+            // safe by a rule that never ran.
+            //
+            // "Built-in" means the binding ships in either of the two maps the app
+            // can be configured with — it is checked by comparing the action
+            // against both, not by map identity, which keeps the
+            // neighbouring arm's promise intact: an *explicit user binding*
+            // still wins over text. `VIM_BINDINGS` matters as much as
+            // `DEFAULT_BINDINGS` here: `Shift+G` exists only in the vim map,
+            // and the regression test that used to cover it passed
+            // `bindings: None`, so it exercised the one path where the old
+            // gate fired and stayed green while the real path was broken.
+            // The lowercase letters stay on `is_normal_only`, which is the
+            // right tool for `x`/`ToggleAgentRun` because that one binds no
+            // modifier at all.
+            let is_builtin_text_key = is_text_key
+                && (map.get(&key_tuple) == DEFAULT_BINDINGS.get(&key_tuple)
+                    || map.get(&key_tuple) == VIM_BINDINGS.get(&key_tuple));
 
             if let Some(action) = map.get(&key_tuple) {
-                if is_bare_char || is_normal_only(action) || (is_text_key && is_default_map) {
+                if is_bare_char || is_normal_only(action) || is_builtin_text_key {
                     debug_log!("insert mode: skipping bare char binding: {:?}", action);
                 } else {
                     debug_log!("insert mode: matched binding: {:?}", action);
@@ -2388,6 +2533,45 @@ mod tests {
     }
 
     #[test]
+    fn shift_t_opens_the_tasks_overlay_under_both_encodings() {
+        // Terminals disagree about how a shifted letter arrives: some send
+        // `Char('T') + SHIFT`, others a bare `Char('T')`. Binding only one
+        // spelling means the key silently does nothing on the other half of
+        // the terminals a user might be on.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            let key = make_key(KeyCode::Char('T'), modifiers);
+            assert_eq!(
+                handle_key_with_bindings(key, None, InputMode::Normal),
+                Some(InputAction::ToggleTasksList),
+                "Shift+T must resolve with modifiers {modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lowercase_t_is_not_the_tasks_overlay() {
+        // The binding is Normal-mode-only and case-sensitive on purpose: a
+        // bare `t` is a prompt character and must never open the overlay.
+        let key = make_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_ne!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::ToggleTasksList),
+            "lowercase t must not open the tasks overlay"
+        );
+    }
+
+    #[test]
+    fn ctrl_t_still_owns_the_todo_strip() {
+        // The two surfaces overlap by design but must not share a key: Ctrl+T
+        // owns the always-visible compact progress line.
+        let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::ToggleTodoList)
+        );
+    }
+
+    #[test]
     fn ctrl_b_toggles_sidebar_in_both_maps_and_modes() {
         for insert in [false, true] {
             let key = make_key(KeyCode::Char('b'), KeyModifiers::CONTROL);
@@ -2472,9 +2656,83 @@ mod tests {
         );
     }
 
+    /// A built-in `Shift+<letter>` binding must never fire while the user is
+    /// composing. A capital letter is text in the middle of a word, so firing
+    /// an action swallows the character and hijacks the prompt.
+    ///
+    /// This is written as a behavioural sweep over **both** keymaps rather
+    /// than as a handful of named cases because the failure is not specific.
+    /// `Shift+F` (project picker) shipped broken this way in the *default*
+    /// configuration, because the guard that was supposed to prevent it was
+    /// gated on `bindings.is_none()` and `App::on_key` never passes `None`.
+    /// `Shift+W` (Workspace) had the same hole. Naming them would have caught
+    /// only the second, and only after someone found the first by hand.
+    #[test]
+    fn builtin_shift_letters_are_composed_text_in_insert_mode() {
+        let mut seen: BTreeSet<char> = BTreeSet::new();
+        for vim_mode in [false, true] {
+            let map = build_bindings(None, vim_mode);
+            for letter in 'A'..='Z' {
+                if !map.contains_key(&(KeyModifiers::SHIFT, KeyCode::Char(letter))) {
+                    continue;
+                }
+                seen.insert(letter);
+                let resolved = handle_key_with_bindings(
+                    KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT),
+                    Some(&map),
+                    InputMode::Insert,
+                );
+                assert!(
+                    matches!(resolved, Some(InputAction::Char(_)) | None),
+                    "Shift+{letter} must compose in Insert (vim_mode={vim_mode}), \
+                     got {resolved:?}"
+                );
+            }
+        }
+        // The sweep must not be vacuous: assert it actually inspected the
+        // mnemonic letters, so dropping a binding cannot make it pass.
+        // `G` is here because it is vim-only — it is precisely the letter a
+        // default-map-only check would have missed.
+        assert_eq!(
+            seen,
+            ['F', 'G', 'H', 'J', 'K', 'L', 'N', 'P', 'Q', 'S', 'T', 'W', 'X']
+                .into_iter()
+                .collect::<BTreeSet<char>>(),
+            "the sweep must observe every built-in Shift-letter mnemonic"
+        );
+    }
+
+    /// The sweep above must not have been bought by making text unwinnable.
+    /// An explicit user binding for a shifted capital is still an explicit
+    /// request, and it must still fire in Insert.
+    #[test]
+    fn a_user_binding_for_a_shift_letter_still_fires_in_insert_mode() {
+        let mut map = build_bindings(None, false);
+        map.insert(
+            (KeyModifiers::SHIFT, KeyCode::Char('Q')),
+            InputAction::ToggleSidebar,
+        );
+        assert_eq!(
+            handle_key_with_bindings(
+                KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
+                Some(&map),
+                InputMode::Insert,
+            ),
+            Some(InputAction::ToggleSidebar),
+            "a custom Shift+<letter> binding must still win over composed text"
+        );
+    }
+
     /// Regression: `Shift+G` was bound to `GoToBottom` in the Insert map, but
     /// bare-char suppression only skips `KeyModifiers::NONE` bindings, so
     /// capital `G` scrolled the viewport instead of reaching the prompt.
+    ///
+    /// Worth keeping narrower than it looks: it passes `bindings: None`, so it
+    /// only ever exercises the `is_default_map` path. That was enough while
+    /// the guard was gated on it, and silently insufficient once it was not —
+    /// the vim map, where `Shift+G` actually lives, went untested the whole
+    /// time. `builtin_shift_letters_are_composed_text_in_insert_mode` is the
+    /// one that passes a real map.
     #[test]
     fn shift_g_inserts_char_in_insert_mode() {
         let key = make_key(KeyCode::Char('G'), KeyModifiers::SHIFT);

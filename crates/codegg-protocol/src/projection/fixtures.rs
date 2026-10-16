@@ -414,6 +414,8 @@ pub fn subagent_event_script() -> Vec<ReducerEventInput> {
                 created_at: 4,
                 completed_at: None,
                 result_summary: None,
+                display_name: Some("Sally".into()),
+                run_id: None,
             },
         },
     ));

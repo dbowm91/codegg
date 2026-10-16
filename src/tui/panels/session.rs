@@ -87,6 +87,14 @@ impl SidePanel for SessionPanel {
                     SidebarActivation::InspectRun(run_id) => {
                         PanelKey::Intent(TuiMsg::OpenRunDetail { run_id })
                     }
+                    // Opens the addressed subagent as a tab in the main buffer.
+                    // Routed as an `Intent` rather than applied here: the panel
+                    // does not own the tab set, and calling into the app
+                    // directly is how a viewer panel acquires authority it was
+                    // never given.
+                    SidebarActivation::InspectSubagent(task_id) => {
+                        PanelKey::Intent(TuiMsg::OpenSubagentTab { task_id })
+                    }
                     SidebarActivation::None => PanelKey::Consumed,
                 };
             }

@@ -309,6 +309,12 @@ pub enum AppEvent {
         task_id: u64,
         agent: String,
         description: String,
+        /// Human-readable display name drawn once at spawn and released when
+        /// the subagent finishes. Travels in the event so projection replay
+        /// is deterministic; never re-minted downstream.
+        display_name: Option<String>,
+        /// Durable run id when the subagent is scheduler-owned.
+        run_id: Option<String>,
     },
     /// A subagent sent progress.
     SubagentProgress {
