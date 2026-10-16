@@ -162,6 +162,9 @@ fn apply_seatbelt(
 
 #[cfg(unix)]
 fn main() {
+    #[cfg(target_os = "linux")]
+    maybe_run_m004_pty_bootstrap();
+
     // Install the Seatbelt applier before any backend is resolved. On
     // non-macOS hosts this is a no-op the backend registry never reaches.
     #[cfg(target_os = "macos")]
@@ -274,12 +277,99 @@ fn main() {
     );
 }
 
+/// Bubblewrap's PID namespace init launches the requested command as a child
+/// whose inherited process-group leader is outside the namespace. For PTY
+/// launches, move this still-unmodified target process into its own visible
+/// process group and make it foreground before replacing it with user code.
+#[cfg(target_os = "linux")]
+fn maybe_run_m004_pty_bootstrap() {
+    use std::os::unix::process::CommandExt;
+
+    let args = env::args_os().collect::<Vec<_>>();
+    if args.get(1).map(|arg| arg.as_os_str()) != Some(std::ffi::OsStr::new("--m004-pty-bootstrap"))
+    {
+        return;
+    }
+    if args.get(2).map(|arg| arg.as_os_str()) != Some(std::ffi::OsStr::new("--")) {
+        eprintln!("M004 PTY bootstrap arguments are malformed");
+        std::process::exit(126);
+    }
+    let Some(target) = args.get(3) else {
+        eprintln!("M004 PTY bootstrap target is missing");
+        std::process::exit(126);
+    };
+
+    unsafe {
+        if libc::setpgid(0, 0) == -1 {
+            eprintln!(
+                "M004 PTY bootstrap setpgid failed: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(126);
+        }
+        let mut block_sigttou: libc::sigset_t = std::mem::zeroed();
+        let mut previous_signal_mask: libc::sigset_t = std::mem::zeroed();
+        if libc::sigemptyset(&mut block_sigttou) == -1
+            || libc::sigaddset(&mut block_sigttou, libc::SIGTTOU) == -1
+            || libc::sigprocmask(libc::SIG_BLOCK, &block_sigttou, &mut previous_signal_mask) == -1
+        {
+            eprintln!(
+                "M004 PTY bootstrap cannot block SIGTTOU: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(126);
+        }
+        let foreground_group = libc::getpgrp();
+        let set_foreground = libc::ioctl(
+            0,
+            libc::TIOCSPGRP as libc::c_ulong,
+            &foreground_group as *const libc::pid_t,
+        );
+        let ioctl_error = (set_foreground == -1).then(std::io::Error::last_os_error);
+        if libc::sigprocmask(
+            libc::SIG_SETMASK,
+            &previous_signal_mask,
+            std::ptr::null_mut(),
+        ) == -1
+        {
+            eprintln!(
+                "M004 PTY bootstrap cannot restore signal mask: {}",
+                std::io::Error::last_os_error()
+            );
+            std::process::exit(126);
+        }
+        if let Some(error) = ioctl_error {
+            eprintln!("M004 PTY bootstrap TIOCSPGRP failed: {}", error);
+            std::process::exit(126);
+        }
+    }
+
+    let error = Command::new(target).args(args.iter().skip(4)).exec();
+    eprintln!("M004 PTY bootstrap target exec failed: {error}");
+    std::process::exit(126);
+}
+
 /// Replace the helper with Bubblewrap after compiling and pinning every
 /// source mount by descriptor. Bubblewrap's block-fd barrier prevents target
 /// execution until the daemon acknowledges its child identity; Bubblewrap
 /// reads that byte only after completing mount setup.
 #[cfg(target_os = "linux")]
 fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -> ! {
+    let pty_job_control =
+        unsafe { libc::isatty(0) == 1 && libc::isatty(1) == 1 && libc::isatty(2) == 1 };
+    let pty_bootstrap = if pty_job_control {
+        Some(File::open("/proc/self/exe").unwrap_or_else(|error| {
+            fail(
+                status_fd,
+                SandboxLaunchOutcome::SetupError {
+                    reason: String::new(),
+                },
+                format!("pin PTY bootstrap executable: {error}"),
+            )
+        }))
+    } else {
+        None
+    };
     let bubblewrap = codegg::security::sandbox::linux_launch::trusted_bubblewrap_path()
         .unwrap_or_else(|reason| {
             fail(
@@ -316,6 +406,9 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
                 reason,
             )
         });
+    if let Some(bootstrap) = pty_bootstrap.as_ref() {
+        inherited_fds.push(bootstrap.as_raw_fd());
+    }
 
     let seccomp_filter = if spec.linux_process_isolation {
         let filter = codegg::security::sandbox::linux_seccomp::compile_filter()
@@ -374,7 +467,14 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
             seccomp_filter
                 .iter()
                 .flat_map(|fd| ["--seccomp".to_string(), fd.as_raw_fd().to_string()]),
-        )
+        );
+    if let Some(bootstrap) = pty_bootstrap.as_ref() {
+        command
+            .arg("--ro-bind-fd")
+            .arg(bootstrap.as_raw_fd().to_string())
+            .arg("/tmp/.codegg-sandbox-pty-bootstrap");
+    }
+    command
         .arg("--block-fd")
         .arg(codegg::security::sandbox::SANDBOX_ACK_FD.to_string())
         .arg("--json-status-fd")
@@ -391,8 +491,17 @@ fn exec_linux_protected_mount_view(spec: &SandboxLaunchSpec, status_fd: RawFd) -
     for (name, value) in target_env {
         command.arg("--setenv").arg(name).arg(value);
     }
-    command.arg("--").arg(spec.target.as_os_str());
-    command.args(&spec.args);
+    command.arg("--");
+    if pty_job_control {
+        command
+            .arg("/tmp/.codegg-sandbox-pty-bootstrap")
+            .arg("--m004-pty-bootstrap")
+            .arg("--")
+            .arg(spec.target.as_os_str())
+            .args(&spec.args);
+    } else {
+        command.arg(spec.target.as_os_str()).args(&spec.args);
+    }
     unsafe {
         command.pre_exec(move || {
             for fd in &inherited_fds {

@@ -736,19 +736,6 @@ pub(crate) async fn spawn_sandboxed_interactive_child(
             if libc::ioctl(0, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
                 return Err(io::Error::last_os_error());
             }
-            // TIOCSCTTY establishes the session's controlling terminal, but
-            // Bubblewrap's later namespace fork can leave its foreground
-            // process group unset. Set the session leader's group explicitly
-            // so the contained target receives normal terminal job control.
-            let foreground_group = libc::getpgrp();
-            if libc::ioctl(
-                0,
-                libc::TIOCSPGRP as libc::c_ulong,
-                &foreground_group as *const libc::pid_t,
-            ) == -1
-            {
-                return Err(io::Error::last_os_error());
-            }
             Ok(())
         });
     }

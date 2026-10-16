@@ -219,10 +219,14 @@ The interactive PTY owner now has an internal long-lived M004 launch path:
 monitor, resize, cancellation, and scheduler permit. The helper receives a
 bounded explicit environment in the private launch spec and rejects duplicate,
 malformed, or oversized entries; `HOME`, `TMPDIR`, and Git config roots remain
-helper-owned. The daemon protocol still refuses constrained PTY creation while
-this path awaits exact-source hosted PTY qualification. This work does not
-admit M003 or claim offline networking. Constrained LSP remains disabled until
-its distinct duplex process owner is qualified.
+helper-owned. When all three standard streams are terminals, the helper pins its
+own executable into the private mount view and uses it as an in-namespace
+bootstrap to establish a PID-namespace-visible foreground process group before
+execing the requested target in place. The daemon protocol still refuses
+constrained PTY creation while this path awaits exact-source hosted PTY
+qualification. This work does not admit M003 or claim offline networking.
+Constrained LSP remains disabled until its distinct duplex process owner is
+qualified.
 
 ADR-0043 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
