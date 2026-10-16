@@ -258,25 +258,7 @@ async fn offline_network_runs_cargo_metadata_and_check_without_network() {
         panic!("M005 offline toolchain probe requires qualified M004 setup: {reason}");
     }
 
-    let workspace = tempfile::tempdir().expect("offline toolchain workspace");
-    let source = workspace.path().join("src");
-    std::fs::create_dir(&source).expect("create fixture source directory");
-    std::fs::write(
-        workspace.path().join("Cargo.toml"),
-        "[package]\nname = \"offline-toolchain-probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    )
-    .expect("write fixture manifest");
-    std::fs::write(
-        source.join("main.rs"),
-        "fn main() { println!(\"offline\"); }\n",
-    )
-    .expect("write fixture source");
-    std::fs::write(
-        workspace.path().join("Cargo.lock"),
-        "version = 4\n\n[[package]]\nname = \"offline-toolchain-probe\"\nversion = \"0.1.0\"\n",
-    )
-    .expect("write dependency-free lockfile");
-
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .expect("test runner HOME is available");
@@ -292,32 +274,65 @@ async fn offline_network_runs_cargo_metadata_and_check_without_network() {
         .expect("Rustup is installed by the Linux test toolchain")
         .canonicalize()
         .expect("resolve rustup executable");
+    let host_triple_output = Command::new(&rustup)
+        .args(["run", "stable", "rustc", "-vV"])
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("CARGO_HOME", &cargo_home)
+        .output()
+        .expect("query the installed Rust host triple");
+    assert!(
+        host_triple_output.status.success(),
+        "installed rustc query failed: {}",
+        String::from_utf8_lossy(&host_triple_output.stderr)
+    );
+    let host_triple = String::from_utf8_lossy(&host_triple_output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("rustc -vV host triple")
+        .to_string();
+    let linker_env = format!(
+        "CARGO_TARGET_{}_LINKER",
+        host_triple.replace('-', "_").to_ascii_uppercase()
+    );
+    let linker = std::env::split_paths(&std::env::var_os("PATH").expect("runner PATH"))
+        .map(|directory| directory.join("cc"))
+        .find(|candidate| candidate.is_file())
+        .expect("C linker is installed on the Linux test runner")
+        .canonicalize()
+        .expect("resolve C linker executable");
 
     let rustup_home = shell_quote(&rustup_home.to_string_lossy());
     let cargo_bin = shell_quote(&cargo_home.join("bin").to_string_lossy());
     let cargo_home = shell_quote(&cargo_home.to_string_lossy());
-    let target_dir = shell_quote(&workspace.path().join("target").to_string_lossy());
-    let manifest = shell_quote(&workspace.path().join("Cargo.toml").to_string_lossy());
+    let linker_dir = shell_quote(
+        &linker
+            .parent()
+            .expect("C linker has a parent directory")
+            .to_string_lossy(),
+    );
+    let linker = shell_quote(&linker.to_string_lossy());
+    let linker_env = shell_quote(&linker_env);
+    let manifest = shell_quote(&workspace.join("Cargo.toml").to_string_lossy());
     let rustup = shell_quote(&rustup.to_string_lossy());
     let script = format!(
-        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_TARGET_DIR={target_dir}; export PATH={cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --manifest-path {manifest}"
+        "export RUSTUP_HOME={rustup_home} CARGO_HOME={cargo_home} CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS=2 CC={linker} HOST_CC={linker} {linker_env}={linker}; export PATH={linker_dir}:{cargo_bin}:$PATH; {rustup} run stable cargo metadata --offline --locked --workspace --no-deps --format-version 1 --manifest-path {manifest} >/dev/null && {rustup} run stable cargo check --offline --locked --workspace --manifest-path {manifest}"
     );
 
     let spec = SandboxConfig::new()
         .with_enabled(true)
         .with_mode(SandboxMode::WorkspaceWrite)
         .with_linux_offline_network(true)
-        .launch_spec("/bin/sh", &["-c".into(), script], Some(workspace.path()))
+        .launch_spec("/bin/sh", &["-c".into(), script], Some(&workspace))
         .expect("offline M005 toolchain launch spec");
     let mut request = ManagedProcessRequest::new(
         [spec.target.as_os_str().to_owned()]
             .into_iter()
             .chain(spec.args.iter().map(OsString::from))
             .collect(),
-        workspace.path().to_path_buf(),
-        ProcessProvenance::new("linux-m005", "offline-cargo-toolchain"),
+        workspace,
+        ProcessProvenance::new("linux-m005", "offline-cargo-workspace"),
     );
-    request.timeout = Some(Duration::from_secs(120));
+    request.timeout = Some(Duration::from_secs(15 * 60));
     request.sandbox = SandboxRequest::Required(spec);
 
     let result = ManagedProcessService::run(request)
