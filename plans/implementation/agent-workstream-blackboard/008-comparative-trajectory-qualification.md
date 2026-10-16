@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed. Execute the isolated S0–S3 comparison and remaining deterministic trajectory strata. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed. Partial exploratory S0/S1 and Cargo target measurements are recorded in `plans/closure/agent-workstream-blackboard/008-isolated-results.md`; sandbox containment was not verified, S2/S3 remain unqualified, and the remaining task strata are open. Continue only in an execution context that exposes the production TaskTool and a verified workspace root. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -74,3 +74,20 @@ broad M008 task strata, or shared-checkout execution. M006 and M007 have since
 closed through their strict platform and daemon-backed acceptance gates, so
 M008 is now active for its isolated S0–S3 scope. Any S4 shared-checkout arm
 remains separately gated on M005.
+
+### Additional isolated S0/S1 and Cargo measurements (2026-10-16)
+
+Two more S0 trials completed and one of two S1 trials completed without
+intervention. The other S1 Python client timed out after five minutes; its
+staged change was recovered and passed integrated tests, but the trial is not
+counted as autonomous success. A single cold Rust target-directory comparison
+also completed. Full measurements and limitations are recorded in
+`plans/closure/agent-workstream-blackboard/008-isolated-results.md` and
+`008-isolated-results.json`.
+
+The headless `codegg exec` context did not expose `task.spawn_many` or
+`wait_group`, so no S2/S3 agent runs were started. It also reported that the
+requested workspace-write profile had no workspace root, so those runs do
+not establish sandbox containment. These results do not qualify M008 or
+support an effectiveness-improvement claim. M008 remains active; no
+downstream plan is unblocked by this partial evidence.

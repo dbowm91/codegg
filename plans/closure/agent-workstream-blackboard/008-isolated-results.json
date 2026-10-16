@@ -1,0 +1,176 @@
+{
+  "evidence_kind": "partial exploratory measurement; not M008 closure",
+  "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
+  "fixture_baseline": "f5e27d388255726b0b85226a144fdcce2e91b73a",
+  "binary": {
+    "version": "CodeGG 0.1.0",
+    "source_build_toolchain": "Rust 1.89, aarch64-apple-darwin",
+    "mode": "exec",
+    "provider_model": "opencode_go/gpt-6-luna",
+    "agent": "build",
+    "approval": "yolo",
+    "sandbox_requested": "workspace-write",
+    "sandbox_warning": "Each headless invocation logged that no workspace root was available for the requested workspace-write profile. Effective OS containment was not established by this experiment.",
+    "aggregate_token_budget": null,
+    "random_seed": null
+  },
+  "machine": {
+    "os": "macOS 26.6.2 (25G83)",
+    "reported_architecture": "x86_64 process under Rosetta (sysctl.proc_translated=1)",
+    "memory_bytes": 25769803776,
+    "cargo": "1.98.1 (797e8a9bc 2026-08-05), x86_64-apple-darwin",
+    "rustc": "1.98.1 (48a229cea 2026-09-01), x86_64-apple-darwin"
+  },
+  "task": {
+    "fixture": "plans/closure/agent-workstream-blackboard/008-fixture/README.md",
+    "contract": "Implement deterministic capped exponential retry_delay_ms in dependency-free Rust and Python packages; tests frozen; no dependencies added.",
+    "rust_tests": 5,
+    "python_tests": 5
+  },
+  "trials": [
+    {
+      "id": "S0-A",
+      "condition": "one agent, both modules, ordinary checkout",
+      "result": "success",
+      "agent_duration_ms": 71141,
+      "agent_tokens": 14921,
+      "process_wall_seconds": 71.20,
+      "process_max_rss_bytes": 119635968,
+      "rust_child_commit": null,
+      "python_child_commit": null,
+      "integrated_commit": "91c2179fa22592fa805ca31742712704b9d9bb3e",
+      "agent_rust_tests": "5 passed",
+      "agent_python_tests": "5 passed",
+      "evaluator_rust_tests": "5 passed",
+      "evaluator_python_tests": "5 passed",
+      "test_files_unchanged": true
+    },
+    {
+      "id": "S0-B",
+      "condition": "one agent, both modules, ordinary checkout",
+      "result": "success",
+      "agent_duration_ms": 47664,
+      "agent_tokens": 14784,
+      "process_wall_seconds": 47.67,
+      "process_max_rss_bytes": 119603200,
+      "rust_child_commit": null,
+      "python_child_commit": null,
+      "integrated_commit": "32c48d8d5f1138a94146b23b867069e66bbf8438",
+      "agent_rust_tests": "5 passed",
+      "agent_python_tests": "5 passed",
+      "evaluator_rust_tests": "5 passed",
+      "evaluator_python_tests": "5 passed",
+      "test_files_unchanged": true
+    },
+    {
+      "id": "S1-A",
+      "condition": "two independent children, linked Git worktrees, no board",
+      "result": "client timeout with manual recovery; not counted as autonomous success",
+      "pair_completion_timeout_seconds": 300,
+      "rust_child": {
+        "result": "success",
+        "agent_duration_ms": 45565,
+        "agent_tokens": 12626,
+        "process_wall_seconds": 45.58,
+        "process_max_rss_bytes": 125681664,
+        "commit": "c0672fa7fc4790cdbda4f85f83cba8feb03a80eb",
+        "tests": "5 passed"
+      },
+      "python_child": {
+        "result": "client produced no final JSON before timeout",
+        "process_wall_seconds": 308.37,
+        "process_max_rss_bytes": 117850112,
+        "source_edit_present_at_timeout": true,
+        "recovery_commit": "e1d58a523a5b767e2c8049db62de1a07bee18123",
+        "recovery": "Evaluator committed staged implementation after timeout and ran Python tests (5 passed)."
+      },
+      "integrated_commit": "f906bccd8c1f8653cf2e5d347f8688548ef848f6",
+      "integrated_rust_tests": "5 passed",
+      "integrated_python_tests": "5 passed",
+      "test_files_unchanged": true,
+      "integration_conflicts": 0
+    },
+    {
+      "id": "S2-A",
+      "condition": "two isolated children with peer observations, no claims",
+      "result": "unavailable before child creation",
+      "agent_duration_ms": 23525,
+      "agent_tokens": 10393,
+      "reason": "Headless exec tool discovery exposed no task.spawn_many or wait_group action. No child was started and no replacement coordination was emulated.",
+      "fixture_head_after_attempt": "f5e27d388255726b0b85226a144fdcce2e91b73a"
+    },
+    {
+      "id": "S1-B",
+      "condition": "two independent children, linked Git worktrees, no board",
+      "result": "success",
+      "pair_wall_seconds": 79.01,
+      "agent_tokens": 27140,
+      "summed_individual_process_max_rss_bytes": 221085696,
+      "rust_child": {
+        "agent_duration_ms": 78873,
+        "agent_tokens": 13456,
+        "process_wall_seconds": 79.01,
+        "process_max_rss_bytes": 110362624,
+        "commit": "32d565ed9a71529f6c327024c87394b56a57764c",
+        "tests": "5 passed"
+      },
+      "python_child": {
+        "agent_duration_ms": 64999,
+        "agent_tokens": 13684,
+        "process_wall_seconds": 65.14,
+        "process_max_rss_bytes": 110723072,
+        "commit": "3518ed7367c431146e1322fb8a49d42c6d84644c",
+        "tests": "5 passed"
+      },
+      "integrated_commit": "0748ecc8bd57252ffcf743f7a30f2035ce3079da",
+      "integration_conflicts": 0,
+      "integrated_rust_tests": "5 passed",
+      "integrated_python_tests": "5 passed",
+      "test_files_unchanged": true
+    }
+  ],
+  "cargo_target_measurement": {
+    "source_head": "a0d7acef8e428d55971514addf685741a25ce047",
+    "command": "cargo check --locked --offline -p codegg-core",
+    "cargo_jobs_per_process": 2,
+    "condition_shared_target": {
+      "processes": 2,
+      "exit_codes": [0, 0],
+      "wall_seconds": 211.23,
+      "user_cpu_seconds": 286.09,
+      "system_cpu_seconds": 44.25,
+      "time_reported_max_rss_bytes": 1088335872,
+      "target_size_kib": 1159948,
+      "observation": "Second Cargo process waited on the shared build-directory lock; both checks succeeded."
+    },
+    "condition_separate_targets": {
+      "processes": 2,
+      "exit_codes": [0, 0],
+      "wall_seconds": 233.69,
+      "user_cpu_seconds": 630.37,
+      "system_cpu_seconds": 94.17,
+      "time_reported_max_rss_bytes": 1435226112,
+      "target_sizes_kib": [1167808, 1167308],
+      "observation": "Both independent targets compiled simultaneously; output size was approximately twice the shared-target arm."
+    },
+    "limitations": "One cold run per condition on a 24 GiB Mac under Rosetta, with no randomized order or repeated trials. The reported maximum RSS is the time(1) command's reported maximum, not a sampled sum of concurrent process-tree RSS. This measures Cargo behavior only; it does not qualify shared-checkout mutation or set a product cache policy."
+  },
+  "unavailable_strata": [
+    "S2 and S3 provider-backed trajectories",
+    "Python independent multi-module task",
+    "Rust task with heavy shared dependencies as an agent task",
+    "Tightly coupled Rust API/schema changes",
+    "Overlapping-path collision and clobber task",
+    "Prerequisite chain",
+    "Branch drift/conflict trajectory beyond two clean non-overlapping commits",
+    "Read-only reviewer plus producer",
+    "Interrupted background build/restart recovery",
+    "S4 serialized shared checkout (M005-gated)"
+  ],
+  "summary_limits": [
+    "S0 completed twice; S1 completed once and timed out once with manual recovery.",
+    "S1-B consumed 82.7% more tokens and took about 35% longer than the mean S0 wall time including integration, but that comparison is N=1 versus N=2 and is descriptive only.",
+    "Sandbox containment was requested but not verified because each headless exec logged that no workspace root was available.",
+    "No S2/S3 peer-observation or claim benefit conclusion is supported."
+  ]
+}

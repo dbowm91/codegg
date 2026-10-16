@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — ADR-0032 is accepted; M006 and M007 are now strictly closed and M008 proceeds on isolated worktrees. Continue the checkout-writer feasibility design; do not start a writer-permit service before the external-writer product boundary and complete mediation/native lifecycle evidence are accepted. Shared mutation remains unavailable.
+Status: active — ADR-0032 is accepted; M006 and M007 are strictly closed and M008 proceeds on isolated worktrees. Proposed ADR-0033 makes the restricted CodeGG-mediated writer boundary concrete but remains unaccepted. Continue feasibility review only; do not start a writer-permit service before maintainers accept the external-writer boundary and complete-mediation/native-lifecycle gates. Shared mutation remains unavailable.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
@@ -248,6 +248,17 @@ This review does not qualify shared mutation and does not change ADR-0032 or
 ADR-0002. It records why scheduler exclusivity keys and request-scoped locks
 are insufficient and why persistent process ownership must be resolved before
 broad implementation.
+
+#### External-writer boundary proposal (2026-10-16)
+
+Proposed ADR-0033 records Option B for maintainer review: shared-placement
+serialization would cover CodeGG-mediated writers only. Unrelated same-user
+processes are outside the serialization guarantee; guarded CodeGG writes must
+detect external checkout drift as conflict, without claiming protection from
+that writer. Any CodeGG mutation surface without a typed permit through
+verified effective-writer quiescence remains denied. The proposal authorizes
+no service or shared-write path, and M005 remains active pending ratification
+and per-platform feasibility evidence.
 
 #### Architecture options and recommendation
 

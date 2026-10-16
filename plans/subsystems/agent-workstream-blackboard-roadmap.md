@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004, M006–M007, and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. M006 and M007 strict closures passed exact-head hosted CI and Windows native worktree qualification on `79cc725b`. M008 is active for isolated S0–S3 trajectory and economics qualification; S4 shared-checkout execution remains unavailable pending M005. M005 continues as a separately gated feasibility initiative with shared mutation disabled and no writer-permit implementation.
+Status: active; M001–M004, M006–M007, and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. M006 and M007 strict closures passed exact-head hosted CI and Windows native worktree qualification on `79cc725b`. M008 has exploratory S0/S1 and Cargo target data; S2/S3 and other strata remain open because the headless context lacked TaskTool and verified sandbox-root evidence. S4 remains unavailable pending M005. Proposed ADR-0033 recommends a CodeGG-mediated writer boundary; M005 remains feasibility-only, shared mutation disabled, and no writer-permit service is implemented.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -72,7 +72,7 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M008 isolated trajectory/economics                [active: M006/M007 closed; S4 remains M005-gated]
 ~~~
 
-M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. Following user direction on 2026-10-16, M006 and M007 were prioritized first and are now strictly closed. M008 is active for isolated S0–S3 trajectory/economics qualification; any S4 shared-checkout arm remains M005-gated. M005 continues only through its restricted-capability and process/platform feasibility decision until that decision and complete mediation evidence are resolved. M006 isolated session ownership and M007 per-workspace scheduler quota do not depend on shared writes. M010 qualifies the closed M003/M004 substrate on isolated checkouts. Original isolated subagent and conversation-fork semantics remain authoritative.
+M001 was an independently eligible safety corrective on already-closed WorkOrders, and M002 did not depend on that correction. Following user direction on 2026-10-16, M006 and M007 were prioritized first and are now strictly closed. M008 has partial isolated S0/S1 evidence but remains open for S2/S3 and the remaining trajectory strata; any S4 shared-checkout arm remains M005-gated. M005 continues through the restricted-capability and process/platform feasibility decision; proposed ADR-0033 makes the external-writer boundary reviewable but does not authorize implementation. M006 isolated session ownership and M007 per-workspace scheduler quota do not depend on shared writes. M010 qualifies the closed M003/M004 substrate on isolated checkouts. Original isolated subagent and conversation-fork semantics remain authoritative.
 
 ## Milestones / deliverables
 
@@ -123,7 +123,7 @@ Closure: `plans/closure/agent-workstream-blackboard/009-status.md`.
 
 ### M005 — Explicit group-owned worktree placement (active feasibility; shared-write capability blocked)
 
-Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers. M006 and M007 are now closed; M005 continues to resolve the external-writer contract and platform/process feasibility. Do not implement a writer-permit service until the product boundary and complete mediation/native lifecycle evidence are accepted.
+Add separate checkout ownership and participating execution access; task spawn/group placement choices (inherit read-only; auto isolated; new isolated; explicitly serialized shared worktree). With shared mutation, retain a single file/index/Git writer boundary covering shell, terminal, LSP, plugin, tool programs and subprocesses; fail closed where absent. Nested children inherit policy ceilings, not implicit leases. No simultaneous disjoint writers. M006 and M007 are now closed; M005 continues to resolve the external-writer contract and platform/process feasibility. Proposed ADR-0033 recommends defining serialization over CodeGG-mediated writers while treating external same-user edits as conflicts; maintainer acceptance and complete mediation/native lifecycle evidence remain outstanding. Do not implement a writer-permit service until those gates are accepted.
 
 Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
 
@@ -149,11 +149,12 @@ M010 closed the deterministic claim/worktree/Rust/Python/integration trajectory.
 Plan: `plans/implementation/agent-workstream-blackboard/010-isolated-rust-python-trajectory.md`.
 Closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
 
-### M008 — Comparative validation and closure (active for isolated S0–S3; S4 unavailable pending M005)
+### M008 — Comparative validation and closure (active; S0/S1 partial, S2/S3 unqualified; S4 unavailable pending M005)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets; include Rust and Python fixtures, overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm is unavailable until M005 qualifies it; never emulate shared writes unsafely. Deterministic traces support CI; provider-backed experiments are separately reported. Negative/no-improvement results must be reported without hiding them.
 
 Plan: plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md
+Partial results: `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and `008-isolated-results.json`. Headless execution lacked the production TaskTool and did not establish the requested sandbox root; no peer/claim benefit is established and no downstream plan is unblocked.
 
 ## Security, persistence, protocol and operations
 
