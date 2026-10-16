@@ -1234,6 +1234,7 @@ fn m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted() {
             rows: Some(24),
             scrollback_bytes: None,
         };
+        let event_seq_before = daemon.event_log.current_seq();
         let response = daemon_request(
             &daemon,
             client_id,
@@ -1246,6 +1247,11 @@ fn m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted() {
         );
         assert!(!marker.exists(), "refused constrained PTY ran its target");
         assert_eq!(daemon.interactive_processes.service().session_count(), 0);
+        assert_eq!(
+            daemon.event_log.current_seq(),
+            event_seq_before,
+            "refused constrained PTY emitted an execution audit event"
+        );
     });
 }
 
