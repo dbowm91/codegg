@@ -228,7 +228,7 @@ impl GitEnvPolicy {
             "git".to_owned(),
             "worktree".to_owned(),
             "add".to_owned(),
-            path.to_string_lossy().into_owned(),
+            git_worktree_path_argument(path),
             "-b".to_owned(),
             branch.to_owned(),
             base_commit.to_owned(),
@@ -240,6 +240,28 @@ impl GitEnvPolicy {
         apply_environment(&mut cmd, self);
         Ok(cmd)
     }
+}
+
+fn git_worktree_path_argument(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    let path = {
+        let path = path.as_ref();
+        let path = if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
+            format!("\\\\{unc}")
+        } else if let Some(drive_path) = path.strip_prefix("\\\\?\\") {
+            drive_path.to_owned()
+        } else {
+            path.to_owned()
+        };
+        path
+    };
+    #[cfg(not(windows))]
+    let path = path.as_ref();
+
+    // Git for Windows rejects Rust's verbatim `\\?\` canonical-path prefix.
+    // Forward slashes are accepted by Git on every supported platform.
+    path.replace('\\', "/")
 }
 
 /// Classify a shell-free Git invocation before it crosses the process
@@ -455,15 +477,19 @@ pub async fn run_bounded_with_input(
             }
             if status.is_some() && stdout_result.is_some() && stdin_result.is_some() {
                 let bytes = stdout_result
-                    .expect("checked stdout result")
+                    .take()
+                    .ok_or_else(|| EgggitError::Io("missing completed git stdout".into()))?
                     .map_err(|error| EgggitError::Io(format!("read git stdout: {error}")))?;
                 stdin_result
-                    .expect("checked stdin result")
+                    .take()
+                    .ok_or_else(|| EgggitError::Io("missing completed git stdin".into()))?
                     .map_err(|error| EgggitError::Io(format!("write git stdin: {error}")))?;
                 let _ = stdout_reader.join();
                 let _ = stdin_writer.join();
                 return Ok(StdOutput {
-                    status: status.expect("checked child status"),
+                    status: status
+                        .take()
+                        .ok_or_else(|| EgggitError::Io("missing completed git status".into()))?,
                     stdout: bytes,
                     stderr: Vec::new(),
                 });
@@ -471,9 +497,12 @@ pub async fn run_bounded_with_input(
             if Instant::now() >= deadline {
                 kill_process_tree(&mut child);
                 return Err(EgggitError::Timeout(format!(
-                    "git command timed out after {}s: {}",
+                    "git command timed out after {}s: {} (exited={}, stdout_complete={}, stdin_complete={})",
                     DEFAULT_READ_TIMEOUT.as_secs(),
-                    rendered
+                    rendered,
+                    status.is_some(),
+                    stdout_result.is_some(),
+                    stdin_result.is_some()
                 )));
             }
             std::thread::sleep(CHILD_POLL_INTERVAL);
@@ -921,6 +950,19 @@ mod tests {
         // an unbounded `spawn_blocking` wait, so a stuck git could hang a
         // `git_query` call indefinitely.
         assert!(DEFAULT_READ_TIMEOUT <= Duration::from_secs(60));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_worktree_path_removes_verbatim_windows_prefix() {
+        assert_eq!(
+            git_worktree_path_argument(Path::new(r"\\?\C:\Users\runner\checkout")),
+            "C:/Users/runner/checkout"
+        );
+        assert_eq!(
+            git_worktree_path_argument(Path::new(r"\\?\UNC\server\share\checkout")),
+            "//server/share/checkout"
+        );
     }
 
     #[test]

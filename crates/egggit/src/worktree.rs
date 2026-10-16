@@ -187,7 +187,12 @@ pub async fn attest_filter_free_checkout(
             "Git returned malformed checkout filter attributes".into(),
         ));
     }
-    for entry in fields[..fields.len().saturating_sub(1)].chunks_exact(3) {
+    let (entries, remainder) = fields[..fields.len().saturating_sub(1)].as_chunks::<3>();
+    debug_assert!(
+        remainder.is_empty(),
+        "attribute fields were validated in triples"
+    );
+    for entry in entries {
         if entry[1] == b"filter" {
             return Err(EgggitError::Git(
                 "checkout uses a custom Git filter; managed materialization is unavailable for this revision".into(),
