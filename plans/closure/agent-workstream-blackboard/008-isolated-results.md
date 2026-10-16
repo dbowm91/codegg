@@ -165,3 +165,37 @@ carries the resolved repository identity from the session workspace binding.
 The S1 stalls remain unresolved and do not demonstrate whether multi-agent
 work is effective. M008 remains active; S2/S3 and the other task strata remain
 open. No effectiveness improvement is claimed.
+
+## 8. Same-session group continuation finding (2026-10-16)
+
+A bounded retry created group
+`ab10021a-82a8-4c43-8120-3286c54408f2` with two isolated child worktrees and
+the resolved repository identity on both tasks. The parent turn performed six
+`wait_group` calls; each wait is capped at 30 seconds. The parent turn ended
+with the group still running. A later headless turn in the same durable session
+then received `group actor is not authorized` for `wait_group`: turn-owned
+groups require the exact creating turn ID even though the same session is
+authorized to submit a new turn. The durable group remained running and could
+not be resumed from the later turn.
+
+M012 (`plans/closure/agent-workstream-blackboard/012-status.md`) closes this bounded lifecycle gap. The creating turn remains provenance while same-session top-level turns can access group lifecycle operations; different sessions and child run actors remain unauthorized. Focused service coverage passes. The old daemon was restarted on the corrected build; recovery marked its children interrupted, and a later headless turn in the same session successfully inspected the recovered group.
+
+## 9. M012 daemon continuation and fresh S1 retry (2026-10-16)
+
+A new S1 group (`ff40bb51-6960-4a67-a01d-a0e6b01435ec`) was launched through
+the corrected isolated daemon. Its Rust producer and Python consumer have
+distinct managed worktrees and the same resolved repository identity. After
+the parent turn ended, later headless turns in the same durable session
+successfully invoked `wait_group`; both returned without an authorization
+error and observed the two child runs still running. This verifies that a
+live group can be observed across turns on the corrected daemon.
+
+At the latest evidence check, both child runs remained `running`, and neither
+had produced a terminal result. The captured usage rows are session scoped and
+include parent follow-up turns, so they cannot be attributed to child
+progress. This retry remains pending/incomplete and is excluded from S1
+success and performance denominators. Do not claim an effectiveness result.
+Continue with bounded same-session waits and inspect child results, worktree
+diffs, and frozen evaluators before classifying the trial. M008 remains active;
+the S2/S3 and remaining acceptance strata are still open, and S4 remains gated
+on M005.
