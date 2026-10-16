@@ -1164,6 +1164,91 @@ fn m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant() {
     });
 }
 
+#[test]
+fn m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted() {
+    if std::env::var_os("CODEGG_RUN_M004_RESTRICTED_USERNS").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+
+    interactive_test_runtime().block_on(async {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("workspace");
+        let url = format!(
+            "file:interactive_m004_restricted_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str(&url)
+                    .expect("sqlite URL")
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("sqlite pool");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("schema");
+        let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
+        let workspace = daemon
+            .workspaces
+            .get_or_register(dir.path())
+            .await
+            .expect("workspace registration");
+        let client_id = "m004-pty-restricted-userns-client";
+        let principal = codegg_core::transport_auth::AuthenticatedPrincipal::local_owner(client_id);
+        daemon.clients.register_with_principal(
+            client_id.to_string(),
+            "M004 restricted PTY qualification".to_string(),
+            None,
+            principal.clone(),
+        );
+        codegg_core::approval::RuntimePreferenceStore::new(pool)
+            .set_sandbox_profile(
+                principal.principal_id().as_str(),
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                None,
+            )
+            .await
+            .expect("persist principal PTY profile");
+
+        let marker = dir.path().join("m004-restricted-pty-must-not-start");
+        let request = InteractiveProcessCreateRequest {
+            workspace_id: workspace.id.as_str().to_string(),
+            argv: vec![
+                "/usr/bin/python3".to_string(),
+                "-c".to_string(),
+                format!(
+                    "import pathlib; pathlib.Path({:?}).write_text('started')",
+                    marker
+                ),
+            ],
+            cwd: None,
+            env_overrides: Vec::new(),
+            cols: Some(80),
+            rows: Some(24),
+            scrollback_bytes: None,
+        };
+        let response = daemon_request(
+            &daemon,
+            client_id,
+            CoreRequest::InteractiveProcessCreate { request },
+        )
+        .await;
+        assert!(
+            matches!(response, CoreResponse::Error { .. }),
+            "restricted user namespaces unexpectedly started a constrained PTY: {response:?}"
+        );
+        assert!(!marker.exists(), "refused constrained PTY ran its target");
+        assert_eq!(daemon.interactive_processes.service().session_count(), 0);
+    });
+}
+
 fn daemon_envelope(payload: CoreRequest) -> RequestEnvelope<CoreRequest> {
     RequestEnvelope {
         protocol_version: 2,

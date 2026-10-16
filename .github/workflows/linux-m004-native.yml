@@ -94,3 +94,38 @@ jobs:
         run: |
           cargo test --locked --lib protected_mount_ -- --nocapture
           cargo test -p egggit --locked trusted_git -- --test-threads=1
+
+  restricted-userns-fails-closed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
+      CODEGG_RUN_M004_RESTRICTED_USERNS: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install Bubblewrap
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
+      - name: Disable user namespaces in the ephemeral runner
+        run: |
+          uname -a
+          bwrap --version
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+          sudo sysctl -w user.max_user_namespaces=0
+          test "$(cat /proc/sys/user/max_user_namespaces)" = 0
+
+      - name: Build trusted sandbox helper
+        run: cargo build --locked --bin codegg-sandbox-helper
+
+      - name: Required M004 launch refuses before target under host userns policy
+        run: cargo test --locked --test linux_m004_process_ipc required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
+
+      - name: Constrained PTY route refuses before target under host userns policy
+        run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
