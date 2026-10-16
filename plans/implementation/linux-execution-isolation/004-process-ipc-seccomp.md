@@ -65,10 +65,15 @@ resolver and a loopback resolver that returns different A records for the
 same query, again denied from the contained child. It also retains the offline
 Cargo metadata/workspace-check candidate. macOS target compile
 [`38928962564`](https://github.com/dbowm91/codegg/actions/runs/38928962564)
-passed. Exact-head full CI run `38929001163` had one failure in the existing
-typed Git log service test; the same-SHA retry `38931841531` is still running
-as this evidence was recorded. The failure is not yet classified as
-transient, so the full-suite retry remains a reconciliation gate.
+passed. Exact-head full CI run `38929001163` failed in the existing typed Git
+log service test; its focused test passed locally, but that hosted failure is
+not classified as transient. Same-SHA retry `38931841531` exposed a separate
+stale background-shell integration fixture: its `BashTool` had no registered
+workspace root/allowed-path binding and submitted relative `.`. The fixture
+now uses the canonical registered workspace, and its complete integration
+file passed locally 12/12. That isolated correction is commit `7646ed68`;
+fresh full CI `38934845574` on that head is pending. Full-suite
+reconciliation remains open until the latest run completes.
 
 This additional native evidence closes the DNS fixture gap only. The PTY
 service still refuses constrained profiles before `openpty`/spawn, and the
