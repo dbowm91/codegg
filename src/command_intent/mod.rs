@@ -1361,7 +1361,7 @@ mod tests {
 
     #[test]
     fn git_remote_v_is_readonly() {
-        // The typed Git parser recognizes verbose as the remote-list form.
+        // `git remote -v` lists configured remotes and does not mutate Git state.
         let intent = classify_command("git remote -v");
         assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
         assert!(!intent

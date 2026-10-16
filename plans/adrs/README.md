@@ -172,12 +172,12 @@ references. Linux/command historical aliases and fingerprints are recorded in
 
 ## ADR-0032 workstream coordination (2026-10-15)
 
-The agent-workstream-blackboard planning branch allocates
-`ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` as
-**accepted**. It does not modify accepted ADR-0002, admit shared-write child
-execution, or confer new capability by existing group membership. M005 remains
-blocked until real tool-path confinement and recovery evidence qualify the
-shared-write mode.
+`ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` was
+accepted on 2026-10-15 and merged to main in commit `171ef93b`. It does not
+modify accepted ADR-0002, admit shared-write child execution, or confer new
+capability by existing group membership. M005 is active for writer-containment
+design and qualification; shared-write execution remains unavailable pending
+real tool-path confinement and lifecycle recovery evidence.
 
 ## ADR-0034 command-authority identity correction (2026-10-16)
 
