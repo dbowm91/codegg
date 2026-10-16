@@ -94,6 +94,14 @@ pub struct TreeNode {
 /// Result of one bounded walk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TreeListing {
+    /// The workspace-relative scope this listing describes, echoed by the
+    /// daemon alongside the entries it walked.
+    ///
+    /// `""` is the workspace root. Carried rather than assumed so a
+    /// completion can be matched against the subtree it was asked for: `l`
+    /// twice in quick succession issues two requests whose generations may
+    /// both still be current, and only the scope says which answered.
+    pub prefix: String,
     /// The roots rendered at the top level, directories before files, then
     /// lexically within each group.
     pub nodes: Vec<TreeNode>,
@@ -137,6 +145,10 @@ pub(crate) fn from_shared_listing(
     listing: crate::directory_listing::DirectoryListing,
 ) -> TreeListing {
     TreeListing {
+        // A locally-walked listing is always the workspace root: the TUI only
+        // walks locally in tests and in the refused `local_walk_root` path,
+        // and a subtree walk goes through the daemon request instead.
+        prefix: String::new(),
         nodes: listing.nodes.into_iter().map(from_shared_node).collect(),
         truncated: listing.truncated,
         truncated_reason: listing.truncated_reason,

@@ -12034,7 +12034,7 @@ impl App {
         matches!(
             self.ui_state.routes.current(),
             crate::tui::route::Route::Editor
-        ) && !self.editor_state.buffer_focused()
+        ) && !self.editor_state.buffer_focused(self.ui_state.input_mode)
     }
 
     pub fn input_target(&self) -> crate::tui::panels::InputTarget {

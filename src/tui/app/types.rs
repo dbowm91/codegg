@@ -634,6 +634,20 @@ pub enum TuiMsg {
     /// path, so a refresh that lands after the user changed project is
     /// dropped rather than painted over the new workspace.
     FilesRefresh,
+    /// `/files`: make `path` the listing's root (`l`).
+    ///
+    /// The box holds a *copy* of the shared tree state and cannot reach `App`
+    /// from `render`, so re-rooting is an intent like opening a file: the
+    /// command layer moves the shared state's scope and issues the walk. The
+    /// path is workspace-relative, exactly as the listing reported it.
+    FilesDescend {
+        path: String,
+    },
+    /// `/files`: leave the current root and list its parent (`h`).
+    ///
+    /// Carries no path — "one level up" is a relation, not a location, and
+    /// the box cannot compute a parent of a root it does not own.
+    FilesAscend,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

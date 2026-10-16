@@ -1143,19 +1143,38 @@ in all three.
 | Key | Meaning |
 |---|---|
 | `j` / `k`, `↓` / `↑` | move the cursor |
+| `Ctrl+d` / `Ctrl+u` | page down / page up — two thirds of the box's viewport |
 | `Enter` on a directory | expand/collapse **in place** — the cursor does not move |
-| `l` / `→` | **enter** the directory: expand it and step onto its first child |
-| `h` / `←` | **back one level**: collapse an open directory in place, otherwise step to the parent |
+| `l` / `→` | **make that directory the listing's root** and list its contents |
+| `h` / `←` | **back one level**: leave the current root; at the workspace root, collapse an open directory in place, otherwise step to the parent row |
 | `Enter` on a file | open it in the editor |
-| `r` | re-walk the workspace |
+| `r` | re-walk the current root |
 | `Esc` | close |
 
-Enter and `l` both expand a directory, but they are deliberately different
-verbs: Enter reveals contents and leaves the cursor where the user put it,
-while `l` moves the cursor in. Collapsing them would mean one of the two
-intentions could not be expressed. `h` on an already-expanded directory
-collapses it rather than jumping to the parent — backing *out of* a directory
-means closing it, and only a closed one steps further out.
+Enter and `l` are deliberately different verbs: Enter reveals contents and
+leaves the cursor where the user put it, while `l` moves the *pane*. Making a
+directory the root means the listing has a top level again, so entering a
+deeply nested structure is the same operation at every depth — there is no
+"walked down six expanded folders" mode to keep coherent, and no cursor that
+has to survive a relist.
+
+That also means the pane has **one** keyboard axis for scope
+(`FileTreeState::root_history`, whose last entry is the current root) rather
+than a prefix field and an expansion set that can disagree. `h` pops the
+chain and lands the cursor on the directory just left behind, so stepping
+out and back in returns to the same place. A jump deeper than one level keeps
+the ancestry (`h` walks back out along the way it came); a jump outside the
+current root resets it, because a chain claiming the pane arrived from a
+directory it never listed would make `h` go somewhere unpredictable.
+
+Re-rooting is a **daemon round-trip**, not a local filter. The scope travels
+as `WorkspaceDirectoryListRequestDto::prefix`, the daemon walks that subtree
+with the same bounded walker, and the echoed prefix is checked against the
+one the request asked for — `l` twice in quick succession issues two requests
+whose generations may both still be current, and only the scope says which
+answered. Filtering the already-loaded listing would have been free, and
+wrong: it would silently drop everything the original walk hit its bounds on
+and present the remainder as if it were the directory.
 
 Three rules keep this a navigator rather than a second document surface:
 
@@ -1167,7 +1186,9 @@ Three rules keep this a navigator rather than a second document surface:
    `TuiMsg::FilesOpenSelected { path }`, handled in `App::process_msg` by
    calling `open_editor` — the same seam `/open` and the Ctrl+T pane use, so
    lexical validation and daemon authorization are not restated here. Only a
-   *file* emits an intent; a directory has no document to open.
+   *file* emits an intent; a directory has no document to open. Re-rooting is
+   an intent for the same reason: `l`/`h` emit `TuiMsg::FilesDescend` /
+   `TuiMsg::FilesAscend` rather than mutating the box's own copy.
 3. **A widget cannot reach `App` from `render`, so the box holds a copy of the
    shared state**, seeded from `App::file_tree_state` at open time — which is
    why `/files` resumes where a previous browse left off — and re-synced from
@@ -2330,11 +2351,53 @@ so undo stays meaningful. A divergent draft is retained by the controller in
 a recovery state; the editor surfaces that state and never auto-reloads,
 auto-replays, or auto-discards.
 
-**Focus model.** `EditorFocus` is `Composer` or `Buffer`. The composer is the
-default, matching `Route::Workspace`, so opening the editor does not disturb
-session composition. `Ctrl+E` focuses the buffer; `Esc` walks back out —
-insert mode, then focus, then the view. Keys the buffer does not claim fall
-through to the composer.
+**One mode axis, not two.** The editor route used to carry an `EditorFocus`
+(`Composer`/`Buffer`) *beside* `EditorMode`, and the two could disagree. They
+did: a fresh open defaulted to `Composer`, which made `handle_editor_key` claim
+nothing except `Ctrl+E` while the bare-text gate swallowed every printable —
+so the file rendered and no key reached it, which reads as "the editor does not
+work" rather than as two toggles. `EditorFocus` is gone.
+
+The single axis is `App::ui_state.input_mode`, the same `NOR`/`INS` the
+composer badge and every dockable box already show. On `Route::Editor`:
+
+| Mode | Keyboard | Typing goes to |
+|---|---|---|
+| `Insert` | the document | the text box — the cursor is drawn there |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+
+**Normal returns `BufferKey::Unhandled` for every key it does not own**, which
+is the mechanism, not a fallback: the editor claims navigation and editing and
+everything else stays a composer keystroke. This is the same contract the
+interactive terminal runs on — NOR reads, INS types — and the same rule
+`focus_panel` follows for a side panel.
+
+`Esc` is a **mode step, never an exit**. Insert → Normal. Normal → a toast
+naming `:q`. It never leaves the route: the only ways out are `:q` and `:wq`,
+and the frame says so. `Esc` closes an open `:` command line first.
+
+Insertion entries (`i`/`a`/`I`/`A`/`o`/`O`) return `BufferKey::EnterInsert`
+and the App layer adopts `Insert` mode; a read-only attachment returns
+`Unhandled` so the refusal is visible rather than a dead key.
+
+**Helix, not vi.** The buffer speaks the same dialect `/terminal` speaks in its
+viewing mode, so the two surfaces share one set of instincts. vi's `dd`/`dw`
+are gone — `x` then `d` is the same gesture in Helix — and `D` stays as
+delete-to-end-of-line because it has no Helix meaning here. Bare `d` is
+**claimed even with nothing selected**: an unclaimed `d` escapes to the global
+`OpenDiff` binding. `space y` is remembered prefix state, not a chord, because
+legacy xterm encoding delivers it as two events.
+
+**Selection is the shared state machine.** `tui::helix_selection::SelectionState`
+is instantiated with `EditorPoint { byte, line }` — byte offsets plus the line
+each byte sits on — and `SelectionState::restore` lets the editor drive it
+while keeping its own byte-offset cursor. The *rules* (`v` is a mode, `x` is an
+action, movement extends only in character mode) therefore cannot drift from
+the terminal; `editor.rs` owns only the geometry, which is what the shared
+module deliberately does not know. `editor::selection_range` resolves a held
+`Selection` to the byte range the two effects and the renderer consume:
+character mode is inclusive of the head, line mode spans whole lines including
+their terminators so a delete leaves no trailing blank line.
 
 **Hard wrap.** One logical line is exactly one screen row, with horizontal
 scrolling for long lines. This is what makes the line-number gutter, the
@@ -2412,22 +2475,47 @@ fencing state (which workspace the pane believes it shows). There is no
 
 **Focus and layout.** The layout split degrades to the full-width editor on a
 narrow terminal rather than producing a degenerate pane. While the tree is
-focused it claims a strict subset of keys — `j`/`k` to move, `h`/`l` to
-collapse or expand, `Enter` to open a file or expand a directory, `r` to
-re-walk, `Esc` to leave the tree — and every other key falls through
-unchanged, so a focused tree never swallows composer or editor input. `Esc`
-returns focus to the editor buffer without changing the route, preserving
-the non-modal composer contract.
+focused it claims a strict subset of keys — `j`/`k` to move, `Ctrl+d`/`Ctrl+u`
+to page, `l`/`→` to make the selected directory the pane's root, `h`/`←` to go
+back one level, `Enter` to open a file or expand a directory, `r` to re-walk,
+`Esc` to leave the tree — and every other key falls through unchanged, so a
+focused tree never swallows composer or editor input. `Esc` returns focus to
+the editor buffer without changing the route, preserving the non-modal
+composer contract.
+
+`Ctrl+d`/`Ctrl+u` carry `Char('d')`/`Char('u')` codes, so the tree's modifier
+check runs before its character arms; the editor's own half-page motions are
+untouched because the tree only claims keys while focused. A page is two
+thirds of the pane, from the viewport the renderer measured and published as
+`FileTreeState::viewport_rows` — the widget returns its `PaneLayout` rather
+than writing into the state it borrows, so the number stays next to the
+layout that produced it. An unmeasured pane (a key arriving before the first
+frame) falls back to `FALLBACK_PAGE_ROWS` rather than making the verb inert.
+
+**The pane has a root, and it says which one.** `root_history`'s last entry
+is the directory being listed; the title leads with it and names the
+workspace after it, because a pane scoped with `l` showing a workspace-root
+title would misdescribe every row under it. Rows carry a per-type icon from
+the one table in `src/tui/file_icons.rs` — the folder glyph doubles as the
+expansion state, so there is no second caret column in a 22-column pane — and
+the selected row repaints rather than recolors, so the type colour that
+distinguishes a `.rs` from a `.md` survives the cursor landing on it. Icons
+are Nerd Font glyphs by default and `CODEGG_FILE_ICONS=plain` selects the
+pre-Nerd caret markers for a terminal without a patched font; that is an
+environment switch rather than a config key because it answers a
+terminal-capability question, and a wrong-shaped key in a layered config
+discards more than it selects.
 
 **Async discipline.** The listing is a daemon round-trip on a scoped
 `TuiTaskKind::FileTree` task. A completion carries the request id, the
-tree generation, and the root it was issued for; a completion that is stale,
-cancelled, for another workspace, or answered for a different daemon scope
-is discarded rather than rendered. Failures arrive as an explicit
-`FileTreeFailed` completion and are fail-visible in the pane. Switching
-projects resets selection and expansion, because a path from the previous
-project is meaningless in the next. Advisory daemon statuses stay visible:
-`busy` names the retry key, and bound hits carry their truncation reason.
+tree generation, the root it was issued for, and the scope it was issued for;
+a completion that is stale, cancelled, for another workspace, or answered for
+a different subtree is discarded rather than rendered. Failures arrive as an
+explicit `FileTreeFailed` completion and are fail-visible in the pane.
+Switching projects resets selection, expansion, and the root, because a path
+from the previous project is meaningless in the next. Advisory daemon
+statuses stay visible: `busy` names the retry key, and bound hits carry their
+truncation reason.
 
 ### Command mode and agent management (M006-F)
 
@@ -2504,7 +2592,7 @@ that refusal exists.
 
 #### The editor replaces the main buffer; the composer arms with `:`
 
-While `Route::Editor` is active and the buffer does **not** hold focus,
+While `Route::Editor` is active and the route is in **Normal** mode,
 `composer_refuses_bare_text()` is true and `App::on_key` turns the first
 character into `:` + that character. The gate sits on the single
 `InputAction::Char` arm, so every path that could type a character is
@@ -2512,7 +2600,8 @@ covered by one rule rather than by the keymap alone.
 
 It is scoped narrowly on purpose: a focused side panel is a *different*
 destination with its own composer, and chat is a conversation, so both stay
-freely typeable.
+freely typeable. The test is `input_mode == Normal` because the buffer holds
+the keyboard exactly when it is `Insert` — the one axis, read once.
 
 #### The directionals stay live in the buffer
 
@@ -3409,10 +3498,12 @@ TUI retains no document text outside the controller snapshot.
 ### Completion popup and transactional acceptance (M004)
 
 The completion popup consumes the M003 `LspCompletionGet` surface and
-nothing else. The trigger is `F8` with the buffer focused (claimed inside
-`handle_editor_key`, so it never falls through to the global bindings) and
+nothing else. The trigger is `F8` (claimed inside `handle_editor_key` in
+**both** modes, so it never falls through to the global bindings) and
 `:complete` from Normal mode; terminals that cannot send `F8` always have
-the command spelling. While open, the popup owns exactly `Up`/`Down`
+the command spelling. `F8` is spoken for here — the syntax-highlight
+retry is `F9`, because a highlight refresh that silently took `F8` would
+make completion unreachable from a terminal that can send function keys. While open, the popup owns exactly `Up`/`Down`
 (`j`/`k` only in Normal mode, where they are navigation rather than text),
 `Enter`, and `Esc`; every other key dismisses first and processes normally,
 so a keystroke is never both typed and interpreted as popup input. `Esc`

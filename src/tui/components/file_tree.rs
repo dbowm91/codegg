@@ -1,9 +1,9 @@
 //! M006-D: project-scoped file-tree widget.
 //!
 //! Renders one row per visible tree entry: an indent guide by depth, a
-//! directory/file marker, an expand caret for directories, and the selected
-//! row highlighted. A truncation notice occupies the last row when the walk
-//! hit a bound, so a partial tree never presents itself as complete.
+//! per-type icon, and the selected row highlighted. A truncation notice
+//! occupies the last row when the walk hit a bound, so a partial tree never
+//! presents itself as complete.
 //!
 //! ## Not a content path
 //!
@@ -15,7 +15,10 @@
 //! ## Bounded work
 //!
 //! Only the rows that fit the pane are materialized, so per-frame cost is a
-//! function of the viewport rather than of the workspace.
+//! function of the viewport rather than of the workspace. That same viewport
+//! is returned to the caller rather than written into the state from here: a
+//! widget borrows the state it is handed, and `FileTreeState::viewport_rows`
+//! is layout published by the renderer, not navigation decided in a draw.
 
 use std::sync::Arc;
 
@@ -26,7 +29,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::app::state::file_tree::{FileTreeState, FileTreeStatus};
-use crate::tui::file_tree::{TreeNodeKind, TreeRow};
+use crate::tui::file_icons::{self, FileIconStyle};
+use crate::tui::file_tree::TreeRow;
 use crate::tui::theme::Theme;
 
 /// Minimum width for the tree pane. Below this the caller renders the editor
@@ -35,6 +39,13 @@ pub const MIN_TREE_PANE_WIDTH: u16 = 22;
 
 /// Fraction of the editor viewport given to the tree pane.
 pub const TREE_PANE_RATIO: u16 = 2;
+
+/// Deepest indent the pane will draw.
+///
+/// Indentation is orientation, the name is content: past this a nested row
+/// would push its name out of a narrow pane entirely. With `l` re-rooting the
+/// pane, the depth that actually shows up inside one is a level or two.
+const MAX_INDENT_DEPTH: usize = 8;
 
 /// Split `area` into `(tree, editor)`, or `(None, area)` when the pane does
 /// not fit.
@@ -70,6 +81,13 @@ pub struct FileTreeView<'a> {
     pub theme: Arc<Theme>,
 }
 
+/// What the pane measured while drawing itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaneLayout {
+    /// Rows the listing area could show. `0` when the pane did not fit.
+    pub viewport_rows: usize,
+}
+
 impl<'a> FileTreeView<'a> {
     pub fn new(state: &'a FileTreeState, focused: bool, theme: Arc<Theme>) -> Self {
         Self {
@@ -79,7 +97,12 @@ impl<'a> FileTreeView<'a> {
         }
     }
 
-    pub fn render(self, frame: &mut Frame, area: Rect) {
+    /// Draw the pane, returning how many rows the listing area could show.
+    ///
+    /// The caller publishes that as `FileTreeState::viewport_rows` so the
+    /// paging verbs move a page of *this* pane. Returning it keeps the
+    /// measurement next to the layout that produced it.
+    pub fn render(self, frame: &mut Frame, area: Rect) -> PaneLayout {
         let theme = Arc::clone(&self.theme);
         let title = format!(
             " {} · {}{} ",
@@ -99,7 +122,7 @@ impl<'a> FileTreeView<'a> {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
-            return;
+            return PaneLayout { viewport_rows: 0 };
         }
 
         let rows = self.state.rows();
@@ -140,51 +163,60 @@ impl<'a> FileTreeView<'a> {
                 notice_area,
             );
         }
+        PaneLayout {
+            viewport_rows: visible_height,
+        }
     }
 
     fn row_line(&self, row: &TreeRow) -> Line<'static> {
         let theme = Arc::clone(&self.theme);
         let selected = self.state.selected.as_deref() == Some(row.path.as_str());
-        let marker = match row.kind {
-            TreeNodeKind::Directory => {
-                if row.expanded {
-                    "▾ "
-                } else {
-                    "▸ "
-                }
-            }
-            TreeNodeKind::File => "  ",
-        };
-        let indent = "  ".repeat(row.depth);
+        let indent = "  ".repeat(row.depth.min(MAX_INDENT_DEPTH));
+        // The folder icon carries the expansion state, so there is no second
+        // caret column doing the same job in a pane 22 columns wide.
+        let (glyph, icon_style) = file_icons::icon_style(
+            row.kind,
+            &row.name,
+            row.expanded,
+            FileIconStyle::active(),
+            &self.theme,
+        );
+        // Selection inverts the row rather than recoloring it: the type
+        // colour is the only thing distinguishing a `.rs` from a `.md` at a
+        // glance, and dropping it on the row the cursor is standing on would
+        // hide it exactly when the user is deciding.
         let name_style = if selected {
             Style::default()
-                .fg(theme.background)
+                .bg(theme.selection)
+                .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD)
         } else {
-            match row.kind {
-                TreeNodeKind::Directory => Style::default().fg(theme.primary),
-                TreeNodeKind::File => Style::default().fg(theme.foreground),
-            }
+            icon_style
         };
-        let mut spans = vec![
+        Line::from(vec![
             Span::raw(indent),
-            Span::styled(marker, Style::default().fg(theme.muted)),
+            Span::styled(format!("{glyph} "), icon_style),
             Span::styled(row.name.clone(), name_style),
-        ];
-        if selected {
-            spans.push(Span::raw(""));
-        }
-        Line::from(spans)
+        ])
     }
 
+    /// The pane's title names the directory it is listing.
+    ///
+    /// A pane scoped with `l` shows a subtree, and a title that still read
+    /// the workspace name would misdescribe every row under it — so the scope
+    /// leads and the workspace it hangs off is the quieter half.
     fn root_label(&self) -> String {
-        self.state
+        let workspace = self
+            .state
             .root
             .as_ref()
             .and_then(|root| root.file_name())
             .and_then(|name| name.to_str())
-            .unwrap_or("workspace")
-            .to_string()
+            .unwrap_or("workspace");
+        match self.state.root_prefix() {
+            "" => workspace.to_string(),
+            scope => format!("{scope} · {workspace}"),
+        }
     }
 
     fn status_label(&self) -> String {
@@ -212,7 +244,7 @@ impl<'a> FileTreeView<'a> {
 mod tests {
     use super::*;
     use crate::tui::app::state::file_tree::FileTreeState;
-    use crate::tui::file_tree::build_tree;
+    use crate::tui::file_tree::{build_tree, TreeNodeKind};
     use crate::tui::theme::Theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -295,6 +327,96 @@ mod tests {
         assert!(
             text.contains("[tree]"),
             "focus should be visible in the title"
+        );
+    }
+
+    #[test]
+    fn rows_carry_icons_rather_than_a_bare_caret() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("nested")).expect("mkdir");
+        std::fs::write(root.path().join("main.rs"), b"x").expect("write");
+        std::fs::write(root.path().join("README.md"), b"x").expect("write");
+
+        let mut state = FileTreeState {
+            visible: true,
+            ..FileTreeState::default()
+        };
+        let (generation, request_id) = state.begin_rebuild(root.path().to_path_buf());
+        state.apply_listing(
+            generation,
+            request_id,
+            root.path().to_path_buf(),
+            build_tree(root.path()),
+        );
+
+        let style = FileIconStyle::active();
+        let text = render_to_lines(&state, true, 40, 20);
+        let folder = crate::tui::file_icons::glyph(TreeNodeKind::Directory, "nested", false, style);
+        let rust = crate::tui::file_icons::glyph(TreeNodeKind::File, "main.rs", false, style);
+        let markdown = crate::tui::file_icons::glyph(TreeNodeKind::File, "README.md", false, style);
+        for icon in [folder, rust, markdown] {
+            assert!(
+                text.contains(icon),
+                "the {icon:?} glyph should be on screen, got:\n{text}"
+            );
+        }
+        assert_ne!(
+            rust, markdown,
+            "a .rs and a .md must not draw the same glyph"
+        );
+
+        // Expansion is drawn in the icon, not in a second caret column, so a
+        // pane 22 columns wide still has room for the name.
+        assert!(state.set_root_prefix("nested"));
+        let collapsed = render_to_lines(&state, true, 40, 20);
+        assert!(collapsed.contains("nested"));
+    }
+
+    #[test]
+    fn the_title_names_the_scoped_root() {
+        let (_root, mut state) = populated();
+        let workspace = state
+            .root
+            .as_ref()
+            .and_then(|root| root.file_name())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let at_root = render_to_lines(&state, true, 60, 20);
+        assert!(
+            at_root.contains(&workspace),
+            "an unscoped pane names the workspace, got:\n{at_root}"
+        );
+
+        assert!(state.set_root_prefix("src"));
+        let scoped = render_to_lines(&state, true, 60, 20);
+        assert!(
+            scoped.contains("src"),
+            "a pane scoped with `l` must say so in its title, got:\n{scoped}"
+        );
+    }
+
+    #[test]
+    fn the_rendered_pane_reports_the_viewport_it_can_show() {
+        let (_root, state) = populated();
+        let measure = |width: u16, height: u16| {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            let mut layout = PaneLayout::default();
+            terminal
+                .draw(|frame| {
+                    layout = FileTreeView::new(&state, true, theme()).render(frame, frame.area());
+                })
+                .expect("draw");
+            layout
+        };
+        // 20 rows of pane, 2 of border: the paging verbs need this number to
+        // move a page instead of guessing.
+        assert_eq!(measure(40, 20).viewport_rows, 18);
+        assert_eq!(
+            measure(40, 0).viewport_rows,
+            0,
+            "a pane that did not fit shows nothing"
         );
     }
 
