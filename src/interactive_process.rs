@@ -383,8 +383,8 @@ pub struct SpawnSpec {
     /// Scrollback retention override (`None` = default).
     pub scrollback_bytes: Option<usize>,
     /// Daemon-resolved profile for internal production-owner routing. Wire
-    /// requests cannot populate this field; constrained requests remain
-    /// refused by `InteractiveProcessProtocol` until native qualification.
+    /// requests cannot populate this field; the daemon-owned protocol sets it
+    /// only after resolving principal policy for the qualified M004 owner.
     pub(crate) constrained_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
