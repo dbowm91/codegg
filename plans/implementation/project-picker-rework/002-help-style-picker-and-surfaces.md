@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 002 — Help-style picker with Normal-mode filter/select plus cwd and project surfaces
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `292e5f5b` (M001 implementation commit).
 
@@ -28,12 +28,13 @@ selection fully usable in Normal mode, and surface the active project
 name plus cwd on the status line and project names in the sessions
 panel — with no protocol or storage change.
 
-## 2. Why this milestone is ready
+## 2. Dependency disposition
 
-Blocked, not ready: M1 must close first (shared key/help/description
-surface; M1 removes the `Ctrl+\` chord this milestone's help copy and
-tests assume gone). No other hard dependency; the `/help` render and key
-pattern to borrow is stable.
+M1 is closed at `plans/closure/project-picker-rework/001-status.md`.
+Its retired chord is absent from the shared key/help surface, and the
+`/help` render and key pattern used here remains stable. M2 is now
+implemented; formal closure and the downstream dependency audit are
+recorded separately.
 
 ## 3. Current implementation evidence
 

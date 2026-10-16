@@ -9363,56 +9363,27 @@ impl App {
             return;
         };
 
-        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            if picker.transport_local {
+                picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
+                picker.registration_input.clear();
+            } else {
+                picker.last_error =
+                    Some("Raw path registration requires a local TUI context".to_string());
+                picker.phase = crate::tui::app::state::PickerPhase::Error;
+            }
+            return;
+        }
 
-        match key.code {
-            KeyCode::Esc => {
+        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        let action = picker.handle_catalog_key(key, filtered_len);
+        match action {
+            crate::tui::app::state::PickerCatalogAction::None => {}
+            crate::tui::app::state::PickerCatalogAction::Close => {
                 self.close_dialog();
             }
-            KeyCode::Up => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Down => {
-                picker.select_down(filtered_len);
-            }
-            // `j`/`k` move the catalog list only while the search query is
-            // empty; once the user is typing a query they are ordinary
-            // characters and must reach `picker.query` below.
-            KeyCode::Char('k') if picker.query.is_empty() => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Char('j') if picker.query.is_empty() => {
-                picker.select_down(filtered_len);
-            }
-            KeyCode::Backspace => {
-                picker.query.pop();
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
-                    picker.query.push(c);
-                    picker.selected_row = 0;
-                }
-            }
-            KeyCode::Enter => {
+            crate::tui::app::state::PickerCatalogAction::Select => {
                 self.commit_picker_catalog_selection();
-            }
-            KeyCode::Tab => {
-                // Toggle show_archived on Tab.
-                picker.show_archived = !picker.show_archived;
-                picker.selected_row = 0;
-            }
-            _ => {
-                // Ctrl+R enters registration input mode.
-                if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
-                    if picker.transport_local {
-                        picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
-                        picker.registration_input.clear();
-                    } else {
-                        picker.last_error =
-                            Some("Raw path registration requires a local TUI context".to_string());
-                        picker.phase = crate::tui::app::state::PickerPhase::Error;
-                    }
-                }
             }
         }
     }

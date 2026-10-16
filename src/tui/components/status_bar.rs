@@ -28,6 +28,9 @@ impl TuiStatusSummary {
 pub struct StatusBarWidget {
     pub theme: Arc<Theme>,
     pub status: String,
+    /// Active project and working directory, formatted by the App and
+    /// bounded here before display.
+    pub project_context: Option<String>,
     pub token_str: String,
     pub thinking: bool,
     pub thinking_label: Option<String>,
@@ -54,6 +57,7 @@ impl StatusBarWidget {
         Self {
             theme,
             status: "idle".to_string(),
+            project_context: None,
             token_str: String::new(),
             thinking: false,
             thinking_label: None,
@@ -74,6 +78,10 @@ impl StatusBarWidget {
 
     pub fn set_status(&mut self, status: String) {
         self.status = status;
+    }
+
+    pub fn set_project_context(&mut self, context: Option<String>) {
+        self.project_context = context.map(|text| middle_truncate(&text, 48));
     }
 
     pub fn set_tokens(&mut self, token_str: String) {
@@ -188,6 +196,12 @@ impl Widget for &StatusBarWidget {
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ));
+        if let Some(context) = &self.project_context {
+            left_spans.push(Span::styled(
+                format!("  {context}"),
+                Style::default().fg(self.theme.secondary),
+            ));
+        }
 
         if let Some(ref msg) = self.undo_message {
             middle_spans.push(Span::styled("  ", Style::default()));
@@ -326,6 +340,23 @@ impl Widget for &StatusBarWidget {
     }
 }
 
+fn middle_truncate(value: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let left = (max_chars - 3) / 2;
+    let right = max_chars - 3 - left;
+    format!(
+        "{}...{}",
+        chars[..left].iter().collect::<String>(),
+        chars[chars.len() - right..].iter().collect::<String>()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +405,20 @@ mod tests {
         let line = rendered_line(&buf, area.width);
         assert!(line.contains("approval:yolo"));
         assert!(line.contains("sandbox:workspace-write"));
+    }
+
+    #[test]
+    fn project_context_renders_and_middle_truncates() {
+        let mut widget = StatusBarWidget::default();
+        widget.set_project_context(Some(
+            "my-project · /workspace/a-very-long-checkout-directory-name".to_string(),
+        ));
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        (&widget).render(area, &mut buf);
+        let line = rendered_line(&buf, area.width);
+        assert!(line.contains("my-project"));
+        assert!(line.contains("..."));
+        assert!(line.contains("directory-name"));
     }
 }

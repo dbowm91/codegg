@@ -52,6 +52,13 @@ then `ProjectRegister`) registers a new project into the catalog. Open it with
 `Shift+F` in `NOR` mode or the `/projects` command
 (which also works mid-prompt).
 
+The picker shows the active project and its workspace path on the status
+line; the sessions dialog repeats that context in its header. In the picker,
+`j`/`k` move through results and printable keys filter while in `NOR`.
+Press `i` to type a filter including `j` or `k`; `Esc` returns to
+`NOR`, clears a filter, then closes on successive presses. `Tab` includes
+archived projects, which appear after active projects.
+
 ## Sessions from the CLI
 
 Four subcommands read and move session records without opening the UI:

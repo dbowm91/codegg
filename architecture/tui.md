@@ -133,6 +133,17 @@ canonical daemon denial (`authorization_scope_required`) as a bounded picker
 error rather than a silent fallback to local path interpretation; no process
 `cwd` inference is reintroduced.
 
+The project picker uses the help-dialog layout: title, bounded filter/count
+row with an `INS`/`NOR` badge, result rows, and a mode-specific footer. It
+opens in the caller's input mode. In Normal mode, printable keys filter while
+`j`/`k` navigate even with a query; `i` enters Insert so those letters can
+be typed, and `Esc` steps Insert -> Normal -> clear filter -> close. The
+picker remains capped and preserves its async generation guards. Active
+projects sort before archived projects, with fuzzy score ordering retained
+within each group. The status bar and sessions dialog show the active tab's
+project name and workspace-root context, resolved from tab/catalog state.
+They never derive a root from process cwd.
+
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
 workspace root and refreshed on tab activation or explicit asset reload.

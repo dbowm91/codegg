@@ -52,8 +52,8 @@ pub use presence::{
     MAX_PRESENCE_PROJECTS, MAX_PRINCIPAL_DISPLAY_LEN,
 };
 pub use project_picker::{
-    PickerPhase, ProjectPickerState, RegistrationDraft, SessionSummaryCacheEntry,
-    MAX_OPEN_PROJECT_TABS, MAX_PROJECT_LIST_ITEMS, MAX_TAB_LABEL_LEN,
+    PickerCatalogAction, PickerPhase, ProjectPickerState, RegistrationDraft,
+    SessionSummaryCacheEntry, MAX_OPEN_PROJECT_TABS, MAX_PROJECT_LIST_ITEMS, MAX_TAB_LABEL_LEN,
 };
 pub use project_tabs::{ProjectCatalogState, ProjectTabId, ProjectTabState, ProjectTabs};
 pub use projection_client::{

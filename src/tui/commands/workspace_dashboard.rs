@@ -1214,7 +1214,7 @@ mod tests {
         // Neighbors untouched: picker, composer, tab close.
         assert_eq!(
             default_bindings().get(&(KeyModifiers::CONTROL, KeyCode::Char('\\'))),
-            Some(&InputAction::OpenProjectPicker)
+            None
         );
         assert_eq!(
             default_bindings().get(&(KeyModifiers::CONTROL, KeyCode::Char('g'))),

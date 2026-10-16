@@ -39,6 +39,36 @@ impl App {
             .map(|context| context.workspace_root)
     }
 
+    /// Bounded-source label for TUI project context surfaces. The
+    /// project name comes from the active tab's daemon detail/catalog
+    /// cache, and the root comes only from its execution context.
+    pub(crate) fn active_project_display_context(&self) -> Option<String> {
+        let tab = self.active_tab()?;
+        let project_name = tab
+            .project_details
+            .as_ref()
+            .map(|details| details.project.display_name.as_str())
+            .or_else(|| {
+                tab.project_id.as_deref().and_then(|project_id| {
+                    self.project_catalog
+                        .entries
+                        .iter()
+                        .find(|entry| entry.project_id == project_id)
+                        .map(|entry| entry.display_name.as_str())
+                })
+            })
+            .unwrap_or(tab.label.as_str());
+        let root = self
+            .active_workspace_root()
+            .map(|path| path.display().to_string());
+        match (project_name.is_empty(), root) {
+            (false, Some(root)) => Some(format!("{project_name} · {root}")),
+            (false, None) => Some(project_name.to_string()),
+            (true, Some(root)) => Some(root),
+            (true, None) => None,
+        }
+    }
+
     /// Return the typed project id, or the explicit compatibility key for
     /// legacy requests that still use a directory-shaped project field.
     pub fn active_project_key(&self) -> Option<String> {

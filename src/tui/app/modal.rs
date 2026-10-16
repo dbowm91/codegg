@@ -235,8 +235,9 @@ impl App {
             crate::tui::app::state::AppMode::Embedded
         );
         let catalog_generation = self.project_catalog.list_request.request_id();
-        let picker =
+        let mut picker =
             crate::tui::app::state::ProjectPickerState::new(transport_local, catalog_generation);
+        picker.input_mode = self.ui_state.input_mode;
         self.dialog_state.project_picker = Some(picker);
         self.push_dialog(
             Dialog::ProjectPicker,
@@ -277,6 +278,10 @@ impl App {
         match dialog {
             Dialog::Session => {
                 self.load_sessions_dialog();
+                let project_context = self.active_project_display_context();
+                self.dialog_state
+                    .session_dialog
+                    .set_project_context(project_context);
                 self.focus_manager
                     .push(Box::new(self.dialog_state.session_dialog.clone()));
             }

@@ -1666,6 +1666,8 @@ impl App {
 
         self.status_bar.set_theme(&self.ui_state.theme);
         self.status_bar.apply_summary(&summary);
+        self.status_bar
+            .set_project_context(self.active_project_display_context());
 
         // M007: daemon-resolved effective policy line (cached from the
         // last snapshot; cleared until the first snapshot lands).

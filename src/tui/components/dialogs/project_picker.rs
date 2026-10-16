@@ -17,7 +17,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -171,22 +171,77 @@ pub fn render_picker_body(
     inner: Rect,
     theme: &Arc<Theme>,
 ) {
-    let mut lines: Vec<Line> = Vec::new();
-
     let phase_label = match picker.phase {
-        PickerPhase::Catalog => "Search",
+        PickerPhase::Catalog => "Projects",
         PickerPhase::WorkspaceSelection => "Choose Workspace",
         PickerPhase::RegistrationInput => "Register Local Project",
         PickerPhase::RegistrationConfirm => "Confirm Registration",
         PickerPhase::Error => "Error",
     };
-    lines.push(Line::from(Span::styled(
-        format!("[{}]", phase_label),
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .split(inner);
+    let title = Paragraph::new(Line::from(Span::styled(
+        phase_label,
         Style::default().fg(theme.primary),
-    )));
+    )))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.border)),
+    );
+    frame.render_widget(title, chunks[0]);
 
-    let query_line = format!("Search: {}", picker.query);
-    lines.push(Line::from(Span::raw(query_line)));
+    let count = filtered_indices.len();
+    let total = entries
+        .iter()
+        .filter(|entry| picker.show_archived || entry.archived_at.is_none())
+        .count();
+    let mut filter_spans = if picker.query.is_empty() {
+        vec![Span::styled(
+            "type to filter projects…",
+            Style::default().fg(theme.muted),
+        )]
+    } else {
+        vec![
+            Span::styled("search ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{}_", picker.query),
+                Style::default().fg(theme.primary),
+            ),
+            Span::styled(
+                format!("  {count}/{total}"),
+                Style::default().fg(theme.muted),
+            ),
+        ]
+    };
+    let (mode_label, mode_color) = match picker.input_mode {
+        crate::tui::input::InputMode::Normal => ("NOR", theme.muted),
+        crate::tui::input::InputMode::Insert => ("INS", theme.primary),
+    };
+    filter_spans.push(Span::styled(
+        format!("  {mode_label} "),
+        Style::default()
+            .fg(theme.background)
+            .bg(mode_color)
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+    let filter = Paragraph::new(Line::from(filter_spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if picker.query.is_empty() {
+                theme.border
+            } else {
+                theme.primary
+            })),
+    );
+    frame.render_widget(filter, chunks[1]);
+
+    let mut lines: Vec<Line> = Vec::new();
 
     match picker.phase {
         PickerPhase::Catalog => {
@@ -286,15 +341,31 @@ pub fn render_picker_body(
         }
     }
 
-    lines.push(Line::from(Span::styled(
-        " Enter select  |  Esc close  |  Ctrl+R register".to_string(),
-        Style::default().fg(theme.muted),
-    )));
-
     let paragraph = Paragraph::new(lines)
         .style(Style::default().fg(theme.foreground))
         .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(
+        paragraph.block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border)),
+        ),
+        chunks[2],
+    );
+
+    let footer_text = if picker.input_mode == crate::tui::input::InputMode::Normal {
+        "j/k move  |  type to filter  |  i Insert  |  Enter select  |  Tab archived  |  Esc"
+    } else {
+        "type to filter  |  Backspace erase  |  Esc Normal  |  Enter select  |  Ctrl+R register"
+    };
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(theme.muted))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border)),
+        );
+    frame.render_widget(footer, chunks[3]);
 }
 
 /// Map a key event to a picker-driven `TuiMsg`. The actual commit
@@ -387,5 +458,68 @@ mod tests {
     fn picker_key_to_msg_esc_closes() {
         let key = KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE);
         assert_eq!(picker_key_to_msg(key), Some(TuiMsg::CloseDialog));
+    }
+
+    #[test]
+    fn picker_render_shows_filter_count_mode_badge_and_footer() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut picker = ProjectPickerState::new(true, 0);
+        picker.query = "beta".to_string();
+        let entries = vec![make_dto("a", "Alpha"), make_dto("b", "Beta")];
+        let filtered = picker.filtered_indices(&entries);
+        let theme = Arc::new(Theme::dark());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_picker_body(
+                    frame,
+                    &picker,
+                    &filtered,
+                    &entries,
+                    true,
+                    frame.area(),
+                    &theme,
+                );
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Projects"));
+        assert!(text.contains("search beta_"));
+        assert!(text.contains("1/2"));
+        assert!(text.contains("NOR"));
+        assert!(text.contains("j/k move"));
+        assert!(text.contains("Beta"));
+
+        picker.input_mode = crate::tui::input::InputMode::Insert;
+        terminal
+            .draw(|frame| {
+                render_picker_body(
+                    frame,
+                    &picker,
+                    &filtered,
+                    &entries,
+                    true,
+                    frame.area(),
+                    &theme,
+                );
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("INS"));
+        assert!(text.contains("Esc Normal"));
     }
 }
