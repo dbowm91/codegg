@@ -191,6 +191,7 @@ impl DaemonRequestFamily {
             CoreRequest::ProjectList { .. } => Self::Projects,
             CoreRequest::WorkspaceDashboard { .. } => Self::Projects,
             CoreRequest::ProjectRegister { .. } => Self::Projects,
+            CoreRequest::ProjectUpdate { .. } => Self::Projects,
             CoreRequest::ProjectRestore { .. } => Self::Projects,
             CoreRequest::SnapshotDaemon => Self::Projects,
             CoreRequest::SnapshotWorkspace { .. } => Self::Projects,

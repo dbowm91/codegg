@@ -46,6 +46,11 @@ from internal/diagnostic surfaces only.
   fail without mutation. Workspace registrations remain available for a
   later project registration. The result returns deleted session ids so the
   daemon cancels live runtimes only after commit.
+- `update_project(project_id, display_name, workspace_id, expected_updated_at, source)` —
+  transactionally renames and consolidates the project's workspace and
+  session bindings onto one previously registered workspace. It refuses
+  an optimistic revision conflict and any workspace bound to another
+  project, and returns the rebound session ids for runtime invalidation.
 - `list_workspaces_for_project(project_id)` — bound workspaces.
 - `list_sessions_for_project(project_id)` — session count.
 - `list_locators(project_id)` — all locators for a project.

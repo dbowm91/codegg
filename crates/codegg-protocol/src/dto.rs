@@ -147,6 +147,16 @@ pub struct ProjectDeleteRequestDto {
     pub expected_session_count: usize,
 }
 
+/// Rename and rebind a project to an already registered workspace root.
+/// `expected_updated_at` is the optimistic concurrency token shown to the editor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectUpdateRequestDto {
+    pub project_id: String,
+    pub display_name: String,
+    pub root: String,
+    pub expected_updated_at: i64,
+}
+
 fn default_project_registration_source() -> String {
     "protocol".to_string()
 }

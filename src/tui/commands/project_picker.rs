@@ -645,6 +645,298 @@ pub(crate) fn apply_project_destroy_confirmation_loaded(
     picker.phase = crate::tui::app::state::PickerPhase::DestroyConfirm;
 }
 
+/// Load the current project name, primary bound root, and optimistic token
+/// before showing the rename/repath editor.
+pub(crate) fn start_project_edit(app: &mut App, project_id: String, picker_request_id: u64) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_edit_detail",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("project-edit-detail-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectGet {
+                    project_id: project_id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectGet { project }) => {
+                    let root = project
+                        .workspaces
+                        .first()
+                        .and_then(|workspace| workspace.canonical_root.clone());
+                    if root.is_none() {
+                        return Some(TuiCommand::ProjectEditLoaded {
+                            picker_request_id,
+                            project_id,
+                            display_name: None,
+                            root: None,
+                            expected_updated_at: None,
+                            error: Some("Project has no bound local directory".to_string()),
+                        });
+                    }
+                    Some(TuiCommand::ProjectEditLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: Some(project.project.display_name),
+                        root,
+                        expected_updated_at: Some(project.project.updated_at),
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some(format!("{code}: {message}")),
+                }),
+                Ok(_) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some("Unexpected project detail response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectEditLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    root: None,
+                    expected_updated_at: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_edit_loaded(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    display_name: Option<String>,
+    root: Option<String>,
+    expected_updated_at: Option<i64>,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::tui::app::state::PickerPhase::ProjectEditLoading
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
+        return;
+    }
+    let (Some(display_name), Some(root), Some(expected_updated_at)) =
+        (display_name, root, expected_updated_at)
+    else {
+        picker.last_error = Some("Project edit data was incomplete".to_string());
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
+        return;
+    };
+    picker.project_edit = Some(crate::tui::app::state::project_picker::ProjectEditDraft {
+        display_name,
+        root,
+        expected_updated_at,
+        editing_root: false,
+    });
+    picker.last_error = None;
+    picker.phase = crate::tui::app::state::PickerPhase::ProjectEdit;
+}
+
+pub(crate) fn start_project_update(
+    app: &mut App,
+    project_id: String,
+    display_name: String,
+    root: String,
+    expected_updated_at: i64,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_update",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("project-update-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectUpdate {
+                    request: crate::protocol::dto::ProjectUpdateRequestDto {
+                        project_id,
+                        display_name,
+                        root,
+                        expected_updated_at,
+                    },
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectUpdated {
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                }) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: Some(project),
+                    workspace: Some(workspace),
+                    previous_display_name: Some(previous_display_name),
+                    previous_root: Some(previous_root),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectUpdateFinished {
+                        picker_request_id,
+                        project: None,
+                        workspace: None,
+                        previous_display_name: None,
+                        previous_root: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some("Unexpected project update response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectUpdateFinished {
+                    picker_request_id,
+                    project: None,
+                    workspace: None,
+                    previous_display_name: None,
+                    previous_root: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_update_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project: Option<crate::protocol::dto::ProjectSummaryDto>,
+    workspace: Option<crate::protocol::dto::ProjectWorkspaceSummaryDto>,
+    previous_display_name: Option<String>,
+    previous_root: Option<String>,
+    error: Option<String>,
+) {
+    if let Some(error) = error {
+        if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+            if picker.is_request_current(picker_request_id)
+                && picker.phase == crate::tui::app::state::PickerPhase::ProjectUpdating
+            {
+                picker.last_error = Some(error);
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectEdit;
+                return;
+            }
+        }
+        return;
+    }
+    let (Some(project), Some(workspace)) = (project, workspace) else {
+        return;
+    };
+    if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+        if !picker.is_request_current(picker_request_id)
+            || picker.phase != crate::tui::app::state::PickerPhase::ProjectUpdating
+        {
+            return;
+        }
+        picker.reset_to_catalog();
+        picker.begin_request();
+    }
+    apply_project_updated(
+        app,
+        project,
+        workspace,
+        previous_display_name.unwrap_or_default(),
+        previous_root.unwrap_or_default(),
+    );
+    app.messages_state
+        .toasts
+        .info("Project renamed and directory rebound");
+    app.refresh_project_catalog();
+}
+
+pub(crate) fn apply_project_updated(
+    app: &mut App,
+    project: crate::protocol::dto::ProjectSummaryDto,
+    workspace: crate::protocol::dto::ProjectWorkspaceSummaryDto,
+    _previous_display_name: String,
+    _previous_root: String,
+) {
+    let root = workspace
+        .canonical_root
+        .as_deref()
+        .map(std::path::PathBuf::from);
+    let mut refresh_sessions = Vec::new();
+    if let Some(entry) = app
+        .project_catalog
+        .entries
+        .iter_mut()
+        .find(|entry| entry.project_id == project.project_id)
+    {
+        *entry = project.clone();
+    }
+    for tab in app.project_tabs.values_mut() {
+        if tab.project_id.as_deref() != Some(project.project_id.as_str()) {
+            continue;
+        }
+        tab.label =
+            crate::tui::app::state::project_picker::truncate_tab_label(&project.display_name);
+        tab.workspace_id = Some(workspace.workspace_id.clone());
+        tab.workspace_root = root.clone();
+        if let Some(details) = tab.project_details.as_mut() {
+            details.project = project.clone();
+            details.workspaces = vec![workspace.clone()];
+        }
+        if let Some(workspace_id) = tab.workspace_id.clone() {
+            refresh_sessions.push((tab.tab_id.clone(), project.project_id.clone(), workspace_id));
+        }
+    }
+    app.refresh_project_command_registry();
+    app.schedule_manifest_save();
+    for (tab_id, project_id, workspace_id) in refresh_sessions {
+        start_list_project_sessions(app, tab_id, project_id, workspace_id);
+    }
+}
+
 pub(crate) fn start_project_lifecycle(
     app: &mut App,
     project_id: String,

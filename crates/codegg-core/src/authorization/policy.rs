@@ -536,6 +536,11 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectConfigure),
         ),
+        R::ProjectUpdate { .. } => OperationDescriptor::new(
+            "project_update",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectConfigure),
+        ),
         R::ProjectHealth { .. } => OperationDescriptor::new(
             "project_health",
             ScopeKind::DirectProject,
@@ -1666,6 +1671,14 @@ pub fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::ProjectRestore {
             project_id: String::new(),
+        },
+        R::ProjectUpdate {
+            request: codegg_protocol::dto::ProjectUpdateRequestDto {
+                project_id: String::new(),
+                display_name: String::new(),
+                root: String::new(),
+                expected_updated_at: 0,
+            },
         },
         R::ProjectHealth {
             project_id: String::new(),

@@ -46,6 +46,7 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::ProjectRegistered { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectRestored { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectDeleted { .. } => SafePublicationClass::Safe,
+        CoreEvent::ProjectUpdated { .. } => SafePublicationClass::Safe,
         // M006-B: diagnostics carry source messages, code, and snippets, so
         // publishing them `Safe` is only correct because they are gated at
         // `file.read` rather than the generic projection stream's

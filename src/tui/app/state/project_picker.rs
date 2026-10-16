@@ -64,6 +64,12 @@ pub enum PickerPhase {
     LifecycleChanging,
     /// Permanent project deletion is in flight after explicit confirmation.
     Destroying,
+    /// Loading the project/workspace values before opening the edit form.
+    ProjectEditLoading,
+    /// Editing the project's display name and bound directory.
+    ProjectEdit,
+    /// Project update is being committed.
+    ProjectUpdating,
     /// An error occurred; show the error and a retry hint.
     Error,
 }
@@ -125,6 +131,8 @@ pub struct ProjectPickerState {
     pub cached_detail: Option<ProjectDetailsDto>,
     /// Name and exact session count shown by the destroy confirmation.
     pub destroy_confirmation: Option<ProjectDestroyConfirmation>,
+    /// Current rename/repath draft while the edit form is mounted.
+    pub project_edit: Option<ProjectEditDraft>,
     /// Per-picker request generation for catalog/detail/registration.
     pub request_id: u64,
     /// Snapshot of catalog cache generation used to build this picker.
@@ -149,6 +157,14 @@ pub struct ProjectDestroyConfirmation {
     pub session_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectEditDraft {
+    pub display_name: String,
+    pub root: String,
+    pub expected_updated_at: i64,
+    pub editing_root: bool,
+}
+
 impl ProjectPickerState {
     /// Create a fresh picker state. `transport_local` should be set
     /// based on `app.ui_state.mode`.
@@ -161,6 +177,7 @@ impl ProjectPickerState {
             pinned_project_id: None,
             cached_detail: None,
             destroy_confirmation: None,
+            project_edit: None,
             request_id: 0,
             catalog_generation,
             show_archived: false,
@@ -300,6 +317,7 @@ impl ProjectPickerState {
         self.pinned_project_id = None;
         self.cached_detail = None;
         self.destroy_confirmation = None;
+        self.project_edit = None;
         self.last_error = None;
         self.registration = RegistrationDraft::default();
         self.registration_input.clear();

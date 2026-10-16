@@ -2199,6 +2199,22 @@ impl App {
                 );
                 true
             }
+            E::ProjectUpdated {
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+            } => {
+                crate::tui::commands::project_picker::apply_project_updated(
+                    self,
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                );
+                self.refresh_project_catalog();
+                true
+            }
             _ => false,
         }
     }
@@ -9364,6 +9380,15 @@ impl App {
                     }
                 }
             }
+            PickerPhase::ProjectEditLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEdit => self.handle_picker_project_edit_key(key),
             PickerPhase::DestroyConfirm => match key.code {
                 crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n') => {
                     if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -9394,7 +9419,9 @@ impl App {
                 }
                 _ => {}
             },
-            PickerPhase::LifecycleChanging | PickerPhase::Destroying => {}
+            PickerPhase::LifecycleChanging
+            | PickerPhase::Destroying
+            | PickerPhase::ProjectUpdating => {}
             PickerPhase::Error => {
                 let _ = key; // suppress unused
                 if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -9407,6 +9434,38 @@ impl App {
 
     fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        let edit_project_id = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+                    && key.code == KeyCode::Char('e')
+            })
+            .and_then(|picker| {
+                picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))
+                    .map(|project| project.project_id.clone())
+            });
+        if let Some(project_id) = edit_project_id {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.project_edit = None;
+                picker.last_error = None;
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectEditLoading;
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                crate::tui::commands::project_picker::start_project_edit(
+                    self, project_id, request_id,
+                );
+            }
+            return;
+        }
 
         let lifecycle_action = self
             .dialog_state
@@ -9483,6 +9542,66 @@ impl App {
             crate::tui::app::state::PickerCatalogAction::Select => {
                 self.commit_picker_catalog_selection();
             }
+        }
+    }
+
+    fn handle_picker_project_edit_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        let Some(edit) = picker.project_edit.as_mut() else {
+            picker.last_error = Some("Project edit form is unavailable".to_string());
+            picker.phase = crate::tui::app::state::PickerPhase::Error;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.reset_to_catalog();
+                picker.begin_request();
+            }
+            KeyCode::Tab => {
+                edit.editing_root = !edit.editing_root;
+                picker.last_error = None;
+            }
+            KeyCode::Backspace => {
+                if edit.editing_root {
+                    edit.root.pop();
+                } else {
+                    edit.display_name.pop();
+                }
+                picker.last_error = None;
+            }
+            KeyCode::Enter => {
+                let Some(project_id) = picker.pinned_project_id.clone() else {
+                    return;
+                };
+                let (name, root, expected) = (
+                    edit.display_name.clone(),
+                    edit.root.clone(),
+                    edit.expected_updated_at,
+                );
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectUpdating;
+                let request_id = picker.begin_request();
+                crate::tui::commands::project_picker::start_project_update(
+                    self, project_id, name, root, expected, request_id,
+                );
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if edit.editing_root {
+                    if edit.root.chars().count() < 1024 {
+                        edit.root.push(ch);
+                    }
+                } else if edit.display_name.chars().count() < 80 {
+                    edit.display_name.push(ch);
+                }
+                picker.last_error = None;
+            }
+            _ => {}
         }
     }
 

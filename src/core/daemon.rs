@@ -1096,6 +1096,7 @@ impl CoreDaemon {
             | CoreRequest::ProjectArchive { project_id }
             | CoreRequest::ProjectRestore { project_id } => Some(project_id),
             CoreRequest::ProjectDelete { request } => Some(&request.project_id),
+            CoreRequest::ProjectUpdate { request } => Some(&request.project_id),
             CoreRequest::DocumentOpen { project_id, .. }
             | CoreRequest::DocumentSnapshotGet { project_id, .. }
             | CoreRequest::DocumentStatusGet { project_id, .. }
@@ -3361,6 +3362,7 @@ impl CoreDaemon {
         match request {
             CoreRequest::SessionCreate { .. }
             | CoreRequest::ProjectDelete { .. }
+            | CoreRequest::ProjectUpdate { .. }
             | CoreRequest::ProjectArchive { .. }
             | CoreRequest::ProjectRestore { .. }
             | CoreRequest::JobSubmit { .. }
@@ -3737,6 +3739,9 @@ impl CoreDaemon {
                 codegg_core::identity::ProjectId::parse(project_id).ok()
             }
             CoreRequest::ProjectDelete { request } => {
+                codegg_core::identity::ProjectId::parse(&request.project_id).ok()
+            }
+            CoreRequest::ProjectUpdate { request } => {
                 codegg_core::identity::ProjectId::parse(&request.project_id).ok()
             }
             CoreRequest::SessionCreate {

@@ -258,7 +258,7 @@ not a separate protocol.
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
 **Project Responses**: `ProjectList`, `ProjectGet`, `ProjectRegistered`,
-`ProjectArchived`, `ProjectRestored`, `ProjectDeleted`, `ProjectHealth`,
+`ProjectArchived`, `ProjectRestored`, `ProjectDeleted`, `ProjectUpdated`, `ProjectHealth`,
 `ProjectCatalogCapabilities`
 
 **Project Initialization Responses**: `ProjectInitDraft` carries the
@@ -307,7 +307,7 @@ Tagged enum with 87 variants. Major groups:
 `AssetRefreshCompleted`, `ConnectionRotated`, `ConnectionStateChanged`
 
 **Project (5)**: `ProjectRegistered`, `ProjectArchived`,
-`ProjectRestored`, `ProjectDeleted`, `ProjectHealthChanged`
+`ProjectRestored`, `ProjectDeleted`, `ProjectUpdated`, `ProjectHealthChanged`
 
 **Turn (5)**: `TurnStarted`, `TurnTextDelta`, `TurnReasoningDelta`,
 `TurnCompleted`, `TurnFailed`

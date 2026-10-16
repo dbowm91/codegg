@@ -2383,6 +2383,42 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::ProjectEditLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            root,
+            expected_updated_at,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_edit_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                root,
+                expected_updated_at,
+                error,
+            );
+        }
+        TuiCommand::ProjectUpdateFinished {
+            picker_request_id,
+            project,
+            workspace,
+            previous_display_name,
+            previous_root,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_update_finished(
+                app,
+                picker_request_id,
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+                error,
+            );
+        }
         TuiCommand::StartListProjectSessions {
             tab_id,
             project_id,

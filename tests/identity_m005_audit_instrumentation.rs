@@ -949,6 +949,118 @@ async fn project_destroy_audit_carries_actor_and_confirmed_session_count() {
     );
 }
 
+#[tokio::test]
+async fn project_update_audit_records_actor_old_and_new_values() {
+    let pool = test_pool().await;
+    let old_root = tempfile::tempdir().unwrap();
+    let new_root = tempfile::tempdir().unwrap();
+    let project = ProjectId::new();
+    let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
+    let old_workspace = daemon
+        .workspaces
+        .get_or_register(old_root.path())
+        .await
+        .unwrap();
+    let new_workspace = daemon
+        .workspaces
+        .get_or_register(new_root.path())
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query("INSERT INTO logical_project (id, display_name, lifecycle, time_created, time_updated, archived_at) VALUES (?, 'Old name', 'active', ?, ?, NULL)")
+        .bind(project.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, NULL, NULL, NULL, ?, 'resolved', 'test', 1, ?, ?)")
+        .bind(old_workspace.id.as_str())
+        .bind(project.as_str())
+        .bind(old_workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = Box::pin(daemon.handle_request_for_client(
+        new_request(
+            "req-project-update".to_owned(),
+            CoreRequest::ProjectUpdate {
+                request: codegg::protocol::dto::ProjectUpdateRequestDto {
+                    project_id: project.as_str().to_owned(),
+                    display_name: "New name".to_owned(),
+                    root: new_root.path().to_string_lossy().into_owned(),
+                    expected_updated_at: now,
+                },
+            },
+        ),
+        "client-project-update",
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(response, CoreResponse::ProjectUpdated { .. }));
+    assert_eq!(
+        new_workspace.canonical_root.to_string_lossy().as_ref(),
+        new_root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+
+    let page = AuditStore::new(pool)
+        .query(
+            &AuditQueryFilter::new(Some(project.clone()))
+                .with_action("config_change")
+                .with_limit(10),
+        )
+        .await
+        .unwrap();
+    let update = page
+        .events
+        .iter()
+        .find(|event| {
+            event
+                .metadata
+                .get("project.update.operation")
+                .map(String::as_str)
+                == Some("rename_repath")
+        })
+        .expect("successful project update should be audited");
+    assert_eq!(update.actor_principal.as_str(), "local-owner");
+    assert_eq!(
+        update
+            .metadata
+            .get("project.update.previous_name")
+            .map(String::as_str),
+        Some("Old name")
+    );
+    assert_eq!(
+        update
+            .metadata
+            .get("project.update.new_name")
+            .map(String::as_str),
+        Some("New name")
+    );
+    assert_eq!(
+        update
+            .metadata
+            .get("project.update.previous_root")
+            .map(String::as_str),
+        Some(old_workspace.canonical_root.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        update
+            .metadata
+            .get("project.update.new_root")
+            .map(String::as_str),
+        Some(new_workspace.canonical_root.to_string_lossy().as_ref())
+    );
+}
+
 #[test]
 fn required_event_matrix_covers_all_taxonomy_actions() {
     for known in AuditAction::ALL {

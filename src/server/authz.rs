@@ -128,6 +128,13 @@ pub fn route_disposition_table() -> Vec<RouteDispositionEntry> {
             capability: "project.configure",
         },
         RouteDispositionEntry {
+            method: "PATCH",
+            path: "/api/projects/{id}",
+            disposition: D::SharedAuthz,
+            operation: "project_update",
+            capability: "project.configure",
+        },
+        RouteDispositionEntry {
             method: "POST",
             path: "/api/sessions/{id}/unshare",
             disposition: D::SharedAuthz,

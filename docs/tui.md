@@ -64,6 +64,13 @@ permanent deletion; `Esc` or `n` dismisses without changing anything.
 Destroy permanently deletes the project and its sessions, so it cannot be
 undone. Open tabs for the destroyed project close automatically.
 
+Press `e` on a project row to edit its display name and bound directory.
+Use `Tab` to switch fields, `Enter` to commit, and `Esc` to cancel. Repath
+rebinds the project's sessions to the new existing directory; it never
+moves files. Roots must be absolute directories without a symlink alias.
+A root already bound to another project is refused with that project's
+name. A successful rebind updates open tabs and their displayed paths.
+
 ## Sessions from the CLI
 
 Four subcommands read and move session records without opening the UI:

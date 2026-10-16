@@ -114,6 +114,269 @@ async fn insert_bound_sessions(
     ids
 }
 
+async fn insert_workspace_row(pool: &SqlitePool, ws: &WorkspaceRecord) {
+    sqlx::query("INSERT INTO workspace (id, canonical_root, display_name, time_created, time_last_opened, time_archived) VALUES (?, ?, ?, ?, ?, NULL)")
+        .bind(ws.id.as_str())
+        .bind(ws.canonical_root.to_string_lossy().to_string())
+        .bind(&ws.display_name)
+        .bind(ws.created_at.timestamp_millis())
+        .bind(ws.last_opened_at.timestamp_millis())
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn project_update_renames_rebinds_and_preserves_session_identity() {
+    let p = pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let old_root = tempdir().unwrap();
+    let new_root = tempdir().unwrap();
+    let old_ws = workspace(old_root.path(), "old-root");
+    let new_ws = workspace(new_root.path(), "new-root");
+    insert_workspace_row(&p, &old_ws).await;
+    insert_workspace_row(&p, &new_ws).await;
+    let project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "Before".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &old_ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let sessions = insert_bound_sessions(&p, &project.project_id, &old_ws.id, 2).await;
+
+    let result = catalog
+        .update_project(
+            &project.project_id,
+            "After",
+            &new_ws.id,
+            project.updated_at.timestamp_millis(),
+            "test-update",
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.project.display_name, "After");
+    assert_eq!(result.rebound_session_ids.len(), 2);
+    assert_eq!(
+        catalog
+            .list_workspaces_for_project(&project.project_id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace.workspace_id.clone())
+            .collect::<Vec<_>>(),
+        vec![new_ws.id.clone()]
+    );
+    for session_id in sessions {
+        let binding: (String, String) = sqlx::query_as(
+            "SELECT project_id, workspace_id FROM session_project_binding WHERE session_id = ?",
+        )
+        .bind(&session_id)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+        assert_eq!(binding.0, project.project_id.to_string());
+        assert_eq!(binding.1, new_ws.id.to_string());
+        let session_workspace: String =
+            sqlx::query_scalar("SELECT workspace_id FROM session WHERE id = ?")
+                .bind(&session_id)
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert_eq!(session_workspace, new_ws.id.to_string());
+    }
+    assert!(matches!(
+        catalog
+            .update_project(
+                &project.project_id,
+                "Lost update",
+                &old_ws.id,
+                project.updated_at.timestamp_millis(),
+                "test-update",
+            )
+            .await,
+        Err(CatalogError::Conflict(_))
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn project_update_refuses_a_workspace_owned_by_another_project() {
+    let p = pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let first_root = tempdir().unwrap();
+    let second_root = tempdir().unwrap();
+    let first_ws = workspace(first_root.path(), "first-root");
+    let second_ws = workspace(second_root.path(), "second-root");
+    insert_workspace_row(&p, &first_ws).await;
+    insert_workspace_row(&p, &second_ws).await;
+    let first = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "First".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &first_ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let second = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "Second Owner".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &second_ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+
+    let error = catalog
+        .update_project(
+            &first.project_id,
+            "First Renamed",
+            &second_ws.id,
+            first.updated_at.timestamp_millis(),
+            "test-update",
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CatalogError::Conflict(_)));
+    assert!(error.to_string().contains(&second.display_name));
+    assert_eq!(
+        catalog
+            .get_project(&first.project_id)
+            .await
+            .unwrap()
+            .display_name,
+        "First"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_project_updates_use_revision_compare_and_swap() {
+    let (p, _database_dir) = concurrent_pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let original_root = tempdir().unwrap();
+    let first_root = tempdir().unwrap();
+    let second_root = tempdir().unwrap();
+    let original_ws = workspace(original_root.path(), "original-root");
+    let first_ws = workspace(first_root.path(), "first-root");
+    let second_ws = workspace(second_root.path(), "second-root");
+    insert_workspace_row(&p, &original_ws).await;
+    insert_workspace_row(&p, &first_ws).await;
+    insert_workspace_row(&p, &second_ws).await;
+    let project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "Concurrent".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &original_ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let expected_revision = project.updated_at.timestamp_millis();
+    let first_update = catalog.update_project(
+        &project.project_id,
+        "First winner",
+        &first_ws.id,
+        expected_revision,
+        "test-update",
+    );
+    let second_update = catalog.update_project(
+        &project.project_id,
+        "Second winner",
+        &second_ws.id,
+        expected_revision,
+        "test-update",
+    );
+    let (first, second) = tokio::join!(first_update, second_update);
+    assert_ne!(first.is_ok(), second.is_ok());
+    let loser = if let Err(error) = first {
+        error
+    } else {
+        second.unwrap_err()
+    };
+    assert!(matches!(loser, CatalogError::Conflict(_)), "got {loser:?}");
+    let current = catalog.get_project(&project.project_id).await.unwrap();
+    assert!(matches!(
+        current.display_name.as_str(),
+        "First winner" | "Second winner"
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn injected_project_update_failure_rolls_back_name_and_bindings() {
+    let p = pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let original_root = tempdir().unwrap();
+    let new_root = tempdir().unwrap();
+    let original_ws = workspace(original_root.path(), "original-root");
+    let new_ws = workspace(new_root.path(), "new-root");
+    insert_workspace_row(&p, &original_ws).await;
+    insert_workspace_row(&p, &new_ws).await;
+    let project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "Before failure".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &original_ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "CREATE TRIGGER fail_project_rebind BEFORE INSERT ON workspace_project_binding WHEN new.project_id = '{}' BEGIN SELECT RAISE(ABORT, 'injected project rebind failure'); END",
+        project.project_id.as_str()
+    ))
+        .execute(&p)
+        .await
+        .unwrap();
+
+    assert!(catalog
+        .update_project(
+            &project.project_id,
+            "Must roll back",
+            &new_ws.id,
+            project.updated_at.timestamp_millis(),
+            "test-update",
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        catalog
+            .get_project(&project.project_id)
+            .await
+            .unwrap()
+            .display_name,
+        "Before failure"
+    );
+    let bound = catalog
+        .list_workspaces_for_project(&project.project_id)
+        .await
+        .unwrap();
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].workspace_id, original_ws.id);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn migration_v28_is_additive_and_idempotent() {
     let p = pool().await;

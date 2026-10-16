@@ -5,8 +5,9 @@ use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
     JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
     ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
-    RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
-    ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
+    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
+    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
+    SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1260,6 +1261,12 @@ pub enum CoreResponse {
         project_id: String,
         deleted_session_count: usize,
     },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
+    },
     ProjectHealth {
         health: ProjectHealthDto,
     },
@@ -2438,6 +2445,9 @@ pub enum CoreRequest {
     },
     ProjectDelete {
         request: ProjectDeleteRequestDto,
+    },
+    ProjectUpdate {
+        request: ProjectUpdateRequestDto,
     },
     ProjectHealth {
         project_id: String,
@@ -3632,6 +3642,12 @@ pub enum CoreEvent {
     ProjectDeleted {
         project_id: String,
         deleted_session_count: usize,
+    },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
     },
     ProjectHealthChanged {
         project_id: String,

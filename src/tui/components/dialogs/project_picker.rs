@@ -180,6 +180,9 @@ pub fn render_picker_body(
         PickerPhase::DestroyConfirm => "Confirm Project Destroy",
         PickerPhase::LifecycleChanging => "Update Project",
         PickerPhase::Destroying => "Destroy Project",
+        PickerPhase::ProjectEditLoading => "Load Project for Editing",
+        PickerPhase::ProjectEdit => "Edit Project",
+        PickerPhase::ProjectUpdating => "Update Project",
         PickerPhase::Error => "Error",
     };
     let chunks = Layout::vertical([
@@ -367,6 +370,35 @@ pub fn render_picker_body(
         PickerPhase::Destroying => {
             lines.push(Line::from(Span::raw("Deleting project and its sessions…")));
         }
+        PickerPhase::ProjectEditLoading => {
+            lines.push(Line::from(Span::raw("Loading project name and directory…")));
+        }
+        PickerPhase::ProjectEdit => {
+            if let Some(edit) = &picker.project_edit {
+                let name_mark = if edit.editing_root { "  " } else { "> " };
+                let root_mark = if edit.editing_root { "> " } else { "  " };
+                lines.push(Line::from(format!(
+                    "{name_mark}Name: {}",
+                    edit.display_name
+                )));
+                lines.push(Line::from(format!("{root_mark}Directory: {}", edit.root)));
+                lines.push(Line::from(Span::styled(
+                    "Rebind changes directory bindings only; it never moves files.",
+                    Style::default().fg(theme.muted),
+                )));
+                if let Some(error) = picker.last_error.as_deref() {
+                    lines.push(Line::from(Span::styled(
+                        error,
+                        Style::default().fg(theme.error),
+                    )));
+                }
+            }
+        }
+        PickerPhase::ProjectUpdating => {
+            lines.push(Line::from(Span::raw(
+                "Renaming project and rebinding sessions…",
+            )));
+        }
         PickerPhase::Error => {
             let err = picker.last_error.as_deref().unwrap_or("Unknown error");
             lines.push(Line::from(Span::styled(
@@ -392,6 +424,8 @@ pub fn render_picker_body(
         PickerPhase::DestroyConfirm => "Enter/y permanently destroy  |  Esc/n cancel",
         PickerPhase::DestroyLoading => "Esc cancel",
         PickerPhase::LifecycleChanging | PickerPhase::Destroying => "Working…",
+        PickerPhase::ProjectEditLoading | PickerPhase::ProjectUpdating => "Working…",
+        PickerPhase::ProjectEdit => "Tab switch field  |  Enter save  |  Esc cancel",
         _ if picker.input_mode == crate::tui::input::InputMode::Normal => {
             "j/k move  |  type to filter  |  i Insert  |  Enter select  |  Tab archived  |  Esc"
         }
@@ -597,5 +631,37 @@ mod tests {
         assert!(text.contains("This cannot be undone."));
         assert!(text.contains("Enter/y permanently destroy"));
         assert!(text.contains("Esc/n cancel"));
+    }
+
+    #[test]
+    fn project_edit_shows_name_root_and_binding_only_copy() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut picker = ProjectPickerState::new(true, 0);
+        picker.phase = PickerPhase::ProjectEdit;
+        picker.project_edit = Some(crate::tui::app::state::project_picker::ProjectEditDraft {
+            display_name: "Example".to_string(),
+            root: "/work/example".to_string(),
+            expected_updated_at: 42,
+            editing_root: false,
+        });
+        let theme = Arc::new(Theme::dark());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| render_picker_body(frame, &picker, &[], &[], true, frame.area(), &theme))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Edit Project"));
+        assert!(text.contains("Name: Example"));
+        assert!(text.contains("Directory: /work/example"));
+        assert!(text.contains("never moves files"));
+        assert!(text.contains("Enter save"));
     }
 }

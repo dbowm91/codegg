@@ -412,6 +412,137 @@ impl CoreDaemon {
                     Err(error) => Ok(Self::project_catalog_error("project delete failed", &error)),
                 }
             }
+            CoreRequest::ProjectUpdate { request } => {
+                let project_id = match codegg_core::identity::ProjectId::parse(&request.project_id)
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_project_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let requested_root = std::path::PathBuf::from(&request.root);
+                if !requested_root.is_absolute() {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_workspace_root".into(),
+                        message: "project root must be an absolute local directory".into(),
+                    });
+                }
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "project_catalog_unavailable".into(),
+                        message: "project update requires a catalog".into(),
+                    });
+                };
+                let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+                let current = match catalog.get_project(&project_id).await {
+                    Ok(project) => project,
+                    Err(error) => {
+                        return Ok(Self::project_catalog_error("project get failed", &error))
+                    }
+                };
+                if current.updated_at.timestamp_millis() != request.expected_updated_at {
+                    return Ok(CoreResponse::Error {
+                        code: "project_update_conflict".into(),
+                        message: "project changed since the edit form was opened; reload and retry"
+                            .into(),
+                    });
+                }
+                let previous_root = match catalog.list_workspaces_for_project(&project_id).await {
+                    Ok(workspaces) => workspaces
+                        .first()
+                        .map(|workspace| workspace.canonical_root.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    Err(error) => {
+                        return Ok(Self::project_catalog_error(
+                            "project workspace lookup failed",
+                            &error,
+                        ))
+                    }
+                };
+                let workspace = match self.workspaces.get_or_register(&requested_root).await {
+                    Ok(workspace) => workspace,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_workspace_root".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let result = match catalog
+                    .update_project(
+                        &project_id,
+                        &request.display_name,
+                        &workspace.id,
+                        request.expected_updated_at,
+                        "project-picker-update",
+                    )
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        return Ok(Self::project_catalog_error("project update failed", &error))
+                    }
+                };
+                for session_id in &result.rebound_session_ids {
+                    if let Some(runtime) =
+                        self.sessions.get(session_id).map(|runtime| runtime.clone())
+                    {
+                        if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
+                            let _ = active_turn.cancel_tx.send(true);
+                        }
+                        self.sessions.remove(session_id);
+                    }
+                }
+                let project = codegg_core::protocol_conversions::project_catalog_record_to_dto(
+                    &result.project,
+                );
+                let workspace_dto = crate::protocol::dto::ProjectWorkspaceSummaryDto {
+                    workspace_id: workspace.id.to_string(),
+                    display_name: workspace.display_name.clone(),
+                    canonical_root: Some(workspace.canonical_root.to_string_lossy().into_owned()),
+                };
+                let provenance = codegg_core::authorization::audit_provenance(&authz_decision);
+                let audit = codegg_core::audit::AuditEventBuilder::new(
+                    codegg_core::audit::AuditAction::ConfigChange,
+                    authority.principal(),
+                    &provenance,
+                )
+                .with_correlation(request_id)
+                .with_project(project_id.clone())
+                .with_metadata("project.update.operation", "rename_repath")
+                .with_metadata("project.update.previous_name", &current.display_name)
+                .with_metadata("project.update.new_name", &result.project.display_name)
+                .with_metadata("project.update.previous_root", &previous_root)
+                .with_metadata(
+                    "project.update.new_root",
+                    workspace.canonical_root.to_string_lossy().as_ref(),
+                )
+                .with_metadata(
+                    "project.update.rebound_session_count",
+                    result.rebound_session_ids.len().to_string(),
+                )
+                .with_metadata("decision.id", provenance.decision_id())
+                .with_metadata("decision.outcome", "allow");
+                self.audit_emitter().emit(audit).await;
+                let event = CoreEvent::ProjectUpdated {
+                    project: project.clone(),
+                    workspace: workspace_dto.clone(),
+                    previous_display_name: current.display_name.clone(),
+                    previous_root: previous_root.clone(),
+                };
+                self.event_log
+                    .publish(Some(project_id.to_string()), None, event.clone())
+                    .await;
+                Ok(CoreResponse::ProjectUpdated {
+                    project,
+                    workspace: workspace_dto,
+                    previous_display_name: current.display_name,
+                    previous_root,
+                })
+            }
             CoreRequest::ProjectHealth {
                 project_id,
                 workspace_id,

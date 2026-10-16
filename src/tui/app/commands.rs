@@ -943,6 +943,24 @@ pub enum TuiCommand {
         deleted_session_count: Option<usize>,
         error: Option<String>,
     },
+    /// Project/workspace detail loaded for a rename/repath form.
+    ProjectEditLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        root: Option<String>,
+        expected_updated_at: Option<i64>,
+        error: Option<String>,
+    },
+    /// Completion of a rename/repath update.
+    ProjectUpdateFinished {
+        picker_request_id: u64,
+        project: Option<crate::protocol::dto::ProjectSummaryDto>,
+        workspace: Option<crate::protocol::dto::ProjectWorkspaceSummaryDto>,
+        previous_display_name: Option<String>,
+        previous_root: Option<String>,
+        error: Option<String>,
+    },
     /// Project Picker (Milestone 2): load sessions for a project tab.
     StartListProjectSessions {
         tab_id: crate::tui::app::state::ProjectTabId,
