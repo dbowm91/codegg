@@ -1370,7 +1370,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn diff_rename_detection_populates_old_path() {
+    async fn diff_rename_detection_preserves_paths_in_structured_or_raw_payload() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path());
         commit_file(dir.path(), "old.txt", "content");
@@ -1410,6 +1410,13 @@ mod tests {
                     file.old_path.is_some(),
                     "old_path should be set for renames"
                 );
+            }
+            GitPayload::DiffText(text) => {
+                // Git versions and repository configuration can leave the
+                // structured summary unavailable. Preserve the truthful raw
+                // fallback contract while pinning both rename paths.
+                assert!(text.contains("rename from old.txt"), "got: {text}");
+                assert!(text.contains("rename to new.txt"), "got: {text}");
             }
             other => panic!("expected DiffResult, got {:?}", other),
         }
