@@ -354,8 +354,18 @@ pub struct App {
     /// Whether the above-input todo strip shows the full list or only the
     /// one-line `n/m completed` summary. Toggled with Ctrl+T.
     pub todo_expanded: bool,
+    /// Whether the unified tasks overlay is expanded. Toggled with Shift+T.
+    ///
+    /// Separate from [`App::todo_expanded`] because the two answer different
+    /// questions. `Ctrl+T` owns the always-visible compact progress line; this
+    /// owns the on-demand block that adds in-flight subagents and jobs beneath
+    /// it. Collapsing them would take away the one-line summary that is legible
+    /// without expanding anything.
+    pub tasks_expanded: bool,
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
+    /// Rows the unified tasks overlay occupies on the last render pass.
+    pub tasks_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
     /// Every panel column painted on the last frame, with the placement that
     /// owns it.
@@ -1104,7 +1114,9 @@ impl App {
             todos: Vec::new(),
             todo_revision: 0,
             todo_expanded: false,
+            tasks_expanded: false,
             todo_area: None,
+            tasks_area: None,
             sidebar_area: None,
             panel_areas: Vec::new(),
             left_border_area: None,
@@ -1677,7 +1689,9 @@ impl App {
             todos: Vec::new(),
             todo_revision: 0,
             todo_expanded: false,
+            tasks_expanded: false,
             todo_area: None,
+            tasks_area: None,
             sidebar_area: None,
             panel_areas: Vec::new(),
             left_border_area: None,
@@ -3737,6 +3751,9 @@ impl App {
                     self,
                     InputAction::OpenPanelManager,
                 );
+            }
+            Some(InputAction::ToggleTasksList) => {
+                self.toggle_tasks_list();
             }
             Some(InputAction::ToggleTodoList) => {
                 self.toggle_todo_list();
@@ -13777,6 +13794,17 @@ impl App {
         self.todo_expanded = !self.todo_expanded;
     }
 
+    /// Toggle the unified tasks overlay (todos, subagents, jobs).
+    ///
+    /// Unlike `toggle_todo_list`, this one is *not* short-circuited when the
+    /// list is empty. An empty overlay is a legitimate answer — "you asked
+    /// what the session is waiting on and the answer is nothing" — and
+    /// swallowing the key would leave the user pressing a key that appears
+    /// dead. The overlay still reports the groups it found nothing in.
+    pub fn toggle_tasks_list(&mut self) {
+        self.tasks_expanded = !self.tasks_expanded;
+    }
+
     /// Completed todo count. `TodoStatus::Completed` is the only status that
     /// counts toward the `n/m` progress readout; cancelled items are not
     /// "done work" and must not inflate the numerator.
@@ -13800,6 +13828,60 @@ impl App {
         // the viewport. `Ctrl+T` still reports the true totals in the header.
         let tasks = self.todos.len().min(MAX_TODO_STRIP_TASKS) as u16;
         tasks.saturating_add(1)
+    }
+
+    /// Rows the unified tasks overlay needs, including its per-group headers.
+    ///
+    /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
+    /// so the input keeps the space in both cases. The height is deliberately
+    /// independent of `todo_strip_height`: the overlay is on-demand, and
+    /// coupling them would make expanding one reflow the other's rows.
+    pub fn tasks_strip_height(&self) -> u16 {
+        if !self.tasks_expanded {
+            return 0;
+        }
+        let rows = self.task_rows();
+        if rows.is_empty() {
+            return 0;
+        }
+        // Header + rows + the "nothing here" line when the overlay is open but
+        // every group was empty. Without that last row an expanded-but-empty
+        // overlay would collapse to nothing and the toggle would appear broken.
+        crate::tui::app::state::tasks::bounded(rows).len() as u16
+    }
+
+    /// Build the tasks overlay rows from the three projection-backed sources.
+    ///
+    /// Subagents come from the already-projected `SubagentState.rows` rather
+    /// than being re-read from the snapshot, and jobs come from
+    /// `snapshot.jobs`. Nothing here synthesizes a row or mints a name; this
+    /// only selects and formats what the projection already vouches for.
+    pub fn task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
+        let todos: Vec<crate::tui::app::state::tasks::TodoLike> = self
+            .todos
+            .iter()
+            .map(|todo| crate::tui::app::state::tasks::TodoLike {
+                bubble: Self::todo_bubble(&todo.status),
+                content: todo.content.clone(),
+            })
+            .collect();
+        let jobs: Vec<crate::tui::app::state::tasks::JobLike> = self
+            .projection_client
+            .active_snapshot()
+            .map(|(_, snapshot)| {
+                snapshot
+                    .jobs
+                    .iter()
+                    .map(|job| crate::tui::app::state::tasks::JobLike {
+                        kind: job.kind.clone(),
+                        summary: job.summary.clone(),
+                        state: job.state.clone(),
+                        error_class: job.error_class.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::tui::app::state::tasks::build_task_rows(&todos, &self.ui_state.subagents.rows, &jobs)
     }
 
     /// The single-character status bubble for a todo entry.

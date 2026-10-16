@@ -6,8 +6,31 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
+use crate::tui::app::state::tasks::{bounded as bounded_task_rows, TaskRow};
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
+
+/// One overlay row, ellipsized to the strip width.
+///
+/// Wrapping is deliberately avoided: the overlay's height is computed once in
+/// `tasks_strip_height`, so a wrapped line would paint into the next row and a
+/// long job summary would silently corrupt the block below it.
+fn strip_line<'a>(
+    theme: &'a crate::tui::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let lead_width = unicode_width::UnicodeWidthStr::width(lead);
+    let budget = (width as usize).saturating_sub(3 + lead_width);
+    let body = crate::tui::wrap::ellipsize_to_width(text, budget);
+    Line::from(vec![
+        Span::styled("   ", Style::default()),
+        Span::styled(lead.to_string(), Style::default().fg(theme.primary)),
+        Span::styled(body, Style::default().fg(colour)),
+    ])
+}
 
 /// Maximum display width of the agent name shown beside the input-mode badge.
 const MAX_AGENT_BADGE_WIDTH: usize = 20;
@@ -126,11 +149,33 @@ impl App {
         // line and todo strip are: carving it afterwards would shrink the
         // input every time the agent started working.
         let working_rows = self.working_strip_rows();
+        // The unified tasks overlay reserves from the prompt allocation for
+        // the same reason the todo strip does: carving it out afterwards would
+        // shrink the input box every time the overlay opened. It is added
+        // *after* the todo strip because the overlay renders directly beneath
+        // it, so their order in the allocation has to match their order on
+        // screen.
+        //
+        // The reservation is then clamped against the height actually left
+        // over once the transcript's floor is honoured. Without the clamp the
+        // overlay and the prompt box together can exceed a short pane, and the
+        // carve below silently yields — so `Shift+T` looks like a dead key on
+        // exactly the terminals where a status overlay would be most wanted.
+        // A too-short pane shows no overlay rather than a wrong one.
+        let overlay_allowance = self.tasks_overlay_allowance(
+            pane_area.height,
+            todo_rows,
+            hint_rows,
+            working_rows,
+            max_prompt_height,
+        );
+        let tasks_rows = self.tasks_strip_height().min(overlay_allowance);
         let prompt_height = self
             .prompt_state
             .prompt
             .needed_height(max_prompt_height)
             .saturating_add(todo_rows)
+            .saturating_add(tasks_rows)
             .saturating_add(hint_rows)
             .saturating_add(working_rows);
         let session_chunks = self
@@ -161,7 +206,11 @@ impl App {
             hint_chunk = Some(split[0]);
             available = split[1];
         }
-        let (prompt_chunk, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
+        // Carve top-down in the same order the rows were added to
+        // `prompt_height`: working strip, hint line, todo strip, tasks
+        // overlay, then the prompt gets whatever is left. The overlay sits
+        // directly beneath the todo strip on screen for the same reason.
+        let (remaining, todo_chunk) = if todo_rows > 0 && available.height > todo_rows {
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(todo_rows), Constraint::Min(1)])
@@ -170,7 +219,17 @@ impl App {
         } else {
             (available, None)
         };
+        let (prompt_chunk, tasks_chunk) = if tasks_rows > 0 && remaining.height > tasks_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(tasks_rows), Constraint::Min(1)])
+                .split(remaining);
+            (split[1], Some(split[0]))
+        } else {
+            (remaining, None)
+        };
         self.todo_area = todo_chunk;
+        self.tasks_area = tasks_chunk;
         self.viewport_area = Some(session_chunks[1]);
         self.prompt_area = Some(prompt_chunk);
 
@@ -222,6 +281,7 @@ impl App {
         self.render_working_strip(frame, working_chunk);
         self.render_composer_hints(frame, hint_chunk);
         self.render_todo_strip(frame, todo_chunk);
+        self.render_tasks_strip(frame, tasks_chunk);
         self.render_prompt(frame, prompt_chunk);
         self.render_footer(frame, session_chunks[3]);
 
@@ -1141,6 +1201,134 @@ impl App {
         } else {
             lines.push(Line::from(Span::styled(
                 format!(" Todo list: {done}/{total} completed · Ctrl+T expand "),
+                Style::default().fg(theme.muted),
+            )));
+        }
+
+        let shown = (area.height as usize).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[..shown].to_vec()), area);
+    }
+
+    /// How many rows the tasks overlay may reserve on a pane of `pane_height`.
+    ///
+    /// Returns the space left after honouring every other claim on the pane:
+    /// the header and footer, the transcript's `MIN_TRANSCRIPT` floor, the
+    /// prompt box at its own maximum, and the working strip, hint line, and
+    /// todo strip above it.
+    ///
+    /// The floor is the load-bearing part. `session_layout` splits the pane
+    /// into `Min(10)` for the transcript and a fixed height for the prompt, so
+    /// an overlay that overshoots does not merely render short — it makes the
+    /// carve below yield, and `Shift+T` stops doing anything at all. Clamping
+    /// here makes a short pane drop the overlay instead, which is the honest
+    /// outcome: a truncated transcript is worse than no overlay.
+    fn tasks_overlay_allowance(
+        &self,
+        pane_height: u16,
+        todo_rows: u16,
+        hint_rows: u16,
+        working_rows: u16,
+        max_prompt_height: u16,
+    ) -> u16 {
+        const MIN_TRANSCRIPT: u16 = 10;
+        let config = &self.ui_state.layout.config;
+        let claimed = config
+            .header_height
+            .saturating_add(config.footer_height)
+            .saturating_add(MIN_TRANSCRIPT)
+            .saturating_add(max_prompt_height)
+            .saturating_add(todo_rows)
+            .saturating_add(hint_rows)
+            .saturating_add(working_rows);
+        pane_height.saturating_sub(claimed)
+    }
+
+    /// Draw the unified tasks overlay (`Shift+T`) directly above the input.
+    ///
+    /// Renders three projection-backed groups — todos, in-flight subagents,
+    /// in-flight jobs — each preceded by its own header, with empty groups
+    /// omitted entirely. Every line is ellipsized to the available width
+    /// rather than wrapped, so a long description can never change the
+    /// overlay's height and reflow the transcript underneath it.
+    fn render_tasks_strip(&mut self, frame: &mut Frame, area: Option<Rect>) {
+        let Some(area) = area else { return };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let theme = self.ui_state.theme.clone();
+        let all_rows = self.task_rows();
+        let rows = bounded_task_rows(all_rows.clone());
+
+        let mut lines: Vec<Line> = Vec::new();
+        if rows.is_empty() {
+            // The overlay is open and there is genuinely nothing to wait on.
+            // Say so rather than rendering an empty block, so the user learns
+            // the key works instead of concluding it is broken.
+            lines.push(Line::from(Span::styled(
+                " Nothing pending · Shift+T close ".to_string(),
+                Style::default().fg(theme.muted),
+            )));
+        } else {
+            for row in &rows {
+                match row {
+                    TaskRow::Header { group } => {
+                        lines.push(Line::from(Span::styled(
+                            format!(" ── {} ──", group.title()),
+                            Style::default().fg(theme.muted),
+                        )));
+                    }
+                    TaskRow::Todo { bubble, content } => {
+                        lines.push(strip_line(
+                            &theme,
+                            area.width,
+                            &format!(" {bubble} "),
+                            content,
+                            theme.foreground,
+                        ));
+                    }
+                    TaskRow::Subagent {
+                        label,
+                        agent,
+                        description,
+                        status,
+                    } => {
+                        // Name and agent type together: the name is what the
+                        // user looks for later, the type is what it actually is.
+                        let lead = if label == agent {
+                            format!(" {label} ")
+                        } else {
+                            format!(" {label} ({agent}) ")
+                        };
+                        let text = if description.trim().is_empty() {
+                            lead.clone()
+                        } else {
+                            format!("{lead}· {status} — {description}")
+                        };
+                        lines.push(strip_line(&theme, area.width, " ", &text, theme.foreground));
+                    }
+                    TaskRow::Job {
+                        kind,
+                        summary,
+                        state,
+                        error_class,
+                    } => {
+                        let text = if summary.trim().is_empty() {
+                            format!(" {kind} · {state}")
+                        } else {
+                            format!(" {kind} · {state} — {summary}")
+                        };
+                        let colour = if error_class.is_some() {
+                            theme.error
+                        } else {
+                            theme.foreground
+                        };
+                        lines.push(strip_line(&theme, area.width, " ", &text, colour));
+                    }
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                " Shift+T close ".to_string(),
                 Style::default().fg(theme.muted),
             )));
         }

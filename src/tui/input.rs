@@ -25,6 +25,7 @@
 //! | n | NewSession (Normal only) |
 //! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTodoList |
+//! | Shift+T | ToggleTasksList (todos + subagents + jobs) |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
@@ -154,6 +155,13 @@ pub enum InputAction {
     DirectionUp,
     DirectionDown,
     ToggleTodoList,
+    /// Expand the unified tasks overlay: todos, then in-flight
+    /// subagents, then jobs the session is waiting on.
+    ///
+    /// Distinct from the `/tasks` command, which governs *schedules*.
+    /// That overlap is deliberate but the help text must not call a
+    /// scheduled run a "task" beside a live subagent.
+    ToggleTasksList,
     ToggleSection,
     CloseSession,
     Help,
@@ -244,6 +252,13 @@ pub enum ActionKey {
     DirectionUp,
     DirectionDown,
     ToggleTodoList,
+    /// Expand the unified tasks overlay: todos, then in-flight
+    /// subagents, then jobs the session is waiting on.
+    ///
+    /// Distinct from the `/tasks` command, which governs *schedules*.
+    /// That overlap is deliberate but the help text must not call a
+    /// scheduled run a "task" beside a live subagent.
+    ToggleTasksList,
     ToggleSection,
     CloseSession,
     Help,
@@ -351,6 +366,7 @@ impl ActionKey {
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
             Self::ToggleTodoList,
+            Self::ToggleTasksList,
         ]
     }
 
@@ -413,6 +429,7 @@ impl ActionKey {
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
             Self::ToggleTodoList => InputAction::ToggleTodoList,
+            Self::ToggleTasksList => InputAction::ToggleTasksList,
         }
     }
 
@@ -475,6 +492,7 @@ impl ActionKey {
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
             Self::ToggleTodoList => "Toggle todo list (expand above input)",
+            Self::ToggleTasksList => "Toggle tasks (todos, subagents, jobs) (Shift+T)",
         }
     }
 
@@ -530,6 +548,11 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // picker keeps its `Ctrl+\` Insert spelling while `Shift+F`
             // stays Normal-only.)
             | InputAction::OpenPanelManager
+            // `Shift+T` claims an uppercase letter, which is text the user is
+            // actively typing. Without this entry Insert mode would treat a
+            // capital `T` mid-word as "open the overlay" instead of composing
+            // it — the same class of bug the `Shift+S` entry above prevents.
+            | InputAction::ToggleTasksList
             // Already covered by the bare-char rule, but stated here because
             // it is load-bearing: `x` must never be claimed while composing,
             // or typing a word containing it would stop the agent.
@@ -602,6 +625,21 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
     map.insert(
         (KeyModifiers::NONE, KeyCode::Char('F')),
         InputAction::OpenProjectPicker,
+    );
+    // `Shift+T` opens the unified tasks overlay (todos, subagents, jobs).
+    // Under both encodings for the same legacy reason as the letters above.
+    //
+    // It deliberately does NOT reuse `Ctrl+T`, which stays with the todo
+    // strip. The two surfaces overlap by design — todos appear in both — but
+    // collapsing them would take away the compact progress line that `Ctrl+T`
+    // keeps on screen at all times.
+    map.insert(
+        (KeyModifiers::SHIFT, KeyCode::Char('T')),
+        InputAction::ToggleTasksList,
+    );
+    map.insert(
+        (KeyModifiers::NONE, KeyCode::Char('T')),
+        InputAction::ToggleTasksList,
     );
 }
 
@@ -2385,6 +2423,45 @@ mod tests {
         let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
         assert_eq!(result, Some(InputAction::ToggleTodoList));
+    }
+
+    #[test]
+    fn shift_t_opens_the_tasks_overlay_under_both_encodings() {
+        // Terminals disagree about how a shifted letter arrives: some send
+        // `Char('T') + SHIFT`, others a bare `Char('T')`. Binding only one
+        // spelling means the key silently does nothing on the other half of
+        // the terminals a user might be on.
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+            let key = make_key(KeyCode::Char('T'), modifiers);
+            assert_eq!(
+                handle_key_with_bindings(key, None, InputMode::Normal),
+                Some(InputAction::ToggleTasksList),
+                "Shift+T must resolve with modifiers {modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lowercase_t_is_not_the_tasks_overlay() {
+        // The binding is Normal-mode-only and case-sensitive on purpose: a
+        // bare `t` is a prompt character and must never open the overlay.
+        let key = make_key(KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_ne!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::ToggleTasksList),
+            "lowercase t must not open the tasks overlay"
+        );
+    }
+
+    #[test]
+    fn ctrl_t_still_owns_the_todo_strip() {
+        // The two surfaces overlap by design but must not share a key: Ctrl+T
+        // owns the always-visible compact progress line.
+        let key = make_key(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key_with_bindings(key, None, InputMode::Normal),
+            Some(InputAction::ToggleTodoList)
+        );
     }
 
     #[test]

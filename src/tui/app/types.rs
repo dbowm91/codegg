@@ -259,6 +259,8 @@ pub enum TuiMsg {
         placement: crate::tui::panels::PanelPlacement,
     },
     ToggleTodoList,
+    /// Open the unified tasks overlay: todos, subagents, jobs.
+    ToggleTasksList,
     ToggleFullscreen,
     ToggleReasoning,
     ToggleTts,

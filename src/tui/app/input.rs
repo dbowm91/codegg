@@ -718,6 +718,7 @@ impl App {
             TuiMsg::SavePanelHotkey { digit, panel } => {
                 crate::tui::commands::panels::save_panel_hotkey(self, digit, panel)
             }
+            TuiMsg::ToggleTasksList => self.toggle_tasks_list(),
             TuiMsg::ToggleTodoList => self.toggle_todo_list(),
             TuiMsg::ToggleFullscreen => self.toggle_fullscreen(),
             TuiMsg::ToggleReasoning => self.toggle_reasoning(),

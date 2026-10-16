@@ -23,6 +23,7 @@ pub mod routing;
 pub mod session;
 pub mod snapshot;
 pub mod subagents;
+pub mod tasks;
 pub mod ui;
 pub mod view_switch;
 pub mod work_orders;

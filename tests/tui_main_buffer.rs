@@ -896,3 +896,110 @@ fn an_idle_agent_shows_no_stop_affordance() {
          Rendered:\n{text}"
     );
 }
+
+#[test]
+fn a_saturated_overlay_never_squeezes_the_transcript_below_its_floor() {
+    // Forty todos, ten running subagents and ten running jobs on a 30-row
+    // terminal: far more work in flight than the pane has rows. The contract
+    // is not "the overlay always fits" - it is that the transcript keeps its
+    // `Min(10)` floor and the overlay yields instead of the layout
+    // over-committing. An overshooting overlay is not merely tall: it makes
+    // the carve yield, so `Shift+T` would read as a dead key.
+    use codegg::tui::app::state::subagents::SubagentRow;
+    use codegg::tui::app::state::tasks::TodoLike;
+
+    for (width, height) in [(100u16, 30u16), (100, 50), (120, 24)] {
+        let mut app = test_app();
+        app.session_state.session_status = SessionStatus::Working;
+        app.set_todos(
+            (0..40)
+                .map(|i| codegg::tui::app::TodoEntry {
+                    content: format!("todo number {i}"),
+                    status: "pending".into(),
+                    priority: "medium".into(),
+                })
+                .collect(),
+        );
+        app.ui_state.subagents.set_rows(
+            (0..10)
+                .map(|i| SubagentRow {
+                    task_id: i.to_string(),
+                    run_id: None,
+                    display_name: Some(format!("Sally{i}")),
+                    agent: "explore".into(),
+                    description: format!("a long description for subagent {i}"),
+                    status: "running".into(),
+                })
+                .collect(),
+        );
+        app.tasks_expanded = true;
+
+        render_to_buffer(&mut app, width, height);
+
+        let viewport = app.viewport_area.expect("viewport area recorded");
+        assert!(
+            viewport.height >= 10,
+            "transcript fell to {} rows at {width}x{height}; the floor is 10",
+            viewport.height
+        );
+        // Whatever rows the overlay did take, the composer still has a box.
+        let prompt = app.prompt_area.expect("prompt area recorded");
+        assert!(
+            prompt.height >= 1,
+            "the composer vanished at {width}x{height}"
+        );
+    }
+}
+
+#[test]
+fn the_overlay_appears_when_the_pane_has_room_for_it() {
+    use codegg::tui::app::state::subagents::SubagentRow;
+
+    let mut app = test_app();
+    app.session_state.session_status = SessionStatus::Working;
+    app.set_todos(vec![codegg::tui::app::TodoEntry {
+        content: "ship the thing".into(),
+        status: "in_progress".into(),
+        priority: "high".into(),
+    }]);
+    app.ui_state.subagents.set_rows(vec![SubagentRow {
+        task_id: "1".into(),
+        run_id: None,
+        display_name: Some("Sally".into()),
+        agent: "explore".into(),
+        description: "Map the auth flow".into(),
+        status: "running".into(),
+    }]);
+    app.tasks_expanded = true;
+
+    render_to_buffer(&mut app, 100, 50);
+    let area = app
+        .tasks_area
+        .expect("the overlay reserves rows when there is room");
+    assert!(area.height > 0);
+
+    let text = buffer_text(&render_to_buffer(&mut app, 100, 50));
+    // Both groups are labelled and named, so the reader can tell what each
+    // block is without inferring it from the rows.
+    assert!(text.contains("Todo list"), "{text}");
+    assert!(text.contains("Subagents"), "{text}");
+    assert!(text.contains("Sally"), "{text}");
+    assert!(text.contains("explore"), "{text}");
+}
+
+#[test]
+fn a_collapsed_tasks_overlay_reserves_nothing() {
+    let mut app = test_app();
+    app.set_todos(vec![codegg::tui::app::TodoEntry {
+        content: "a todo".into(),
+        status: "pending".into(),
+        priority: "medium".into(),
+    }]);
+    app.tasks_expanded = false;
+    assert_eq!(app.tasks_strip_height(), 0);
+    render_to_buffer(&mut app, 100, 30);
+    assert!(
+        app.tasks_area.is_none(),
+        "a collapsed overlay must not paint"
+    );
+}
