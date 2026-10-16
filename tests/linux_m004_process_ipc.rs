@@ -174,6 +174,63 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
         "DNS response ID mismatch"
     );
 
+    // A local resolver deliberately returns a different A record for the
+    // same question twice. This is the host positive control for a DNS
+    // rebinding-shaped answer sequence; the contained child below must not
+    // be able to reach this host loopback resolver at all.
+    let rebinding_dns = UdpSocket::bind(("127.0.0.1", 0)).expect("rebinding DNS fixture");
+    rebinding_dns
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set rebinding DNS fixture timeout");
+    let rebinding_dns_addr = rebinding_dns
+        .local_addr()
+        .expect("rebinding DNS fixture address");
+    let mut rebinding_answers = Vec::new();
+    for address in ["127.0.0.1", "198.51.100.1"] {
+        let control = UdpSocket::bind(("127.0.0.1", 0)).expect("bind rebinding control socket");
+        control
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set rebinding control timeout");
+        control
+            .send_to(&dns_query, rebinding_dns_addr)
+            .expect("send rebinding positive-control query");
+        let mut query = [0_u8; 512];
+        let (query_len, peer) = rebinding_dns
+            .recv_from(&mut query)
+            .expect("rebinding DNS fixture receives host query");
+        assert_eq!(&query[..query_len], dns_query);
+        let mut response = query[..query_len].to_vec();
+        response[2] = 0x81;
+        response[3] = 0x80;
+        response[6] = 0;
+        response[7] = 1;
+        response.extend_from_slice(&[
+            0xc0, 0x0c, // compressed owner name: the queried name
+            0, 1, // A
+            0, 1, // IN
+            0, 0, 0, 1, // one-second TTL
+            0, 4, // IPv4 RDATA length
+        ]);
+        let IpAddr::V4(answer) = address.parse::<IpAddr>().expect("fixture A address") else {
+            unreachable!("fixture answers are IPv4")
+        };
+        response.extend_from_slice(&answer.octets());
+        rebinding_dns
+            .send_to(&response, peer)
+            .expect("send changing DNS answer");
+        let mut answer = [0_u8; 512];
+        let (answer_len, source) = control
+            .recv_from(&mut answer)
+            .expect("host positive-control receives rebinding answer");
+        assert_eq!(source, rebinding_dns_addr);
+        assert!(answer_len >= 4);
+        rebinding_answers.push(answer[answer_len - 4..answer_len].to_vec());
+    }
+    assert_ne!(
+        rebinding_answers[0], rebinding_answers[1],
+        "the host fixture must actually change the answer for an identical query"
+    );
+
     // Keep a host-connected TCP socket open across the launch. M004's
     // close-range handoff must remove this bridge before the helper execs.
     let inherited_stream = std::net::TcpStream::connect(tcp4_addr).expect("inherited host socket");
@@ -224,6 +281,15 @@ except OSError:
     pass
 else:
     raise SystemExit(45)
+rebinding = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+rebinding.settimeout(0.5)
+try:
+    rebinding.sendto(query, ('127.0.0.1', {}))
+    rebinding.recvfrom(512)
+except OSError:
+    pass
+else:
+    raise SystemExit(46)
 external = socket.socket()
 external.settimeout(1)
 if external.connect_ex(('198.51.100.1', 443)) == 0:
@@ -247,6 +313,7 @@ else:
         udp6_addr.port(),
         u8::from(host_resolver.is_ipv6()),
         host_resolver.to_string(),
+        rebinding_dns_addr.port(),
         inherited_fd.as_raw_fd(),
         marker.to_string_lossy(),
     );

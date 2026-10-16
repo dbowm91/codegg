@@ -98,19 +98,20 @@ DNS rebinding, every production launch owner, supported-host admission, or a
 persisted `OfflineRequired` route. M005 remains unenforced and M004's PTY/LSP
 owner gates remain open.
 
-### Resolver endpoint probe corrective — awaiting exact-head native qualification
+### Resolver endpoint and changing-answer probe corrective — awaiting exact-head native qualification
 
 The existing native fixture proves host DNS works and that the contained
 child's `getaddrinfo` call fails, but it did not directly attempt to contact
 the host's configured resolver. The fixture now records the configured
 nameserver, proves it answers the same bounded DNS query from the host, then
 sends that query from the private network namespace; receiving any child-side
-reply is a test failure. This proves the isolated child cannot receive a
-resolver response that could carry a rebinding answer. It does not simulate a
-resolver that changes answers, and it does not close the remaining
-production-owner or supported-host gates. The code change is pending exact-head
-hosted M004/M005 verification before this paragraph is treated as qualification
-evidence.
+reply is a test failure. A second loopback DNS fixture now returns two different
+A records for the same query (`127.0.0.1`, then `198.51.100.1`), verifies both
+host-side answers differ, and has the contained child attempt to query that
+fixture directly. This distinguishes a demonstrated changing-answer fixture
+from a mere resolver reachability check. The code change is pending exact-head
+hosted M004/M005 verification; it does not close the remaining production-owner
+or supported-host gates.
 
 First exact-head attempt `38913230183` ran 8/9 native tests successfully,
 including the offline workspace checks, but the new Python probe received
