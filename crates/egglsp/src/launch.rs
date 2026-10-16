@@ -81,6 +81,7 @@ pub struct LspProcess {
 /// Embedders can provide a daemon-owned launcher that applies execution policy
 /// while preserving the LSP's supervised stdin/stdout/stderr pipes. The
 /// default implementation retains egglsp's historical direct-spawn behavior.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LspProcessLauncher: Send + Sync {
     async fn launch(&self, spec: &LspLaunchSpec, root: &Path) -> Result<LspProcess, LspError>;
