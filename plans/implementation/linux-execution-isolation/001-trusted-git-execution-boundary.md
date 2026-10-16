@@ -2,8 +2,13 @@
 
 Status: blocked (historical M001 blocked; C001–C003 now split recovery)
 Primary class: invariant
+<<<<<<< HEAD
 Hard dependencies: none; no ADR-0031 acceptance required for this existing-authority corrective.
 Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0031; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). Historical initial implementation `eb0f18c` and blocked closure `plans/closure/linux-execution-isolation/001-status.md` remain evidence of a partial security pass and Git integration breakage. C001/C002/C003 own corrective remediation.
+=======
+Hard dependencies: none; no ADR-0035 acceptance required for this existing-authority corrective.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016. Proposed design gate: ADR-0035; do not treat it as accepted. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). Historical initial implementation `eb0f18c` and blocked closure `plans/closure/linux-execution-isolation/001-status.md` remain evidence of a partial security pass and Git integration breakage. C001/C002/C003 own corrective remediation.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 1. Objective
 

@@ -106,7 +106,11 @@ There is no migration or persistent configuration change. Existing static-altern
 
 ## 9. Documentation and operations
 
+<<<<<<< HEAD
 Updated `architecture/security.md`, `.opencode/skills/permission/SKILL.md`, the C009 implementation plan, Linux roadmap, and `plans/registry.md`. ADR-0031 remains accepted and unchanged. The hosted Linux workflow records kernel, Bubblewrap, UID/GID, AppArmor, and user-namespace setup. Landlock remains the operational default.
+=======
+Updated `architecture/security.md`, `.opencode/skills/permission/SKILL.md`, the C009 implementation plan, Linux roadmap, and `plans/registry.md`. ADR-0035 remains accepted and unchanged. The hosted Linux workflow records kernel, Bubblewrap, UID/GID, AppArmor, and user-namespace setup. Landlock remains the operational default.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 10. Unresolved findings
 

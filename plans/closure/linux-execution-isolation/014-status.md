@@ -24,8 +24,13 @@ The separate maintainer decision was pending at the reviewed baseline; see the d
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
+<<<<<<< HEAD
 | C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 is uniquely identified; its proposed/accepted state did not change. |
 | Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0031-composable-linux-execution-isolation.md` | pass (2026-10-14) | ADR-0031 is accepted. This clears the architecture decision gate only; it does not prove or enable a production backend. |
+=======
+| C004 identity reconciliation | `plans/closure/linux-execution-isolation/012-status.md` | pass | ADR-0031 was uniquely identified at the reviewed baseline; its proposed status did not change during C004. |
+| Explicit canonical Linux ADR acceptance | `plans/adrs/ADR-0035-composable-linux-execution-isolation.md` | pass (2026-10-14; canonical ID later reconciled) | The Linux ADR was accepted as ADR-0031. This cleared the architecture decision gate only; it did not prove or enable a production backend. |
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 | C005 strict-positive native production launcher qualification | `plans/closure/linux-execution-isolation/013-status.md` | partial / blocked | Real test-only namespaces and setup-failure behavior passed, but protected overlays, production adapter integration, toolchain, Git workspace, and PTY compatibility were not qualified. |
 | M002 typed launch contract | `plans/closure/linux-execution-isolation/002-status.md` | partial | Interface/probe slice is conditionally closed; no mount backend is selected and enhanced dimensions remain unavailable. |
 | Protected workspace/Git metadata implementation | no implementation | blocked | No mount manifest, protected nested overlays, worktree alias handling, metadata lease, or trusted integration exists. |
@@ -61,7 +66,16 @@ The maintainer accepted ADR-0031. This supersedes only the pending-decision stat
 
 ## 8. Implementation-start update — 2026-10-14
 
+<<<<<<< HEAD
 C006 moved to active implementation after ADR-0031 acceptance. The first source change rejects fixed-path Bubblewrap candidates with setuid or setgid mode bits. This narrows trusted-helper eligibility only; no mount backend was registered, no constrained launch routing changed, and no C006 enforcement or native denial evidence is claimed.
+=======
+C006 moved to active implementation after Linux ADR-0031 acceptance. The first source change rejects fixed-path Bubblewrap candidates with setuid or setgid mode bits. This narrows trusted-helper eligibility only; no mount backend was registered, no constrained launch routing changed, and no C006 enforcement or native denial evidence is claimed.
+
+Current identity note (2026-10-15): current main uses ADR-0031 for accepted
+authenticated idle continuation. The Linux decision referenced above is now
+canonical ADR-0035 with unchanged substance and accepted status. This note
+reconciles identity only; the findings and verdict remain unchanged.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 9. Implementation and hosted native qualification update — 2026-10-14
 

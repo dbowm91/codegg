@@ -34,7 +34,11 @@ IDs 0029/0030 were reserved by the concurrent Windows identity migration; the ne
 
 ## 3. Production implementation evidence
 
+<<<<<<< HEAD
 No runtime, storage, protocol, or backend code changed. ADR-0031 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
+=======
+No runtime, storage, protocol, or backend code changed. ADR-0035 still selects no production backend until separate maintainer acceptance and native proof. ADR-0032 preserves the already-accepted command classification and execution-authority contract.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 4. Verification executed
 
@@ -54,7 +58,11 @@ All commands passed locally. `scripts/verify.sh quick` reported `Quick verificat
 ## 5. Invariant review
 
 - No authority ceiling, explicit deny, sandbox default, requested capability, or obtained-capability claim changed.
+<<<<<<< HEAD
 - Linux ADR-0031 remains proposed; no namespace or mount backend was registered.
+=======
+- Linux ADR-0035 remains proposed; no namespace or mount backend was registered.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 - Command ADR-0032 remains accepted; its content was not substantively revised.
 - Windows ADR-0027/0028 references continue to mean Windows decisions on this branch.
 
@@ -92,3 +100,19 @@ C004 is closed. C005 remains eligible and may proceed. C006 remains blocked on e
 - Move C004 from dependency-ready work to recently closed with implementation commit `2e8d93189f3dae73d7a8a5cc5446aebea181101a` and this closure link.
 - Mark C004 closed in the Linux roadmap.
 - Unblock audit: no new plan became ready because of C004. C005/C007/C008 and command M004 were already ready; C006 remains blocked by its other hard gates.
+<<<<<<< HEAD
+=======
+
+## Current identity corrections (2026-10-15 and 2026-10-16)
+
+Current main had accepted authenticated idle continuation as ADR-0031. The
+Linux decision remains accepted with unchanged substance as ADR-0035; command
+authority was ADR-0032 at that correction point. This later canonical-ID
+correction does not alter the historical C004 baseline or its evidence.
+
+On 2026-10-16, current main introduced the accepted agent-workstream ADR-0032.
+Command authority therefore keeps its accepted status and unchanged substance
+under ADR-0034; Linux remains ADR-0035 and idle continuation remains ADR-0031.
+See `plans/adrs/linux-command-adr-id-migration.md` and the current canonical
+command ADR at `plans/adrs/ADR-0034-command-syntax-and-execution-authority.md`.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)

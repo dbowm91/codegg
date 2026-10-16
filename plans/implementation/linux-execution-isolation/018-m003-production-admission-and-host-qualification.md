@@ -5,7 +5,11 @@ Repository baseline: merge commit `188edb371759f40b291052f25598bdb8ab57702d` (in
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8.
+<<<<<<< HEAD
 Applicable ADRs: accepted ADR-0033 and ADR-0032; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
+=======
+Applicable ADRs: accepted ADR-0035 and ADR-0034; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 Primary class: capability / security invariant
 
 ## 1. Objective
@@ -16,7 +20,7 @@ This corrective is bounded to the M003 admission decision. It does not claim M00
 
 ## 2. Why this milestone is ready
 
-- ADR-0033 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
+- ADR-0035 is accepted, ADR IDs are unique, and C009 completed bounded candidate qualification.
 - The merge with current `origin/main` is committed at `188edb371759f40b291052f25598bdb8ab57702d`; C010 evidence and the admission disposition are recorded at `plans/closure/linux-execution-isolation/018-status.md`.
 - C009 names the remaining blockers: object-view performance, packed-store evidence, rustup's `/proc/self/exe` requirement, and the absence of a production backend route.
 
@@ -28,7 +32,7 @@ The protected mount view intentionally omits host `/proc`; the C009 record docum
 
 ## 4. Invariants
 
-- Preserve accepted ADR-0033 and unique canonical ADR identifiers.
+- Preserve accepted ADR-0035 and unique canonical ADR identifiers.
 - No protected-mount production backend registration, default change, or automatic fallback is permitted from this qualification alone.
 - Required enhanced launch fails before target execution when Bubblewrap, user/mount namespaces, or the necessary host policy are unavailable.
 - Requested and obtained filesystem scope remain distinct from process, IPC, seccomp, network, and resource guarantees.

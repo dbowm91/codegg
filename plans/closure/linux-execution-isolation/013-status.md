@@ -21,7 +21,11 @@ Implementation commits:
 
 The bounded C005 feasibility experiment is conditionally closed with positive native evidence for unprivileged Bubblewrap user, mount, PID, network, and IPC namespaces on this host. The fixture proves the child entered distinct namespaces, received `no_new_privs` before the shell payload, could not see the parent-owned status-pipe descriptor, and did not run after an invalid required mount.
 
+<<<<<<< HEAD
 This does not qualify the M003 protected mount backend. The test uses narrow runtime directory binds and a disposable writable fixture; it does not build protected nested Git/credential overlays, validate worktree aliases, or route production managed processes through Bubblewrap. No production backend was selected or registered. ADR-0031 was proposed when this closure was written and was accepted separately on 2026-10-14; this later decision does not promote a backend, qualify M003, or alter this test-only closure.
+=======
+This does not qualify the M003 protected mount backend. The test uses narrow runtime directory binds and a disposable writable fixture; it does not build protected nested Git/credential overlays, validate worktree aliases, or route production managed processes through Bubblewrap. No production backend was selected or registered. ADR-0035 was proposed when this closure was written and was accepted separately on 2026-10-14; this later decision does not promote a backend, qualify M003, or alter this test-only closure.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 2. Requirement-to-evidence matrix
 
@@ -98,19 +102,31 @@ The fixture verifies real namespace identity and no-target-on-setup-failure. It 
 
 ## 9. Documentation and operations
 
+<<<<<<< HEAD
 The fixture is opt-in with `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP=1`. Its exact invocation, host metadata, helper version, and namespace inode observations are recorded above. Existing ADR-0031 and production rollout gates remain in the Linux roadmap.
+=======
+The fixture is opt-in with `CODEGG_RUN_LINUX_BWRAP_FIRST_HOP=1`. Its exact invocation, host metadata, helper version, and namespace inode observations are recorded above. Existing ADR-0035 and production rollout gates remain in the Linux roadmap.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 10. Unresolved findings
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
+<<<<<<< HEAD
 | medium | Bubblewrap first-hop is not integrated with the canonical managed-process owner or production private receipt protocol. | No production route may select this backend. | C006 must integrate only after a separate ADR-0031 decision and its full real protected-mount requirements. |
+=======
+| medium | Bubblewrap first-hop is not integrated with the canonical managed-process owner or production private receipt protocol. | No production route may select this backend. | C006 must integrate only after a separate ADR-0035 decision and its full real protected-mount requirements. |
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 | medium | Toolchain, Git workspace mutation, PTY, namespace PID cleanup, and concurrent fixture compatibility were not qualified. | M003 production compatibility and lifecycle remain unproven. | Qualify these in a later accepted, bounded implementation plan; do not infer them from this test. |
 | medium | No full Landlock ABI number was emitted by this fixture. | Existing Landlock tests establish compatibility but this closure does not claim an ABI value. | Capture exact ABI in a later host qualification record if required. |
 
 ## 11. Roadmap disposition
 
+<<<<<<< HEAD
 C005 is conditionally closed as a bounded positive namespace feasibility experiment. It does not close M003 or qualify production Bubblewrap. C006 remains blocked on separate explicit ADR-0031 disposition, C005 evidence appropriate to its production scope, and M002. C007 and C008 remain eligible for their fixtures-only feasibility scopes.
+=======
+C005 is conditionally closed as a bounded positive namespace feasibility experiment. It does not close M003 or qualify production Bubblewrap. C006 remains blocked on separate explicit ADR-0035 disposition, C005 evidence appropriate to its production scope, and M002. C007 and C008 remain eligible for their fixtures-only feasibility scopes.
+>>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
 
 ## 12. Registry updates
 
