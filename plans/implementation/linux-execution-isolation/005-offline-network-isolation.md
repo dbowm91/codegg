@@ -40,6 +40,26 @@ Introduce operator-opted `OfflineRequired` for local Linux child execution, inde
   Those remain required before any `NetworkEnforcement::Enforced` result or
   production preference can be exposed.
 
+### Expanded hosted candidate probe — 2026-10-16
+
+Exact-head hosted workflow [38829815162](https://github.com/dbowm91/codegg/actions/runs/38829815162)
+on `b30ebdcd53f5ac3a411e3365fe7288ceff1a4acd` passed the expanded native test
+inside the M004 suite. The contained Python child could not connect to host
+IPv4/IPv6 loopback TCP listeners, deliver IPv4/IPv6 UDP datagrams to host
+listeners, resolve `example.com`, connect to the reserved external address
+`198.51.100.1:443`, or use a deliberately inherited host TCP descriptor.
+The Python fixture was rewritten as a raw multiline string after review found
+that Rust's continued-string whitespace elision had removed indentation from a
+`try` block; the hosted result is for the corrected script.
+
+This remains bounded candidate evidence. The DNS and reserved-address probes
+did not include positive controls proving those same services were reachable
+from the host, and do not satisfy the plan's full external-route/DNS-rebinding
+qualification. No offline Cargo/toolchain workflow or production launch owner
+was exercised. M004 production-owner, host-qualification and no-admission
+gates remain; no persisted preference, default, or `NetworkEnforcement::Enforced`
+claim is enabled.
+
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
 
