@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M010 — Isolated Rust/Python Coordination Trajectory
 
-Status: active — deterministic trajectory implementation and qualification
+Status: closed — deterministic isolated Rust/Python coordination qualified
 Repository baseline: `171ef93b6ba67d50b0412ae23b7697eb02d072eb` plus the active M005 branch
 
 Source roadmap: `plans/subsystems/agent-workstream-blackboard-roadmap.md#corrective-m010--isolated-rustpython-trajectory`
@@ -59,3 +59,12 @@ Test setup failure, toolchain absence, or Git worktree allocation failure is rep
 ## 9. Registry/unblock audit
 
 This plan has no M005 dependency. Its closure may inform M008 but does not close M006/M007 or authorize shared checkout placement. Update the registry and roadmap with the closure and explicit unblock result.
+
+## 10. Closure
+
+Strict closure: `plans/closure/agent-workstream-blackboard/010-status.md`.
+Hosted CI run `38850114895` passed the full workspace suite (13,961 passed,
+0 failed, 6 skipped); Desktop E2E run `38850114846` also passed. The closure
+qualifies deterministic worktree/claim/check/integration behavior only. It
+does not claim provider-backed model performance or production WorktreeService
+allocation.

@@ -1,6 +1,6 @@
 # Command Intent Post-Closure Corrective Addendum
 
-Status: active — C001 aligns the `git remote -v` test and architecture description with the existing read-only classifier
+Status: closed — C001 aligns the `git remote -v` test and architecture description with the existing read-only classifier
 
 Controlling process: `plans/003-planning-process.md#7-corrective-passes`
 Owning module: `architecture/command_intent.md`
@@ -27,4 +27,8 @@ Close after hosted `CI / verify` passes on the exact change head with the full
 workspace suite completed. Record the run and test counts in
 `plans/closure/command-intent-post-closure-corrective/001-status.md` and update
 the planning registry. Do not edit historical closures.
+
+C001 closed at `plans/closure/command-intent-post-closure-corrective/001-status.md`.
+Hosted CI `38850114895` passed on the exact source head with 13,961 passed, 0
+failed, and 6 configured skips.
 

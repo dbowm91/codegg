@@ -227,6 +227,22 @@ ADR-0002. It records why scheduler exclusivity keys and request-scoped locks
 are insufficient and why persistent process ownership must be resolved before
 broad implementation.
 
+#### Architecture options and recommendation
+
+| Option | Feasibility | Decision |
+|---|---|---|
+| Daemon mutex held around each tool/job request | Fails for detached descendants, idle PTYs, persistent LSP/MCP processes, and other CodeGG file APIs that bypass the permit. A request lifetime is not the writer lifetime. | Reject as a universal checkout guarantee. A mutex may remain an internal scheduling primitive only after all effect owners are mediated. |
+| OS identity/filesystem boundary around the shared checkout | This is the only plausible route if the guarantee must exclude arbitrary same-user writers. It requires separate native designs and adversarial lifecycle evidence on Linux, macOS, and Windows; current process-group and Job Object ownership alone is not filesystem isolation. | No implementation is qualified. Treat this as a new platform-security project, not a permit-store extension. |
+| Restricted CodeGG shared-placement capability profile | Potentially usable if the product boundary excludes external same-user writers and each CodeGG effect either receives a typed checkout permit through verified quiescence or is denied. Initial profile would deny PTY and persistent LSP/MCP/plugin paths and must prove descendant containment for finite shell/build/test jobs per platform. | Recommended candidate for a future ADR/implementation gate, with ADR-0002 isolated placement remaining the default. Do not start Q1 storage until the product boundary and per-platform capability matrix are accepted. |
+
+The feasibility result is therefore conditional, not a blanket “add a lock.”
+If users require protection against arbitrary processes running as the same
+OS identity, the restricted CodeGG profile cannot satisfy the requirement and
+shared checkout placement is a no-go until a qualified OS identity/filesystem
+boundary exists. If those external writers are explicitly outside the
+contract, a constrained profile may be pursued, but every enabled process and
+file-write route still needs native containment evidence.
+
 ## Work packages
 
 A. Consolidate placement resolution. Define one core domain policy (avoid duplicating WorkOrder WorkspacePolicy and task-spawn policy semantics): Auto, IsolatedNew, InheritReadOnly, and SerializedShared (group or exact worktree ID). Separate selected placement from effective mutation capability and sandbox/approval ceiling. Auto remains existing M004-era isolated default for write-capable delegated runs. Group placement is an explicit field on spawn_many and inherited by nested children only within authorized ceilings; single spawn may opt in if supported. Reject unsupported placement with typed diagnostic, never silently share or weaken capabilities.

@@ -1,6 +1,6 @@
 # Command Intent Corrective C001 — Stale Git Remote Read-Only Expectation
 
-Status: active — implementation and hosted CI qualification
+Status: closed — stale read-only test expectation aligned
 
 Repository baseline: `b6d334fe38837b0b0ea1e4a6880fee8b7ccafa3a`
 
@@ -27,4 +27,8 @@ a command that lists configured remotes.
 Run formatting and diff checks and obtain green hosted `CI / verify` on the
 exact head with the complete workspace suite. Record the evidence and unblock
 audit in `plans/closure/command-intent-post-closure-corrective/001-status.md`.
+
+Closure: `plans/closure/command-intent-post-closure-corrective/001-status.md`.
+Hosted CI run `38850114895` passed on the qualified source head with the full
+workspace suite.
 

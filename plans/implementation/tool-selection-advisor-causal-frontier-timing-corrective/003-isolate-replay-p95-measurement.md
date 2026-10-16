@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Timing Corrective C003 — Isolate Replay p95 Measurement
 
-Status: active — implementation and hosted qualification
+Status: closed — replay p95 gate passed in the exclusive CI group
 
 Repository baseline: `03e20d3edf5b4ee07f002f61084d5c88e808a273`
 
@@ -53,4 +53,8 @@ The threshold and assertion must remain present and unchanged. If the test
 still breaches when isolated, stop and open a separate measurement/code
 investigation; do not raise the budget or classify the failure as harmless
 noise.
+
+Closure: `plans/closure/tool-selection-advisor-causal-frontier-timing-corrective/003-status.md`.
+Hosted CI run `38850114895` passed on the qualified source head; the replay p95
+test passed in the exclusive group and all 13,961 workspace tests passed.
 

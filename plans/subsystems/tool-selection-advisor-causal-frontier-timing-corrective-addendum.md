@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Timing Corrective Addendum
 
-Status: active — C001/C002 closed; C003 isolates the replay p95 test from concurrent CI binaries
+Status: closed — C001/C002/C003 closed
 
 Repository planning baseline: `cdfd6257`
 
@@ -43,6 +43,10 @@ Triggering evidence:
   C003 keeps the budget/assertion and moves this test binary into the existing
   CPU-exclusive nextest group; see
   `plans/implementation/tool-selection-advisor-causal-frontier-timing-corrective/003-isolate-replay-p95-measurement.md`.
+
+C003 strict closure: `plans/closure/tool-selection-advisor-causal-frontier-timing-corrective/003-status.md`.
+Hosted CI `38850114895` passed on the exact source head; the frozen p95 gate
+passed in the exclusive group and the full 13,961-test workspace suite passed.
 
 ## 1. Purpose
 

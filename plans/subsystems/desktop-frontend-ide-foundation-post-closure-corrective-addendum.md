@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed — C001–C005 closed
 
 Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 

@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Post-Closure Corrective C005 — Order Closed-Transport Fixture
 
-Status: active — test-fixture correction and hosted CI qualification
+Status: closed — closed-transport fixture ordering qualified
 
 Repository baseline: `70405abdcc71e079dac053256854d0ff6efe7ad0`
 
@@ -31,4 +31,8 @@ post-attach disconnected state.
 Run formatting and obtain green hosted `CI / verify` on the exact source head
 with the complete workspace test suite. Record the exact run and count in
 `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/005-status.md`.
+
+Closure: `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/005-status.md`.
+Hosted CI `38850114895` and Desktop E2E `38850114846` passed on the exact
+source head.
 
