@@ -1,6 +1,6 @@
 # Managed Agent Scratch M001 — Private Session Scratch and Canonical Launch Wiring
 
-Status: active
+Status: implemented
 Repository baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79`
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 9, 16–18, 26, 27, 29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phases 9, 10, 19.
