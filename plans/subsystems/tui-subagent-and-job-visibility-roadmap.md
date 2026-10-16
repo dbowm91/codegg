@@ -416,29 +416,132 @@ keeps its current complete list.
 
 ### M003 — Subagent tabs in the main buffer
 
-- **Class:** capability (C2).
+- **Class:** capability (C2). **Status: landed.**
 - **Objective:** open a subagent as a tab in the main LLM buffer panel; cycle
   with `Shift+N`/`Shift+P`; close with `Shift+X`.
 - **Dependencies:** M001. Interface dependency from M004.
-- **Deliverable boundary:**
-  - A tab set mirroring `ProjectTabs`' `add_tab` / `remove_tab` / `set_active` /
-    `active` / close-fallback semantics, including a capacity bound and an
-    explicit "subject left the snapshot" state for D-b.
+- **Delivered:**
+  - `src/tui/app/state/subagent_tabs.rs` — a tab set mirroring
+    `ProjectTabs`' `add_tab` / `remove_tab` / `set_active` / `active` /
+    close-fallback semantics, plus the capacity bound
+    (`MAX_OPEN_SUBAGENT_TABS = 16`), the attached/detached distinction for D-b,
+    cycle-with-wrap, and the one-row bar's width arithmetic (`fit_bar_tabs`).
+    `SubagentState` now holds it in place of the old single-slot
+    `Option<SubagentView>`.
   - `Shift+N`, `Shift+P`, `Shift+X` bound in **both** encodings (SHIFT and NONE)
-    per `src/tui/input.rs:556-579`, in whichever of the three keymaps owns
-    normal-mode navigation.
-  - A keyboard path to open a subagent tab from the focused panel row and from
-    the tasks overlay. Today there is none; the only path is a mouse click.
-  - The active tab's view keeps its existing Esc-closes behaviour; tab identity
-    and view state are kept separate so a closed tab cannot resurrect scroll.
-- **Exit conditions:**
-  - Cycle order is stable and wraps; closing the last tab falls back exactly as
-    `close_fallback_tab` does for projects.
-  - A tab whose subject leaves the snapshot renders a defined state and never a
-    panic or a stale claim.
-  - Every new binding appears in the help overlay and passes the chord-disjoint
-    tests in `tests/modifier_chords.rs`.
-- **Explicitly not here:** any ability to type into a tab.
+    via the shared `insert_panel_direction_bindings`, so every keymap receives
+    them, and all three listed in `is_normal_only`.
+  - A keyboard path into a tab from the tasks overlay: `j`/`k` move a cursor,
+    `↵` opens the selected subagent, `Esc` closes the overlay. Normal mode only
+    — the overlay is opened from Normal, but the user switches back to Insert
+    to keep typing, and claiming `j`/`k`/`Enter` there would break the composer.
+  - `TuiMsg::OpenSubagentTab { task_id }`, dispatched through
+    `src/tui/app/input.rs` (I2), as the interface M004 wires the panel to.
+  - A one-row tab bar under the header, carved off the top of the viewport and
+    drawn from the same clamped spare-rows budget as the tasks overlay.
+- **Exit conditions, each mapped to a named test:**
+  - Cycle order is stable and wraps; closing the last tab falls back. *(covered:
+    `cycling_forward_from_the_main_buffer_lands_on_the_first_tab`,
+    `cycling_backward_from_the_main_buffer_lands_on_the_last_tab`,
+    `cycling_with_a_single_tab_alternates_between_it_and_the_main_buffer`,
+    `closing_the_active_tab_falls_back_to_its_neighbour`,
+    `closing_the_last_tab_falls_back_to_the_main_conversation`,
+    `shift_n_and_shift_p_cycle_the_tab_set_and_wrap_through_the_conversation`)*
+  - A tab whose subject leaves the snapshot renders a defined state, never a
+    panic or a stale claim. *(covered:
+    `a_subject_that_leaves_the_snapshot_detaches_instead_of_claiming_to_run`,
+    `a_still_running_row_in_a_detached_tab_reads_as_detached_on_the_bar`,
+    `a_tab_whose_subject_left_the_snapshot_says_so_instead_of_claiming_to_run`,
+    `a_detached_tab_returns_to_live_when_its_subject_comes_back`)*
+  - Every new binding is in the help overlay and chord-disjoint. *(covered:
+    `documented_keys_resolve_in_the_active_map`,
+    `subagent_tab_letters_resolve_under_both_encodings`,
+    `subagent_tab_letters_are_ordinary_text_in_insert_mode`,
+    `subagent_tab_letters_are_distinct_from_the_project_tab_chords`,
+    `no_subagent_tab_binding_is_reachable_as_a_control_shift_chord`)*
+- **Layout is bounded like every other strip.** The bar is one row whenever it
+  renders — never two, and never a row that pushes the transcript below its
+  floor. Asserted across 100x30, 100x50, 120x24 and 80x20 rather than one size.
+  *(covered: `the_tab_bar_costs_exactly_one_row_whenever_it_renders`,
+  `the_tab_bar_never_pushes_the_transcript_below_its_floor`,
+  `no_tab_bar_reserves_no_rows`)*
+
+#### Decisions M003 settled
+
+- **Tab identity is the projection's `task_id`, not a fresh UUID.** A subagent
+  already has a stable snapshot-derived identity; minting a second one would
+  mean carrying a mapping between the two for no benefit, and it would break
+  the "every surface addresses the same subject" property that lets M004's
+  panel rows and M003's overlay agree. It is *not* durable, matching D1.
+- **The main conversation is `active_tab_id == None`,** not a sentinel tab.
+  This is the close-fallback analogue of `ProjectTabs::close_fallback_tab`:
+  projects must always have a tab to render so removing the last one mints an
+  empty compat tab, whereas the main buffer already has a surface, so the
+  fallback is simply to stop selecting a subagent. Closing the last tab needs
+  no special case.
+- **Capacity refuses rather than evicts.** At 16 tabs an open is declined with
+  a toast. Silently closing a tab the user is reading is a worse failure than
+  declining the open.
+- **Separate Shift letters rather than reusing `Ctrl+Alt+N`/`Ctrl+Alt+B`.**
+  Project tabs (header) and subagent tabs (main buffer) are independent axes;
+  reusing the project chords would have collapsed two navigations onto one
+  gesture and made existing muscle memory fire a subagent switch instead.
+- **The cycle models the main conversation as position 0, not position −1.**
+  Treating it as −1 and taking a remainder sends "previous" from the
+  transcript to the *second* tab instead of the last. This is the wrap that a
+  naive implementation gets wrong, and it is asserted directly.
+
+#### Four defects this milestone tripped over
+
+- **The single `Option<SubagentView>` slot destroyed the previous view.** A
+  second click replaced the first tab outright, silently discarding its scroll
+  position — the same shape as the `PermissionPending` dialog bug in
+  `AGENTS.md`, where one slot serving two callers loses state the other holder
+  still owns. Replacing it with an addressed tab set makes the collision
+  impossible by construction rather than by a guard.
+- **The bar was charged to the transcript twice.** It was added to
+  `prompt_height` *and* carved off the viewport chunk. That sum is what reserves
+  room for strips carved off the *prompt* chunk — the bar never touches the
+  prompt chunk, so the second charge bought nothing and cost one row. The
+  visible symptom was a bar that appeared to cost two rows, which is exactly
+  the kind of thing a "one row" assertion catches and an eyeball does not.
+- **The bar pushed the transcript under its floor on a short pane.** `Min(10)`
+  in `session_layout` is a *soft* floor — ratatui yields it when the pane is
+  oversubscribed, and the working strip is allowed to oversubscribe it. So the
+  bar has to yield, not the transcript. It now draws from the same clamped
+  spare-rows budget `tasks_overlay_allowance` established, and takes it ahead
+  of the tasks overlay because a persistent bar missing is worse than an
+  on-demand overlay one row shorter. On a pane with no room the bar is dropped
+  entirely: tabs stay reachable by `Shift+N`, whereas a truncated transcript
+  is the loss the user cannot see coming.
+- **`viewport_area` was published before the bar was carved out of it.** The
+  scrollbar hit-test and scroll math read that field; publishing it early would
+  have handed them a row belonging to the bar. It is now published *after* the
+  carve, so it names the rect the transcript actually occupies.
+
+#### One more: the overlay had no addressable identity
+
+`TaskRow::Subagent` carried a display label and an agent type, and neither is
+an identity: a display name is optional and falls back to the agent type, which
+is never unique across concurrent runs. Opening a tab from the overlay
+therefore required adding `task_id` to the row — it could not have been matched
+back from what was drawn.
+
+#### Boundary note: the sessions-panel path belongs to M004
+
+M003's deliverable list asked for a keyboard path "from the focused panel row
+and from the tasks overlay". The overlay path is delivered here. The panel path
+is M004's, and the reason is concrete rather than convenience: `Enter` on the
+sessions panel's *existing* agent-tree rows already resolves to
+`SidebarActivation::InspectRun` and opens the run-detail dialog. Repurposing it
+would break a working surface to add a second one. M004 adds dedicated
+collapsible subagent sections whose `Enter` opens a tab instead, which is what
+the roadmap already asked for there. M003's contribution to that path is the
+addressed message (`TuiMsg::OpenSubagentTab { task_id }`) and the tab set both
+sides resolve against.
+
+- **Explicitly not here:** any ability to type into a tab. `Shift+X` closes a
+  tab; it cancels nothing, and a closed tab does not stop its run.
 
 ### M004 — Sessions panel subagent and job sections
 
@@ -571,7 +674,7 @@ Interaction with a subagent is **not** part of this definition.
 |---|---|---|---|---|
 | M001 ephemeral display name | landed (pool, registry, event-carried name, dead join fixed) | — | — | none |
 | M002 unified tasks overlay | landed (Shift+T; global row budget + height clamp) | — | — | none |
-| M003 subagent buffer tabs | not started | — | — | M001 |
+| M003 subagent buffer tabs | landed (tab set, Shift+N/P/X, detached terminal state, overlay keyboard path) | — | — | none |
 | M004 sessions panel sections | not started | — | — | M001, M003 |
 | M005 guards, help, docs | not started | — | — | M002, M003, M004 |
 | M900 send-to-subagent | not approved for planning | — | — | design decision |

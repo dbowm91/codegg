@@ -362,6 +362,17 @@ pub struct App {
     /// it. Collapsing them would take away the one-line summary that is legible
     /// without expanding anything.
     pub tasks_expanded: bool,
+    /// Row the overlay's selection cursor rests on, as an index into the
+    /// *bounded* row list the overlay actually renders.
+    ///
+    /// `None` until the overlay is opened, because an invisible cursor is not
+    /// a cursor: showing one in a strip nobody is looking at would imply the
+    /// overlay is a focusable surface when nothing has asked to focus it yet.
+    ///
+    /// Indices are resolved against the bounded rows rather than the raw
+    /// `task_rows()`, so the cursor can never point at a row that truncation
+    /// removed — which would make `Enter` open a subagent the user cannot see.
+    pub tasks_selected: Option<usize>,
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
     /// Rows the unified tasks overlay occupies on the last render pass.
@@ -1115,6 +1126,7 @@ impl App {
             todo_revision: 0,
             todo_expanded: false,
             tasks_expanded: false,
+            tasks_selected: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -1690,6 +1702,7 @@ impl App {
             todo_revision: 0,
             todo_expanded: false,
             tasks_expanded: false,
+            tasks_selected: None,
             todo_area: None,
             tasks_area: None,
             sidebar_area: None,
@@ -3497,11 +3510,43 @@ impl App {
             return;
         }
 
+        // The expanded tasks overlay sits *above* the main buffer, so it gets first
+        // refusal on the keys that drive it. Ordered ahead of the subagent-tab
+        // Esc below because the overlay is the topmost thing on screen: Esc
+        // closes what you are looking at, and what you are looking at is the
+        // overlay.
+        //
+        // Normal mode only, and that gate is load-bearing rather than
+        // cosmetic. The overlay is opened by `Shift+T`, which is itself
+        // Normal-only, but the user switches back to Insert to keep typing
+        // while it is up. Claiming `j`/`k`/`Enter` there would break the
+        // composer outright.
+        if self.tasks_expanded && self.ui_state.input_mode == InputMode::Normal {
+            let action = crate::tui::input::handle_key_with_bindings(
+                key,
+                Some(&self.ui_state.bindings),
+                self.ui_state.input_mode,
+            );
+            let consumed = match action {
+                Some(InputAction::Cancel) => {
+                    self.toggle_tasks_list();
+                    true
+                }
+                Some(InputAction::NavigateUp) => self.move_tasks_selection(-1),
+                Some(InputAction::NavigateDown) => self.move_tasks_selection(1),
+                Some(InputAction::Send) => self.open_selected_task(),
+                _ => false,
+            };
+            if consumed {
+                return;
+            }
+        }
+
         // An open subagent buffer is a view *over* the main buffer, so Esc
         // returns to the transcript. It sits below the modal short-circuit
         // so Esc still closes a dialog in front of it, and above everything
         // else so no later handler can consume the key that dismisses it.
-        if self.ui_state.subagents.open.is_some() {
+        if self.ui_state.subagents.active_tab().is_some() {
             if let Some(InputAction::Cancel) = crate::tui::input::handle_key_with_bindings(
                 key,
                 Some(&self.ui_state.bindings),
@@ -3884,6 +3929,15 @@ impl App {
             }
             Some(InputAction::CloseProjectTab) => {
                 self.process_msg(TuiMsg::CloseProjectTab);
+            }
+            Some(InputAction::NextSubagentTab) => {
+                self.process_msg(TuiMsg::NextSubagentTab);
+            }
+            Some(InputAction::PreviousSubagentTab) => {
+                self.process_msg(TuiMsg::PreviousSubagentTab);
+            }
+            Some(InputAction::CloseSubagentTab) => {
+                self.process_msg(TuiMsg::CloseSubagentTab);
             }
             Some(InputAction::ToggleComposerMode) => {
                 self.process_msg(TuiMsg::ToggleComposerMode);
@@ -8676,11 +8730,22 @@ impl App {
             ClickTarget::Working => {
                 // Throbber row (or a gap between rows) has nothing to open.
                 if let Some(index) = self.ui_state.subagents.hit_at(x, y) {
-                    if self.ui_state.subagents.open_row(index) {
-                        let agent = self.ui_state.subagents.rows[index].agent.clone();
-                        self.messages_state.toasts.info(&format!(
-                            "Subagent buffer: {agent} · Esc returns to the main buffer"
-                        ));
+                    let Some(row) = self.ui_state.subagents.rows.get(index).cloned() else {
+                        return;
+                    };
+                    let was_open = self.ui_state.subagents.has_tab(&row.task_id);
+                    if self.ui_state.subagents.open(row.clone()) {
+                        let label = row.label().to_string();
+                        // Reopening an existing tab is a focus change, not a
+                        // new tab, so it gets different guidance than a first
+                        // open. Telling someone who just clicked a tab they
+                        // already had open that it "opened" would be a lie
+                        // about what happened.
+                        self.messages_state.toasts.info(&if was_open {
+                            format!("Subagent buffer: {label} · Shift+N / Shift+P to cycle")
+} else {
+    format!("Subagent buffer: {label} · Shift+N / Shift+P to cycle, Shift+X to close")
+});
                     }
                 }
             }
@@ -13803,6 +13868,86 @@ impl App {
     /// dead. The overlay still reports the groups it found nothing in.
     pub fn toggle_tasks_list(&mut self) {
         self.tasks_expanded = !self.tasks_expanded;
+        // A cursor left pointing at yesterday's row index would select
+        // whatever happens to sit there now — or nothing at all — the next
+        // time the overlay opens. Reopening starts at the top.
+        self.tasks_selected = None;
+    }
+
+    /// The overlay rows actually rendered, bounded to what fits.
+    ///
+    /// The bound is applied here rather than only at paint time so every
+    /// consumer — the renderer, the selection cursor, `Enter` — agrees on
+    /// which rows exist. A cursor that could point past the bound would open a
+    /// subagent the user cannot see.
+    pub fn bounded_task_rows(&self) -> Vec<crate::tui::app::state::tasks::TaskRow> {
+        crate::tui::app::state::tasks::bounded(self.task_rows())
+    }
+
+    /// Move the overlay's selection cursor by `offset` rows.
+    ///
+    /// Returns whether the cursor moved. The cursor visits body rows only —
+    /// a group heading is a label, not a row to land on — and stops at both
+    /// ends rather than wrapping: it is a scroll position inside a strip the
+    /// user is reading, not a cycle like the tab set.
+    pub fn move_tasks_selection(&mut self, offset: isize) -> bool {
+        if !self.tasks_expanded {
+            return false;
+        }
+        use crate::tui::app::state::tasks::selectable_indices;
+        let selectable = selectable_indices(&self.bounded_task_rows());
+        if selectable.is_empty() {
+            self.tasks_selected = None;
+            return false;
+        }
+        let current = self
+            .tasks_selected
+            .and_then(|index| selectable.iter().position(|row| *row == index));
+        let next = match current {
+            Some(position) => {
+                (position as isize + offset).clamp(0, selectable.len() as isize - 1) as usize
+            }
+            // No cursor yet: start at the first row whichever way the gesture
+            // points. Skipping to the second on `j` would silently swallow the
+            // top item on an overlay that has only ever been opened once, and
+            // the user would `Enter` the wrong subagent.
+            None => 0,
+        };
+        if current == Some(next) {
+            return false;
+        }
+        self.tasks_selected = Some(selectable[next]);
+        true
+    }
+
+    /// Open whatever the overlay's cursor is resting on.
+    ///
+    /// Only a subagent row has a target today. A todo or a job is still
+    /// *selectable* so navigation does not skip over it, but activating one
+    /// does nothing: inventing a detail view for either would be a surface
+    /// the projection does not actually back.
+    pub fn open_selected_task(&mut self) -> bool {
+        use crate::tui::app::state::tasks::activatable_target;
+        if !self.tasks_expanded {
+            return false;
+        }
+        let rows = self.bounded_task_rows();
+        let Some(target) = self
+            .tasks_selected
+            .and_then(|index| rows.get(index))
+            .and_then(activatable_target)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        if self.open_subagent_tab(&target) {
+            // Opening closes the overlay: the thing the user asked to look at
+            // now owns the main buffer, and leaving a selection cursor behind
+            // it would be a control they are no longer looking at.
+            self.tasks_expanded = false;
+            self.tasks_selected = None;
+        }
+        true
     }
 
     /// Completed todo count. `TodoStatus::Completed` is the only status that
@@ -13830,6 +13975,89 @@ impl App {
         tasks.saturating_add(1)
     }
 
+    /// Rows the main buffer's subagent tab bar needs.
+    ///
+    /// One row, and only while a subagent tab is actually open. That is a
+    /// different shape from the working strip, which reserves row 0
+    /// unconditionally precisely so that turn state cannot reflow the
+    /// transcript — but the two are answering different questions. The working
+    /// strip reports on the *turn*, which starts and stops on its own; the tab
+    /// bar reports on tabs, which only appear because the user asked for one.
+    /// A one-row appearance and disappearance caused by an explicit keystroke
+    /// is ordinary editor behaviour, not the automatic reflow I4 forbids.
+    ///
+    /// The row is bounded to 1 and the labels are trimmed to the width
+    /// available (see `fit_bar_tabs`), so opening tabs cannot cost the
+    /// transcript more than a single row no matter how many are open.
+    pub fn subagent_tab_strip_height(&self) -> u16 {
+        u16::from(!self.ui_state.subagents.tabs.is_empty())
+    }
+
+    /// Open the subagent with this projection `task_id` as a buffer tab.
+    ///
+    /// Returns whether a tab is now open for it. `false` covers a task id with
+    /// no live row and a tab set already at capacity; the caller decides
+    /// whether either is worth reporting.
+    pub fn open_subagent_tab(&mut self, task_id: &str) -> bool {
+        let task_id = task_id.to_string();
+        let was_open = self.ui_state.subagents.has_tab(&task_id);
+        let opened = self.ui_state.subagents.open_task(&task_id);
+        if !opened && !was_open {
+            // Distinguish "no such subagent" from "the tab set is full" — the
+            // second is a real limit the user should know about, and telling
+            // them "no such subagent" when the row is right there would be a
+            // lie about what the UI can see.
+            if self
+                .ui_state
+                .subagents
+                .rows
+                .iter()
+                .any(|row| row.task_id == task_id)
+                && self.ui_state.subagents.tabs.is_at_capacity()
+            {
+                self.messages_state
+                    .toasts
+                    .info("Subagent tab limit reached — close a tab with Shift+X to open another");
+            }
+        }
+        opened
+    }
+
+    /// Move `offset` places through the subagent tab cycle.
+    ///
+    /// Returns whether a subagent tab is showing afterwards. `false` with no
+    /// subagent tabs open is not a failure: the conversation stays selected,
+    /// which is the same "no dead key" rule `toggle_tasks_list` follows.
+    fn cycle_subagent_tab(&mut self, offset: isize) -> bool {
+        self.ui_state.subagents.cycle_tabs(offset)
+    }
+
+    /// `Shift+N`: show the next subagent tab, wrapping through the
+    /// conversation.
+    pub fn next_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(1);
+    }
+
+    /// `Shift+P`: show the previous subagent tab, wrapping through the
+    /// conversation.
+    pub fn previous_subagent_tab(&mut self) {
+        self.cycle_subagent_tab(-1);
+    }
+
+    /// `Shift+X`: close the active subagent tab.
+    ///
+    /// Closes nothing but the tab. The run keeps going, because whether a user
+    /// is *watching* a subagent has never had any bearing on whether it
+    /// finishes.
+    pub fn close_subagent_tab(&mut self) {
+        let closed = self.ui_state.subagents.tabs.close_active();
+        if let Some(tab) = closed {
+            self.messages_state
+                .toasts
+                .info(&format!("Closed {}", tab.label()));
+        }
+    }
+
     /// Rows the unified tasks overlay needs, including its per-group headers.
     ///
     /// Returns 0 when collapsed *or* when there is genuinely nothing to show,
@@ -13840,14 +14068,14 @@ impl App {
         if !self.tasks_expanded {
             return 0;
         }
-        let rows = self.task_rows();
+        let rows = self.bounded_task_rows();
         if rows.is_empty() {
             return 0;
         }
         // Header + rows + the "nothing here" line when the overlay is open but
         // every group was empty. Without that last row an expanded-but-empty
         // overlay would collapse to nothing and the toggle would appear broken.
-        crate::tui::app::state::tasks::bounded(rows).len() as u16
+        rows.len() as u16
     }
 
     /// Build the tasks overlay rows from the three projection-backed sources.

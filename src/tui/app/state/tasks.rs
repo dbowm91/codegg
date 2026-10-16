@@ -69,6 +69,15 @@ pub enum TaskRow {
     },
     /// An in-flight subagent.
     Subagent {
+        /// The projection's canonical task identity.
+        ///
+        /// Carried rather than re-derived so the overlay can address the
+        /// subject when a row is activated — a tab, or (from M004) a sessions
+        /// panel section — without the caller having to match the rendered
+        /// label back to a row. A label is not an identity: two live
+        /// subagents can display the same name, and `display_name` is optional
+        /// so it can fall back to the agent type, which is *never* unique.
+        task_id: String,
         /// Display name when the projection carried one, else the agent type.
         label: String,
         /// The agent type, shown alongside the name so a display name is not
@@ -157,6 +166,7 @@ pub fn build_task_rows(
             group: TaskGroup::Subagents,
         });
         rows.extend(live_subagents.into_iter().map(|row| TaskRow::Subagent {
+            task_id: row.task_id.clone(),
             label: row.label().to_string(),
             agent: row.agent.clone(),
             description: row.description.clone(),
@@ -339,6 +349,35 @@ pub fn headers_of(rows: &[TaskRow]) -> Vec<TaskGroup> {
         .collect()
 }
 
+/// The indices of the rows a selection cursor can land on.
+///
+/// Headers are excluded: `── Subagents ──` is a label, not something to open,
+/// and letting the cursor rest on one would make `Enter` a no-op the user has
+/// to learn to step over. Indices refer to the *bounded* row list the overlay
+/// actually renders, so a selection cannot address a row that truncation
+/// removed.
+pub fn selectable_indices(rows: &[TaskRow]) -> Vec<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, row)| !matches!(row, TaskRow::Header { .. }))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// What activating `row` would open, if anything.
+///
+/// Only a subagent row has a target today: it resolves to a tab in the main
+/// buffer. Todos are inline text with no separate view, and a job row's
+/// durable detail has no surface yet — so those rows are *selectable* (the
+/// cursor may rest on them and show which line is selected) but not
+/// activatable, rather than being skipped and making navigation jump.
+pub fn activatable_target(row: &TaskRow) -> Option<&str> {
+    match row {
+        TaskRow::Subagent { task_id, .. } => Some(task_id.as_str()),
+        TaskRow::Header { .. } | TaskRow::Todo { .. } | TaskRow::Job { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +436,37 @@ mod tests {
             r,
             TaskRow::Job { kind, .. } if kind == "test"
         )));
+    }
+
+    #[test]
+    fn a_subagent_row_carries_the_identity_a_tab_is_keyed_on() {
+        let mut row = subagent("explore", "running");
+        row.task_id = "42".into();
+        let rows = build_task_rows(&[], &[row], &[]);
+        let body = rows
+            .iter()
+            .find(|r| matches!(r, TaskRow::Subagent { .. }))
+            .expect("a subagent row");
+        assert_eq!(activatable_target(body), Some("42"));
+    }
+
+    #[test]
+    fn only_subagent_rows_have_something_to_open() {
+        let rows = build_task_rows(
+            &[todo("write the thing")],
+            &[subagent("explore", "running")],
+            &[job("test", "queued")],
+        );
+        // Rows are [header, todo, header, subagent, header, job].
+        // Selectable: todos and jobs are still rows the cursor may rest on,
+        // so navigation does not jump over them.
+        assert_eq!(selectable_indices(&rows), vec![1, 3, 5]);
+        // Activatable: only the subagent resolves to something today.
+        assert_eq!(activatable_target(&rows[0]), None, "header");
+        assert_eq!(activatable_target(&rows[1]), None, "todo");
+        assert!(activatable_target(&rows[3]).is_some(), "subagent");
+        assert_eq!(activatable_target(&rows[4]), None, "header");
+        assert_eq!(activatable_target(&rows[5]), None, "job");
     }
 
     #[test]

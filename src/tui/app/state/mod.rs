@@ -22,6 +22,7 @@ pub mod restore;
 pub mod routing;
 pub mod session;
 pub mod snapshot;
+pub mod subagent_tabs;
 pub mod subagents;
 pub mod tasks;
 pub mod ui;
@@ -70,7 +71,11 @@ pub use routing::{
     UiRouteToken, MAX_TAB_HEALTH_SUMMARY_LEN, MAX_TAB_LAST_ERROR_LEN, MAX_TAB_UNREAD_DISPLAY,
 };
 pub use session::{RunningTool, SessionState};
-pub use subagents::{SubagentRow, SubagentState, SubagentView};
+pub use subagent_tabs::{
+    bar_width, fit_bar_tabs, SubagentBarTab, SubagentTabId, SubagentTabLiveness, SubagentTabState,
+    SubagentTabs, BAR_ELLIPSIS, BAR_SEPARATOR, MAIN_TAB_LABEL, MAX_OPEN_SUBAGENT_TABS,
+};
+pub use subagents::{SubagentRow, SubagentState};
 pub use ui::{AppMode, UiState};
 pub use view_switch::ViewSwitchCoordinator;
 pub use work_orders::{

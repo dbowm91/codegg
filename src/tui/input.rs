@@ -26,6 +26,8 @@
 //! | Ctrl+N | Toggle panel resize mode |
 //! | Ctrl+T | ToggleTodoList |
 //! | Shift+T | ToggleTasksList (todos + subagents + jobs) |
+//! | Shift+N / Shift+P | Next / previous subagent tab (main buffer) |
+//! | Shift+X | Close subagent tab (main buffer) |
 //! | Ctrl+B | ToggleSidebar |
 //! | Ctrl+W | CloseSession |
 //! | Ctrl+S | StashPrompt |
@@ -206,6 +208,19 @@ pub enum InputAction {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    /// Move to the next subagent tab in the main buffer (`Shift+N`).
+    ///
+    /// Cycle order runs `Chat` → subagent tabs in the order they were opened,
+    /// and wraps. A no-op with no subagent tabs open: the main conversation
+    /// stays selected rather than the key becoming visibly dead.
+    NextSubagentTab,
+    /// Move to the previous subagent tab (`Shift+P`). Mirrors
+    /// [`InputAction::NextSubagentTab`] in both directions and wrapping.
+    PreviousSubagentTab,
+    /// Close the active subagent tab (`Shift+X`), returning to the main
+    /// conversation. Never closes the main buffer itself, and cancels
+    /// nothing — the run keeps going whether or not its tab is open.
+    CloseSubagentTab,
     /// Project Work Orders M003 + C001: toggle the prompt composer between
     /// Session and Task submission modes. C001 owns bare Tab at root
     /// prompt focus (`Session <-> Task`); `SwitchAgent` lives on `Ctrl+A`
@@ -296,6 +311,9 @@ pub enum ActionKey {
     NextProjectTab,
     PreviousProjectTab,
     CloseProjectTab,
+    NextSubagentTab,
+    PreviousSubagentTab,
+    CloseSubagentTab,
     ToggleComposerMode,
     OpenWorkspaceDashboard,
 }
@@ -363,6 +381,9 @@ impl ActionKey {
             Self::NextProjectTab,
             Self::PreviousProjectTab,
             Self::CloseProjectTab,
+            Self::NextSubagentTab,
+            Self::PreviousSubagentTab,
+            Self::CloseSubagentTab,
             Self::ToggleComposerMode,
             Self::OpenWorkspaceDashboard,
             Self::ToggleTodoList,
@@ -426,6 +447,9 @@ impl ActionKey {
             Self::NextProjectTab => InputAction::NextProjectTab,
             Self::PreviousProjectTab => InputAction::PreviousProjectTab,
             Self::CloseProjectTab => InputAction::CloseProjectTab,
+            Self::NextSubagentTab => InputAction::NextSubagentTab,
+            Self::PreviousSubagentTab => InputAction::PreviousSubagentTab,
+            Self::CloseSubagentTab => InputAction::CloseSubagentTab,
             Self::ToggleComposerMode => InputAction::ToggleComposerMode,
             Self::OpenWorkspaceDashboard => InputAction::OpenWorkspaceDashboard,
             Self::ToggleTodoList => InputAction::ToggleTodoList,
@@ -489,6 +513,9 @@ impl ActionKey {
             Self::NextProjectTab => "Next project tab",
             Self::PreviousProjectTab => "Previous project tab",
             Self::CloseProjectTab => "Close project tab",
+            Self::NextSubagentTab => "Next subagent tab (Shift+N)",
+            Self::PreviousSubagentTab => "Previous subagent tab (Shift+P)",
+            Self::CloseSubagentTab => "Close subagent tab (Shift+X)",
             Self::ToggleComposerMode => "Toggle composer mode (Session/Task)",
             Self::OpenWorkspaceDashboard => "Open Workspace view (selected-project chat)",
             Self::ToggleTodoList => "Toggle todo list (expand above input)",
@@ -553,6 +580,15 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // capital `T` mid-word as "open the overlay" instead of composing
             // it — the same class of bug the `Shift+S` entry above prevents.
             | InputAction::ToggleTasksList
+            // `Shift+N` / `Shift+P` / `Shift+X` claim three more uppercase
+            // letters, and `N` and `X` are among the most common capitals in
+            // ordinary prose. Without these entries Insert mode would read a
+            // capital `N` mid-word as "next subagent tab" instead of composing
+            // it — the same class of bug the `Shift+S` and `Shift+T` entries
+            // above prevent.
+            | InputAction::NextSubagentTab
+            | InputAction::PreviousSubagentTab
+            | InputAction::CloseSubagentTab
             // Already covered by the bare-char rule, but stated here because
             // it is load-bearing: `x` must never be claimed while composing,
             // or typing a word containing it would stop the agent.
@@ -641,6 +677,25 @@ fn insert_panel_direction_bindings(map: &mut HashMap<(KeyModifiers, KeyCode), In
         (KeyModifiers::NONE, KeyCode::Char('T')),
         InputAction::ToggleTasksList,
     );
+    // `Shift+N` / `Shift+P` / `Shift+X` drive the subagent tab set in the main
+    // buffer: next, previous, close. All three are uppercase letters that were
+    // unbound in every keymap, and all three are bound under both encodings for
+    // the same legacy reason as `Shift+S`/`Shift+F`/`Shift+T` above.
+    //
+    // They are separate letters rather than a reused chord on purpose. These
+    // names the buffer itself, adjacent to `Tab` for project tabs — but they
+    // are a different axis entirely (subagents inside one session, versus
+    // projects beside it), so reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` would have
+    // collapsed two independent navigations onto one gesture and made the
+    // project-tab muscle memory fire a subagent switch instead.
+    for (letter, action) in [
+        ('N', InputAction::NextSubagentTab),
+        ('P', InputAction::PreviousSubagentTab),
+        ('X', InputAction::CloseSubagentTab),
+    ] {
+        map.insert((KeyModifiers::SHIFT, KeyCode::Char(letter)), action.clone());
+        map.insert((KeyModifiers::NONE, KeyCode::Char(letter)), action);
+    }
 }
 
 fn default_bindings_internal() -> HashMap<(KeyModifiers, KeyCode), InputAction> {
@@ -1680,6 +1735,24 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "Shift+F",
             action: "Open the project picker; /projects also works mid-prompt",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+N",
+            action: "Next subagent tab in the main buffer (cycles through the conversation)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+P",
+            action: "Previous subagent tab in the main buffer",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+X",
+            action: "Close the active subagent tab; the run keeps going either way",
             condition: None,
         },
         HelpEntry {

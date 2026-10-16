@@ -776,6 +776,18 @@ impl App {
             TuiMsg::SelectProjectTabByIndex { index } => {
                 self.select_project_tab_by_visible_index(index);
             }
+            // Subagent tabs are frontend-local view state over projection
+            // rows, so they dispatch straight to `App` rather than over the
+            // `tui_cmd_tx` command channel the project-tab arms use: there is
+            // no daemon-side tab to keep in step, and routing a pure view
+            // change through the command transport would invent a message the
+            // core has no business handling.
+            TuiMsg::OpenSubagentTab { task_id } => {
+                self.open_subagent_tab(&task_id);
+            }
+            TuiMsg::NextSubagentTab => self.next_subagent_tab(),
+            TuiMsg::PreviousSubagentTab => self.previous_subagent_tab(),
+            TuiMsg::CloseSubagentTab => self.close_subagent_tab(),
             TuiMsg::ToggleComposerMode => {
                 crate::tui::commands::work_orders::toggle_composer_mode(self);
             }

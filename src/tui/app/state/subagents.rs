@@ -4,8 +4,7 @@
 //! `[...3]` badge in the header. That states *how many* subagents exist and
 //! nothing about *who* they are or what they are doing, so a turn that fans
 //! out to several agents reads as one opaque spinner. This module owns the
-//! rows that make that work legible, plus the buffer view opened by clicking
-//! one.
+//! rows that make that work legible, plus the tab set opened by selecting one.
 //!
 //! Two rules shape the design:
 //!
@@ -16,9 +15,14 @@
 //! - The strip is **view state**. It may be absent, stale, or empty without
 //!   that being an error: there is no synthetic "0 subagents" row, and a
 //!   missing snapshot clears the rows rather than inventing any.
+//!
+//! Open subagents live in [`SubagentTabs`], which owns identity, display order,
+//! and the attached/detached distinction. This module owns only the *rows* and
+//! the mouse hit geometry, and reconciles the two on every arriving snapshot.
 
 use ratatui::layout::Rect;
 
+use crate::tui::app::state::subagent_tabs::{SubagentTabId, SubagentTabState, SubagentTabs};
 use crate::tui::wrap::ellipsize_to_width;
 
 /// Hard-truncate to `width` chars, with no ellipsis.
@@ -136,27 +140,14 @@ impl SubagentRow {
     }
 }
 
-/// The subagent buffer opened over the main buffer.
-///
-/// `Esc` clears it and returns to the transcript. It is deliberately a plain
-/// view rather than a modal dialog: a modal would take the keyboard hostage
-/// and make "Esc goes back" ambiguous with "Esc closes a dialog".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SubagentView {
-    /// The row that was clicked, captured so the view stays coherent even if
-    /// the next projection snapshot drops the run.
-    pub row: SubagentRow,
-    /// Scroll offset within the rendered view, in rows.
-    pub scroll: u16,
-}
-
 /// Subagent state for the main buffer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubagentState {
     /// Rows currently advertised, in projection order.
     pub rows: Vec<SubagentRow>,
-    /// The open subagent buffer, if any.
-    pub open: Option<SubagentView>,
+    /// Subagents opened as tabs in the main buffer. `None` as the active tab
+    /// *is* the main conversation; see [`SubagentTabs`].
+    pub tabs: SubagentTabs,
     /// Hit rects for the rendered rows, in absolute frame coordinates,
     /// paired with their index into `rows`.
     ///
@@ -170,10 +161,16 @@ pub struct SubagentState {
 impl SubagentState {
     /// Replace the advertised rows from a projection snapshot.
     ///
-    /// A snapshot with no subagents clears the list. The open view is left
-    /// alone: it holds its own captured row, so a run disappearing from the
-    /// tree does not yank the buffer the user is reading out from under them.
+    /// A snapshot with no subagents clears the list. Open tabs are *not*
+    /// closed: each is reconciled instead, so a tab whose subject just left
+    /// the tree detaches rather than vanishing from under the user, and a tab
+    /// whose subject came back is refreshed and re-attached.
+    ///
+    /// Only call this when a snapshot actually arrived. A missing snapshot is
+    /// not evidence that a subject is gone, so routing that case here would
+    /// detach every live tab during a projection hiccup.
     pub fn set_rows(&mut self, rows: Vec<SubagentRow>) {
+        self.tabs.sync_with_rows(&rows);
         self.rows = rows;
     }
 
@@ -195,19 +192,73 @@ impl SubagentState {
             .map(|(index, _)| *index)
     }
 
-    /// Open the subagent buffer for `index`, returning whether a row was hit.
+    /// The subagent tab currently on screen, if any.
+    pub fn active_tab(&self) -> Option<&SubagentTabState> {
+        self.tabs.active()
+    }
+
+    /// Mutable accessor for the active tab.
+    pub fn active_tab_mut(&mut self) -> Option<&mut SubagentTabState> {
+        self.tabs.active_mut()
+    }
+
+    /// Open the subagent at `index` as a tab, returning whether a row was hit.
+    ///
+    /// Delegated to [`SubagentTabs::open_or_focus`], so a subject that is
+    /// already open gains focus rather than duplicating its tab.
     pub fn open_row(&mut self, index: usize) -> bool {
         let Some(row) = self.rows.get(index).cloned() else {
             return false;
         };
-        self.open = Some(SubagentView { row, scroll: 0 });
-        true
+        self.open(row)
     }
 
-    /// Close the subagent buffer, returning to the main buffer.
+    /// Open the tab for the given projection `task_id`, if a row carries it.
+    ///
+    /// The keyboard path into a tab, used by the tasks overlay and — from M004
+    /// — the sessions panel. Both address a subject by its canonical id rather
+    /// than by a row index, so they cannot open a tab for a row that has since
+    /// shifted under them.
+    pub fn open_task(&mut self, task_id: &str) -> bool {
+        let Some(row) = self.rows.iter().find(|row| row.task_id == task_id).cloned() else {
+            return false;
+        };
+        self.open(row)
+    }
+
+    /// Whether a tab for `task_id` is already open.
+    pub fn has_tab(&self, task_id: &str) -> bool {
+        self.tabs.contains(task_id)
+    }
+
+    /// Open `row` as a tab, returning whether the tab set took it.
+    ///
+    /// `false` covers both refusals the tab set makes — a blank `task_id` that
+    /// cannot key a tab, and a set already at capacity. The caller decides
+    /// whether either is worth telling the user about.
+    pub fn open(&mut self, row: SubagentRow) -> bool {
+        self.tabs.open_or_focus(row).is_some()
+    }
+
+    /// Move `offset` places through the tab cycle.
+    pub fn cycle_tabs(&mut self, offset: isize) -> bool {
+        self.tabs.cycle(offset).is_some()
+    }
+
+    /// Close the active tab, returning to the main buffer.
+    ///
+    /// With no tabs open this is a no-op rather than an error: the main buffer
+    /// is already what is showing.
     pub fn close(&mut self) {
-        self.open = None;
+        self.tabs.close_active();
         self.hits.clear();
+    }
+
+    /// The tab id for `task_id`, if one is open.
+    pub fn tab_id_for(&self, task_id: &str) -> Option<&SubagentTabId> {
+        self.tabs
+            .active_tab_id()
+            .filter(|id| id.as_str() == task_id)
     }
 }
 
@@ -223,6 +274,13 @@ mod tests {
             agent: "explore".into(),
             description: "Find the auth flow".into(),
             status: status.into(),
+        }
+    }
+
+    fn row_id(task_id: &str, status: &str) -> SubagentRow {
+        SubagentRow {
+            task_id: task_id.into(),
+            ..row(status)
         }
     }
 
@@ -329,23 +387,67 @@ mod tests {
         state.set_rows(vec![row("running")]);
         assert!(state.open_row(0));
         assert_eq!(
-            state.open.as_ref().map(|v| v.row.agent.clone()),
+            state.active_tab().map(|tab| tab.row.agent.clone()),
             Some("explore".into())
         );
-        // An out-of-range index must not clobber an open view.
+        // An out-of-range index must not clobber an open tab.
         assert!(!state.open_row(7));
-        assert!(state.open.is_some());
+        assert!(state.active_tab().is_some());
         state.close();
-        assert!(state.open.is_none());
+        assert!(state.active_tab().is_none());
     }
 
     #[test]
-    fn a_snapshot_dropping_a_run_leaves_the_open_view_intact() {
+    fn opening_the_same_row_twice_focuses_one_tab() {
+        let mut state = SubagentState::default();
+        state.set_rows(vec![row("running"), row_id("t2", "running")]);
+        assert!(state.open_row(0));
+        assert!(state.open_row(1));
+        assert!(state.open_row(0));
+        assert_eq!(state.tabs.len(), 2, "no duplicate tab for the same subject");
+        assert_eq!(
+            state.active_tab().map(|tab| tab.tab_id.as_str()),
+            Some("t1")
+        );
+    }
+
+    #[test]
+    fn a_task_id_addresses_the_same_tab_a_row_index_does() {
+        let mut state = SubagentState::default();
+        state.set_rows(vec![row("running"), row_id("t2", "running")]);
+        assert!(state.open_task("t2"));
+        assert_eq!(
+            state.active_tab().map(|tab| tab.tab_id.as_str()),
+            Some("t2")
+        );
+        assert!(state.has_tab("t2"));
+        assert!(!state.has_tab("nope"));
+        // A task id with no row opens nothing rather than inventing one.
+        assert!(!state.open_task("nope"));
+        assert_eq!(state.tabs.len(), 1);
+    }
+
+    #[test]
+    fn a_snapshot_dropping_a_run_detaches_its_tab_rather_than_closing_it() {
         let mut state = SubagentState::default();
         state.set_rows(vec![row("running")]);
         state.open_row(0);
         state.set_rows(Vec::new());
+
         assert!(state.rows.is_empty());
-        assert!(state.open.is_some(), "the view holds its own captured row");
+        let tab = state.active_tab().expect("the tab survives its subject");
+        assert_eq!(tab.row.task_id, "t1", "it keeps the row it was opened with");
+        assert!(
+            !tab.is_running(),
+            "a detached tab must not keep claiming live work"
+        );
+    }
+
+    #[test]
+    fn closing_with_no_tabs_open_is_a_no_op() {
+        let mut state = SubagentState::default();
+        state.close();
+        assert!(state.active_tab().is_none());
+        assert!(state.tabs.is_empty());
     }
 }

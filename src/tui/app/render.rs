@@ -32,6 +32,36 @@ fn strip_line<'a>(
     ])
 }
 
+/// [`strip_line`] for a row the tasks overlay's cursor is resting on.
+///
+/// Same geometry as the unselected form — the budget arithmetic is shared, so
+/// moving the cursor can never change the overlay's height — with the row
+/// inverted instead of re-coloured. Inverting rather than switching to the
+/// primary colour is deliberate: a selected *job* may be rendered in the error
+/// colour, and an accent that merely happens to differ from both is weaker
+/// evidence of selection than the only styling convention every terminal
+/// already uses for it.
+fn strip_line_selected<'a>(
+    theme: &'a crate::tui::theme::Theme,
+    width: u16,
+    lead: &str,
+    text: &str,
+    colour: Color,
+) -> Line<'a> {
+    let plain = strip_line(theme, width, lead, text, colour);
+    Line::from(
+        plain
+            .spans
+            .into_iter()
+            .map(|span| {
+                let mut style = span.style;
+                style = style.add_modifier(Modifier::REVERSED);
+                Span::styled(span.content, style)
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// Maximum display width of the agent name shown beside the input-mode badge.
 const MAX_AGENT_BADGE_WIDTH: usize = 20;
 
@@ -156,20 +186,43 @@ impl App {
         // it, so their order in the allocation has to match their order on
         // screen.
         //
-        // The reservation is then clamped against the height actually left
-        // over once the transcript's floor is honoured. Without the clamp the
-        // overlay and the prompt box together can exceed a short pane, and the
-        // carve below silently yields — so `Shift+T` looks like a dead key on
-        // exactly the terminals where a status overlay would be most wanted.
-        // A too-short pane shows no overlay rather than a wrong one.
-        let overlay_allowance = self.tasks_overlay_allowance(
+        // The unified tasks overlay and the subagent tab bar draw from one
+        // budget of rows left over once every other claim is honoured,
+        // transcript floor included.
+        //
+        // The clamp is what makes this a budget rather than two independent
+        // wishes. Without it the overlay and the prompt box together can exceed
+        // a short pane, the carve below silently yields, and `Shift+T` looks
+        // like a dead key on exactly the terminals where a status overlay would
+        // be most wanted. A too-short pane shows neither rather than a wrong
+        // one.
+        //
+        // Sharing the budget is also the point: neither may be sized as if it
+        // were the only thing asking, or the two together overshoot and
+        // `Min(10)` quietly yields.
+        //
+        // The bar is taken first because it is persistent while the overlay is
+        // on-demand, and a missing bar is worse than a shorter overlay — tabs
+        // the user opened would become invisible with no control that says so.
+        let spare_rows = self.tasks_overlay_allowance(
             pane_area.height,
             todo_rows,
             hint_rows,
             working_rows,
             max_prompt_height,
         );
-        let tasks_rows = self.tasks_strip_height().min(overlay_allowance);
+        // The bar is one row carved off the top of the *viewport* chunk — see
+        // the carve below. It is deliberately **not** added to
+        // `prompt_height`: that sum is what reserves room for strips carved
+        // off the *prompt* chunk (working strip, hint line, todo strip, tasks
+        // overlay). Adding the bar there as well would charge the transcript
+        // twice for one row, because the bar never touches the prompt chunk at
+        // all. The input box is unaffected either way, which was the only
+        // reason to reserve it in the first place.
+        let tab_rows = self.subagent_tab_strip_height().min(spare_rows);
+        let tasks_rows = self
+            .tasks_strip_height()
+            .min(spare_rows.saturating_sub(tab_rows));
         let prompt_height = self
             .prompt_state
             .prompt
@@ -230,7 +283,6 @@ impl App {
         };
         self.todo_area = todo_chunk;
         self.tasks_area = tasks_chunk;
-        self.viewport_area = Some(session_chunks[1]);
         self.prompt_area = Some(prompt_chunk);
 
         // Outer TUI frame: paint the left border on the reserved strip
@@ -252,19 +304,37 @@ impl App {
 
         self.render_header(frame, session_chunks[0]);
 
+        // Carve the subagent tab bar off the top of the viewport. Guarded on
+        // the chunk actually having room: on a pane too short to give up the
+        // row, dropping the bar entirely beats eating the transcript's floor.
+        let mut viewport_chunk = session_chunks[1];
+        let mut tab_chunk = None;
+        if tab_rows > 0 && viewport_chunk.height > tab_rows {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(tab_rows), Constraint::Min(1)])
+                .split(viewport_chunk);
+            tab_chunk = Some(split[0]);
+            viewport_chunk = split[1];
+        }
+        // Published *after* the carve, so scroll and scrollbar hit-testing read
+        // the rect the transcript actually occupies. Setting it before the
+        // carve would hand the scrollbar a row that belongs to the tab bar.
+        self.viewport_area = Some(viewport_chunk);
+
         // Viewport (messages) — highest-risk surface for render panics
         let viewport_result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
                 if self.render_panic_injection.messages {
                     panic!("injected messages render panic");
                 }
-                self.render_viewport(frame, session_chunks[1]);
+                self.render_viewport(frame, viewport_chunk);
                 // An open subagent buffer replaces the transcript in the
                 // same rect rather than opening a modal over it: Esc then has
                 // exactly one meaning — return to the main buffer — instead of
                 // being ambiguous between "close a dialog" and "go back".
-                if self.ui_state.subagents.open.is_some() {
-                    self.render_subagent_view(frame, session_chunks[1]);
+                if self.ui_state.subagents.active_tab().is_some() {
+                    self.render_subagent_view(frame, viewport_chunk);
                 }
                 Ok(())
             }));
@@ -275,7 +345,10 @@ impl App {
             self.ui_state
                 .diagnostics
                 .record_component_render_panic("messages");
-            self.render_component_fallback(frame, session_chunks[1], "Messages render error");
+            self.render_component_fallback(frame, viewport_chunk, "Messages render error");
+        }
+        if let Some(area) = tab_chunk {
+            self.render_subagent_tab_strip(frame, area);
         }
 
         self.render_working_strip(frame, working_chunk);
@@ -1257,6 +1330,7 @@ impl App {
         }
 
         let theme = self.ui_state.theme.clone();
+        let selected = self.tasks_selected;
         let all_rows = self.task_rows();
         let rows = bounded_task_rows(all_rows.clone());
 
@@ -1270,42 +1344,67 @@ impl App {
                 Style::default().fg(theme.muted),
             )));
         } else {
-            for row in &rows {
-                match row {
-                    TaskRow::Header { group } => {
-                        lines.push(Line::from(Span::styled(
-                            format!(" ── {} ──", group.title()),
-                            Style::default().fg(theme.muted),
-                        )));
-                    }
+            for (index, row) in rows.iter().enumerate() {
+                // The cursor renders as a leading marker as well as the
+                // inversion, because `REVERSED` is a hint some themes and
+                // some terminals flatten — and a selection the user cannot
+                // see is a selection they will press Enter against the wrong
+                // row on.
+                let is_selected = selected == Some(index);
+                let lead = if is_selected { "▸" } else { " " };
+                let line = match row {
+                    // Headers are never selectable, so they render plainly
+                    // even if a stale cursor index happens to land here.
+                    TaskRow::Header { group } => Line::from(Span::styled(
+                        format!(" ── {} ──", group.title()),
+                        Style::default().fg(theme.muted),
+                    )),
                     TaskRow::Todo { bubble, content } => {
-                        lines.push(strip_line(
-                            &theme,
-                            area.width,
-                            &format!(" {bubble} "),
-                            content,
-                            theme.foreground,
-                        ));
+                        // The bubble is rendered as the lead rather than
+                        // folded into the text so the completed/pending
+                        // distinction stays in the same column on every row.
+                        if is_selected {
+                            strip_line_selected(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        } else {
+                            strip_line(
+                                &theme,
+                                area.width,
+                                &format!("{bubble} "),
+                                content,
+                                theme.foreground,
+                            )
+                        }
                     }
                     TaskRow::Subagent {
                         label,
                         agent,
                         description,
                         status,
+                        ..
                     } => {
                         // Name and agent type together: the name is what the
                         // user looks for later, the type is what it actually is.
-                        let lead = if label == agent {
+                        let text = if label == agent {
                             format!(" {label} ")
                         } else {
                             format!(" {label} ({agent}) ")
                         };
                         let text = if description.trim().is_empty() {
-                            lead.clone()
+                            text
                         } else {
-                            format!("{lead}· {status} — {description}")
+                            format!("{text}· {status} — {description}")
                         };
-                        lines.push(strip_line(&theme, area.width, " ", &text, theme.foreground));
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, theme.foreground)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, theme.foreground)
+                        }
                     }
                     TaskRow::Job {
                         kind,
@@ -1323,12 +1422,22 @@ impl App {
                         } else {
                             theme.foreground
                         };
-                        lines.push(strip_line(&theme, area.width, " ", &text, colour));
+                        if is_selected {
+                            strip_line_selected(&theme, area.width, lead, &text, colour)
+                        } else {
+                            strip_line(&theme, area.width, lead, &text, colour)
+                        }
                     }
-                }
+                };
+                lines.push(line);
             }
             lines.push(Line::from(Span::styled(
-                " Shift+T close ".to_string(),
+                if selected.is_some() {
+                    " Shift+N/P open · ↵ select · Esc close "
+                } else {
+                    " Shift+T close "
+                }
+                .to_string(),
                 Style::default().fg(theme.muted),
             )));
         }
@@ -1345,37 +1454,62 @@ impl App {
     /// progress text: the projection adapter hardcodes `progress: None`, so
     /// an invented "working on step 3" line would be a lie the user acts on.
     fn render_subagent_view(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(view) = self.ui_state.subagents.open.clone() else {
+        let Some(tab) = self.ui_state.subagents.active_tab().cloned() else {
             return;
         };
         if area.width == 0 || area.height == 0 {
             return;
         }
         let theme = self.ui_state.theme.clone();
-        let status_style = if view.row.is_running() {
+        let status_style = if tab.is_running() {
             Style::default().fg(theme.primary)
         } else {
             Style::default().fg(theme.muted)
         };
 
         let mut lines: Vec<Line> = Vec::new();
+        // Lead with the curated display name where there is one, so the tab
+        // bar and this view name the same run identically — a tab reading
+        // `Sally` over a body reading `explore` would make the user hunt.
+        let title = match tab.row.display_name.as_deref() {
+            Some(name) if !name.trim().is_empty() && name != tab.row.agent => {
+                format!(" Subagent · {} ({})", name, tab.row.agent)
+            }
+            _ => format!(" Subagent · {}", tab.row.agent),
+        };
         lines.push(Line::from(Span::styled(
-            format!(" Subagent · {}", view.row.agent),
+            title,
             Style::default()
                 .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
-            format!(" {}", view.row.status),
+            format!(" {}", tab.row.status),
             status_style,
         )));
+        // The terminal state for "my subject left the projection". This is a
+        // first-class outcome, not an error: the per-turn agent tree is
+        // cleared when the turn ends, so a tab opened during a turn outliving
+        // that turn is expected rather than exceptional. Stating it plainly is
+        // the whole point — the alternative is a view that keeps rendering
+        // `running` for a run the projection has stopped reporting.
+        if !tab.liveness.is_attached() {
+            lines.push(Line::from(Span::styled(
+                " This run is no longer in the session's projection.",
+                Style::default().fg(theme.muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                " What is shown below is the last state it reported.",
+                Style::default().fg(theme.muted),
+            )));
+        }
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
             " Task",
             Style::default().fg(theme.muted),
         )));
         lines.push(Line::from(Span::styled(
-            format!("   {}", view.row.description),
+            format!("   {}", tab.row.description),
             Style::default().fg(theme.foreground),
         )));
         lines.push(Line::default());
@@ -1384,10 +1518,10 @@ impl App {
             Style::default().fg(theme.muted),
         )));
         lines.push(Line::from(Span::styled(
-            format!("   task {}", view.row.task_id),
+            format!("   task {}", tab.row.task_id),
             Style::default().fg(theme.foreground),
         )));
-        if let Some(run_id) = &view.row.run_id {
+        if let Some(run_id) = &tab.row.run_id {
             lines.push(Line::from(Span::styled(
                 format!("   run  {run_id}"),
                 Style::default().fg(theme.foreground),
@@ -1402,8 +1536,58 @@ impl App {
         let width = area.width.saturating_sub(1);
         let paragraph = Paragraph::new(lines)
             .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((view.scroll, 0));
+            .scroll((tab.scroll, 0));
         frame.render_widget(paragraph, Rect { width, ..area });
+    }
+
+    /// Draw the one-row subagent tab bar directly under the header.
+    ///
+    /// Carved off the **top** of the viewport chunk rather than the prompt
+    /// chunk: a tab bar belongs to the buffer it labels, and the working strip
+    /// already owns the bottom edge of the transcript. The rows are reserved
+    /// from the prompt allocation instead (see the `prompt_height` sum) so
+    /// opening a tab does not shrink the input box.
+    ///
+    /// The active entry is styled, not merely ordered, because at a narrow
+    /// width the bar trims older tabs and "which one am I reading" can no
+    /// longer be answered by position.
+    fn render_subagent_tab_strip(&mut self, frame: &mut Frame, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let theme = self.ui_state.theme.clone();
+        let entries = crate::tui::app::state::subagent_tabs::fit_bar_tabs(
+            self.ui_state.subagents.tabs.bar_tabs(),
+            area.width as usize,
+        );
+        let separator = crate::tui::app::state::subagent_tabs::BAR_SEPARATOR;
+        let muted = Style::default().fg(theme.muted);
+
+        let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2);
+        for (index, entry) in entries.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(separator.to_string(), muted));
+            }
+            let style = if entry.active {
+                Style::default()
+                    .fg(theme.primary)
+                    .add_modifier(Modifier::BOLD)
+            } else if entry.ellipsis {
+                muted
+            } else {
+                Style::default().fg(theme.foreground)
+            };
+            if entry.glyph.is_empty() {
+                spans.push(Span::styled(entry.label.clone(), style));
+            } else {
+                spans.push(Span::styled(entry.label.clone(), style));
+                spans.push(Span::styled(
+                    format!(" {}", entry.glyph),
+                    if entry.active { style } else { muted },
+                ));
+            }
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     /// Rows the working strip needs.
