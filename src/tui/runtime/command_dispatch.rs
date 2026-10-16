@@ -2339,6 +2339,86 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::ProjectDestroyConfirmationLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_destroy_confirmation_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                session_count,
+                error,
+            );
+        }
+        TuiCommand::ProjectLifecycleFinished {
+            picker_request_id,
+            project_id,
+            restored,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_lifecycle_finished(
+                app,
+                picker_request_id,
+                project_id,
+                restored,
+                error,
+            );
+        }
+        TuiCommand::ProjectDeleteFinished {
+            picker_request_id,
+            project_id,
+            deleted_session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_delete_finished(
+                app,
+                picker_request_id,
+                project_id,
+                deleted_session_count,
+                error,
+            );
+        }
+        TuiCommand::ProjectEditLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            root,
+            expected_updated_at,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_edit_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                root,
+                expected_updated_at,
+                error,
+            );
+        }
+        TuiCommand::ProjectUpdateFinished {
+            picker_request_id,
+            project,
+            workspace,
+            previous_display_name,
+            previous_root,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_update_finished(
+                app,
+                picker_request_id,
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+                error,
+            );
+        }
         TuiCommand::StartListProjectSessions {
             tab_id,
             project_id,
@@ -2372,37 +2452,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::StartRegisterWorkspace { path } => {
             super::super::commands::project_picker::start_register_workspace(app, path);
         }
-        TuiCommand::WorkspaceRegistered {
-            request_id,
-            picker_request_id,
-            workspace_id,
-            error,
-        } => {
-            super::super::commands::project_picker::apply_workspace_registered(
-                app,
-                request_id,
-                picker_request_id,
-                workspace_id,
-                error,
-            );
-        }
-        TuiCommand::StartRegisterProject {
-            workspace_id,
-            display_name,
-            description,
-            tags,
-        } => {
-            super::super::commands::project_picker::start_register_project(
-                app,
-                workspace_id,
-                display_name,
-                description,
-                tags,
-            );
-        }
         TuiCommand::ProjectRegistered {
             request_id,
             picker_request_id,
+            workspace_id,
+            workspace_root,
             project_id,
             error,
         } => {
@@ -2410,6 +2464,8 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app,
                 request_id,
                 picker_request_id,
+                workspace_id,
+                workspace_root,
                 project_id,
                 error,
             );

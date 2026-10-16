@@ -369,6 +369,12 @@ impl ProjectTabs {
             .collect()
     }
 
+    /// Iterate over all mutable tab records. Consumers that update identity
+    /// projections do not depend on display order.
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut ProjectTabState> {
+        self.tabs.values_mut()
+    }
+
     /// The active tab id, if any. Distinct from `active()` so callers
     /// can compare ids without taking a reference to the full state.
     pub fn active_tab_id(&self) -> Option<&ProjectTabId> {

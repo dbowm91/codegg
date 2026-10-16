@@ -166,6 +166,8 @@ pub enum BuiltinSlashAction {
     ChatActionReview,
     ChatActionList,
     Sessions,
+    /// Open the project picker (same box as `Ctrl+\` / Normal-mode `Shift+F`).
+    Projects,
     Share,
     Unshare,
     Rename,
@@ -535,6 +537,9 @@ impl CommandRegistry {
                 // silently shadow the other.
                 .with_aliases(&["resume", "continue"])
                 .with_description("Switch session"),
+            Command::new("/projects", CommandCategory::System, CommandAction::Builtin(BuiltinSlashAction::Projects))
+                .with_aliases(&["/project"])
+                .with_description("Open the project picker (Shift+F in Normal mode)"),
             Command::new("/new", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::New))
                 .with_aliases(&["clear"])
                 .with_description("New session"),
@@ -1179,14 +1184,15 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        // 163rd is `/start` and 162nd is `/stop` (carry on after a
-        // stopped turn; interrupt a running one). 161st is `/files` (the
-        // workspace file manager); 160th is `/panels` (the side-panel manager,
-        // the spelling of `⇧S` that stays typeable mid-prompt); 159th and 158th
-        // are `/terminal` (bare interactive terminal box) and
-        // `/terminal-clear`. Keep `architecture/command.md` counts in sync when
-        // adding more.
-        assert_eq!(CommandRegistry::built_in_commands().len(), 163);
+        // 164th is `/projects` (the project picker spelling that stays
+        // typeable mid-prompt, mirroring `/panels` for `⇧S`). 163rd is
+        // `/start` and 162nd is `/stop` (carry on after a stopped turn;
+        // interrupt a running one). 161st is `/files` (the workspace file
+        // manager); 160th is `/panels` (the side-panel manager, the spelling
+        // of `⇧S` that stays typeable mid-prompt); 159th and 158th are
+        // `/terminal` (bare interactive terminal box) and `/terminal-clear`.
+        // Keep `architecture/command.md` counts in sync when adding more.
+        assert_eq!(CommandRegistry::built_in_commands().len(), 164);
     }
 
     #[test]
@@ -1382,6 +1388,7 @@ mod tests {
             B::ChatActionReview,
             B::ChatActionList,
             B::Sessions,
+            B::Projects,
             B::Share,
             B::Unshare,
             B::Rename,
@@ -1591,6 +1598,25 @@ mod tests {
             all_builtin_variants().len(),
             "registry builtin count must match exhaustive variant list"
         );
+    }
+
+    #[test]
+    fn projects_command_opens_the_picker() {
+        let registry = CommandRegistry::new();
+        let cmd = registry
+            .find_by_name_or_alias("/projects")
+            .expect("/projects must be registered");
+        assert!(
+            matches!(
+                cmd.action,
+                CommandAction::Builtin(BuiltinSlashAction::Projects)
+            ),
+            "/projects must dispatch to the picker action"
+        );
+        let alias = registry
+            .find_by_name_or_alias("/project")
+            .expect("/project alias must be registered");
+        assert_eq!(alias.name, cmd.name, "alias must resolve to /projects");
     }
 
     #[test]

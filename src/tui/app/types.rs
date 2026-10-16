@@ -180,6 +180,16 @@ pub enum TuiMsg {
     /// dispatcher the main buffer's `InputAction` arms reach, so both halves
     /// of a box/panel pair resolve it identically.
     MoveDirection(crate::tui::panels::PanelDirection),
+    /// Put the keyboard on the panel docked at `placement`.
+    ///
+    /// The pointer answer to `Shift+H/J/K/L`. Kept as its own message rather
+    /// than folded into [`MoveDirection`](Self::MoveDirection) because those
+    /// resolve the keyboard position *between* edges, while a click names an
+    /// edge outright — and because focus has to go through the app to
+    /// park/restore the composer mode that `focus_panel` owns.
+    FocusPanelAt {
+        placement: crate::tui::panels::PanelPlacement,
+    },
     /// The terminal panel took the PTY's keyboard.
     ///
     /// A panel cannot focus the terminal itself: the focus flag lives on the

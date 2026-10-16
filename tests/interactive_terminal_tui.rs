@@ -257,9 +257,15 @@ async fn tui_terminal_full_lifecycle_over_cat() {
     );
     assert!(!text.is_empty());
 
-    let esc = match classify_key(true, TerminalKey::Esc) {
+    // `Esc` is the mode key; `Ctrl+]` is what carries an escape byte onward.
+    assert_eq!(
+        classify_key(true, TerminalKey::Esc),
+        TerminalKeyAction::EscapeFocus,
+        "Esc must leave insert, not be forwarded behind the user's back"
+    );
+    let esc = match classify_key(true, TerminalKey::LiteralEscape) {
         TerminalKeyAction::Forward(bytes) => bytes,
-        action => panic!("literal Esc must reach the focused PTY, got {action:?}"),
+        action => panic!("Ctrl+] must reach the focused PTY, got {action:?}"),
     };
     assert_eq!(esc, [0x1b]);
     match protocol
@@ -624,14 +630,16 @@ fn terminal_tool_surface_is_truthful_after_disposition() {
 }
 
 #[test]
-fn terminal_focus_gate_forwards_escape_and_reserves_ctrl_right_bracket() {
+fn terminal_focus_gate_leaves_on_esc_and_forwards_a_literal_escape() {
+    // One key per meaning. The gate used to need a hidden latch to tell "the
+    // user wants out" from "the program wants an escape" apart.
     assert_eq!(
         classify_key(true, TerminalKey::Esc),
-        TerminalKeyAction::Forward(vec![0x1b])
+        TerminalKeyAction::EscapeFocus
     );
     assert_eq!(
-        classify_key(true, TerminalKey::ExitFocus),
-        TerminalKeyAction::EscapeFocus
+        classify_key(true, TerminalKey::LiteralEscape),
+        TerminalKeyAction::Forward(vec![0x1b])
     );
     // Focusing a second terminal hides the first: exactly one owner.
     let mut controller = InteractiveTerminalController::new();

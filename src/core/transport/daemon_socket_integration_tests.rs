@@ -1218,6 +1218,7 @@ async fn two_socket_session_filter_isolation() {
             None,
             CoreEvent::SessionUpdated {
                 session_id: "s_A".into(),
+                title: None,
             },
         )
         .await;
@@ -1298,6 +1299,7 @@ async fn global_only_subscription_does_not_receive_session_events() {
             None,
             CoreEvent::SessionUpdated {
                 session_id: "s_session".into(),
+                title: None,
             },
         )
         .await;
@@ -1378,6 +1380,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
             None,
             CoreEvent::SessionUpdated {
                 session_id: "s1".into(),
+                title: None,
             },
         )
         .await;
@@ -1388,6 +1391,7 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
             None,
             CoreEvent::SessionUpdated {
                 session_id: "s2".into(),
+                title: None,
             },
         )
         .await;

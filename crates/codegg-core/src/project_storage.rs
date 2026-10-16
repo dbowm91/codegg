@@ -574,6 +574,31 @@ impl ProjectStorage {
             }
         }
         let source = bounded_text(source, MAX_LINEAGE_VALUE_LENGTH, "binding source")?;
+        let current_project: Option<String> = sqlx::query_scalar(
+            "SELECT project_id FROM workspace_project_binding WHERE workspace_id = ?",
+        )
+        .bind(workspace_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_error)?;
+        if current_project.as_deref() != Some(project_id.as_str()) {
+            if let Some(owner) = sqlx::query(
+                "SELECT lp.display_name, w.canonical_root FROM workspace_project_binding wpb JOIN logical_project lp ON lp.id = wpb.project_id JOIN workspace w ON w.id = wpb.workspace_id WHERE wpb.project_id = ? AND wpb.workspace_id <> ? LIMIT 1",
+            )
+            .bind(project_id.as_str())
+            .bind(workspace_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_error)?
+            {
+                let root: String = owner.get("canonical_root");
+                return Err(ProjectStorageError::Conflict(format!(
+                    "project '{}' already owns directory '{}'; rebind the project before associating another root",
+                    owner.get::<String, _>("display_name"),
+                    root
+                )));
+            }
+        }
         let now = Utc::now();
         let result = sqlx::query(
             "UPDATE workspace_project_binding SET project_id = ?, repository_id = ?, status = 'resolved', source = ?, revision = revision + 1, time_updated = ? WHERE workspace_id = ? AND revision = ?",
@@ -839,30 +864,20 @@ async fn resolve_project_and_repository(
         };
         let repository_id = Some(repo.clone());
 
-        let project_row = sqlx::query(
-            "SELECT project_id FROM project_repository WHERE repository_id = ? AND relation_kind = 'primary' ORDER BY project_id LIMIT 2",
+        // A repository can have many working directories (clones and
+        // worktrees). Keep lineage as shared metadata, but create one logical
+        // project for each previously unseen workspace root.
+        let project_id = ProjectId::new();
+        sqlx::query(
+            "INSERT INTO logical_project (id, display_name, lifecycle, time_created, time_updated) VALUES (?, ?, 'active', ?, ?)",
         )
-        .bind(repo.as_str())
-        .fetch_all(&mut **tx)
+        .bind(project_id.as_str())
+        .bind(&display_name)
+        .bind(now.timestamp_millis())
+        .bind(now.timestamp_millis())
+        .execute(&mut **tx)
         .await
         .map_err(db_error)?;
-        let project_id = if project_row.len() == 1 {
-            ProjectId::parse(project_row[0].get::<String, _>("project_id").as_str())
-                .map_err(identity_error)?
-        } else {
-            let project = ProjectId::new();
-            sqlx::query(
-                "INSERT INTO logical_project (id, display_name, lifecycle, time_created, time_updated) VALUES (?, ?, 'active', ?, ?)",
-            )
-            .bind(project.as_str())
-            .bind(&display_name)
-            .bind(now.timestamp_millis())
-            .bind(now.timestamp_millis())
-            .execute(&mut **tx)
-            .await
-            .map_err(db_error)?;
-            project
-        };
         sqlx::query(
             "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
         )
@@ -1305,7 +1320,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn same_lineage_reuses_project_and_repository() {
+    async fn same_lineage_keeps_project_roots_distinct_and_repository_shared() {
         let storage = ProjectStorage::new(pool().await);
         let first_root = tempdir().unwrap();
         let second_root = tempdir().unwrap();
@@ -1323,12 +1338,13 @@ mod tests {
             .await
             .unwrap()
             .binding;
-        assert_eq!(first_binding.project_id, second_binding.project_id);
+        assert_ne!(first_binding.project_id, second_binding.project_id);
         assert_eq!(first_binding.repository_id, second_binding.repository_id);
+        assert_eq!(storage.list_projects().await.unwrap().len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn concurrent_registration_converges_on_one_project_and_repository() {
+    async fn concurrent_registration_keeps_projects_distinct_and_repository_shared() {
         let (pool, _directory) = concurrent_pool().await;
         let storage = ProjectStorage::new(pool);
         let first_root = tempdir().unwrap();
@@ -1343,10 +1359,29 @@ mod tests {
         );
         let first_binding = first_result.unwrap().binding;
         let second_binding = second_result.unwrap().binding;
-        assert_eq!(first_binding.project_id, second_binding.project_id);
+        assert_ne!(first_binding.project_id, second_binding.project_id);
         assert_eq!(first_binding.repository_id, second_binding.repository_id);
-        assert_eq!(storage.list_projects().await.unwrap().len(), 1);
+        assert_eq!(storage.list_projects().await.unwrap().len(), 2);
         assert_eq!(storage.list_repositories().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_open_of_one_workspace_coalesces_on_its_binding() {
+        let (pool, _directory) = concurrent_pool().await;
+        let storage = ProjectStorage::new(pool);
+        let root = tempdir().unwrap();
+        let workspace = workspace(root.path(), "One directory");
+        let evidence =
+            crate::repository_lineage::classify_remote_urls(["https://example.test/repo"]);
+        let (first, second) = tokio::join!(
+            storage.reconcile_workspace(&workspace, &evidence, "open-a"),
+            storage.reconcile_workspace(&workspace, &evidence, "open-b")
+        );
+        let first = first.unwrap().binding;
+        let second = second.unwrap().binding;
+        assert_eq!(first.workspace_id, second.workspace_id);
+        assert_eq!(first.project_id, second.project_id);
+        assert_eq!(storage.list_projects().await.unwrap().len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1379,6 +1414,42 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn explicit_rebind_refuses_to_add_a_second_workspace_to_a_project() {
+        let storage = ProjectStorage::new(pool().await);
+        let first_root = tempdir().unwrap();
+        let second_root = tempdir().unwrap();
+        let first = workspace(first_root.path(), "Project root");
+        let second = workspace(second_root.path(), "Second root");
+        let evidence = crate::repository_lineage::RepositoryLineageEvidence::NotRepository;
+        let first_binding = storage
+            .reconcile_workspace(&first, &evidence, "test")
+            .await
+            .unwrap()
+            .binding;
+        let second_binding = storage
+            .reconcile_workspace(&second, &evidence, "test")
+            .await
+            .unwrap()
+            .binding;
+
+        let error = storage
+            .rebind_workspace(
+                &second.id,
+                &first_binding.project_id,
+                None,
+                second_binding.revision,
+                "test-explicit-association",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ProjectStorageError::Conflict(_)));
+        assert!(error.to_string().contains("Project root"));
+        assert!(error
+            .to_string()
+            .contains(&first.canonical_root.display().to_string()));
     }
 
     #[tokio::test(flavor = "current_thread")]

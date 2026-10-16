@@ -141,11 +141,13 @@ model to the wrong connection.
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
-  resolves a directory by catalog lookup only and never registers on a miss, so
-  a directory CodeGG has not seen before has no executable project context.
-  `App::bootstrap_launch_project_context` runs from `main.rs` before any
-  session-scoped request: `WorkspaceRegister` then `ProjectRegister` for the
-  launch directory (both idempotent), writing the resulting pair onto the
+  resolves a directory by catalog lookup only and never registers on a miss.
+  Startup and the local directory picker share
+  `ensure_bound_project_context`: they register the workspace then the
+  directory-named project, and both operations are idempotent for a known
+  canonical root. New roots receive one project each even when their Git
+  lineage matches another project; historical multi-root bindings stay
+  readable until explicitly rebound. The launch pair is written onto the
   active tab via `set_active_identities`. New code must not move identity
   creation into the resolver, and must not send a path in an identity field —
   `SessionCreate` takes a `(project_id, workspace_id)` **pair**, so a
@@ -704,21 +706,41 @@ model to the wrong connection.
   locally or send frontend cwd/environment. Insert a run into shell history
   only after daemon admission; preserve the captured session/workspace binding
   so late output cannot be promoted into another tab.
-- **Interactive terminal keys** are modal input: a focused lone `Esc` is
-  forwarded to the PTY, `Esc Esc` (or `Ctrl-]`) leaves focus, and viewing-mode
-  Esc detaches/closes. `Esc Esc` is the reachable exit on keyboards without a
-  `]` key, and any intervening key disarms the pair. Terminal
-  output is interpreted by bounded VT screen state before Ratatui rendering;
-  never write raw child escape sequences to the host terminal.
+- **Interactive terminal keys are modal input, one key per meaning.** INS (the
+  process owns the keyboard): every printable key plus `Enter`/`Backspace`/`Tab`/
+  arrows/`Ctrl-C`/`Ctrl-D` goes to the PTY; `Esc` returns to NOR; `Ctrl+]` sends a
+  real `0x1b` for full-screen programs and stays in INS. NOR (the reader owns it):
+  helix `hjkl`/`Ctrl+u/d`/`e`/`b`/`v`/`x`/`d`/`space+y`/`C`/`D`, `i` or `Enter`
+  back to INS, `Esc` detaches. `/terminal` opens the box **already in INS**.
+  Terminal output is interpreted by bounded VT screen state before Ratatui
+  rendering; never write raw child escape sequences to the host terminal.
+- **Never make one key answer two questions.** `Esc` used to be both "leave
+  insert" and "pass an escape byte through", disambiguated by a hidden
+  `pending_escape` latch (one `Esc` went to the program, two left). A keystroke's
+  destination then depended on state the user could not see. Give each meaning
+  its own key and keep the classifier stateless.
+- **A panel that fronts a process must opt into Insert-mode keys.**
+  `SidePanel::claims_insert_keys` is what makes `panel_active` consult a focused
+  panel in Insert. The default is correct for panels that render their own text
+  field (there Insert means "type into that field"), and exactly wrong for a
+  panel fronting a PTY — without the opt-in, docking with `Shift+L` and typing
+  sends everything to a composer the user is not looking at.
 - **Focus must never desync between the panel host and the PTY view.**
   `SidePanelHost::blur` and `TerminalFocus` are separate flags, and
   `panel_active` requires `is_focused()` — so a focused PTY that declines
   `owns_exit_key` looks like it left while still reporting INS, and then takes
   no keys at all. A panel whose view can hold the keyboard claims the host's
-  exit keys (`owns_exit_key` takes `ctx` for exactly this) and ends in the
-  blur that clears its own focus. Terminal output is interpreted by bounded VT
-  screen state before Ratatui rendering; never write raw child escape sequences
-  to the host terminal.
+  mode key (`owns_exit_key` takes `ctx` for exactly this) and ends in the blur
+  that clears its own focus. Claim **`Esc` only** — claiming `q` as well meant
+  the shell could never receive the most common letter in most commands.
+- **Side panels are mouse surfaces.** Record every occupied column's rect on
+  each render (`App::panel_areas`) and resolve `ClickTarget::Panel { placement }`
+  from it, so the list can never name a column that is not painted. Click focuses
+  the column (`TuiMsg::FocusPanelAt`, via the same composer-mode park/restore as
+  `Shift+H/J/K/L`); drag joins the viewport in `on_mouse`'s deferred-press arm so
+  release copies; wheel scrolls **that column**. An unhandled target falls
+  through to the transcript, which is what made scrolling a terminal column look
+  like scrolling the conversation.
 - **The terminal is a reader, not a text editor.** In viewing (NOR) mode it
   speaks Helix: `j/k/h/l` and arrows move the cursor and scroll at the edges,
   `Ctrl+u`/`Ctrl+d` page, `e`/`b` jump by word, `v` selects by character, `x`

@@ -9,6 +9,7 @@ use super::super::authz;
 use super::super::scope::{context_error, resolve_context, ScopeQuery};
 use super::super::state::ServerState;
 use crate::error::{AppError, AxumAppError};
+use crate::protocol::core::CoreEvent;
 use codegg_core::context::ProjectContext;
 use codegg_core::identity::ProjectId;
 use codegg_core::project_catalog::{ProjectCatalog, ProjectCatalogRecord, RegisterLocalProject};
@@ -223,7 +224,7 @@ async fn project_lifecycle(
     } else {
         "project_archive"
     };
-    authz::authorize_project(
+    let decision = authz::authorize_project(
         &state.pool,
         &principal,
         &project_id,
@@ -254,6 +255,15 @@ async fn project_lifecycle(
         .list_sessions_for_project(&project.project_id)
         .await
         .map_err(|e| context_error("project_context_unavailable", e.to_string()))?;
+    emit_project_lifecycle_audit(
+        &state.pool,
+        &principal,
+        &decision,
+        &project.project_id,
+        if restore { "reactivate" } else { "deactivate" },
+        session_count,
+    )
+    .await;
     Ok(Json(project_info(project, path, session_count)))
 }
 
@@ -271,6 +281,231 @@ pub async fn restore_project(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
     project_lifecycle(principal, state, id, true).await
+}
+
+#[derive(Serialize)]
+pub struct ProjectDeletedResponse {
+    pub project_id: String,
+    pub deleted_session_count: usize,
+}
+
+pub async fn delete_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<crate::protocol::dto::ProjectDeleteRequestDto>,
+) -> Result<Json<ProjectDeletedResponse>, AxumAppError> {
+    let project_id = ProjectId::parse(&id).map_err(|_| authz::denial_not_found())?;
+    if request.project_id != id {
+        return Err(context_error(
+            "project_context_mismatch",
+            "path project_id does not match request project_id",
+        ));
+    }
+    let decision = authz::authorize_project(
+        &state.pool,
+        &principal,
+        &project_id,
+        codegg_core::authorization::Capability::ProjectConfigure,
+        "project_delete",
+    )
+    .await?;
+    let result = ProjectCatalog::new(state.pool.clone())
+        .delete_project(&project_id, request.expected_session_count)
+        .await
+        .map_err(|e| context_error("project_delete_failed", e.to_string()))?;
+    // Mirror the daemon handler's post-commit cleanup when this server runs
+    // against a live daemon: without it, destroyed sessions keep running
+    // turns, park permission/question waiters with no UI target, and no
+    // `ProjectDeleted` event reaches WS/TUI clients. Daemon-less servers
+    // have no runtimes or event bus, so there is nothing to clean up.
+    if let Some(daemon) = &state.daemon {
+        daemon
+            .note_project_destroyed(
+                &project_id,
+                &result.deleted_session_ids,
+                result.deleted_session_count(),
+            )
+            .await;
+    }
+    emit_project_lifecycle_audit(
+        &state.pool,
+        &principal,
+        &decision,
+        &project_id,
+        "destroy",
+        result.deleted_session_count(),
+    )
+    .await;
+    Ok(Json(ProjectDeletedResponse {
+        project_id: project_id.to_string(),
+        deleted_session_count: result.deleted_session_count(),
+    }))
+}
+
+#[derive(Serialize)]
+pub struct ProjectUpdatedResponse {
+    pub project_id: String,
+    pub display_name: String,
+    pub canonical_root: String,
+    pub updated_at: i64,
+    pub rebound_session_count: usize,
+}
+
+pub async fn update_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<crate::protocol::dto::ProjectUpdateRequestDto>,
+) -> Result<Json<ProjectUpdatedResponse>, AxumAppError> {
+    let project_id = ProjectId::parse(&id).map_err(|_| authz::denial_not_found())?;
+    if request.project_id != id {
+        return Err(context_error(
+            "project_context_mismatch",
+            "path project_id does not match request project_id",
+        ));
+    }
+    if !Path::new(&request.root).is_absolute() {
+        return Err(context_error(
+            "invalid_workspace_root",
+            "project root must be an absolute local directory",
+        ));
+    }
+    let decision = authz::authorize_project(
+        &state.pool,
+        &principal,
+        &project_id,
+        codegg_core::authorization::Capability::ProjectConfigure,
+        "project_update",
+    )
+    .await?;
+    let requested_root = Path::new(&request.root);
+    let metadata = tokio::fs::metadata(requested_root)
+        .await
+        .map_err(AppError::Io)?;
+    if !metadata.is_dir() {
+        return Err(context_error(
+            "invalid_workspace_root",
+            "project root must be a directory",
+        ));
+    }
+    let canonical_root = tokio::fs::canonicalize(requested_root)
+        .await
+        .map_err(AppError::Io)?;
+    let workspaces = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
+        codegg_core::workspace::SqliteWorkspaceStore::new(state.pool.clone()),
+    ))
+    .await
+    .map_err(|e| context_error("invalid_workspace_root", e.to_string()))?;
+    let workspace = workspaces
+        .get_or_register(&canonical_root)
+        .await
+        .map_err(|e| context_error("invalid_workspace_root", e.to_string()))?;
+    let pool = state.pool.clone();
+    let current = ProjectCatalog::new(pool.clone())
+        .get_project(&project_id)
+        .await
+        .map_err(|e| context_error("project_update_failed", e.to_string()))?;
+    let old_workspaces = ProjectCatalog::new(pool.clone())
+        .list_workspaces_for_project(&project_id)
+        .await
+        .map_err(|e| context_error("project_update_failed", e.to_string()))?;
+    let result = ProjectCatalog::new(pool.clone())
+        .update_project(
+            &project_id,
+            &request.display_name,
+            &workspace.id,
+            request.expected_updated_at,
+            "http-project-update",
+        )
+        .await
+        .map_err(|e| context_error("project_update_failed", e.to_string()))?;
+    // Mirror the daemon handler's post-commit cleanup when this server runs
+    // against a live daemon: rebound runtimes hold a stale root, so their
+    // turns are cancelled and evicted and `ProjectUpdated` is published.
+    // Daemon-less servers have no runtimes or event bus to update.
+    if let Some(daemon) = &state.daemon {
+        let project =
+            codegg_core::protocol_conversions::project_catalog_record_to_dto(&result.project);
+        let event = CoreEvent::ProjectUpdated {
+            project,
+            workspace: crate::protocol::dto::ProjectWorkspaceSummaryDto {
+                workspace_id: workspace.id.to_string(),
+                display_name: workspace.display_name.clone(),
+                canonical_root: Some(workspace.canonical_root.to_string_lossy().into_owned()),
+            },
+            previous_display_name: current.display_name.clone(),
+            previous_root: old_workspaces
+                .first()
+                .map(|w| w.canonical_root.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        daemon
+            .note_project_rebound(&project_id, &result.rebound_session_ids, event)
+            .await;
+    }
+    let provenance = codegg_core::authorization::audit_provenance(&decision);
+    let old_root = old_workspaces
+        .first()
+        .map(|w| w.canonical_root.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let audit = codegg_core::audit::AuditEventBuilder::new(
+        codegg_core::audit::AuditAction::ConfigChange,
+        &principal,
+        &provenance,
+    )
+    .with_correlation(format!("http-project-update-{}", uuid::Uuid::new_v4()))
+    .with_project(project_id)
+    .with_metadata("project.update.operation", "rename_repath")
+    .with_metadata("project.update.previous_name", &current.display_name)
+    .with_metadata("project.update.new_name", &result.project.display_name)
+    .with_metadata("project.update.previous_root", old_root)
+    .with_metadata(
+        "project.update.new_root",
+        workspace.canonical_root.to_string_lossy().as_ref(),
+    )
+    .with_metadata(
+        "project.update.rebound_session_count",
+        result.rebound_session_ids.len().to_string(),
+    )
+    .with_metadata("decision.id", provenance.decision_id())
+    .with_metadata("decision.outcome", "allow");
+    codegg_core::audit_instrumentation::ExecutionAuditEmitter::new(Some(pool))
+        .emit(audit)
+        .await;
+    Ok(Json(ProjectUpdatedResponse {
+        project_id: result.project.project_id.to_string(),
+        display_name: result.project.display_name,
+        canonical_root: workspace.canonical_root.to_string_lossy().into_owned(),
+        updated_at: result.project.updated_at.timestamp_millis(),
+        rebound_session_count: result.rebound_session_ids.len(),
+    }))
+}
+
+async fn emit_project_lifecycle_audit(
+    pool: &sqlx::SqlitePool,
+    principal: &AuthenticatedPrincipal,
+    decision: &codegg_core::authorization::AuthorizationDecision,
+    project_id: &ProjectId,
+    operation: &str,
+    session_count: usize,
+) {
+    let provenance = codegg_core::authorization::audit_provenance(decision);
+    let audit = codegg_core::audit::AuditEventBuilder::new(
+        codegg_core::audit::AuditAction::ConfigChange,
+        principal,
+        &provenance,
+    )
+    .with_correlation(format!("http-project-lifecycle-{}", uuid::Uuid::new_v4()))
+    .with_project(project_id.clone())
+    .with_metadata("project.lifecycle.operation", operation)
+    .with_metadata("project.session_count", session_count.to_string())
+    .with_metadata("project.deleted_session_count", session_count.to_string())
+    .with_metadata("decision.id", provenance.decision_id())
+    .with_metadata("decision.outcome", "allow");
+    codegg_core::audit_instrumentation::ExecutionAuditEmitter::new(Some(pool.clone()))
+        .emit(audit)
+        .await;
 }
 
 pub async fn create_project(

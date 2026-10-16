@@ -41,7 +41,7 @@ failure exist **only** on this stream.
 | `TurnFailed` | `Error` + the daemon message as a toast |
 | `Error` | `Error` + `code: message` as a toast |
 | `PermissionPending` / `QuestionPending` | open the matching dialog |
-| `SessionUpdated` | spawn a bounded single-session metadata refresh (title) |
+| `SessionUpdated` | apply the carried title directly; id-only events fall back to a bounded single-session metadata refresh |
 
 Usage reaches the footer on `TurnCompleted`, not on
 `AppEvent::AgentFinished`: that bus event is intentionally not mapped across
@@ -65,9 +65,12 @@ confident percentage against a window the selected model may not have. The
 number is deliberately the one that gates compaction, so the meter cannot
 disagree with the behaviour it describes.
 
-`SessionUpdated` carries only a session id, so the daemon-side auto-titler
-(which writes the title and publishes the event) still requires a re-read.
-That re-read is the `SessionRefreshed` command: it is generation-guarded,
+`SessionUpdated` carries an optional title: auto-title events publish
+`Some(title)` and the TUI applies it directly with no round trip.
+Id-only events (`title: None` — agent/model selection, legacy publishers)
+still require a re-read. That re-read is the `SessionRefreshed` command:
+it is generation-guarded, carries the active tab's project key (an empty
+id is never sent — the daemon rejects it with `project_context_required`),
 updates only the title, and deliberately avoids `App::set_session` — that
 would navigate and re-arm the event stream on a background metadata refresh.
 It must write to both `dialog_state.session_dialog` and the focus-manager
@@ -129,6 +132,17 @@ locally. Remote/team transports carrying a team principal receive the
 canonical daemon denial (`authorization_scope_required`) as a bounded picker
 error rather than a silent fallback to local path interpretation; no process
 `cwd` inference is reintroduced.
+
+The project picker uses the help-dialog layout: title, bounded filter/count
+row with an `INS`/`NOR` badge, result rows, and a mode-specific footer. It
+opens in the caller's input mode. In Normal mode, printable keys filter while
+`j`/`k` navigate even with a query; `i` enters Insert so those letters can
+be typed, and `Esc` steps Insert -> Normal -> clear filter -> close. The
+picker remains capped and preserves its async generation guards. Active
+projects sort before archived projects, with fuzzy score ordering retained
+within each group. The status bar and sessions dialog show the active tab's
+project name and workspace-root context, resolved from tab/catalog state.
+They never derive a root from process cwd.
 
 The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
@@ -616,7 +630,37 @@ and their hit rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
 strip is carved out of the prompt chunk, so the reverse order would resolve
-every subagent click to click-to-focus. Rows are bounded by
+every subagent click to click-to-focus.
+
+**Side panels are mouse surfaces like the buffer.** Every occupied column
+records its rect on each render (`App::panel_areas`), and
+`ClickTarget::Panel { placement }` resolves a click inside one. A panel that is
+not painted is not clickable, because the list is rebuilt from the same
+`regions.occupied()` pass that drew them — a click can never name a column that
+has moved or closed.
+
+Three gestures, and each one has to be right:
+
+- **Click focuses the column** — `TuiMsg::FocusPanelAt`, the pointer's answer to
+  `Shift+H/J/K/L`, going through the same composer-mode park/restore so pointer
+  and keyboard cannot leave the composer in different modes. Deliberately focus
+  *only*: a click must not also fire a panel's row activation, which would make
+  one press open something the user only pointed at.
+- **Drag selects, and release copies** — panel columns join the viewport in the
+  deferred-press arm of `on_mouse`, because they are the same *kind* of region
+  (text being read, possibly wanted). The highlight sweep in `finish_render` and
+  `selection::extract` are already region-agnostic, so this needed no new copy
+  machinery. Excluding them is what made a docked terminal — the densest output
+  in the app — look unselectable next to a buffer that was not.
+- **Wheel scrolls that column**, via `App::scroll_panel`. Falling through to the
+  transcript — which an unhandled target did — moved a buffer the user was not
+  pointing at, so scrolling a terminal column appeared to scroll the
+  conversation. Only the Terminal panel has its own scrollback today; for the
+  rest this is a no-op rather than a fallback, because the wrong surface moving
+  is worse than nothing moving.
+
+`ClickTarget::Sidebar` is still resolved first, so the Session panel keeps its
+own hover, collapse and scroll behaviour untouched. Rows are bounded by
 `MAX_WORKING_STRIP_SUBAGENTS` and truncation is announced with a `… +N more`
 row, which `working_strip_rows` reserves space for.
 
@@ -832,16 +876,31 @@ through the TUI `CoreClient`.
   `/terminal-resize <handle> <cols> <rows>`, `/terminal-resume [handle]`,
   `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
   `/terminal-remove [handle]`, `/terminal-clear [handle]`.
-- **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
-  to the process). Leaving focus is `Esc Esc` or `Ctrl-]`; in viewing mode a
-  single `Esc` closes with detach.
-  A lone `Esc` **is** forwarded to the PTY (full-screen programs own it), and a
-  prompt is never submitted from terminal focus (`classify_key_stateful`, via
-  `InteractiveTerminalController::classify_focused`). `Esc Esc` exists because
-  `Ctrl-]` alone is untypeable on a US Mac keyboard, which left macOS users
-  with no reachable exit and a TUI that looked frozen; the pair is cleared by
-  any intervening key and by every focus transition, so only a *consecutive*
-  pair escapes.
+- **Focus gate — one key per meaning.** `/terminal` opens the box **already in
+  INS**, so the first character a user types reaches the process. This is the
+  contract, and it is deliberately stateless:
+
+  | Mode | Meaning | Keys |
+  |---|---|---|
+  | **INS** | the process owns the keyboard | every printable key, `Enter`, `Backspace`, `Tab`, arrows, `Ctrl-C`/`Ctrl-D` → PTY. `Esc` → NOR. `Ctrl+]` → forward a real `0x1b` and stay in INS |
+  | **NOR** | the reader owns the keyboard | `hjkl`/arrows move, `Ctrl+u/d` page, `e`/`b` word, `v` chars, `x` lines, `d` delete, `space+y` yank, `C` clear, `D` diagnostics. `i`/`Enter` → INS. `Esc` closes with detach (or drops an armed selection first) |
+
+  `Esc` used to be both a mode key and a pass-through byte, disambiguated by a
+  hidden `pending_escape` latch: one `Esc` went to the program, two left. That
+  made the destination of a keystroke depend on state the user could not see,
+  which is the specific reason the surface read as unusable — there was no way
+  to tell from what you pressed where your keys were going. The latch is gone;
+  the capability it protected is not. A full-screen program that needs its own
+  escape gets `Ctrl+]`, so `Esc` is free to mean exactly one thing on every
+  keyboard.
+
+  A prompt is never submitted from terminal focus (`classify_key`, via
+  `InteractiveTerminalController::classify_focused`).
+- **Cursor**: INS draws the *program's* cursor (`TerminalScreen::program_cursor`
+  — where the child accepts the next character); NOR draws the *reader's*
+  (`hjkl`/`v`/`x` move it). `styled_lines` paints the cursor cell even when it
+  is blank, because a shell prompt's cursor sits on an empty cell by definition
+  and trimming trailing blanks hid the caret exactly when the user was typing.
 - **Bounds**: 64 KiB scrollback window per view (matches the M002
   default read), ≤16 views (matches the per-client attachment cap),
   32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
@@ -1380,18 +1439,36 @@ object the `/terminal` box drives, because two VT parsers for one PTY would
 disagree about what is on screen. That grant carries presentation state only:
 no client, no locator, no authority to choose a project or a terminal.
 
-**A focused PTY claims the host's exit keys.** `owns_exit_key` takes `ctx`
+**A focused PTY claims `Esc`, but never `q`.** `owns_exit_key` takes `ctx`
 because the claim depends on state the panel does not own. The Terminal panel
-returns true for `Esc`/`q` **only while its view is focused**, so those keys
-route into `handle_key` instead of `SidePanelHost::blur`. Declining them split
-the two focus flags: the host dropped panel focus while
-`TerminalFocus::Focused` stayed set on the view, so `q` looked like it left and
-the PTY still held the keyboard — and because `panel_active` requires
-`is_focused()`, the panel then saw no keys at all while still reporting INS.
-That is the reported "no key combo lets me leave": the keyboard was already
-gone before `Esc Esc` could ever be pressed. `handle_key` owns the exit and ends
-in `TuiMsg::TerminalPanelBlur`, the one call that clears the view's focus. In
-Normal mode the panel declines, so `Esc`/`q` remain cheap focus exits.
+returns true for `Esc` **only while its view is focused**, so it routes into
+`handle_key` instead of `SidePanelHost::blur`. Declining it split the two focus
+flags: the host dropped panel focus while `TerminalFocus::Focused` stayed set on
+the view, so `Esc` looked like it left and the PTY still held the keyboard — and
+because `panel_active` requires `is_focused()`, the panel then saw no keys at
+all while still reporting INS.
+
+`q` was claimed alongside it, which is why this section could not simply keep
+the old pair: in INS the panel *is* a terminal, and `q` is a character the user
+is typing. Claiming it meant the shell could never receive the most common
+letter in most commands. Only the mode key is claimed now.
+
+**A panel that fronts a process claims Insert-mode keys.**
+`SidePanel::claims_insert_keys` is the opt-in that makes `panel_active` consult
+a focused panel in Insert as well as Normal. The host's default is right for
+every panel that renders its own text field — there, Insert means "type into
+that field" and the composer is the correct target — but it is exactly wrong
+for the Terminal panel, which renders a *process`. Without the opt-in, docking
+the terminal with `Shift+L` and typing sent every keystroke to a composer the
+user was not looking at, and the panel looked frozen. The claim is scoped to
+the focused panel only, so it cannot take keys from an unrelated surface, and
+it is keyed on `ctx.terminal.is_focused(...)` so a terminal that is still
+attaching or has exited leaves those keys visible and recoverable in the
+composer instead of dropping them.
+
+`handle_key` owns the exit and ends in `TuiMsg::TerminalPanelBlur`, the one call
+that clears the view's focus. In NOR the panel declines, so `Esc`/`q` remain
+cheap focus exits.
 
 **A focused panel owns navigation, not text — and only in Normal mode.** Two
 rules replace the original "consumes every key" contract:

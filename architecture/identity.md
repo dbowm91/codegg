@@ -66,7 +66,9 @@ boundaries.
 - `SessionBinding` expresses the canonical `ProjectId + WorkspaceId` session
   relation.
 
-One project/repository pair can therefore have multiple workspace bindings.
+The storage model can still read historical projects with multiple workspace
+bindings. New bindings are one canonical directory to one logical project;
+repository lineage remains shared metadata and does not merge project roots.
 These values are immutable, cloneable, and serde-friendly; they do not grant
 authorization and do not own persistence.
 
@@ -113,11 +115,10 @@ only a compatibility locator for a unique existing binding; it never creates an
 identity.
 
 Because that resolver never registers on a miss, identity creation for a
-previously unseen directory belongs to the frontend bootstrap, not the
-resolver. `App::bootstrap_launch_project_context` (see `architecture/core.md`)
-performs the idempotent workspace-then-project registration for the TUI's own
-launch directory before any session-scoped request, which is what makes a first
-launch in a new directory usable.
+previously unseen directory belongs to frontend open flows, not the resolver.
+`ensure_bound_project_context` is shared by startup and the local project
+picker: it performs idempotent workspace-then-project registration, names a
+new project after its directory, and loads the existing binding on reopen.
 
 ## Team principal, membership, role, and capability domain
 

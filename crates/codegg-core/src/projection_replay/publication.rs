@@ -373,7 +373,7 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
-        CoreEvent::SessionUpdated { session_id } => {
+        CoreEvent::SessionUpdated { session_id, .. } => {
             let event = ProjectionEvent::SessionActivated {
                 summary: codegg_protocol::projection::dto::SessionSummaryProjection {
                     session_id: session_id.clone(),

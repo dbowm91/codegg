@@ -8,10 +8,11 @@ This module owns the lowest-level abstraction at which the daemon reasons about
 and lives in `crates/codegg-core/src/workspace.rs`.
 
 The typed identity foundation in `crates/codegg-core/src/identity.rs` keeps
-logical project identity separate from this workspace locator. A
-`ProjectBinding` can associate one `ProjectId`/`RepositoryId` pair with many
-`WorkspaceId` values, and optional `WorktreeId`/`NodeId` values describe the
-execution location without changing project identity.
+logical project identity separate from this workspace locator. Each newly
+bound canonical directory owns one logical project, and each new project has
+one bound directory. Existing multi-directory bindings remain readable until
+an operator rebinds them. Repository lineage is shared metadata and does not
+merge clones or worktrees into one project.
 
 ## Why it exists
 
@@ -29,8 +30,9 @@ every daemon-owned execution path.
 - `WorkspaceRecord` — persisted registry entry (`id`, `canonical_root`,
   `display_name`, `created_at`, `last_opened_at`, `archived_at`).
 - `WorkspaceRegistry` — daemon-owned registry. Deduplicates canonical roots
-  via `get_or_register`; rejects nonexistent paths, file paths, and
-  symlink-escaping paths. Hydrates from a `WorkspaceStore` and serves
+  via `get_or_register`; requires an absolute root path and rejects
+  nonexistent paths, file paths, and a symlink at the selected root.
+  Hydrates from a `WorkspaceStore` and serves
   subsequent reads from an in-memory `DashMap` index.
 - `WorkspaceStore` — persistence trait. Two implementations:
   `SqliteWorkspaceStore` (the production path) and
@@ -73,7 +75,12 @@ discovery observation is not an execution context; activation still requires
 an explicit later project/workspace selection.
 ```
 
-`SessionBinding` expresses the typed internal relation. `project_id` and
+`SessionBinding` expresses the typed internal relation. Launch and local
+picker opens share an idempotent ensure-bound flow: an unseen directory gets
+a project named after its final path component, and reopening it returns the
+existing binding. Selecting a project stores its canonical workspace root on
+the client tab; `ExecutionContext` is resolved from that active tab and never
+from daemon process cwd. `project_id` and
 `directory` remain as compatibility projections in storage and DTOs; the
 directory is a filesystem locator, not a project identity. New daemon code
 reads `workspace_id`. `CoreDaemon::bind_runtime_for_session`
@@ -109,14 +116,16 @@ remain unbound and are rejected at turn submission.
 
 Schema migration v25 adds the canonical `workspace_project_binding` relation.
 It binds one workspace to one logical `ProjectId`, an optional `RepositoryId`,
-status, provenance, locator, and optimistic-concurrency revision. A project
-may have many workspace bindings. Session bindings are stored separately in
+status, provenance, locator, and optimistic-concurrency revision. New bindings
+are one directory to one project; historical projects with several bindings
+remain readable and are graduated by the M4 rebind operation. Session bindings are stored separately in
 `session_project_binding`; the legacy session columns remain projections.
 
 `ProjectStorage::reconcile_workspace_path` probes only the explicitly
 registered workspace and gathers Git evidence before opening a write
-transaction. Missing or ambiguous lineage is retained as a diagnostic and
-never merged from path names or directory basenames.
+transaction. Missing or ambiguous lineage is retained as a diagnostic.
+Repository lineage can be shared by separate project roots; it never selects
+another root's project binding.
 
 ## Protocol
 
@@ -187,8 +196,9 @@ projections untouched. Its `--fixture` mode verifies the negative case.
   registry dedup, serde roundtrip, pool persistence, and unbound session
   rejection.
 - `crates/codegg-core/src/workspace.rs` inline tests — `get_or_register`
-  dedup, symlink alias dedup, nonexistent/file rejection, archive filter,
-  and `ExecutionContext` cwd resolution.
+  canonical-root dedup, relative and symlink-root rejection,
+  nonexistent/file rejection, archive filter, and `ExecutionContext`
+  cwd resolution.
 - `python3 scripts/check_daemon_cwd_usage.py` — static guard.
 
 Run the narrowest scope that covers your change:

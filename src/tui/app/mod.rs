@@ -243,8 +243,31 @@ pub enum ClickTarget {
     /// The working strip above the composer: the throbber row and the
     /// clickable subagent rows below it.
     Working,
+    /// A side-panel column.
+    ///
+    /// Recorded per placement during render so a click can both *focus* the
+    /// column and resolve a text selection inside it — the same two things a
+    /// click in the main buffer does. Without this the panels were keyboard-
+    /// only: a click over one resolved to `None`, and the wheel scrolled the
+    /// transcript behind a column the user was pointing at.
+    Panel {
+        placement: crate::tui::panels::PanelPlacement,
+    },
     None,
 }
+
+/// Which way a panel wheel event moves its own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scroll {
+    Up,
+    Down,
+}
+
+/// Rows one wheel notch moves a panel's content.
+///
+/// Three, not one: a terminal column is narrow and often tall, and a
+/// single-row notch makes the wheel feel like it is not responding.
+const PANEL_WHEEL_LINES: i32 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub struct RenderPanicInjection {
@@ -334,6 +357,15 @@ pub struct App {
     /// Rows the todo strip occupies on the last render pass.
     pub todo_area: Option<Rect>,
     pub sidebar_area: Option<Rect>,
+    /// Every panel column painted on the last frame, with the placement that
+    /// owns it.
+    ///
+    /// `sidebar_area` is one special case of this (it marks the Session panel
+    /// for its own hover/scroll handling); the list is what makes *every* other
+    /// column hit-testable, so a click can focus it and a drag can select the
+    /// text inside it. Rebuilt on each render, so a placement that is not on
+    /// screen is not clickable.
+    pub panel_areas: Vec<(crate::tui::panels::PanelPlacement, Rect)>,
     /// 1-column strip reserved for the TUI's outer left border.
     pub left_border_area: Option<Rect>,
     /// 1-row strip reserved for the TUI's outer bottom border (under
@@ -1074,6 +1106,7 @@ impl App {
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -1646,6 +1679,7 @@ impl App {
             todo_expanded: false,
             todo_area: None,
             sidebar_area: None,
+            panel_areas: Vec::new(),
             left_border_area: None,
             bottom_border_area: None,
             composer_mode_before_panel_focus: None,
@@ -2039,12 +2073,27 @@ impl App {
                 }
                 true
             }
-            E::SessionUpdated { session_id } => {
-                // The daemon auto-titler writes the new title and publishes
-                // this event, but the event carries only an id — so the
-                // title has to be re-read. Without this the UI kept showing
-                // "Untitled" until a manual session reload.
-                crate::tui::commands::sessions::start_refresh_session(self, session_id);
+            E::SessionUpdated { session_id, title } => {
+                // The daemon auto-titler writes the new title and carries
+                // it on the event when it knows it — apply directly with
+                // no round trip. Id-only events (agent/model selection,
+                // legacy publishers) fall back to a bounded refetch, which
+                // is what kept the UI on "Untitled" until a manual reload.
+                match title.filter(|t| !t.trim().is_empty()) {
+                    Some(title) => {
+                        let request_id = self.dialog_state.session_refresh_request.begin();
+                        crate::tui::commands::sessions::apply_session_refreshed(
+                            self,
+                            request_id,
+                            session_id,
+                            Some(title),
+                            None,
+                        );
+                    }
+                    None => {
+                        crate::tui::commands::sessions::start_refresh_session(self, session_id);
+                    }
+                }
                 true
             }
             E::TurnFailed { message, .. } => {
@@ -2171,6 +2220,33 @@ impl App {
                 self.messages_state
                     .toasts
                     .info(&format!("Background {kind} {status}: {summary}"));
+                true
+            }
+            E::ProjectDeleted {
+                project_id,
+                deleted_session_count,
+            } => {
+                crate::tui::commands::project_picker::apply_project_deleted(
+                    self,
+                    &project_id,
+                    deleted_session_count,
+                );
+                true
+            }
+            E::ProjectUpdated {
+                project,
+                workspace,
+                previous_display_name,
+                previous_root,
+            } => {
+                crate::tui::commands::project_picker::apply_project_updated(
+                    self,
+                    project,
+                    workspace,
+                    previous_display_name,
+                    previous_root,
+                );
+                self.refresh_project_catalog();
                 true
             }
             _ => false,
@@ -3441,17 +3517,25 @@ impl App {
             return;
         }
 
-        // The host takes keys when its overlay is up, or when a panel holds focus
-        // *in Normal mode*. The mode gate is load-bearing: the host claims
-        // `Esc`/`q` as focus-exit keys, so consulting it in Insert mode
-        // would make the letter `q` unfocusable and `Esc` unable to leave
-        // Insert. In Insert mode the composer owns the keyboard — which is
-        // what lets one bottom composer deliver to either target, because
+        // The host takes keys when its overlay is up, or when a panel holds focus.
+        // The mode gate is load-bearing for the ordinary case: the host
+        // claims `Esc`/`q` as focus-exit keys, so consulting a panel in
+        // Insert mode would make the letter `q` unfocusable and `Esc`
+        // unable to leave Insert. For a panel that renders its own text
+        // field the composer really is the right Insert target, which is
+        // what lets one bottom composer deliver to either target because
         // `send_prompt` reads the same `[BUILD]`/`[CHAT]` value the badge
         // renders.
+        //
+        // A panel that fronts something other than itself opts in through
+        // `claims_insert_keys`. The Terminal panel does: after `Shift+L`
+        // docks it, Insert has to mean "type into the PTY". Without the
+        // opt-in the keystrokes went to a composer the user was not looking
+        // at, and the terminal appeared to be frozen.
         let panel_active = self.panel_host.is_visible_at(self.panel_host.placement())
             && self.panel_host.is_focused()
-            && self.ui_state.input_mode == InputMode::Normal;
+            && (self.ui_state.input_mode == InputMode::Normal
+                || crate::tui::commands::panels::panel_claims_insert_keys(self));
         // Resize mode (`Ctrl+N`) is answered here — ahead of the panel recall,
         // ahead of the focused panel, and ahead of the binding map. It has to
         // be ahead of the panel because `h/j/k/l` are the panel's own cursor
@@ -5693,6 +5777,9 @@ impl App {
             }
             B::Sessions => {
                 self.open_dialog(Dialog::Session);
+            }
+            B::Projects => {
+                self.open_project_picker();
             }
             B::Stop => {
                 crate::tui::commands::turn_control::stop(self);
@@ -8189,6 +8276,9 @@ impl App {
             ClickTarget::Completion => "Tab/Enter: Complete | Esc: Close".to_string(),
             ClickTarget::Sidebar => "Click: Collapse section | Wheel: Scroll sidebar".to_string(),
             ClickTarget::Scrollbar { .. } => "Click/drag: Jump | Scroll: Page up/down".to_string(),
+            ClickTarget::Panel { .. } => {
+                "Click: Focus panel | Drag: Select text | Ctrl+C: Copy".to_string()
+            }
             ClickTarget::None => String::new(),
         };
     }
@@ -8210,13 +8300,29 @@ impl App {
         // without this arm the output of a tool call cannot be copied at all.
         // Any other surface (sidebar, scrollbar, dialogs, completion popup,
         // prompt) keeps its immediate press behaviour.
-        let selecting = matches!(target, ClickTarget::Viewport)
+        //
+        // Panel columns join the viewport here. They are the same *kind* of
+        // region — text the user is reading and may want copied — and they are
+        // the densest output in the app when a terminal is docked. Excluding
+        // them is what made panels look unselectable next to a buffer that
+        // was not.
+        let selectable = matches!(target, ClickTarget::Viewport | ClickTarget::Panel { .. });
+        // The viewport's rect already excludes the TUI's outer border strips,
+        // so its rows start at or below 1 and the guard below can simply be
+        // skipped for it. A panel column is the *whole* frame height including
+        // its own block border, so its rect legitimately begins at row 0 —
+        // applying the viewport's guard to it refused the top row of every
+        // docked panel while still reporting that cell as the panel's own.
+        let inside_target = match target {
+            ClickTarget::Panel { .. } => true,
+            _ => event.column >= 1 && event.row >= 1,
+        };
+        let selecting = selectable
             && matches!(
                 event.kind,
                 MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
             )
-            && event.column >= 1
-            && event.row >= 1;
+            && inside_target;
         if selecting {
             match event.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
@@ -8431,6 +8537,16 @@ impl App {
                 return ClickTarget::Sidebar;
             }
         }
+        // Panel columns, tested after the Session panel so its existing
+        // hover/collapse/scroll behaviour is untouched. The rects come from
+        // the last render, so this cannot name a column that is not painted.
+        for (placement, rect) in &self.panel_areas {
+            if Self::in_rect(x, y, *rect) {
+                return ClickTarget::Panel {
+                    placement: *placement,
+                };
+            }
+        }
         ClickTarget::None
     }
 
@@ -8576,6 +8692,17 @@ impl App {
                     }
                 }
             }
+            ClickTarget::Panel { placement } => {
+                // Clicking a column focuses it — the same answer `Shift+H/J/K/L`
+                // gives — so the pointer and the keyboard agree on which panel
+                // owns the keyboard. Deliberately *focus only*: the selection
+                // that a drag builds is resolved on release above, and a click
+                // must not also fire a panel's row activation, which would
+                // make one press open something the user only pointed at.
+                self.process_msg(TuiMsg::FocusPanelAt {
+                    placement: *placement,
+                });
+            }
             ClickTarget::None => {}
         }
     }
@@ -8610,6 +8737,9 @@ impl App {
                     self.sidebar.scroll_up(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Up);
+            }
             ClickTarget::Dialog => {
                 let up_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Up,
@@ -8643,6 +8773,9 @@ impl App {
                     self.sidebar.scroll_down(area);
                 }
             }
+            ClickTarget::Panel { placement } => {
+                self.scroll_panel(*placement, Scroll::Down);
+            }
             ClickTarget::Dialog => {
                 let down_key = crossterm::event::KeyEvent::new(
                     crossterm::event::KeyCode::Down,
@@ -8662,6 +8795,36 @@ impl App {
                 self.messages_state.messages.scroll_page_down();
             }
         }
+    }
+
+    /// Scroll the panel docked to `placement`.
+    ///
+    /// The wheel over a column has to scroll *that column*. Falling through to
+    /// the transcript — which is what an unhandled target did — moved a buffer
+    /// the user was not pointing at, so scrolling a terminal column looked like
+    /// scrolling the conversation.
+    ///
+    /// Only the Terminal panel has its own scrollback today; for the rest this
+    /// is a no-op rather than a fallback, because the wrong surface moving is
+    /// worse than nothing moving.
+    fn scroll_panel(&mut self, placement: crate::tui::panels::PanelPlacement, dir: Scroll) {
+        if self.panel_host.panel_at(placement) != crate::tui::panels::SidePanelId::Terminal {
+            return;
+        }
+        let Some(handle) = self
+            .panel_host
+            .terminal_handle_at(placement)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        self.interactive_terminals.scroll_by(
+            &handle,
+            match dir {
+                Scroll::Up => -PANEL_WHEEL_LINES,
+                Scroll::Down => PANEL_WHEEL_LINES,
+            },
+        );
     }
 
     fn on_scroll_left(&mut self, target: &ClickTarget) {
@@ -9327,6 +9490,56 @@ impl App {
             PickerPhase::WorkspaceSelection => self.handle_picker_workspace_selection_key(key),
             PickerPhase::RegistrationInput => self.handle_picker_registration_input_key(key),
             PickerPhase::RegistrationConfirm => self.handle_picker_registration_confirm_key(key),
+            PickerPhase::DestroyLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEditLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::ProjectEdit => self.handle_picker_project_edit_key(key),
+            PickerPhase::DestroyConfirm => match key.code {
+                crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n') => {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                    }
+                }
+                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('y') => {
+                    let (project_id, session_count, picker_request_id) = self
+                        .dialog_state
+                        .project_picker
+                        .as_mut()
+                        .and_then(|picker| {
+                            let project_id = picker.pinned_project_id.clone()?;
+                            let session_count = picker.destroy_confirmation.as_ref()?.session_count;
+                            picker.phase = PickerPhase::Destroying;
+                            let request_id = picker.begin_request();
+                            Some((project_id, session_count, request_id))
+                        })
+                        .unwrap_or_default();
+                    if !project_id.is_empty() {
+                        crate::tui::commands::project_picker::start_project_delete(
+                            self,
+                            project_id,
+                            session_count,
+                            picker_request_id,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            PickerPhase::LifecycleChanging
+            | PickerPhase::Destroying
+            | PickerPhase::ProjectUpdating => {}
             PickerPhase::Error => {
                 let _ = key; // suppress unused
                 if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -9340,62 +9553,173 @@ impl App {
     fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 
+        let edit_project_id = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+                    && key.code == KeyCode::Char('e')
+            })
+            .and_then(|picker| {
+                picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))
+                    .map(|project| project.project_id.clone())
+            });
+        if let Some(project_id) = edit_project_id {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.project_edit = None;
+                picker.last_error = None;
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectEditLoading;
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                crate::tui::commands::project_picker::start_project_edit(
+                    self, project_id, request_id,
+                );
+            }
+            return;
+        }
+
+        let lifecycle_action = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+            })
+            .and_then(|picker| {
+                let selected = picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))?;
+                let action = match (key.code, selected.archived_at.is_some()) {
+                    (KeyCode::Char('d'), false) => Some(false),
+                    (KeyCode::Char('d'), true) => Some(true),
+                    (KeyCode::Char('a'), true) => Some(false),
+                    _ => None,
+                }?;
+                let restores = key.code == KeyCode::Char('a');
+                Some((selected.project_id.clone(), action, restores))
+            });
+        if let Some((project_id, destroy, restores)) = lifecycle_action {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.last_error = None;
+                picker.destroy_confirmation = None;
+                picker.phase = if destroy {
+                    crate::tui::app::state::PickerPhase::DestroyLoading
+                } else {
+                    crate::tui::app::state::PickerPhase::LifecycleChanging
+                };
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                if destroy {
+                    crate::tui::commands::project_picker::start_project_destroy_confirmation(
+                        self, project_id, request_id,
+                    );
+                } else {
+                    crate::tui::commands::project_picker::start_project_lifecycle(
+                        self, project_id, restores, request_id,
+                    );
+                }
+            }
+            return;
+        }
+
         let Some(picker) = self.dialog_state.project_picker.as_mut() else {
             self.close_dialog();
             return;
         };
 
-        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+            if picker.transport_local {
+                picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
+                picker.registration_input.clear();
+            } else {
+                picker.last_error =
+                    Some("Raw path registration requires a local TUI context".to_string());
+                picker.phase = crate::tui::app::state::PickerPhase::Error;
+            }
+            return;
+        }
 
-        match key.code {
-            KeyCode::Esc => {
+        let filtered_len = picker.filtered_indices(&self.project_catalog.entries).len();
+        let action = picker.handle_catalog_key(key, filtered_len);
+        match action {
+            crate::tui::app::state::PickerCatalogAction::None => {}
+            crate::tui::app::state::PickerCatalogAction::Close => {
                 self.close_dialog();
             }
-            KeyCode::Up => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Down => {
-                picker.select_down(filtered_len);
-            }
-            // `j`/`k` move the catalog list only while the search query is
-            // empty; once the user is typing a query they are ordinary
-            // characters and must reach `picker.query` below.
-            KeyCode::Char('k') if picker.query.is_empty() => {
-                picker.select_up(filtered_len);
-            }
-            KeyCode::Char('j') if picker.query.is_empty() => {
-                picker.select_down(filtered_len);
-            }
-            KeyCode::Backspace => {
-                picker.query.pop();
-            }
-            KeyCode::Char(c) => {
-                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
-                    picker.query.push(c);
-                    picker.selected_row = 0;
-                }
-            }
-            KeyCode::Enter => {
+            crate::tui::app::state::PickerCatalogAction::Select => {
                 self.commit_picker_catalog_selection();
             }
+        }
+    }
+
+    fn handle_picker_project_edit_key(&mut self, key: KeyEvent) {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        let Some(picker) = self.dialog_state.project_picker.as_mut() else {
+            self.close_dialog();
+            return;
+        };
+        let Some(edit) = picker.project_edit.as_mut() else {
+            picker.last_error = Some("Project edit form is unavailable".to_string());
+            picker.phase = crate::tui::app::state::PickerPhase::Error;
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => {
+                picker.reset_to_catalog();
+                picker.begin_request();
+            }
             KeyCode::Tab => {
-                // Toggle show_archived on Tab.
-                picker.show_archived = !picker.show_archived;
-                picker.selected_row = 0;
+                edit.editing_root = !edit.editing_root;
+                picker.last_error = None;
             }
-            _ => {
-                // Ctrl+R enters registration input mode.
-                if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
-                    if picker.transport_local {
-                        picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
-                        picker.registration_input.clear();
-                    } else {
-                        picker.last_error =
-                            Some("Raw path registration requires a local TUI context".to_string());
-                        picker.phase = crate::tui::app::state::PickerPhase::Error;
-                    }
+            KeyCode::Backspace => {
+                if edit.editing_root {
+                    edit.root.pop();
+                } else {
+                    edit.display_name.pop();
                 }
+                picker.last_error = None;
             }
+            KeyCode::Enter => {
+                let Some(project_id) = picker.pinned_project_id.clone() else {
+                    return;
+                };
+                let (name, root, expected) = (
+                    edit.display_name.clone(),
+                    edit.root.clone(),
+                    edit.expected_updated_at,
+                );
+                picker.phase = crate::tui::app::state::PickerPhase::ProjectUpdating;
+                let request_id = picker.begin_request();
+                crate::tui::commands::project_picker::start_project_update(
+                    self, project_id, name, root, expected, request_id,
+                );
+            }
+            KeyCode::Char(ch)
+                if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                if edit.editing_root {
+                    if edit.root.chars().count() < 1024 {
+                        edit.root.push(ch);
+                    }
+                } else if edit.display_name.chars().count() < 80 {
+                    edit.display_name.push(ch);
+                }
+                picker.last_error = None;
+            }
+            _ => {}
         }
     }
 
@@ -9649,9 +9973,7 @@ impl App {
             let _ = send_tui(&tx, TuiCommand::StartRegisterWorkspace { path });
         }
 
-        // Move to RegistrationConfirm placeholder; the apply will
-        // transition to RegistrationInput on success so the user can
-        // fill in display name / description / tags.
+        // The open flow derives the project name from this directory.
         if let Some(picker) = self.dialog_state.project_picker.as_mut() {
             picker.phase = PickerPhase::RegistrationConfirm;
         }
@@ -11837,7 +12159,7 @@ impl App {
         let agent_keys = self.llm_buffer_key_hints();
         let panel = self
             .panel_host
-            .composer_hints(self.chat_panel_project.as_deref());
+            .composer_hints(self.chat_panel_project.as_deref(), self.ui_state.input_mode);
         match (agent_keys, panel) {
             (Some(agent_keys), Some(panel)) => Some(format!("{agent_keys} · {panel}")),
             (Some(agent_keys), None) => Some(agent_keys),
@@ -11983,8 +12305,8 @@ impl App {
     /// Kick off an async refresh of the project catalog.
     ///
     /// This is the public entry point for the catalog client
-    /// (Multi-Project TUI milestone 1). Callers (e.g. the eventual
-    /// `Space f` picker, startup, or a `/projects` slash command)
+    /// (Multi-Project TUI milestone 1). Callers (e.g. the `Ctrl+\`
+    /// picker, startup, or a `/projects` slash command)
     /// dispatch this through the normal event loop so the result
     /// lands back on the loop as a `TuiCommand::ProjectCatalogRefreshed`
     /// completion. The method itself never blocks.
@@ -12890,62 +13212,13 @@ impl App {
             .core_client
             .clone()
             .ok_or_else(|| "core client is not attached".to_string())?;
-        let root = directory.to_string_lossy().into_owned();
-
-        // Phase 1: workspace identity for the root. Idempotent.
-        let workspace_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-workspace-{}", uuid::Uuid::new_v4()),
-                CoreRequest::WorkspaceRegister { root: root.clone() },
-            ))
-            .await
-        {
-            Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("workspace registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "workspace registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("workspace registration request failed: {e}")),
-        };
-
-        // Phase 2: project identity bound to that workspace. Idempotent —
-        // an existing binding returns the bound project unchanged.
-        let display_name = directory
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| root.clone());
-        let project_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-project-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectRegister {
-                    request: crate::protocol::dto::ProjectRegisterRequestDto {
-                        workspace_id: workspace_id.clone(),
-                        display_name,
-                        description: None,
-                        tags: Vec::new(),
-                        repository_id: None,
-                        source: LAUNCH_REGISTRATION_SOURCE.to_string(),
-                    },
-                },
-            ))
-            .await
-        {
-            Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("project registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "project registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("project registration request failed: {e}")),
-        };
+        let (project_id, workspace_id, _canonical_root) =
+            crate::tui::commands::project_picker::ensure_bound_project_context(
+                core_client.as_ref(),
+                directory,
+                LAUNCH_REGISTRATION_SOURCE,
+            )
+            .await?;
 
         // Keep the active tab's session binding; only the project/workspace
         // identities are being established here.

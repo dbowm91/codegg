@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto,
-    ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
+    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
+    ProjectUpdateRequestDto, ProjectWorkspaceSummaryDto, RecoveryReportDto, RunQueryDto,
     RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
     SessionBindingDto, WorkspaceServiceHealthDto,
 };
@@ -1256,6 +1257,16 @@ pub enum CoreResponse {
     ProjectRestored {
         project: ProjectSummaryDto,
     },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
+    },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
+    },
     ProjectHealth {
         health: ProjectHealthDto,
     },
@@ -2431,6 +2442,12 @@ pub enum CoreRequest {
     },
     ProjectRestore {
         project_id: String,
+    },
+    ProjectDelete {
+        request: ProjectDeleteRequestDto,
+    },
+    ProjectUpdate {
+        request: ProjectUpdateRequestDto,
     },
     ProjectHealth {
         project_id: String,
@@ -3622,6 +3639,16 @@ pub enum CoreEvent {
         project_id: String,
         project: ProjectSummaryDto,
     },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
+    },
+    ProjectUpdated {
+        project: ProjectSummaryDto,
+        workspace: ProjectWorkspaceSummaryDto,
+        previous_display_name: String,
+        previous_root: String,
+    },
     ProjectHealthChanged {
         project_id: String,
         workspace_id: String,
@@ -3747,6 +3774,11 @@ pub enum CoreEvent {
     },
     SessionUpdated {
         session_id: String,
+        /// New title when the publisher knows it (daemon auto-title).
+        /// `None` preserves the old id-only shape: receivers fall back to
+        /// a bounded metadata refetch. Serde-defaulted for wire compat.
+        #[serde(default)]
+        title: Option<String>,
     },
     FileChanged {
         path: String,

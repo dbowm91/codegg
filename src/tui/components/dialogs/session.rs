@@ -78,6 +78,7 @@ impl DatePreset {
 
 pub struct SessionDialog {
     pub theme: Arc<Theme>,
+    pub project_context: Option<String>,
     pub filter: String,
     pub selected: usize,
     pub sessions: Vec<Session>,
@@ -99,6 +100,7 @@ impl Clone for SessionDialog {
     fn clone(&self) -> Self {
         Self {
             theme: Arc::clone(&self.theme),
+            project_context: self.project_context.clone(),
             filter: self.filter.clone(),
             selected: self.selected,
             sessions: self.sessions.clone(),
@@ -122,6 +124,7 @@ impl SessionDialog {
     pub fn new(theme: Arc<Theme>) -> Self {
         Self {
             theme,
+            project_context: None,
             filter: String::new(),
             selected: 0,
             sessions: Vec::new(),
@@ -142,6 +145,10 @@ impl SessionDialog {
 
     pub fn set_theme(&mut self, theme: &Arc<Theme>) {
         self.theme = Arc::clone(theme);
+    }
+
+    pub fn set_project_context(&mut self, context: Option<String>) {
+        self.project_context = context;
     }
 
     pub fn cycle_date_preset(&mut self) {
@@ -575,6 +582,14 @@ impl Component for SessionDialog {
         )));
         lines.push(Line::from(""));
 
+        if let Some(context) = &self.project_context {
+            lines.push(Line::from(vec![
+                Span::styled("project: ", Style::default().fg(theme.muted)),
+                Span::styled(context, Style::default().fg(theme.secondary)),
+            ]));
+            lines.push(Line::from(""));
+        }
+
         if !self.filter.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("filter: ", Style::default().fg(theme.muted)),
@@ -774,5 +789,28 @@ mod vim_key_tests {
         d.handle_key(key('j'));
         d.handle_key(key('k'));
         assert_eq!(d.filter, "", "j/k must not open the filter");
+    }
+
+    #[test]
+    fn sessions_dialog_shows_active_project_context() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut d = dialog();
+        d.set_project_context(Some("project-a · /workspace/a".to_string()));
+        let theme = Arc::new(Theme::default());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| d.render(frame, frame.area(), &theme))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("project-a"));
+        assert!(text.contains("/workspace/a"));
     }
 }
