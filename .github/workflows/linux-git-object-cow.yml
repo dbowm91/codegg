@@ -65,7 +65,7 @@ jobs:
           packed="$cow/packed"
           fragmented="$cow/fragmented"
           git clone --no-hardlinks "$GITHUB_WORKSPACE" "$packed"
-          git -C "$packed" repack --all --delete-redundant --window=0
+          git -C "$packed" repack -a -d -f -F --window=0
           cp -a "$packed" "$fragmented"
           pack_dir="$fragmented/.git/objects/pack"
           shopt -s nullglob
