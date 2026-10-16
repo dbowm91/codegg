@@ -54,7 +54,7 @@ jobs:
           sudo chown "$USER":"$(id -gn)" /mnt/codegg-object-cow
           mkdir -p /mnt/codegg-object-cow/tmp
           findmnt -T /mnt/codegg-object-cow -o TARGET,FSTYPE,OPTIONS
-          btrfs filesystem show /mnt/codegg-object-cow
+          btrfs filesystem usage /mnt/codegg-object-cow
           stat -f -c 'filesystem=%T block_size=%S' /mnt/codegg-object-cow
 
       - name: Build exact-content packed and fragmented fixtures
