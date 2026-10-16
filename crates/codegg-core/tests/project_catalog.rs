@@ -70,6 +70,50 @@ async fn register_workspace(storage: &ProjectStorage, ws: &WorkspaceRecord) {
         .unwrap();
 }
 
+async fn insert_bound_sessions(
+    pool: &SqlitePool,
+    project_id: &ProjectId,
+    workspace_id: &WorkspaceId,
+    count: usize,
+) -> Vec<String> {
+    let now = Utc::now().timestamp_millis();
+    let legacy_project_id = format!("legacy-{}", uuid::Uuid::new_v4());
+    sqlx::query("INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes) VALUES (?, '', 'legacy', ?, ?, '[]')")
+        .bind(&legacy_project_id)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let mut ids = Vec::new();
+    for index in 0..count {
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO session (id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, '', ?, 'test', ?, ?)")
+            .bind(&session_id)
+            .bind(&legacy_project_id)
+            .bind(workspace_id.as_str())
+            .bind(format!("slug-{index}"))
+            .bind(format!("Session {index}"))
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO session_project_binding (session_id, project_id, workspace_id, status, source, revision, time_created, time_updated) VALUES (?, ?, ?, 'resolved', 'test', 1, ?, ?)")
+            .bind(&session_id)
+            .bind(project_id.as_str())
+            .bind(workspace_id.as_str())
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await
+            .unwrap();
+        ids.push(session_id);
+    }
+    ids
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn migration_v28_is_additive_and_idempotent() {
     let p = pool().await;
@@ -345,6 +389,153 @@ async fn restore_clears_archived_at() {
         restored.lifecycle,
         codegg_core::project_storage::ProjectLifecycle::Active
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delete_project_atomically_cascades_sessions_and_owned_bindings() {
+    let p = pool().await;
+    let storage = ProjectStorage::new(p.clone());
+    let catalog = ProjectCatalog::new(p.clone());
+    let root = tempdir().unwrap();
+    let ws = workspace(root.path(), "DestroyTest");
+    register_workspace(&storage, &ws).await;
+    let record = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "DestroyTest".to_string(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let sessions = insert_bound_sessions(&p, &record.project_id, &ws.id, 2).await;
+    sqlx::query("INSERT INTO project_membership (project_id, principal_id, role, state, revision, time_created, time_updated) VALUES (?, 'principal-test', 'owner', 'active', 1, 1, 1)")
+        .bind(record.project_id.as_str())
+        .execute(&p)
+        .await
+        .unwrap();
+
+    assert!(catalog.delete_project(&record.project_id, 2).await.is_err());
+    catalog
+        .archive_project(&record.project_id, "test")
+        .await
+        .unwrap();
+    assert!(catalog.delete_project(&record.project_id, 1).await.is_err());
+    let before_confirm: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE id IN (?, ?)")
+        .bind(&sessions[0])
+        .bind(&sessions[1])
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(before_confirm, 2);
+    let result = catalog.delete_project(&record.project_id, 2).await.unwrap();
+    assert_eq!(result.deleted_session_count(), 2);
+    let mut expected_session_ids = sessions.clone();
+    expected_session_ids.sort();
+    assert_eq!(result.deleted_session_ids, expected_session_ids);
+    assert_eq!(
+        catalog
+            .get_project(&record.project_id)
+            .await
+            .unwrap_err()
+            .to_string(),
+        format!("catalog record not found: project {}", record.project_id)
+    );
+    let remaining_sessions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE id IN (?, ?)")
+            .bind(&sessions[0])
+            .bind(&sessions[1])
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    let remaining_session_bindings: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session_project_binding WHERE project_id = ?")
+            .bind(record.project_id.as_str())
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    let remaining_workspace_bindings: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_project_binding WHERE project_id = ?")
+            .bind(record.project_id.as_str())
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    let remaining_memberships: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM project_membership WHERE project_id = ?")
+            .bind(record.project_id.as_str())
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    let workspace_still_registered: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace WHERE id = ?")
+            .bind(ws.id.as_str())
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(remaining_sessions, 0);
+    assert_eq!(remaining_session_bindings, 0);
+    assert_eq!(remaining_workspace_bindings, 0);
+    assert_eq!(remaining_memberships, 0);
+    assert_eq!(workspace_still_registered, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_project_delete_rolls_back_sessions_and_bindings() {
+    let p = pool().await;
+    let storage = ProjectStorage::new(p.clone());
+    let catalog = ProjectCatalog::new(p.clone());
+    let root = tempdir().unwrap();
+    let ws = workspace(root.path(), "FailedDestroyTest");
+    register_workspace(&storage, &ws).await;
+    let record = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "FailedDestroyTest".to_string(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &ws.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let sessions = insert_bound_sessions(&p, &record.project_id, &ws.id, 1).await;
+    catalog
+        .archive_project(&record.project_id, "test")
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER fail_logical_project_delete BEFORE DELETE ON logical_project BEGIN SELECT RAISE(ABORT, 'injected project delete failure'); END")
+        .execute(&p)
+        .await
+        .unwrap();
+
+    assert!(catalog.delete_project(&record.project_id, 1).await.is_err());
+    assert!(catalog.get_project(&record.project_id).await.is_ok());
+    let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE id = ?")
+        .bind(&sessions[0])
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    let session_binding_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session_project_binding WHERE session_id = ?")
+            .bind(&sessions[0])
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    let workspace_binding_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM workspace_project_binding WHERE project_id = ?")
+            .bind(record.project_id.as_str())
+            .fetch_one(&p)
+            .await
+            .unwrap();
+    assert_eq!(session_count, 1);
+    assert_eq!(session_binding_count, 1);
+    assert_eq!(workspace_binding_count, 1);
 }
 
 #[tokio::test(flavor = "current_thread")]

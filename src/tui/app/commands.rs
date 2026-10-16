@@ -920,6 +920,29 @@ pub enum TuiCommand {
         result: Option<crate::protocol::dto::ProjectDetailsDto>,
         error: Option<String>,
     },
+    /// Completion of the `ProjectGet` used to build a permanent-destroy
+    /// confirmation. It is picker-generation scoped and has no side effects.
+    ProjectDestroyConfirmationLoaded {
+        picker_request_id: u64,
+        project_id: String,
+        display_name: Option<String>,
+        session_count: Option<usize>,
+        error: Option<String>,
+    },
+    /// Completion of recoverable archive/restore.
+    ProjectLifecycleFinished {
+        picker_request_id: u64,
+        project_id: String,
+        restored: bool,
+        error: Option<String>,
+    },
+    /// Completion of permanent project destruction.
+    ProjectDeleteFinished {
+        picker_request_id: u64,
+        project_id: String,
+        deleted_session_count: Option<usize>,
+        error: Option<String>,
+    },
     /// Project Picker (Milestone 2): load sessions for a project tab.
     StartListProjectSessions {
         tab_id: crate::tui::app::state::ProjectTabId,

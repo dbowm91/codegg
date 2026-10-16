@@ -528,6 +528,370 @@ pub(crate) fn apply_project_sessions_loaded(
     tab.pending_session_load = false;
 }
 
+/// Fetch the current session count before opening the permanent-destroy
+/// confirmation. The picker generation fences stale detail responses.
+pub(crate) fn start_project_destroy_confirmation(
+    app: &mut App,
+    project_id: String,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_destroy_confirmation",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("project-destroy-detail-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectGet {
+                    project_id: project_id.clone(),
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectGet { project })
+                    if project.project.archived_at.is_some() =>
+                {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: Some(project.project.display_name),
+                        session_count: Some(project.session_count),
+                        error: None,
+                    })
+                }
+                Ok(CoreResponse::ProjectGet { .. }) => {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: None,
+                        session_count: None,
+                        error: Some(
+                            "Project is no longer inactive; refresh and try again".to_string(),
+                        ),
+                    })
+                }
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                        picker_request_id,
+                        project_id,
+                        display_name: None,
+                        session_count: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some("Unexpected project detail response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectDestroyConfirmationLoaded {
+                    picker_request_id,
+                    project_id,
+                    display_name: None,
+                    session_count: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_destroy_confirmation_loaded(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    display_name: Option<String>,
+    session_count: Option<usize>,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::tui::app::state::PickerPhase::DestroyLoading
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
+        return;
+    }
+    let (Some(display_name), Some(session_count)) = (display_name, session_count) else {
+        picker.last_error = Some("Project confirmation data was incomplete".to_string());
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
+        return;
+    };
+    picker.destroy_confirmation = Some(
+        crate::tui::app::state::project_picker::ProjectDestroyConfirmation {
+            display_name,
+            session_count,
+        },
+    );
+    picker.phase = crate::tui::app::state::PickerPhase::DestroyConfirm;
+}
+
+pub(crate) fn start_project_lifecycle(
+    app: &mut App,
+    project_id: String,
+    restore: bool,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        if restore {
+            "project_restore"
+        } else {
+            "project_archive"
+        },
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectLifecycleFinished {
+                    picker_request_id,
+                    project_id,
+                    restored: restore,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let payload = if restore {
+                CoreRequest::ProjectRestore {
+                    project_id: project_id.clone(),
+                }
+            } else {
+                CoreRequest::ProjectArchive {
+                    project_id: project_id.clone(),
+                }
+            };
+            let request = crate::core::new_request(
+                format!("project-lifecycle-{}", uuid::Uuid::new_v4()),
+                payload,
+            );
+            let error = match core_client.request(request).await {
+                Ok(CoreResponse::ProjectArchived { .. }) if !restore => None,
+                Ok(CoreResponse::ProjectRestored { .. }) if restore => None,
+                Ok(CoreResponse::Error { code, message }) => Some(format!("{code}: {message}")),
+                Ok(_) => Some("Unexpected project lifecycle response".to_string()),
+                Err(error) => Some(error.to_string()),
+            };
+            Some(TuiCommand::ProjectLifecycleFinished {
+                picker_request_id,
+                project_id,
+                restored: restore,
+                error,
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_project_lifecycle_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    restored: bool,
+    error: Option<String>,
+) {
+    let Some(picker) = app.dialog_state.project_picker.as_mut() else {
+        return;
+    };
+    if !picker.is_request_current(picker_request_id)
+        || picker.pinned_project_id.as_deref() != Some(project_id.as_str())
+        || picker.phase != crate::tui::app::state::PickerPhase::LifecycleChanging
+    {
+        return;
+    }
+    if let Some(error) = error {
+        picker.last_error = Some(error);
+        picker.phase = crate::tui::app::state::PickerPhase::Error;
+    } else {
+        picker.reset_to_catalog();
+        app.messages_state.toasts.info(if restored {
+            "Project reactivated"
+        } else {
+            "Project deactivated"
+        });
+    }
+    app.refresh_project_catalog();
+}
+
+pub(crate) fn start_project_delete(
+    app: &mut App,
+    project_id: String,
+    expected_session_count: usize,
+    picker_request_id: u64,
+) {
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "project_delete",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some("Core unavailable".to_string()),
+                });
+            };
+            let request = crate::core::new_request(
+                format!("project-delete-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectDelete {
+                    request: crate::protocol::dto::ProjectDeleteRequestDto {
+                        project_id: project_id.clone(),
+                        expected_session_count,
+                    },
+                },
+            );
+            match core_client.request(request).await {
+                Ok(CoreResponse::ProjectDeleted {
+                    project_id,
+                    deleted_session_count,
+                }) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: Some(deleted_session_count),
+                    error: None,
+                }),
+                Ok(CoreResponse::Error { code, message }) => {
+                    Some(TuiCommand::ProjectDeleteFinished {
+                        picker_request_id,
+                        project_id,
+                        deleted_session_count: None,
+                        error: Some(format!("{code}: {message}")),
+                    })
+                }
+                Ok(_) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some("Unexpected project deletion response".to_string()),
+                }),
+                Err(error) => Some(TuiCommand::ProjectDeleteFinished {
+                    picker_request_id,
+                    project_id,
+                    deleted_session_count: None,
+                    error: Some(error.to_string()),
+                }),
+            }
+        },
+    );
+}
+
+pub(crate) fn apply_project_delete_finished(
+    app: &mut App,
+    picker_request_id: u64,
+    project_id: String,
+    deleted_session_count: Option<usize>,
+    error: Option<String>,
+) {
+    let current = app
+        .dialog_state
+        .project_picker
+        .as_ref()
+        .is_some_and(|picker| {
+            picker.is_request_current(picker_request_id)
+                && picker.pinned_project_id.as_deref() == Some(project_id.as_str())
+                && picker.phase == crate::tui::app::state::PickerPhase::Destroying
+        });
+    if !current {
+        return;
+    }
+    if let Some(error) = error {
+        if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+            picker.last_error = Some(error);
+            picker.phase = crate::tui::app::state::PickerPhase::Error;
+        }
+        app.refresh_project_catalog();
+        return;
+    }
+    apply_project_deleted(app, &project_id, deleted_session_count.unwrap_or(0));
+}
+
+/// Apply the durable deletion event/response idempotently to open tabs and
+/// the local catalog projection.
+pub(crate) fn apply_project_deleted(app: &mut App, project_id: &str, deleted_session_count: usize) {
+    let known = app
+        .project_catalog
+        .entries
+        .iter()
+        .any(|entry| entry.project_id == project_id)
+        || app
+            .project_tabs
+            .ordered()
+            .iter()
+            .any(|tab| tab.project_id.as_deref() == Some(project_id));
+    if !known {
+        return;
+    }
+    app.project_catalog
+        .entries
+        .retain(|entry| entry.project_id != project_id);
+    let retained_target = app
+        .project_tabs
+        .ordered()
+        .into_iter()
+        .find(|tab| tab.project_id.as_deref() != Some(project_id))
+        .map(|tab| tab.tab_id.clone());
+    if let Some(target) = retained_target.as_ref() {
+        switch_active_tab(app, target);
+    } else if app.project_tabs.len() > 0 {
+        app.invalidate_pending_session_submit(false);
+        app.view_switch.bump_epoch();
+    }
+    let removed: Vec<_> = app
+        .project_tabs
+        .ordered()
+        .into_iter()
+        .filter(|tab| tab.project_id.as_deref() == Some(project_id))
+        .map(|tab| tab.tab_id.clone())
+        .collect();
+    for tab_id in removed {
+        app.project_tabs.remove_tab(&tab_id);
+        app.routing_registry.drop_tab(&tab_id);
+        let _ = app.task_registry.cancel_for_tab(tab_id.as_str());
+    }
+    if app.project_tabs.len() == 0 {
+        app.project_tabs.close_fallback_tab();
+        app.session_state.session = None;
+        app.session_state.session_status = crate::tui::app::SessionStatus::Idle;
+        app.session_state.active_turn_id = None;
+        app.session_state.running_tool = None;
+        app.messages_state.messages.clear();
+    }
+    if let Some(picker) = app.dialog_state.project_picker.as_mut() {
+        if picker.pinned_project_id.as_deref() == Some(project_id) {
+            picker.reset_to_catalog();
+        }
+    }
+    app.presence.clear_project(project_id);
+    app.messages_state.toasts.info(&format!(
+        "Project destroyed; {deleted_session_count} session{} permanently deleted",
+        if deleted_session_count == 1 { "" } else { "s" }
+    ));
+    app.schedule_manifest_save();
+    app.refresh_project_catalog();
+}
+
 /// Start listing sessions for a project tab.
 pub(crate) fn start_list_project_sessions(
     app: &mut App,

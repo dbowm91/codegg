@@ -56,6 +56,14 @@ pub enum PickerPhase {
     RegistrationInput,
     /// Confirming registration before submitting.
     RegistrationConfirm,
+    /// Loading the current session count before presenting permanent destroy.
+    DestroyLoading,
+    /// Waiting for explicit confirmation to permanently delete a project.
+    DestroyConfirm,
+    /// A project lifecycle mutation is in flight.
+    LifecycleChanging,
+    /// Permanent project deletion is in flight after explicit confirmation.
+    Destroying,
     /// An error occurred; show the error and a retry hint.
     Error,
 }
@@ -115,6 +123,8 @@ pub struct ProjectPickerState {
     pub pinned_project_id: Option<String>,
     /// Resolved ProjectGet result, cached per picker generation.
     pub cached_detail: Option<ProjectDetailsDto>,
+    /// Name and exact session count shown by the destroy confirmation.
+    pub destroy_confirmation: Option<ProjectDestroyConfirmation>,
     /// Per-picker request generation for catalog/detail/registration.
     pub request_id: u64,
     /// Snapshot of catalog cache generation used to build this picker.
@@ -133,6 +143,12 @@ pub struct ProjectPickerState {
     pub picker_request: AsyncUiRequestState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDestroyConfirmation {
+    pub display_name: String,
+    pub session_count: usize,
+}
+
 impl ProjectPickerState {
     /// Create a fresh picker state. `transport_local` should be set
     /// based on `app.ui_state.mode`.
@@ -144,6 +160,7 @@ impl ProjectPickerState {
             selected_row: 0,
             pinned_project_id: None,
             cached_detail: None,
+            destroy_confirmation: None,
             request_id: 0,
             catalog_generation,
             show_archived: false,
@@ -282,6 +299,7 @@ impl ProjectPickerState {
         self.selected_row = 0;
         self.pinned_project_id = None;
         self.cached_detail = None;
+        self.destroy_confirmation = None;
         self.last_error = None;
         self.registration = RegistrationDraft::default();
         self.registration_input.clear();

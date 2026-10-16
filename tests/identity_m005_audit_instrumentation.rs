@@ -882,6 +882,73 @@ async fn daemon_authorized_audit_read_is_self_describing() {
     assert!(page.events.iter().all(|e| e.action == "audit_query"));
 }
 
+#[tokio::test]
+async fn project_destroy_audit_carries_actor_and_confirmed_session_count() {
+    let pool = test_pool().await;
+    let project = ProjectId::new();
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query("INSERT INTO logical_project (id, display_name, lifecycle, time_created, time_updated, archived_at) VALUES (?, 'Destroy audit', 'archived', ?, ?, ?)")
+        .bind(project.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
+    let response = Box::pin(daemon.handle_request_for_client(
+        new_request(
+            "req-project-delete".to_owned(),
+            CoreRequest::ProjectDelete {
+                request: codegg::protocol::dto::ProjectDeleteRequestDto {
+                    project_id: project.as_str().to_owned(),
+                    expected_session_count: 0,
+                },
+            },
+        ),
+        "client-destroy-owner",
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        response,
+        CoreResponse::ProjectDeleted {
+            deleted_session_count: 0,
+            ..
+        }
+    ));
+
+    let store = AuditStore::new(pool);
+    let page = store
+        .query(
+            &AuditQueryFilter::new(Some(project.clone()))
+                .with_action("config_change")
+                .with_limit(10),
+        )
+        .await
+        .unwrap();
+    let destroy = page
+        .events
+        .iter()
+        .find(|event| {
+            event
+                .metadata
+                .get("project.lifecycle.operation")
+                .map(String::as_str)
+                == Some("destroy")
+        })
+        .expect("successful project destroy should be audited");
+    assert_eq!(destroy.project_id.as_ref(), Some(&project));
+    assert_eq!(destroy.actor_principal.as_str(), "local-owner");
+    assert_eq!(
+        destroy
+            .metadata
+            .get("project.deleted_session_count")
+            .map(String::as_str),
+        Some("0")
+    );
+}
+
 #[test]
 fn required_event_matrix_covers_all_taxonomy_actions() {
     for known in AuditAction::ALL {

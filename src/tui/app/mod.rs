@@ -2188,6 +2188,17 @@ impl App {
                     .info(&format!("Background {kind} {status}: {summary}"));
                 true
             }
+            E::ProjectDeleted {
+                project_id,
+                deleted_session_count,
+            } => {
+                crate::tui::commands::project_picker::apply_project_deleted(
+                    self,
+                    &project_id,
+                    deleted_session_count,
+                );
+                true
+            }
             _ => false,
         }
     }
@@ -9345,6 +9356,45 @@ impl App {
             PickerPhase::WorkspaceSelection => self.handle_picker_workspace_selection_key(key),
             PickerPhase::RegistrationInput => self.handle_picker_registration_input_key(key),
             PickerPhase::RegistrationConfirm => self.handle_picker_registration_confirm_key(key),
+            PickerPhase::DestroyLoading => {
+                if key.code == crossterm::event::KeyCode::Esc {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                        picker.begin_request();
+                    }
+                }
+            }
+            PickerPhase::DestroyConfirm => match key.code {
+                crossterm::event::KeyCode::Esc | crossterm::event::KeyCode::Char('n') => {
+                    if let Some(picker) = self.dialog_state.project_picker.as_mut() {
+                        picker.reset_to_catalog();
+                    }
+                }
+                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Char('y') => {
+                    let (project_id, session_count, picker_request_id) = self
+                        .dialog_state
+                        .project_picker
+                        .as_mut()
+                        .and_then(|picker| {
+                            let project_id = picker.pinned_project_id.clone()?;
+                            let session_count = picker.destroy_confirmation.as_ref()?.session_count;
+                            picker.phase = PickerPhase::Destroying;
+                            let request_id = picker.begin_request();
+                            Some((project_id, session_count, request_id))
+                        })
+                        .unwrap_or_default();
+                    if !project_id.is_empty() {
+                        crate::tui::commands::project_picker::start_project_delete(
+                            self,
+                            project_id,
+                            session_count,
+                            picker_request_id,
+                        );
+                    }
+                }
+                _ => {}
+            },
+            PickerPhase::LifecycleChanging | PickerPhase::Destroying => {}
             PickerPhase::Error => {
                 let _ = key; // suppress unused
                 if let Some(picker) = self.dialog_state.project_picker.as_mut() {
@@ -9357,6 +9407,54 @@ impl App {
 
     fn handle_picker_catalog_key(&mut self, key: KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
+
+        let lifecycle_action = self
+            .dialog_state
+            .project_picker
+            .as_ref()
+            .filter(|picker| {
+                picker.input_mode == crate::tui::input::InputMode::Normal
+                    && key.modifiers == KeyModifiers::NONE
+            })
+            .and_then(|picker| {
+                let selected = picker
+                    .filtered_indices(&self.project_catalog.entries)
+                    .get(picker.selected_row)
+                    .and_then(|index| self.project_catalog.entries.get(*index))?;
+                let action = match (key.code, selected.archived_at.is_some()) {
+                    (KeyCode::Char('d'), false) => Some(false),
+                    (KeyCode::Char('d'), true) => Some(true),
+                    (KeyCode::Char('a'), true) => Some(false),
+                    _ => None,
+                }?;
+                let restores = key.code == KeyCode::Char('a');
+                Some((selected.project_id.clone(), action, restores))
+            });
+        if let Some((project_id, destroy, restores)) = lifecycle_action {
+            let request_id = self.dialog_state.project_picker.as_mut().map(|picker| {
+                picker.pinned_project_id = Some(project_id.clone());
+                picker.last_error = None;
+                picker.destroy_confirmation = None;
+                picker.phase = if destroy {
+                    crate::tui::app::state::PickerPhase::DestroyLoading
+                } else {
+                    crate::tui::app::state::PickerPhase::LifecycleChanging
+                };
+                picker.begin_request()
+            });
+            if let Some(request_id) = request_id {
+                if destroy {
+                    crate::tui::commands::project_picker::start_project_destroy_confirmation(
+                        self, project_id, request_id,
+                    );
+                } else {
+                    crate::tui::commands::project_picker::start_project_lifecycle(
+                        self, project_id, restores, request_id,
+                    );
+                }
+            }
+            return;
+        }
 
         let Some(picker) = self.dialog_state.project_picker.as_mut() else {
             self.close_dialog();

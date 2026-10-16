@@ -223,7 +223,7 @@ async fn project_lifecycle(
     } else {
         "project_archive"
     };
-    authz::authorize_project(
+    let decision = authz::authorize_project(
         &state.pool,
         &principal,
         &project_id,
@@ -254,6 +254,15 @@ async fn project_lifecycle(
         .list_sessions_for_project(&project.project_id)
         .await
         .map_err(|e| context_error("project_context_unavailable", e.to_string()))?;
+    emit_project_lifecycle_audit(
+        &state.pool,
+        &principal,
+        &decision,
+        &project.project_id,
+        if restore { "reactivate" } else { "deactivate" },
+        session_count,
+    )
+    .await;
     Ok(Json(project_info(project, path, session_count)))
 }
 
@@ -271,6 +280,78 @@ pub async fn restore_project(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<ProjectInfo>, AxumAppError> {
     project_lifecycle(principal, state, id, true).await
+}
+
+#[derive(Serialize)]
+pub struct ProjectDeletedResponse {
+    pub project_id: String,
+    pub deleted_session_count: usize,
+}
+
+pub async fn delete_project(
+    Extension(principal): Extension<AuthenticatedPrincipal>,
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::Json(request): axum::Json<crate::protocol::dto::ProjectDeleteRequestDto>,
+) -> Result<Json<ProjectDeletedResponse>, AxumAppError> {
+    let project_id = ProjectId::parse(&id).map_err(|_| authz::denial_not_found())?;
+    if request.project_id != id {
+        return Err(context_error(
+            "project_context_mismatch",
+            "path project_id does not match request project_id",
+        ));
+    }
+    let decision = authz::authorize_project(
+        &state.pool,
+        &principal,
+        &project_id,
+        codegg_core::authorization::Capability::ProjectConfigure,
+        "project_delete",
+    )
+    .await?;
+    let result = ProjectCatalog::new(state.pool.clone())
+        .delete_project(&project_id, request.expected_session_count)
+        .await
+        .map_err(|e| context_error("project_delete_failed", e.to_string()))?;
+    emit_project_lifecycle_audit(
+        &state.pool,
+        &principal,
+        &decision,
+        &project_id,
+        "destroy",
+        result.deleted_session_count(),
+    )
+    .await;
+    Ok(Json(ProjectDeletedResponse {
+        project_id: project_id.to_string(),
+        deleted_session_count: result.deleted_session_count(),
+    }))
+}
+
+async fn emit_project_lifecycle_audit(
+    pool: &sqlx::SqlitePool,
+    principal: &AuthenticatedPrincipal,
+    decision: &codegg_core::authorization::AuthorizationDecision,
+    project_id: &ProjectId,
+    operation: &str,
+    session_count: usize,
+) {
+    let provenance = codegg_core::authorization::audit_provenance(decision);
+    let audit = codegg_core::audit::AuditEventBuilder::new(
+        codegg_core::audit::AuditAction::ConfigChange,
+        principal,
+        &provenance,
+    )
+    .with_correlation(format!("http-project-lifecycle-{}", uuid::Uuid::new_v4()))
+    .with_project(project_id.clone())
+    .with_metadata("project.lifecycle.operation", operation)
+    .with_metadata("project.session_count", session_count.to_string())
+    .with_metadata("project.deleted_session_count", session_count.to_string())
+    .with_metadata("decision.id", provenance.decision_id())
+    .with_metadata("decision.outcome", "allow");
+    codegg_core::audit_instrumentation::ExecutionAuditEmitter::new(Some(pool.clone()))
+        .emit(audit)
+        .await;
 }
 
 pub async fn create_project(

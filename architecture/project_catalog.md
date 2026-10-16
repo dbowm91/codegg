@@ -1,7 +1,7 @@
 # Project Catalog
 
 The daemon-owned project catalog service sits above `ProjectStorage`
-and provides list, get, register, archive, and restore operations for
+and provides list, get, register, archive, restore, and confirmed destroy operations for
 logical projects. Catalog identity is stable and path-independent.
 Catalog listing does not trigger expensive services.
 
@@ -17,7 +17,7 @@ from internal/diagnostic surfaces only.
 
 | Path | Role |
 |------|------|
-| `crates/codegg-core/src/project_catalog.rs` | Catalog service (list/get/register/archive/restore, locators, health, hydration, legacy association) |
+| `crates/codegg-core/src/project_catalog.rs` | Catalog service (list/get/register/archive/restore/delete, locators, health, hydration, legacy association) |
 | `crates/codegg-core/src/project_storage.rs` | `ProjectStorage` layer above which the catalog sits |
 | `crates/codegg-core/src/project_discovery.rs` | Bounded metadata-only scanner (deterministic, no I/O) |
 | `crates/codegg-core/src/project_discovery_service.rs` | Daemon coordinator for discovery (persistence, reconciliation) |
@@ -39,6 +39,13 @@ from internal/diagnostic surfaces only.
   `lifecycle = 'archived'`, writes `archived_at`). Retries up to 3
   times on SQLite `database is locked`.
 - `restore_project(project_id, source)` — clears archive fields.
+- `delete_project(project_id, expected_session_count)` — in one SQLite
+  transaction, permanently removes an archived project, its canonically
+  bound sessions and restrictive bindings, plus stale project memberships.
+  The captured count must still match; mismatch and active-project requests
+  fail without mutation. Workspace registrations remain available for a
+  later project registration. The result returns deleted session ids so the
+  daemon cancels live runtimes only after commit.
 - `list_workspaces_for_project(project_id)` — bound workspaces.
 - `list_sessions_for_project(project_id)` — session count.
 - `list_locators(project_id)` — all locators for a project.
@@ -91,6 +98,15 @@ repositories, sessions, locators, health rows, or files on disk.
 Archive retries up to 3 times on `database is locked` errors
 (retrying after 10 ms). The project may already be archived on
 entry; the method is idempotent.
+
+Permanent destroy is separate from archive and accepts archived projects
+only. The caller presents the session count shown by the confirmation
+screen; the catalog rechecks it in the same transaction as the cascade.
+Deleting sessions cascades their events/messages and other session-owned
+records through the existing foreign keys. Any database failure rolls the
+whole transaction back. Duplicate deletes return not-found. Workspace rows
+are retained, while project/workspace and project/session bindings and
+unreferenced membership grants are removed.
 
 ### Restart Hydration
 
@@ -210,20 +226,24 @@ Safe defaults: disabled, depth 4, 10,000 entries, 1,000 candidates,
 2. **Archive is non-destructive**: Never deletes workspaces,
    repositories, sessions, locators, or files.
 
-3. **Listing is probe-free**: No LSP, Git, indexer, provider, or
+3. **Destroy requires an archived project and count confirmation**:
+   permanent deletion cascades bound sessions atomically; dismissing the
+   TUI confirmation sends no request.
+
+4. **Listing is probe-free**: No LSP, Git, indexer, provider, or
    build initialization on catalog reads.
 
-4. **Remote locators are inert**: `Ssh` and `LinkedNode` have no
+5. **Remote locators are inert**: `Ssh` and `LinkedNode` have no
    local-path coercion.
 
-5. **Discovery never writes below roots**: The scanner is
+6. **Discovery never writes below roots**: The scanner is
    read-only. The coordinator delegates workspace/project authority
    to `ProjectStorage`.
 
-6. **Symlinks not followed**: Discovery never follows symlinks.
+7. **Symlinks not followed**: Discovery never follows symlinks.
    Symlinked entries produce a diagnostic.
 
-7. **Reconciliation is deterministic**: `reconcile_candidate()` is
+8. **Reconciliation is deterministic**: `reconcile_candidate()` is
    pure. Fork conflicts and ambiguous lineages remain unresolved.
 
 ## Testing

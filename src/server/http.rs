@@ -312,6 +312,7 @@ pub async fn run_server(
         .route("/api/projects/{id}", get(routes::get_project_by_id))
         .route("/api/projects/{id}/archive", post(routes::archive_project))
         .route("/api/projects/{id}/restore", post(routes::restore_project))
+        .route("/api/projects/{id}", delete(routes::delete_project))
         .route(
             "/api/workspace",
             get(routes::get_workspace).post(routes::create_workspace),

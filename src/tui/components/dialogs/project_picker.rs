@@ -176,6 +176,10 @@ pub fn render_picker_body(
         PickerPhase::WorkspaceSelection => "Choose Workspace",
         PickerPhase::RegistrationInput => "Register Local Project",
         PickerPhase::RegistrationConfirm => "Confirm Registration",
+        PickerPhase::DestroyLoading => "Prepare Project Destroy",
+        PickerPhase::DestroyConfirm => "Confirm Project Destroy",
+        PickerPhase::LifecycleChanging => "Update Project",
+        PickerPhase::Destroying => "Destroy Project",
         PickerPhase::Error => "Error",
     };
     let chunks = Layout::vertical([
@@ -332,6 +336,37 @@ pub fn render_picker_body(
                 ))));
             }
         }
+        PickerPhase::DestroyLoading => {
+            lines.push(Line::from(Span::raw(
+                "Loading project and current session count…",
+            )));
+        }
+        PickerPhase::DestroyConfirm => {
+            let confirmation = picker.destroy_confirmation.as_ref();
+            let name = confirmation
+                .map(|c| c.display_name.as_str())
+                .unwrap_or("this project");
+            let session_count = confirmation.map(|c| c.session_count).unwrap_or(0);
+            lines.push(Line::from(Span::styled(
+                format!("Permanently destroy {name}?"),
+                Style::default().fg(theme.error),
+            )));
+            lines.push(Line::from(format!(
+                "{} session{} will be permanently deleted.",
+                session_count,
+                if session_count == 1 { "" } else { "s" }
+            )));
+            lines.push(Line::from(Span::styled(
+                "This cannot be undone.",
+                Style::default().fg(theme.error),
+            )));
+        }
+        PickerPhase::LifecycleChanging => {
+            lines.push(Line::from(Span::raw("Updating project lifecycle…")));
+        }
+        PickerPhase::Destroying => {
+            lines.push(Line::from(Span::raw("Deleting project and its sessions…")));
+        }
         PickerPhase::Error => {
             let err = picker.last_error.as_deref().unwrap_or("Unknown error");
             lines.push(Line::from(Span::styled(
@@ -353,10 +388,16 @@ pub fn render_picker_body(
         chunks[2],
     );
 
-    let footer_text = if picker.input_mode == crate::tui::input::InputMode::Normal {
-        "j/k move  |  type to filter  |  i Insert  |  Enter select  |  Tab archived  |  Esc"
-    } else {
-        "type to filter  |  Backspace erase  |  Esc Normal  |  Enter select  |  Ctrl+R register"
+    let footer_text = match picker.phase {
+        PickerPhase::DestroyConfirm => "Enter/y permanently destroy  |  Esc/n cancel",
+        PickerPhase::DestroyLoading => "Esc cancel",
+        PickerPhase::LifecycleChanging | PickerPhase::Destroying => "Working…",
+        _ if picker.input_mode == crate::tui::input::InputMode::Normal => {
+            "j/k move  |  type to filter  |  i Insert  |  Enter select  |  Tab archived  |  Esc"
+        }
+        _ => {
+            "type to filter  |  Backspace erase  |  Esc Normal  |  Enter select  |  Ctrl+R register"
+        }
     };
     let footer = Paragraph::new(footer_text)
         .style(Style::default().fg(theme.muted))
@@ -521,5 +562,40 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("INS"));
         assert!(text.contains("Esc Normal"));
+    }
+
+    #[test]
+    fn destroy_confirmation_names_project_session_count_and_irreversibility() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut picker = ProjectPickerState::new(true, 0);
+        picker.phase = PickerPhase::DestroyConfirm;
+        picker.destroy_confirmation = Some(
+            crate::tui::app::state::project_picker::ProjectDestroyConfirmation {
+                display_name: "Archived Project".to_string(),
+                session_count: 2,
+            },
+        );
+        let theme = Arc::new(Theme::dark());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_picker_body(frame, &picker, &[], &[], true, frame.area(), &theme);
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Confirm Project Destroy"));
+        assert!(text.contains("Permanently destroy Archived Project?"));
+        assert!(text.contains("2 sessions will be permanently deleted."));
+        assert!(text.contains("This cannot be undone."));
+        assert!(text.contains("Enter/y permanently destroy"));
+        assert!(text.contains("Esc/n cancel"));
     }
 }

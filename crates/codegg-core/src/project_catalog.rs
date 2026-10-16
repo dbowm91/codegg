@@ -416,6 +416,18 @@ pub enum CatalogError {
     AlreadyExists(String),
 }
 
+/// Result of atomically destroying a logical project and its bound sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDeleteResult {
+    pub deleted_session_ids: Vec<String>,
+}
+
+impl ProjectDeleteResult {
+    pub fn deleted_session_count(&self) -> usize {
+        self.deleted_session_ids.len()
+    }
+}
+
 // Safety: CatalogError is Send + Sync
 const _: () = {
     fn _assert_send_sync<T: Send + Sync>() {}
@@ -976,6 +988,90 @@ impl ProjectCatalog {
             // Already active — return current state
         }
         self.get_project(project_id).await
+    }
+
+    /// Permanently delete a project and all sessions canonically bound to it.
+    ///
+    /// This is one SQLite transaction. The session list is captured under the
+    /// same transaction and returned to the daemon so live runtimes can be
+    /// cancelled only after the durable deletion commits.
+    pub async fn delete_project(
+        &self,
+        project_id: &ProjectId,
+        expected_session_count: usize,
+    ) -> Result<ProjectDeleteResult, CatalogError> {
+        let mut tx = self.pool.begin().await.map_err(catalog_db_error)?;
+        let archived_at = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT archived_at FROM logical_project WHERE id = ?",
+        )
+        .bind(project_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(catalog_db_error)?;
+        let Some(archived_at) = archived_at else {
+            return Err(CatalogError::NotFound(format!("project {project_id}")));
+        };
+        if archived_at.is_none() {
+            return Err(CatalogError::Conflict(
+                "project must be archived before permanent deletion".to_string(),
+            ));
+        }
+
+        let deleted_session_ids = sqlx::query_scalar::<_, String>(
+            "SELECT session_id FROM session_project_binding WHERE project_id = ? ORDER BY session_id",
+        )
+        .bind(project_id.as_str())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(catalog_db_error)?;
+        if deleted_session_ids.len() != expected_session_count {
+            return Err(CatalogError::Conflict(format!(
+                "project session count changed from {expected_session_count} to {}; review the updated confirmation",
+                deleted_session_ids.len()
+            )));
+        }
+
+        sqlx::query(
+            "DELETE FROM session WHERE id IN (SELECT session_id FROM session_project_binding WHERE project_id = ?)",
+        )
+        .bind(project_id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(catalog_db_error)?;
+
+        // These rows intentionally restrict logical-project deletion, so
+        // remove the project-owned bindings first. Keep workspace records:
+        // they are independent client-side directory registrations.
+        sqlx::query("DELETE FROM session_project_binding WHERE project_id = ?")
+            .bind(project_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(catalog_db_error)?;
+        sqlx::query("DELETE FROM workspace_project_binding WHERE project_id = ?")
+            .bind(project_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(catalog_db_error)?;
+        // Membership rows predate the logical-project FK and therefore do
+        // not cascade automatically.
+        sqlx::query("DELETE FROM project_membership WHERE project_id = ?")
+            .bind(project_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(catalog_db_error)?;
+        let deleted = sqlx::query("DELETE FROM logical_project WHERE id = ?")
+            .bind(project_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(catalog_db_error)?;
+        if deleted.rows_affected() != 1 {
+            return Err(CatalogError::NotFound(format!("project {project_id}")));
+        }
+        tx.commit().await.map_err(catalog_db_error)?;
+
+        Ok(ProjectDeleteResult {
+            deleted_session_ids,
+        })
     }
 
     /// List workspaces bound to a project.

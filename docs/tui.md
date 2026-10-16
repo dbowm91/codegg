@@ -57,7 +57,12 @@ line; the sessions dialog repeats that context in its header. In the picker,
 `j`/`k` move through results and printable keys filter while in `NOR`.
 Press `i` to type a filter including `j` or `k`; `Esc` returns to
 `NOR`, clears a filter, then closes on successive presses. `Tab` includes
-archived projects, which appear after active projects.
+archived projects, which appear after active projects. In `NOR`, `d`
+deactivates an active project and `a` reactivates an archived one. Press
+`d` on an archived project to review its current session count and confirm
+permanent deletion; `Esc` or `n` dismisses without changing anything.
+Destroy permanently deletes the project and its sessions, so it cannot be
+undone. Open tabs for the destroyed project close automatically.
 
 ## Sessions from the CLI
 

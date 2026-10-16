@@ -139,6 +139,14 @@ pub struct ProjectRegisterRequestDto {
     pub source: String,
 }
 
+/// Explicitly confirmed destruction request. The session count captured by
+/// the confirmation screen is rechecked atomically by the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDeleteRequestDto {
+    pub project_id: String,
+    pub expected_session_count: usize,
+}
+
 fn default_project_registration_source() -> String {
     "protocol".to_string()
 }

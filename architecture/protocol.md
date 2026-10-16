@@ -180,8 +180,8 @@ and bounded reasons only, never secrets)
 `WorkspaceArchive`, `WorkspaceSnapshotRequest`,
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
-**Project Catalog (8)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
-`ProjectArchive`, `ProjectRestore`, `ProjectHealth`,
+**Project Catalog (9)**: `ProjectList`, `ProjectGet`, `ProjectRegister`,
+`ProjectArchive`, `ProjectRestore`, `ProjectDelete`, `ProjectHealth`,
 `ProjectCatalogCapabilities`, `WorkspaceDashboard`
 
 **Run (4)**: `RunList`, `RunGet`, `RunArtifactRead`, `RunRerun`
@@ -258,7 +258,7 @@ not a separate protocol.
 `WorkspaceServicesSnapshot`, `WorkspaceConfigReload`
 
 **Project Responses**: `ProjectList`, `ProjectGet`, `ProjectRegistered`,
-`ProjectArchived`, `ProjectRestored`, `ProjectHealth`,
+`ProjectArchived`, `ProjectRestored`, `ProjectDeleted`, `ProjectHealth`,
 `ProjectCatalogCapabilities`
 
 **Project Initialization Responses**: `ProjectInitDraft` carries the
@@ -306,8 +306,8 @@ Tagged enum with 87 variants. Major groups:
 **Snapshot (6)**: `SnapshotSession`, `SnapshotWorkspace`, `SnapshotModels`,
 `AssetRefreshCompleted`, `ConnectionRotated`, `ConnectionStateChanged`
 
-**Project (4)**: `ProjectRegistered`, `ProjectArchived`,
-`ProjectRestored`, `ProjectHealthChanged`
+**Project (5)**: `ProjectRegistered`, `ProjectArchived`,
+`ProjectRestored`, `ProjectDeleted`, `ProjectHealthChanged`
 
 **Turn (5)**: `TurnStarted`, `TurnTextDelta`, `TurnReasoningDelta`,
 `TurnCompleted`, `TurnFailed`

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use crate::document::{self, DocumentSnapshotDto, DocumentTransactionDto};
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, ContinuationGrantDto, JobAttemptDto, JobQueryDto,
-    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto,
-    ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto,
-    RunRecordDto, RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto,
-    SessionBindingDto, WorkspaceServiceHealthDto,
+    JobRecordDto, JobSubmitDto, JobSummaryDto, ManagedWorktreeDto, ProjectDeleteRequestDto,
+    ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto, ProjectSummaryDto,
+    RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto, ScheduleCreateDto,
+    ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto, WorkspaceServiceHealthDto,
 };
 use crate::provider::{
     ConnectionDetailDto, ConnectionProvisioningStatusDto, ConnectionRefreshStatusDto,
@@ -1256,6 +1256,10 @@ pub enum CoreResponse {
     ProjectRestored {
         project: ProjectSummaryDto,
     },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
+    },
     ProjectHealth {
         health: ProjectHealthDto,
     },
@@ -2431,6 +2435,9 @@ pub enum CoreRequest {
     },
     ProjectRestore {
         project_id: String,
+    },
+    ProjectDelete {
+        request: ProjectDeleteRequestDto,
     },
     ProjectHealth {
         project_id: String,
@@ -3621,6 +3628,10 @@ pub enum CoreEvent {
     ProjectRestored {
         project_id: String,
         project: ProjectSummaryDto,
+    },
+    ProjectDeleted {
+        project_id: String,
+        deleted_session_count: usize,
     },
     ProjectHealthChanged {
         project_id: String,

@@ -2339,6 +2339,50 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::ProjectDestroyConfirmationLoaded {
+            picker_request_id,
+            project_id,
+            display_name,
+            session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_destroy_confirmation_loaded(
+                app,
+                picker_request_id,
+                project_id,
+                display_name,
+                session_count,
+                error,
+            );
+        }
+        TuiCommand::ProjectLifecycleFinished {
+            picker_request_id,
+            project_id,
+            restored,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_lifecycle_finished(
+                app,
+                picker_request_id,
+                project_id,
+                restored,
+                error,
+            );
+        }
+        TuiCommand::ProjectDeleteFinished {
+            picker_request_id,
+            project_id,
+            deleted_session_count,
+            error,
+        } => {
+            super::super::commands::project_picker::apply_project_delete_finished(
+                app,
+                picker_request_id,
+                project_id,
+                deleted_session_count,
+                error,
+            );
+        }
         TuiCommand::StartListProjectSessions {
             tab_id,
             project_id,

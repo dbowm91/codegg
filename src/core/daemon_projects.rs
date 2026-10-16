@@ -18,7 +18,7 @@ impl CoreDaemon {
         authority: codegg_core::transport_auth::RequestAuthorityContext,
         authz_decision: codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, AppError> {
-        let _ = (request_id, trusted_client_id, &authority, &authz_decision);
+        let _ = trusted_client_id;
         match request {
             CoreRequest::WorktreeList { project_dir } => {
                 let git_root = std::path::PathBuf::from(&project_dir);
@@ -321,10 +321,96 @@ impl CoreDaemon {
                 }
             }
             CoreRequest::ProjectArchive { project_id } => {
-                self.project_lifecycle_request(&project_id, false).await
+                self.project_lifecycle_request(
+                    &project_id,
+                    false,
+                    request_id,
+                    &authority,
+                    &authz_decision,
+                )
+                .await
             }
             CoreRequest::ProjectRestore { project_id } => {
-                self.project_lifecycle_request(&project_id, true).await
+                self.project_lifecycle_request(
+                    &project_id,
+                    true,
+                    request_id,
+                    &authority,
+                    &authz_decision,
+                )
+                .await
+            }
+            CoreRequest::ProjectDelete { request } => {
+                let project_id = match codegg_core::identity::ProjectId::parse(&request.project_id)
+                {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "invalid_project_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "project_catalog_unavailable".into(),
+                        message: "project deletion requires a catalog".into(),
+                    });
+                };
+                let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
+                match catalog
+                    .delete_project(&project_id, request.expected_session_count)
+                    .await
+                {
+                    Ok(result) => {
+                        let deleted_session_count = result.deleted_session_count();
+                        for session_id in &result.deleted_session_ids {
+                            crate::bus::PermissionRegistry::cancel_session(session_id);
+                            crate::bus::QuestionRegistry::cancel_session(session_id);
+                            if let Some(runtime) =
+                                self.sessions.get(session_id).map(|runtime| runtime.clone())
+                            {
+                                if let Some(active_turn) = runtime.active_turn.read().await.as_ref()
+                                {
+                                    let _ = active_turn.cancel_tx.send(true);
+                                }
+                                self.sessions.remove(session_id);
+                            }
+                        }
+                        let provenance =
+                            codegg_core::authorization::audit_provenance(&authz_decision);
+                        let audit = codegg_core::audit::AuditEventBuilder::new(
+                            codegg_core::audit::AuditAction::ConfigChange,
+                            authority.principal(),
+                            &provenance,
+                        )
+                        .with_correlation(request_id)
+                        .with_project(project_id.clone())
+                        .with_metadata("project.lifecycle.operation", "destroy")
+                        .with_metadata(
+                            "project.deleted_session_count",
+                            deleted_session_count.to_string(),
+                        )
+                        .with_metadata("decision.id", provenance.decision_id())
+                        .with_metadata("decision.outcome", "allow");
+                        self.audit_emitter().emit(audit).await;
+                        self.event_log
+                            .publish(
+                                Some(project_id.to_string()),
+                                None,
+                                CoreEvent::ProjectDeleted {
+                                    project_id: project_id.to_string(),
+                                    deleted_session_count,
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ProjectDeleted {
+                            project_id: project_id.to_string(),
+                            deleted_session_count,
+                        })
+                    }
+                    Err(error) => Ok(Self::project_catalog_error("project delete failed", &error)),
+                }
             }
             CoreRequest::ProjectHealth {
                 project_id,

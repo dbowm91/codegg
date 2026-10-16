@@ -622,6 +622,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_unshare", "membership_change"),
     ("project_archive", "config_change"),
     ("project_restore", "config_change"),
+    ("project_delete", "config_change"),
     ("eggpool_connection_create", "provider_select"),
     ("provider_connection_create", "provider_select"),
     ("connection_rotate_begin", "provider_select"),

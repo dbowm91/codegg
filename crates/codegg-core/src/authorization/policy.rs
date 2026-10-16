@@ -531,6 +531,11 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectConfigure),
         ),
+        R::ProjectDelete { .. } => OperationDescriptor::new(
+            "project_delete",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectConfigure),
+        ),
         R::ProjectHealth { .. } => OperationDescriptor::new(
             "project_health",
             ScopeKind::DirectProject,

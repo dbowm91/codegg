@@ -184,6 +184,7 @@ impl DaemonRequestFamily {
             CoreRequest::ManagedWorktreeGet { .. } => Self::Projects,
             CoreRequest::ManagedWorktreeList { .. } => Self::Projects,
             CoreRequest::ProjectArchive { .. } => Self::Projects,
+            CoreRequest::ProjectDelete { .. } => Self::Projects,
             CoreRequest::ProjectCatalogCapabilities => Self::Projects,
             CoreRequest::ProjectGet { .. } => Self::Projects,
             CoreRequest::ProjectHealth { .. } => Self::Projects,

@@ -1,9 +1,8 @@
 # Project Picker Rework Milestone 003 — Deactivate/reactivate lifecycle plus confirmed destroy
 
-Status: ready
+Status: implemented
 
-Repository baseline: `b4e9a92d` (rebase onto the M2 closure head before
-handoff — see stop conditions)
+Repository baseline: `a8325de7` (M002 strict closure; current handoff head)
 
 Source roadmap:
 

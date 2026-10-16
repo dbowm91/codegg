@@ -497,6 +497,7 @@ not a Core operation):
 | `permission_respond` | global | `none` |
 | `project_archive` | direct_project | `project.configure` |
 | `project_catalog_capabilities` | global | `none` |
+| `project_delete` | direct_project | `project.configure` |
 | `project_get` | direct_project | `project.read` |
 | `project_health` | direct_project | `project.read` |
 | `project_list` | enumeration | `project.read` |

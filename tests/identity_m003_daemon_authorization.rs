@@ -534,6 +534,22 @@ async fn membership_revocation_takes_effect_at_boundary() {
     .await
     .unwrap();
     assert_eq!(error_code(&denied), "authorization_denied");
+
+    let denied_delete = Box::pin(daemon.handle_request_for_client(
+        new_request(
+            "req-revoked-delete".to_owned(),
+            CoreRequest::ProjectDelete {
+                request: codegg_protocol::dto::ProjectDeleteRequestDto {
+                    project_id: project.as_str().to_owned(),
+                    expected_session_count: 0,
+                },
+            },
+        ),
+        "client-owner",
+    ))
+    .await
+    .unwrap();
+    assert_eq!(error_code(&denied_delete), "authorization_denied");
 }
 
 #[tokio::test(flavor = "current_thread")]
