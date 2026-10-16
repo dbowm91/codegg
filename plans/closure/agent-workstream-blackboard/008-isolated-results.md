@@ -110,11 +110,11 @@ The first terminal-tool smoke wrote a unique probe under `/tmp` despite the
 session's `workspace_write` policy. Source tracing found that the legacy
 `terminal` tool did not propagate the tool execution authorization or build a
 required sandbox request. The file was removed. After the corrective change
-at source commit `TO_BE_REPLACED`, focused terminal tests passed 5/5 and the
-sandbox-policy and execution-ownership guards passed. A fresh daemon-backed
-terminal call then wrote/read/deleted a temporary file in the managed
-worktree and received `Operation not permitted` for the `/tmp` write; a host
-check confirmed the outside probe was absent. The observed limitation is
+at source commit `473579066803469e130b21d3daf2bf645658a115`, focused terminal
+tests passed 5/5 and the sandbox-policy and execution-ownership guards passed.
+A fresh daemon-backed terminal call then wrote/read/deleted a temporary file
+in the managed worktree and received `Operation not permitted` for the `/tmp`
+write; a host check confirmed the outside probe was absent. The observed limitation is
 Darwin Seatbelt plus the tested terminal path/session root only. It is not
 shared-checkout or all-writer evidence.
 
