@@ -99,6 +99,193 @@ pub const MAX_EDITOR_COMMAND_LINE: usize = 64;
 /// one-character query from producing an unbounded candidate set.
 pub const MAX_EDITOR_COMMAND_MATCHES: usize = 8;
 
+/// Maximum length of the `/` search line.
+///
+/// Same reasoning as [`MAX_EDITOR_COMMAND_LINE`]: a search needle is a query,
+/// never document text, so it is refused at the keystroke rather than
+/// buffered into something unbounded.
+pub const MAX_EDITOR_SEARCH_LINE: usize = 128;
+
+/// Maximum number of retained search matches.
+///
+/// Bounded so a one-character query in a large file cannot turn the
+/// highlight set into an unbounded list. Past the bound the search still
+/// works — it reports the matches it kept and says the rest were dropped,
+/// rather than silently pretending the document contains only those.
+pub const MAX_EDITOR_SEARCH_MATCHES: usize = 2_000;
+
+/// Bytes of the document a `/` search will scan.
+///
+/// A search is an interactive keystroke, so its cost is paid on the frame
+/// the user is waiting for. Beyond this bound the search reports that it
+/// covered only the leading window rather than hanging on a huge file.
+pub const MAX_EDITOR_SEARCH_BYTES: usize = 2 * 1024 * 1024;
+
+/// One resolved `/` search outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchOutcome {
+    /// Retained match start offsets, ascending.
+    pub matches: Vec<usize>,
+    /// Whether matches beyond [`MAX_EDITOR_SEARCH_MATCHES`] existed and were
+    /// dropped. Disclosed rather than hidden: a truncated match list that
+    /// looks complete is the same defect as unvalidated LSP coverage.
+    pub truncated: bool,
+    /// Whether the scan stopped at [`MAX_EDITOR_SEARCH_BYTES`] before the
+    /// end of the document.
+    pub bounded: bool,
+}
+
+/// Find every occurrence of `needle` in `snapshot`, bounded.
+///
+/// Offsets are absolute UTF-8 byte offsets into the replica and are always
+/// character boundaries, because they are handed straight to the renderer
+/// and to the cursor. The full ascending list is returned rather than a
+/// slice starting at the cursor: `n` and `N` index it directly, so the
+/// cursor's position is part of what the *caller* asks for
+/// ([`next_match_index`]) instead of a post-hoc adjustment here.
+pub fn find_matches(snapshot: &DocumentSnapshot, needle: &str) -> SearchOutcome {
+    if needle.is_empty() {
+        return SearchOutcome {
+            matches: Vec::new(),
+            truncated: false,
+            bounded: false,
+        };
+    }
+    let total = snapshot.len_bytes();
+    // Cut the scanned window at a character boundary, and never report the
+    // bound as reached when the document already fits inside it.
+    let mut window = total.min(MAX_EDITOR_SEARCH_BYTES);
+    while window < total && !snapshot.is_byte_boundary(window) {
+        window += 1;
+    }
+    let bounded = window < total;
+    let Ok(haystack) = snapshot.read_bytes(0, window) else {
+        return SearchOutcome {
+            matches: Vec::new(),
+            truncated: false,
+            bounded,
+        };
+    };
+    let mut matches = Vec::new();
+    let mut truncated = false;
+    for (offset, _) in haystack.match_indices(needle) {
+        if offset + needle.len() > window {
+            break;
+        }
+        if matches.len() == MAX_EDITOR_SEARCH_MATCHES {
+            truncated = true;
+            break;
+        }
+        matches.push(offset);
+    }
+    SearchOutcome {
+        matches,
+        truncated,
+        bounded,
+    }
+}
+
+/// The word surrounding `offset`, for seeding a `/` search.
+///
+/// Returns `None` when the cursor is not inside a word, so `/` on
+/// whitespace opens an empty line rather than a search for a space.
+pub fn word_at(snapshot: &DocumentSnapshot, offset: usize) -> Option<String> {
+    let offset = clamp_offset(snapshot, offset);
+    let line = cursor_line(snapshot, offset);
+    let start = line_start(snapshot, line)?;
+    let end = line_content_end(snapshot, line).unwrap_or(start);
+    let Ok(line_text) = snapshot.read_bytes(start, end) else {
+        return None;
+    };
+    let column = offset.saturating_sub(start);
+    if column > line_text.len() || !line_text.is_char_boundary(column) {
+        return None;
+    }
+    let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+    // The cursor has to be *on* a word, not merely before one. Scanning
+    // outward from a position with no scan-backward guard returned the whole
+    // line: on the space after `let`, the backward sweep found `let`, the
+    // forward sweep broke at that same space, and the gap between them was
+    // the entire rest of the line — so `/` on whitespace seeded a search for
+    // a whole row instead of opening empty.
+    //
+    // The test is on the character *at* the cursor, not the one before it.
+    // Checking backward meant the space at the end of `let` was judged by the
+    // `t` behind it and accepted.
+    let under = line_text[column..].chars().next()?;
+    if !is_word(under) {
+        return None;
+    }
+    let mut begin = 0usize;
+    let mut finish = line_text.len();
+    for (index, ch) in line_text[..column].char_indices().rev() {
+        if is_word(ch) {
+            begin = index;
+        } else {
+            break;
+        }
+    }
+    for (index, ch) in line_text[column..].char_indices() {
+        if is_word(ch) {
+            finish = column + index + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    begin = begin.min(column);
+    finish = finish.max(column);
+    if begin >= finish {
+        return None;
+    }
+    Some(line_text[begin..finish].to_string())
+}
+
+/// Index of the first match at or after `cursor`, wrapping to the first.
+///
+/// Inclusive on purpose, and this is the difference from
+/// [`next_match_index`]. Typing `/` while the cursor already sits on a match
+/// must leave you **on** that match; a strict `>` would make every keystroke
+/// of a live search hop you to the next occurrence, so refining a needle
+/// you are looking at would keep running away from you.
+pub fn first_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    match matches.iter().position(|offset| *offset >= cursor) {
+        Some(index) => Some(index),
+        None => Some(0),
+    }
+}
+
+/// Index of the first match strictly after `cursor`, wrapping to the first.
+///
+/// Strict, because this is `n`: pressing it must move you *off* the match you
+/// are on, or the first press would look like the key did nothing.
+///
+/// Wrapping is deliberate: a search that stopped at the last match would
+/// make `n` look broken exactly when the user has found what they were
+/// looking for and wants to come back to it.
+pub fn next_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    match matches.iter().position(|offset| *offset > cursor) {
+        Some(index) => Some(index),
+        None => Some(0),
+    }
+}
+
+/// Index of the last match strictly before `cursor`, wrapping to the last.
+pub fn previous_match_index(matches: &[usize], cursor: usize) -> Option<usize> {
+    if matches.is_empty() {
+        return None;
+    }
+    match matches.iter().rposition(|offset| *offset < cursor) {
+        Some(index) => Some(index),
+        None => Some(matches.len() - 1),
+    }
+}
+
 /// One `:` command the editor can execute.
 ///
 /// Kept as data rather than a `match` arm at the call site so the palette,
@@ -510,6 +697,15 @@ pub fn line_content_end(snapshot: &DocumentSnapshot, line: usize) -> Option<usiz
 pub fn buffer_content_end(snapshot: &DocumentSnapshot) -> usize {
     let last = snapshot.len_lines().saturating_sub(1);
     line_content_end(snapshot, last).unwrap_or_else(|| snapshot.len_bytes())
+}
+
+/// Zero-based index of the document's last line.
+///
+/// A document always has at least one line, so this never underflows; it is
+/// the single answer to "where does the file end" that paging and viewport
+/// arithmetic share.
+pub fn last_line_of(snapshot: &DocumentSnapshot) -> usize {
+    snapshot.len_lines().saturating_sub(1)
 }
 
 fn is_word_byte(byte: u8) -> bool {
@@ -1019,10 +1215,20 @@ fn apply_motion_inner(
         EditorCommand::WordBackward => word_backward(snapshot, cursor),
         EditorCommand::WordEnd => word_end(snapshot, cursor),
         EditorCommand::HalfPageDown => {
+            // A page that would land past the end continues to the end
+            // instead of stopping short. Half a window from the last page
+            // is a very ordinary place to be — and a motion that quietly
+            // refuses there reads as a dropped keypress rather than as the
+            // end of the document.
             let target = half_page_target(presentation.viewport_line, visible_lines, true);
-            let column = cursor
-                .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
-            offset_on_line(snapshot, target, column)
+            if target > last_line_of(snapshot) {
+                buffer_content_end(snapshot)
+            } else {
+                let column = cursor.saturating_sub(
+                    line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0),
+                );
+                offset_on_line(snapshot, target, column)
+            }
         }
         EditorCommand::HalfPageUp => {
             let target = half_page_target(presentation.viewport_line, visible_lines, false);
@@ -1073,14 +1279,57 @@ fn viewport_after_motion(
         _ => presentation.viewport_line,
     }
     .min(last_line);
-    let cursor_line = cursor_line(snapshot, clamp_offset(snapshot, cursor));
-    if cursor_line < viewport {
-        cursor_line
-    } else if cursor_line >= viewport + window {
-        (cursor_line + 1 - window).min(last_line)
+    reveal_cursor(
+        viewport,
+        cursor_line(snapshot, clamp_offset(snapshot, cursor)),
+        window,
+        last_line,
+    )
+}
+
+/// Scroll the minimum amount needed to bring `target_line` into a window of
+/// `window` rows anchored at `viewport`.
+///
+/// The one reveal rule, shared by motions and by `/` search, so a jump to a
+/// match lands the same way a jump to the end of the buffer does.
+pub fn reveal_cursor(
+    viewport: usize,
+    target_line: usize,
+    window: usize,
+    last_line: usize,
+) -> usize {
+    if target_line < viewport {
+        target_line
+    } else if target_line >= viewport + window {
+        (target_line + 1 - window).min(last_line)
     } else {
         viewport
     }
+}
+
+/// Park the cursor on `offset` and scroll the minimum amount to reveal it.
+///
+/// Used by anything that moves the cursor *to a place* rather than by a
+/// relative step: `/` search, `n`/`N`, and an LSP jump. It shares the reveal
+/// rule with the Helix motions so the two cannot disagree about where the
+/// view lands, and it drops a held selection rather than dragging the old
+/// anchor onto wherever the cursor ended up.
+pub fn move_cursor_to(
+    presentation: &mut TuiDocumentPresentation,
+    snapshot: &DocumentSnapshot,
+    offset: usize,
+    visible_lines: usize,
+) -> usize {
+    let cursor = clamp_offset(snapshot, offset);
+    presentation.cursor_byte = cursor;
+    presentation.selection = None;
+    presentation.viewport_line = reveal_cursor(
+        presentation.viewport_line,
+        cursor_line(snapshot, cursor),
+        visible_lines.max(1),
+        last_line_of(snapshot),
+    );
+    cursor
 }
 
 /// Resolve an editing command into a local transaction plus the cursor and
@@ -1592,6 +1841,240 @@ mod tests {
             cursor_byte: cursor,
             ..TuiDocumentPresentation::default()
         }
+    }
+
+    /// Park the cursor on `offset`, as the `/` search handler does between
+    /// two `step_search` calls.
+    fn editor_move(
+        presentation: &mut TuiDocumentPresentation,
+        snapshot: &DocumentSnapshot,
+        offset: usize,
+    ) {
+        move_cursor_to(presentation, snapshot, offset, 10);
+    }
+
+    // ── `Ctrl+d` continues to the end ───────────────────────────────────
+
+    #[test]
+    fn half_page_down_continues_to_the_last_line() {
+        // 30 lines, a 10-row window. From viewport 20 a half page would land
+        // on 25 — still inside — so this first press pages normally.
+        let text = (0..30).map(|i| format!("line{i}\n")).collect::<String>();
+        let snapshot = snapshot_of(&text);
+        let mut presentation = presentation_at(0);
+        presentation.viewport_line = 20;
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::HalfPageDown,
+            10,
+        );
+        assert_eq!(cursor_line(&snapshot, presentation.cursor_byte), 25);
+
+        // From 25 the next half page would land on 30, which is past the last
+        // line. It must continue to the end instead of refusing there.
+        presentation.viewport_line = 25;
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::HalfPageDown,
+            10,
+        );
+        assert_eq!(
+            cursor_line(&snapshot, presentation.cursor_byte),
+            last_line_of(&snapshot),
+            "a half page that would overshoot must continue to the last line"
+        );
+    }
+
+    #[test]
+    fn half_page_down_already_at_the_end_stays_at_the_end() {
+        let text = (0..12).map(|i| format!("line{i}\n")).collect::<String>();
+        let snapshot = snapshot_of(&text);
+        let mut presentation = presentation_at(buffer_content_end(&snapshot));
+        presentation.viewport_line = last_line_of(&snapshot);
+        apply_motion(
+            &mut presentation,
+            &snapshot,
+            EditorCommand::HalfPageDown,
+            10,
+        );
+        assert_eq!(
+            cursor_line(&snapshot, presentation.cursor_byte),
+            last_line_of(&snapshot)
+        );
+    }
+
+    // ── `/` search ─────────────────────────────────────────────────────
+
+    #[test]
+    fn find_matches_returns_every_offset_in_order() {
+        let snapshot = snapshot_of("let host_status = 1;\nfn host_status() {}\n");
+        let outcome = find_matches(&snapshot, "host_status");
+        assert_eq!(outcome.matches.len(), 2);
+        assert!(outcome.matches[0] < outcome.matches[1]);
+        assert!(!outcome.truncated && !outcome.bounded);
+        // Every offset is a cursor position, so every one must be a char
+        // boundary — a non-boundary offset would panic the renderer.
+        for offset in outcome.matches {
+            assert!(snapshot.is_byte_boundary(offset));
+        }
+    }
+
+    #[test]
+    fn an_empty_needle_matches_nothing() {
+        let snapshot = snapshot_of("alpha\n");
+        let outcome = find_matches(&snapshot, "");
+        assert!(outcome.matches.is_empty());
+        assert!(!outcome.truncated && !outcome.bounded);
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_leaves_the_cursor_alone() {
+        let snapshot = snapshot_of("alpha\nbeta\n");
+        let mut presentation = presentation_at(7);
+        let outcome = find_matches(&snapshot, "zzz");
+        let landed = presentation.adopt_search(outcome, presentation.cursor_byte);
+        assert_eq!(landed, None, "a failed search must not move the cursor");
+        assert_eq!(presentation.cursor_byte, 7);
+    }
+
+    #[test]
+    fn search_lands_on_the_match_the_cursor_is_already_on() {
+        let snapshot = snapshot_of("aaa bbb aaa\n");
+        let mut presentation = presentation_at(0);
+        let outcome = find_matches(&snapshot, "aaa");
+        // The cursor sits on the first `aaa`. A live search must leave it
+        // there: a strict `>` would hop to the second match on the very first
+        // keystroke, so refining a needle you are looking at would run away
+        // from you.
+        assert_eq!(
+            presentation.adopt_search(outcome, presentation.cursor_byte),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn stepping_walks_matches_and_wraps_at_both_ends() {
+        let snapshot = snapshot_of("aaa bbb aaa\n");
+        let mut presentation = presentation_at(0);
+        let outcome = find_matches(&snapshot, "aaa");
+        presentation.adopt_search(outcome, 0);
+        let landed = |presentation: &mut TuiDocumentPresentation, forward: bool| {
+            let offset = presentation.step_search(forward).expect("two matches");
+            editor_move(presentation, &snapshot, offset);
+            offset
+        };
+        // `n` must move *off* the match the cursor is on, not re-report it.
+        assert_eq!(landed(&mut presentation, true), 8);
+        // And from the last match it wraps rather than stalling.
+        assert_eq!(landed(&mut presentation, true), 0);
+        // `N` walks the other way and wraps at the top.
+        assert_eq!(landed(&mut presentation, false), 8);
+    }
+
+    #[test]
+    fn search_stepping_with_no_matches_reports_nothing_to_do() {
+        let mut presentation = presentation_at(0);
+        presentation.cancel_search();
+        assert_eq!(presentation.step_search(true), None);
+        assert_eq!(presentation.step_search(false), None);
+        assert!(!presentation.has_search());
+    }
+
+    #[test]
+    fn the_search_line_is_bounded_at_the_keystroke() {
+        let mut presentation = presentation_at(0);
+        presentation.open_search_line("");
+        for _ in 0..(MAX_EDITOR_SEARCH_LINE + 50) {
+            presentation.push_search_char('a');
+        }
+        assert_eq!(
+            presentation.search_line.chars().count(),
+            MAX_EDITOR_SEARCH_LINE,
+            "the needle is a query, not a buffer; it must not grow without bound"
+        );
+        // And a refused keystroke leaves the line exactly as it was.
+        presentation.push_search_char('b');
+        assert_eq!(
+            presentation.search_line.chars().count(),
+            MAX_EDITOR_SEARCH_LINE
+        );
+        assert!(presentation.search_line.ends_with('a'));
+    }
+
+    #[test]
+    fn accepting_a_search_keeps_the_highlight_and_cancelling_drops_it() {
+        let snapshot = snapshot_of("aaa bbb aaa\n");
+        let mut presentation = presentation_at(0);
+        presentation.open_search_line("aaa");
+        let outcome = find_matches(&snapshot, "aaa");
+        presentation.adopt_search(outcome, 0);
+        presentation.close_search_line();
+        assert!(!presentation.search_active, "Enter closes the line");
+        assert!(presentation.has_search(), "and keeps the matches for n/N");
+
+        presentation.open_search_line("aaa");
+        presentation.cancel_search();
+        assert!(!presentation.search_active);
+        assert!(!presentation.has_search(), "Esc disowns the highlight too");
+    }
+
+    #[test]
+    fn an_empty_search_confirms_to_nothing() {
+        let mut presentation = presentation_at(0);
+        presentation.open_search_line("");
+        presentation.close_search_line();
+        // Enter on an empty needle is a search for nothing, so there is
+        // nothing to leave painted.
+        assert!(!presentation.has_search());
+    }
+
+    #[test]
+    fn word_at_seeds_the_search_line_from_the_cursor() {
+        let snapshot = snapshot_of("let host_status = 1;\n");
+        assert_eq!(
+            word_at(&snapshot, 6),
+            Some("host_status".to_string()),
+            "`/` on a word should start from that word"
+        );
+        // On whitespace there is no word, so the line opens empty rather than
+        // searching for a space.
+        assert_eq!(word_at(&snapshot, 3), None);
+    }
+
+    #[test]
+    fn word_at_handles_multibyte_text_without_slicing_a_character() {
+        let snapshot = snapshot_of("let café = 1;\n");
+        // Byte 8 is the start of `é`; the seed must be the whole word.
+        assert_eq!(word_at(&snapshot, 8), Some("café".to_string()));
+        // A mid-character offset is refused rather than sliced — callers
+        // clamp to boundaries, so reaching one means something is wrong
+        // upstream and it must not be papered over with a panic.
+        assert_eq!(word_at(&snapshot, 9), None);
+    }
+
+    #[test]
+    fn move_cursor_to_reveals_the_target_and_drops_a_held_selection() {
+        let text = (0..40).map(|i| format!("line{i}\n")).collect::<String>();
+        let snapshot = snapshot_of(&text);
+        let mut presentation = presentation_at(0);
+        presentation.selection = Some(Selection {
+            anchor: EditorPoint { byte: 0, line: 0 },
+            head: EditorPoint { byte: 3, line: 0 },
+            mode: SelectionMode::Char,
+            growing: false,
+        });
+        let end = line_start(&snapshot, 30).expect("line 30 starts somewhere");
+        move_cursor_to(&mut presentation, &snapshot, end, 10);
+        assert_eq!(presentation.cursor_byte, end);
+        assert_eq!(cursor_line(&snapshot, presentation.cursor_byte), 30);
+        assert!(
+            presentation.selection.is_none(),
+            "a jump must not drag a stale selection anchor along with it"
+        );
+        // Revealed, so the target is inside the window the viewport shows.
+        assert!(30 >= presentation.viewport_line && 30 < presentation.viewport_line + 10);
     }
 
     // ── Completion edit resolution ────────────────────────────────────

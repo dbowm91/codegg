@@ -74,6 +74,14 @@ pub struct EditorWidget<'a> {
     pub command_line: &'a str,
     /// Highlighted palette row index.
     pub command_selection: usize,
+    /// Whether the `/` search line is open.
+    pub search_active: bool,
+    /// The `/` line without its leading slash.
+    pub search_line: &'a str,
+    /// Retained match count for the current search.
+    pub search_count: usize,
+    /// Whether the current search is known to be partial.
+    pub search_partial: bool,
     /// Cursor byte offset into `snapshot`.
     pub cursor_byte: usize,
     /// Whether the attachment holds the writer lease.
@@ -86,6 +94,12 @@ pub struct EditorWidget<'a> {
     pub lsp: &'a crate::tui::editor_lsp::EditorLspState,
     /// Bounded completion popup state for this document generation.
     pub completion: &'a crate::tui::editor_completion::EditorCompletionState,
+    /// Server-free syntax highlighting for this document generation.
+    ///
+    /// Mutated only to resolve spans for the rows this frame paints; the
+    /// LSP layer in `lsp.semantic_tokens` stays authoritative wherever the
+    /// two overlap.
+    pub highlight: &'a mut crate::tui::editor_highlight::EditorHighlight,
     /// Focused editor presentation, mutated only to resolve the viewport.
     pub presentation: &'a mut crate::tui::document_session::TuiDocumentPresentation,
     pub theme: Arc<Theme>,
@@ -136,6 +150,7 @@ impl EditorWidget<'_> {
         let theme = Arc::clone(&self.theme);
         let line_number = editor::cursor_line(self.snapshot, self.cursor_byte) + 1;
         let column = editor::display_column(self.snapshot, self.cursor_byte) + 1;
+        let plural = if self.search_count == 1 { "" } else { "es" };
         let pending = if self.pending_command.is_empty() {
             String::new()
         } else {
@@ -145,7 +160,18 @@ impl EditorWidget<'_> {
         // the banner row because that row is what the user is looking at
         // when they typed `:`, and a separate floating line would read as a
         // different surface than the one holding the keyboard.
-        let (banner_text, banner_style) = if self.command_active {
+        //
+        // `/` gets the same row for the same reason: it is a modal input
+        // line on this surface, so it belongs where `:` lives rather than
+        // inventing a second place to look.
+        let (banner_text, banner_style) = if self.search_active {
+            (
+                format!("/{}_", self.search_line),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else if self.command_active {
             (
                 format!(":{}_", self.command_line),
                 Style::default()
@@ -169,7 +195,43 @@ impl EditorWidget<'_> {
             )
         };
         let first = Line::from(Span::styled(banner_text, banner_style));
-        let second = if self.command_active {
+        let second = if self.search_active || self.search_count > 0 {
+            // The live match count sits next to the cursor readout, which is
+            // where the reader is already looking, and it survives viewport
+            // scrolling in a way an overlay on the text would not.
+            let mut spans = vec![Span::styled(
+                format!("ln {line_number}  col {column}  "),
+                Style::default().fg(theme.muted),
+            )];
+            if self.search_line.is_empty() {
+                // A `/` with nothing typed yet is not a failed search.
+                spans.push(Span::styled(
+                    "type to search",
+                    Style::default().fg(theme.muted),
+                ));
+            } else if self.search_count == 0 {
+                spans.push(Span::styled("no matches", Style::default().fg(theme.error)));
+            } else {
+                spans.push(Span::styled(
+                    format!("{} match{}", self.search_count, plural),
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if self.search_partial {
+                // Never let a truncated match list read as a complete one.
+                spans.push(Span::styled(
+                    "  · partial",
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            if !self.search_active && self.search_count > 0 {
+                spans.push(Span::styled(
+                    "  · n/N next/prev",
+                    Style::default().fg(theme.muted),
+                ));
+            }
+            Line::from(spans)
+        } else if self.command_active {
             // One row of fuzzy matches, inlined after the cursor readout.
             // A separate overlay would cover the document the command is
             // about to act on, which is the one thing the user needs to see
@@ -288,7 +350,16 @@ impl EditorWidget<'_> {
             width: inner.width,
             height: CHROME_ROWS.min(inner.height),
         };
-        frame.render_widget(Paragraph::new(vec![first, second]), rows);
+        // Themed like the text area. The block paints its background first,
+        // but anything the user has typed into the composer underneath can
+        // leave the terminal's own default behind on these two rows, and a
+        // status line in a different colour than the document reads as two
+        // different surfaces.
+        frame.render_widget(
+            Paragraph::new(vec![first, second])
+                .style(Style::default().bg(theme.background).fg(theme.foreground)),
+            rows,
+        );
     }
 
     /// Gutter plus horizontally scrolled text for the visible slice.
@@ -305,12 +376,17 @@ impl EditorWidget<'_> {
         let current_gutter = Style::default()
             .fg(theme.primary)
             .add_modifier(Modifier::BOLD);
-        let current_text = Style::default().bg(theme.selection);
-        let current_style = if self.buffer_focused {
-            current_text
-        } else {
-            Style::default().fg(theme.alternate_bg)
-        };
+        // The current line is a **tint, not a highlight**. The position
+        // indicators are the cursor block and the held selection; the line
+        // itself only has to say "this one".
+        //
+        // It used to set `fg(theme.alternate_bg)` — a *background* colour
+        // used as a foreground — so on every dark theme the cursor's own
+        // line rendered near-black on near-black. Since a file opens in
+        // Normal mode, that made the one line a reader is guaranteed to be
+        // looking at the one line they could not read. A background keeps
+        // the syntax colours, which a foreground overrode.
+        let current_style = Style::default().bg(theme.alternate_bg);
 
         let total_lines = self.snapshot.len_lines();
         let mut lines: Vec<Line> = Vec::with_capacity(viewport.visible_lines as usize);
@@ -387,7 +463,15 @@ impl EditorWidget<'_> {
             )));
         }
         frame.render_widget(Clear, area);
-        frame.render_widget(Paragraph::new(lines), area);
+        // `Clear` resets every cell to the terminal's own default, so the
+        // themed background the block painted a moment ago is gone by the
+        // time the text lands. Restating it here is what actually makes the
+        // document area theme-colored rather than whatever the user's shell
+        // profile happened to leave behind.
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme.background).fg(theme.foreground)),
+            area,
+        );
     }
 
     fn render_lsp_panel(&self, frame: &mut Frame, area: Rect) {
@@ -692,13 +776,25 @@ impl EditorWidget<'_> {
 
     /// Build the styled spans for one row.
     ///
-    /// `selection` is in absolute byte offsets and is applied *last*, after
-    /// the semantic-token foreground, by patching only the background. A
-    /// selection that repainted the foreground would erase highlighting on
-    /// exactly the region the user is selecting — and dark-on-dark selected
-    /// text is invisible rather than merely wrong.
+    /// Four layers resolve into one set of spans, in this order, each one
+    /// overriding only the fields it owns:
+    ///
+    /// 1. **Syntax** — an LSP semantic token where a language server
+    ///    supplied one, otherwise the built-in [`EditorHighlight`] scan. The
+    ///    server wins because it knows the real grammar; the scan is the
+    ///    floor that keeps files coloured on a machine with no server.
+    /// 2. **Search** — a `/` match, background only.
+    /// 3. **Selection** — a held Helix selection, background and foreground.
+    /// 4. **Cursor** — the block in Normal, the bar in Insert.
+    ///
+    /// Every background layer pins the foreground to `theme.foreground` at
+    /// the same time. A themed background with a syntax foreground chosen
+    /// for a *different* background is exactly the dark-on-dark case that
+    /// made selected and cursor-line text unreadable, so a selection that
+    /// painted only its background was not a safe compromise — it was the
+    /// same bug one layer down.
     fn line_spans(
-        &self,
+        &mut self,
         line_index: usize,
         viewport: EditorViewport,
         base: Style,
@@ -764,7 +860,12 @@ impl EditorWidget<'_> {
         }
         let visible_end = visible_end.max(visible_start).min(line.len());
         let mut boundaries = vec![visible_start, visible_end];
-        let mut ranges = Vec::new();
+        // Foreground sources, in priority order: an LSP semantic token
+        // first, the built-in scan second. `find` takes the first covering
+        // range, so a server that knows the grammar overrides the scan
+        // wherever the two agree, and the scan fills in everything the
+        // server said nothing about.
+        let mut syntax_ranges: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
         for token in self
             .lsp
             .semantic_tokens
@@ -791,9 +892,69 @@ impl EditorWidget<'_> {
             if range.start < range.end {
                 boundaries.push(range.start);
                 boundaries.push(range.end);
-                ranges.push((range, style));
+                syntax_ranges.push((range, style));
             }
         }
+        // Server-free layer. A no-op when a server is supplying tokens for
+        // this line, and the only colouring there is when one is not.
+        for span in self.highlight.spans_for_line(
+            self.snapshot,
+            self.path,
+            &self.theme.code_theme,
+            line_index,
+        ) {
+            let range = span.range.start.max(visible_start)..span.range.end.min(visible_end);
+            if range.start < range.end {
+                boundaries.push(range.start);
+                boundaries.push(range.end);
+                syntax_ranges.push((range, Style::default().fg(span.color)));
+            }
+        }
+        // `/` matches, clipped to this row. Match offsets ascend, so a
+        // partition point finds the first one inside the line in O(log n)
+        // rather than walking every retained match for every visible row.
+        let search_ranges = {
+            let needle = self.presentation.search_line.len();
+            if needle == 0 {
+                Vec::new()
+            } else {
+                let absolute_start = start;
+                let absolute_end = start + line.len();
+                let first = self
+                    .presentation
+                    .search_matches
+                    .partition_point(|offset| *offset < absolute_start);
+                self.presentation
+                    .search_matches
+                    .iter()
+                    .skip(first)
+                    .take_while(|offset| **offset < absolute_end)
+                    .map(|offset| {
+                        let from = offset
+                            .saturating_sub(start)
+                            .clamp(visible_start, visible_end);
+                        let to = (offset + needle)
+                            .saturating_sub(start)
+                            .clamp(visible_start, visible_end);
+                        from..to
+                    })
+                    .filter(|range| range.start < range.end)
+                    .collect::<Vec<_>>()
+            }
+        };
+        for range in &search_ranges {
+            boundaries.push(range.start);
+            boundaries.push(range.end);
+        }
+        // The cursor cell. It has to exist even when it sits past the last
+        // character — otherwise "the cursor is at the end of the line" is
+        // the one position a reader cannot see.
+        let cursor_cell = self.cursor_cell(start, &line, line_index, visible_start, visible_end);
+        if let Some((from, to)) = cursor_cell {
+            boundaries.push(from);
+            boundaries.push(to);
+        }
+        let cursor_style = self.cursor_style();
         boundaries.sort_unstable();
         boundaries.dedup();
         boundaries
@@ -803,13 +964,23 @@ impl EditorWidget<'_> {
                 if range.start == range.end {
                     return None;
                 }
-                let text = line.get(range.clone())?.to_string();
-                let style = ranges
+                // The only byte range that legitimately misses the line is the
+                // cursor's virtual cell past its end; it renders as one space
+                // rather than disappearing.
+                let text = match line.get(range.clone()) {
+                    Some(text) => text.to_string(),
+                    None if cursor_cell.is_some_and(|(from, _)| from == range.start) => {
+                        " ".to_string()
+                    }
+                    None => return None,
+                };
+                let style = syntax_ranges
                     .iter()
                     .find(|(token_range, _)| {
                         token_range.start <= range.start && token_range.end >= range.end
                     })
                     .map_or(base, |(_, token_style)| base.patch(*token_style));
+                let at_cursor = cursor_cell.is_some_and(|(from, _)| from == range.start);
                 // Absolute offsets back to line-relative, then clipped to the
                 // segment so a selection boundary can only colour part of it.
                 let selected = selection.is_some_and(|selected| {
@@ -817,6 +988,18 @@ impl EditorWidget<'_> {
                     let to = selected.end.saturating_sub(start);
                     from < range.end && to > range.start
                 });
+                let searched = search_ranges
+                    .iter()
+                    .any(|found| found.start <= range.start && found.end >= range.end);
+                let style = if searched {
+                    style.patch(
+                        Style::default()
+                            .bg(self.theme.selection_dim)
+                            .fg(self.theme.foreground),
+                    )
+                } else {
+                    style
+                };
                 let style = if selected {
                     style.patch(
                         Style::default()
@@ -826,9 +1009,85 @@ impl EditorWidget<'_> {
                 } else {
                     style
                 };
+                // The cursor is painted last so nothing can bury it: a
+                // selection or a search hit that happened to cover the
+                // cursor's own cell must not make the position unreadable.
+                //
+                // It *patches* rather than replaces. Replacing dropped the
+                // base outright, and since the Insert caret only carries a
+                // foreground and a modifier, that punched an untinted
+                // one-cell hole in the current line — the caret cell was the
+                // one cell on the row that did not belong to the row.
+                let style = if at_cursor {
+                    style.patch(cursor_style)
+                } else {
+                    style
+                };
                 Some(Span::styled(text, style))
             })
             .collect()
+    }
+
+    /// The cell the cursor occupies on this row, as a line-relative byte
+    /// range, or `None` when the cursor is on another line or scrolled out
+    /// of the horizontal window.
+    ///
+    /// A cursor sitting past the last character still owns a cell: it is
+    /// rendered as a single space one column past the end of the text. That
+    /// is the position a reader reaches most often — the end of a line they
+    /// are about to append to — so it is the one that must never be
+    /// invisible.
+    fn cursor_cell(
+        &self,
+        line_start: usize,
+        line: &str,
+        line_index: usize,
+        visible_start: usize,
+        visible_end: usize,
+    ) -> Option<(usize, usize)> {
+        if line_index != editor::cursor_line(self.snapshot, self.cursor_byte) {
+            return None;
+        }
+        let at = self.cursor_byte.saturating_sub(line_start).min(line.len());
+        // Past the last character on an otherwise fully visible row: the
+        // virtual cell. Anywhere else it means the cursor is simply scrolled
+        // out of the window, and inventing a cell there would paint a ghost
+        // cursor somewhere the viewport has already decided not to show.
+        if at == visible_end && visible_end < line.len() {
+            return None;
+        }
+        if at < visible_start {
+            return None;
+        }
+        let end = line[at..]
+            .chars()
+            .next()
+            .map_or(at + 1, |ch| at + ch.len_utf8());
+        Some((at, end.max(at + 1)))
+    }
+
+    /// How the cursor paints itself.
+    ///
+    /// **Normal** is reverse video. The cursor must stay legible over
+    /// whatever the highlighter painted underneath it, and a fixed accent
+    /// background cannot promise that — a dark syntax foreground over a dark
+    /// accent is the same unreadable pairing as the selection bug, one layer
+    /// down. Swapping the theme's own foreground and background guarantees
+    /// contrast for every token color, every theme, without the renderer
+    /// having to know which of them is light.
+    ///
+    /// **Insert** is a thin bar. A block there would cover the character
+    /// being typed over — the one thing Insert mode exists to show.
+    fn cursor_style(&self) -> Style {
+        if self.buffer_focused {
+            Style::default()
+                .fg(self.theme.primary)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(self.theme.background)
+                .bg(self.theme.foreground)
+        }
     }
 }
 
@@ -907,6 +1166,15 @@ mod tests {
         command_active: bool,
         command_line: &'a str,
         command_selection: usize,
+        search_active: bool,
+        search_line: &'a str,
+        search_count: usize,
+        search_partial: bool,
+        /// A held selection, for tests that need the renderer's third
+        /// background layer to actually be painted.
+        selection: Option<crate::tui::helix_selection::Selection<editor::EditorPoint>>,
+        /// Retained `/` match offsets, for the search highlight layer.
+        search_matches: Vec<usize>,
         writable: bool,
         busy: bool,
         scope: codegg_protocol::document::DocumentScope,
@@ -922,6 +1190,12 @@ mod tests {
             command_active: false,
             command_line: "",
             command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            selection: None,
+            search_matches: Vec::new(),
             writable: true,
             busy: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
@@ -939,10 +1213,14 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
+            selection: options.selection,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -956,6 +1234,10 @@ mod tests {
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
                     scope: options.scope,
                     cursor_byte: presentation.cursor_byte,
                     writable: options.writable,
@@ -963,6 +1245,7 @@ mod tests {
                     snapshot: &snapshot,
                     lsp: &lsp,
                     completion: &completion,
+                    highlight: &mut highlight,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }
@@ -981,6 +1264,154 @@ mod tests {
 
     fn paint(text: &str, width: u16, height: u16, cursor: usize) -> String {
         render(text, width, height, cursor, defaults()).join("\n")
+    }
+
+    /// Paint one frame and hand back the raw buffer, so a test can assert on
+    /// colors rather than on glyphs.
+    ///
+    /// Every readability bug this file's tests cover was invisible to
+    /// `paint`: dark-on-dark text renders exactly like readable text, because
+    /// the *glyphs* are right and only the colors are wrong.
+    fn render_buffer(
+        text: &str,
+        width: u16,
+        height: u16,
+        cursor: usize,
+        options: Options<'_>,
+    ) -> ratatui::buffer::Buffer {
+        let snapshot = DocumentBuffer::new(text).snapshot();
+        let mut presentation = TuiDocumentPresentation {
+            cursor_byte: cursor,
+            selection: options.selection,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
+            ..TuiDocumentPresentation::default()
+        };
+        let lsp = crate::tui::editor_lsp::EditorLspState::default();
+        let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                EditorWidget {
+                    path: "src/lib.rs",
+                    status: options.status,
+                    notice: options.notice,
+                    mode: options.mode,
+                    buffer_focused: options.buffer_focused,
+                    pending_command: options.pending_command,
+                    command_active: options.command_active,
+                    command_line: options.command_line,
+                    command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
+                    scope: options.scope,
+                    cursor_byte: presentation.cursor_byte,
+                    writable: options.writable,
+                    busy: options.busy,
+                    snapshot: &snapshot,
+                    lsp: &lsp,
+                    completion: &completion,
+                    highlight: &mut highlight,
+                    presentation: &mut presentation,
+                    theme: Arc::new(Theme::default()),
+                }
+                .render(frame, Rect::new(0, 0, width, height));
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Relative luminance of a color, used to assert a pairing is *readable*
+    /// rather than asserting which specific color was chosen.
+    fn luminance(color: ratatui::style::Color) -> f32 {
+        let (r, g, b) = match color {
+            ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+            ratatui::style::Color::Reset => return 1.0,
+            _ => return 1.0,
+        };
+        (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0
+    }
+
+    /// The colors and modifiers a body cell was painted with.
+    #[derive(Debug, Clone, Copy)]
+    struct CellStyle {
+        fg: ratatui::style::Color,
+        bg: ratatui::style::Color,
+        modifier: Modifier,
+    }
+
+    /// The painted style of a body cell.
+    ///
+    /// Row 0 is the block's top border and the two `CHROME_ROWS` sit at the
+    /// *bottom*, so body row 0 is buffer row 1 and the banner is
+    /// `height - 3`. Text starts at `inner.x + gutter` = 1 + 3 = 4.
+    fn body_style(buffer: &ratatui::buffer::Buffer, row: u16, column: u16) -> CellStyle {
+        let cell = &buffer[(4 + column, row + 1)];
+        CellStyle {
+            fg: cell.fg,
+            bg: cell.bg,
+            modifier: cell.modifier,
+        }
+    }
+
+    /// Buffer row of the first chrome row: the status text, or the `:` / `/`
+    /// line while one is open.
+    const fn banner_row(height: u16) -> u16 {
+        height - 3
+    }
+
+    /// Every painted body cell, in reading order.
+    ///
+    /// Tests that care about *a* cell rather than a specific one use this
+    /// instead of hardcoding `(x, y)`: the gutter width, the block border,
+    /// and the chrome rows are all things the layout can move, and a test
+    /// pinned to a literal coordinate then fails on the layout rather than on
+    /// the behavior it was written to pin.
+    fn body_cells(buffer: &ratatui::buffer::Buffer, height: u16) -> Vec<CellStyle> {
+        let mut cells = Vec::new();
+        for y in 1..height.saturating_sub(2) {
+            for x in TEXT_X..buffer.area.width.saturating_sub(1) {
+                let cell = &buffer[(x, y)];
+                cells.push(CellStyle {
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    modifier: cell.modifier,
+                });
+            }
+        }
+        cells
+    }
+
+    /// Left edge of the text columns: the block's inner edge plus the
+    /// 3-column line-number gutter.
+    const TEXT_X: u16 = 4;
+
+    /// Buffer row of the second chrome row: the `ln N col M` readout, which
+    /// also carries the search match count.
+    const fn readout_row(height: u16) -> u16 {
+        height - 2
+    }
+
+    /// A held selection covering `byte_range`, as the renderer resolves it.
+    fn selection_over(
+        snapshot: &codegg_document::DocumentSnapshot,
+        byte_range: std::ops::Range<usize>,
+    ) -> crate::tui::helix_selection::Selection<editor::EditorPoint> {
+        crate::tui::helix_selection::Selection {
+            anchor: editor::EditorPoint {
+                byte: byte_range.start,
+                line: editor::cursor_line(snapshot, byte_range.start),
+            },
+            head: editor::EditorPoint {
+                byte: byte_range.end,
+                line: editor::cursor_line(snapshot, byte_range.end),
+            },
+            mode: crate::tui::helix_selection::SelectionMode::Char,
+            growing: false,
+        }
     }
 
     #[test]
@@ -1425,9 +1856,13 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: cursor,
+            selection: options.selection,
+            search_line: options.search_line.to_string(),
+            search_matches: options.search_matches.clone(),
             ..TuiDocumentPresentation::default()
         };
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -1441,6 +1876,10 @@ mod tests {
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
                     scope: options.scope,
                     cursor_byte: presentation.cursor_byte,
                     writable: options.writable,
@@ -1448,6 +1887,7 @@ mod tests {
                     snapshot: &snapshot,
                     lsp: &lsp,
                     completion: &completion,
+                    highlight: &mut highlight,
                     presentation: &mut presentation,
                     theme: Arc::new(theme.clone()),
                 }
@@ -1553,10 +1993,17 @@ mod tests {
             command_active: false,
             command_line: "",
             command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
+            selection: None,
+            search_matches: Vec::new(),
             scope: codegg_protocol::document::DocumentScope::Workspace,
             writable: true,
             busy: false,
         };
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
@@ -1570,6 +2017,10 @@ mod tests {
                     command_active: options.command_active,
                     command_line: options.command_line,
                     command_selection: options.command_selection,
+                    search_active: options.search_active,
+                    search_line: options.search_line,
+                    search_count: options.search_count,
+                    search_partial: options.search_partial,
                     scope: options.scope,
                     cursor_byte: presentation.cursor_byte,
                     writable: options.writable,
@@ -1577,6 +2028,7 @@ mod tests {
                     snapshot: &snapshot,
                     lsp: &lsp,
                     completion,
+                    highlight: &mut highlight,
                     presentation: &mut presentation,
                     theme: Arc::new(Theme::default()),
                 }
@@ -1825,6 +2277,7 @@ mod tests {
             ..crate::tui::editor_lsp::EditorLspState::default()
         };
         let completion = crate::tui::editor_completion::EditorCompletionState::default();
+        let mut highlight = crate::tui::editor_highlight::EditorHighlight::default();
         let viewport = EditorViewport {
             first_line: 0,
             column: 0,
@@ -1832,7 +2285,7 @@ mod tests {
             text_columns: 40,
             visible_lines: 5,
         };
-        let widget = EditorWidget {
+        let mut widget = EditorWidget {
             path: "src/lib.rs",
             status: "synced",
             notice: None,
@@ -1842,6 +2295,10 @@ mod tests {
             command_active: false,
             command_line: "",
             command_selection: 0,
+            search_active: false,
+            search_line: "",
+            search_count: 0,
+            search_partial: false,
             scope: codegg_protocol::document::DocumentScope::Workspace,
             cursor_byte: 0,
             writable: true,
@@ -1849,6 +2306,7 @@ mod tests {
             snapshot: &snapshot,
             lsp: &lsp,
             completion: &completion,
+            highlight: &mut highlight,
             presentation: &mut presentation,
             theme,
         };
@@ -1956,5 +2414,283 @@ mod tests {
             widest <= 30,
             "semantic spans must stay viewport-bounded: {widest}"
         );
+    }
+
+    // ── Cursor, readability, background ──────────────────────────────────
+
+    #[test]
+    fn normal_mode_draws_a_reverse_video_cursor() {
+        let theme = Theme::default();
+        // The cursor sits on `b` of `beta`.
+        let height = 8;
+        let buffer = render_buffer(
+            "alpha\nbeta\ngamma",
+            30,
+            height,
+            6,
+            Options {
+                mode: EditorMode::Normal,
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        // Found by the reverse-video pairing itself, so the test states the
+        // rule rather than a coordinate.
+        let reversed = body_cells(&buffer, height)
+            .into_iter()
+            .filter(|cell| cell.fg == theme.background && cell.bg == theme.foreground)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reversed.len(),
+            1,
+            "exactly one cell may be reverse-video, and it is the cursor"
+        );
+        // And the character under it is still legible glyph-first: reverse
+        // video is the one choice that guarantees contrast for every token
+        // color without the renderer knowing which of them is light.
+        let cursor_symbol = &buffer[(TEXT_X, 1 + 1)];
+        assert_eq!(cursor_symbol.symbol(), "b");
+    }
+
+    #[test]
+    fn insert_mode_draws_a_bar_and_never_a_block() {
+        let theme = Theme::default();
+        let height = 8;
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            height,
+            6,
+            Options {
+                mode: EditorMode::Insert,
+                buffer_focused: true,
+                ..defaults()
+            },
+        );
+        // Self-locating: find the bar by the marker that *defines* it rather
+        // than by a hardcoded cell. The point is that exactly one such cell
+        // exists, and that its background is the current-line tint — a block
+        // would be the theme foreground.
+        let bars = body_cells(&buffer, height)
+            .into_iter()
+            .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+            .collect::<Vec<_>>();
+        assert_eq!(bars.len(), 1, "exactly one Insert caret must be drawn");
+        assert_eq!(
+            bars[0].bg, theme.alternate_bg,
+            "a block in Insert would hide the character being typed over"
+        );
+        assert_ne!(
+            bars[0].bg, theme.foreground,
+            "the Insert caret must not reverse the cell it sits on"
+        );
+    }
+
+    #[test]
+    fn a_cursor_at_the_end_of_a_line_is_still_visible() {
+        let theme = Theme::default();
+        // Offset 5 is one past `alpha` — the position a reader reaches most
+        // often and the one that must never be invisible.
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            8,
+            5,
+            Options {
+                buffer_focused: false,
+                ..defaults()
+            },
+        );
+        let cell = &buffer[(4 + 5, 1)];
+        assert_eq!(cell.symbol(), " ");
+        assert_eq!(cell.fg, theme.background);
+        assert_eq!(cell.bg, theme.foreground);
+    }
+
+    #[test]
+    fn the_cursor_line_is_readable_on_a_dark_theme() {
+        let theme = Theme::default();
+        let buffer = render_buffer("alpha\nbeta", 30, 8, 0, defaults());
+        // Body row 0 is the cursor's own line; column 1 is not the cursor.
+        let style = body_style(&buffer, 0, 1);
+        let fg = style.fg;
+        let bg = if style.bg == ratatui::style::Color::Reset {
+            theme.background
+        } else {
+            style.bg
+        };
+        // The defect this pins: the current line used to render as
+        // `fg(alternate_bg)`, a background color as a foreground, which on a
+        // dark theme is near-black on near-black.
+        assert_ne!(
+            fg, theme.alternate_bg,
+            "the cursor line must not paint a background color as its foreground"
+        );
+        assert!(
+            (luminance(fg) - luminance(bg)).abs() > 0.5,
+            "cursor-line text {fg:?} on {bg:?} has too little contrast to read"
+        );
+    }
+
+    #[test]
+    fn the_document_area_carries_the_theme_background() {
+        let theme = Theme::default();
+        let buffer = render_buffer("alpha", 30, 8, 0, defaults());
+        // A blank cell past the end of the text still has to be themed: this
+        // is the `Clear`-then-bare-`Paragraph` defect, and it only shows on a
+        // cell with no glyph on it.
+        let trailing = &buffer[(14, 1)];
+        assert_eq!(
+            trailing.bg, theme.background,
+            "the document area must not fall back to the terminal default"
+        );
+    }
+
+    #[test]
+    fn selected_text_stays_readable_against_the_selection_background() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("alpha\nbeta").snapshot();
+        // Select bytes 1..4 (`pha`) on the cursor's own line, with the cursor
+        // parked at 4 — the head, not the cells under assertion.
+        let buffer = render_buffer(
+            "alpha\nbeta",
+            30,
+            8,
+            4,
+            Options {
+                buffer_focused: true,
+                selection: Some(selection_over(&snapshot, 1..4)),
+                ..defaults()
+            },
+        );
+        let cell = body_style(&buffer, 0, 1);
+        assert_eq!(cell.bg, theme.selection, "selection must paint bg");
+        let fg = cell.fg;
+        // Pinning the foreground is the contract: "patch only the background"
+        // carried a syntax foreground chosen for a different background,
+        // which is the same dark-on-dark defect one layer down.
+        assert_eq!(fg, theme.foreground);
+        assert!(
+            (luminance(fg) - luminance(theme.selection)).abs() > 0.3,
+            "selected text {fg:?} on {:?} is not readable",
+            theme.selection
+        );
+        // Line 1 carries no selection at all and must not be tinted.
+        assert_ne!(body_style(&buffer, 1, 1).bg, theme.selection);
+    }
+
+    #[test]
+    fn a_search_match_is_highlighted_and_still_readable() {
+        let theme = Theme::default();
+        // `aaa` sits at 0..3 on the cursor's own line; the cursor block owns
+        // column 0, so column 1 is a match cell that is not the cursor.
+        let buffer = render_buffer(
+            "aaa bbb aaa",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                search_line: "aaa",
+                search_count: 2,
+                search_matches: vec![0, 8],
+                ..defaults()
+            },
+        );
+        let cell = body_style(&buffer, 0, 1);
+        assert_eq!(
+            cell.bg, theme.selection_dim,
+            "a `/` match must be highlighted in the text"
+        );
+        let fg = cell.fg;
+        assert_eq!(fg, theme.foreground);
+        assert!((luminance(fg) - luminance(theme.selection_dim)).abs() > 0.3);
+        // Column 4 (`b`) is not part of any match and must not be tinted.
+        assert_ne!(body_style(&buffer, 0, 4).bg, theme.selection_dim);
+    }
+
+    #[test]
+    fn the_cursor_is_painted_over_a_search_match_and_a_selection() {
+        let theme = Theme::default();
+        let snapshot = DocumentBuffer::new("aaa bbb").snapshot();
+        // Every layer stacked on the same cell: the cursor is on the match
+        // start, which is also inside the selection.
+        let buffer = render_buffer(
+            "aaa bbb",
+            30,
+            8,
+            0,
+            Options {
+                buffer_focused: false,
+                selection: Some(selection_over(&snapshot, 0..3)),
+                search_line: "aaa",
+                search_count: 1,
+                search_matches: vec![0],
+                ..defaults()
+            },
+        );
+        let cursor_cell = body_style(&buffer, 0, 0);
+        assert_eq!(cursor_cell.bg, theme.foreground);
+        assert_eq!(cursor_cell.fg, theme.background);
+    }
+
+    // ── `/` search rendering ────────────────────────────────────────────
+
+    #[test]
+    fn the_search_line_appears_in_the_banner_while_it_is_open() {
+        let height = 8;
+        let lines = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_active: true,
+                search_line: "host_status",
+                ..defaults()
+            },
+        );
+        let banner = &lines[banner_row(height) as usize];
+        assert!(
+            banner.contains("/host_status_"),
+            "the open `/` line belongs on the banner row: {banner:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_search_says_so_rather_than_reading_as_complete() {
+        let height = 8;
+        let lines = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_line: "alph",
+                search_count: 3,
+                search_partial: true,
+                ..defaults()
+            },
+        );
+        // The count shares the `ln/col` readout row, which is where the
+        // reader is already looking when a search resolves.
+        let readout = &lines[readout_row(height) as usize];
+        assert!(readout.contains("3 matches"), "{readout:?}");
+        assert!(readout.contains("partial"), "{readout:?}");
+        let plain = render(
+            "alpha",
+            40,
+            height,
+            0,
+            Options {
+                search_line: "alph",
+                search_count: 3,
+                search_partial: false,
+                ..defaults()
+            },
+        );
+        let plain_readout = &plain[readout_row(height) as usize];
+        assert!(plain_readout.contains("3 matches"), "{plain_readout:?}");
+        assert!(!plain_readout.contains("partial"), "{plain_readout:?}");
     }
 }

@@ -972,6 +972,14 @@ impl App {
         let command_active = presentation.command_active;
         let command_line = presentation.command_line.clone();
         let command_selection = presentation.command_selection;
+        // Hoisted out of the widget construction below: it needs the mutable
+        // `session`, and holding the shared borrow this function started
+        // with across that point would be the same borrow the whole call is
+        // built around.
+        let search_active = presentation.search_active;
+        let search_line = presentation.search_line.clone();
+        let search_count = presentation.search_matches.len();
+        let search_partial = presentation.search_partial;
         let scope = self.editor_state.scope;
         let path = self
             .editor_state
@@ -998,6 +1006,10 @@ impl App {
                 command_active,
                 command_line: &command_line,
                 command_selection,
+                search_active,
+                search_line: &search_line,
+                search_count,
+                search_partial,
                 scope,
                 cursor_byte: cursor,
                 writable,
@@ -1005,6 +1017,7 @@ impl App {
                 snapshot: &snapshot,
                 lsp: &self.editor_state.lsp,
                 completion: &self.editor_state.completion,
+                highlight: &mut self.editor_state.highlight,
                 presentation: session.presentation_mut(),
                 theme,
             }

@@ -294,6 +294,13 @@ pub struct EditorState {
     /// See [`EditorState::arm_semantic_refresh`]. `None` means nothing is
     /// pending, so the render pump does no work at all in the common case.
     pub semantic_refresh_due_at: Option<std::time::Instant>,
+    /// Server-free syntax highlighting for the attached document.
+    ///
+    /// The always-available floor under the LSP semantic tokens: a bounded
+    /// `syntect` scan keyed by path, theme and revision, so a machine with
+    /// no language server installed still renders files coloured. Holds no
+    /// document text — only byte ranges and colors.
+    pub highlight: crate::tui::editor_highlight::EditorHighlight,
 }
 
 impl Default for EditorState {
@@ -312,6 +319,7 @@ impl Default for EditorState {
             close_after_save: false,
             lsp: crate::tui::editor_lsp::EditorLspState::default(),
             completion: crate::tui::editor_completion::EditorCompletionState::default(),
+            highlight: crate::tui::editor_highlight::EditorHighlight::default(),
         }
     }
 }
@@ -417,6 +425,12 @@ impl EditorState {
         self.close_after_save = false;
         self.lsp.reset();
         self.completion.clear();
+        // The built-in highlighter keys on path, code theme, and revision —
+        // and a fresh attachment to an unmodified file is *revision 0*, so
+        // reopening the same path after discarding edits would otherwise
+        // hand the new document the previous one's colors. Detaching is the
+        // one point that unambiguously means "a different document".
+        self.highlight.reset();
     }
 }
 

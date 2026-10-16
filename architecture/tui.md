@@ -2506,7 +2506,17 @@ composer badge and every dockable box already show. On `Route::Editor`:
 | Mode | Keyboard | Typing goes to |
 |---|---|---|
 | `Insert` | the document | the text box — the cursor is drawn there |
-| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+| `Normal` | the Helix verbs (`hjkl`, arrows, `Ctrl+d`/`Ctrl+u`, `e`/`b`, `v`, `x`, `d`, `space y`, `0`, `$`, `gg`, `G`, `:`, `/`, `n`, `N`, `i/a/I/A/o/O`, `u`, `Ctrl+r`) | the bottom input box |
+
+**A file opens in `Normal`, not `Insert`.** This is the same choice
+`/terminal`, the panel manager, and the chat box make: they are read before
+they are typed into, and `i` is one keystroke away. The editor used to enter
+`Insert` on open, which cost two concrete things. The first keystroke of a
+mistaken open became an edit to the file. And the reader arrived on a
+surface that looks like a reader and answers `j` by inserting a newline —
+every navigation key silently became an edit key until `Esc`, a chord
+nothing on screen named. `open_document` and `:new` both call
+`enter_editor_normal`; nothing puts a freshly opened document in `Insert`.
 
 **Normal returns `BufferKey::Unhandled` for every key it does not own**, which
 is the mechanism, not a fallback: the editor claims navigation and editing and
@@ -2516,7 +2526,33 @@ interactive terminal runs on — NOR reads, INS types — and the same rule
 
 `Esc` is a **mode step, never an exit**. Insert → Normal. Normal → a toast
 naming `:q`. It never leaves the route: the only ways out are `:q` and `:wq`,
-and the frame says so. `Esc` closes an open `:` command line first.
+and the frame says so. `Esc` closes an open `/` search line first, then an
+open `:` command line, then steps the mode — most recent request first.
+
+**`/` searches the document, not the command catalog.** On this route the
+composer arms bare text with `:` (`composer_refuses_bare_text`), so an
+unclaimed `/` used to become `:/` and resolve to no command: a key that looks
+like it should do something and silently did not. `handle_normal_key` claims
+it, seeds the line from the word under the cursor, and owns every key while
+open — the same modal contract as `:`, including the mode-independent `Ctrl`
+chords, because a leaked printable must not edit the document behind a line
+the user believes is capturing it.
+
+It searches **as you type** (`/host` → `/host_status` → `/host_status fn`),
+which is the whole interaction: a needle being refined one character at a
+time is not a reason to make every intermediate refinement its own round
+trip. `Enter` accepts and leaves the matches painted; `Esc` abandons the whole
+search, highlight included, because the match set is derived state the user
+has just disowned. `n`/`N` then walk the accepted matches and are claimed
+**only while a search exists**, so an `n` with no search still reaches the
+composer as the start of a session name. Matches are bounded
+(`MAX_EDITOR_SEARCH_MATCHES`, `MAX_EDITOR_SEARCH_BYTES`) and a partial result
+says so in the status row rather than reading as a complete one.
+
+`Ctrl+d` **continues to the last line** when a half-page would land past the
+end. Half a window from the last page is an ordinary place to be, and a
+motion that quietly refuses there reads as a dropped keypress rather than as
+the end of the document.
 
 Insertion entries (`i`/`a`/`I`/`A`/`o`/`O`) return `BufferKey::EnterInsert`
 and the App layer adopts `Insert` mode; a read-only attachment returns
@@ -2551,6 +2587,69 @@ by viewport height, and each visible line is read with one bounded
 `read_bytes` call. A multi-megabyte file renders exactly like a small one.
 A whole-document `Vec<Line>` is never built, which the static guard also
 enforces.
+
+**The cursor is drawn, and it is drawn last.** `line_spans` resolves four
+layers into one set of spans, each overriding only the fields it owns:
+
+1. **Syntax** — an LSP semantic token where a language server supplied one,
+   otherwise the built-in scan below. Foreground only.
+2. **Search** — a `/` match, `selection_dim` background.
+3. **Selection** — a held Helix selection, `selection` background.
+4. **Cursor** — painted *last*, so nothing can bury the position.
+
+**Every background layer pins the foreground to `theme.foreground` at the
+same time.** A themed background carrying a syntax foreground chosen for a
+*different* background is exactly the dark-on-dark case, so "patch only the
+background" was never a safe compromise — it was the same bug one layer
+down. Two concrete defects came out of this:
+
+- The current line used to render as `fg(theme.alternate_bg)` — a
+  *background* colour used as a foreground. On every dark theme that is
+  near-black on near-black, so the cursor's own line was the one line a
+  reader could not read. Since a file opens in `Normal`, this was the
+  default state, not an edge case. It is now `bg(theme.alternate_bg)`: a
+  tint that says "this one" and leaves the syntax colours alone.
+- The **document area had no theme background at all.** The block paints
+  `theme.background`, then `render_text` renders `Clear` over the text area
+  — which resets every cell to the terminal's own default — and a bare
+  `Paragraph` on top of it inherits that default. Both `Paragraph`s now
+  restate `bg(theme.background).fg(theme.foreground)`.
+
+**The cursor paints differently per mode, for a reason.** In `Normal` it is
+**reverse video** — `fg(theme.background)` on `bg(theme.foreground)`. The
+cursor must stay legible over whatever the highlighter painted underneath,
+and a fixed accent background cannot promise that: a dark syntax foreground
+over a dark accent is the unreadable pairing again, one layer down. Swapping
+the theme's own two colours guarantees contrast for every token color and
+every theme without the renderer having to know which of them is light. In
+`Insert` it is a thin bar (`fg(primary)` + `UNDERLINED`), because a block
+would cover the character being typed over — the one thing Insert exists to
+show.
+
+A cursor sitting **past the last character** still owns a cell, rendered as
+one space past the end of the text. That is the position a reader reaches
+most often — the end of a line they are about to append to — so it is the
+one that must never be invisible. It is only drawn when the row is
+horizontally in view, so a cursor scrolled off to the left does not become a
+ghost.
+
+**Syntax highlighting has a server-free floor.** LSP semantic tokens stay
+authoritative, but a language server is optional: with none installed, every
+file rendered flat, which made "syntax highlighting" a property of the
+machine rather than of the editor. `tui::editor_highlight::EditorHighlight`
+is a bounded `syntect` scan underneath the tokens, keyed by path, code
+theme, and document revision. It lives on `EditorState::highlight`, is
+passed to the widget as a scoped `&mut`, and holds no document text — only
+byte ranges and colors, so the text-authority guard is unaffected.
+
+Its scan is **sequential and forward-only** because `syntect`'s parser is a
+state machine: line N depends on whether line N-1 opened a block comment.
+Already-scanned lines are cached; a backwards scroll or a jump resets the
+machine and replays from the top, bounded by `MAX_HIGHLIGHT_SCAN_LINES`
+(5000), past which highlighting switches **itself off** and says so. An
+unknown extension is a plain render, not an error. `theme.code_theme` is
+already light/dark-correct (`select_code_theme`), so the scan's palette
+cannot invert against the surrounding UI.
 
 **Async discipline.** Every controller round trip (open, save, reload,
 resync, close) is spawned with `spawn_scoped_registered_tui_task` and carries

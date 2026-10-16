@@ -631,16 +631,51 @@ security signal pipeline that can escalate them, are described in
 
 ## Editor language features
 
-Opening a file puts the cursor in the document (`INS`). `Esc` returns to
-`NOR`, where `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
-`v` selects by character, `x` selects the whole line (press again for one more),
-`d` deletes the selection, and `space y` copies it — the same Helix keys
-`/terminal` uses in its viewing mode. In `NOR` anything the buffer does not
-claim types into the input box at the bottom, so you can talk to the agent
-without leaving the file. `Esc` never closes the editor; `:q` does.
+Opening a file puts you in `NOR`, not `INS`. It is a surface you read before
+you type into, and `i` is one keystroke away. `NOR` gives the keyboard to the
+Helix verbs: `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
+`v` selects by character, `x` selects the whole line (press again for one
+more), `d` deletes the selection, and `space y` copies it — the same keys
+`/terminal` uses in its viewing mode. `i`/`a`/`I`/`A`/`o`/`O` enter `INS`,
+where typing goes into the file and `Esc` returns. In `NOR` anything the
+buffer does not claim types into the input box at the bottom, so you can talk
+to the agent without leaving the file. `Esc` never closes the editor; `:q`
+does.
 
-Syntax highlighting arrives with the file and is refreshed shortly after you
-stop typing. Press `F9` to ask again if your language server was still starting.
+The cursor is a block in `NOR` and a thin bar in `INS`, so you can always see
+where you are. `Ctrl+d` pages down and continues to the end of the file when a
+half-page would land past it.
+
+### Searching inside the file
+
+`/` searches the document while the editor has focus in `NOR`. The line opens
+pre-filled with the word under the cursor, and it searches as you type:
+`/host` → `/host_status` → `/host_status fn`. Matches are highlighted in the
+text and the count shows next to the line/column readout.
+
+| Key | What it does |
+|---|---|
+| `Enter` | accept, keep the highlight |
+| `Esc` | abandon the search and clear the highlight |
+| `n` / `N` | next / previous match (after `Enter`) |
+| `Backspace` | remove a character and re-search |
+
+Search covers a bounded window of the file. If it stops short, the status row
+says `partial` rather than implying the count is the whole story.
+
+In `INS` a slash is just a slash — otherwise you could not type a URL.
+
+### Syntax highlighting
+
+Files are coloured as soon as they open, with no language server required.
+When a language server is available its semantic tokens take over and stay
+authoritative, because it knows the real grammar. Built-in highlighting follows
+the file's extension; an extension with no bundled grammar renders plain.
+Press `F9` to re-request server tokens if your language server was still
+starting.
+
+Very large files (more than 5000 lines) drop built-in highlighting rather than
+freeze a frame while re-scanning; the text still edits normally.
 
 The editor can show current-file diagnostics and request hover, definition,
 references, document symbols, and workspace symbols from the daemon-owned
