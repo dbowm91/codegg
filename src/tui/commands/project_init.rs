@@ -322,4 +322,35 @@ mod tests {
             }
         ));
     }
+
+    #[tokio::test]
+    async fn launch_open_a_b_a_restores_each_directory_identity() {
+        let parent = tempfile::tempdir().unwrap();
+        let root_a = parent.path().join("project-a");
+        let root_b = parent.path().join("project-b");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        let pool = test_pool().await;
+        let client = Arc::new(InprocCoreClient::new(
+            None,
+            None,
+            Some(pool),
+            crate::config::schema::Config::default(),
+            None,
+        ));
+        let mut app = App::new_for_testing(root_a.display().to_string());
+        app.set_core_client(client);
+
+        let first_a = app.bootstrap_launch_project_context(&root_a).await.unwrap();
+        let only_b = app.bootstrap_launch_project_context(&root_b).await.unwrap();
+        let second_a = app.bootstrap_launch_project_context(&root_a).await.unwrap();
+
+        assert_eq!(first_a.project_id, second_a.project_id);
+        assert_eq!(first_a.workspace_id, second_a.workspace_id);
+        assert_ne!(first_a.project_id, only_b.project_id);
+        assert_eq!(
+            app.project_execution_context().unwrap().workspace_root,
+            root_a.canonicalize().unwrap()
+        );
+    }
 }

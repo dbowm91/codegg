@@ -37,8 +37,8 @@ lands in that tab's workspace.
 Two consequences worth knowing:
 
 - Execution is always scoped to the active tab's workspace. The process working
-  directory is never changed — the launch directory is used exactly once, by
-  the bootstrap path that creates the initial compatibility tab.
+  directory is never changed; the frontend stores the selected workspace root
+  on that tab and passes it as the execution context.
 - The sidebar is keyboard-focusable and includes an Agent Runs tree for nested
   run inspection. The tree renders the active projection turn's bounded run
   nodes parent-first, with status, attention, progress, and joined
@@ -47,10 +47,16 @@ Two consequences worth knowing:
   rather than copying transcripts into sidebar state.
 
 Switch tabs with `NextProjectTab` / `PreviousProjectTab` / `SelectProjectTabByIndex`
-and close one with `CloseProjectTab`. A local project picker (`WorkspaceRegister`
-then `ProjectRegister`) registers a new project into the catalog. Open it with
+and close one with `CloseProjectTab`. A local project picker opens a directory:
+an unseen directory creates a project named after that directory, while a
+reopened directory loads its existing project. Open the picker with
 `Shift+F` in `NOR` mode or the `/projects` command
 (which also works mid-prompt).
+
+Each new directory is bound to its own project, even when another directory
+is a clone or worktree with the same Git remote. Existing projects that were
+previously bound to multiple directories remain readable; use the picker edit
+action to rebind one directory before adding another.
 
 The picker shows the active project and its workspace path on the status
 line; the sessions dialog repeats that context in its header. In the picker,

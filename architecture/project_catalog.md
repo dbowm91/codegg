@@ -34,7 +34,10 @@ from internal/diagnostic surfaces only.
 - `register_local_project(input, workspace_id, source)` — explicit
   local registration. Creates a new `ProjectId` and binds the
   workspace, or returns an existing project if the workspace is
-  already bound.
+  already bound. Repository lineage is metadata: a new workspace root
+  receives its own project even when another project shares that lineage.
+  Existing multi-workspace projects remain readable until a rebind selects
+  one root.
 - `archive_project(project_id, source)` — logical archive (sets
   `lifecycle = 'archived'`, writes `archived_at`). Retries up to 3
   times on SQLite `database is locked`.
@@ -123,7 +126,7 @@ API calls. Returns `HydrationReport` with `active_project_count`,
 ### Conservative Legacy Association
 
 `conservative_legacy_association()` uses `repository_lineage` to
-associate unambiguous workspaces to canonical projects. Ambiguous
+attach repository metadata to a new directory-owned project. Ambiguous
 cases record diagnostics in `identity_diagnostic` without merging.
 The operation is idempotent: the `legacy_catalog_association_marker`
 table records which sources have already been processed.

@@ -980,24 +980,12 @@ pub enum TuiCommand {
     StartRegisterWorkspace {
         path: String,
     },
-    /// Project Picker (Milestone 2): workspace registration completion.
-    WorkspaceRegistered {
-        request_id: u64,
-        picker_request_id: u64,
-        workspace_id: Option<String>,
-        error: Option<String>,
-    },
-    /// Project Picker (Milestone 2): register a project.
-    StartRegisterProject {
-        workspace_id: String,
-        display_name: String,
-        description: Option<String>,
-        tags: Vec<String>,
-    },
     /// Project Picker (Milestone 2): project registration completion.
     ProjectRegistered {
         request_id: u64,
         picker_request_id: u64,
+        workspace_id: String,
+        workspace_root: String,
         project_id: Option<String>,
         error: Option<String>,
     },

@@ -465,7 +465,7 @@ async fn register_local_project_with_unregistered_root_returns_invalid_value() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn two_workspaces_one_project_reuses() {
+async fn distinct_workspaces_get_distinct_projects_even_with_shared_lineage() {
     let p = pool().await;
     let storage = ProjectStorage::new(p.clone());
     let catalog = ProjectCatalog::new(p.clone());
@@ -475,7 +475,7 @@ async fn two_workspaces_one_project_reuses() {
     let ws1 = workspace(root1.path(), "First");
     let ws2 = workspace(root2.path(), "Second");
 
-    // Both use the same repo → same lineage → same project
+    // Repository lineage is metadata; directory bindings define project identity.
     let evidence =
         codegg_core::repository_lineage::classify_remote_urls(["https://example.test/repo"]);
     storage
@@ -510,8 +510,110 @@ async fn two_workspaces_one_project_reuses() {
         .await
         .unwrap();
 
-    // Same project_id because same repository lineage
-    assert_eq!(r1.project_id, r2.project_id);
+    assert_ne!(r1.project_id, r2.project_id);
+    assert_eq!(
+        catalog
+            .list_workspaces_for_project(&r1.project_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        catalog
+            .list_workspaces_for_project(&r2.project_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Reopening either root resolves its original project.
+    let reopened = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "ignored on reopen".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &ws1.id,
+            "test-reopen",
+        )
+        .await
+        .unwrap();
+    assert_eq!(r1.project_id, reopened.project_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn grandfathered_multi_root_project_is_readable_but_not_extended() {
+    let p = pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let first_root = tempdir().unwrap();
+    let second_root = tempdir().unwrap();
+    let third_root = tempdir().unwrap();
+    let first = workspace(first_root.path(), "First historical root");
+    let second = workspace(second_root.path(), "Second historical root");
+    let third = workspace(third_root.path(), "New root");
+    for workspace in [&first, &second, &third] {
+        insert_workspace_row(&p, workspace).await;
+    }
+    let project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "Historical project".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &first.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    let now = Utc::now().timestamp_millis();
+    sqlx::query(
+        "INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, NULL, NULL, NULL, ?, 'resolved', 'legacy', 1, ?, ?)",
+    )
+    .bind(second.id.as_str())
+    .bind(project.project_id.as_str())
+    .bind(second.canonical_root.to_string_lossy().as_ref())
+    .bind(now)
+    .bind(now)
+    .execute(&p)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        catalog
+            .list_workspaces_for_project(&project.project_id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    let new_project = catalog
+        .register_local_project(
+            RegisterLocalProject {
+                display_name: "New root".into(),
+                description: None,
+                tags: vec![],
+                primary_repository_id: None,
+            },
+            &third.id,
+            "test",
+        )
+        .await
+        .unwrap();
+    assert_ne!(new_project.project_id, project.project_id);
+    assert_eq!(
+        catalog
+            .list_workspaces_for_project(&project.project_id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1117,4 +1219,32 @@ async fn concurrent_duplicate_registration_converges() {
     for id in &project_ids[1..] {
         assert_eq!(*id, project_ids[0]);
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_first_registration_for_one_workspace_coalesces() {
+    let (p, _dir) = concurrent_pool().await;
+    let catalog = ProjectCatalog::new(p.clone());
+    let root = tempdir().unwrap();
+    let ws = workspace(root.path(), "Concurrent first open");
+    insert_workspace_row(&p, &ws).await;
+    let make_input = || RegisterLocalProject {
+        display_name: "Concurrent first open".into(),
+        description: None,
+        tags: vec![],
+        primary_repository_id: None,
+    };
+
+    let (first, second) = tokio::join!(
+        catalog.register_local_project(make_input(), &ws.id, "open-a"),
+        catalog.register_local_project(make_input(), &ws.id, "open-b")
+    );
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.project_id, second.project_id);
+    let projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM logical_project")
+        .fetch_one(&p)
+        .await
+        .unwrap();
+    assert_eq!(projects, 1);
 }

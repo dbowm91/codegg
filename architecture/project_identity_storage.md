@@ -18,17 +18,20 @@ string-backed session fields intact.
 | `identity_diagnostic` | Redacted, reason-coded migration and rebinding evidence |
 
 Foreign keys and primary/unique keys are the final authority for relation
-convergence. Binding revisions are incremented on successful rebinds and are
-required by `ProjectStorage::rebind_workspace` and `rebind_session`.
+convergence. New workspace bindings are one canonical root to one logical
+project. Historical projects with multiple workspace bindings remain readable
+until an operator uses project rebind to select one root. Binding revisions
+are incremented on successful rebinds and are required by
+`ProjectStorage::rebind_workspace` and `rebind_session`.
 
 ## Reconciliation rules
 
 `ProjectStorage::reconcile_workspace_path` probes only the supplied registered
 workspace. Git probing is local-only, bounded, non-interactive, and performed
 before the SQLite write transaction. A unique normalized remote is the only
-repository lineage match. Equivalent remote spellings reuse the same
-repository and project; path renames do not create new identity. Missing Git
-metadata creates a valid project without a repository. Conflicting, redacted,
+repository lineage match. Equivalent remote spellings reuse repository
+metadata, while each unseen workspace gets a distinct logical project. Missing
+Git metadata creates a valid project without a repository. Conflicting, redacted,
 or insufficient evidence creates an explicit ambiguous/rebind-required
 diagnostic and does not merge records.
 
@@ -37,11 +40,14 @@ marks sessions without a resolvable workspace as `rebind_required`. It is
 safe to rerun: resolved workspace bindings and resolved session bindings are
 retained, and uniqueness constraints prevent duplicate authority.
 
-## Launch registration
+## Directory open registration
 
-A TUI launch registers its directory through `ProjectCatalog::register_local_project`
-(`CoreRequest::ProjectRegister`), **not** through `reconcile_workspace_path`.
-That path applies the same lineage rules directly:
+A TUI launch and local picker use the shared
+`ensure_bound_project_context` flow: `WorkspaceRegister`, followed by
+`ProjectRegister`. The project catalog returns an existing workspace binding
+on reopen and creates a directory-named project for a new root. Registration
+does not use `reconcile_workspace_path` for interactive opens. The catalog
+registration path applies these lineage rules:
 
 - The local Git probe runs before any write transaction, and only unique
   usable remote evidence produces a `repository` row.
@@ -50,11 +56,9 @@ That path applies the same lineage rules directly:
 - A binding recorded with `status = 'resolved'` but a NULL repository is
   **healed**: the probed lineage is attached to the existing project, which is
   never churned. The `UPDATE` is guarded on `repository_id IS NULL`.
-- A repository already primary-bound to a *different* project is recorded as an
-  `ambiguous` `identity_diagnostic` instead of merging two projects.
-- Without a binding, a repository whose lineage already maps to exactly one
-  project reuses that project, so a rename, a move, or a second worktree of the
-  same remote lands on one logical project.
+- Without a binding, the directory gets a new project named for its workspace.
+  A clone or worktree with the same remote gets its own project while reusing
+  the repository metadata.
 
 Healing matters because `reconcile_workspace_once` deliberately treats a
 `resolved` binding as authoritative and never re-probes. A binding written

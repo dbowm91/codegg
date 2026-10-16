@@ -644,28 +644,9 @@ impl ProjectCatalog {
             },
         };
 
-        // Check if the primary repository already links to an existing project.
-        // Identity follows lineage, not path: a rename, a move, or a second
-        // worktree of the same remote lands on the same logical project.
-        if let Some(repo_id) = &repository_id {
-            let existing = sqlx::query(
-                "SELECT project_id FROM project_repository WHERE repository_id = ? AND relation_kind = 'primary' ORDER BY project_id LIMIT 2",
-            )
-            .bind(repo_id.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(catalog_db_error)?;
-
-            if existing.len() == 1 {
-                let project_id =
-                    ProjectId::parse(existing[0].get::<String, _>("project_id").as_str())
-                        .map_err(catalog_identity_error)?;
-                // Bind workspace to existing project
-                self.bind_workspace_to_project(workspace_id, &project_id, Some(repo_id), &source)
-                    .await?;
-                return self.get_project(&project_id).await;
-            }
-        }
+        // Project identity follows the canonical directory binding. Repository
+        // lineage is useful metadata, but must not merge distinct directories:
+        // worktrees and clones receive independent logical projects.
 
         // Create new project
         let mut tx = self.pool.begin().await.map_err(catalog_db_error)?;
@@ -706,19 +687,12 @@ impl ProjectCatalog {
 
         // Bind workspace
         let locator_root = canonical_root;
-        sqlx::query(
+        let binding = sqlx::query(
             r#"INSERT INTO workspace_project_binding
                (workspace_id, project_id, repository_id, worktree_id, node_id,
                 locator, status, source, revision, time_created, time_updated)
                VALUES (?, ?, ?, NULL, NULL, ?, 'resolved', ?, 1, ?, ?)
-               ON CONFLICT(workspace_id) DO UPDATE SET
-                project_id = excluded.project_id,
-                repository_id = excluded.repository_id,
-                locator = excluded.locator,
-                status = excluded.status,
-                source = excluded.source,
-                revision = workspace_project_binding.revision + 1,
-                time_updated = excluded.time_updated"#,
+               ON CONFLICT(workspace_id) DO NOTHING"#,
         )
         .bind(workspace_id.as_str())
         .bind(project_id.as_str())
@@ -730,6 +704,21 @@ impl ProjectCatalog {
         .execute(&mut *tx)
         .await
         .map_err(catalog_db_error)?;
+
+        if binding.rows_affected() == 0 {
+            // Another opener won the workspace binding race. Roll back the
+            // speculative project so a concurrent open coalesces cleanly.
+            tx.rollback().await.map_err(catalog_db_error)?;
+            let winner: String = sqlx::query_scalar(
+                "SELECT project_id FROM workspace_project_binding WHERE workspace_id = ?",
+            )
+            .bind(workspace_id.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(catalog_db_error)?;
+            let winner = ProjectId::parse(&winner).map_err(catalog_identity_error)?;
+            return self.get_project(&winner).await;
+        }
 
         tx.commit().await.map_err(catalog_db_error)?;
         self.get_project(&project_id).await
@@ -1628,52 +1617,6 @@ impl ProjectCatalog {
             health_count: health as usize,
         })
     }
-
-    /// Bind an existing workspace to a project (internal helper).
-    async fn bind_workspace_to_project(
-        &self,
-        workspace_id: &WorkspaceId,
-        project_id: &ProjectId,
-        repository_id: Option<&crate::identity::RepositoryId>,
-        source: &str,
-    ) -> Result<(), CatalogError> {
-        let now = Utc::now();
-        let workspace_row = sqlx::query("SELECT canonical_root FROM workspace WHERE id = ?")
-            .bind(workspace_id.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(catalog_db_error)?
-            .ok_or_else(|| {
-                CatalogError::InvalidValue("workspace not found for binding".to_string())
-            })?;
-        let locator_root: String = workspace_row.get("canonical_root");
-
-        sqlx::query(
-            r#"INSERT INTO workspace_project_binding
-               (workspace_id, project_id, repository_id, worktree_id, node_id,
-                locator, status, source, revision, time_created, time_updated)
-               VALUES (?, ?, ?, NULL, NULL, ?, 'resolved', ?, 1, ?, ?)
-               ON CONFLICT(workspace_id) DO UPDATE SET
-                project_id = excluded.project_id,
-                repository_id = excluded.repository_id,
-                locator = excluded.locator,
-                status = excluded.status,
-                source = excluded.source,
-                revision = workspace_project_binding.revision + 1,
-                time_updated = excluded.time_updated"#,
-        )
-        .bind(workspace_id.as_str())
-        .bind(project_id.as_str())
-        .bind(repository_id.map(|r| r.as_str()))
-        .bind(&locator_root)
-        .bind(source)
-        .bind(now.timestamp_millis())
-        .bind(now.timestamp_millis())
-        .execute(&self.pool)
-        .await
-        .map_err(catalog_db_error)?;
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1740,7 +1683,10 @@ pub async fn conservative_legacy_association(
             Ok(evidence) => {
                 // Check if unambiguous
                 if let Some(lineage_key) = evidence.equality_key() {
-                    // Look for existing project with this repository
+                    // Reuse repository metadata, never project identity: a
+                    // legacy directory receiving its first binding gets its
+                    // own logical project even when another root has this
+                    // Git lineage.
                     let repo_row = sqlx::query(
                         "SELECT id FROM repository WHERE vcs_kind = 'git' AND lineage_key = ?",
                     )
@@ -1749,93 +1695,39 @@ pub async fn conservative_legacy_association(
                     .await
                     .map_err(catalog_db_error)?;
 
-                    let project_id = if let Some(row) = repo_row {
-                        let repo_id: String = row.get("id");
-                        // Find existing project for this repo
-                        let proj_row = sqlx::query(
-                            "SELECT project_id FROM project_repository WHERE repository_id = ? AND relation_kind = 'primary' LIMIT 1",
-                        )
-                        .bind(&repo_id)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .map_err(catalog_db_error)?;
-
-                        if let Some(row) = proj_row {
-                            ProjectId::parse(row.get::<String, _>("project_id").as_str())
-                                .map_err(catalog_identity_error)?
-                        } else {
-                            // Create new project
-                            let new_project = ProjectId::new();
-                            let now = Utc::now();
-                            let display_name = bounded_text(
-                                &workspace.display_name,
-                                MAX_DISPLAY_NAME_LENGTH,
-                                "display name",
-                            )
-                            .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
-                            sqlx::query(
-                                r#"INSERT INTO logical_project
-                                   (id, display_name, lifecycle, registration_source,
-                                    time_created, time_updated)
-                                   VALUES (?, ?, 'active', ?, ?, ?)"#,
-                            )
-                            .bind(new_project.as_str())
-                            .bind(&display_name)
-                            .bind(&source_bounded)
-                            .bind(now.timestamp_millis())
-                            .bind(now.timestamp_millis())
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(catalog_db_error)?;
-
-                            // Create project_repository relation
-                            sqlx::query(
-                                "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
-                            )
-                            .bind(new_project.as_str())
-                            .bind(&repo_id)
-                            .bind(now.timestamp_millis())
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(catalog_db_error)?;
-
-                            new_project
-                        }
+                    let (repo_id, create_repo) = if let Some(row) = repo_row {
+                        (row.get::<String, _>("id"), false)
                     } else {
-                        // No existing repo, create new project
-                        let new_project = ProjectId::new();
-                        let now = Utc::now();
-                        let display_name = bounded_text(
-                            &workspace.display_name,
-                            MAX_DISPLAY_NAME_LENGTH,
-                            "display name",
-                        )
-                        .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
-                        sqlx::query(
-                            r#"INSERT INTO logical_project
-                               (id, display_name, lifecycle, registration_source,
-                                time_created, time_updated)
-                               VALUES (?, ?, 'active', ?, ?, ?)"#,
-                        )
-                        .bind(new_project.as_str())
-                        .bind(&display_name)
-                        .bind(&source_bounded)
-                        .bind(now.timestamp_millis())
-                        .bind(now.timestamp_millis())
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(catalog_db_error)?;
+                        (crate::identity::RepositoryId::new().to_string(), true)
+                    };
 
-                        // Create repository
-                        let repo_id = crate::identity::RepositoryId::new();
-                        let _remote_identity =
-                            crate::project_storage::ProjectStorage::new(pool.clone());
-                        // We can't call project_storage methods in a tx context easily,
-                        // so we insert directly
+                    let new_project = ProjectId::new();
+                    let now = Utc::now();
+                    let display_name = bounded_text(
+                        &workspace.display_name,
+                        MAX_DISPLAY_NAME_LENGTH,
+                        "display name",
+                    )
+                    .map_err(|e| CatalogError::InvalidValue(e.to_string()))?;
+                    sqlx::query(
+                        r#"INSERT INTO logical_project
+                           (id, display_name, lifecycle, registration_source,
+                            time_created, time_updated)
+                           VALUES (?, ?, 'active', ?, ?, ?)"#,
+                    )
+                    .bind(new_project.as_str())
+                    .bind(&display_name)
+                    .bind(&source_bounded)
+                    .bind(now.timestamp_millis())
+                    .bind(now.timestamp_millis())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(catalog_db_error)?;
+                    if create_repo {
                         sqlx::query(
                             "INSERT INTO repository (id, vcs_kind, lineage_key, remote_identity, provenance, status, time_created, time_updated) VALUES (?, 'git', ?, NULL, ?, 'resolved', ?, ?)",
                         )
-                        .bind(repo_id.as_str())
+                        .bind(&repo_id)
                         .bind(&lineage_key)
                         .bind(&source_bounded)
                         .bind(now.timestamp_millis())
@@ -1843,19 +1735,16 @@ pub async fn conservative_legacy_association(
                         .execute(&mut *tx)
                         .await
                         .map_err(catalog_db_error)?;
-
-                        sqlx::query(
-                            "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
-                        )
-                        .bind(new_project.as_str())
-                        .bind(repo_id.as_str())
-                        .bind(now.timestamp_millis())
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(catalog_db_error)?;
-
-                        new_project
-                    };
+                    }
+                    sqlx::query(
+                        "INSERT INTO project_repository (project_id, repository_id, relation_kind, time_created, revision) VALUES (?, ?, 'primary', ?, 1) ON CONFLICT(project_id, repository_id) DO NOTHING",
+                    )
+                    .bind(new_project.as_str())
+                    .bind(&repo_id)
+                    .bind(now.timestamp_millis())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(catalog_db_error)?;
 
                     // Bind workspace
                     let now = Utc::now();
@@ -1864,11 +1753,12 @@ pub async fn conservative_legacy_association(
                         r#"INSERT INTO workspace_project_binding
                            (workspace_id, project_id, repository_id, worktree_id, node_id,
                             locator, status, source, revision, time_created, time_updated)
-                           VALUES (?, ?, NULL, NULL, NULL, ?, 'resolved', ?, 1, ?, ?)
+                           VALUES (?, ?, ?, NULL, NULL, ?, 'resolved', ?, 1, ?, ?)
                            ON CONFLICT(workspace_id) DO NOTHING"#,
                     )
                     .bind(workspace.id.as_str())
-                    .bind(project_id.as_str())
+                    .bind(new_project.as_str())
+                    .bind(&repo_id)
                     .bind(&locator_root)
                     .bind(&source_bounded)
                     .bind(now.timestamp_millis())
@@ -2311,10 +2201,10 @@ mod tests {
         );
     }
 
-    /// Identity follows lineage, not path: a second workspace with the same
-    /// remote (a worktree, or a renamed directory) lands on the same project.
+    /// Directory identity is independent from repository lineage: separate
+    /// worktrees of one remote get separate logical projects.
     #[tokio::test(flavor = "current_thread")]
-    async fn same_lineage_reuses_one_project_across_workspaces() {
+    async fn same_lineage_keeps_projects_distinct_across_workspaces() {
         let first_root = tempfile::tempdir().unwrap();
         let second_root = tempfile::tempdir().unwrap();
         init_repo_with_remote(first_root.path(), "https://example.com/team/shared.git");
@@ -2335,7 +2225,23 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(a.project_id, b.project_id);
+        assert_ne!(a.project_id, b.project_id);
+        assert_eq!(
+            catalog
+                .list_workspaces_for_project(&a.project_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .list_workspaces_for_project(&b.project_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     /// A binding that already carries a repository is authoritative; healing

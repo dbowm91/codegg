@@ -12,6 +12,63 @@ use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+/// Resolve a frontend-owned directory to its idempotent workspace/project
+/// pair. Both startup and picker opens use this path so a known root always
+/// returns its existing project and an unseen root is named for its directory.
+pub(crate) async fn ensure_bound_project_context(
+    core_client: &dyn crate::core::CoreClient,
+    directory: &std::path::Path,
+    source: &str,
+) -> Result<(String, String, String), String> {
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve directory: {error}"))?;
+    let root = directory.to_string_lossy().into_owned();
+    let workspace_id = match core_client
+        .request(crate::core::new_request(
+            format!("workspace-open-{}", uuid::Uuid::new_v4()),
+            CoreRequest::WorkspaceRegister { root: root.clone() },
+        ))
+        .await
+    {
+        Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
+        Ok(CoreResponse::Error { code, message }) => {
+            return Err(format!("workspace registration failed ({code}): {message}"))
+        }
+        Ok(other) => return Err(format!("unexpected workspace response: {other:?}")),
+        Err(error) => return Err(format!("workspace registration request failed: {error}")),
+    };
+    let display_name = directory
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| root.clone());
+    let project_id = match core_client
+        .request(crate::core::new_request(
+            format!("project-open-{}", uuid::Uuid::new_v4()),
+            CoreRequest::ProjectRegister {
+                request: crate::protocol::dto::ProjectRegisterRequestDto {
+                    workspace_id: workspace_id.clone(),
+                    display_name,
+                    description: None,
+                    tags: Vec::new(),
+                    repository_id: None,
+                    source: source.to_string(),
+                },
+            },
+        ))
+        .await
+    {
+        Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
+        Ok(CoreResponse::Error { code, message }) => {
+            return Err(format!("project registration failed ({code}): {message}"))
+        }
+        Ok(other) => return Err(format!("unexpected project response: {other:?}")),
+        Err(error) => return Err(format!("project registration request failed: {error}")),
+    };
+    Ok((project_id, workspace_id, root))
+}
+
 /// Open or focus a project tab. If the project is already open,
 /// switches to that tab. Otherwise creates a new tab after validating
 /// capacity.
@@ -1407,174 +1464,39 @@ pub(crate) fn start_register_workspace(app: &mut App, path: String) {
     let tx = app.tui_cmd_tx.clone();
 
     let request_id = 0; // Will be assigned by the picker on apply
+    let workspace_root = path.clone();
 
     spawn_registered_tui_task(
         tx,
         &mut app.task_registry,
         TuiTaskKind::Command,
-        "register_workspace",
+        "open_project_directory",
         async move {
-            let Some(core_client) = core_client else {
-                return Some(TuiCommand::WorkspaceRegistered {
-                    request_id,
-                    picker_request_id,
-                    workspace_id: None,
-                    error: Some("Core unavailable".to_string()),
-                });
+            let result = match core_client {
+                Some(core_client) => {
+                    ensure_bound_project_context(
+                        core_client.as_ref(),
+                        std::path::Path::new(&path),
+                        "tui-picker-open",
+                    )
+                    .await
+                }
+                None => Err("Core unavailable".to_string()),
             };
-
-            let req = crate::core::new_request(
-                format!("workspace-register-{}", uuid::Uuid::new_v4()),
-                CoreRequest::WorkspaceRegister { root: path },
-            );
-
-            match core_client.request(req).await {
-                Ok(CoreResponse::WorkspaceSnapshot { workspace }) => {
-                    Some(TuiCommand::WorkspaceRegistered {
-                        request_id,
-                        picker_request_id,
-                        workspace_id: Some(workspace.workspace_id),
-                        error: None,
-                    })
+            let (workspace_id, workspace_root, project_id, error) = match result {
+                Ok((project_id, workspace_id, workspace_root)) => {
+                    (workspace_id, workspace_root, Some(project_id), None)
                 }
-                Ok(CoreResponse::Error { code, message }) => {
-                    Some(TuiCommand::WorkspaceRegistered {
-                        request_id,
-                        picker_request_id,
-                        workspace_id: None,
-                        error: Some(format!("{}: {}", code, message)),
-                    })
-                }
-                Ok(_) => Some(TuiCommand::WorkspaceRegistered {
-                    request_id,
-                    picker_request_id,
-                    workspace_id: None,
-                    error: Some("Unexpected response".to_string()),
-                }),
-                Err(e) => Some(TuiCommand::WorkspaceRegistered {
-                    request_id,
-                    picker_request_id,
-                    workspace_id: None,
-                    error: Some(e.to_string()),
-                }),
-            }
-        },
-    );
-}
-
-/// Apply workspace registration completion.
-pub(crate) fn apply_workspace_registered(
-    app: &mut App,
-    request_id: u64,
-    picker_request_id: u64,
-    workspace_id: Option<String>,
-    error: Option<String>,
-) {
-    // Reject stale completion if the picker has moved on.
-    let picker = match &mut app.dialog_state.project_picker {
-        Some(p) => p,
-        None => return,
-    };
-    if !picker.is_request_current(picker_request_id) {
-        return;
-    }
-    let _ = request_id;
-
-    if let Some(err) = error {
-        app.messages_state.toasts.error(&err);
-        picker.last_error = Some(err);
-        picker.phase = crate::tui::app::state::PickerPhase::Error;
-        return;
-    }
-
-    let _ws_id = match workspace_id {
-        Some(id) => id,
-        None => return,
-    };
-
-    // Store the workspace id for the next step (project registration)
-    // and transition to registration input phase
-    picker.phase = crate::tui::app::state::PickerPhase::RegistrationInput;
-    picker.last_error = None;
-}
-
-/// Start registering a project.
-pub(crate) fn start_register_project(
-    app: &mut App,
-    workspace_id: String,
-    display_name: String,
-    description: Option<String>,
-    tags: Vec<String>,
-) {
-    // Capture picker request generation for stale-completion rejection.
-    let picker_request_id = app
-        .dialog_state
-        .project_picker
-        .as_ref()
-        .map(|p| p.picker_request.request_id())
-        .unwrap_or(0);
-
-    let core_client = app.core_client.clone();
-    let tx = app.tui_cmd_tx.clone();
-    let request_id = 0;
-
-    spawn_registered_tui_task(
-        tx,
-        &mut app.task_registry,
-        TuiTaskKind::Command,
-        "register_project",
-        async move {
-            let Some(core_client) = core_client else {
-                return Some(TuiCommand::ProjectRegistered {
-                    request_id,
-                    picker_request_id,
-                    project_id: None,
-                    error: Some("Core unavailable".to_string()),
-                });
+                Err(error) => (String::new(), workspace_root, None, Some(error)),
             };
-
-            let req = crate::core::new_request(
-                format!("project-register-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectRegister {
-                    request: crate::protocol::dto::ProjectRegisterRequestDto {
-                        workspace_id,
-                        display_name,
-                        description,
-                        tags,
-                        repository_id: None,
-                        source: "tui".to_string(),
-                    },
-                },
-            );
-
-            match core_client.request(req).await {
-                Ok(CoreResponse::ProjectRegistered { project }) => {
-                    Some(TuiCommand::ProjectRegistered {
-                        request_id,
-                        picker_request_id,
-                        project_id: Some(project.project_id),
-                        error: None,
-                    })
-                }
-                Ok(CoreResponse::Error { code, message }) => Some(TuiCommand::ProjectRegistered {
-                    request_id,
-                    picker_request_id,
-                    project_id: None,
-                    error: Some(format!("{}: {}", code, message)),
-                }),
-                Ok(_) => Some(TuiCommand::ProjectRegistered {
-                    request_id,
-                    picker_request_id,
-                    project_id: None,
-                    error: Some("Unexpected response".to_string()),
-                }),
-                Err(e) => Some(TuiCommand::ProjectRegistered {
-                    request_id,
-                    picker_request_id,
-                    project_id: None,
-                    error: Some(e.to_string()),
-                }),
-            }
+            Some(TuiCommand::ProjectRegistered {
+                request_id,
+                picker_request_id,
+                workspace_id,
+                workspace_root,
+                project_id,
+                error,
+            })
         },
     );
 }
@@ -1584,6 +1506,8 @@ pub(crate) fn apply_project_registered(
     app: &mut App,
     request_id: u64,
     picker_request_id: u64,
+    workspace_id: String,
+    workspace_root: String,
     project_id: Option<String>,
     error: Option<String>,
 ) {
@@ -1617,5 +1541,16 @@ pub(crate) fn apply_project_registered(
 
     // Refresh catalog and open the project
     super::project_catalog::start_refresh_project_catalog(app);
-    open_or_focus_project(app, proj_id, None, None, None);
+    open_or_focus_project(
+        app,
+        proj_id,
+        Some(workspace_id),
+        Some(
+            std::path::Path::new(&workspace_root)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| workspace_root.clone()),
+        ),
+        Some(std::path::PathBuf::from(workspace_root)),
+    );
 }

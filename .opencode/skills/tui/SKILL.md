@@ -141,11 +141,13 @@ model to the wrong connection.
 ## Other Invariants
 
 - **The launch directory is registered at startup.** `ProjectContextResolver`
-  resolves a directory by catalog lookup only and never registers on a miss, so
-  a directory CodeGG has not seen before has no executable project context.
-  `App::bootstrap_launch_project_context` runs from `main.rs` before any
-  session-scoped request: `WorkspaceRegister` then `ProjectRegister` for the
-  launch directory (both idempotent), writing the resulting pair onto the
+  resolves a directory by catalog lookup only and never registers on a miss.
+  Startup and the local directory picker share
+  `ensure_bound_project_context`: they register the workspace then the
+  directory-named project, and both operations are idempotent for a known
+  canonical root. New roots receive one project each even when their Git
+  lineage matches another project; historical multi-root bindings stay
+  readable until explicitly rebound. The launch pair is written onto the
   active tab via `set_active_identities`. New code must not move identity
   creation into the resolver, and must not send a path in an identity field —
   `SessionCreate` takes a `(project_id, workspace_id)` **pair**, so a

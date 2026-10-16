@@ -9855,9 +9855,7 @@ impl App {
             let _ = send_tui(&tx, TuiCommand::StartRegisterWorkspace { path });
         }
 
-        // Move to RegistrationConfirm placeholder; the apply will
-        // transition to RegistrationInput on success so the user can
-        // fill in display name / description / tags.
+        // The open flow derives the project name from this directory.
         if let Some(picker) = self.dialog_state.project_picker.as_mut() {
             picker.phase = PickerPhase::RegistrationConfirm;
         }
@@ -13096,62 +13094,13 @@ impl App {
             .core_client
             .clone()
             .ok_or_else(|| "core client is not attached".to_string())?;
-        let root = directory.to_string_lossy().into_owned();
-
-        // Phase 1: workspace identity for the root. Idempotent.
-        let workspace_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-workspace-{}", uuid::Uuid::new_v4()),
-                CoreRequest::WorkspaceRegister { root: root.clone() },
-            ))
-            .await
-        {
-            Ok(CoreResponse::WorkspaceSnapshot { workspace }) => workspace.workspace_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("workspace registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "workspace registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("workspace registration request failed: {e}")),
-        };
-
-        // Phase 2: project identity bound to that workspace. Idempotent —
-        // an existing binding returns the bound project unchanged.
-        let display_name = directory
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| root.clone());
-        let project_id = match core_client
-            .request(crate::core::new_request(
-                format!("launch-project-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectRegister {
-                    request: crate::protocol::dto::ProjectRegisterRequestDto {
-                        workspace_id: workspace_id.clone(),
-                        display_name,
-                        description: None,
-                        tags: Vec::new(),
-                        repository_id: None,
-                        source: LAUNCH_REGISTRATION_SOURCE.to_string(),
-                    },
-                },
-            ))
-            .await
-        {
-            Ok(CoreResponse::ProjectRegistered { project }) => project.project_id,
-            Ok(CoreResponse::Error { code, message }) => {
-                return Err(format!("project registration failed ({code}): {message}"))
-            }
-            Ok(other) => {
-                return Err(format!(
-                    "project registration returned an unexpected response: {other:?}"
-                ))
-            }
-            Err(e) => return Err(format!("project registration request failed: {e}")),
-        };
+        let (project_id, workspace_id, _canonical_root) =
+            crate::tui::commands::project_picker::ensure_bound_project_context(
+                core_client.as_ref(),
+                directory,
+                LAUNCH_REGISTRATION_SOURCE,
+            )
+            .await?;
 
         // Keep the active tab's session binding; only the project/workspace
         // identities are being established here.

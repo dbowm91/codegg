@@ -2452,37 +2452,11 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::StartRegisterWorkspace { path } => {
             super::super::commands::project_picker::start_register_workspace(app, path);
         }
-        TuiCommand::WorkspaceRegistered {
-            request_id,
-            picker_request_id,
-            workspace_id,
-            error,
-        } => {
-            super::super::commands::project_picker::apply_workspace_registered(
-                app,
-                request_id,
-                picker_request_id,
-                workspace_id,
-                error,
-            );
-        }
-        TuiCommand::StartRegisterProject {
-            workspace_id,
-            display_name,
-            description,
-            tags,
-        } => {
-            super::super::commands::project_picker::start_register_project(
-                app,
-                workspace_id,
-                display_name,
-                description,
-                tags,
-            );
-        }
         TuiCommand::ProjectRegistered {
             request_id,
             picker_request_id,
+            workspace_id,
+            workspace_root,
             project_id,
             error,
         } => {
@@ -2490,6 +2464,8 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 app,
                 request_id,
                 picker_request_id,
+                workspace_id,
+                workspace_root,
                 project_id,
                 error,
             );
