@@ -1060,13 +1060,13 @@ impl AgentRunGroupService {
             .ok_or_else(|| AgentRunGroupError::NotFound(group_id.to_string()))?;
         let authorized = match &group.owner {
             AgentRunGroupOwner::Run { run_id } => actor.run_id.as_ref() == Some(run_id),
-            AgentRunGroupOwner::Turn {
-                session_id,
-                turn_id,
-            } => {
+            AgentRunGroupOwner::Turn { session_id, .. } => {
                 actor.run_id.is_none()
                     && actor.session_id.as_deref() == Some(session_id.as_str())
-                    && actor.turn_id.as_deref() == Some(turn_id.as_str())
+                    && actor
+                        .turn_id
+                        .as_deref()
+                        .is_some_and(|turn_id| !turn_id.is_empty())
             }
         };
         if authorized {
@@ -1402,20 +1402,33 @@ mod tests {
         let summary = restarted
             .status(
                 &GroupActor {
-                    run_id: Some(owner.run_id),
+                    run_id: Some(owner.run_id.clone()),
                     session_id: None,
                     turn_id: None,
                 },
-                created.group.group_id,
+                created.group.group_id.clone(),
             )
             .await
             .unwrap();
         assert_eq!(summary.group.status, RunGroupStatus::Completed);
         assert_eq!(summary.members.len(), 1);
+        assert!(matches!(
+            restarted
+                .status(
+                    &GroupActor {
+                        run_id: Some(AgentRunId::new()),
+                        session_id: None,
+                        turn_id: None,
+                    },
+                    created.group.group_id,
+                )
+                .await,
+            Err(AgentRunGroupError::Unauthorized)
+        ));
     }
 
     #[tokio::test]
-    async fn turn_owned_group_accepts_only_the_turns_top_level_runs() {
+    async fn turn_owned_group_allows_same_session_later_turn_but_rejects_other_actors() {
         let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
         let first = make_turn_run(&runs, "turn-child-1").await;
         let second = make_turn_run(&runs, "turn-child-2").await;
@@ -1451,18 +1464,55 @@ mod tests {
             )
             .await
             .is_ok());
+        let later_turn = GroupActor {
+            run_id: None,
+            session_id: Some("turn-group-session".into()),
+            turn_id: Some("turn-2".into()),
+        };
+        assert!(service
+            .status(&later_turn, summary.group.group_id.clone())
+            .await
+            .is_ok());
+        assert!(matches!(
+            service
+                .wait(
+                    &later_turn,
+                    summary.group.group_id.clone(),
+                    std::time::Duration::from_millis(1),
+                )
+                .await,
+            Err(AgentRunGroupError::WaitTimedOut(_))
+        ));
         assert!(matches!(
             service
                 .status(
                     &GroupActor {
                         run_id: None,
-                        session_id: Some("turn-group-session".into()),
-                        turn_id: Some("turn-2".into()),
+                        session_id: Some("another-session".into()),
+                        turn_id: Some("turn-3".into()),
                     },
-                    summary.group.group_id,
+                    summary.group.group_id.clone(),
                 )
                 .await,
             Err(AgentRunGroupError::Unauthorized)
         ));
+        assert!(matches!(
+            service
+                .status(
+                    &GroupActor {
+                        run_id: Some(first.run_id),
+                        session_id: Some("turn-group-session".into()),
+                        turn_id: None,
+                    },
+                    summary.group.group_id.clone(),
+                )
+                .await,
+            Err(AgentRunGroupError::Unauthorized)
+        ));
+        let cancelled = service
+            .cancel(&later_turn, summary.group.group_id)
+            .await
+            .expect("same-session owner can cancel the retained group");
+        assert_eq!(cancelled.group.status, RunGroupStatus::Cancelled);
     }
 }
