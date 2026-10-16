@@ -62,12 +62,17 @@ On the implementation branch, `bash scripts/verify.sh quick`, focused
 M006/M007 tests, formatting, `git diff --check`, execution-ownership and
 scheduler-bypass guards passed. Exact-head hosted run 38868243512 passed
 formatting, all configured repository guards, workspace Clippy and sandbox
-helper build, then stopped at stale slash-command invariants. Run 38868243512
-failed the count assertion (165 runtime commands vs. 163 expected); run
-38869913826 passed the corrected count and command-doc assertions but failed
-the exhaustive built-in action list, which omitted the two M006 actions. That
-list is corrected; the next exact-head run is pending. Do not use this record
-as a green hosted-CI claim until it passes.
+helper build. Run 38868243512 failed the count assertion (165 runtime
+commands vs. 163 expected); run 38869913826 passed the corrected count and
+command-doc assertions but failed the exhaustive built-in action list, which
+omitted the two M006 actions. Run 38872186777 passed those command tests, then
+revealed two M007 compatibility issues: Build's legacy workspace-mutation
+exclusion key was dropped, and the old distinct-Cargo-target parallelism test
+did not raise the new default one-build-per-workspace limit. Build now retains
+the exclusion key and that test explicitly configures two build slots. The
+focused resource-profile, distinct-key contention and build-vs-mutation
+admission tests pass locally; a new exact-head hosted run is pending. Do not
+use this record as a green hosted-CI claim until it passes.
 
 ## 5. Security and recovery review
 

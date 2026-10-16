@@ -725,6 +725,9 @@ async fn same_exclusivity_key_blocks_concurrent() {
 async fn different_exclusivity_keys_run_in_parallel() {
     let mut config = ResolvedSchedulerConfig::default();
     config.resources.max_process_slots = 4;
+    // M007 defaults to one concurrent Build per workspace. Raise the explicit
+    // limit here so this test continues to isolate distinct-key behavior.
+    config.resources.max_builds_per_workspace = 2;
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await
         .unwrap();

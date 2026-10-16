@@ -732,7 +732,9 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 3,
                 network_slots: 0,
-                exclusivity_keys: Vec::new(),
+                // Retain workspace-mutation exclusion with format/write jobs;
+                // M007 adds a separate bounded build-class quota alongside it.
+                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
                 workspace_build_slots: 1,
             },
             JobKind::Lint => Self {
