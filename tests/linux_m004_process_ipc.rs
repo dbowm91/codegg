@@ -1,6 +1,7 @@
 #![cfg(target_os = "linux")]
 
 use std::ffi::OsString;
+use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -10,8 +11,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use codegg::managed_process::{
-    ManagedProcessRequest, ManagedProcessService, ProcessProvenance, SandboxExecutionOutcome,
-    SandboxRequest,
+    EnvironmentPolicy, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
+    SandboxExecutionOutcome, SandboxRequest,
 };
 use codegg::security::sandbox::{SandboxConfig, SandboxMode};
 
@@ -76,7 +77,7 @@ fn offline_network_compiles_private_network_namespace_with_m004() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn offline_network_namespace_cannot_reach_host_loopback_listener() {
+async fn offline_network_blocks_host_network_and_inherited_socket_access() {
     if std::env::var(M005_OPT_IN).as_deref() != Ok("1") {
         eprintln!("skipped: set {M005_OPT_IN}=1 to run the native M005 child probe");
         return;
@@ -85,14 +86,70 @@ async fn offline_network_namespace_cannot_reach_host_loopback_listener() {
         panic!("M005 candidate requires qualified M004 process/IPC setup: {reason}");
     }
 
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host listener");
-    let address = listener.local_addr().expect("listener address");
+    let tcp4 = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("host IPv4 listener");
+    let tcp4_addr = tcp4.local_addr().expect("IPv4 listener address");
+    let tcp6 = std::net::TcpListener::bind(("::1", 0)).expect("host IPv6 listener");
+    let tcp6_addr = tcp6.local_addr().expect("IPv6 listener address");
+    let udp4 = std::net::UdpSocket::bind(("127.0.0.1", 0)).expect("host IPv4 UDP listener");
+    udp4.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set IPv4 UDP timeout");
+    let udp4_addr = udp4.local_addr().expect("IPv4 UDP address");
+    let udp6 = std::net::UdpSocket::bind(("::1", 0)).expect("host IPv6 UDP listener");
+    udp6.set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set IPv6 UDP timeout");
+    let udp6_addr = udp6.local_addr().expect("IPv6 UDP address");
+
+    // Keep a host-connected TCP socket open across the launch. M004's
+    // close-range handoff must remove this bridge before the helper execs.
+    let inherited_stream = std::net::TcpStream::connect(tcp4_addr).expect("inherited host socket");
+    let mut inherited_peer = tcp4.accept().expect("accept inherited host socket").0;
+    inherited_peer
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set inherited peer timeout");
+    let inherited_fd = unsafe { libc::fcntl(inherited_stream.as_raw_fd(), libc::F_DUPFD, 256) };
+    assert!(inherited_fd >= 256, "duplicate inherited socket descriptor");
+    let inherited_fd = unsafe { OwnedFd::from_raw_fd(inherited_fd) };
+    assert_eq!(
+        unsafe { libc::fcntl(inherited_fd.as_raw_fd(), libc::F_SETFD, 0) },
+        0,
+        "make inherited network descriptor inheritable"
+    );
+
     let workspace = tempfile::tempdir().expect("workspace");
     let marker = workspace.path().join("target-ran");
     let probe = format!(
-        "import socket; s=socket.socket(); s.settimeout(1);\ntry: s.connect(({:?}, {})); raise SystemExit(41)\nexcept OSError: open({:?}, 'w').write('offline')",
-        address.ip().to_string(),
-        address.port(),
+        "import os, socket\n\
+         probes = [\n\
+           (socket.AF_INET, ({:?}, {})),\n\
+           (socket.AF_INET6, ({:?}, {})),\n\
+         ]\n\
+         for family, address in probes:\n\
+           s = socket.socket(family, socket.SOCK_STREAM); s.settimeout(1)\n\
+           if s.connect_ex(address) == 0: raise SystemExit(41)\n\
+         for family, address in [(socket.AF_INET, ({:?}, {})), (socket.AF_INET6, ({:?}, {}))]:\n\
+           s = socket.socket(family, socket.SOCK_DGRAM)\n\
+           try: s.sendto(b'network-leak', address)\n\
+           except OSError: pass\n\
+         try:\n\
+           socket.getaddrinfo('codegg-m005-probe.invalid', 443, type=socket.SOCK_STREAM)\n\
+           raise SystemExit(42)\n\
+         except OSError: pass\n\
+         external = socket.socket(); external.settimeout(1)\n\
+         if external.connect_ex(('198.51.100.1', 443)) == 0: raise SystemExit(43)\n\
+         fd = int(os.environ['CODEGG_M005_INHERITED_FD'])\n\
+         try: os.fstat(fd)\n\
+         except OSError: open({:?}, 'w').write('offline')\n\
+         else:\n\
+           os.write(fd, b'inherited-socket-leak')\n\
+           raise SystemExit(44)",
+        tcp4_addr.ip().to_string(),
+        tcp4_addr.port(),
+        tcp6_addr.ip().to_string(),
+        tcp6_addr.port(),
+        udp4_addr.ip().to_string(),
+        udp4_addr.port(),
+        udp6_addr.ip().to_string(),
+        udp6_addr.port(),
         marker.to_string_lossy(),
     );
     let spec = SandboxConfig::new()
@@ -110,6 +167,10 @@ async fn offline_network_namespace_cannot_reach_host_loopback_listener() {
         ProcessProvenance::new("linux-m005", "offline-loopback-probe"),
     );
     request.timeout = Some(Duration::from_secs(15));
+    request.environment_policy = EnvironmentPolicy::sanitized().with_var(
+        "CODEGG_M005_INHERITED_FD",
+        inherited_fd.as_raw_fd().to_string(),
+    );
     request.sandbox = SandboxRequest::Required(spec);
 
     let result = ManagedProcessService::run(request)
@@ -124,7 +185,21 @@ async fn offline_network_namespace_cannot_reach_host_loopback_listener() {
         std::fs::read_to_string(marker).expect("offline target marker"),
         "offline"
     );
-    drop(listener);
+    let mut datagram = [0_u8; 128];
+    assert!(
+        udp4.recv_from(&mut datagram).is_err(),
+        "offline child reached host IPv4 UDP listener"
+    );
+    assert!(
+        udp6.recv_from(&mut datagram).is_err(),
+        "offline child reached host IPv6 UDP listener"
+    );
+    let mut inherited_data = [0_u8; 128];
+    assert!(
+        inherited_peer.read(&mut inherited_data).is_err(),
+        "offline child communicated through an inherited host socket"
+    );
+    drop((tcp4, tcp6, inherited_stream));
 }
 
 fn stop(child: &mut Child) {
