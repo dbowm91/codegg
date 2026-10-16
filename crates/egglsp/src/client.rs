@@ -54,7 +54,9 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::{debug, info, warn};
 use url::Url;
 
-use super::launch::{self, LspLaunchSpec, LspProcess};
+use super::launch::{
+    self, DirectLspProcessLauncher, LspLaunchSpec, LspProcess, LspProcessLauncher,
+};
 use super::server::LspServerDef;
 use super::server_request::{dispatch_server_request, ServerRequestContext, ServerRequestReply};
 use super::writer::LspWriter;
@@ -658,14 +660,25 @@ impl LspClient {
         configuration: serde_json::Value,
         options: LspClientOptions,
     ) -> Result<Self, LspError> {
-        let LspLaunchSpec {
-            id,
-            command,
-            args,
-            env,
-            ..
-        } = launch;
-        let process = launch::spawn_server_owned(&command, &args, &env, Some(root)).await?;
+        Self::new_with_launch_spec_and_launcher(
+            launch,
+            root,
+            configuration,
+            options,
+            std::sync::Arc::new(DirectLspProcessLauncher),
+        )
+        .await
+    }
+
+    pub async fn new_with_launch_spec_and_launcher(
+        launch: LspLaunchSpec,
+        root: &Path,
+        configuration: serde_json::Value,
+        options: LspClientOptions,
+        launcher: std::sync::Arc<dyn LspProcessLauncher>,
+    ) -> Result<Self, LspError> {
+        let id = launch.id.clone();
+        let process = launcher.launch(&launch, root).await?;
         Self::finish_from_process(id, process, root, configuration, options).await
     }
 

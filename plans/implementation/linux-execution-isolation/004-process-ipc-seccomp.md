@@ -164,6 +164,14 @@ FullHost behavior remains compatible. M004 stays active until a contained
 duplex LSP owner and contained PTY route are qualified on supported and
 restricted-userns host configurations.
 
+`egglsp::LspService` now accepts one `LspProcessLauncher` when constructed and
+routes both initial launches and restart generations through that same
+service-owned launcher. Existing services use the direct FullHost adapter.
+This provides the injection boundary for a future daemon-owned constrained
+LSP instance while preserving duplex pipe ownership. No constrained adapter is
+currently installed, and the existing constrained refusal remains in force;
+the interface change is not execution containment evidence.
+
 ## 9. Acceptance criteria
 
 An opted-in child cannot enumerate or inspect host proc, signal/ptrace a same-UID fixture process, reach a withheld Codegg-daemon/session socket or abstract UDS, or install unsafe namespaces. It **can** run expected child shell/compiler/test operations and its descendant processes remain cancellable/reaped. Cargo check/test workflows pass through the M004 child boundary. A host with user namespaces disabled demonstrably refuses before target execution. Production PTY and LSP process creation use the canonical M004 launch/receipt owner before closure; direct-spawn service paths are not treated as contained. Every advertised seccomp/process/IPC guarantee is supported by a real negative and positive probe. Required failure leaves no target execution; legacy behavior unaffected.
