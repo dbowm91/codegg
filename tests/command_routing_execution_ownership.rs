@@ -35,11 +35,19 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
     // `CODEGG_ROUTING_DISABLE=1` from sibling tests; each test that depends
     // on active routing must clear it before constructing the tool.
     std::env::remove_var("CODEGG_ROUTING_DISABLE");
+    let workspace_root = std::env::current_dir()
+        .expect("current test workspace")
+        .canonicalize()
+        .expect("canonical test workspace");
     let workspace_registry = codegg_core::workspace::WorkspaceRegistry::load(Arc::new(
         codegg_core::workspace::InMemoryWorkspaceStore::new(),
     ))
     .await
     .expect("workspace registry");
+    workspace_registry
+        .get_or_register(&workspace_root)
+        .await
+        .expect("register test workspace");
     let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
         workspace_registry,
         Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
@@ -79,6 +87,8 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
     let mut tool = BashTool::new()
         .with_run_store(store)
         .with_submission(submission)
+        .with_workspace_root(workspace_root.clone())
+        .with_allowed_paths(vec![workspace_root.to_string_lossy().into_owned()])
         .with_configured_sandbox_profile(codegg_core::approval::SandboxProfile::FullHost);
     let _scheduler_task = scheduler.spawn_run();
     if let Some(cic) = config {
