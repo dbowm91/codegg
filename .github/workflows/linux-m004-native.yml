@@ -126,3 +126,6 @@ jobs:
 
       - name: Required M004 launch refuses before target under host userns policy
         run: cargo test --locked --test linux_m004_process_ipc required_process_tier_fails_closed_when_user_namespaces_are_restricted -- --nocapture
+
+      - name: Constrained PTY route refuses before target under host userns policy
+        run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_fails_closed_when_user_namespaces_restricted -- --nocapture
