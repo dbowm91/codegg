@@ -18,11 +18,12 @@ reservation and workspace-binding saga. NewManaged launch/fork and exact
 idempotent replay passed on the development Mac.
 
 M006 is not strictly closed because the implementation plan requires native
-Windows path-length and linked `.git`-file qualification. The new focused
-Windows workflow exposed Git for Windows rejecting the verbatim path prefix
-returned by Rust canonicalization. The materializer now strips that prefix at
-its narrow Git argument boundary; a rerun is required. This finding does not
-block M007, and neither milestone depends on M005 shared-checkout mutation.
+Windows path-length and linked `.git`-file qualification. The focused
+Windows workflow first exposed Git for Windows rejecting the verbatim
+destination prefix, then exposed its `$GIT_DIR too big` failure when the
+repository working directory retained that prefix. The materializer now
+strips it from both locations; another rerun is required. This finding does
+not block M007, and neither milestone depends on M005 shared-checkout mutation.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -34,7 +35,7 @@ block M007, and neither milestone depends on M005 shared-checkout mutation.
 | Concurrent and nested managed worktrees preserve distinct leases and pinned base | `concurrent_filter_free_worktree_creation_uses_distinct_leases`; `nested_worktree_creation_uses_the_pinned_filter_free_base` | pass | Real Git fixtures. |
 | Daemon NewManaged launch/fork, session binding, ancestry and exact replay | `core::daemon::tests::managed_session_launch_and_fork_are_idempotent_and_bound` | pass | Local aarch64 macOS; includes existing-worktree and NewManaged launch/fork. |
 | Linux hosted verification | Exact-head CI pending | not run | Record the existing CI run after pushing the implementation commit. |
-| Deep checkout path and linked `.git`-file behavior | `managed_worktree_creation_materializes_filter_free_checkout` asserts a 200–259 character checkout path and resolves Git metadata through the linked `.git` file | local pass; first native run exposed path-prefix incompatibility | Run `38920436943` exposed Git for Windows rejecting Rust's verbatim `\\?\` destination prefix. The narrow materializer now strips that prefix (including UNC normalization) and has a Windows unit test; rerun the focused workflow on the corrective head before strict closure. |
+| Deep checkout path and linked `.git`-file behavior | `managed_worktree_creation_materializes_filter_free_checkout` asserts a 200–259 character checkout path and resolves Git metadata through the linked `.git` file | local pass; two native runs exposed path-prefix incompatibilities | Run `38920436943` rejected the verbatim destination prefix; run `38922769990` then failed with `'$GIT_DIR' too big` because the repository cwd remained verbatim. The narrow materializer now normalizes both cwd and destination (including UNC destinations) and has a Windows unit test; rerun before strict closure. |
 
 ## 3. Implementation and invariant review
 
@@ -83,6 +84,6 @@ trajectory commands above passed.
 
 | Severity | Finding | Required action |
 |---|---|---|
-| medium | Native Windows path-length and linked `.git`-file qualification is awaiting a rerun after fixing the `\\?\` path incompatibility. | Run `.github/workflows/m006-windows-worktree.yml` on the corrective head and record its exact result; then decide strict closure from the complete M006 acceptance matrix. |
+| medium | Native Windows path-length and linked `.git`-file qualification is awaiting a rerun after fixing the destination and cwd path incompatibilities. | Run `.github/workflows/m006-windows-worktree.yml` on the corrective head and record its exact result; then decide strict closure from the complete M006 acceptance matrix. |
 
 Keep M006 in `closing` until native Windows evidence is available. M007 remains independently eligible.

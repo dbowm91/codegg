@@ -74,8 +74,8 @@ and invariants that are easy to violate.
    submodule recursion for `worktree add`. Filter-bearing revisions fail
    closed. Do not generalize this attestation into permission to run arbitrary
    `git worktree add`, checkout, clean/smudge, or other filter-capable commands.
-    On Windows, remove Rust's verbatim canonical-path prefix at this narrow
-    materializer boundary; the hosted M006 workflow qualifies a deep path and
+    On Windows, remove Rust's verbatim canonical-path prefix from both the
+    Git working directory and destination at this narrow boundary; the hosted M006 workflow qualifies a deep path and
     linked `.git` metadata.
 
 ## Static Guards

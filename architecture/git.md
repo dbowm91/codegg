@@ -89,7 +89,7 @@ attests the pinned commit has no active custom `filter` attributes, then uses
 the existing pinned hook/fsmonitor policy. Filter-bearing trees still fail
 closed, and the generic classifier still refuses arbitrary `worktree add`.
 On Windows, the narrow materializer strips Rust's verbatim `\\?\` prefix
-and passes a Git-compatible path spelling; native deep-path behavior is gated
+from both the repository working directory and destination argument; native deep-path behavior is gated
 by the M006 Windows qualification workflow.
 This policy does not protect writable `.git` metadata or
 claim network isolation; those are separate Linux execution-isolation gates.

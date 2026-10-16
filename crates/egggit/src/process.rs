@@ -235,7 +235,8 @@ impl GitEnvPolicy {
         ];
         let mut cmd = StdCommand::new("git");
         add_trusted_git_overrides(&mut cmd, &argv);
-        cmd.current_dir(cwd);
+        let git_cwd = git_worktree_path_argument(&canonical_root);
+        cmd.current_dir(git_cwd);
         isolate_child_process_group(&mut cmd);
         apply_environment(&mut cmd, self);
         Ok(cmd)
