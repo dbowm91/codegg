@@ -131,7 +131,7 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
            try: s.sendto(b'network-leak', address)\n\
            except OSError: pass\n\
          try:\n\
-           socket.getaddrinfo('codegg-m005-probe.invalid', 443, type=socket.SOCK_STREAM)\n\
+         socket.getaddrinfo('example.com', 443, type=socket.SOCK_STREAM)\n\
            raise SystemExit(42)\n\
          except OSError: pass\n\
          external = socket.socket(); external.settimeout(1)\n\
