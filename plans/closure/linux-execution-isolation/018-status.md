@@ -308,3 +308,45 @@ behavior. Linux ADR-0033 remains accepted, C010's negative M003 production
 admission remains in force, M004 remains active pending PTY/LSP ownership and
 supported-host qualification, and M005 remains an internal candidate without
 persisted OfflineRequired authority or enforced network status.
+
+### Reconciled-head qualification (2026-10-16)
+
+The branch was reconciled with `main` at `68f9358d` in merge commit
+`bebcbf50`; a fresh fetch confirmed `main` had not advanced beyond that commit.
+ADR-0031 remains the accepted authenticated-idle-continuation decision, while
+the accepted Linux isolation decision remains ADR-0033. The ADR identity/link
+guard passed both in CI and on the final documentation update.
+
+Exact merged-head CI
+[38860500106](https://github.com/dbowm91/codegg/actions/runs/38860500106)
+passed all repository guards, formatting, workspace Clippy, Eggwork fixture
+prebuild, trusted sandbox-helper build, and the complete workspace suite:
+14,019 passed and 7 skipped. The earlier run
+[38857296844](https://github.com/dbowm91/codegg/actions/runs/38857296844)
+exposed a trusted-Git lineage failure: `repository_lineage::run_git` dropped
+the `GitEnvPolicy` wrapper, and therefore its private object-view directory,
+immediately after spawning Git. Commit `c97ca6b8` retained that wrapper until
+child completion. The merged-head suite now passes the affected lineage
+coverage. Eggwork prebuild passed; the red CI result was not an Eggwork
+fixture failure.
+
+Hosted native qualification on the runtime-identical implementation commit
+`c97ca6b8` completed successfully: C006 run
+[38860303887](https://github.com/dbowm91/codegg/actions/runs/38860303887)
+passed 11/11 protected-mount and 18/18 trusted-Git tests; M004 run
+[38860303873](https://github.com/dbowm91/codegg/actions/runs/38860303873)
+passed 8/8 managed-process/process-IPC probes, 11/11 protected-mount tests,
+and 18/18 trusted-Git tests, while the restricted-userns job passed its
+refusal-before-target probe. Windows native probe run
+[38860303848](https://github.com/dbowm91/codegg/actions/runs/38860303848)
+passed the actual-child matrix (1/1) and timeout/cancellation/descendant
+coverage (6/6). The macOS target compile passed on exact merged head in run
+[38860469121](https://github.com/dbowm91/codegg/actions/runs/38860469121).
+
+These results improve implementation and platform evidence but do not change
+the admission decisions: M003 remains no-admission under C010's recorded
+performance threshold; M004 remains active until constrained PTY routing,
+supervised duplex LSP ownership, and supported-host qualification close; M005
+remains an internal candidate without persisted `OfflineRequired` authority
+or enforced network status. No Linux host is admitted and no blocked plan is
+unblocked by this evidence.
