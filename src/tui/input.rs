@@ -570,10 +570,12 @@ pub(crate) fn is_normal_only(action: &InputAction) -> bool {
             // two-key arrangement with a chord that worked in Insert; the
             // chord is retired and this is now the only spelling, which
             // makes the mode gate the whole reason the key is safe.
-            // (`Shift+F` needs no entry here: the Insert branch below
-            // treats every text-modifier letter as typeable text, so the
-            // picker keeps its `Ctrl+\` Insert spelling while `Shift+F`
-            // stays Normal-only.)
+            // (`Shift+F` and `Shift+W` are deliberately **not** listed here.
+            // Both actions also own a `Ctrl` chord — `Ctrl+\` for the picker,
+            // `Ctrl+O` for Workspace — and `is_normal_only` is keyed on the
+            // action, so listing them here would have silently taken the
+            // chord out of Insert mode too. Built-in shifted capitals are
+            // handled in the Insert branch instead, at the key.)
             | InputAction::OpenPanelManager
             // `Shift+T` claims an uppercase letter, which is text the user is
             // actively typing. Without this entry Insert mode would treat a
@@ -1420,7 +1422,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
         HelpEntry {
             mode: HelpMode::Normal,
             key: "Enter",
-            action: "Inspect sidebar selection",
+            // One key, three outcomes by row kind: an agent-tree row opens the
+            // run-detail dialog, a subagent row opens its transcript as a main
+            // buffer tab, and a job row opens nothing (it has no transcript).
+            // A job row is deliberately inert rather than routed somewhere
+            // arbitrary — see `a_job_row_is_read_only_and_never_reaches_the_composer`.
+            action: "Inspect sidebar selection (a subagent row opens its transcript tab)",
             condition: Some("sidebar focus"),
         },
         HelpEntry {
@@ -1735,6 +1742,12 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             mode: HelpMode::Normal,
             key: "Shift+F",
             action: "Open the project picker; /projects also works mid-prompt",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Normal,
+            key: "Shift+T",
+            action: "Open the tasks overlay: todos, subagents, and jobs together, with empty groups hidden",
             condition: None,
         },
         HelpEntry {
@@ -2089,12 +2102,33 @@ pub(crate) fn handle_key_with_bindings(
             // key still fires (custom bindings win over text).
             let is_text_key = matches!(key.code, KeyCode::Char(c)
                 if is_text_modifier(key.modifiers) && is_printable_char(c));
-            // The consulted map is the default one exactly when no custom
-            // bindings were passed.
-            let is_default_map = bindings.is_none();
+            // A **built-in** text-modifier letter is composed text, not an
+            // action, even when the caller passed its own resolved map. This
+            // used to be gated on `is_default_map` (i.e. `bindings.is_none()`),
+            // which is dead in the real app: `App::on_key` always passes
+            // `Some(&self.ui_state.bindings)`. So typing a capital `F`
+            // mid-word opened the project picker instead of composing, in the
+            // default configuration — `Shift+F` had been waved through as
+            // safe by a rule that never ran.
+            //
+            // "Built-in" means the binding ships in either of the two maps the app
+            // can be configured with — it is checked by comparing the action
+            // against both, not by map identity, which keeps the
+            // neighbouring arm's promise intact: an *explicit user binding*
+            // still wins over text. `VIM_BINDINGS` matters as much as
+            // `DEFAULT_BINDINGS` here: `Shift+G` exists only in the vim map,
+            // and the regression test that used to cover it passed
+            // `bindings: None`, so it exercised the one path where the old
+            // gate fired and stayed green while the real path was broken.
+            // The lowercase letters stay on `is_normal_only`, which is the
+            // right tool for `x`/`ToggleAgentRun` because that one binds no
+            // modifier at all.
+            let is_builtin_text_key = is_text_key
+                && (map.get(&key_tuple) == DEFAULT_BINDINGS.get(&key_tuple)
+                    || map.get(&key_tuple) == VIM_BINDINGS.get(&key_tuple));
 
             if let Some(action) = map.get(&key_tuple) {
-                if is_bare_char || is_normal_only(action) || (is_text_key && is_default_map) {
+                if is_bare_char || is_normal_only(action) || is_builtin_text_key {
                     debug_log!("insert mode: skipping bare char binding: {:?}", action);
                 } else {
                     debug_log!("insert mode: matched binding: {:?}", action);
@@ -2622,9 +2656,83 @@ mod tests {
         );
     }
 
+    /// A built-in `Shift+<letter>` binding must never fire while the user is
+    /// composing. A capital letter is text in the middle of a word, so firing
+    /// an action swallows the character and hijacks the prompt.
+    ///
+    /// This is written as a behavioural sweep over **both** keymaps rather
+    /// than as a handful of named cases because the failure is not specific.
+    /// `Shift+F` (project picker) shipped broken this way in the *default*
+    /// configuration, because the guard that was supposed to prevent it was
+    /// gated on `bindings.is_none()` and `App::on_key` never passes `None`.
+    /// `Shift+W` (Workspace) had the same hole. Naming them would have caught
+    /// only the second, and only after someone found the first by hand.
+    #[test]
+    fn builtin_shift_letters_are_composed_text_in_insert_mode() {
+        let mut seen: BTreeSet<char> = BTreeSet::new();
+        for vim_mode in [false, true] {
+            let map = build_bindings(None, vim_mode);
+            for letter in 'A'..='Z' {
+                if !map.contains_key(&(KeyModifiers::SHIFT, KeyCode::Char(letter))) {
+                    continue;
+                }
+                seen.insert(letter);
+                let resolved = handle_key_with_bindings(
+                    KeyEvent::new(KeyCode::Char(letter), KeyModifiers::SHIFT),
+                    Some(&map),
+                    InputMode::Insert,
+                );
+                assert!(
+                    matches!(resolved, Some(InputAction::Char(_)) | None),
+                    "Shift+{letter} must compose in Insert (vim_mode={vim_mode}), \
+                     got {resolved:?}"
+                );
+            }
+        }
+        // The sweep must not be vacuous: assert it actually inspected the
+        // mnemonic letters, so dropping a binding cannot make it pass.
+        // `G` is here because it is vim-only — it is precisely the letter a
+        // default-map-only check would have missed.
+        assert_eq!(
+            seen,
+            ['F', 'G', 'H', 'J', 'K', 'L', 'N', 'P', 'Q', 'S', 'T', 'W', 'X']
+                .into_iter()
+                .collect::<BTreeSet<char>>(),
+            "the sweep must observe every built-in Shift-letter mnemonic"
+        );
+    }
+
+    /// The sweep above must not have been bought by making text unwinnable.
+    /// An explicit user binding for a shifted capital is still an explicit
+    /// request, and it must still fire in Insert.
+    #[test]
+    fn a_user_binding_for_a_shift_letter_still_fires_in_insert_mode() {
+        let mut map = build_bindings(None, false);
+        map.insert(
+            (KeyModifiers::SHIFT, KeyCode::Char('Q')),
+            InputAction::ToggleSidebar,
+        );
+        assert_eq!(
+            handle_key_with_bindings(
+                KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
+                Some(&map),
+                InputMode::Insert,
+            ),
+            Some(InputAction::ToggleSidebar),
+            "a custom Shift+<letter> binding must still win over composed text"
+        );
+    }
+
     /// Regression: `Shift+G` was bound to `GoToBottom` in the Insert map, but
     /// bare-char suppression only skips `KeyModifiers::NONE` bindings, so
     /// capital `G` scrolled the viewport instead of reaching the prompt.
+    ///
+    /// Worth keeping narrower than it looks: it passes `bindings: None`, so it
+    /// only ever exercises the `is_default_map` path. That was enough while
+    /// the guard was gated on it, and silently insufficient once it was not —
+    /// the vim map, where `Shift+G` actually lives, went untested the whole
+    /// time. `builtin_shift_letters_are_composed_text_in_insert_mode` is the
+    /// one that passes a real map.
     #[test]
     fn shift_g_inserts_char_in_insert_mode() {
         let key = make_key(KeyCode::Char('G'), KeyModifiers::SHIFT);

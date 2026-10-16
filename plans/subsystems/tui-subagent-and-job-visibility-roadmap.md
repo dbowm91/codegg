@@ -643,17 +643,97 @@ sides resolve against.
 - **Class:** polish (P1, P2).
 - **Objective:** make the new surface verifiable and documented.
 - **Dependencies:** M002, M003, M004.
-- **Deliverable boundary:**
-  - P1: confirm the `Shift+W` path and the `/workspace` command reach the same
-    handler (`open_workspace_dashboard`). Note that `/workspaces` does **not**
-    exist as a command — it appears only in the domain-classification list at
-    `src/tui/command.rs:402`. If they already agree, this is a no-op recorded as
-    verified rather than a change.
-  - P2: `docs/tui.md` binding table, help-overlay entries, and the
+- **Status:** **landed** on `feat/auto-20261016-845b613f`.
+- **Delivered:**
+  - P1 — verified, and the verification was not a formality. `Shift+W` (vim
+    Normal), `Ctrl+O` (both modes), and `/workspace` all reach
+    `commands::workspace_dashboard::open_workspace_dashboard`, and the route
+    plus mounted-dashboard assertions are now pinned by a test that drives
+    each entry point for real.
+  - P2 — the missing `Shift+T` help-overlay entry, the corrected sidebar
+    `Enter` entry, `docs/tui.md`'s new subagent/jobs section, and the
     `architecture/tui.md` module map.
-  - Run `scripts/verify.sh quick` and the change-triggered guards this touches.
-- **Exit conditions:** help overlay and `docs/tui.md` list every new binding;
-  quick verification green.
+- **Exit conditions, each mapped to a named test:**
+  - The help overlay lists every new binding →
+    `documented_keys_resolve_in_the_active_map` audits that every advertised
+    key resolves in the mode it is documented under. Note what that test does
+    *not* catch: an absent entry. The missing `Shift+T` entry was found by
+    reading `default_help_entries` against the binding map, not by a failing
+    test, and no test in the suite fails if a binding loses its help entry.
+    That is the one direction this milestone leaves uncovered.
+  - `/workspace` and every Workspace hotkey reach one handler →
+    `workspace_command_and_hotkey_open_same_dashboard`,
+    `workspace_command_and_hotkeys_reach_one_handler`, and
+    `workspace_help_key_resolves_to_the_workspace_action`.
+  - `docs/tui.md` documents each new binding → checked by review; the doc is
+    prose and the help overlay is the auditable surface.
+
+#### P1 — what "verify, don't assume" turned up
+
+The pre-existing test named `workspace_command_and_hotkey_open_same_dashboard`
+called `open_workspace_dashboard` directly, twice, and asserted the handler's
+own effects. Its name promised a convergence claim it never made: it would
+have kept passing if `/workspace` were re-pointed at a different builtin, or
+if `Shift+W` were rebound to something else. The convergence test now lives in
+`app/mod.rs` where `dispatch_builtin_command` and `App::on_key` are both
+reachable, and it resolves `/workspace` **through the command registry by its
+user-facing spelling** so an alias or rebinding is caught. The old test was
+renamed to `opening_workspace_preserves_tab_session_and_composer`, which is
+what it actually asserted.
+
+The roadmap's own note here was also stale: it recorded that `/workspaces`
+does not exist as a command. It does — `BuiltinSlashAction::Workspaces` is
+registered at `src/tui/command.rs:598` and answers with a toast pointing at
+`/sessions`. The domain-classification list at `command.rs:402` is a separate
+thing that also contains `"workspaces"`, and reading one as the other is how
+the note went wrong.
+
+#### The defect P1 was written to prevent, already present
+
+`Shift+W` was bound under both encodings but is **not** in `is_normal_only`,
+so in Insert mode it fired instead of composing. While confirming the path,
+the same probe found two more instances of one bug class, and one of them was
+not even part of this roadmap:
+
+- **`Shift+F` (project picker) hijacked the composer in the default
+  configuration.** Typing a capital `F` mid-word opened the picker and
+  swallowed the character. A comment in `is_normal_only` had explicitly
+  waved this through as safe — on the strength of the Insert branch's
+  text-key rule, which is gated on `bindings.is_none()`. `App::on_key` always
+  passes `Some(&self.ui_state.bindings)`, so that gate never fired in the
+  real app. The existing regression test for `Shift+G` passed and stayed green
+  for the same reason: it passed `bindings: None`, exercising the one path
+  where the dead gate happened to hold.
+- **`Shift+G` (`GoToBottom`) did the same in vim mode**, which is why the
+  existing test missed it.
+
+The fix is in the Insert branch, at the **key** rather than the action: a
+text-modifier key whose binding matches either shipped map is composed text.
+Matching the action instead of map identity is what preserves "an explicit user
+binding wins over text". It could not go in `is_normal_only`, which is
+action-keyed and cannot say "this *spelling* is Normal-only" —
+`OpenWorkspaceDashboard` also owns `Ctrl+O` and `OpenProjectPicker` also owns
+`Ctrl+\`, so listing either there would have silently taken its chord out of
+Insert mode too.
+
+This is worth recording as a roadmap-level lesson rather than a milestone
+detail: **the fix was not to add the missing entries to the list.** The list
+was the right mechanism for lowercase letters (`x`/`ToggleAgentRun`) and for
+the panel directions, and it could not express what these two needed. A test
+that had asserted the *list* stayed complete would have passed throughout the
+bug's life.
+
+#### Two documentation defects, also pre-existing
+
+- **The module map was missing four files.** `app/state/` listed 27 modules
+  and omitted `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and
+  `tasks.rs` — two of which this roadmap added. `commands/` (35 → 37),
+  `components/dialogs/` (34 → 40), and `command.rs`'s built-in count (153 →
+  164) were stale too. All remeasured against their listed `Source`, and
+  `architecture/overview.md`'s Verified-counts row corrected to match, since
+  that table is the single source of truth for counts.
+- **`architecture/overview.md` undercounted slash commands** as 161 against a
+  test asserting 164, and TUI state modules as 29 against 31 files.
 
 ### M900 — Send-to-subagent (not approved for planning)
 
@@ -749,5 +829,5 @@ Interaction with a subagent is **not** part of this definition.
 | M002 unified tasks overlay | landed (Shift+T; global row budget + height clamp) | — | — | none |
 | M003 subagent buffer tabs | landed (tab set, Shift+N/P/X, detached terminal state, overlay keyboard path) | — | — | none |
 | M004 sessions panel sections | landed (subagent + job sections, `InspectSubagent`, id-keyed job focus) | — | — | none |
-| M005 guards, help, docs | not started | — | — | M002, M003, M004 |
+| M005 guards, help, docs | landed (Shift+T help entry, Insert-mode Shift-letter fix, docs + module map) | — | — | none |
 | M900 send-to-subagent | not approved for planning | — | — | design decision |

@@ -696,6 +696,77 @@ height is predictable. The strip's rows are added to the prompt allocation in
 `session_layout` and then carved back off, so the input box keeps the height it
 requested and the viewport absorbs the difference.
 
+**Tasks overlay** (`Shift+T`, `state/tasks.rs`). One overlay over todos,
+subagents, and jobs in that fixed order, each under its own header. A group
+with nothing in it contributes **no header at all** — the alternative, an
+empty "Jobs" heading above nothing, is what makes an overlay feel broken even
+when it is accurate. Group order is a property of `build_task_rows`, not of the
+order the sources happen to arrive in.
+
+Filtering here is by *liveness*, and it is deliberately different from the
+session panel's (§ "Keyboard sidebar and agent-tree inspection"). The overlay
+answers "what is this turn waiting on", so finished subagents and completed
+jobs are dropped; the panel is a persistent index, where a row disappearing
+while you read it would be worse than a stale one. `is_live_state` is the
+shared rule and it is asymmetric on purpose: an empty or unrecognised state
+counts as **live**, because showing a job that turns out to be done costs a
+glance while hiding a running one costs the fact the user asked for.
+
+`bounded` applies one global row budget across all three groups rather than a
+per-group cap, so a turn with sixty todos cannot starve the two subagent rows
+that explain what the sixty todos are waiting on.
+
+The overlay's keyboard path is gated on `InputMode::Normal` and sits **above**
+the subagent-tab `Esc` arm, because the overlay is the topmost thing on screen
+and `Esc` must dismiss what the user is looking at. The gate is load-bearing
+rather than cosmetic: the user switches back to `INS` to keep typing with the
+overlay open, and an ungated `j`/`k`/`Enter` there would break the composer.
+
+`move_tasks_selection` starts at row 0 with no cursor yet **in both
+directions**. Starting at the second row on `j` would silently swallow the top
+item on an overlay that has only ever been opened once, and the user would
+`Enter` the wrong subagent.
+
+`open_selected_task` only succeeds for rows `activatable_target` recognises —
+subagent rows. A todo or job row returns `false` and the overlay stays open,
+rather than inventing a destination. On success the overlay **closes**: the
+thing the user asked to look at now owns the main buffer, and a selection cursor
+left behind it would be a control they are no longer looking at.
+
+**Subagent tab set** (`Shift+N` / `Shift+P` / `Shift+X`,
+`state/subagent_tabs.rs`). Three properties are load-bearing and each closes a
+hole the obvious implementation leaves:
+
+- **Identity is the projection's `task_id`**, not a fresh UUID. A subagent
+  already carries a stable snapshot-derived identity; minting a second one
+  would mean carrying a mapping between the two for no benefit. It is also why
+  the module can promise nothing across a restart: `task_id` is a daemon-local
+  `u64`, and the per-turn tree is cleared when the turn ends.
+- **`active_tab_id == None` *is* the main conversation.** The direct analogue
+  of `ProjectTabs::close_fallback_tab`: projects must always have some tab to
+  render, but the main buffer already has a surface, so the fallback is to stop
+  selecting a subagent. Closing the last tab needs no special case and cannot
+  leave the renderer with nothing to draw.
+- **`SubagentTabLiveness::Detached` is a state, not an error.** Because the
+  tree is per-turn, a tab's subject can vanish while the tab is open.
+  `is_running` refuses to report `true` for a detached tab, so the buffer can
+  never keep claiming a run is live after the projection stopped vouching for
+  it. A tab that outlives its subject is exactly the "panel outliving the
+  tree" shape D3 asks to watch for, so it is modelled rather than papered over.
+
+`MAX_OPEN_SUBAGENT_TABS` (16) **refuses** a new tab rather than evicting one.
+Silently closing a tab the user is reading is a worse failure than declining
+the open, and the caller then has a defined outcome to report — `App::
+open_subagent_tab` toasts only when a row exists *and* the set is at capacity.
+Note that `open_task` requires the row to still exist: a panel row alone cannot
+open a tab, because a tab with nothing to render is not a tab.
+
+These keys name the buffer itself, adjacent to `Tab` for project tabs, but the
+two axes never consult each other — subagents are inside one session, projects
+are beside it. Reusing `Ctrl+Alt+N`/`Ctrl+Alt+B` would have collapsed two
+independent navigations onto one gesture and made project-tab muscle memory
+fire a subagent switch instead.
+
 ### Viewport click vs. drag
 
 Inside the message viewport a press does both jobs and only the release
@@ -1550,6 +1621,34 @@ terminals disagree about how to encode a shifted letter. Binding both is safe
 legacy-encoding hazard that made every `Ctrl+Shift+X` chord undecodable — see
 `tests/modifier_chords.rs`.
 
+**A built-in `Shift+<capital>` is composed text in Insert mode.** Every mnemonic
+in this file is a single capital letter, which is exactly what makes it
+dangerous: it is a letter the user is in the middle of typing. Two separate
+guards keep that true, and they are not interchangeable.
+
+`is_normal_only` is keyed on the **action**, so it can only say "this action is
+Normal-only" — it cannot say "this *spelling* is". It is right for the panel
+directions and for `x`/`ToggleAgentRun`, which binds no modifier at all. It is
+wrong for `OpenProjectPicker` and `OpenWorkspaceDashboard`, because those
+actions also own a `Ctrl` chord (`Ctrl+\`, `Ctrl+O`) that must keep working in
+Insert mode; listing them would have silently taken the chord out too.
+
+The shifted-capitals rule therefore lives in the Insert branch of
+`handle_key_with_bindings`, at the **key**: a text-modifier key whose binding
+matches either shipped map (`DEFAULT_BINDINGS` or `VIM_BINDINGS`) is text.
+Both maps matter — `Shift+G` exists only in the vim one. Comparing the binding
+rather than the map's identity is what keeps the neighbouring arm's promise: an
+explicit *user* binding for a shifted capital still fires. The old gate was
+`bindings.is_none()`, which is dead in the real app: `App::on_key` always passes
+`Some(&self.ui_state.bindings)`, so the guard never ran and a capital `F`
+mid-word opened the project picker in the **default** configuration.
+`builtin_shift_letters_are_composed_text_in_insert_mode` sweeps both keymaps so
+the next mnemonic inherits the fix rather than rediscovering the hole; the
+sweep also asserts it saw all thirteen letters, so deleting a binding cannot
+make it pass vacuously, and
+`a_user_binding_for_a_shift_letter_still_fires_in_insert_mode` asserts the fix
+was not bought by making text unwinnable.
+
 **The composer is the only input surface.** The chat panel holds no composer
 buffer; verbs that need text hand the keyboard to the bottom composer. The
 composer renders `[NOR|INS] [agent] [BUILD] [CHAT]` with the armed target
@@ -1893,6 +1992,49 @@ Detached durable runs remain inspectable. Enter delegates to the existing lazy
 `OpenRunDetail`/RunStore surface and never copies transcripts, logs, or diffs
 into sidebar state. The tree is capped independently at 64 source nodes and
 inherits the projection's reconnect/replay bounds.
+
+**Subagent and job sections** sit between `Todos` and the file-change/MCP
+sections, so the three "what is this waiting on" surfaces read as one block and
+match the overlay's todos → subagents → jobs order. Rows come from the **same
+`SubagentRow` vector** already handed to `SubagentState::set_rows` for the main
+buffer strip and the overlay: one derived value rendered three ways, which is
+what guarantees one name per subagent across surfaces. Jobs come from
+`snapshot.jobs` filtered by the shared `state::tasks::is_live_state`, so
+"waiting on" is one rule rather than two that drift.
+
+Four properties here are deliberate, and each has a test named after it:
+
+- **The agent tree keeps `Enter`.** Adding a second adjacent subagent surface
+  made reusing `Enter` on the tree rows tempting; refusing it keeps a working
+  surface working. "What happened to this run" (run-detail dialog) and "show me
+  its transcript" (buffer tab) stay separate questions on separate rows
+  (`the_new_sections_do_not_take_over_the_agent_tree_activation`).
+- **A job row activates to nothing.** There is no job transcript and no job
+  dialog, so `Enter` consumes the key via `SidebarActivation::None` rather than
+  fabricating a destination
+  (`a_job_row_is_read_only_and_never_reaches_the_composer`).
+- **Job focus targets key on `job_id`, not list index.** Jobs are upserted
+  *and* filtered to live states, so an earlier job finishing shifts every
+  later index down by one; an index-keyed target would silently move focus onto
+  a different job and then activate it. Todos and file changes still use
+  indices because the projection only appends to them.
+- **The subagent section keeps terminal rows.** Filtering here — as the overlay
+  does — would make a finished subagent vanish while its tab may still be open,
+  which is the exact failure D3 asks to watch for. Status is drawn per row
+  instead, and when the tree drops the node the row goes and the tab shows its
+  `Detached` state. This settles D3 in favour of agreement with the tab set.
+
+A missing snapshot does **not** clear the subagent section: `set_subagents` is
+called only with rows an arriving snapshot reported, matching
+`SubagentState::set_rows`. A projection that has not spoken is not evidence that
+no subagents exist. Jobs do clear, consistent with the sidebar's neighbouring
+setters.
+
+Routing is the ordinary panel path — `SidebarActivation::InspectSubagent` →
+`PanelKey::Intent(TuiMsg::OpenSubagentTab)` → `App::open_subagent_tab`. The
+panel never calls `process_msg` itself; only `App::on_mouse`'s
+`ClickTarget::Sidebar` arm does, which is what keeps the click and Enter routes
+identical (`a_clicked_subagent_row_opens_the_same_tab_as_enter`).
 
 ### UiState (`src/tui/app/state/ui.rs:40`)
 
@@ -2869,7 +3011,7 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # 27 state domain modules + mod.rs
+│   └── state/              # 31 state domain modules + mod.rs
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
 │       ├── change_review.rs # M006-E review state machine
@@ -2882,6 +3024,7 @@ tui/
 │       ├── manifest.rs     # Manifest handling
 │       ├── messages.rs     # MessagesState (messages, toasts, spinner)
 │       ├── observe.rs      # Read-only session observation
+│       ├── panel_hotkeys.rs # Side-panel Ctrl+digit hotkey bindings
 │       ├── persistence.rs  # State persistence
 │       ├── plugin_ui.rs    # PluginUiState
 │       ├── presence.rs     # Collaborator presence projection
@@ -2893,11 +3036,14 @@ tui/
 │       ├── routing.rs      # Route routing helpers
 │       ├── session.rs      # SessionState (session, history, git info)
 │       ├── snapshot.rs     # Remote snapshot building
+│       ├── subagent_tabs.rs # Subagent tab set over the main buffer (Shift+N/P/X)
+│       ├── subagents.rs    # SubagentRow projection rows + strip/buffer view state
+│       ├── tasks.rs        # Shift+T tasks overlay rows (todos, subagents, jobs)
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
 │       ├── view_switch.rs  # Active-view switch coordinator
 │       ├── work_orders.rs  # Task/work-order state, ComposerMode
 │       └── workspace_dashboard.rs # M005 Workspace primary-view cache
-├── commands/               # 35 command handler submodules + mod.rs
+├── commands/               # 37 command handler submodules + mod.rs
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
 │   ├── change_review.rs    # M006-E review commands
@@ -2943,7 +3089,7 @@ tui/
 │   ├── component/
 │   │   ├── focus.rs        # FocusManager for modal focus stack
 │   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # 34 modal dialogs + mod.rs (all implement Component)
+│   ├── dialogs/            # 40 modal dialogs + mod.rs (all implement Component)
 │   │   ├── agent.rs        # AgentDialog
 │   │   ├── command.rs      # CommandPalette (query/selection model only —
 │   │   │                     # it no longer renders; see "One popup" below)
@@ -3023,7 +3169,7 @@ tui/
 ├── unified_diff.rs         # Bounded patch/hunk parser
 ├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
 ├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
-├── command.rs              # Slash command registry (153 built-in)
+├── command.rs              # Slash command registry (164 built-in)
 ├── ui_builders/            # Pure UiNode builder functions
 │   ├── mod.rs
 │   ├── stats.rs            # stats_node for /tui-stats
@@ -3361,6 +3507,16 @@ Verified 2026-10-06 against `src/tui/`: `app/mod.rs` line count
 five `.await` points in `dispatch_tui_command`
 (`runtime/command_dispatch.rs:84`). Render-regression test count (99
 `#[test]` in `tests/tui_render.rs`) confirmed.
+
+Re-verified during the subagent/job visibility roadmap against `src/tui/`:
+`app/mod.rs` line count (18,815), the **31** `app/state/` modules (32 `.rs`
+files incl. `mod.rs`), `TuiMsg` (149 variants) at `app/types.rs:123`,
+`InputAction` (62) at `input.rs`, and the render-regression test count (111
+`#[test]` in `tests/tui_render.rs`). The Directory Structure counts below were
+corrected in the same pass: `commands/` (37 submodules), `components/dialogs/`
+(40 dialogs), `command.rs` (164 built-ins), and `app/state/` — which had been
+missing `panel_hotkeys.rs`, `subagents.rs`, `subagent_tabs.rs`, and `tasks.rs`
+entirely, so the map silently understated the module count.
 
 Re-verified 2026-10-06 against `src/tui/` and
 `scripts/check_tui_*`. Corrected the Invariants entry that placed

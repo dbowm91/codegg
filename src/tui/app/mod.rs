@@ -18000,6 +18000,133 @@ mod skills_command_tests {
 }
 
 #[cfg(test)]
+mod workspace_entry_convergence_tests {
+    use super::*;
+    use crate::tui::command::{BuiltinSlashAction, CommandAction, CommandRegistry};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    /// M005 P1: `/workspace` and the Workspace hotkeys must reach **one**
+    /// handler (`commands::workspace_dashboard::open_workspace_dashboard`).
+    ///
+    /// Each entry point is driven through its own production seam — the
+    /// command registry for the slash command, `App::on_key` for the hotkeys —
+    /// rather than by calling the handler directly. A test that calls the
+    /// handler three times asserts only that the handler works; it would keep
+    /// passing after `/workspace` was re-pointed at a different builtin, or
+    /// after the hotkey was rebound, which is precisely the drift P1 exists to
+    /// rule out.
+    #[test]
+    fn workspace_command_and_hotkeys_reach_one_handler() {
+        // 1. The slash command, resolved by its user-facing spelling so an
+        //    alias or rebinding would be caught here.
+        let registry = CommandRegistry::new();
+        let command = registry
+            .find_by_name_or_alias("/workspace")
+            .expect("/workspace must stay registered");
+        let CommandAction::Builtin(BuiltinSlashAction::Workspace) = command.action else {
+            panic!(
+                "/workspace must stay Builtin(Workspace), got {:?}",
+                command.action
+            );
+        };
+
+        let mut via_command = App::new_for_testing("/tmp".into());
+        via_command.dispatch_builtin_command(BuiltinSlashAction::Workspace, None);
+        assert!(
+            matches!(
+                via_command.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "/workspace must open the Workspace view"
+        );
+        assert!(
+            via_command.dialog_state.workspace_dashboard.is_some(),
+            "/workspace must mount the dashboard"
+        );
+
+        // 2. Every bound hotkey for the same action, through the real key
+        //    entry point. `Ctrl+O` works in both input modes; `Shift+W` is a
+        //    vim-Normal letter, so it needs a vim-configured app. `App::
+        //    new_for_testing` deliberately builds the *non-vim* map, and
+        //    using it unchanged would have made `Shift+W` fail for the right
+        //    reason while testing the wrong thing.
+        let ctrl_o = KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        for mode in [InputMode::Insert, InputMode::Normal] {
+            let mut via_key = App::new_for_testing("/tmp".into());
+            via_key.ui_state.input_mode = mode;
+            via_key.on_key(ctrl_o);
+            assert!(
+                matches!(
+                    via_key.ui_state.routes.current(),
+                    crate::tui::route::Route::Workspace
+                ),
+                "Ctrl+O must open the same Workspace view as /workspace in {mode:?}"
+            );
+            assert!(
+                via_key.dialog_state.workspace_dashboard.is_some(),
+                "Ctrl+O must mount the same dashboard as /workspace in {mode:?}"
+            );
+        }
+
+        let mut vim_app = App::new_for_testing("/tmp".into());
+        vim_app.ui_state.vim_mode = true;
+        vim_app.ui_state.bindings = crate::tui::input::build_bindings(None, true);
+        vim_app.ui_state.input_mode = InputMode::Normal;
+        vim_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            matches!(
+                vim_app.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "Shift+W (vim Normal) must open the same Workspace view as /workspace"
+        );
+        assert!(
+            vim_app.dialog_state.workspace_dashboard.is_some(),
+            "Shift+W (vim Normal) must mount the same dashboard as /workspace"
+        );
+
+        // 3. The normal-only gate is the contract, not an accident of the key
+        //    map: in Insert, `Shift+W` is the letter `W` being composed. If a
+        //    future change made this action global, the capital W a user
+        //    types mid-word would open a dashboard over their prompt.
+        let mut insert_app = App::new_for_testing("/tmp".into());
+        insert_app.ui_state.vim_mode = true;
+        insert_app.ui_state.bindings = crate::tui::input::build_bindings(None, true);
+        insert_app.ui_state.input_mode = InputMode::Insert;
+        insert_app.on_key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT));
+        assert!(
+            !matches!(
+                insert_app.ui_state.routes.current(),
+                crate::tui::route::Route::Workspace
+            ),
+            "Shift+W must stay Normal-only: in Insert it is composed text"
+        );
+    }
+
+    /// The advertised help key for the Workspace view must itself resolve.
+    /// `workspace_dashboard_action_is_configurable_and_helped` pins the *help
+    /// text*; this pins the round trip, so a rebind that left the help
+    /// advertising a dead key fails here rather than in a user's terminal.
+    #[test]
+    fn workspace_help_key_resolves_to_the_workspace_action() {
+        for entry in crate::tui::input::help_entries_for_mode(crate::tui::input::HelpMode::Normal) {
+            if entry.action != "Open Workspace view (selected-project chat)" {
+                continue;
+            }
+            assert_eq!(entry.key, "Ctrl+O");
+            let resolved = crate::tui::input::handle_key_with_bindings(
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                None,
+                InputMode::Normal,
+            );
+            assert_eq!(resolved, Some(InputAction::OpenWorkspaceDashboard));
+            return;
+        }
+        panic!("help must advertise the Workspace view hotkey");
+    }
+}
+
+#[cfg(test)]
 mod projection_adoption_tests {
     use super::*;
     use crate::protocol::projection::caps::ProjectionCapabilities;

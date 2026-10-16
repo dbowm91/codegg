@@ -1039,8 +1039,16 @@ mod tests {
         );
     }
 
+    /// Opening the dashboard is non-modal and side-effect free: it changes the
+    /// route, preserves the active project tab and session, mounts no
+    /// `FocusManager` modal, and leaves the ordinary composer as the focus.
+    ///
+    /// The *convergence* of the `/workspace` command with its hotkeys is a
+    /// separate claim owned by `workspace_entry_convergence_tests` in
+    /// `app/mod.rs`, which drives both entry points for real. This test calls
+    /// the handler directly and only says what the handler itself guarantees.
     #[tokio::test(flavor = "current_thread")]
-    async fn workspace_command_and_hotkey_open_same_dashboard() {
+    async fn opening_workspace_preserves_tab_session_and_composer() {
         let (mut app, _client) = test_app();
         let tab_before = app.project_tabs.active_tab_id().cloned();
         open_workspace_dashboard(&mut app);
