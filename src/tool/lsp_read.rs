@@ -50,6 +50,7 @@ use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProve
 use crate::tool::contract::{
     IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
 };
+use crate::tool::util::tolerant_opt_u32;
 use crate::tool::{Tool, ToolCategory};
 
 /// Allowed read operations. Everything else on the multiplexed `lsp`
@@ -74,9 +75,9 @@ struct LspReadInput {
     operation: String,
     #[serde(default)]
     file_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tolerant_opt_u32")]
     line: Option<u32>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "tolerant_opt_u32")]
     column: Option<u32>,
     #[serde(default)]
     symbol: Option<String>,
@@ -269,11 +270,13 @@ impl Tool for LspReadTool {
                     "description": "Workspace-relative file path (must stay inside the program workspace root)"
                 },
                 "line": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "1-indexed line number"
                 },
                 "column": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 1,
                     "description": "1-indexed column number"
                 },
                 "symbol": {

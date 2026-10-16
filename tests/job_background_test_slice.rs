@@ -107,8 +107,12 @@ fn ctx_for(session: &str, turn: Option<&str>, invocation: &str) -> ToolExecution
 #[tokio::test(flavor = "current_thread")]
 async fn background_test_returns_handle_without_blocking_wait() {
     let (submission, _scheduler, notifications, _store) = harness().await;
+    // Threaded as production does: the tool defaults its workdir to the
+    // session workspace and refuses to guess the process cwd.
+    let root = tempfile::tempdir().expect("workspace fixture");
     let tool = codegg::tool::test::TestTool::new()
         .with_submission(submission)
+        .with_workspace_root(root.path().to_path_buf())
         .with_job_notifications(notifications.clone());
     // A scope that resolves without executing (validation happens before
     // submit; an unknown scope fails before any job exists).
@@ -163,8 +167,10 @@ async fn background_test_without_session_fails_without_spawning() {
         .await
         .unwrap()
         .len();
+    let root = tempfile::tempdir().expect("workspace fixture");
     let tool = codegg::tool::test::TestTool::new()
         .with_submission(submission)
+        .with_workspace_root(root.path().to_path_buf())
         .with_job_notifications(notifications);
     let err = tool
         .execute(serde_json::json!({"scope": "auto", "execution_mode": "background"}))

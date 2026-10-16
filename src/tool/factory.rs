@@ -157,6 +157,7 @@ pub fn build_session_tool_registry(
     };
 
     let mut tool_registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         tool_advisor: config.tool_advisor.clone(),
         decision_engine: config.decision_engine.clone(),
         todo_state: Some(todo_state),

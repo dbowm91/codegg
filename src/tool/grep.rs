@@ -80,7 +80,8 @@ impl Tool for GrepTool {
                     "description": "File or directory to search in"
                 },
                 "context": {
-                    "type": "number",
+                    "type": "integer",
+                    "minimum": 0,
                     "description": "Number of context lines before and after"
                 }
             },
@@ -154,10 +155,9 @@ impl Tool for GrepTool {
 
         let search_path_str = input["path"].as_str().unwrap_or(".");
         let search_path = Path::new(search_path_str);
-        let context = input["context"]
-            .as_u64()
+        let context = crate::tool::util::json_usize(&input["context"])
             .unwrap_or(0)
-            .min(MAX_CONTEXT_LINES as u64) as usize;
+            .min(MAX_CONTEXT_LINES);
 
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;

@@ -1,8 +1,8 @@
 use codegg::config::schema::{Config, PermissionConfig, PermissionRule};
 use codegg::permission::{
-    agent_ruleset, config_ruleset, default_ruleset, merge_rulesets, parse_level, PathRule,
-    PermissionChecker, PermissionLevel, PermissionRequest, PermissionResult, PermissionRuleset,
-    PermissionStore, PersistentDecision, ToolRule,
+    agent_ruleset, config_ruleset, default_ruleset, explicit_config_ruleset, merge_rulesets,
+    parse_level, PathRule, PermissionChecker, PermissionLevel, PermissionRequest, PermissionResult,
+    PermissionRuleset, PermissionStore, PersistentDecision, ToolRule,
 };
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -466,10 +466,13 @@ async fn narrow_saved_command_grant_does_not_cover_compound_shell() {
 }
 
 #[tokio::test]
-async fn exact_saved_complex_command_grant_is_not_reused_for_a_variant() {
+async fn a_saved_compound_command_grant_covers_its_segments_but_not_a_variant() {
     let command = "cargo test; ./second.sh";
-    let scope = codegg::permission::decision_scope_for_shell_command(command).unwrap();
-    assert!(scope.starts_with("cmd:exact:"));
+    // The whole-invocation digest still exists as a scope shape, but a
+    // compound command is now remembered one segment at a time.
+    let scopes = codegg::permission::decision_scopes_for_shell_command(command);
+    assert_eq!(scopes.len(), 2);
+    assert!(scopes.iter().any(|scope| scope == "cmd:cargo"));
     let checker = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
         default: PermissionLevel::Ask,
         tool_rules: vec![ToolRule {
@@ -480,17 +483,29 @@ async fn exact_saved_complex_command_grant_is_not_reused_for_a_variant() {
         }],
         path_rules: Vec::new(),
     });
-    assert!(
-        checker
-            .always_allow_scoped("bash", None, Some(&scope), None)
-            .await
-    );
+    for scope in &scopes {
+        assert!(
+            checker
+                .always_allow_scoped("bash", None, Some(scope), None)
+                .await
+        );
+    }
     assert!(matches!(
         checker
             .check_with_args("bash", None, Some(command), None)
             .await,
         PermissionResult::Allow
     ));
+    // Approving a segment remembers that command family, which is what makes
+    // "Allow always" converge instead of re-prompting on every variant.
+    assert!(matches!(
+        checker
+            .check_with_args("bash", None, Some("cargo test"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+    // The documented invariant is unchanged: a saved `cmd:cargo` grant cannot
+    // cover a compound command whose other segment was never approved.
     assert!(matches!(
         checker
             .check_with_args("bash", None, Some("cargo test; ./other.sh"), None)
@@ -1115,4 +1130,206 @@ async fn test_permission_bash_patterns_none_allows_all() {
 
     let result = checker.check_bash_legacy(None, Some("any command")).await;
     assert!(matches!(result, PermissionResult::Ask(_)));
+}
+
+// ── Agent declarations on the main loop ──────────────────────────────────────
+//
+// An agent's own declaration is authoritative until the operator speaks for
+// that tool. Two pieces make that true on the main loop (not the subagent
+// loop): the resolved agents are enveloped against *operator-written* config
+// levels (`resolve_agents_with_context`, src/agent/definition.rs:580), and the
+// checker is built with those rules (`build_agent_loop`,
+// src/agent/agent_loop_factory.rs).
+
+fn agent_declaring(name: &str, permissions: &[(&str, &str)]) -> codegg::agent::Agent {
+    codegg::agent::Agent {
+        git_read_only: false,
+        name: name.to_string(),
+        permissions: permissions
+            .iter()
+            .map(|(tool, level)| (tool.to_string(), level.to_string()))
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// Reproduces the main-loop wiring: safety envelope over resolved agents, then
+/// checker construction with the active agent's rules.
+fn main_loop_checker(
+    config: &Config,
+    agent: &codegg::agent::Agent,
+    store_path: Option<std::path::PathBuf>,
+) -> PermissionChecker {
+    let session_rules = PermissionRuleset::default();
+    let config_rules = explicit_config_ruleset(Some(config));
+    let hard_deny = vec![
+        "commit".to_string(),
+        "todowrite".to_string(),
+        "todoread".to_string(),
+    ];
+    let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+    PermissionChecker::new(Some(config), store_path)
+        .with_agent_rules(codegg::agent::agent_loop_factory::active_agent_rules(
+            std::slice::from_ref(&safe_agent),
+        ))
+        .with_active_mode(config)
+}
+
+#[test]
+fn explicit_config_ruleset_is_neutral_without_operator_permission() {
+    // No `[permission]` table at all: the operator has not spoken, so the
+    // config layer must contribute nothing. `config_ruleset` answers a
+    // different question — what to do with an unclaimed tool — and still
+    // carries the built-in Ask list.
+    let config = Config::default();
+    let explicit = explicit_config_ruleset(Some(&config));
+    assert!(
+        explicit.tool_rules.is_empty(),
+        "absent [permission] must not contribute tool rules: {:?}",
+        explicit.tool_rules
+    );
+    assert!(matches!(explicit.default, PermissionLevel::Ask));
+
+    let defaults = config_ruleset(Some(&config));
+    assert!(
+        defaults
+            .tool_rules
+            .iter()
+            .any(|rule| rule.tool == "task" && matches!(rule.level, PermissionLevel::Ask)),
+        "config_ruleset must keep the built-in fallback for unclaimed tools"
+    );
+}
+
+#[test]
+fn explicit_config_ruleset_reports_only_operator_statements() {
+    let config = Config {
+        permission: Some(PermissionConfig {
+            task: Some(PermissionRule::Action("deny".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let explicit = explicit_config_ruleset(Some(&config));
+    let task_rule = explicit
+        .tool_rules
+        .iter()
+        .find(|rule| rule.tool == "task")
+        .expect("operator-set task level is reported");
+    assert!(matches!(task_rule.level, PermissionLevel::Deny));
+    // A tool the operator never named is not reported as a decision, so the
+    // built-in `edit` Ask must not appear here.
+    assert!(!explicit.tool_rules.iter().any(|rule| rule.tool == "edit"));
+    // Unconfigured bash is not synthesized into a decision either.
+    assert!(!explicit.tool_rules.iter().any(|rule| rule.tool == "bash"));
+}
+
+#[tokio::test]
+async fn agent_allow_applies_to_task_on_the_main_loop() {
+    let config = Config::default();
+    let agent = agent_declaring("build", &[("task", "allow")]);
+
+    let checker = main_loop_checker(&config, &agent, None);
+    assert!(
+        matches!(
+            checker.check("task", None, None).await,
+            PermissionResult::Allow
+        ),
+        "an agent's task=allow must stand when the operator configured nothing"
+    );
+
+    // Control: the same config without the declaration still asks, so this is
+    // the declaration being honored and not a weakened default.
+    let bare = PermissionChecker::new(Some(&config), None);
+    assert!(matches!(
+        bare.check("task", None, None).await,
+        PermissionResult::Ask(_)
+    ));
+}
+
+#[tokio::test]
+async fn operator_explicit_level_beats_agent_allow() {
+    let ask_config = Config {
+        permission: Some(PermissionConfig {
+            task: Some(PermissionRule::Action("ask".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let agent = agent_declaring("build", &[("task", "allow")]);
+    let checker = main_loop_checker(&ask_config, &agent, None);
+    assert!(matches!(
+        checker.check("task", None, None).await,
+        PermissionResult::Ask(_)
+    ));
+
+    let deny_config = Config {
+        permission: Some(PermissionConfig {
+            task: Some(PermissionRule::Action("deny".to_string())),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let checker = main_loop_checker(&deny_config, &agent, None);
+    assert!(matches!(
+        checker.check("task", None, None).await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
+async fn agent_deny_applies_without_operator_config() {
+    let config = Config::default();
+    let agent = agent_declaring("build", &[("task", "deny"), ("image", "deny")]);
+    let checker = main_loop_checker(&config, &agent, None);
+
+    assert!(matches!(
+        checker.check("task", None, None).await,
+        PermissionResult::Deny
+    ));
+    assert!(matches!(
+        checker.check("image", None, None).await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
+async fn tools_no_agent_declares_keep_the_default_prompt() {
+    let config = Config::default();
+    let agent = agent_declaring("build", &[("task", "allow")]);
+    let checker = main_loop_checker(&config, &agent, None);
+
+    for tool in ["edit", "apply_patch", "write"] {
+        assert!(
+            matches!(
+                checker.check(tool, None, None).await,
+                PermissionResult::Ask(_)
+            ),
+            "{tool} is declared by no agent and must still prompt"
+        );
+    }
+    // Unlisted mutating tool with no rule anywhere: falls back to the default.
+    assert!(matches!(
+        checker.check("python_script", None, None).await,
+        PermissionResult::Ask(_)
+    ));
+}
+
+#[tokio::test]
+async fn remembered_deny_beats_agent_allow() {
+    let dir = TempDir::new().unwrap();
+    let store_path = dir.path().join("permissions.json");
+
+    let config = Config::default();
+    let agent = agent_declaring("build", &[("task", "allow")]);
+    let checker = main_loop_checker(&config, &agent, Some(store_path));
+    assert!(matches!(
+        checker.check("task", None, None).await,
+        PermissionResult::Allow
+    ));
+
+    assert!(checker.always_deny("task", None, None).await);
+    assert!(matches!(
+        checker.check("task", None, None).await,
+        PermissionResult::Deny
+    ));
 }

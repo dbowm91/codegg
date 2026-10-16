@@ -25,6 +25,16 @@ pub struct GitTool {
     workdir: PathBuf,
     run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
     child_policy: Option<ChildGitPolicy>,
+    /// Refuse every invocation `codegg-git` does not classify as read-only.
+    ///
+    /// Set for an agent that declares `git_read_only`. It is enforced here, at
+    /// the tool boundary, rather than only in the permission ruleset: a
+    /// permission level answers "may this run?", while this answers "may this
+    /// agent do this specific git call?", and only the tool sees the argv that
+    /// distinguishes `branch` from `branch -d`.
+    read_only_only: bool,
+    /// Agent name for the refusal message. Never used for routing.
+    agent_label: String,
 }
 
 impl GitTool {
@@ -34,7 +44,16 @@ impl GitTool {
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             run_store: None,
             child_policy: None,
+            read_only_only: false,
+            agent_label: "unknown".to_string(),
         }
+    }
+
+    /// Restrict this tool to read-only git, enforced per invocation.
+    pub fn with_read_only_only(mut self, enabled: bool, agent_label: String) -> Self {
+        self.read_only_only = enabled;
+        self.agent_label = agent_label;
+        self
     }
 
     pub fn with_workdir(mut self, dir: PathBuf) -> Self {
@@ -60,23 +79,24 @@ impl GitTool {
         self
     }
 
-    /// Determine if the given subcommand is a read-only operation.
-    fn is_read_only(subcommand: &str) -> bool {
-        matches!(
-            subcommand,
-            "status"
-                | "diff"
-                | "log"
-                | "show"
-                | "blame"
-                | "branch"
-                | "tag"
-                | "remote"
-                | "worktree"
-                | "stash"
-                | "rev-parse"
-                | "for-each-ref"
-        )
+    /// Determine if this exact git invocation is read-only.
+    ///
+    /// The authority is `codegg-git`'s typed risk model, not the subcommand
+    /// name. The previous name-only list classified `branch`, `tag`, `remote`,
+    /// `stash`, and `worktree` as read-only, which meant `git branch -d x`,
+    /// `git tag v1`, `git remote add`, and `git worktree add` all passed a
+    /// read-only gate they never should have. Parsing the argv separates the
+    /// list form from the mutate form because those share a name but not a
+    /// risk.
+    ///
+    /// An unparseable argv is treated as **not** read-only: a gate that
+    /// degrades open on input it does not understand is not a gate.
+    fn invocation_is_read_only(subcommand: &str, args: &[String]) -> bool {
+        let mut argv = vec!["git".to_string(), subcommand.to_string()];
+        argv.extend_from_slice(args);
+        parse_git_argv(&argv)
+            .map(|operation| operation.is_read_only())
+            .unwrap_or(false)
     }
 
     /// Try to execute a structured read via GitExecutionService.
@@ -357,12 +377,6 @@ impl GitTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
 
-        if self.child_policy.is_some() && !Self::is_read_only(subcommand) {
-            return Err(ToolError::Permission(
-                "isolated child Git policy requires typed local stage/commit operations".into(),
-            ));
-        }
-
         let args: Vec<String> = input["args"]
             .as_array()
             .map(|arr| {
@@ -372,23 +386,41 @@ impl GitTool {
             })
             .unwrap_or_default();
 
+        if self.read_only_only && !Self::invocation_is_read_only(subcommand, &args) {
+            return Err(ToolError::Permission(format!(
+                "agent '{}' is granted read-only git access; \
+                 `git {}` is not a read-only operation",
+                self.agent_label.clone(),
+                subcommand
+            )));
+        }
+
+        if self.child_policy.is_some() && !Self::invocation_is_read_only(subcommand, &args) {
+            return Err(ToolError::Permission(
+                "isolated child Git policy requires typed local stage/commit operations".into(),
+            ));
+        }
+
         // Try structured read for read-only operations
-        if Self::is_read_only(subcommand) {
+        if Self::invocation_is_read_only(subcommand, &args) {
             let tool = GitTool {
                 timeout,
                 workdir: workdir.clone(),
                 run_store: self.run_store.clone(),
                 child_policy: self.child_policy,
+                read_only_only: self.read_only_only,
+                agent_label: self.agent_label.clone(),
             };
             if let Some(result) = tool.try_structured_read(subcommand, &args).await {
                 return result;
             }
         }
 
-        // Fall back to raw execution
+        // Fall back to raw execution. `args` stays owned here because the
+        // read-only audit gate further down still classifies the invocation.
         let full_args = {
             let mut full = vec![subcommand.to_string()];
-            full.extend(args);
+            full.extend(args.iter().cloned());
             full
         };
 
@@ -411,7 +443,7 @@ impl GitTool {
         let mut cmd = match env_policy.apply(&argv_for_run, &workdir) {
             Ok(command) => command,
             Err(outcome) => {
-                if !Self::is_read_only(subcommand) {
+                if !Self::invocation_is_read_only(subcommand, &args) {
                     emit_raw_git_audit(audit_ctx, subcommand, "policy_blocked").await;
                 }
                 return Err(ToolError::Execution(outcome.to_string()));
@@ -424,7 +456,7 @@ impl GitTool {
                 // M002: spawned then reaped by the deadline. Mutating
                 // subcommands describe the timeout once; read-only
                 // subcommands stay silent.
-                if !Self::is_read_only(subcommand) {
+                if !Self::invocation_is_read_only(subcommand, &args) {
                     emit_raw_git_audit(audit_ctx, subcommand, "timeout").await;
                 }
                 return Err(ToolError::Timeout(format!(
@@ -455,7 +487,7 @@ impl GitTool {
         // M002: the raw fallback executes real mutations outside the
         // typed executor, so it owns their single `git_operation`
         // event here. Read-only subcommands never emit.
-        if !Self::is_read_only(subcommand) {
+        if !Self::invocation_is_read_only(subcommand, &args) {
             let terminal = if output.status.success() {
                 "completed"
             } else {
@@ -1316,6 +1348,99 @@ mod schema_tests {
             assert!(
                 matches!(error, ToolError::Permission(_)),
                 "unexpected child-policy result: {error:?}"
+            );
+        }
+    }
+
+    /// The per-invocation classification that `git_read_only` is enforced with.
+    ///
+    /// The old name-only list called `branch`, `tag`, `remote`, `stash`, and
+    /// `worktree` read-only, so `git remote add` and `git stash` sailed through
+    /// a gate that was supposed to stop them. These assertions are the list
+    /// form vs the mutate form of the *same* subcommand name.
+    #[test]
+    fn list_and_mutate_forms_classify_differently() {
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(GitTool::invocation_is_read_only(
+            "branch",
+            &args(&["--show-current"])
+        ));
+        assert!(!GitTool::invocation_is_read_only(
+            "branch",
+            &args(&["-D", "topic"])
+        ));
+        assert!(GitTool::invocation_is_read_only("remote", &args(&["-v"])));
+        assert!(!GitTool::invocation_is_read_only(
+            "remote",
+            &args(&["add", "origin", "https://example.invalid/x.git"])
+        ));
+        assert!(GitTool::invocation_is_read_only("stash", &args(&["list"])));
+        assert!(!GitTool::invocation_is_read_only("stash", &args(&["push"])));
+        assert!(GitTool::invocation_is_read_only("tag", &args(&["-l"])));
+        assert!(!GitTool::invocation_is_read_only("tag", &args(&["v1.0.0"])));
+    }
+
+    #[test]
+    fn plainly_read_only_commands_stay_read_only() {
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(GitTool::invocation_is_read_only("status", &args(&[])));
+        assert!(GitTool::invocation_is_read_only(
+            "log",
+            &args(&["--oneline", "-n", "5"])
+        ));
+        assert!(GitTool::invocation_is_read_only(
+            "diff",
+            &args(&["--", "src/lib.rs"])
+        ));
+        assert!(GitTool::invocation_is_read_only("show", &args(&["HEAD"])));
+    }
+
+    /// An argv the typed parser cannot classify must not open the gate.
+    #[test]
+    fn an_unparseable_invocation_is_not_read_only() {
+        let args = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!GitTool::invocation_is_read_only(
+            "not-a-git-subcommand",
+            &args(&["--whatever"])
+        ));
+        // But a flag the parser does not recognise on a genuinely read-only
+        // command is still that command: `status` cannot write whatever follows.
+        assert!(GitTool::invocation_is_read_only(
+            "status",
+            &args(&["-Z", "x"])
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_read_only_agent_is_refused_every_mutating_form() {
+        let tool = GitTool::new().with_read_only_only(true, "explore".to_string());
+        for input in [
+            serde_json::json!({"subcommand": "branch", "args": ["-D", "topic"], "workdir": "."}),
+            serde_json::json!({"subcommand": "remote", "args": ["add", "o", "https://example.invalid"], "workdir": "."}),
+            serde_json::json!({"subcommand": "stash", "args": ["push"], "workdir": "."}),
+            serde_json::json!({"subcommand": "push", "args": ["origin", "main"], "workdir": "."}),
+        ] {
+            let error = tool.execute(input.clone()).await.unwrap_err();
+            assert!(
+                matches!(error, ToolError::Permission(ref message) if message.contains("read-only git")),
+                "expected a read-only refusal for {input}, got {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_only_agent_may_still_inspect() {
+        // `status` is permitted to *reach* execution; whether it then succeeds
+        // depends on the fixture directory, which is not what is under test.
+        // The gate must not refuse it.
+        let tool = GitTool::new().with_read_only_only(true, "explore".to_string());
+        let result = tool
+            .execute(serde_json::json!({"subcommand": "status", "args": [], "workdir": "."}))
+            .await;
+        if let Err(error) = result {
+            assert!(
+                !matches!(&error, ToolError::Permission(ref m) if m.contains("read-only git")),
+                "a read-only agent must not be refused `git status`: {error:?}"
             );
         }
     }

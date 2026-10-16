@@ -257,6 +257,7 @@ mod real_build_tool_definitions_tests {
             mode: codegg::agent::AgentMode::Primary,
             mode_name: None,
             model: None,
+            git_read_only: false,
             variant: None,
             temperature: None,
             top_p: None,

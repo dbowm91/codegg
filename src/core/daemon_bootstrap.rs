@@ -475,18 +475,28 @@ impl CoreDaemon {
                                 } else {
                                     NotificationPriority::Low
                                 };
+                                // Resolve the session name for the announcement. The
+                                // rendered message is spoken aloud, so it must not
+                                // carry a raw uuid; the fallback is a short prefix.
+                                let session_title = super::notification::resolve_session_title(
+                                    daemon.pool.as_ref(),
+                                    session_id.as_str(),
+                                )
+                                .await;
+                                let spoken_name = super::notification::spoken_session_name(
+                                    session_title.as_deref(),
+                                    Some(session_id.as_str()),
+                                );
                                 let event = NotificationEvent {
                                     id: format!("notif-{}", uuid::Uuid::new_v4()),
                                     session_id: Some(session_id.clone()),
                                     turn_id: None,
                                     kind,
                                     priority,
-                                    message: format!(
-                                        "Turn {} for session {}",
-                                        stop_reason, session_id
-                                    ),
+                                    message: format!("Turn {stop_reason} for {spoken_name}"),
                                     dedupe_key: Some(format!("turn-done:{}", session_id)),
                                     created_at: Utc::now(),
+                                    session_title,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
@@ -512,6 +522,7 @@ impl CoreDaemon {
                                     message: format!("Permission required for tool: {}", tool),
                                     dedupe_key: Some(format!("perm:{}", session_id)),
                                     created_at: Utc::now(),
+                                    session_title: None,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
@@ -536,6 +547,7 @@ impl CoreDaemon {
                                     message: "Question requires your input".to_string(),
                                     dedupe_key: Some(format!("question:{}", session_id)),
                                     created_at: Utc::now(),
+                                    session_title: None,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
@@ -556,6 +568,7 @@ impl CoreDaemon {
                                     message: message.clone(),
                                     dedupe_key: None,
                                     created_at: Utc::now(),
+                                    session_title: None,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
@@ -601,6 +614,7 @@ impl CoreDaemon {
                                         session_id, task_id
                                     )),
                                     created_at: Utc::now(),
+                                    session_title: None,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {
@@ -637,6 +651,7 @@ impl CoreDaemon {
                                         session_id, task_id
                                     )),
                                     created_at: Utc::now(),
+                                    session_title: None,
                                 };
                                 daemon.notification_router.emit(event.clone()).await;
                                 if let Some(ref pool) = daemon.pool {

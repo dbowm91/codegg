@@ -1061,6 +1061,7 @@ description = "Global TOML agent"
     #[test]
     fn test_overlay_merge_preserves_base_fields() {
         let base = Agent {
+            git_read_only: false,
             name: "security-review".to_string(),
             role: Some("reviewer".to_string()),
             description: "Built-in security reviewer".to_string(),
@@ -1086,6 +1087,7 @@ description = "Global TOML agent"
 
         // Overlay only changes temperature
         let overlay = Agent {
+            git_read_only: false,
             name: "security-review".to_string(),
             role: None,
             description: String::new(),
@@ -1124,6 +1126,7 @@ description = "Global TOML agent"
     #[test]
     fn test_overlay_merge_permissions_per_tool() {
         let base = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Base".to_string(),
@@ -1149,6 +1152,7 @@ description = "Global TOML agent"
 
         // Overlay changes bash to ask
         let overlay = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: String::new(),
@@ -1177,6 +1181,7 @@ description = "Global TOML agent"
     #[test]
     fn test_overlay_replace_discards_base() {
         let base = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: Some("base-role".to_string()),
             description: "Base description".to_string(),
@@ -1198,6 +1203,7 @@ description = "Global TOML agent"
         };
 
         let overlay = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Overlay description".to_string(),
@@ -1328,6 +1334,7 @@ deny = [".git/**", "target/**"]
     #[test]
     fn test_structured_bash_to_ruleset_conversion() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),
@@ -1387,6 +1394,7 @@ deny = [".git/**", "target/**"]
     #[test]
     fn test_structured_path_to_ruleset_conversion() {
         let agent = Agent {
+            git_read_only: false,
             name: "test".to_string(),
             role: None,
             description: "Test".to_string(),

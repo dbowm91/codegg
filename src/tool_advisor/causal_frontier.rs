@@ -5893,6 +5893,28 @@ mod tests {
                 || observed_post_m003_test_fields == ["execution_mode", "on_complete"],
             "unexpected test-tool input-schema changes: {observed_post_m003_test_fields:?}"
         );
+        // The `workdir` description was corrected after M003. It read
+        // "Defaults to current working directory", which under a daemon is
+        // actively wrong advice: the process cwd is wherever the daemon was
+        // launched, so a model following that description pointed test runs at
+        // an unrelated tree. Reconstruct the historical wording so the frozen
+        // receipt keeps matching, and fail loudly if the description changes
+        // again — otherwise this override would silently stop doing anything.
+        let live_workdir_description = historical_test_schema["properties"]["workdir"]
+            .as_object_mut()
+            .expect("test workdir schema property")
+            .insert(
+                "description".to_string(),
+                serde_json::json!("Working directory. Defaults to current working directory."),
+            );
+        assert_eq!(
+            live_workdir_description,
+            Some(serde_json::json!(
+                "Working directory for the test command. Defaults to the session \
+                 workspace root. A relative path resolves against that root."
+            )),
+            "unexpected post-M003 test.workdir description"
+        );
         historical_schemas.insert("test".to_string(), historical_test_schema);
 
         // Search-backend retirement intentionally narrowed explicit provider
@@ -5963,6 +5985,87 @@ mod tests {
             "unexpected post-M003 repo_search schema"
         );
         historical_schemas.insert("repo_search".to_string(), historical_repo_search_schema);
+
+        // Integer parameters were re-declared as `"integer"` (with a
+        // `minimum`) after M003. They were `"number"`, which is why a model
+        // following the schema literally emitted `500.0` for a count and the
+        // call failed to deserialize. Reconstruct that narrower historical
+        // typing so the frozen receipt keeps matching, and fail loudly if the
+        // live schemas ever stop being integers — otherwise this override
+        // would silently stop doing anything.
+        for (tool, property, minimum) in [
+            ("list", "max_files", 1),
+            ("codesearch", "tokens_num", 1),
+            ("lsp_read", "line", 1),
+            ("lsp_read", "column", 1),
+            ("git_read", "max_count", 1),
+            ("grep", "context", 0),
+        ] {
+            let mut schema = registry
+                .get(tool)
+                .unwrap_or_else(|| panic!("{tool} tool remains registered"))
+                .parameters();
+            let entry = schema["properties"][property]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool}.{property} remains declared"));
+            assert_eq!(
+                entry.get("type").and_then(|t| t.as_str()),
+                Some("integer"),
+                "unexpected post-M003 {tool}.{property} schema type"
+            );
+            assert_eq!(
+                entry.get("minimum").and_then(|m| m.as_u64()),
+                Some(minimum),
+                "unexpected post-M003 {tool}.{property} minimum"
+            );
+            entry.insert("type".to_string(), serde_json::json!("number"));
+            entry.remove("minimum");
+            historical_schemas.insert(tool.to_string(), schema);
+        }
+
+        // The `path` description for the tree tools was corrected after M003.
+        // It read "default: current directory", which under a daemon points at
+        // whatever tree the daemon was launched from — the wrong advice, and
+        // the reason these tools looked like they had no working directory.
+        // Reconstruct the historical wording so the frozen receipt keeps
+        // matching, and fail loudly if either description changes again.
+        for (tool, property, live_description, historical_description) in [
+            (
+                "list",
+                "path",
+                "Directory to list (default: the session workspace root). A relative path resolves against that root.",
+                "Directory to list (default: current directory)",
+            ),
+            (
+                "glob",
+                "path",
+                "Directory to search in (default: the session workspace root). A relative path resolves against that root.",
+                "Directory to search in (default: current directory)",
+            ),
+        ] {
+            // Start from the already-reverted schema where this tool was one of
+            // the integer deltas, so both corrections survive together.
+            let mut schema = match historical_schemas.remove(tool) {
+                Some(schema) => schema,
+                None => registry
+                    .get(tool)
+                    .unwrap_or_else(|| panic!("{tool} tool remains registered"))
+                    .parameters(),
+            };
+            let entry = schema["properties"][property]
+                .as_object_mut()
+                .unwrap_or_else(|| panic!("{tool}.{property} remains declared"));
+            let previous = entry.insert(
+                "description".to_string(),
+                serde_json::json!(historical_description),
+            );
+            assert_eq!(
+                previous.as_ref().and_then(|d| d.as_str()),
+                Some(live_description),
+                "unexpected post-M003 {tool}.{property} description"
+            );
+            historical_schemas.insert(tool.to_string(), schema);
+        }
 
         let historical_effect_fingerprint =
             effect_catalog_fingerprint_with_schema_overrides(&registry, &historical_schemas);

@@ -552,6 +552,16 @@ fn parse_remote(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
         None => return Ok(GitOperation::RemoteList),
     };
 
+    // `git remote -v` / `--verbose` lists remotes *with* their URLs. It is a
+    // read, and it is how almost every agent checks what a repository points
+    // at. Without this arm it fell to `managed_fallback` and was classified as
+    // a worktree+history mutation, which refused it to any read-only agent and
+    // — once `remote` left the auto-allow list — prompted the operator for a
+    // command that cannot write anything.
+    if sub == "-v" || sub == "--verbose" {
+        return Ok(GitOperation::RemoteList);
+    }
+
     match sub.as_str() {
         "add" => {
             let name = ctx
@@ -2111,6 +2121,44 @@ mod tests {
     fn remote_list() {
         let result = parse_git_argv(&argv(&["git", "remote"])).unwrap();
         assert_eq!(result, GitOperation::RemoteList);
+    }
+
+    /// `git remote -v` lists remotes with their URLs — it is a read.
+    ///
+    /// It used to fall through to the conservative `managed_fallback` and be
+    /// classified as a worktree+history mutation, which refused it to every
+    /// read-only agent and prompted the operator for a command that cannot write.
+    #[test]
+    fn remote_verbose_lists_and_is_read_only() {
+        for flag in ["-v", "--verbose"] {
+            let result = parse_git_argv(&argv(&["git", "remote", flag])).unwrap();
+            assert_eq!(
+                result,
+                GitOperation::RemoteList,
+                "`git remote {flag}` must parse as a listing"
+            );
+            assert!(
+                result.is_read_only(),
+                "`git remote {flag}` must be classified read-only"
+            );
+        }
+    }
+
+    /// The write forms of the same name stay writes.
+    #[test]
+    fn remote_mutations_are_not_read_only() {
+        let result = parse_git_argv(&argv(&[
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://example.com",
+        ]))
+        .unwrap();
+        assert!(
+            !result.is_read_only(),
+            "`git remote add` must never be classified read-only"
+        );
     }
 
     #[test]

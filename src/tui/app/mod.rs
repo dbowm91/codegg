@@ -398,7 +398,6 @@ pub struct App {
     pub undo_until: Option<Instant>,
     pub notification_manager: Option<crate::tui::components::notification::NotificationManager>,
     pub focus_manager: crate::tui::components::component::FocusManager,
-    pub busy_spinner: crate::tui::components::spinner::SpinnerWidget,
     pub session_state_derived: crate::session::state::TuiSessionState,
     /// Active goal for the current session, kept in sync with the goal
     /// table via `AppEvent::GoalUpdated` and friends. Used by the
@@ -911,6 +910,7 @@ impl App {
                 running_tool: None,
                 active_turn_id: None,
                 stopped_turn: false,
+                last_error: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -976,6 +976,7 @@ impl App {
                 command_palette: CommandPalette::new_with_registry(&command_registry),
                 question_session_id: None,
                 permission_perm_id: None,
+                permission_queue: std::collections::VecDeque::new(),
                 permission_dialog: None,
                 keybind_dialog: None,
                 mcp_dialog: None,
@@ -1105,7 +1106,6 @@ impl App {
             undo_until: None,
             notification_manager: None,
             focus_manager,
-            busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
@@ -1482,6 +1482,7 @@ impl App {
                 running_tool: None,
                 active_turn_id: None,
                 stopped_turn: false,
+                last_error: None,
                 token_in: 0,
                 token_out: 0,
                 live_output_tokens: 0,
@@ -1547,6 +1548,7 @@ impl App {
                 command_palette: CommandPalette::new(),
                 question_session_id: None,
                 permission_perm_id: None,
+                permission_queue: std::collections::VecDeque::new(),
                 permission_dialog: None,
                 keybind_dialog: None,
                 mcp_dialog: None,
@@ -1673,7 +1675,6 @@ impl App {
             undo_until: None,
             notification_manager: None,
             focus_manager,
-            busy_spinner: crate::tui::components::spinner::SpinnerWidget::new(),
             streaming_active: false,
             session_state_derived: crate::session::state::TuiSessionState::default(),
             active_goal: None,
@@ -1778,6 +1779,27 @@ impl App {
         self.session_state.session_status = status;
     }
 
+    /// Latch a turn failure so the main buffer can keep saying what went wrong.
+    ///
+    /// Every turn-failure site used to call `toasts.error` alone. That made the
+    /// whole record of a dead turn a message that expires in seconds, which is
+    /// the wrong lifetime for the one thing a user needs while deciding whether
+    /// to retry: the reason it stopped.
+    ///
+    /// The toast stays — it is the notification, and `/logs` retains it — but the
+    /// latch is what outlives it. Deliberately *not* cleared on a timer: the
+    /// user reading the reason must not have it vanish, and the user who has
+    /// resumed has already cleared it via the next `TurnStarted`.
+    ///
+    /// Only genuine turn failures route here. Shell staging, clipboard, and
+    /// `/theme` errors are transient command feedback and stay toast-only, or
+    /// the strip would report a turn failure that never happened.
+    pub fn report_turn_error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.session_state.last_error = Some(message.clone());
+        self.messages_state.toasts.error(&message);
+    }
+
     /// Release a turn that never started, with a reason the user can act on.
     ///
     /// `send_prompt` optimistically moves the session to `Working`, adds the
@@ -1799,7 +1821,7 @@ impl App {
         // there is no in-flight turn to guard.
         self.prompt_state.pending_send = false;
         self.prompt_state.prompt.set_waiting(false);
-        self.messages_state.toasts.error(reason);
+        self.report_turn_error(reason);
     }
 
     /// Fail a turn that has produced no event for [`TURN_STALL_TIMEOUT`].
@@ -1832,7 +1854,7 @@ impl App {
         }
         self.session_state.working_since = None;
         self.session_state.session_status = SessionStatus::Error;
-        self.messages_state.toasts.error(&format!(
+        self.report_turn_error(format!(
             "turn stalled: the core produced no event for over 5 minutes. \
              The turn may still be running — press {} twice to stop it.",
             crate::tui::commands::turn_control::STOP_KEY_LABEL,
@@ -1865,23 +1887,34 @@ impl App {
                 self.session_state.active_turn_id = Some(turn_id.clone());
                 // A fresh turn supersedes any earlier stop.
                 self.session_state.stopped_turn = false;
+                // The agent is running again, so the reason the last turn died
+                // has been acted on. Latched, not timed — this is the only
+                // place it clears, so a user reading it is never interrupted
+                // mid-sentence and a user who has moved on has moved on.
+                self.session_state.last_error = None;
                 // Announce the turn in the chat tail. Everything below
                 // re-arms this on the next event, so the one-line
                 // indicator follows the agent's actual phase
-                // (thinking -> running <tool> -> thinking -> ...).
-                self.messages_state.messages.begin_activity("thinking");
+                // (queued -> thinking -> running <tool> -> writing -> ...).
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::tui::components::messages::ActivityPhase::Queued);
                 self.messages_state.messages.begin_reasoning();
                 true
             }
             E::TurnTextDelta { delta, .. } => {
                 self.messages_state.messages.end_reasoning();
-                self.messages_state.messages.begin_activity("writing");
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::tui::components::messages::ActivityPhase::Writing);
                 self.add_live_output_delta(&delta);
                 self.messages_state.messages.add_assistant_text(delta);
                 true
             }
             E::TurnReasoningDelta { delta, .. } => {
-                self.messages_state.messages.begin_activity("thinking");
+                self.messages_state
+                    .messages
+                    .begin_activity(crate::tui::components::messages::ActivityPhase::Thinking);
                 // Reasoning deltas must go to `add_reasoning`, which opens a
                 // real `MsgPart::Reasoning` block. This arm used to call
                 // `add_assistant_text`, which is a parser for *literal*
@@ -1910,7 +1943,7 @@ impl App {
                 self.messages_state.messages.end_reasoning();
                 self.messages_state
                     .messages
-                    .begin_activity(tool_activity_label(&tool_name, &arguments));
+                    .begin_activity(tool_activity_phase(&tool_name, &arguments));
                 self.session_state.running_tool =
                     Some(crate::tui::app::state::session::RunningTool::new(
                         tool_id.clone(),
@@ -2022,15 +2055,13 @@ impl App {
                 self.session_state.active_turn_id = None;
                 self.session_state.session_status = SessionStatus::Error;
                 self.status_bar.set_thinking(false, None);
-                self.messages_state.toasts.error(&message);
+                self.report_turn_error(&message);
                 true
             }
             E::Error { code, message, .. } => {
                 self.session_state.session_status = SessionStatus::Error;
                 self.status_bar.set_thinking(false, None);
-                self.messages_state
-                    .toasts
-                    .error(&format!("{code}: {message}"));
+                self.report_turn_error(format!("{code}: {message}"));
                 true
             }
             E::TodoListUpdated {
@@ -2080,6 +2111,15 @@ impl App {
                 true
             }
             E::PermissionPending { id, tool, path, .. } => {
+                // The turn is blocked on a human, not on the model. Saying so
+                // is the difference between "it is stuck" and "it is waiting on
+                // me" — and this is the state a user is most likely to be
+                // staring at, because it does not resolve without them.
+                self.messages_state.messages.begin_activity(
+                    crate::tui::components::messages::ActivityPhase::WaitingForApproval {
+                        tool: tool.clone(),
+                    },
+                );
                 self.show_permission_dialog(
                     id,
                     PermissionRequest {
@@ -4807,7 +4847,12 @@ impl App {
                 self.prompt_state.show_completions = false;
                 self.reset_live_token_estimate();
                 self.set_session_status(SessionStatus::Working);
-                if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+                // Same transport rule as `prompt_turn.rs`: `RemoteCore` alone
+                // is not the WebSocket attach frontend. On the socket-daemon
+                // frontend a mode-only gate pushed the rendered template into
+                // the absent `remote_send_tx` and cleared `pending_send`,
+                // pinning the session in `Working` with nothing submitted.
+                if self.is_ws_attach_transport() {
                     self.send_remote_message(RemoteTuiMessage::Input { text: rendered });
                     self.prompt_state.pending_send = false;
                 } else {
@@ -8119,7 +8164,7 @@ impl App {
         // content has been re-wrapped. `set_width` already invalidates
         // the layout cache, so this scroll reset is independent of that.
         self.messages_state.messages.scroll_to_bottom();
-        if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+        if self.is_ws_attach_transport() {
             let (w, h) = crossterm::terminal::size().unwrap_or((0, 0));
             self.send_remote_message(RemoteTuiMessage::Resize { w, h });
         }
@@ -8425,6 +8470,12 @@ impl App {
                 if let Some(viewport) = self.viewport_area {
                     let row = y.saturating_sub(viewport.y) as usize;
                     if let Some(idx) = self.messages_state.messages.select_at_viewport_line(row) {
+                        // A row waiting on an approval is an action, not a
+                        // disclosure. Answering is otherwise only reachable
+                        // while the dialog is up, and the dialog can be gone.
+                        if self.open_pending_permission_for_message(idx) {
+                            return;
+                        }
                         // Clicking a message expands whichever detail the
                         // message actually carries. Reasoning is checked
                         // first: its collapsed header is the one-line
@@ -9155,6 +9206,14 @@ impl App {
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
             }
+            Dialog::Permission => {
+                // Every answer path clears `permission_dialog` before closing,
+                // so anything still mounted here was dismissed without being
+                // answered. Re-queue it: the daemon-side waiter is still
+                // parked on this `perm_id`, and dropping it is how a batch of
+                // approvals left the user with no way to answer any of them.
+                self.requeue_open_permission();
+            }
             Dialog::Terminal => {
                 // UI state only: attachment release is owned by
                 // `close_terminal_view` on the explicit Esc path, or by
@@ -9855,6 +9914,12 @@ impl App {
 
     fn toggle_reasoning(&mut self) {
         if let Some(idx) = self.messages_state.messages.sel_msg {
+            // Keyboard twin of the click affordance: the same queued row is
+            // opened for review, and only falls through to disclosure when it
+            // is not waiting on anything.
+            if self.open_pending_permission_for_message(idx) {
+                return;
+            }
             if !self.messages_state.messages.toggle_tool_output(idx) {
                 self.messages_state.messages.toggle_reasoning(idx);
             }
@@ -13416,9 +13481,6 @@ impl App {
         self.session_state.session_status = status.clone();
         if status == SessionStatus::Idle {
             self.prompt_state.pending_send = false;
-            self.busy_spinner.stop();
-        } else if status == SessionStatus::Working {
-            self.busy_spinner.start(None);
         }
     }
 
@@ -13531,12 +13593,201 @@ impl App {
         perm_id: String,
         request: crate::permission::PermissionRequest,
     ) {
+        // Never evict an approval that is already on screen. A tool batch can
+        // raise several at once, and overwriting left the previous one with no
+        // UI at all: its `perm_id` was gone, so it could not be answered and
+        // the daemon waiter timed out denied. Queue instead, and let
+        // `promote_next_permission` take over once this one is answered.
+        let already_tracked = self.dialog_state.permission_perm_id.as_deref() == Some(&perm_id)
+            || self
+                .dialog_state
+                .permission_queue
+                .iter()
+                .any(|pending| pending.perm_id == perm_id);
+        if already_tracked {
+            tracing::debug!(perm_id = %perm_id, "permission request already pending; ignoring duplicate");
+            return;
+        }
+        if self.dialog_state.permission_dialog.is_some() {
+            tracing::debug!(
+                perm_id = %perm_id,
+                depth = self.dialog_state.permission_queue.len() + 1,
+                "another approval is on screen; queued"
+            );
+            self.dialog_state
+                .permission_queue
+                .push_back(crate::tui::app::state::dialog::PendingPermission { perm_id, request });
+            self.sync_pending_permission_markers();
+            return;
+        }
+        self.mount_permission_dialog(perm_id, request);
+    }
+
+    /// Put a request on screen. Callers must have decided that nothing is
+    /// showing; [`Self::show_permission_dialog`] owns that arbitration.
+    fn mount_permission_dialog(
+        &mut self,
+        perm_id: String,
+        mut request: crate::permission::PermissionRequest,
+    ) {
+        if request.args.is_none() {
+            // `CoreEvent::PermissionPending` does not carry the arguments, so a
+            // request that crossed the daemon arrives with nothing to approve
+            // and the dialog reads "No additional details". The transcript
+            // already holds the arguments for the call that raised it —
+            // recover them, because approving a command you cannot read is not
+            // a real decision.
+            request.args = self.tool_arguments_for(&request.tool);
+        }
         self.dialog_state.permission_dialog = Some(PermissionDialog::new(
             request,
             Arc::clone(&self.ui_state.theme),
         ));
         self.dialog_state.permission_perm_id = Some(perm_id);
         self.open_dialog(Dialog::Permission);
+        self.sync_pending_permission_markers();
+    }
+
+    /// Most recent recorded arguments for an unresolved `tool` call, so a
+    /// reopened approval shows the command rather than nothing.
+    fn tool_arguments_for(&self, tool: &str) -> Option<serde_json::Value> {
+        self.messages_state
+            .messages
+            .latest_pending_tool_arguments(tool)
+    }
+
+    /// Return an unanswered dialog's request to the queue instead of dropping
+    /// it. `close_dialog` has other paths besides answering — a `CloseDialog`
+    /// from anywhere pops the focus stack, and this arm was `_ => {}`, so the
+    /// `perm_id` stayed set with no dialog and the next request was then
+    /// queued behind a phantom. That is the other half of "the box disappeared
+    /// and I cannot approve it".
+    ///
+    /// The answer paths clear `permission_dialog` *before* calling
+    /// `close_dialog`, so an answered request re-entering here is impossible.
+    fn requeue_open_permission(&mut self) {
+        let (Some(perm_id), Some(request)) = (
+            self.dialog_state.permission_perm_id.take(),
+            self.dialog_state
+                .permission_dialog
+                .take()
+                .map(|dialog| dialog.request),
+        ) else {
+            return;
+        };
+        if self
+            .dialog_state
+            .permission_queue
+            .iter()
+            .any(|pending| pending.perm_id == perm_id)
+        {
+            return;
+        }
+        tracing::debug!(perm_id = %perm_id, "permission dialog dismissed unanswered; requeued");
+        self.dialog_state
+            .permission_queue
+            .push_front(crate::tui::app::state::dialog::PendingPermission { perm_id, request });
+        self.sync_pending_permission_markers();
+    }
+
+    /// Push the set of tools with an unanswered approval into the transcript so
+    /// the queued row can say it is answerable. The marker is what makes the
+    /// row honest: without it the row would advertise an action that may have
+    /// nothing to act on.
+    fn sync_pending_permission_markers(&mut self) {
+        let mut tools = std::collections::BTreeSet::new();
+        if let Some(dialog) = self.dialog_state.permission_dialog.as_ref() {
+            tools.insert(dialog.request.tool.clone());
+        }
+        for pending in &self.dialog_state.permission_queue {
+            tools.insert(pending.request.tool.clone());
+        }
+        self.messages_state
+            .messages
+            .set_pending_permission_tools(tools);
+    }
+
+    /// Open the approval behind `msg_idx`, if that row is waiting on one.
+    /// Returns whether the click was consumed as an approval action rather
+    /// than a transcript toggle.
+    pub fn open_pending_permission_for_message(&mut self, msg_idx: usize) -> bool {
+        let Some(tool) = self
+            .messages_state
+            .messages
+            .pending_permission_tool(msg_idx)
+        else {
+            return false;
+        };
+        let Some(perm_id) = self.pending_permission_for_tool(&tool) else {
+            return false;
+        };
+        if self.dialog_state.permission_perm_id.as_deref() == Some(perm_id.as_str()) {
+            return true;
+        }
+        let Some(pos) = self
+            .dialog_state
+            .permission_queue
+            .iter()
+            .position(|pending| pending.perm_id == perm_id)
+        else {
+            return false;
+        };
+        // Another request owns the screen. Do not tear it down unanswerably —
+        // put the one the user pointed at at the front of the queue so it is
+        // the next thing they see.
+        let pending = self
+            .dialog_state
+            .permission_queue
+            .remove(pos)
+            .expect("position came from the same queue");
+        self.dialog_state.permission_queue.push_front(pending);
+        if self.dialog_state.permission_dialog.is_some() {
+            self.messages_state
+                .toasts
+                .warning("Queued approval moved to the front — answer the open request first.");
+        } else {
+            self.promote_next_permission();
+        }
+        true
+    }
+
+    /// Show the next queued approval, if any, once the current one is answered.
+    /// A non-empty queue with a closed dialog is the exact state that used to
+    /// strand every request after the first.
+    pub fn promote_next_permission(&mut self) {
+        // Sync first: the empty-queue case is the one that has to *clear* the
+        // marker, and it is the case reached after answering the last request.
+        let next = self.dialog_state.permission_queue.pop_front();
+        self.sync_pending_permission_markers();
+        let Some(next) = next else {
+            return;
+        };
+        tracing::debug!(
+            perm_id = %next.perm_id,
+            remaining = self.dialog_state.permission_queue.len(),
+            "promoting queued approval"
+        );
+        self.mount_permission_dialog(next.perm_id, next.request);
+    }
+
+    /// Re-answerable approval for `tool`, preferring one already on screen and
+    /// otherwise the oldest still-queued one. Backs the click-a-queued-row
+    /// affordance: once a request has been shown and answered, or was evicted
+    /// from the screen, there would otherwise be no way back to it.
+    pub fn pending_permission_for_tool(&self, tool: &str) -> Option<String> {
+        if let (Some(id), Some(dialog)) = (
+            self.dialog_state.permission_perm_id.as_deref(),
+            self.dialog_state.permission_dialog.as_ref(),
+        ) {
+            if dialog.request.tool == tool {
+                return Some(id.to_string());
+            }
+        }
+        self.dialog_state
+            .permission_queue
+            .iter()
+            .find(|pending| pending.request.tool == tool)
+            .map(|pending| pending.perm_id.clone())
     }
 
     pub fn submit_permission_response(&mut self, allowed: bool) {
@@ -13562,6 +13813,7 @@ impl App {
         self.dialog_state.permission_dialog = None;
         self.dialog_state.permission_perm_id = None;
         self.close_dialog();
+        self.promote_next_permission();
     }
 
     pub fn on_permission_confirm(&mut self) -> Option<(bool, usize)> {
@@ -13592,6 +13844,7 @@ impl App {
         self.dialog_state.permission_dialog = None;
         self.dialog_state.permission_perm_id = None;
         self.close_dialog();
+        self.promote_next_permission();
         Some((allowed, idx))
     }
 
@@ -14150,24 +14403,32 @@ impl App {
 /// The bare tool name answers "is something happening" but not "what". A turn
 /// that spends ninety seconds in `bash` looks identical to a turn that spent
 /// ninety seconds thinking, and the user cannot tell which to wait out — so
-/// the label carries the argument that identifies the work.
+/// the phase carries the argument that identifies the work.
 ///
 /// Bounded twice over: the summary is capped in [`SUMMARY_MAX`] characters and
 /// flattened to a single line, because this draws into one fixed-height row.
 /// It is never *more* revealing than the transcript itself, which already
 /// renders these same arguments in full above the strip.
-fn tool_activity_label(tool_name: &str, arguments: &str) -> String {
+fn tool_activity_phase(
+    tool_name: &str,
+    arguments: &str,
+) -> crate::tui::components::messages::ActivityPhase {
+    use crate::tui::components::messages::ActivityPhase;
+    let phase = |summary: &str| ActivityPhase::RunningTool {
+        name: tool_name.to_string(),
+        summary: summary.to_string(),
+    };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
         // Unparseable arguments are not a reason to lose the tool name.
-        return format!("running {tool_name}");
+        return phase("");
     };
     let Some(summary) = summarize_tool_arguments(&value) else {
-        return format!("running {tool_name}");
+        return phase("");
     };
     if summary.is_empty() {
-        return format!("running {tool_name}");
+        return phase("");
     }
-    format!("running {tool_name} · {summary}")
+    phase(&summary)
 }
 
 /// Argument keys worth naming, in priority order, per tool.

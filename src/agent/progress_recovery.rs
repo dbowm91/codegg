@@ -47,7 +47,6 @@ pub enum IncidentKind {
     ExactRepeat,
     EquivalentResult,
     EquivalentError,
-    ShortCycle,
     MalformedCall,
     NarrationWithoutAction,
     NoProgress,
@@ -355,6 +354,18 @@ impl RecoveryController {
             .iter()
             .filter(|o| o.action_key() == observation.action_key())
             .count();
+        // A call this turn has never made cannot be a repeat of anything, so
+        // on a read-only surface it is evidence by definition. Keying this off
+        // novelty rather than off "did the model read recently" is what lets a
+        // model read a dozen different files, or alternate `read` and `bash`
+        // while exploring, without the detector calling that a stall.
+        let novel_read = same_action_count == 0
+            && successful
+            && observation.error_class.is_none()
+            && matches!(
+                observation.effect_class,
+                Some(ToolEffectClass::ReadOnly | ToolEffectClass::ReadValidate)
+            );
         let novel_read_result = matches!(
             observation.effect_class,
             Some(ToolEffectClass::ReadOnly | ToolEffectClass::ReadValidate)
@@ -372,7 +383,7 @@ impl RecoveryController {
             ProgressSignal::ChildAdvanced
         } else if successful && observation.state_changed {
             ProgressSignal::StateChanged
-        } else if successful && (observation.new_evidence || novel_read_result) {
+        } else if successful && (observation.new_evidence || novel_read || novel_read_result) {
             ProgressSignal::NewEvidence
         } else {
             ProgressSignal::None
@@ -461,20 +472,14 @@ impl RecoveryController {
             }
             return Some(IncidentKind::ExactRepeat);
         }
-        let keys: Vec<&str> = self
-            .history
-            .iter()
-            .rev()
-            .take(6)
-            .map(|o| o.canonical_tool.as_deref().unwrap_or(""))
-            .collect();
-        let current_tool = current.canonical_tool.as_deref().unwrap_or("");
-        if keys.len() >= 2 && keys[1] == current_tool && keys[0] != keys[1] {
-            return Some(IncidentKind::ShortCycle);
-        }
-        if keys.len() >= 3 && keys[2] == current_tool && keys[0] != keys[1] {
-            return Some(IncidentKind::ShortCycle);
-        }
+        // Nothing else is an incident. An earlier `ShortCycle` arm compared
+        // `canonical_tool` alone and so fired exactly when the same tool was
+        // reached for again with *different* arguments — reading a second
+        // file, running a second grep. That is the ordinary shape of a model
+        // doing its job, and because it outranked nothing it climbed the whole
+        // ladder and stalled the turn. Repeated *work* is `ExactRepeat` /
+        // `EquivalentResult` above, keyed on the whole call; distinct work is
+        // progress (`novel_read` in `observe`). There is no third case.
         None
     }
 
@@ -547,6 +552,12 @@ mod tests {
             selected_surface_fingerprint: None,
             batch_id: 0,
         }
+    }
+    fn read_obs(tool: &str, args: &str, result: &str) -> ProgressObservation {
+        let mut o = obs(tool, args, result);
+        o.effect_class = Some(ToolEffectClass::ReadOnly);
+        o.execution_status = Some(ToolExecutionStatus::Success);
+        o
     }
     #[test]
     fn first_repeat_nudges_and_eventually_stalls() {
@@ -677,18 +688,81 @@ mod tests {
             }
         ));
     }
+    /// Regression: `detect` had a `ShortCycle` arm that compared
+    /// `canonical_tool` alone while every other check used the whole
+    /// `action_key`. It therefore fired exactly when the same tool was
+    /// reached for again with *different* arguments — reading a second file,
+    /// running a second grep — which is the ordinary shape of a model
+    /// exploring a codebase. The bounded ladder then ran Nudge → Correct →
+    /// RestoreBasePalette → Replan → Stall and killed the turn, so a model
+    /// that was simply reading and grepping was reported as "stalled".
     #[test]
-    fn short_cycle_is_detected() {
+    fn reaching_for_the_same_tool_with_new_arguments_is_not_an_incident() {
         let mut c = RecoveryController::default();
-        c.observe(obs("read", "a", "one"));
-        c.observe(obs("grep", "b", "two"));
-        c.observe(obs("list", "c", "three"));
-        let decision = c.observe(obs("read", "d", "four"));
+        // read a; grep; read b; list; read c ... — different files, same tools.
+        for n in 0..12 {
+            let tool = match n % 3 {
+                0 => "read",
+                1 => "grep",
+                _ => "list",
+            };
+            let decision = c.observe(read_obs(tool, &format!("target-{n}"), "contents"));
+            assert_eq!(
+                decision,
+                RecoveryDecision::Progress,
+                "distinct work must read as progress (iteration {n})"
+            );
+        }
+        assert_eq!(c.recovery_count(), 0, "no recovery was ever warranted");
+    }
+
+    /// The reported scenario: reads interleaved with shell work, which is how
+    /// a model that batch-reads actually operates. Never stalls.
+    #[test]
+    fn interleaving_reads_and_shell_is_never_a_stall() {
+        let mut c = RecoveryController::default();
+        for n in 0..12 {
+            let decision = c.observe(read_obs("read", &format!("file-{n}.rs"), "contents"));
+            assert_eq!(decision, RecoveryDecision::Progress);
+            let decision = c.observe(obs(
+                "bash",
+                &format!("rg -n 'needle' src/module-{n}"),
+                "matches",
+            ));
+            assert!(
+                !matches!(decision, RecoveryDecision::Stalled(_)),
+                "interleaving shell work must not stall (iteration {n}): {decision:?}"
+            );
+        }
+        assert_eq!(c.recovery_count(), 0, "no recovery was ever warranted");
+    }
+
+    /// Novelty is the whole point: a call the turn never made is not a repeat,
+    /// so it must not be escalated no matter how it interleaves.
+    #[test]
+    fn a_novel_call_is_never_an_incident() {
+        let mut c = RecoveryController::default();
+        for n in 0..20 {
+            assert!(matches!(
+                c.observe(obs("bash", &format!("cmd-{n}"), "")),
+                RecoveryDecision::Continue
+            ));
+        }
+        assert_eq!(c.recovery_count(), 0);
+    }
+
+    /// Genuinely repeated work is still caught — the fix narrows what counts
+    /// as a loop, it does not abolish loop detection.
+    #[test]
+    fn the_identical_call_is_still_detected() {
+        let mut c = RecoveryController::default();
+        c.observe(read_obs("read", "same", "one"));
+        let decision = c.observe(read_obs("read", "same", "one"));
         assert!(matches!(
             decision,
             RecoveryDecision::Recover {
                 incident: RecoveryIncident {
-                    kind: IncidentKind::ShortCycle,
+                    kind: IncidentKind::EquivalentResult,
                     ..
                 },
                 ..

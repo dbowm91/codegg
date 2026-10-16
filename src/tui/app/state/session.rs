@@ -131,6 +131,18 @@ pub struct SessionState {
     /// stopped this" from "the agent finished". Without this flag the stopped
     /// state is invisible and `/start` has nothing to act on.
     pub stopped_turn: bool,
+    /// The most recent turn failure, held until the agent resumes.
+    ///
+    /// A toast is transient by design and a transcript row is scroll state, so
+    /// before this the only record of "the turn died because the provider was
+    /// overloaded" was a message that vanished in seconds and a log line the
+    /// user does not know exists. This is the one durable line the main buffer
+    /// shows, because it is the surface with no status row of its own.
+    ///
+    /// Cleared when the agent resumes rather than on a timer: a user who is
+    /// still reading the reason should not have it disappear underneath them,
+    /// and a user who has started a new turn has already moved past it.
+    pub last_error: Option<String>,
     pub token_in: u64,
     pub token_out: u64,
     pub live_output_tokens: u64,

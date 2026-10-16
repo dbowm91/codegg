@@ -252,6 +252,13 @@ pub struct PythonScriptTool {
     #[allow(dead_code)]
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission_service: Option<Arc<JobSubmissionService>>,
+    /// The session's workspace root: the default script `workdir` and the
+    /// containment root for the spawned interpreter.
+    ///
+    /// The parser used to emit `workspace_root: None` unconditionally, so both
+    /// the run directory and the containment check fell back to the process
+    /// cwd — the daemon's launch directory, unrelated to the session.
+    workspace_root: Option<std::path::PathBuf>,
 }
 
 impl PythonScriptTool {
@@ -259,6 +266,7 @@ impl PythonScriptTool {
         Self {
             run_store: None,
             submission_service: None,
+            workspace_root: None,
         }
     }
 
@@ -266,11 +274,17 @@ impl PythonScriptTool {
         Self {
             run_store: Some(store),
             submission_service: None,
+            workspace_root: None,
         }
     }
 
     pub fn with_submission_service(mut self, service: Arc<JobSubmissionService>) -> Self {
         self.submission_service = Some(service);
+        self
+    }
+
+    pub fn with_workspace_root(mut self, root: std::path::PathBuf) -> Self {
+        self.workspace_root = Some(root);
         self
     }
 
@@ -281,6 +295,7 @@ impl PythonScriptTool {
         Self {
             run_store,
             submission_service,
+            workspace_root: None,
         }
     }
 }
@@ -492,7 +507,7 @@ impl Tool for PythonScriptTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let request = build_python_request(&input)?;
+        let request = build_python_request(&input, self.workspace_root.as_deref())?;
 
         // Scheduler-owned path: submit through JobSubmissionService
         if let Some(ref submission) = self.submission_service {
@@ -507,7 +522,13 @@ impl Tool for PythonScriptTool {
 }
 
 /// Build a `PythonScriptRequest` from model-facing JSON input.
-fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest, ToolError> {
+///
+/// `workspace_root` is the session's workspace: the default script `workdir`,
+/// the base a relative `workdir` resolves against, and the containment root.
+fn build_python_request(
+    input: &serde_json::Value,
+    workspace_root: Option<&std::path::Path>,
+) -> Result<PythonScriptRequest, ToolError> {
     let code = input
         .get("code")
         .and_then(|v| v.as_str())
@@ -529,13 +550,30 @@ fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest
         }
     };
 
-    let workdir = input
-        .get("workdir")
-        .and_then(|v| v.as_str())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
+    // The script runs in the session's workspace, never the daemon's launch
+    // directory. A relative `workdir` resolves against that same root under
+    // the same containment rule every file path obeys, because the interpreter
+    // process would otherwise have the OS resolve it against the process cwd.
+    //
+    // Both branches share the resolver so an omitted and an explicit root
+    // produce the same canonical spelling of one directory.
+    let workdir = match (
+        input.get("workdir").and_then(|v| v.as_str()),
+        workspace_root,
+    ) {
+        (Some(raw), Some(root)) => {
+            crate::tool::util::resolve_workdir(std::path::Path::new(raw), root)?
+        }
+        (Some(raw), None) => std::path::PathBuf::from(raw),
+        (None, Some(root)) => crate::tool::util::resolve_workdir(root, root)?,
+        // No workspace authority: refuse rather than run somewhere the
+        // session does not own.
+        (None, None) => {
+            return Err(ToolError::Execution(
+                "no workspace root is bound to this tool; pass 'workdir' explicitly".to_string(),
+            ))
+        }
+    };
 
     let default_timeout = match mode {
         PythonExecutionMode::Verify => 300,
@@ -562,7 +600,9 @@ fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest
         code: code.to_string(),
         mode,
         cwd: workdir,
-        workspace_root: None,
+        // Canonical, so the containment root and the job's derived workspace id
+        // agree no matter how the root was spelled on the way in.
+        workspace_root: workspace_root.and_then(|root| root.canonicalize().ok()),
         timeout_secs: timeout,
         session_id: None,
         intent,

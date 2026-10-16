@@ -741,13 +741,13 @@ impl App {
         if subagent_count > 0 {
             return format!("[...{}]  ", subagent_count);
         }
-        match self.session_state.session_status {
-            SessionStatus::Working => {
-                self.busy_spinner.tick();
-                format!("{}  ", self.busy_spinner.frame())
-            }
-            _ => String::new(),
-        }
+        // Turn state deliberately does NOT appear here. This prefix used to
+        // paint a second spinner here, driven by a private widget whose cadence
+        // disagreed with the working strip's — two indicators, two speeds, one
+        // of them on a row too small to read. The working strip is the single
+        // status surface now; keeping a token here would only re-create the
+        // ambiguity it replaced.
+        String::new()
     }
 
     fn render_viewport(&mut self, frame: &mut Frame, area: Rect) {
@@ -1211,11 +1211,23 @@ impl App {
         frame.render_widget(paragraph, Rect { width, ..area });
     }
 
-    /// Rows the working strip needs, or `0` when it has nothing to say.
+    /// Rows the working strip needs.
+    ///
+    /// Row 0 is **unconditionally reserved**. It used to be gated on "there is
+    /// something to say", but this height is subtracted from the transcript
+    /// (`session_layout` splits `prompt_height` against `Min(10)` for the
+    /// buffer), so every row appearing or vanishing reflowed the transcript and
+    /// moved whatever the user was reading. Gating it on turn state meant the
+    /// buffer jumped on every submit and again on every completion.
+    ///
+    /// Reserving it permanently turns that off for good: the strip's *content*
+    /// can now change freely — idle, working, stopped, failed — without the
+    /// transcript viewport ever changing height.
+    ///
+    /// Subagent rows remain content-driven, because N subagents genuinely
+    /// need N rows. That variation is real information rather than a state
+    /// transition, and it only moves while a turn is in flight.
     fn working_strip_rows(&self) -> u16 {
-        if !self.should_show_working_strip() {
-            return 0;
-        }
         let total = self.ui_state.subagents.rows.len();
         let shown = total.min(MAX_WORKING_STRIP_SUBAGENTS);
         // Reserve a row for the overflow marker when the list is truncated.
@@ -1226,19 +1238,11 @@ impl App {
         1 + shown as u16 + overflow
     }
 
-    /// Whether the strip has anything to say.
+    /// Draw the working strip: the single status surface for the turn.
     ///
-    /// A stopped turn counts. The user stopped it on purpose and the very next
-    /// question is "is it still stopped, and how do I carry on" — an indicator
-    /// that vanishes the instant work stops answers neither, and the buffer
-    /// goes quiet exactly when they are deciding what to type next.
-    fn should_show_working_strip(&self) -> bool {
-        matches!(self.session_state.session_status, SessionStatus::Working)
-            || self.session_state.stopped_turn
-    }
-
-    /// Draw the working strip: a throbber with elapsed time and the current
-    /// phase, followed by one clickable row per advertised subagent.
+    /// Row 0 is always present and always answers "is the model healthy, stuck,
+    /// or broken?" — the question a long pause raises and the strip used to be
+    /// silent about. It then draws one clickable row per advertised subagent.
     ///
     /// Hit rects are recorded as they are drawn so a click resolves to the
     /// row the user actually saw rather than a recomputed layout.
@@ -1258,11 +1262,6 @@ impl App {
             self.ui_state.subagents.hits.clear();
             return;
         }
-        if !self.should_show_working_strip() {
-            self.ui_state.working_area = None;
-            self.ui_state.subagents.hits.clear();
-            return;
-        }
 
         self.ui_state.working_area = Some(area);
         // Rebuilt from scratch each frame: a stale rect from a previous
@@ -1271,42 +1270,62 @@ impl App {
         let theme = self.ui_state.theme.clone();
         let mut lines: Vec<Line> = Vec::new();
 
-        // Row 0: the throbber. `ActivityIndicator::line` derives its glyph
-        // from whole elapsed seconds, so it animates on the 80ms pump without
-        // depending on render cadence.
-        //
-        // The right-hand side is the reason a long pause reads as progress
-        // rather than as a disconnect: it names the one key that changes the
-        // situation. An indicator that only reports the current phase still
-        // leaves a user staring at a frozen screen with no way out.
-        let phase = if self.session_state.stopped_turn {
-            // Stopped is not a phase of a running turn, so it does not get a
-            // spinner — an animated glyph beside "stopped" would be a lie
-            // about whether anything is still running.
-            format!(
-                "■ stopped · press {} or /start",
-                crate::tui::commands::turn_control::STOP_KEY_LABEL
-            )
+        // Row 0 is the whole status surface. Its right-hand side is the reason a
+        // long pause reads as progress rather than as a disconnect: it names
+        // the one key that changes the situation. An indicator that only
+        // reports the current phase still leaves a user staring at a frozen
+        // screen with no way out.
+        let is_working = matches!(self.session_state.session_status, SessionStatus::Working);
+        let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
+        let stop_hint = if self.session_state.stopped_turn {
+            Some(format!("press {key} or /start"))
+        } else if is_working {
+            // A stop waits for a confirming second press, so while the arm is
+            // live the line must say exactly which press completes it —
+            // otherwise the confirmation is invisible and the key looks dead.
+            Some(if crate::tui::commands::turn_control::stop_armed(self) {
+                format!("press {key} again to stop agent")
+            } else {
+                format!("{key} to stop")
+            })
         } else {
-            let phase = self
+            None
+        };
+
+        // Precedence is a debugging aid, not a prettiness ranking: a latched
+        // failure outranks every live phase because it is the one thing that
+        // explains why nothing is progressing, and by the time it is readable
+        // here the toast that also said so has expired.
+        let (body, color) = if let Some(error) = self.session_state.last_error.as_deref() {
+            // A static glyph: nothing is running, so an animated one would lie
+            // about it. The full text stays in the toast and in `/logs`; this
+            // row is the durable one-line reminder.
+            (format!("✗ {error}"), theme.error)
+        } else if self.session_state.stopped_turn {
+            // Stopped is not a phase of a running turn, so it does not get a
+            // spinner either.
+            ("■ stopped".to_string(), theme.warning)
+        } else if is_working {
+            let line = self
                 .messages_state
                 .messages
                 .activity
                 .as_ref()
                 .map(|activity| activity.line())
                 .unwrap_or_else(|| self.working_elapsed_fallback());
-            let key = crate::tui::commands::turn_control::STOP_KEY_LABEL;
-            // A stop waits for a confirming second press, so while the arm is
-            // live the line must say exactly which press completes it —
-            // otherwise the confirmation is invisible and the key looks dead.
-            if crate::tui::commands::turn_control::stop_armed(self) {
-                format!("{phase} · press {key} again to stop agent")
-            } else {
-                format!("{phase} · {key} to stop")
-            }
+            (line, theme.primary)
+        } else {
+            // Idle is an answer, not an absence. Naming it is what lets row 0
+            // be reserved permanently without reading as a broken widget.
+            ("idle".to_string(), theme.muted)
         };
+
+        let mut head = body;
+        if let Some(hint) = stop_hint {
+            head.push_str(" · ");
+            head.push_str(&hint);
+        }
         let running_subs = self.ui_state.subagents.running_count();
-        let mut head = phase;
         if running_subs > 0 && !self.session_state.stopped_turn {
             head.push_str(&format!(" · {running_subs} subagent"));
             if running_subs != 1 {
@@ -1315,11 +1334,7 @@ impl App {
         }
         lines.push(Line::from(Span::styled(
             format!(" {head}"),
-            Style::default().fg(if self.session_state.stopped_turn {
-                theme.warning
-            } else {
-                theme.primary
-            }),
+            Style::default().fg(color),
         )));
 
         for (index, sub) in self
@@ -1375,13 +1390,22 @@ impl App {
     /// The strip must not blink out during the window between the turn being
     /// marked `Working` and the first event that names a phase, so this
     /// falls back to the turn's own elapsed time.
+    ///
+    /// It used to hardcode the first frame of the table, so the one interval
+    /// that most needs to read as alive — the long silence after a tool
+    /// returns, while the model decides what to do next — was the only one
+    /// that could not animate. It now animates on the shared clock like every
+    /// other phase.
     fn working_elapsed_fallback(&self) -> String {
-        let secs = self
-            .session_state
-            .working_since
-            .map(|since| since.elapsed().as_secs())
-            .unwrap_or(0);
-        format!("⠋ working {secs}s")
+        let since = self.session_state.working_since;
+        let secs = since.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+        let glyph = match since {
+            Some(started) => crate::tui::components::spinner::spinner_frame_since(started),
+            None => {
+                crate::tui::components::spinner::spinner_frame(std::time::Duration::from_secs(0))
+            }
+        };
+        format!("{glyph} working {secs}s")
     }
 
     /// The contextual key line for whatever currently owns the keyboard.

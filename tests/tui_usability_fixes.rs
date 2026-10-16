@@ -700,7 +700,9 @@ fn completion_popup_scrolls_so_the_selection_stays_visible() {
 #[test]
 fn live_activity_line_reports_what_the_model_is_doing() {
     let mut app = app_with_chat();
-    app.messages_state.messages.begin_activity("thinking");
+    app.messages_state
+        .messages
+        .begin_activity(codegg::tui::components::messages::ActivityPhase::Thinking);
     let buf = render_to_buffer(&mut app, 100, 30);
     let text = buffer_text(&buf);
     assert!(

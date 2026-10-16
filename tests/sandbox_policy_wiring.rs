@@ -111,6 +111,7 @@ fn unsupported_host_reports_unavailable_never_full_host() {
 fn production_registry_threads_workspace_write_into_bash() {
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         sandbox_profile: Some(SandboxProfile::WorkspaceWrite),
         ..ToolRegistryOptions::default()
@@ -124,6 +125,7 @@ fn workspace_write_bash_carries_enabled_landlock_config() {
     use codegg::tool::bash::BashTool;
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         sandbox_profile: Some(SandboxProfile::WorkspaceWrite),
         ..ToolRegistryOptions::default()
@@ -147,6 +149,7 @@ fn full_host_registry_leaves_bash_without_containment_explicitly() {
     use codegg::tool::bash::BashTool;
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         sandbox_profile: Some(SandboxProfile::FullHost),
         ..ToolRegistryOptions::default()

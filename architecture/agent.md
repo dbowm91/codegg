@@ -766,6 +766,33 @@ rows stay notify-only (see `architecture/jobs.md` and
 
 ## Invariants & Gotchas
 
+### Progress recovery keys on the whole call, never the tool name
+
+`RecoveryController::detect` (`src/agent/progress_recovery.rs`) classifies a
+tool observation into an `IncidentKind` and climbs a bounded ladder
+(`Nudge` → `Correct` → `RestoreBasePalette` → `Replan` → `Stall`). `Stall`
+**breaks the turn** and reports "agent stalled". Two rules keep that from
+firing on a model that is simply working:
+
+- **Every incident is keyed on `action_key()`** — canonical tool *plus*
+  normalized-argument fingerprint. There is deliberately no tool-name-only
+  check. An earlier `ShortCycle` arm compared `canonical_tool` alone while all
+  the other checks used the whole call, so it fired exactly when the same tool
+  was reached for again with *different* arguments: reading a second file,
+  running a second grep. That is the ordinary shape of a model exploring a
+  codebase, it climbed the whole ladder, and it killed the turn — the
+  `agent stalled ... incident=ShortCycle` lines on read-heavy turns. The
+  variant and its arm are gone. Repeated *work* is `ExactRepeat` /
+  `EquivalentResult`, keyed on the whole call.
+- **A successful read-only call this turn has never made is `NewEvidence`.**
+  Novelty is a fact, not a heuristic: it cannot be a repeat, so it must never
+  be escalated, and it resets `recoveries`/`transitions`. Reading a dozen
+  different files, or alternating reads and bash, is progress.
+
+`EffectClass` must be populated for the novel-read rule to apply; the loop
+reads it from the tool's contract (`src/agent/loop.rs`). The outer bound on a
+run is `ExecutionLimits::max_turns` (default 100), not this ladder.
+
 ### Session transcript persistence
 
 A completed run is written to the session transcript so reloading the session

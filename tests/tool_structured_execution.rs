@@ -19,6 +19,7 @@ use serde_json::json;
 
 fn build_with_backends(backends: ToolBackendConfig) -> ToolRegistry {
     ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         tool_backends: backends,
         ..ToolRegistryOptions::default()
     })
@@ -29,7 +30,16 @@ fn build_with_backends(backends: ToolBackendConfig) -> ToolRegistry {
 /// return a `StructuredToolResult` with legacy provenance.
 #[tokio::test]
 async fn list_through_execute_capture_returns_legacy_provenance() {
-    let registry = ToolRegistry::with_defaults();
+    // A dispatching registry is always rooted — the daemon builds it from the
+    // session workspace, and `list` refuses a rootless default rather than
+    // listing whatever directory the process happens to be in. Root it here so
+    // this test stays about legacy provenance rather than path authority.
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
+        workspace_root: Some(root.path().to_path_buf()),
+        ..ToolRegistryOptions::default()
+    });
     let result = registry
         .execute_capture("list", json!({"path": ".", "max_depth": 0}), None)
         .await
@@ -192,7 +202,14 @@ async fn execute_capture_unknown_tool_returns_not_found() {
 /// `execute_capture` stamps `elapsed_ms` on legacy provenance.
 #[tokio::test]
 async fn execute_capture_legacy_records_elapsed_ms() {
-    let registry = ToolRegistry::with_defaults();
+    // Rooted for the same reason as the provenance test above: a dispatching
+    // registry carries the session workspace, and `list` will not guess one.
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
+        workspace_root: Some(root.path().to_path_buf()),
+        ..ToolRegistryOptions::default()
+    });
     let result = registry
         .execute_capture("list", json!({"path": ".", "max_depth": 0}), None)
         .await

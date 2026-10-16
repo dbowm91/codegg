@@ -22,16 +22,36 @@ pub(crate) fn start_refresh_git_sidebar(app: &mut App) {
     // it could never find `.git`, so the sidebar reported "not a git repo"
     // even inside a repository. Prefer the session's own workspace root, then
     // the active tab's root, and only then the legacy directory projection.
-    let start_dir = app
-        .session_state
-        .session
-        .as_ref()
-        .map(|s| s.directory.clone())
-        .filter(|d| !d.trim().is_empty())
-        .or_else(|| {
-            app.active_workspace_root()
-                .map(|root| root.to_string_lossy().into_owned())
-        });
+    //
+    // The last resort used to apply to *every* session whose DTO carried no
+    // directory. That is missing authority, not permission to display someone
+    // else's checkout: a TUI launched in ~/projects/codegg rendered codegg's
+    // branch for a session bound to a different workspace. It also returned
+    // early without touching the cache, so the previously displayed branch
+    // stayed on screen across a session switch — which is how a stale branch
+    // outlived the session it belonged to.
+    let start_dir = match app.session_state.session.as_ref() {
+        Some(session) => {
+            let directory = session.directory.clone();
+            if directory.trim().is_empty() {
+                let generation = app.session_state.git_sidebar.begin_refresh();
+                app.session_state
+                    .git_sidebar
+                    .apply_refresh(generation, GitSidebarInfo::default());
+                app.session_state.git_sidebar.apply_refresh_error(
+                    generation,
+                    "session has no workspace directory".to_string(),
+                );
+                return;
+            }
+            Some(directory)
+        }
+        // No session is bound yet, so the TUI's own launch root is the honest
+        // answer rather than a substituted one.
+        None => app
+            .active_workspace_root()
+            .map(|root| root.to_string_lossy().into_owned()),
+    };
     let Some(project_dir) = start_dir else {
         return;
     };

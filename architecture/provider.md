@@ -202,6 +202,46 @@ listing, pickers, work orders): it logs and skips a provider it cannot
 resolve. It never picks between competing store records — that choice now
 returns a typed error the caller may surface.
 
+### Delegated runs inherit the parent's provider authority
+
+A subagent is not a new user decision — it is the parent turn's own
+continuation, so it resolves its provider **exactly** as `turn_runtime.rs` does.
+`execute_agent_task` used to do neither of the two things that path does, and
+every delegated run failed before it produced a token:
+
+- It read the provider out of the ambient `Arc<ProviderRegistry>` captured when
+  `SubAgentPool` was built. That registry has no connection authority, so a
+  provider holding several stored accounts resolves as permanently
+  `AmbiguousCredential` there — and it can never be otherwise, because the
+  registry is built once, long before any session selects a connection.
+- It sent `profile.resolved_model` — the **prefixed** `<provider>/<model>`
+  string — as `ChatRequest.model`. Providers match their wire mapping by exact
+  model id (`opencode_go::resolve` → `provider_profile::resolve_route`), so a
+  child asking for `opencode_go/longcat-2.5-preview-free` failed closed with
+  `has no reviewed wire mapping` while the parent, sending
+  `longcat-2.5-preview-free` through the very same connection, succeeded.
+
+Both are now shared with the main loop rather than reimplemented:
+
+- `runtime_model_provider_segment` owns the provider half. A bare model id
+  (`gpt-4o`) yields an **empty** provider segment, which is reported as unknown
+  — the old hand-rolled `split('/').next()…unwrap_or("openai")` turned it into a
+  provider name and died with `Provider 'gpt-4o' not found`. The storage-key
+  form `other:opencode_go` is normalised here too.
+- `model_name` (the bare id) is what reaches `ChatRequest`, `resolve_adapter`,
+  and `ModelProfileResolver`.
+- `session_connection_credential_locator` reads the **originating session's**
+  durable connection and returns its `TurnCredentialLocator`, and the child
+  registers through `register_builtin_with_config_for_turn` exactly as the turn
+  does. The originating session (`agent_task.originating_session_id`) is used
+  because it stays stable across nesting depth, so a grandchild inherits the
+  root user's connection rather than the child session's empty one. It is
+  best-effort: every failure degrades to `None`, which leaves the child on the
+  same ambiguity-checked store fallback an unbound parent turn gets.
+- The ambient registry is retained only as a **fallback** for a provider the
+  turn-scoped pass does not build (a plugin-registered one, say), so nothing
+  that worked before stops working.
+
 `ExternalCommand` and `OAuthDevice` auth modes are parsed but return
 `AuthError::Unsupported`. The previous `std::process::Command` shell-out
 path has been removed.

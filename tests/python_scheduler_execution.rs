@@ -631,8 +631,12 @@ async fn python_tool_disabled_scheduler_returns_disabled_error() {
     use codegg::error::ToolError;
     use codegg::python_script::PythonScriptTool;
 
-    // Tool without scheduler should return Disabled error
-    let tool = PythonScriptTool::new();
+    // Tool without scheduler should return Disabled error.
+    // The workspace root is threaded here exactly as production does; without
+    // it the tool refuses an omitted `workdir` before reaching the scheduler
+    // check this test is about.
+    let root = tempfile::tempdir().expect("workspace fixture");
+    let tool = PythonScriptTool::new().with_workspace_root(root.path().to_path_buf());
     let input = serde_json::json!({
         "code": "print(1)",
         "mode": "analyze"
