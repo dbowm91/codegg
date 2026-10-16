@@ -73,7 +73,7 @@ kill_on_drop). stdout/stderr pass through
 `redact_url_credentials_in_text` before reaching any downstream consumer.
 
 The trusted process policy also pins repository-controlled execution settings
-with Git `-c` options: hooks, fsmonitor, external diff, credential helpers,
+with Git `-c` options: hooks, fsmonitor, submodule recursion, external diff, credential helpers,
 SSH command overrides, signing programs and pagers are disabled; diff/show/log
 also receive `--no-ext-diff --no-textconv`. `classify_git_request` returns a
 typed `GitExecutionPolicyOutcome` before command construction. It distinguishes
@@ -84,7 +84,11 @@ missing executable. Operations requiring filters, merge drivers, or remote
 transport remain unavailable until their containment/mediation plan lands;
 their subcommand names alone are not treated as the security boundary.
 `stash list`, `worktree list`, and the verified non-executable local flows
-remain available. This policy does not protect writable `.git` metadata or
+remain available. Managed checkout creation has a separate narrow helper: it
+attests the pinned commit has no active custom `filter` attributes, then uses
+the existing pinned hook/fsmonitor policy. Filter-bearing trees still fail
+closed, and the generic classifier still refuses arbitrary `worktree add`.
+This policy does not protect writable `.git` metadata or
 claim network isolation; those are separate Linux execution-isolation gates.
 
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
@@ -139,7 +143,10 @@ The M003 `WorktreeService` owns only CodeGG-managed local worktree
 lifecycles. It resolves the canonical common repository root and base HEAD with structured
 read APIs, acquires the shared repository/worktree mutation lock, and invokes
 the hardened `codegg-core::worktree` add/remove helpers through
-`spawn_blocking`. For linked/nested worktrees, the identity root and the
+`spawn_blocking`. Its narrow add path first attests that the pinned tree has
+no active custom `filter` attribute; filter-bearing trees remain unavailable
+until a contained filter backend exists. The generic Git classifier continues
+to refuse arbitrary `worktree add`. For linked/nested worktrees, the identity root and the
 checkout used to read the effective base are separate inputs. This preserves
 the logical repository identity while allowing a child to continue from its
 owner's current HEAD. It does not clone repositories, perform network Git

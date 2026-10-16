@@ -68,6 +68,12 @@ and invariants that are easy to violate.
    killed as a tree must become their own process-group leaders before spawn;
    otherwise `getpgid(child)` can identify the caller's group and cleanup can
    kill the caller.
+9. **Managed checkout creation has a narrow filter-free path.** The durable
+   `WorktreeService` attests the exact pinned tree's effective `filter`
+   attributes using bounded Git output, then disables hooks, fsmonitor and
+   submodule recursion for `worktree add`. Filter-bearing revisions fail
+   closed. Do not generalize this attestation into permission to run arbitrary
+   `git worktree add`, checkout, clean/smudge, or other filter-capable commands.
 
 ## Static Guards
 

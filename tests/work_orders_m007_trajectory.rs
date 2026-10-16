@@ -1211,8 +1211,8 @@ async fn e_fault_windows_converge_without_duplicates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn f_worktree_containment_gate_and_truthfulness() {
-    // Managed worktree creation needs contained Git execution because adding
-    // a worktree checks out repository content and can invoke clean filters.
+    // Filter-free checkout materialization disables hooks and refuses any
+    // revision that would invoke a custom clean/smudge driver.
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -1253,12 +1253,15 @@ async fn f_worktree_containment_gate_and_truthfulness() {
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
-    let error = service
+    let (worktree, lease) = service
         .create(&request)
         .await
-        .expect_err("worktree mutation needs a contained Git backend");
-    assert!(error.to_string().contains("Git backend unavailable"));
-    assert!(error.to_string().contains("CleanSmudgeFilter"));
+        .expect("filter-free managed worktree should be available");
+    assert!(worktree.path.join("README.md").is_file());
+    service
+        .release_lease(&lease.worktree_id, &lease.owner_run_id, lease.generation)
+        .await
+        .expect("release managed worktree lease");
 
     let records = service
         .list(codegg_core::worktree_service::WorktreeQuery::default())
@@ -1267,13 +1270,13 @@ async fn f_worktree_containment_gate_and_truthfulness() {
     assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].state,
-        codegg_core::worktree_service::ManagedWorktreeState::Orphaned
+        codegg_core::worktree_service::ManagedWorktreeState::Ready
     );
     assert_eq!(
         records[0].health,
-        codegg_core::worktree_service::WorktreeHealth::GitError
+        codegg_core::worktree_service::WorktreeHealth::Clean
     );
-    assert!(!records[0].path.exists());
+    assert!(records[0].path.exists());
     let canonical_managed = managed_root
         .path()
         .canonicalize()

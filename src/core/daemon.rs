@@ -4748,6 +4748,7 @@ mod tests {
         let repository = tempfile::tempdir().unwrap();
         init_worktree_test_repository(repository.path());
         let managed_root = tempfile::tempdir().unwrap();
+        let canonical_managed_root = managed_root.path().canonicalize().unwrap();
         let pool = in_memory_pool().await;
         let mut deps = CoreRuntimeDeps::new(Some(pool.clone()), None, None);
         deps.worktree_service = Some(codegg_core::worktree_service::WorktreeService::sqlite(
@@ -4900,6 +4901,212 @@ mod tests {
             other => panic!("expected idempotent fork replay, got {other:?}"),
         };
         assert_eq!(fork.id, replay.id);
+
+        let new_managed_launch = match daemon
+            .handle_request(crate::core::new_request(
+                "m006-new-managed-launch".into(),
+                CoreRequest::SessionLaunchInWorktree {
+                    idempotency_key: "new-managed-launch-replay".into(),
+                    project_id: first.0.project_id.clone(),
+                    workspace_id: first.2.clone(),
+                    title: Some("new managed checkout".into()),
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::SessionWorktreeLaunched {
+                session,
+                worktree,
+                workspace_id,
+                ..
+            } => {
+                assert!(
+                    std::path::Path::new(&worktree.path).starts_with(&canonical_managed_root),
+                    "worktree path {} is outside managed root {}",
+                    worktree.path,
+                    canonical_managed_root.display()
+                );
+                assert_eq!(session.directory, worktree.path);
+                assert_eq!(session.workspace_id.as_deref(), Some(workspace_id.as_str()));
+                (session, worktree, workspace_id)
+            }
+            other => panic!("expected NewManaged launch, got {other:?}"),
+        };
+        let new_managed_launch_retry = daemon
+            .handle_request(crate::core::new_request(
+                "m006-new-managed-launch-retry".into(),
+                CoreRequest::SessionLaunchInWorktree {
+                    idempotency_key: "new-managed-launch-replay".into(),
+                    project_id: new_managed_launch.0.project_id.clone(),
+                    workspace_id: first.2.clone(),
+                    title: Some("new managed checkout".into()),
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            new_managed_launch_retry,
+            CoreResponse::SessionWorktreeLaunched { resumed: true, .. }
+        ));
+
+        let new_managed_fork = daemon
+            .handle_request(crate::core::new_request(
+                "m006-new-managed-fork".into(),
+                CoreRequest::SessionForkInWorktree {
+                    idempotency_key: "new-managed-fork-replay".into(),
+                    session_id: new_managed_launch.0.id.clone(),
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::SessionWorktreeLaunched {
+            session: forked,
+            worktree,
+            ..
+        } = new_managed_fork
+        else {
+            panic!("expected NewManaged fork");
+        };
+        assert_eq!(
+            forked.parent_id.as_deref(),
+            Some(new_managed_launch.0.id.as_str())
+        );
+        assert_ne!(worktree.worktree_id, new_managed_launch.1.worktree_id);
+        assert_eq!(forked.directory, worktree.path);
+        assert!(
+            std::path::Path::new(&worktree.path).starts_with(&canonical_managed_root),
+            "worktree path {} is outside managed root {}",
+            worktree.path,
+            canonical_managed_root.display()
+        );
+        let new_managed_fork_retry = daemon
+            .handle_request(crate::core::new_request(
+                "m006-new-managed-fork-retry".into(),
+                CoreRequest::SessionForkInWorktree {
+                    idempotency_key: "new-managed-fork-replay".into(),
+                    session_id: new_managed_launch.0.id,
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            new_managed_fork_retry,
+            CoreResponse::SessionWorktreeLaunched { resumed: true, .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn daemon_build_job_qualifies_real_rust_workspace_and_workspace_quota() {
+        let repository = tempfile::tempdir().unwrap();
+        init_worktree_test_repository(repository.path());
+        std::fs::create_dir(repository.path().join("src")).unwrap();
+        std::fs::write(
+            repository.path().join("Cargo.toml"),
+            "[package]\nname = \"m007-rust-workspace-qualification\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repository.path().join("src/lib.rs"),
+            "pub fn answer() -> u32 { 42 }\n",
+        )
+        .unwrap();
+
+        let pool = in_memory_pool().await;
+        let daemon = CoreDaemon::new(Some(pool), None, None);
+        let (_project_id, workspace_id) = seed_test_context(&daemon, repository.path()).await;
+        let payload = serde_json::to_value(codegg_core::jobs::JobPayload::ManagedArgv {
+            argv: vec!["cargo".into(), "check".into(), "--offline".into()],
+            cwd: Some(repository.path().to_string_lossy().into_owned()),
+        })
+        .unwrap();
+        let submitted = daemon
+            .handle_request(crate::core::new_request(
+                "m007-rust-build-submit".into(),
+                CoreRequest::JobSubmit {
+                    spec: crate::protocol::dto::JobSubmitDto {
+                        submission_key: Some("m007-rust-build-qualification".into()),
+                        workspace_id: workspace_id.clone(),
+                        session_id: None,
+                        turn_id: None,
+                        kind: "build".into(),
+                        priority: "interactive".into(),
+                        source: serde_json::json!({"kind": "interactive"}),
+                        payload,
+                        timeout_ms: Some(300_000),
+                        retry_max_attempts: 1,
+                        retryable_failures: Vec::new(),
+                        idempotency: "safe_repeat".into(),
+                        not_before_ms: None,
+                        deadline_ms: None,
+                        schedule_id: None,
+                        depends_on: Vec::new(),
+                        labels: std::collections::HashMap::new(),
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::JobSubmitted { job_id } = submitted else {
+            panic!("expected daemon build submission, got {submitted:?}");
+        };
+        let job = daemon
+            .deps
+            .job_store
+            .get_job(&codegg_core::jobs::JobId::new_unchecked(job_id.clone()))
+            .await
+            .unwrap()
+            .expect("durable build job");
+        assert_eq!(job.workspace_id.as_str(), workspace_id);
+        assert_eq!(job.resource_request.workspace_build_slots, 1);
+
+        let completed = daemon
+            .handle_request(crate::core::new_request(
+                "m007-rust-build-wait".into(),
+                CoreRequest::JobWait {
+                    job_id: job_id.clone(),
+                    timeout_ms: Some(300_000),
+                },
+            ))
+            .await
+            .unwrap();
+        let CoreResponse::JobWaited {
+            status, summary, ..
+        } = completed
+        else {
+            panic!("expected daemon build completion, got {completed:?}");
+        };
+        assert_eq!(status, "completed", "build {job_id}: {summary}");
+        assert!(
+            summary.contains("Finished"),
+            "unexpected Cargo result: {summary}"
+        );
+        eprintln!(
+            "M007 Rust workspace qualification: job_id={job_id} workspace_id={workspace_id} status={status}"
+        );
+
+        let final_job = daemon
+            .deps
+            .job_store
+            .get_job(&codegg_core::jobs::JobId::new_unchecked(job_id.clone()))
+            .await
+            .unwrap()
+            .expect("terminal build job");
+        assert!(final_job.state.is_terminal());
+        assert_eq!(final_job.workspace_id.as_str(), workspace_id);
+        assert_eq!(final_job.resource_request.workspace_build_slots, 1);
     }
 
     #[tokio::test]

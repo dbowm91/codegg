@@ -81,6 +81,30 @@ pub fn create_worktree_at(
     Ok(())
 }
 
+/// Create a managed checkout only after the exact base commit's effective
+/// Git attributes have been attested to contain no custom filters. General
+/// Git worktree creation remains unavailable without that attestation.
+pub fn create_filter_free_worktree_at(
+    git_root: &Path,
+    path: &Path,
+    branch: &str,
+    base: &str,
+    attestation: &egggit::worktree::FilterFreeCheckoutAttestation,
+) -> Result<(), AppError> {
+    let mut command = egggit::process::GitEnvPolicy::default()
+        .apply_sync_for_filter_free_worktree_add(git_root, path, branch, base, attestation)
+        .map_err(|outcome| AppError::Worktree(outcome.to_string()))?;
+    let output = command
+        .output()
+        .map_err(|error| AppError::Worktree(format!("failed to create worktree: {error}")))?;
+    if !output.status.success() {
+        return Err(AppError::Worktree(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), AppError> {
     let path_str = path.to_string_lossy().to_string();
     let mut args = vec!["worktree", "remove", &path_str];

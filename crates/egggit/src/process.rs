@@ -6,9 +6,10 @@
 //! CodeGG sessions, runs, jobs, permissions, or projections.
 
 use crate::EgggitError;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command as StdCommand, Output as StdOutput, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
@@ -195,6 +196,50 @@ impl GitEnvPolicy {
         apply_environment(&mut cmd, self);
         Ok(cmd)
     }
+
+    /// Construct the managed `worktree add` subprocess after the selected
+    /// commit has passed the filter-free checkout preflight. This narrowly
+    /// attested operation is separate from the general policy, which still
+    /// refuses arbitrary checkout/filter execution.
+    pub fn apply_sync_for_filter_free_worktree_add(
+        &self,
+        cwd: &Path,
+        path: &Path,
+        branch: &str,
+        base_commit: &str,
+        attestation: &crate::worktree::FilterFreeCheckoutAttestation,
+    ) -> Result<StdCommand, GitExecutionPolicyOutcome> {
+        let canonical_root =
+            cwd.canonicalize()
+                .map_err(|_| GitExecutionPolicyOutcome::InvalidRequest {
+                    reason: "worktree repository root is unavailable".into(),
+                })?;
+        if canonical_root != attestation.repository_root
+            || base_commit != attestation.commit
+            || !path.is_absolute()
+            || branch.starts_with('-')
+            || branch.is_empty()
+        {
+            return Err(GitExecutionPolicyOutcome::DeniedExplicitAuthority {
+                reason: "worktree add does not match its filter-free checkout attestation".into(),
+            });
+        }
+        let argv = vec![
+            "git".to_owned(),
+            "worktree".to_owned(),
+            "add".to_owned(),
+            path.to_string_lossy().into_owned(),
+            "-b".to_owned(),
+            branch.to_owned(),
+            base_commit.to_owned(),
+        ];
+        let mut cmd = StdCommand::new("git");
+        add_trusted_git_overrides(&mut cmd, &argv);
+        cmd.current_dir(cwd);
+        isolate_child_process_group(&mut cmd);
+        apply_environment(&mut cmd, self);
+        Ok(cmd)
+    }
 }
 
 /// Classify a shell-free Git invocation before it crosses the process
@@ -331,6 +376,113 @@ pub fn classify_git_request(argv: &[String]) -> GitExecutionPolicyOutcome {
     requires_containment(capabilities)
 }
 
+/// Run a read-only Git command with bounded stdin/stdout and a wall-clock
+/// deadline. This supports NUL-delimited path streams without placing
+/// repository-controlled names in argv.
+pub async fn run_bounded_with_input(
+    args: &[String],
+    cwd: &Path,
+    input: Vec<u8>,
+    max_stdout_bytes: usize,
+) -> Result<StdOutput, EgggitError> {
+    if !cwd.exists() {
+        return Err(EgggitError::NotARepository(cwd.display().to_string()));
+    }
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("git".to_owned());
+    argv.extend_from_slice(args);
+    let cwd = cwd.to_path_buf();
+    let rendered = argv.join(" ");
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = GitEnvPolicy::default()
+            .apply_sync(&argv, &cwd)
+            .map_err(EgggitError::Policy)?;
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = cmd
+            .spawn()
+            .map_err(|error| EgggitError::Io(error.to_string()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| EgggitError::Io("missing git stdin".into()))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EgggitError::Io("missing git stdout".into()))?;
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        let (stdin_tx, stdin_rx) = mpsc::channel();
+        let stdout_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = stdout
+                .by_ref()
+                .take(max_stdout_bytes.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .map(|_| bytes);
+            let _ = stdout_tx.send(result);
+        });
+        let stdin_writer = std::thread::spawn(move || {
+            let result = stdin.write_all(&input);
+            let _ = stdin_tx.send(result);
+        });
+        let deadline = Instant::now() + DEFAULT_READ_TIMEOUT;
+        let mut status = None;
+        let mut stdout_result = None;
+        let mut stdin_result = None;
+        loop {
+            if status.is_none() {
+                match child.try_wait() {
+                    Ok(Some(child_status)) => status = Some(child_status),
+                    Ok(None) => {}
+                    Err(error) => {
+                        kill_process_tree(&mut child);
+                        return Err(EgggitError::Io(format!("failed to wait on git: {error}")));
+                    }
+                }
+            }
+            if stdout_result.is_none() {
+                stdout_result = stdout_rx.try_recv().ok();
+            }
+            if stdin_result.is_none() {
+                stdin_result = stdin_rx.try_recv().ok();
+            }
+            if let Some(Ok(bytes)) = &stdout_result {
+                if bytes.len() > max_stdout_bytes {
+                    kill_process_tree(&mut child);
+                    return Err(EgggitError::OutputTooLarge);
+                }
+            }
+            if status.is_some() && stdout_result.is_some() && stdin_result.is_some() {
+                let bytes = stdout_result
+                    .expect("checked stdout result")
+                    .map_err(|error| EgggitError::Io(format!("read git stdout: {error}")))?;
+                stdin_result
+                    .expect("checked stdin result")
+                    .map_err(|error| EgggitError::Io(format!("write git stdin: {error}")))?;
+                let _ = stdout_reader.join();
+                let _ = stdin_writer.join();
+                return Ok(StdOutput {
+                    status: status.expect("checked child status"),
+                    stdout: bytes,
+                    stderr: Vec::new(),
+                });
+            }
+            if Instant::now() >= deadline {
+                kill_process_tree(&mut child);
+                return Err(EgggitError::Timeout(format!(
+                    "git command timed out after {}s: {}",
+                    DEFAULT_READ_TIMEOUT.as_secs(),
+                    rendered
+                )));
+            }
+            std::thread::sleep(CHILD_POLL_INTERVAL);
+        }
+    })
+    .await
+    .map_err(|error| EgggitError::Join(error.to_string()))?
+}
+
 fn requires_containment(capabilities: Vec<GitExecutionCapability>) -> GitExecutionPolicyOutcome {
     GitExecutionPolicyOutcome::RequiresContainedExecution { capabilities }
 }
@@ -363,6 +515,7 @@ where
     for (key, value) in [
         ("core.fsmonitor", "false"),
         ("core.hooksPath", "/dev/null"),
+        ("submodule.recurse", "false"),
         ("core.pager", "cat"),
         ("core.sshCommand", ""),
         ("credential.helper", ""),

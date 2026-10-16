@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: active — M006 is prioritized ahead of M005 shared-write qualification. ExistingManaged launch/fork is implemented; implement and qualify a separately contained NewManaged Git materializer. Shared-write placement is explicitly out of scope.
+Status: blocked for strict closure — ExistingManaged and filter-free NewManaged launch/fork pass focused daemon/service qualification on the development Mac. Revisions with active custom checkout filters fail closed and retain the reservation. Native Windows path-length and linked `.git`-file qualification remains outstanding. Shared-write placement is explicitly out of scope.
 
 Planning baseline: 68f9358d92f0e501554dc6ebbc3f6f7ffd9180aa (PR #125 integrated into main; implementation branch started from this baseline)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006
@@ -15,6 +15,8 @@ Make isolated-worktree-aware sessions first class for CLI/TUI and daemon API, wi
 ## Existing code and gap
 
 ADR-0002 remains the mutation-capable agent isolation contract. M005/ADR-0032 shared-write qualification is not a dependency for a session that owns a distinct checkout. The implementation must preserve existing WorktreeService lease generation and caller/project authorization. If the available Git backend cannot safely create a managed checkout on a platform, the request must fail closed and retain recoverable state; this limitation does not make shared-write containment a prerequisite.
+
+The current restricted materializer preflights the exact pinned commit's effective `filter` attributes with bounded NUL-delimited Git queries. It permits only filter-free trees, and the checkout process pins hooks, fsmonitor, and submodule recursion off. General `git worktree add` remains denied by the ordinary Git process policy. Filter-bearing trees need a contained filter backend and are not silently checked out without their configured transformation.
 
 SessionStore::fork in crates/codegg-core/src/session/store.rs copies recent messages and parent_id, preserving directory/workspace. src/core/daemon_sessions.rs CoreRequest::SessionFork performs session creation and rebinds the same workspace. docs/cli.md describes codegg --fork <id> and --cwd <dir>; TUI /worktree is list-only. WorktreeService owns managed checkout records and generation-fenced leases; their multi-step session orchestration is not yet one recoverable operation.
 

@@ -455,7 +455,7 @@ async fn canonical_session_creation_uses_the_deterministic_key() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn managed_worktree_creation_fails_closed_without_git_containment_backend() {
+async fn managed_worktree_creation_materializes_filter_free_checkout() {
     let repo_dir = tempfile::tempdir().expect("repo dir");
     for args in [
         vec!["init"],
@@ -480,8 +480,16 @@ async fn managed_worktree_creation_fails_closed_without_git_containment_backend(
         assert!(status.success());
     }
     let managed_root = tempfile::tempdir().expect("managed root");
+    // Keep a realistic deep checkout path without crossing the traditional
+    // 260-character Windows path limit. The Windows qualification workflow
+    // runs this same materialization path natively.
+    let deep_managed_root = managed_root
+        .path()
+        .join("managed-root-segment-012345678901234567890123456789012345")
+        .join("nested-checkout-segment-012345678901234567890123456789012345");
+    std::fs::create_dir_all(&deep_managed_root).expect("deep managed root");
     let service = codegg_core::worktree_service::WorktreeService::memory(
-        managed_root.path().to_path_buf(),
+        deep_managed_root,
         Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
     );
     let project_id = project();
@@ -497,12 +505,31 @@ async fn managed_worktree_creation_fails_closed_without_git_containment_backend(
         base_path: None,
         owner_run_id: codegg_core::identity::AgentRunId::new(),
     };
-    let error = service
+    let (worktree, lease) = service
         .create(&request)
         .await
-        .expect_err("worktree mutation needs a contained Git backend");
-    assert!(error.to_string().contains("Git backend unavailable"));
-    assert!(error.to_string().contains("CleanSmudgeFilter"));
+        .expect("filter-free managed worktree should be available");
+    assert!(worktree.path.join("README.md").is_file());
+    let git_metadata = worktree.path.join(".git");
+    assert!(git_metadata.is_file(), "linked worktree uses a .git file");
+    let path_len = worktree.path.to_string_lossy().len();
+    assert!(
+        (200..260).contains(&path_len),
+        "qualification path should exercise a deep checkout path, got {path_len}"
+    );
+    let git_root = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&worktree.path)
+        .output()
+        .expect("git rev-parse linked worktree");
+    assert!(git_root.status.success(), "linked .git file resolves");
+    let git_root = String::from_utf8(git_root.stdout).expect("Git root is UTF-8");
+    let git_root = std::fs::canonicalize(git_root.trim()).expect("canonical Git root");
+    assert_eq!(git_root, std::fs::canonicalize(&worktree.path).unwrap());
+    service
+        .release_lease(&lease.worktree_id, &lease.owner_run_id, lease.generation)
+        .await
+        .expect("release managed worktree lease");
 
     let records = service
         .list(codegg_core::worktree_service::WorktreeQuery::default())
@@ -511,13 +538,13 @@ async fn managed_worktree_creation_fails_closed_without_git_containment_backend(
     assert_eq!(records.len(), 1);
     assert_eq!(
         records[0].state,
-        codegg_core::worktree_service::ManagedWorktreeState::Orphaned
+        codegg_core::worktree_service::ManagedWorktreeState::Ready
     );
     assert_eq!(
         records[0].health,
-        codegg_core::worktree_service::WorktreeHealth::GitError
+        codegg_core::worktree_service::WorktreeHealth::Clean
     );
-    assert!(!records[0].path.exists());
+    assert!(records[0].path.exists());
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — user direction on 2026-10-16 prioritizes M006 then M007 ahead of M005 implementation. M005 is limited to resolving the restricted-capability architecture decision and its platform/process feasibility; do not implement a writer-permit service until that decision is resolved. Shared mutation remains unavailable until every enabled CodeGG writer is mediated or denied and the native lifecycle matrix passes.
+Status: active — ADR-0032 is accepted. User direction on 2026-10-16 prioritizes M006 then M007 ahead of M005 implementation. Continue the checkout-writer feasibility and qualification design while those strict closures proceed; do not start a writer-permit service before that priority gate and the complete mediation/native lifecycle evidence are satisfied. Shared mutation remains unavailable.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005
@@ -65,16 +65,16 @@ active and shared-checkout execution remains unavailable.
 
 ### Isolated session allocation boundary evidence (2026-10-16)
 
-M006's already-managed-worktree launch/fork path is independent of shared
-writer containment. Its `NewManaged` path still reaches the durable
-`WorktreeService::create_reserved` state machine, whose `worktree add` call
-uses the canonical Git process policy. `egggit::process` classifies
-`worktree add` as requiring `CleanSmudgeFilter` containment; the current
-backend does not provide that containment, so allocation retains its durable
-reservation and fails closed. This is evidence for a per-operation isolated
-checkout materializer gate, not permission to bypass the Git policy and not a
-checkout-wide shared-write permit. It does not make M006 a dependency of the
-M005 shared-mutation decision, and it does not qualify any M005 writer path.
+M006's managed-worktree launch/fork path is independent of shared writer
+containment. `WorktreeService::create_reserved` now uses a narrow filter-free
+materializer: it inspects the exact base commit's effective `filter`
+attributes through bounded Git queries, refuses active custom filters, and
+pins hooks, fsmonitor, and submodule recursion off for the add command. The
+generic Git policy still refuses arbitrary `worktree add`. This is a
+per-operation checkout materializer profile, not permission to run arbitrary
+filters and not a checkout-wide shared-writer permit. It does not make M006 a
+dependency of the M005 shared-mutation decision, and it does not qualify any
+M005 writer path. Cross-platform M006 qualification remains open.
 
 ### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
 

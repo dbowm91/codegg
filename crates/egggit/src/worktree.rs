@@ -2,6 +2,15 @@ use crate::EgggitError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Proof that the selected commit contains no active custom checkout filter
+/// under the effective attributes visible to the Git process. Fields stay
+/// private so callers cannot construct an attestation without the preflight.
+#[derive(Debug, Clone)]
+pub struct FilterFreeCheckoutAttestation {
+    pub(crate) repository_root: PathBuf,
+    pub(crate) commit: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorktreeInfo {
     pub path: String,
@@ -112,6 +121,85 @@ pub async fn list_worktrees(git_root: &Path) -> Result<Vec<WorktreeInfo>, Egggit
     Ok(worktrees)
 }
 
+/// Check the committed tree's effective attributes before checkout.
+/// Git filter drivers are repository-configured commands, so a managed
+/// checkout is supported only when every selected path has no active filter.
+/// Both the tree walk and attribute report have explicit output bounds. The
+/// `--all` query distinguishes an absent filter attribute from an explicitly
+/// configured driver named `unspecified`.
+pub async fn attest_filter_free_checkout(
+    git_root: &Path,
+    commit: &str,
+) -> Result<FilterFreeCheckoutAttestation, EgggitError> {
+    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(EgggitError::InvalidBaseRef(
+            "checkout base must be a full object ID".into(),
+        ));
+    }
+    let repository_root = git_root
+        .canonicalize()
+        .map_err(|error| EgggitError::Io(format!("canonicalize repository root: {error}")))?;
+    const MAX_TREE_PATHS_BYTES: usize = 32 * 1024 * 1024;
+    const MAX_FILTER_REPORT_BYTES: usize = 64 * 1024 * 1024;
+    let tree = crate::process::run_bounded(
+        &[
+            "ls-tree".into(),
+            "-r".into(),
+            "-z".into(),
+            "--name-only".into(),
+            commit.into(),
+        ],
+        &repository_root,
+        MAX_TREE_PATHS_BYTES,
+    )
+    .await?;
+    if !tree.status.success() {
+        return Err(EgggitError::Git(
+            "failed to enumerate checkout paths".into(),
+        ));
+    }
+    if !tree.stdout.is_empty() && tree.stdout.last() != Some(&0) {
+        return Err(EgggitError::Git(
+            "Git returned malformed NUL-delimited checkout paths".into(),
+        ));
+    }
+    let attributes = crate::process::run_bounded_with_input(
+        &[
+            "check-attr".into(),
+            format!("--source={commit}"),
+            "--stdin".into(),
+            "-z".into(),
+            "--all".into(),
+        ],
+        &repository_root,
+        tree.stdout,
+        MAX_FILTER_REPORT_BYTES,
+    )
+    .await?;
+    if !attributes.status.success() {
+        return Err(EgggitError::Git(
+            "failed to inspect checkout filter attributes".into(),
+        ));
+    }
+    let fields: Vec<&[u8]> = attributes.stdout.split(|byte| *byte == 0).collect();
+    if fields.len() % 3 != 1 {
+        return Err(EgggitError::Git(
+            "Git returned malformed checkout filter attributes".into(),
+        ));
+    }
+    for entry in fields[..fields.len().saturating_sub(1)].chunks_exact(3) {
+        if entry[1] == b"filter" {
+            return Err(EgggitError::Git(
+                "checkout uses a custom Git filter; managed materialization is unavailable for this revision".into(),
+            ));
+        }
+    }
+    Ok(FilterFreeCheckoutAttestation {
+        repository_root,
+        commit: commit.to_owned(),
+    })
+}
+
 /// Walk up the directory tree to find a git root.
 pub fn find_git_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.to_path_buf();
@@ -205,5 +293,109 @@ mod tests {
         // There is at least the main worktree.
         assert!(!list.is_empty());
         assert!(list[0].is_current);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn filter_free_checkout_attestation_rejects_custom_filter_attributes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("plain.txt"), "plain\n").unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+        };
+        assert!(git(&["add", "."]).success());
+        assert!(git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "plain",
+        ])
+        .success());
+        let base = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let proof = attest_filter_free_checkout(dir.path(), &base)
+            .await
+            .unwrap();
+        assert_eq!(proof.commit, base);
+
+        std::fs::write(
+            dir.path().join(".gitattributes"),
+            "plain.txt filter=custom\n",
+        )
+        .unwrap();
+        assert!(git(&["add", ".gitattributes"]).success());
+        assert!(git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "filtered",
+        ])
+        .success());
+        let filtered = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let error = attest_filter_free_checkout(dir.path(), &filtered)
+            .await
+            .expect_err("custom filters must be refused");
+        assert!(error.to_string().contains("custom Git filter"));
+
+        std::fs::write(
+            dir.path().join(".gitattributes"),
+            "plain.txt filter=unspecified\n",
+        )
+        .unwrap();
+        assert!(git(&["add", ".gitattributes"]).success());
+        assert!(git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "explicit unspecified filter",
+        ])
+        .success());
+        let explicit_unspecified = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let error = attest_filter_free_checkout(dir.path(), &explicit_unspecified)
+            .await
+            .expect_err("an explicitly named driver must be refused even if named unspecified");
+        assert!(error.to_string().contains("custom Git filter"));
     }
 }

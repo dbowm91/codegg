@@ -83,8 +83,13 @@ with `ObjectId`. Manual worktrees are only returned as external discoveries
 and are never claimed or automatically removed.
 
 Creation and removal run through `spawn_blocking` under the repository lock.
-Creation verifies both Git registration and the worktree `.git` pointer before
-marking a record ready. Refresh and restart reconciliation use structured
+Creation first attests the pinned commit's effective `filter` attributes with
+bounded Git path and attribute streams. The managed materializer accepts only
+trees with no active custom checkout filters, disables repository hooks,
+fsmonitor, and submodule recursion for the add command, and retains a durable
+orphan on preflight refusal. Arbitrary `git worktree add` remains refused by
+the generic Git process policy. Creation then verifies both Git registration
+and the worktree `.git` pointer before marking a record ready. Refresh and restart reconciliation use structured
 `egggit` status and operation-state reads. Missing, dirty, conflicted,
 unknown, or unregistered worktrees become attention/orphan states. Cleanup
 refreshes immediately before removal, checks the expected generation and

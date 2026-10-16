@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. User-directed priority (2026-10-16): M006 active first, M007 active second, then M008. M006 NewManaged contained Git materialization and M007 realistic Rust workspace consumer evidence remain open; both are independent of M005. M005 is limited to its restricted-capability architectural decision before any permit-service implementation; shared mutation remains unavailable. M008's broad comparison remains blocked on strict M006/M007 closure and its remaining task/performance strata; shared-checkout arms also require M005.
+Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15. User-directed priority (2026-10-16): M006, then M007, then M008; M005 feasibility design continues without writer-service implementation. M006's filter-free NewManaged materializer and daemon replay tests pass on macOS; strict closure remains blocked on native Windows path-length and linked `.git`-file qualification. M007's daemon-backed realistic Rust workspace consumer passed; exact-head hosted CI and registry reconciliation remain. Both are independent of M005. Shared mutation remains unavailable under M005; M008's broad comparison remains blocked on strict M006/M007 closure and its remaining task/performance strata; shared-checkout arms also require M005.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -65,8 +65,8 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             |
             +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
-            +-- M006 isolated session/worktree launch UX          [priority 1; active; M005 not required]
-            +-- M007 per-workspace build admission                [priority 2; active; M005 not required]
+            +-- M006 isolated session/worktree launch UX          [blocked: Windows native qualification; M005 not required]
+            +-- M007 per-workspace build admission                [closing: exact-head CI pending; M005 not required]
             +-- M005 explicit group checkout placement     [architectural decision only; shared-write blocked]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
             +-- M008 broad trajectory and economics                [blocked: M006, M007]
@@ -127,15 +127,15 @@ Add separate checkout ownership and participating execution access; task spawn/g
 
 Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
 
-### M006 — Isolated session/worktree fork-and-launch UX (active; priority 1; independent of M005)
+### M006 — Isolated session/worktree fork-and-launch UX (blocked for strict closure; independent of M005)
 
-Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
+Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. The restricted NewManaged materializer accepts filter-free pinned trees and refuses active custom checkout filters; focused macOS daemon/service and trajectory tests pass. Strict closure remains blocked on native Windows path-length and linked `.git`-file qualification. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
 
 Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
 
-### M007 — Per-workspace build admission (active; priority 2; independent of M005)
+### M007 — Per-workspace build admission (closing; priority 2; independent of M005)
 
-Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. Admission implementation is recorded as conditionally closed at `plans/closure/agent-workstream-blackboard/007-status.md`; the milestone is active to complete a realistic Rust workspace run through the daemon-backed authorized JobId consumer and then close strictly. No shared target, compiler cache, build coalescing, or shared checkout is introduced; those optimizations remain separate future work.
+Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. Admission implementation is recorded as conditionally closed at `plans/closure/agent-workstream-blackboard/007-status.md`; the daemon-backed realistic Rust workspace JobId consumer has now passed and is recorded in `plans/closure/agent-workstream-blackboard/007-daemon-rust-workspace-qualification.md`. Exact-head hosted CI and registry reconciliation remain before strict closure. No shared target, compiler cache, build coalescing, or shared checkout is introduced; those optimizations remain separate future work.
 
 Plan: plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md
 The plan's deferred cache note is research only and does not authorize target sharing or coalescing.

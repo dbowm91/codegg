@@ -997,18 +997,32 @@ impl WorktreeService {
                 return Err(WorktreeServiceError::LeaseConflict(id.to_string()))
             }
         }
+        let attestation = match egggit::worktree::attest_filter_free_checkout(
+            &record.repository_root,
+            &record.base_commit,
+        )
+        .await
+        {
+            Ok(attestation) => attestation,
+            Err(error) => {
+                transition(&mut record, ManagedWorktreeState::Orphaned)?;
+                record.health = WorktreeHealth::GitError;
+                self.store.save(record).await?;
+                return Err(WorktreeServiceError::Git(error.to_string()));
+            }
+        };
         let result = tokio::task::spawn_blocking({
             let root = record.repository_root.clone();
             let path = record.path.clone();
             let branch = record.branch.clone();
             let base = record.base_commit.clone();
             move || {
-                crate::worktree::create_worktree_at(
+                crate::worktree::create_filter_free_worktree_at(
                     &root,
                     &path,
                     branch.as_deref().unwrap_or_default(),
-                    true,
-                    Some(&base),
+                    &base,
+                    &attestation,
                 )
             }
         })
@@ -1531,16 +1545,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn worktree_creation_fails_closed_without_containment_backend() {
+    async fn worktree_creation_materializes_filter_free_checkout_and_disables_hooks() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
+        let hook_marker = repo.path().join("hook-ran");
+        let hook_path = repo.path().join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook_path,
+            format!("#!/bin/sh\ntouch '{}'\n", hook_marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let managed = TempDir::new().unwrap();
         let (project, repository, workspace, _run) = ids();
         let service = WorktreeService::memory(
             managed.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
         );
-        let error = service
+        let (record, lease) = service
             .create(&CreateWorktreeRequest {
                 project_id: project,
                 repository_id: repository,
@@ -1552,20 +1578,55 @@ mod tests {
                 owner_run_id: _run,
             })
             .await
-            .expect_err("worktree add needs a contained Git backend");
-        assert!(error.to_string().contains("Git backend unavailable"));
-        assert!(error.to_string().contains("CleanSmudgeFilter"));
+            .expect("filter-free worktree should materialize");
+        assert_eq!(record.state, ManagedWorktreeState::InUse);
+        assert!(record.path.join("README").is_file());
+        assert!(!hook_marker.exists(), "repository hooks must not run");
+        service
+            .release_lease(&lease.worktree_id, &lease.owner_run_id, lease.generation)
+            .await
+            .unwrap();
         let records = service.list(WorktreeQuery::default()).await.unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].state, ManagedWorktreeState::Orphaned);
-        assert_eq!(records[0].health, WorktreeHealth::GitError);
-        assert!(!records[0].path.exists());
+        assert_eq!(records[0].state, ManagedWorktreeState::Ready);
+        assert_eq!(records[0].health, WorktreeHealth::Clean);
+        assert!(records[0].path.exists());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stable_reservation_retries_same_checkout_and_retains_backend_failure() {
+    async fn stable_reservation_retries_same_checkout_and_retains_filter_refusal() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
+        let filter_marker = repo.path().join("filter-ran");
+        let filter_command = format!("touch {}", filter_marker.display());
+        // execution-ownership: test_only
+        let status = Command::new("git")
+            .args(["config", "filter.custom.smudge", &filter_command])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(repo.path().join(".gitattributes"), "README filter=custom\n").unwrap();
+        for args in [
+            vec!["add", ".gitattributes"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "filter",
+            ],
+        ] {
+            // execution-ownership: test_only
+            let status = Command::new("git")
+                .args(&args)
+                .current_dir(repo.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
         let managed = TempDir::new().unwrap();
         let (project, repository, workspace, run) = ids();
         let service = WorktreeService::memory(
@@ -1598,8 +1659,9 @@ mod tests {
         let error = service
             .create_reserved(&worktree_id)
             .await
-            .expect_err("contained Git backend is required for worktree add");
-        assert!(error.to_string().contains("CleanSmudgeFilter"));
+            .expect_err("custom filters are not run by the managed materializer");
+        assert!(error.to_string().contains("custom Git filter"));
+        assert!(!filter_marker.exists(), "custom smudge filter must not run");
         let retained = service.get(&worktree_id).await.unwrap();
         assert_eq!(retained.state, ManagedWorktreeState::Orphaned);
         assert_eq!(retained.health, WorktreeHealth::GitError);
@@ -1608,8 +1670,8 @@ mod tests {
         let retry_error = service
             .create_reserved(&worktree_id)
             .await
-            .expect_err("retry must fail closed while the backend is unavailable");
-        assert!(retry_error.to_string().contains("CleanSmudgeFilter"));
+            .expect_err("retry must fail closed while the base commit requires a filter");
+        assert!(retry_error.to_string().contains("custom Git filter"));
         let records = service.list(WorktreeQuery::default()).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].worktree_id, worktree_id);
@@ -1733,7 +1795,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn concurrent_worktree_creation_is_denied_without_containment_backend() {
+    async fn concurrent_filter_free_worktree_creation_uses_distinct_leases() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let managed = TempDir::new().unwrap();
@@ -1756,22 +1818,19 @@ mod tests {
         let request_a = request(run_a);
         let request_b = request(run_b);
         let (first, second) = tokio::join!(service.create(&request_a), service.create(&request_b));
-        for result in [first, second] {
-            let error = result.expect_err("worktree add needs a contained Git backend");
-            assert!(error.to_string().contains("Git backend unavailable"));
-            assert!(error.to_string().contains("CleanSmudgeFilter"));
-        }
+        let first = first.expect("first filter-free worktree");
+        let second = second.expect("second filter-free worktree");
+        assert_ne!(first.0.worktree_id, second.0.worktree_id);
         let records = service.list(WorktreeQuery::default()).await.unwrap();
         assert_eq!(records.len(), 2);
-        assert_ne!(records[0].worktree_id, records[1].worktree_id);
         assert!(records
             .iter()
-            .all(|record| record.state == ManagedWorktreeState::Orphaned));
-        assert!(records.iter().all(|record| !record.path.exists()));
+            .all(|record| record.state == ManagedWorktreeState::InUse));
+        assert!(records.iter().all(|record| record.path.exists()));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn nested_worktree_creation_waits_for_contained_git_backend() {
+    async fn nested_worktree_creation_uses_the_pinned_filter_free_base() {
         let repo = TempDir::new().unwrap();
         init_repo(repo.path());
         let managed = TempDir::new().unwrap();
@@ -1780,7 +1839,7 @@ mod tests {
             managed.path().to_path_buf(),
             Arc::new(WorkspaceLockTable::new()),
         );
-        let error = service
+        let (worktree, lease) = service
             .create(&CreateWorktreeRequest {
                 project_id: project,
                 repository_id: repository,
@@ -1792,13 +1851,13 @@ mod tests {
                 owner_run_id: parent_run,
             })
             .await
-            .expect_err("parent worktree requires a contained Git backend");
-        assert!(error.to_string().contains("Git backend unavailable"));
-        assert!(error.to_string().contains("CleanSmudgeFilter"));
-        assert_eq!(
-            service.list(WorktreeQuery::default()).await.unwrap().len(),
-            1
-        );
+            .expect("filter-free parent worktree should materialize");
+        assert!(worktree.path.join("README").is_file());
+        assert!(!worktree.base_commit.is_empty());
+        service
+            .release_lease(&lease.worktree_id, &lease.owner_run_id, lease.generation)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

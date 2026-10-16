@@ -1,0 +1,49 @@
+name: M006 Windows managed-worktree qualification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/m006-windows-worktree.yml'
+      - 'crates/codegg-core/src/worktree.rs'
+      - 'crates/codegg-core/src/worktree_service.rs'
+      - 'crates/egggit/src/process.rs'
+      - 'crates/egggit/src/worktree.rs'
+      - 'tests/work_orders_m002_materialization.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: ['**']
+    paths:
+      - '.github/workflows/m006-windows-worktree.yml'
+      - 'crates/codegg-core/src/worktree.rs'
+      - 'crates/codegg-core/src/worktree_service.rs'
+      - 'crates/egggit/src/process.rs'
+      - 'crates/egggit/src/worktree.rs'
+      - 'tests/work_orders_m002_materialization.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  managed-worktree:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Configure git identity for test fixture
+        run: |
+          git config --global user.name "CI Test"
+          git config --global user.email "ci@test.example.com"
+
+      - name: Qualify deep-path linked worktree materialization
+        run: cargo test --locked -p codegg --test work_orders_m002_materialization managed_worktree_creation_materializes_filter_free_checkout -- --exact --nocapture
