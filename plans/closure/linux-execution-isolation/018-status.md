@@ -271,3 +271,19 @@ TCP/UDP, DNS, external TCP, and inherited-descriptor observations. It does not
 test DNS rebinding, exercise every production launch owner, or grant
 `OfflineRequired` authority. M005 remains an internal candidate, and M004's
 constrained PTY and supervised duplex LSP production-owner gates remain open.
+
+### M004 exact-head hosted completion
+
+The same exact-head workflow [38839130216](https://github.com/dbowm91/codegg/actions/runs/38839130216)
+completed successfully on `454e7a0f`. Its positive process/IPC job passed all
+8 native tests, including the contained Cargo workspace check, managed-process
+suite, M005 offline-network denial probe with its host positive controls, and
+process/IPC denial checks. Protected-mount regressions passed 11/11 and trusted
+Git tests passed 18/18. The separate restricted-userns job passed the required
+M004 refusal-before-target probe with `user.max_user_namespaces=0`.
+
+These are exact-head candidate test results. They do not change C010's M003
+no-production-admission decision, enable constrained PTY or LSP, or report
+M005 as enforced. Fresh full CI at this code head was independently red on the
+tool-advisor historical receipt test; its mainline integration correction is
+tracked in `plans/closure/tool-advisor-m003-receipt-ci-corrective/001-status.md`.
