@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004, M006–M007, and M009–M011 closed (M004 strict closure through M009); M008 active; M005 shared-write unavailable. ADR-0032 accepted 2026-10-15 and ADR-0033 accepted 2026-10-16. M011 corrects repository identity propagation from managed session binding to delegated tasks, found during M008. M008's frozen shared-interface S0 completed, while S1 children stalled at the `before_provider_turn` safe boundary; provider request submission or completion could not be established and were cancelled; S2/S3 and other strata remain open. `codegg headless --session` provides the production TaskTool/session path. S4 remains unavailable pending M005. M005 remains feasibility-only, shared mutation disabled, and no writer-permit service is implemented.
+Status: active; M001–M004, M006–M007, and M009–M012 closed (M004 strict closure through M009); M008 active; M005 shared-write unavailable. ADR-0032 accepted 2026-10-15 and ADR-0033 accepted 2026-10-16. M011 corrects repository identity propagation from managed session binding to delegated tasks, found during M008. M008's frozen shared-interface S0 completed. Earlier S1 groups stalled and were cancelled; a fresh S1 group now resumes across later turns on the corrected daemon, but both children remain running without terminal results. S2/S3 and other strata remain open. M012 closes same-session continuation of a live turn-owned group after the creating turn ends. `codegg headless --session` provides the production TaskTool/session path. S4 remains unavailable pending M005. M005 remains feasibility-only, shared mutation disabled, and no writer-permit service is implemented.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -70,6 +70,7 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M005 explicit group checkout placement     [active feasibility; shared-write blocked]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
             +-- M011 root-turn repository identity corrective       [closed; found during M008]
+            +-- M012 same-session run-group continuation            [closed corrective; supports M008]
             +-- M008 isolated trajectory/economics                [active: S0 complete; S1 stalled; S4 remains M005-gated]
 ~~~
 
@@ -160,12 +161,23 @@ a daemon-turn regression test. It does not grant shared-checkout access.
 Plan: `plans/implementation/agent-workstream-blackboard/011-root-turn-repository-identity-corrective.md`.
 Closure: `plans/closure/agent-workstream-blackboard/011-status.md`.
 
+### Corrective M012 — Same-session run-group continuation (closed)
+
+M008 found that a group can outlive its creating root turn, while a later turn
+in the same durable session cannot wait for or inspect it because authorization
+requires the exact original turn ID. Keep the original turn as provenance, but
+let an authorized top-level turn in the same session resume group lifecycle
+operations. Other sessions, projects and child runs remain denied.
+
+Plan: `plans/implementation/agent-workstream-blackboard/012-session-scoped-run-group-continuation-corrective.md`.
+Closure: `plans/closure/agent-workstream-blackboard/012-status.md`; later top-level turns in the same session may resume turn-owned group lifecycle operations, while different sessions and child runs remain denied.
+
 ### M008 — Comparative validation and closure (active; S0/S1 partial, S2/S3 unqualified; S4 unavailable pending M005)
 
 Measure one strong agent vs silent isolated agents vs peer-aware isolated vs claims+peer-aware using identical task/evaluation budgets. Provider-backed comparisons must use real CodeGG coding agents and include substantial Rust and Python work, including a cross-language task where both sides coordinate through a frozen shared interface; independent-module-only results do not satisfy this requirement. Also cover overlapping API changes, failure/recovery, CPU/RSS/disk/token cost, useful throughput and integration outcomes. Any shared checkout arm is unavailable until M005 qualifies it; never emulate shared writes unsafely. Deterministic traces support correctness evidence but do not replace provider-backed effectiveness results. Negative/no-improvement results must be reported without hiding them.
 
 Plan: plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md
-Partial results: `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and `008-isolated-results.json`. The source-built daemon-backed `headless` path supplies TaskTool; frozen shared-interface S0 completed, while post-M011 S1 child runs stalled at `before_provider_turn`; provider request submission or completion is unverified and were cancelled. Darwin terminal sandbox smoke passed for the tested route, but complete sandbox-root and writer-path evidence remains outstanding. No peer/claim benefit is established and no downstream plan is unblocked.
+Partial results: `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and `008-isolated-results.json`. The source-built daemon-backed `headless` path supplies TaskTool; frozen shared-interface S0 completed. Earlier post-M011 S1 groups stalled at `before_provider_turn`; provider request submission or completion was unverified. After M012, a fresh group was observed across later same-session turns on the corrected daemon, but both children remain running without terminal results. Darwin terminal sandbox smoke passed for the tested route, but complete sandbox-root and writer-path evidence remains outstanding. No peer/claim benefit is established and no downstream plan is unblocked.
 
 ## Security, persistence, protocol and operations
 

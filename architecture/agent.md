@@ -156,6 +156,15 @@ managed worktree. The repository identity is derived from stored workspace
 state, not prompt or caller path text. Repository-less sessions retain the
 repository-less task path. This does not grant shared-checkout write access.
 
+### Turn-owned group continuation
+
+A group created by a top-level session turn retains that turn ID as provenance.
+Group lifecycle actions from another top-level turn are scoped to the same
+durable session; child run actors and other sessions do not inherit that
+authority. Run-owned groups remain scoped to their exact owner run. This lets a
+later turn observe or wait for durable children after the creating turn ends
+without making group IDs portable authority.
+
 ### Provider-turn attempt safety (execution-reliability M001)
 
 Each logical turn runs at most 3 attempts under one UUID-scoped attempt

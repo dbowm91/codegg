@@ -224,6 +224,58 @@
       "correction": "M011 resolves the authoritative workspace binding and propagates its resolved repository ID into TurnRunInput.",
       "verification": "core::daemon_turns::tests::repository_binding_reaches_turn_runtime_for_isolated_delegation passed 1/1."
     },
-    "conclusion": "S0 proves the frozen shared-interface task can be completed by one provider-backed CodeGG agent. S1 has not completed after the repository identity correction; no single-agent versus multi-agent effectiveness conclusion is supported."
+    "conclusion": "S0 proves the frozen shared-interface task can be completed by one provider-backed CodeGG agent. S1 has not completed after the repository identity correction; no single-agent versus multi-agent effectiveness conclusion is supported.",
+    "S1_group_continuation_retry": {
+      "session_id": "e8d937ee-8b37-470d-966e-ba5e30166a0a",
+      "group_id": "ab10021a-82a8-4c43-8120-3286c54408f2",
+      "children": [
+        {
+          "run_id": "d1c0c4d8-398f-4a9f-9751-934c01794223",
+          "worktree_id": "c040255a-bdc2-4a8f-acf5-2eb1012258c0",
+          "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+          "assignment": "Rust producer"
+        },
+        {
+          "run_id": "22b1d5a0-2ca9-49d7-b13e-93c6c0095f2f",
+          "worktree_id": "5a00cc2a-24da-443a-9914-c0ef4e2182eb",
+          "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+          "assignment": "Python consumer"
+        }
+      ],
+      "outcome": "The creating turn used six bounded wait_group calls and ended while the group remained running. A subsequent top-level turn in the same session received group actor is not authorized from the pre-M012 daemon. M012 now permits this same-session continuation; restart and daemon-backed verification are still required. This is not a completed S1 result."
+    },
+    "group_continuation_corrective": {
+      "source_commit": "b3829057530eedeb0dc32240c1b15152564f9363",
+      "same_session_top_level_turn": "authorized for turn-owned group lifecycle operations",
+      "different_session": "denied",
+      "child_run_actor": "denied",
+      "run_owned_group": "exact RunId owner retained and tested",
+      "verification": "AgentRunGroup tests 6/6 passed; fmt, execution-ownership, scheduler-bypass, core-boundary guards passed"
+    },
+    "M012_daemon_continuation_S1_retry": {
+      "session_id": "e8d937ee-8b37-470d-966e-ba5e30166a0a",
+      "group_id": "ff40bb51-6960-4a67-a01d-a0e6b01435ec",
+      "parent_turn_id": "turn-fdfc4c47-4190-45ef-a552-0bacd04a8bc5",
+      "children": [
+        {
+          "run_id": "e2b80735-33b5-430a-baab-d4acc4e66076",
+          "worktree_id": "a3cf5436-4729-4787-9171-aa159f126d91",
+          "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+          "assignment": "Rust producer",
+          "latest_status": "running"
+        },
+        {
+          "run_id": "aef40549-6c94-4d68-9d56-482e05048b84",
+          "worktree_id": "5b476e4a-c30a-4aa0-86e1-e9c7a41e965f",
+          "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+          "assignment": "Python consumer",
+          "latest_status": "running"
+        }
+      ],
+      "same_session_followup_turns": 2,
+      "continuation_result": "Both later turns invoked wait_group on the live group and returned normally without authorization errors; each observed both children running.",
+      "latest_observation": "Both children remain running with no terminal result. Session usage rows include parent follow-up turns and cannot be attributed to child progress. No effectiveness conclusion is supported.",
+      "classification": "pending/incomplete; excluded from success and performance denominators"
+    }
   }
 }
