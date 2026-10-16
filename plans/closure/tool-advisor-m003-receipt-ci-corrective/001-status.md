@@ -125,3 +125,14 @@ and the causal-frontier suite (78 passed, 2 ignored). Fresh hosted CI
 [38841915548](https://github.com/dbowm91/codegg/actions/runs/38841915548) was
 running when this integration note was written; no hosted pass is claimed
 until that run completes.
+
+### Later reconciled-head CI result (2026-10-16)
+
+The separate exact-head CI run
+[38851206923](https://github.com/dbowm91/codegg/actions/runs/38851206923)
+passed the ADR identity and repository guards, formatting, and workspace
+Clippy, then stopped after 6,324 tests at the timing-sensitive
+`causal_observe_replay::replay_p95_within_budget` check (5.679 ms against a
+5 ms budget). The tool-advisor receipt correction did not fail; the suite
+stopped before reaching it. This does not replace the still-unverified status
+of the earlier run recorded above, nor does it establish a full-suite pass.
