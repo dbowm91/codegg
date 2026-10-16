@@ -254,6 +254,17 @@ session workspace or scratch directory do not trigger the implicit default
 `Ask`; explicit rules still apply. Human shell commands do not receive the
 session scratch grant.
 
+Each durable subagent run gets its own private scratch directory, so sibling
+temporary files stay separate. An orchestrator can create a named shared
+scratch resource with the `task` tool and grant its opaque ID to selected
+direct children. Those children receive the shared path as
+`CODEGG_SHARED_SCRATCH_<ALIAS>`; `TMPDIR`, `TMP`, `TEMP`, and
+`CODEGG_SCRATCH_DIR` remain private to each run. A sibling without the grant
+cannot read or write the resource through structured tools, and Required
+sandboxes deny writes to ungranted sibling roots. Some native backends permit
+broad reads for tool compatibility, so scratch grants do not claim OS-level
+read confidentiality.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather

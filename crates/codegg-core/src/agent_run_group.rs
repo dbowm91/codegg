@@ -1118,6 +1118,7 @@ mod tests {
                     model: "test".into(),
                     authority_digest: "test".into(),
                     budget: AgentRunBudget::default(),
+                    shared_scratch: Vec::new(),
                 },
             )
             .await
@@ -1175,6 +1176,7 @@ mod tests {
                     model: "test".into(),
                     authority_digest: "test".into(),
                     budget: AgentRunBudget::default(),
+                    shared_scratch: Vec::new(),
                 },
             )
             .await

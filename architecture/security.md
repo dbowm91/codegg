@@ -292,14 +292,21 @@ per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
 `CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
 macOS credential-denied daemon data root; scratch contents are disposable and
 may be removed by host cache maintenance. The Required launch adds the exact
-path as a read/write root. Unix session roots use mode 0700; Windows inherits
+path as a read/write root. Durable child runs receive a separate owner-private
+root keyed by `AgentRunId`; parent-created shared roots enter that run's scope
+only through an immutable direct-child grant validated in `AgentRunStore`.
+Shared roots are explicit sandbox/tool roots and never replace the child's
+private temp variables. Scheduler attempt leases preserve admitted access
+through child completion; revocation blocks later admission. Unix session and
+run roots use mode 0700; Windows inherits
 the per-user cache-root ACL and has no native isolation claim while Required
 launches remain unavailable. Constrained
 launches also retain a separate collision-resistant 0700 per-launch staging directory,
 which is reaped with the process tree. Python's temporary script is held in
 its own private run directory. Shared `/tmp` and global HOME caches are not
-writable grants. Scratch directories are not yet reclaimed automatically;
-lease-aware retention is a later qualification.
+writable grants. Revoked shared directories are removed after the last
+attempt lease releases. Run-private scratch is retained as disposable cache
+data and may be removed by host cache maintenance.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

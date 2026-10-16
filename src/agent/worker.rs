@@ -1518,6 +1518,53 @@ async fn execute_agent_task(
         workspace_root,
         subagent_session_id,
     );
+    if let Some(run_id) = request.run_id.as_ref() {
+        let runs = subagent_pool
+            .durable_agent_runs
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "durable scratch scope requires the AgentRun store".to_string())?;
+        let run = runs
+            .get_run(run_id)
+            .await
+            .map_err(|error| format!("load delegated run scratch grants: {error}"))?
+            .ok_or_else(|| "delegated run is missing".to_string())?;
+        let task = runs
+            .get_task(&run.task_id)
+            .await
+            .map_err(|error| format!("load delegated task origin: {error}"))?
+            .ok_or_else(|| "delegated task is missing".to_string())?;
+        let mut grants = Vec::with_capacity(run.shared_scratch.len());
+        for grant in &run.shared_scratch {
+            let resource = runs
+                .get_scratch_resource(&grant.scratch_id)
+                .await
+                .map_err(|error| format!("validate delegated scratch grant: {error}"))?
+                .ok_or_else(|| "delegated scratch resource is missing".to_string())?;
+            let has_admitted_lease = runs
+                .has_scratch_attempt_lease(&grant.scratch_id, run_id)
+                .await
+                .map_err(|error| format!("validate delegated scratch lease: {error}"))?;
+            if resource.session_id != task.originating_session_id
+                || resource.owner_run_id != run.parent_run_id
+                || (resource.revoked && !has_admitted_lease)
+            {
+                return Err(
+                    "delegated scratch grant is stale or outside direct-parent authority".into(),
+                );
+            }
+            grants.push(grant.clone());
+        }
+        let scratch_scope = crate::scratch::AgentScratchScope::from_authorized_grants(
+            task.originating_session_id.clone(),
+            run_id.clone(),
+            &grants,
+        )
+        .map_err(|error| format!("provision delegated scratch: {error}"))?;
+        agent_loop.set_scratch_scope(scratch_scope);
+        agent_loop.set_peer_observation_session_id(task.originating_session_id);
+    }
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
@@ -1614,6 +1661,17 @@ async fn execute_agent_task(
     let model_profile =
         crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
     let available_agents = agents.as_ref().clone();
+    let runtime_blocks = agent_loop
+        .scratch_scope
+        .as_ref()
+        .map(|scope| {
+            vec![crate::agent::prompt::PromptBlock::required(
+                crate::agent::prompt::PromptBlockKind::Extension,
+                "agent:scratch-scope",
+                &scope.prompt_block(),
+            )]
+        })
+        .unwrap_or_default();
     let compiled_prompt =
         crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
             agent: &safe_agent,
@@ -1627,7 +1685,7 @@ async fn execute_agent_task(
             pin: None,
             execution: None,
             adapter_fingerprint: Some(&adapter.fingerprint),
-            runtime_blocks: &[],
+            runtime_blocks: &runtime_blocks,
         });
     let mut messages = vec![crate::provider::Message::System {
         content: compiled_prompt.text.into(),

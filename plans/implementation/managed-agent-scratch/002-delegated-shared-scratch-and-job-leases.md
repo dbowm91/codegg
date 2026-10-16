@@ -1,7 +1,7 @@
 # Managed Agent Scratch M002 — Delegated Private and Explicitly Shared Scratch with Job Leases
 
 Status: active — M001 strict closure recorded
-Repository baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79` (revalidate after M001).
+Repository baseline: `6612b6ef45a7480ddcd6413f6f54a67023dcc6c9` (revalidated after strict M001 closure on 2026-10-16).
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`.
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 16–18, 26–29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phases 9–10.
 Applicable ADRs: ADR-0001, ADR-0002 and accepted ADR-0028; preserve delegated authority and worktree control.

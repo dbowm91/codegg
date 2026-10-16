@@ -42,6 +42,10 @@ instructions into the candidate. See `architecture/agent.md`.
    A top-level model session gets its trusted scratch prompt block from the
    canonical `SessionId`; tool/process authorization is resolved from broker
    context and never inferred from prompt text or a supplied path.
+   Durable delegated runs use a private `AgentRunId` root. Shared roots are
+   granted only by their direct owner through an opaque `ScratchId` stored in
+   the accepted run snapshot; the worker revalidates grants before exposing
+   `CODEGG_SHARED_SCRATCH_<ALIAS>`. Keep standard temporary variables private.
 2. **Never edit `src/agent/builtins/generated.rs`.** Edit
    `assets/agents/*.toml` or `assets/prompts/` then run
    `python3 scripts/generate_builtin_agents.py` (`--check` in CI).
