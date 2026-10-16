@@ -97,3 +97,31 @@ C001 is closed. The independent blocker on async C007 is resolved: C006 has clos
 - Remove C001 from active and dependency-ready sections.
 - Unblock async C007 in the same commit; it transitions directly to active as WP-A begins. Exact-head CI, Desktop E2E, migration review, PR metadata and maintainer decision remain outstanding.
 - No other registered plan depends on C001.
+
+## Mainline integration follow-up (2026-10-16)
+
+After reconciling the Linux isolation branch with main, exact-head CI
+[38839127536](https://github.com/dbowm91/codegg/actions/runs/38839127536)
+reproduced the same receipt regression at `454e7a0f`: stored effect-catalog
+fingerprint `94ef4d745c79450f8d4b27a0985551c82fb2f572d7f8eba6aa4718c5edfd7649`
+versus recomputed historical fingerprint
+`f8e22dfa40bc1e492d7254626fd49d202520b5c2973cd757f4def161eb425e1b`.
+Nextest stopped after 4,300 passed, one failed, and 9,627 not run. The local
+focused test reproduced the same values.
+
+The merged constrained-profile policy now replaces `lsp` and `lsp_read` with
+hidden `DisabledTool` entries in the default `WorkspaceWrite` registry. The
+frozen M003 effect catalog predates that policy and was bound to the active
+LSP tools. The historical fingerprint fixture had inherited today's
+constrained default, so it was hashing placeholder schemas even after
+reconstructing the other recorded post-M003 schema changes.
+
+Commit `5099ef33348f03185ffbec06e1367947c223a811` fixes the fixture at the
+semantic boundary: both historical effect-catalog construction and the native
+contract seam test explicitly use the FullHost tool registry. The receipt
+asset, negative disposition D, M002 selection, and live stale-catalog fallback
+assertions remain unchanged. Local verification passed the exact receipt test
+and the causal-frontier suite (78 passed, 2 ignored). Fresh hosted CI
+[38841915548](https://github.com/dbowm91/codegg/actions/runs/38841915548) was
+running when this integration note was written; no hosted pass is claimed
+until that run completes.
