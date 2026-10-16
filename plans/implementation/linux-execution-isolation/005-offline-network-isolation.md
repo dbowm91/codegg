@@ -93,32 +93,40 @@ passed all 9 tests, including both offline workspace checks and the contained
 managed-process regression suite. The exact-head native run also passed the
 protected-mount and trusted-Git regressions.
 
-This is internal candidate compatibility evidence only. It does not qualify
-DNS rebinding, every production launch owner, supported-host admission, or a
-persisted `OfflineRequired` route. M005 remains unenforced and M004's PTY/LSP
-owner gates remain open.
+This earlier evidence qualified only the initial denial matrix. The
+exact-head corrective below subsequently qualified the host-configured
+resolver and changing-answer loopback DNS fixtures on the hosted candidate.
+Neither run qualifies every production launch owner, supported-host admission,
+or a persisted `OfflineRequired` route. M005 remains unenforced and M004's
+PTY/LSP owner gates remain open.
 
-### Resolver endpoint and changing-answer probe corrective — awaiting exact-head native qualification
+### Resolver endpoint and changing-answer probe corrective — exact-head native candidate passed
 
-The existing native fixture proves host DNS works and that the contained
-child's `getaddrinfo` call fails, but it did not directly attempt to contact
-the host's configured resolver. The fixture now records the configured
-nameserver, proves it answers the same bounded DNS query from the host, then
-sends that query from the private network namespace; receiving any child-side
-reply is a test failure. A second loopback DNS fixture now returns two different
-A records for the same query (`127.0.0.1`, then `198.51.100.1`), verifies both
-host-side answers differ, and has the contained child attempt to query that
-fixture directly. This distinguishes a demonstrated changing-answer fixture
-from a mere resolver reachability check. The code change is pending exact-head
-hosted M004/M005 verification; it does not close the remaining production-owner
-or supported-host gates.
+The fixture records the configured nameserver, proves it answers the same
+bounded DNS query from the host, then sends that query from the private network
+namespace; receiving any child-side reply is a test failure. A second loopback
+DNS fixture returns two different A records for the same query (`127.0.0.1`,
+then `198.51.100.1`), verifies both host-side answers differ, and has the
+contained child attempt to query that fixture directly.
 
-First exact-head attempt `38913230183` ran 8/9 native tests successfully,
+Exact-head hosted M004/M005 run
+[`38928962604`](https://github.com/dbowm91/codegg/actions/runs/38928962604)
+on `863537c0f36e0f71c4b1f784137ed69ff8ad4295` passed the native process/IPC
+step 9/9, including the configured-resolver and changing-answer loopback
+probes, offline workspace `cargo metadata`/`cargo check`, and managed-process
+regressions. The same workflow passed protected-mount tests 11/11, trusted-Git
+tests 20/20, and the separate restricted-userns refusal-before-target job.
+The hosted changing-answer probe is candidate evidence only: an external
+network positive control, production PTY/LSP owners, and supported-host
+qualification remain open. No `OfflineRequired` profile or
+`NetworkEnforcement::Enforced` claim is enabled.
+
+Earlier exact-head attempt `38913230183` ran 8/9 native tests successfully,
 including the offline workspace checks, but the new Python probe received
 Rust's lowercase `false` literal for its IPv6-family selector and exited with a
-`NameError` before the resolver packet check. This is a fixture-formatting
+`NameError` before the resolver packet check. This was a fixture-formatting
 failure, not a network-boundary result. The selector now receives numeric
-`0`/`1`; the corrected test still requires exact-head hosted qualification.
+`0`/`1`; the corrected exact-head hosted result is recorded above.
 
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.

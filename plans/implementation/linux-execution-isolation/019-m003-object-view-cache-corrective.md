@@ -1,6 +1,6 @@
 # Linux Execution Isolation C011 — Trusted Git Object View Cost Corrective
 
-Status: active
+Status: implemented; conditionally closed with cold-fragmented production performance still blocked
 Repository baseline: `4cd4068a` (current reconciled Linux isolation branch)
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`

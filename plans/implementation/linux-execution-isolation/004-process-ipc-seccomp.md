@@ -56,6 +56,29 @@ LSP process owner carrying the M004 launch scope. Supported-host qualification
 and actual production-owner routing remain hard closure gates. M005 remains an
 internal candidate, and C010's M003 no-admission decision is unchanged.
 
+### Exact-head DNS and object-view regression qualification (2026-10-16)
+
+After adding the host-configured resolver and changing-answer DNS fixtures,
+hosted Linux run
+[`38928962604`](https://github.com/dbowm91/codegg/actions/runs/38928962604)
+on `863537c0f36e0f71c4b1f784137ed69ff8ad4295` passed the native M004/M005
+target 9/9, protected-mount regressions 11/11, trusted-Git regressions 20/20,
+and the separate restricted-userns refusal-before-target probe. The 9/9
+includes host DNS positive control followed by denial to the configured
+resolver and a loopback resolver that returns different A records for the
+same query, again denied from the contained child. It also retains the offline
+Cargo metadata/workspace-check candidate. macOS target compile
+[`38928962564`](https://github.com/dbowm91/codegg/actions/runs/38928962564)
+passed. Exact-head full CI run `38929001163` had one failure in the existing
+typed Git log service test; the same-SHA retry `38931841531` is still running
+as this evidence was recorded. The failure is not yet classified as
+transient, so the full-suite retry remains a reconciliation gate.
+
+This additional native evidence closes the DNS fixture gap only. The PTY
+service still refuses constrained profiles before `openpty`/spawn, and the
+LSP service still has no distinct daemon-owned constrained runtime. No M004
+production owner or M005 production network-enforcement claim is promoted.
+
 ## 3. Invariants
 
 User code is never launched before the requested PID/IPC/mount/proc/seccomp features are installed. No host procfs bind or leaking daemon socket from `/run`, `/tmp`, home or inherited environment is acceptable under process-isolated mode. Only explicitly documented device/pty I/O is exposed. Parent-facing stdin/stdout/stderr and the private status channel are the only narrowly inherited descriptors unless a typed operator-approved capability demands more. Signal behavior and child PID1 reaping do not break `ManagedProcessService` cancellation, timeout or worker accounting. No root privileges or daemon self-restriction.
