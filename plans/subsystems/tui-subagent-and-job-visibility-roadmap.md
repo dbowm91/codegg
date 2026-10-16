@@ -359,24 +359,60 @@ keeps its current complete list.
 - **Objective:** one `Shift+T` overlay presents todos, then subagents, then jobs,
   separated, with empty groups omitted.
 - **Dependencies:** M001 (names must appear here).
+- **Status:** **landed (M002 scope)** on `feat/auto-20261016-845b613f`. Three
+  defects surfaced during implementation and are fixed; they are recorded below
+  because each one is a way this overlay can look broken rather than absent.
 - **Deliverable boundary:**
-  - `toggle_tasks_list()` modelled directly on `toggle_todo_list()`
-    (`src/tui/app/mod.rs:13650`), with a `tasks_expanded` flag and a
-    `tasks_strip_height()` participating in `session_layout` exactly as
-    `todo_strip_height()` does today — I4 preserved.
-  - Subagent and job groups filter to active/pending/queued.
-  - Jobs are read from `snapshot.jobs`. No new request, no daemon change.
-  - Group headers render as separators so a user can tell what each block is.
+  - *(landed)* `tasks_expanded` + `toggle_tasks_list()`, independent of
+    `todo_expanded`. `Ctrl+T` owns the always-visible compact progress line;
+    `Shift+T` owns the on-demand block. Collapsing them would take away the
+    one-line summary legible without expanding anything.
+  - *(landed)* `tasks_strip_height()` participates in the prompt allocation
+    exactly as `todo_strip_height()` does — I4 preserved (the input box keeps
+    the height it asked for; the viewport absorbs the difference).
+  - *(landed)* `src/tui/app/state/tasks.rs` owns the row model. Subagents come
+    from `SubagentState.rows`, jobs from `snapshot.jobs`. No new request, no
+    daemon change.
+  - *(landed)* Bound under both SHIFT and NONE encodings in the **shared**
+    binding function (`insert_panel_direction_bindings`), so every map gets it.
+    An earlier attempt put it in the vim map only, where the default map never
+    saw it — a test caught this, not review.
+  - *(landed)* `is_normal_only` includes it, or Insert mode would treat a
+    capital `T` mid-word as "open the overlay" instead of composing it.
+- **Three defects the implementation surfaced:**
+  1. **Per-group caps are not a total bound.** Three groups each under their own
+     cap still outgrow a short terminal, and an overlay that outgrows its carve
+     is skipped *entirely* — so `Shift+T` reads as a dead key on exactly the
+     terminals where a status overlay would be most wanted. Fixed by
+     `MAX_TASKS_TOTAL_ROWS`, a total budget *including headers*.
+  2. **First-come-first-served starves the last group.** Filling groups in
+     display order until the budget runs out let a long todo list consume
+     everything and cost the jobs group rows it had room for. Fixed by
+     fair-share allocation with redistribution: every group is granted an equal
+     share, and what a small group does not need goes back to those that want
+     it.
+  3. **The reservation is clamped against real available height**
+     (`tasks_overlay_allowance`), honouring header, footer, the transcript's
+     `Min(10)` floor, the prompt box at its own maximum, and the working/hint/
+     todo strips. A too-short pane shows no overlay rather than a wrong one.
 - **Exit conditions:**
   - With nothing running, the overlay shows todos only, with no empty subagent or
-    job heading.
+    job heading. *(covered: `nothing_running_renders_todos_only_with_no_empty_headings`)*
   - With a running subagent and a queued job, both appear with names/statuses.
+    *(covered: `a_running_subagent_and_a_queued_job_both_appear`,
+    `the_overlay_appears_when_the_pane_has_room_for_it`)*
   - Layout math is covered by a test asserting the strip height never eats the
-    transcript below `Min(10)`.
-- **Open question:** the existing `/tasks` slash command (`src/tui/commands/tasks.rs`)
-  governs *schedules*, not this overlay. Terminology overlap must not mislead —
-  the overlay's help text should not call scheduled runs "tasks" in the same
-  breath as in-flight subagents. Resolve in M005's documentation pass.
+    transcript below `Min(10)`. *(covered:
+    `a_saturated_overlay_never_squeezes_the_transcript_below_its_floor`, which
+    asserts the floor across 100x30, 100x50 and 120x24 rather than one size)*
+  - Headers survive truncation, so a partial list never has unattributed rows.
+    *(covered: `bounding_keeps_every_header`,
+    `bounding_respects_the_global_budget_however_many_groups_are_full`)*
+- **Resolved terminology:** the existing `/tasks` slash command
+  (`src/tui/commands/tasks.rs`) governs *schedules*. No group heading says
+  "tasks" — they read `Todo list`, `Subagents`, `Jobs`, and the key is labelled
+  "Toggle tasks (todos, subagents, jobs)" so the overlap with `/tasks` is
+  explicit rather than accidental. Remaining doc surface is M005's job.
 
 ### M003 — Subagent tabs in the main buffer
 
@@ -534,7 +570,7 @@ Interaction with a subagent is **not** part of this definition.
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 ephemeral display name | landed (pool, registry, event-carried name, dead join fixed) | — | — | none |
-| M002 unified tasks overlay | not started | — | — | M001 |
+| M002 unified tasks overlay | landed (Shift+T; global row budget + height clamp) | — | — | none |
 | M003 subagent buffer tabs | not started | — | — | M001 |
 | M004 sessions panel sections | not started | — | — | M001, M003 |
 | M005 guards, help, docs | not started | — | — | M002, M003, M004 |
