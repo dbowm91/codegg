@@ -480,9 +480,15 @@ async fn managed_worktree_creation_materializes_filter_free_checkout() {
         assert!(status.success());
     }
     let managed_root = tempfile::tempdir().expect("managed root");
-    // Keep a realistic deep checkout path without crossing the traditional
-    // 260-character Windows path limit. The Windows qualification workflow
-    // runs this same materialization path natively.
+    // Keep a deep checkout path. Git for Windows has a shorter repository
+    // root limit than the general Windows path limit, so its fixture targets
+    // roughly 200 characters while other platforms exercise up to 260.
+    #[cfg(windows)]
+    let deep_managed_root = managed_root
+        .path()
+        .join("managed-root-segment-012345678901234567890123")
+        .join("nested-checkout-segment-012345678901234567890123");
+    #[cfg(not(windows))]
     let deep_managed_root = managed_root
         .path()
         .join("managed-root-segment-012345678901234567890123456789012345")
@@ -513,6 +519,12 @@ async fn managed_worktree_creation_materializes_filter_free_checkout() {
     let git_metadata = worktree.path.join(".git");
     assert!(git_metadata.is_file(), "linked worktree uses a .git file");
     let path_len = worktree.path.to_string_lossy().len();
+    #[cfg(windows)]
+    assert!(
+        (190..210).contains(&path_len),
+        "qualification path should remain within Git for Windows' repository-root limit, got {path_len}"
+    );
+    #[cfg(not(windows))]
     assert!(
         (200..260).contains(&path_len),
         "qualification path should exercise a deep checkout path, got {path_len}"

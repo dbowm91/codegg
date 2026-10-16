@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M006 — NewManaged Materializer Qualification Addendum
 
-Status: closing — the filter-free NewManaged capability and daemon replay paths pass on the development Mac; a focused native Windows qualification workflow is added and awaits hosted execution
+Status: closing — the filter-free NewManaged capability and daemon replay paths pass on the development Mac; native Windows qualification found Git for Windows' shorter repository-root limit and the next narrowed-path run is pending
 
 Source implementation plan: `plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md`
 Prior closure record: `plans/closure/agent-workstream-blackboard/006-status.md` (historical blocked finding retained)
@@ -20,10 +20,13 @@ idempotent replay passed on the development Mac.
 M006 is not strictly closed because the implementation plan requires native
 Windows path-length and linked `.git`-file qualification. The focused
 Windows workflow first exposed Git for Windows rejecting the verbatim
-destination prefix, then exposed its `$GIT_DIR too big` failure when the
-repository working directory retained that prefix. The materializer now
-strips it from both locations; another rerun is required. This finding does
-not block M007, and neither milestone depends on M005 shared-checkout mutation.
+destination prefix, then exposed its `$GIT_DIR too big` failure with a roughly
+225-character managed checkout root. Git for Windows has a shorter
+repository-root limit than the general Windows `MAX_PATH` threshold. The
+fixture now targets a roughly 200-character managed root on Windows while
+keeping the 200–260 character fixture on other platforms. A native rerun is
+required. This finding does not block M007, and neither milestone depends on
+M005 shared-checkout mutation.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -35,7 +38,7 @@ not block M007, and neither milestone depends on M005 shared-checkout mutation.
 | Concurrent and nested managed worktrees preserve distinct leases and pinned base | `concurrent_filter_free_worktree_creation_uses_distinct_leases`; `nested_worktree_creation_uses_the_pinned_filter_free_base` | pass | Real Git fixtures. |
 | Daemon NewManaged launch/fork, session binding, ancestry and exact replay | `core::daemon::tests::managed_session_launch_and_fork_are_idempotent_and_bound` | pass | Local aarch64 macOS; includes existing-worktree and NewManaged launch/fork. |
 | Linux hosted verification | Exact-head CI pending | not run | Record the existing CI run after pushing the implementation commit. |
-| Deep checkout path and linked `.git`-file behavior | `managed_worktree_creation_materializes_filter_free_checkout` asserts a 200–259 character checkout path and resolves Git metadata through the linked `.git` file | local pass; two native runs exposed path-prefix incompatibilities | Run `38920436943` rejected the verbatim destination prefix; run `38922769990` then failed with `'$GIT_DIR' too big` because the repository cwd remained verbatim. The narrow materializer now normalizes both cwd and destination (including UNC destinations) and has a Windows unit test; rerun before strict closure. |
+| Deep checkout path and linked `.git`-file behavior | `managed_worktree_creation_materializes_filter_free_checkout` resolves Git metadata through the linked `.git` file; Windows uses a 190–209 character managed root within Git for Windows' repository-root limit, other platforms use 200–259 | local pass; three native runs have not passed | Run `38920436943` rejected the verbatim destination prefix; `38922769990` failed with `'$GIT_DIR' too big` while cwd retained the prefix; `38925119626` still failed with `'$GIT_DIR' too big` at an estimated 199-character fixture root after path-prefix normalization. The fixture is now shortened to about 199 characters on Windows; rerun before strict closure. |
 
 ## 3. Implementation and invariant review
 
@@ -84,6 +87,6 @@ trajectory commands above passed.
 
 | Severity | Finding | Required action |
 |---|---|---|
-| medium | Native Windows path-length and linked `.git`-file qualification is awaiting a rerun after fixing the destination and cwd path incompatibilities. | Run `.github/workflows/m006-windows-worktree.yml` on the corrective head and record its exact result; then decide strict closure from the complete M006 acceptance matrix. |
+| medium | Native Windows path-length and linked `.git`-file qualification still fails because Git for Windows rejects the prior roughly 225-character checkout root. | Rerun `.github/workflows/m006-windows-worktree.yml` with the Windows fixture shortened to about 199 characters and record its exact result; then decide strict closure from the complete M006 acceptance matrix. |
 
 Keep M006 in `closing` until native Windows evidence is available. M007 remains independently eligible.
