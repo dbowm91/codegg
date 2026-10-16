@@ -37,6 +37,7 @@ use codegg_protocol::projection::replay::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
+use tokio::sync::oneshot;
 
 fn gui_capabilities() -> ClientCapabilities {
     ClientCapabilities {
@@ -1131,6 +1132,7 @@ async fn resume_retains_cursor_with_new_subscription() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn closed_transport_publishes_disconnected() {
     let (endpoint, listener) = bind().await;
+    let (close_peer, wait_for_attach) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept");
         let (read, mut write) = stream.into_split();
@@ -1145,6 +1147,9 @@ async fn closed_transport_publishes_disconnected() {
         assert!(matches!(payload, CoreRequest::ProjectionSubscribe { .. }));
         send_response(&mut write, id, subscribed_response("sub-1")).await;
 
+        // Do not race the attach response against EOF. The test closes the
+        // peer only after attach has consumed the subscribe response.
+        wait_for_attach.await.expect("attach signals ready");
         // Peer death: no unsubscribe handshake, just a dead socket.
     });
 
@@ -1156,6 +1161,9 @@ async fn closed_transport_publishes_disconnected() {
     )
     .await
     .expect("attach");
+    close_peer
+        .send(())
+        .expect("fake daemon waits for peer close");
     wait_for(&driver, "disconnected", Duration::from_secs(10), |view| {
         view.state == DriverState::Disconnected
     })

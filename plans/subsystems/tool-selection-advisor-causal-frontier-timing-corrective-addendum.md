@@ -1,6 +1,6 @@
 # Tool-Selection Advisor Causal Frontier Timing Corrective Addendum
 
-Status: active
+Status: closed — C001/C002/C003 closed
 
 Repository planning baseline: `cdfd6257`
 
@@ -36,6 +36,17 @@ Triggering evidence:
   §10 as "the documented load flake … no code or gate change". That record is
   immutable historical evidence and is not rewritten; this corrective is the
   deferred work it pointed at.
+- C003 trigger: hosted runs `38840695582` (`469802dd`) and `38842540498`
+  (`03e20d3e`) both failed the retained 201-sample `replay_p95_within_budget`
+  at 5.559 ms and 5.597 ms against 5.0 ms while the `ci` profile ran up to four
+  tests concurrently. Both stopped the suite before the blackboard trajectory.
+  C003 keeps the budget/assertion and moves this test binary into the existing
+  CPU-exclusive nextest group; see
+  `plans/implementation/tool-selection-advisor-causal-frontier-timing-corrective/003-isolate-replay-p95-measurement.md`.
+
+C003 strict closure: `plans/closure/tool-selection-advisor-causal-frontier-timing-corrective/003-status.md`.
+Hosted CI `38850114895` passed on the exact source head; the frozen p95 gate
+passed in the exclusive group and the full 13,961-test workspace suite passed.
 
 ## 1. Purpose
 

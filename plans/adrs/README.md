@@ -145,10 +145,9 @@ were never active on main and must not be reused for Windows references.
 
 ## ADR-0032 workstream coordination reservation (2026-10-15)
 
-The agent-workstream-blackboard planning branch allocates
-ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md as
-**proposed**, not accepted. It does not modify accepted ADR-0002, admit
-shared-write child execution, or confer new capability by existing group
-membership. M005 remains blocked until independent maintainer acceptance and
-real tool-path confinement/recovery evidence. Check other active branches for
-numeric collisions before merging this reservation.
+ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md was
+accepted on 2026-10-15 and merged to main in commit `171ef93b`. It does not
+modify accepted ADR-0002, admit shared-write child execution, or confer new
+capability by existing group membership. M005 is active for writer-containment
+design and qualification; shared-write execution remains unavailable pending
+real tool-path confinement and lifecycle recovery evidence.

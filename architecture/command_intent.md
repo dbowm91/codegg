@@ -185,12 +185,12 @@ matching on known subcommands with conservative risk assignment (falls through
 to `RawShell` for unrecognized forms).
 
 **Important typed parser behavior:** The typed parser may classify some
-commands differently than the heuristic fallback. For example, `git remote -v`
-and `git remote show origin` are classified as `GitMutating` by the typed
-parser (treats `-v`/`show` as unrecognized sub-subcommands), even though the
-heuristic would treat them as read-only. Tests
+commands differently than the heuristic fallback. For example, `git remote
+-v` is classified as `GitReadOnly` because it lists configured remotes, while
+`git remote show origin` falls back to `ManagedGitArgv` and is classified as
+`GitMutating`. Tests
 `git_branch_contains_is_mutating`, `git_branch_merged_is_mutating`
-(`src/command_intent/mod.rs:1323`/`:1331`), `git_remote_v_is_mutating`, and
+(`src/command_intent/mod.rs:1323`/`:1331`), `git_remote_v_is_readonly`, and
 `git_remote_show_is_mutating` (`:1363`/`:1375`) document these cases. Similarly,
 `git branch --contains HEAD` and `git branch --merged main` are classified as
 `GitMutating` by the typed parser because `--contains`/`--merged` are treated

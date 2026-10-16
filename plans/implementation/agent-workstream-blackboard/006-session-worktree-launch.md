@@ -1,20 +1,22 @@
-# Agent Workstream Blackboard M006 — Native Session/Worktree Fork-and-Launch
+# Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: blocked — hard dependency M005 closure
+Status: ready for handoff — shared-write placement is explicitly out of scope
 
-Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
+Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006
-Accepted authorities: ADR-0002, ADR-0004, ADR-0005; ADR-0032 only if formally accepted in M005.
+Accepted authorities: ADR-0002, ADR-0004, ADR-0005. ADR-0032 is not required for this isolated-worktree scope.
 Canonical: plans/000-long-term-specification.md §§6, 9, 13, 16, 25–29; plans/001-terminology-and-domain-model.md §§5–7.
 Primary class: capability.
 
 ## Objective
 
-Make worktree-aware sessions first class for CLI/TUI and daemon API, without changing what existing --fork and /fork mean. A user can start a new session, or fork conversation history, in a new or existing worktree; the session keeps the correct workspace/checkout/branch/root/base binding. Avoid ad-hoc frontend git subprocesses.
+Make isolated-worktree-aware sessions first class for CLI/TUI and daemon API, without changing what existing --fork and /fork mean. A user can start a new session, or fork conversation history, in a newly allocated isolated worktree or an already authorized isolated worktree; the session keeps the correct workspace/checkout/branch/root/base binding. Avoid ad-hoc frontend Git subprocesses. This milestone does not add shared checkout execution or shared-write leases.
 
 ## Existing code and gap
 
-SessionStore::fork in crates/codegg-core/src/session/store.rs copies recent messages and parent_id, preserving directory/workspace. src/core/daemon_sessions.rs CoreRequest::SessionFork performs session creation and rebinds the same workspace. docs/cli.md describes codegg --fork <id> and --cwd <dir>; TUI /worktree is list-only. WorktreeService has create/discover/cleanup and generation fencing; M005 adds explicit execution ownership. Their multi-step orchestration is not yet one recoverable operation.
+ADR-0002 remains the mutation-capable agent isolation contract. M005/ADR-0032 shared-write qualification is not a dependency for a session that owns a distinct checkout. The implementation must preserve existing WorktreeService lease generation and caller/project authorization. If the available Git backend cannot safely create a managed checkout on a platform, the request must fail closed and retain recoverable state; this limitation does not make shared-write containment a prerequisite.
+
+SessionStore::fork in crates/codegg-core/src/session/store.rs copies recent messages and parent_id, preserving directory/workspace. src/core/daemon_sessions.rs CoreRequest::SessionFork performs session creation and rebinds the same workspace. docs/cli.md describes codegg --fork <id> and --cwd <dir>; TUI /worktree is list-only. WorktreeService owns managed checkout records and generation-fenced leases; their multi-step session orchestration is not yet one recoverable operation.
 
 ## Work packages
 
@@ -32,4 +34,4 @@ E. Tests. Simultaneous identical requests; 2 callers with different principals; 
 
 Focused SessionStore/daemon protocol/TUI/CLI/worktree/project binding/recovery tests; src/core/daemon_sessions.rs and CoreRequest compatibility, cargo fmt, scripts/verify.sh quick, workspace Clippy, core/protocol/TUI guards; evidence of real local Git linked worktree on supported host. Never claim a session is in a new worktree from transcript fork alone. No index mutation without canonical Git executor and approvals.
 
-Stop if new request can bypass worktree lease generation, principal/project authorization, or silent cleanup/reuse of dirty state. Record executed commands, exact source SHAs, screenshots or deterministic TUI state evidence and user-facing acceptance in plans/closure/agent-workstream-blackboard/006-status.md.
+Stop if a request can bypass worktree lease generation, principal/project authorization, or silently clean/reuse dirty state. Shared checkout execution remains unavailable regardless of this milestone's status. Record executed commands, exact source SHAs, screenshots or deterministic TUI state evidence and user-facing acceptance in plans/closure/agent-workstream-blackboard/006-status.md.

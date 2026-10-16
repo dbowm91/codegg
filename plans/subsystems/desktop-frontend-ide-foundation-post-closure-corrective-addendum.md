@@ -1,6 +1,6 @@
 # Desktop Frontend and IDE Foundation — Post-Closure Corrective Addendum
 
-Status: active
+Status: closed — C001–C005 closed
 
 Repository baseline reviewed: `995d5cf8dd74009ea12cbcb9220594b49998853f`
 
@@ -290,3 +290,4 @@ C001 closes only when:
 | C002 feature-gated compile break + undrained publisher | closed | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/002-feature-gated-compile-break-and-undrained-publisher.md` | Closure `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/002-status.md`; M006-B push publisher remains undriven by design/evidence. |
 | C003 diagnostics readiness contract | closed | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/003-diagnostics-not-ready-contract.md` | Closure `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/003-status.md`; hosted root CI `38231581158` passed all 12,767 tests. M006-C is unblocked and remains pull-based. |
 | C004 LSP safe navigation target identity | closed (ADR-0018 Option A) | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/004-lsp-safe-navigation-target-identity.md` | Closure `plans/closure/desktop-frontend-ide-foundation-post-closure-corrective/004-status.md`; implementation `6b18122d`; hosted CI `38251214377` and Desktop E2E `38251230731` green. M006-C is ready and active. |
+| C005 order closed-transport fixture | active | `plans/implementation/desktop-frontend-ide-foundation-post-closure-corrective/005-order-closed-transport-fixture.md` | Fake daemon now waits until driver attach consumes the subscribe response before closing the socket; hosted CI closure pending. |
