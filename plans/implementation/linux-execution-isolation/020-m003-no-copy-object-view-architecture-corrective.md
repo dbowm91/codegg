@@ -54,6 +54,40 @@ path based only on a repository path or sandbox-profile string. FullHost cannot
 use the shared live-object fast path under the current threat model; it must
 keep the immutable snapshot or use another qualified snapshot mechanism.
 
+### Exact-content local shape comparison (2026-10-16)
+
+The implementation code under test is `0ddafd40609be6e57d09046584e3478d79c7ca63`; the dataset was created from the same repository object store at documentation-only head `aaed0d170a4e4d691811f43d235790812d1a62d6`. Two temporary worktrees were created from the same `.git` source and
+normalized to identical object-ID sets (53,269 IDs). The packed store has two
+packs and 60,361 KiB packed data; the fragmented store has 53,269 loose files
+and 438,624 KiB loose data. `git cat-file --batch-all-objects` set equality
+was checked after normalization. Both were measured on the same Ubuntu
+x86_64 / kernel `6.8.0-147-generic` / ext4 / Git `2.43.0` / Bubblewrap
+`0.9.0` workstation. This exceeds C010's fragmented-store minimum of 4,000
+loose objects and 100 MiB object data, but is still one repository and one
+host.
+
+The candidate was direct Bubblewrap launch with a read-only repository bind
+and a private tmpfs overlay on `.git/objects/info`; it did not use CodeGG's
+trusted helper or status/ack protocol. On 20 warm `git status --porcelain`
+samples, the packed shape measured 14.94 ms p95 versus 12.20 ms direct (1.22x);
+the fragmented shape measured 14.87 ms versus 11.85 ms (1.25x). On 20 warm
+`git log -n 1` samples, packed measured 4.19 ms p95 versus 1.67 ms direct,
+and fragmented measured 4.23 ms versus 1.58 ms direct. These status values
+meet C010's warm absolute/ratio bounds on this host; the short log command
+shows the fixed namespace-start overhead more clearly.
+
+For comparison, the existing private-copy path's 20-sample warm preparation
+p95 was 0.049 ms packed / 0.048 ms fragmented. Warm end-to-end status p95 was
+14.90 ms packed versus 13.43 ms paired baseline, and 13.67 ms fragmented versus
+13.88 ms baseline. Five cold-advised private-copy misses on the packed shape
+had preparation median/p95/max 137.9/147.3/147.3 ms. The fragmented shape's
+five cold-advised misses measured 12.65, 18.75, 22.61, 20.67, and 45.18 s
+(median 20.67 s, nearest-rank p95/max 45.18 s). The fixture harness uses
+per-file `POSIX_FADV_DONTNEED`, not global cache flushing; five cold samples
+do not satisfy C010's 30-sample requirement. This comparison makes the
+fragmented copy miss impractical and shows the mount fast path is promising
+only if the no-writer lease can be enforced.
+
 The threat-boundary review distinguishes authority from snapshot consistency. A read-only mount plus masked alternates can prevent the Git child from following repository-controlled object-store aliases, while concurrent host-side writes can still change bytes consumed by a query. Git does not necessarily validate the requested object bytes against its object ID on ordinary reads; the `cat-file` probe demonstrated that it returned a replacement payload. Do not treat content addressing or a read-only child mount as freezing the host-side object store. Object-generation immutability remains a hard acceptance requirement.
 
 The no-copy path must use the existing trusted sandbox helper/status-ack ownership boundary. Launching `bwrap` directly from `egggit` would duplicate the launcher and bypass CodeGG's helper identity, setup receipt, and acknowledgement protocol. The production shape therefore requires either a helper-owned Git launch request with the same trusted setup handshake or an equivalent adapter through the existing owner; a unit-level mount compiler test alone is insufficient.
