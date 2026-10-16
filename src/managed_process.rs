@@ -2449,6 +2449,26 @@ mod tests {
             )
             .expect("workspace launch lease");
 
+        use crate::security::sandbox::linux_launch::{
+            LinuxLaunchAdapter, LinuxLaunchPlan, LinuxLaunchRequest, ProductionLinuxLaunchAdapter,
+        };
+        match ProductionLinuxLaunchAdapter.plan(&LinuxLaunchRequest::legacy_filesystem(&spec)) {
+            Ok(
+                LinuxLaunchPlan::ProtectedMountView | LinuxLaunchPlan::ProtectedProcessIsolation,
+            ) => {}
+            Ok(LinuxLaunchPlan::EnhancedUnavailable { dimensions }) => {
+                eprintln!(
+                    "skipped: protected mount replacement probe unavailable on this host: {}",
+                    dimensions.join(", ")
+                );
+                return;
+            }
+            Ok(LinuxLaunchPlan::LegacyPrivateHelper) => {
+                panic!("protected-mount request unexpectedly selected legacy helper")
+            }
+            Err(error) => panic!("invalid protected-mount test request: {error}"),
+        }
+
         let displaced = fixture.path().join("displaced-workspace");
         std::fs::rename(&workspace, &displaced).expect("replace leased workspace path");
         std::fs::create_dir(&workspace).expect("replacement workspace");
