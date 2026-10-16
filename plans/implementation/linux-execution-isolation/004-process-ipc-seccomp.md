@@ -240,6 +240,22 @@ LSP instance while preserving duplex pipe ownership. No constrained adapter is
 currently installed, and the existing constrained refusal remains in force;
 the interface change is not execution containment evidence.
 
+The next exact-code-head hosted qualification was dispatched on
+`0ddafd40609be6e57d09046584e3478d79c7ca63`. Linux protected-mount run
+[`38944344509`](https://github.com/dbowm91/codegg/actions/runs/38944344509)
+passed 11/11 protected-mount tests and 20/20 trusted-Git tests; the separate
+macOS target compile [`38944358617`](https://github.com/dbowm91/codegg/actions/runs/38944358617)
+passed. The restricted-userns refusal job in Linux M004 workflow
+[`38944358636`](https://github.com/dbowm91/codegg/actions/runs/38944358636)
+passed. The positive process/IPC job in `38944358636` remains in progress. Full CI
+[`38944358683`](https://github.com/dbowm91/codegg/actions/runs/38944358683)
+failed at `git_service::tests::changed_files_returns_payload` (expected a
+structured `ChangedFiles` payload, received `None`) after 1,497 tests had
+passed. The focused test and all 25 Git-service tests pass locally; 100
+repeated focused executions also pass. A same-SHA full-CI rerun is underway.
+This hosted failure remains unresolved pending the rerun; no result is inferred
+from partial logs.
+
 ## 9. Acceptance criteria
 
 An opted-in child cannot enumerate or inspect host proc, signal/ptrace a same-UID fixture process, reach a withheld Codegg-daemon/session socket or abstract UDS, or install unsafe namespaces. It **can** run expected child shell/compiler/test operations and its descendant processes remain cancellable/reaped. Cargo check/test workflows pass through the M004 child boundary. A host with user namespaces disabled demonstrably refuses before target execution. Production PTY and LSP process creation use the canonical M004 launch/receipt owner before closure; direct-spawn service paths are not treated as contained. Every advertised seccomp/process/IPC guarantee is supported by a real negative and positive probe. Required failure leaves no target execution; legacy behavior unaffected.
