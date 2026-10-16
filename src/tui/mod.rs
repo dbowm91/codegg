@@ -109,6 +109,7 @@ pub mod command;
 pub mod commands;
 pub mod components;
 pub mod file_diff;
+pub mod file_icons;
 pub mod helix_selection;
 pub mod input;
 pub mod interactive_terminal;

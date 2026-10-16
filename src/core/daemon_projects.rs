@@ -26,7 +26,7 @@ impl CoreDaemon {
         for session_id in deleted_session_ids {
             crate::bus::PermissionRegistry::cancel_session(session_id);
             crate::bus::QuestionRegistry::cancel_session(session_id);
-            if let Some(runtime) = self.sessions.get(session_id).map(|runtime| runtime.clone()) {
+            if let Some(runtime) = self.sessions.get(session_id) {
                 if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
                     let _ = active_turn.cancel_tx.send(true);
                 }
@@ -56,7 +56,7 @@ impl CoreDaemon {
         event: CoreEvent,
     ) {
         for session_id in rebound_session_ids {
-            if let Some(runtime) = self.sessions.get(session_id).map(|runtime| runtime.clone()) {
+            if let Some(runtime) = self.sessions.get(session_id) {
                 if let Some(active_turn) = runtime.active_turn.read().await.as_ref() {
                     let _ = active_turn.cancel_tx.send(true);
                 }
@@ -939,7 +939,7 @@ mod tests {
 
         let project_id = codegg_core::identity::ProjectId::new();
         daemon
-            .note_project_destroyed(&project_id, &[doomed.clone()], 1)
+            .note_project_destroyed(&project_id, std::slice::from_ref(&doomed), 1)
             .await;
 
         // Live turn cancelled, runtime evicted, parked waiters resolved.
@@ -1006,7 +1006,7 @@ mod tests {
             previous_root: "/tmp/old".to_string(),
         };
         daemon
-            .note_project_rebound(&project_id, &[rebound.clone()], event)
+            .note_project_rebound(&project_id, std::slice::from_ref(&rebound), event)
             .await;
 
         assert!(cancel_rx.changed().await.is_ok());

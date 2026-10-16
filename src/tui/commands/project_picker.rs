@@ -1203,7 +1203,7 @@ pub(crate) fn apply_project_deleted(app: &mut App, project_id: &str, deleted_ses
         .map(|tab| tab.tab_id.clone());
     if let Some(target) = retained_target.as_ref() {
         switch_active_tab(app, target);
-    } else if app.project_tabs.len() > 0 {
+    } else if !app.project_tabs.is_empty() {
         app.invalidate_pending_session_submit(false);
         app.view_switch.bump_epoch();
     }
@@ -1219,7 +1219,7 @@ pub(crate) fn apply_project_deleted(app: &mut App, project_id: &str, deleted_ses
         app.routing_registry.drop_tab(&tab_id);
         let _ = app.task_registry.cancel_for_tab(tab_id.as_str());
     }
-    if app.project_tabs.len() == 0 {
+    if app.project_tabs.is_empty() {
         app.project_tabs.close_fallback_tab();
         app.session_state.session = None;
         app.session_state.session_status = crate::tui::app::SessionStatus::Idle;

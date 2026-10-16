@@ -886,6 +886,16 @@ impl App {
             TuiMsg::FilesRefresh => {
                 crate::tui::commands::file_tree::rebuild(self);
             }
+            TuiMsg::FilesDescend { path } => {
+                // The pane's root moves and the walk follows. One command,
+                // because a scope change without a listing would leave the
+                // box showing the directory the user just walked out of
+                // under the new root's title.
+                crate::tui::commands::file_tree::descend_to(self, &path);
+            }
+            TuiMsg::FilesAscend => {
+                crate::tui::commands::file_tree::ascend_one_level(self);
+            }
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {

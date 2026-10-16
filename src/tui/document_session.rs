@@ -22,7 +22,8 @@ use codegg_protocol::document::DocumentScope;
 
 use crate::core::CoreClient;
 
-use super::editor::{EditorFocus, EditorMode, EditorUndoEntry};
+use super::editor::{EditorMode, EditorPoint, EditorUndoEntry};
+use super::helix_selection::Selection;
 
 struct CoreClientTransport(Arc<dyn CoreClient>);
 
@@ -56,8 +57,15 @@ pub struct TuiDocumentSession {
 pub struct TuiDocumentPresentation {
     /// Cursor position as a UTF-8 byte offset into the local replica.
     pub cursor_byte: usize,
-    /// Active selection, as a byte range into the local replica.
-    pub selection: Option<std::ops::Range<usize>>,
+    /// The held Helix selection, or `None` when nothing is selected.
+    ///
+    /// Points are byte offsets paired with their line — see
+    /// [`EditorPoint`](super::editor::EditorPoint). Stored as the shared
+    /// [`Selection`] rather than a bare range so `v` stays a mode and `x` an
+    /// action here exactly as they are in `/terminal`; resolving it to a
+    /// range is [`editor::selection_range`](super::editor::selection_range)'s
+    /// job, and only the effects consume a range.
+    pub selection: Option<Selection<EditorPoint>>,
     /// First visible line, zero-based. The hard-wrap viewport is one
     /// screen row per logical line.
     pub viewport_line: usize,
@@ -65,9 +73,14 @@ pub struct TuiDocumentPresentation {
     pub viewport_column: usize,
     /// Buffer edit mode.
     pub mode: EditorMode,
-    /// Multi-key normal-mode command prefix (`d`, `g`). Bounded to
+    /// Multi-key normal-mode command prefix (`g`). Bounded to
     /// [`MAX_EDITOR_PENDING_COMMAND`](super::editor::MAX_EDITOR_PENDING_COMMAND).
     pub pending_command: String,
+    /// Whether a Helix `space` prefix is armed awaiting `y`.
+    ///
+    /// Remembered state rather than a chord: `space y` arrives as two key
+    /// events in legacy xterm encoding, exactly as it does in `/terminal`.
+    pub yank_prefix_pending: bool,
     /// The `:` command line while command mode is open, without the leading
     /// `:`. Empty when command mode is closed.
     ///
@@ -88,22 +101,28 @@ pub struct TuiDocumentPresentation {
     pub undo_bytes: usize,
     /// Retained redo payload bytes, for the redo memory bound.
     pub redo_bytes: usize,
-    /// Which region of the editor route owns keyboard input.
-    pub focus: EditorFocus,
 }
 
 impl TuiDocumentPresentation {
     /// Reset to a post-open presentation: cursor at the start of the
     /// document, no selection, no history. Undo never survives opening a
     /// different document.
+    ///
+    /// Keyboard ownership is deliberately *not* recorded here. It used to be
+    /// (`focus`), and that second axis is exactly why opening a file rendered
+    /// a buffer no key could reach: focus defaulted to the composer, so the
+    /// editor claimed nothing and the bare-text gate swallowed everything else.
+    /// The one axis is `App::ui_state.input_mode` — Insert puts the keyboard
+    /// in the document, Normal leaves it with the Helix verbs and the bottom
+    /// input box.
     pub fn reset_for_open(&mut self) {
         self.cursor_byte = 0;
         self.selection = None;
         self.viewport_line = 0;
         self.viewport_column = 0;
         self.mode = EditorMode::Normal;
+        self.yank_prefix_pending = false;
         super::editor::clear_history(self);
-        self.focus = EditorFocus::Composer;
         self.close_command_line();
     }
 
@@ -358,7 +377,6 @@ mod tests {
         let mut session = session;
         *session.presentation_mut() = TuiDocumentPresentation {
             cursor_byte: 2,
-            selection: Some(1..3),
             viewport_line: 4,
             ..TuiDocumentPresentation::default()
         };

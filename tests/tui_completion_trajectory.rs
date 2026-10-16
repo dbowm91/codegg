@@ -42,7 +42,7 @@ use codegg::tui::app::state::editor::EditorStatus;
 use codegg::tui::app::state::project_tabs::{ProjectTabId, ProjectTabState};
 use codegg::tui::app::{App, TuiCommand};
 use codegg::tui::document_session::TuiDocumentSession;
-use codegg::tui::editor::{EditorFocus, EditorMode};
+use codegg::tui::editor::EditorMode;
 use codegg::tui::editor_completion::CompletionViewStatus;
 use codegg::tui::route::Route;
 use codegg_client::{DocumentController, DocumentTransport};
@@ -226,9 +226,16 @@ async fn harness(
     let mut session = TuiDocumentSession::from_controller(controller.clone());
     session.presentation_mut().cursor_byte = cursor;
     session.presentation_mut().mode = mode;
-    session.presentation_mut().focus = EditorFocus::Buffer;
 
     let mut app = App::new_for_testing("/tmp/tui-completion".to_string());
+    // The route's `input_mode` is now the *only* keyboard axis on the editor
+    // route, so a harness that set only the presentation mode produced a
+    // document whose mode said one thing and whose key routing said another —
+    // `:` would type a colon into the text instead of opening the command line.
+    app.ui_state.input_mode = match mode {
+        EditorMode::Insert => codegg::tui::input::InputMode::Insert,
+        EditorMode::Normal => codegg::tui::input::InputMode::Normal,
+    };
     if let Some(tab) = app.project_tabs.active_mut() {
         tab.project_id = Some("project-1".to_string());
         tab.workspace_id = Some("ws-1".to_string());
@@ -364,20 +371,31 @@ async fn f8_without_an_open_document_requests_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn f8_with_composer_focus_requests_nothing() {
-    let Harness { mut app, fake, .. } = harness(LIB_RS, true, vec![], 20, EditorMode::Insert).await;
-    app.editor_state
-        .session
-        .as_mut()
-        .expect("session")
-        .presentation_mut()
-        .focus = EditorFocus::Composer;
+async fn the_completion_trigger_fires_in_both_modes() {
+    // There is no separate "composer focus" any more: Normal mode is the
+    // route's one non-buffer mode, and `F8` is claimed in both. A buffer that
+    // only answered keys while the document held the keyboard is exactly what
+    // made the editor look dead, and completion was the first casualty.
+    for mode in [EditorMode::Normal, EditorMode::Insert] {
+        let empty =
+            LspCompletionResultDto::ready("doc-1".to_string(), 0, Some(0), vec![], false, false);
+        let Harness {
+            mut app,
+            fake,
+            mut rx,
+            ..
+        } = harness(LIB_RS, true, vec![FakeReply::Result(empty)], 20, mode).await;
 
-    app.on_key(key(KeyCode::F(8)));
-    // The composer owns the key now; the editor must not claim it, and the
-    // global bindings own no F8, so nothing happens at all.
-    assert!(fake.seen().is_empty());
-    assert!(!app.editor_state.completion.is_open());
+        app.on_key(key(KeyCode::F(8)));
+        // The request is dispatched on a spawned task, so the assertion has to
+        // come after the reply is pumped — not merely after `on_key` returns.
+        let _ = recv_completion(&mut rx).await;
+        assert!(
+            !fake.seen().is_empty(),
+            "F8 must request in {mode:?}; an unclaimed F8 reaches the composer"
+        );
+        assert!(app.editor_state.completion.is_open());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1222,9 +1240,14 @@ async fn reconnect_epoch_fence_drops_a_queued_pre_reset_answer() {
     let mut session = TuiDocumentSession::from_controller(controller.clone());
     session.presentation_mut().cursor_byte = 20;
     session.presentation_mut().mode = EditorMode::Insert;
-    session.presentation_mut().focus = EditorFocus::Buffer;
 
     let mut app = App::new_for_testing("/tmp/tui-completion".to_string());
+    // Both axes have to agree: the route's `input_mode` is the *only* keyboard
+    // axis on the editor route, so a harness that set only the presentation
+    // mode produced a document whose mode said one thing and whose key routing
+    // said another — `:` would type a colon into the text instead of opening
+    // the command line.
+    app.ui_state.input_mode = codegg::tui::input::InputMode::Insert;
     if let Some(tab) = app.project_tabs.active_mut() {
         tab.project_id = Some("project-1".to_string());
         tab.workspace_id = Some("ws-1".to_string());

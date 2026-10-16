@@ -35,9 +35,7 @@ use ratatui::Frame;
 
 use codegg_document::DocumentSnapshot;
 
-use crate::tui::editor::{
-    self, EditorFocus, EditorMode, EditorViewport, MAX_EDITOR_PENDING_COMMAND,
-};
+use crate::tui::editor::{self, EditorMode, EditorViewport, MAX_EDITOR_PENDING_COMMAND};
 use crate::tui::theme::Theme;
 
 /// Rows of chrome reserved above the text: the state banner and the
@@ -58,7 +56,12 @@ pub struct EditorWidget<'a> {
     /// Buffer mode.
     pub mode: EditorMode,
     /// Which region owns keyboard input.
-    pub focus: EditorFocus,
+    /// Whether the document owns the keyboard.
+    ///
+    /// One fact, derived from the route's `input_mode` by the caller: INS
+    /// puts the cursor in the text, NOR hands typing to the bottom input box
+    /// while the Helix verbs stay on the buffer.
+    pub buffer_focused: bool,
     /// Pending normal-mode command prefix.
     pub pending_command: &'a str,
     /// Whether the `:` command line is open.
@@ -92,13 +95,15 @@ impl EditorWidget<'_> {
     /// Paint the editor into `area`.
     pub fn render(mut self, frame: &mut Frame, area: Rect) {
         let theme = Arc::clone(&self.theme);
-        let focused = self.focus == EditorFocus::Buffer;
+        let focused = self.buffer_focused;
         let title = format!(
-            " {} {} · {} · {}{} ",
+            " {} · {} · {}{} ",
             self.path,
-            self.mode_label(),
+            // NOR/INS, the same two-letter badge every other surface shows.
+            // The old title spelled out NORMAL/INSERT and then added
+            // `[composer]`, so one surface carried two mode vocabularies.
+            if focused { "INS" } else { "NOR" },
             self.status,
-            if focused { "[buffer]" } else { "[composer]" },
             if self.busy { " · working…" } else { "" },
         );
         let block = Block::default()
@@ -124,13 +129,6 @@ impl EditorWidget<'_> {
         }
         self.render_lsp_panel(frame, area);
         self.render_completion_popup(frame, area);
-    }
-
-    fn mode_label(&self) -> &'static str {
-        match self.mode {
-            EditorMode::Normal => "NORMAL",
-            EditorMode::Insert => "INSERT",
-        }
     }
 
     /// State banner plus the cursor readout, on the bottom `CHROME_ROWS`.
@@ -299,12 +297,16 @@ impl EditorWidget<'_> {
         let viewport: EditorViewport =
             editor::resolve_viewport(self.presentation, self.snapshot, area.width, area.height);
         let cursor_line = editor::cursor_line(self.snapshot, self.cursor_byte);
+        // Resolved once per frame, not per row: `selection_range` clamps and
+        // resolves lines, and doing that per row would re-walk the selection
+        // for every visible line.
+        let selection = editor::selection_range(self.presentation, self.snapshot);
         let gutter_style = Style::default().fg(theme.muted);
         let current_gutter = Style::default()
             .fg(theme.primary)
             .add_modifier(Modifier::BOLD);
         let current_text = Style::default().bg(theme.selection);
-        let current_style = if self.focus == EditorFocus::Buffer {
+        let current_style = if self.buffer_focused {
             current_text
         } else {
             Style::default().fg(theme.alternate_bg)
@@ -371,7 +373,7 @@ impl EditorWidget<'_> {
                 ));
             } else {
                 frame_remaining = frame_remaining.saturating_sub(row_bytes);
-                spans.extend(self.line_spans(line_index, viewport, text_style));
+                spans.extend(self.line_spans(line_index, viewport, text_style, selection.as_ref()));
             }
             lines.push(Line::from(spans));
         }
@@ -688,11 +690,19 @@ impl EditorWidget<'_> {
         out
     }
 
+    /// Build the styled spans for one row.
+    ///
+    /// `selection` is in absolute byte offsets and is applied *last*, after
+    /// the semantic-token foreground, by patching only the background. A
+    /// selection that repainted the foreground would erase highlighting on
+    /// exactly the region the user is selecting — and dark-on-dark selected
+    /// text is invisible rather than merely wrong.
     fn line_spans(
         &self,
         line_index: usize,
         viewport: EditorViewport,
         base: Style,
+        selection: Option<&std::ops::Range<usize>>,
     ) -> Vec<Span<'static>> {
         use crate::tui::editor_lsp::utf16_column_to_byte;
         let Some(start) = editor::line_start(self.snapshot, line_index) else {
@@ -704,6 +714,17 @@ impl EditorWidget<'_> {
         // skipped on this path — mapping them would cost the whole line —
         // and ordinary short lines keep their exact highlighting below.
         if editor::bounded_prefix_end(self.snapshot, start, end) < end {
+            // A whole-row highlight: the row's bytes are unavailable in full,
+            // so a partial range would need per-byte slicing to be exact. The
+            // row is a 32 KiB marker either way; highlighting all of it says
+            // "selected" honestly and costs nothing.
+            let whole_line_selected =
+                selection.is_some_and(|range| range.start <= start && range.end > start);
+            let base = if whole_line_selected {
+                base.patch(Style::default().bg(self.theme.selection))
+            } else {
+                base
+            };
             let mut spans = vec![Span::styled(self.line_slice(line_index, viewport), base)];
             spans.push(Span::styled(
                 crate::tui::editor::TRUNCATED_LINE_SUFFIX,
@@ -789,6 +810,22 @@ impl EditorWidget<'_> {
                         token_range.start <= range.start && token_range.end >= range.end
                     })
                     .map_or(base, |(_, token_style)| base.patch(*token_style));
+                // Absolute offsets back to line-relative, then clipped to the
+                // segment so a selection boundary can only colour part of it.
+                let selected = selection.is_some_and(|selected| {
+                    let from = selected.start.saturating_sub(start);
+                    let to = selected.end.saturating_sub(start);
+                    from < range.end && to > range.start
+                });
+                let style = if selected {
+                    style.patch(
+                        Style::default()
+                            .bg(self.theme.selection)
+                            .fg(self.theme.foreground),
+                    )
+                } else {
+                    style
+                };
                 Some(Span::styled(text, style))
             })
             .collect()
@@ -865,7 +902,7 @@ mod tests {
         status: &'a str,
         notice: Option<&'a str>,
         mode: EditorMode,
-        focus: EditorFocus,
+        buffer_focused: bool,
         pending_command: &'a str,
         command_active: bool,
         command_line: &'a str,
@@ -880,7 +917,7 @@ mod tests {
             status: "synced",
             notice: None,
             mode: EditorMode::Normal,
-            focus: EditorFocus::Buffer,
+            buffer_focused: true,
             pending_command: "",
             command_active: false,
             command_line: "",
@@ -914,7 +951,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     mode: options.mode,
-                    focus: options.focus,
+                    buffer_focused: options.buffer_focused,
                     pending_command: options.pending_command,
                     command_active: options.command_active,
                     command_line: options.command_line,
@@ -1318,21 +1355,40 @@ mod tests {
     }
 
     #[test]
-    fn the_title_reports_mode_and_focus() {
-        let joined = render(
+    fn the_title_reports_nor_or_ins_and_nothing_else() {
+        // One mode vocabulary across every surface. The title used to spell
+        // out NORMAL/INSERT *and* add `[composer]`/`[buffer]`, so the editor
+        // carried a second way of naming the same fact — and `[composer]` named
+        // an axis that no longer exists.
+        let normal = render(
             "content",
             60,
             8,
             0,
             Options {
-                mode: EditorMode::Insert,
-                focus: EditorFocus::Composer,
+                buffer_focused: false,
                 ..defaults()
             },
         )
         .join("\n");
-        assert!(joined.contains("INSERT"), "{joined}");
-        assert!(joined.contains("[composer]"), "{joined}");
+        assert!(normal.contains("NOR"), "{normal}");
+        assert!(!normal.contains("NORMAL"), "{normal}");
+        assert!(!normal.contains("composer"), "{normal}");
+
+        let insert = render(
+            "content",
+            60,
+            8,
+            0,
+            Options {
+                buffer_focused: true,
+                ..defaults()
+            },
+        )
+        .join("\n");
+        assert!(insert.contains("INS"), "{insert}");
+        assert!(!insert.contains("INSERT"), "{insert}");
+        assert!(!insert.contains("buffer"), "{insert}");
     }
 
     #[test]
@@ -1380,7 +1436,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     mode: options.mode,
-                    focus: options.focus,
+                    buffer_focused: options.buffer_focused,
                     pending_command: options.pending_command,
                     command_active: options.command_active,
                     command_line: options.command_line,
@@ -1485,7 +1541,6 @@ mod tests {
         let snapshot = DocumentBuffer::new(text).snapshot();
         let mut presentation = TuiDocumentPresentation {
             cursor_byte: 0,
-            focus: EditorFocus::Buffer,
             ..TuiDocumentPresentation::default()
         };
         let lsp = crate::tui::editor_lsp::EditorLspState::default();
@@ -1493,7 +1548,7 @@ mod tests {
             status: "synced",
             notice: None,
             mode: EditorMode::Normal,
-            focus: EditorFocus::Buffer,
+            buffer_focused: true,
             pending_command: "",
             command_active: false,
             command_line: "",
@@ -1510,7 +1565,7 @@ mod tests {
                     status: options.status,
                     notice: options.notice,
                     mode: options.mode,
-                    focus: options.focus,
+                    buffer_focused: options.buffer_focused,
                     pending_command: options.pending_command,
                     command_active: options.command_active,
                     command_line: options.command_line,
@@ -1782,7 +1837,7 @@ mod tests {
             status: "synced",
             notice: None,
             mode: EditorMode::Normal,
-            focus: EditorFocus::Buffer,
+            buffer_focused: true,
             pending_command: "",
             command_active: false,
             command_line: "",
@@ -1797,7 +1852,7 @@ mod tests {
             presentation: &mut presentation,
             theme,
         };
-        let spans = widget.line_spans(0, viewport, Style::default());
+        let spans = widget.line_spans(0, viewport, Style::default(), None);
         let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(joined.contains("let"), "{joined}");
         assert!(joined.contains("value"), "{joined}");
