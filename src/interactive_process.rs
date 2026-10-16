@@ -2022,7 +2022,17 @@ mod tests {
         .await
         .expect("PTY resize reached contained target");
         assert!(output.contains("M004_PTY_RESIZED"));
-        let snapshot = service.snapshot(&handle).await.expect("PTY snapshot");
+        let snapshot = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let snapshot = service.snapshot(&handle).await.expect("PTY snapshot");
+                if snapshot.state == SessionState::Exited {
+                    break snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("PTY child exit and helper status were reaped");
         assert_eq!(snapshot.state, SessionState::Exited);
         assert_eq!(snapshot.exit.and_then(|exit| exit.code), Some(0));
         service.remove(&handle).await.expect("remove M004 PTY");
