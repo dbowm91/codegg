@@ -29,6 +29,7 @@ async fn harness() -> (
     Arc<JobSubmissionService>,
     Arc<JobScheduler>,
     Arc<JobNotificationService>,
+    std::path::PathBuf,
 ) {
     let root = tempfile::tempdir().expect("temp workspace");
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
@@ -38,6 +39,7 @@ async fn harness() -> (
         .get_or_register(root.path())
         .await
         .expect("register");
+    let workspace_root = root.path().canonicalize().expect("canonical workspace");
     std::mem::forget(root);
     let services = WorkspaceServiceRegistry::new(
         workspace_registry,
@@ -62,7 +64,7 @@ async fn harness() -> (
     scheduler
         .set_job_notification_service(notifications.clone())
         .await;
-    (submission, scheduler, notifications)
+    (submission, scheduler, notifications, workspace_root)
 }
 
 fn ctx_for(session: &str, invocation: &str) -> ToolExecutionContext {
@@ -106,10 +108,13 @@ fn ctx_for(session: &str, invocation: &str) -> ToolExecutionContext {
 fn bash_tool_with(
     submission: Arc<JobSubmissionService>,
     notifications: Arc<JobNotificationService>,
+    workspace_root: std::path::PathBuf,
 ) -> codegg::tool::bash::BashTool {
     codegg::tool::bash::BashTool::default()
         .with_submission(submission)
         .with_job_notifications(notifications)
+        .with_workspace_root(workspace_root.clone())
+        .with_allowed_paths(vec![workspace_root.to_string_lossy().into_owned()])
 }
 
 #[test]
@@ -129,8 +134,8 @@ fn bash_schema_advertises_background() {
 #[tokio::test(flavor = "current_thread")]
 async fn foreground_echo_unchanged() {
     // Default foreground path preserved byte-for-byte where practical.
-    let (submission, _scheduler, notifications) = harness().await;
-    let tool = bash_tool_with(submission, notifications);
+    let (submission, _scheduler, notifications, workspace_root) = harness().await;
+    let tool = bash_tool_with(submission, notifications, workspace_root);
     let out = tool
         .execute(serde_json::json!({"command": "echo hello-m002"}))
         .await
@@ -143,8 +148,8 @@ async fn foreground_echo_unchanged() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn background_shell_returns_handle_promptly_then_notifies_on_cancel() {
-    let (submission, _scheduler, notifications) = harness().await;
-    let tool = bash_tool_with(submission.clone(), notifications.clone());
+    let (submission, _scheduler, notifications, workspace_root) = harness().await;
+    let tool = bash_tool_with(submission.clone(), notifications.clone(), workspace_root);
     let ctx = ctx_for("sess-m002-1", "inv-m002-1");
     let before = std::time::Instant::now();
     // BashTool::execute_structured wraps execute_inner's string in a legacy
@@ -190,7 +195,7 @@ async fn background_shell_handle_subscribe_and_single_notice() {
         ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
         ResourceRequest, RetryPolicy,
     };
-    let (submission, scheduler, notifications) = harness().await;
+    let (submission, scheduler, notifications, _) = harness().await;
     let tmp = tempfile::tempdir().unwrap();
     let ws_id = submission.workspace_id_for_root(tmp.path()).await.unwrap();
     let key = codegg::scheduler::SubmissionKey::new("bash-bg:pipe-1").unwrap();
@@ -280,7 +285,7 @@ async fn identical_commands_distinct_ids_same_invocation_reuses() {
         ExecutionTarget, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob,
         ResourceRequest, RetryPolicy,
     };
-    let (submission, _scheduler, _notifications) = harness().await;
+    let (submission, _scheduler, _notifications, _) = harness().await;
     let tmp = tempfile::tempdir().unwrap();
     let ws_id = submission.workspace_id_for_root(tmp.path()).await.unwrap();
     let mk = |cmd: &str| NewJob {
@@ -348,8 +353,12 @@ async fn identical_commands_distinct_ids_same_invocation_reuses() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn background_rejects_without_session_and_blocked_commands() {
-    let (submission, _scheduler, notifications) = harness().await;
-    let tool = bash_tool_with(submission.clone(), notifications.clone());
+    let (submission, _scheduler, notifications, workspace_root) = harness().await;
+    let tool = bash_tool_with(
+        submission.clone(),
+        notifications.clone(),
+        workspace_root.clone(),
+    );
     // No session in ctx-free legacy path -> fail without spawning.
     let err = tool
         .execute(serde_json::json!({"command": "echo hi", "execution_mode": "background"}))
@@ -357,8 +366,8 @@ async fn background_rejects_without_session_and_blocked_commands() {
         .unwrap_err();
     assert!(err.to_string().contains("session context"), "got {err}");
     // Blocked commands fail before any submit even in foreground.
-    let blocked_tool =
-        bash_tool_with(submission, notifications).with_blocked_commands(vec!["rm -rf /"]);
+    let blocked_tool = bash_tool_with(submission, notifications, workspace_root)
+        .with_blocked_commands(vec!["rm -rf /"]);
     let err = blocked_tool
         .execute(serde_json::json!({"command": "rm -rf /"}))
         .await
