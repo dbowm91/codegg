@@ -40,7 +40,7 @@ async fn harness() -> (
         .get_or_register(&workspace_root)
         .await
         .expect("register");
-    let workspace_root = root.path().to_path_buf();
+    let workspace_root = root.path().canonicalize().expect("canonical workspace");
     std::mem::forget(root);
     let services = WorkspaceServiceRegistry::new(
         workspace_registry,
@@ -115,6 +115,8 @@ fn bash_tool_with(
         .with_workspace_root(workspace_root)
         .with_submission(submission)
         .with_job_notifications(notifications)
+        .with_workspace_root(workspace_root.clone())
+        .with_allowed_paths(vec![workspace_root.to_string_lossy().into_owned()])
 }
 
 #[test]
