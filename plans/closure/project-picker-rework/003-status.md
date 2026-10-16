@@ -3,8 +3,8 @@
 Status: closed
 Source implementation plan: `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md`
 Source subsystem roadmap: `plans/subsystems/project-picker-rework-roadmap.md#7-milestones`
-Repository baseline reviewed: `a8325de7`
-Implementation commit: `7a46ec60` — atomic project lifecycle and confirmed destroy
+Repository baseline reviewed: `7d092c01`
+Implementation commit: `eecd75e3` — atomic project lifecycle and confirmed destroy
 
 ## 1. Executive finding
 
@@ -50,7 +50,7 @@ passed.
 
 ## 4. Verification executed
 
-Commands ran locally on implementation commit `7a46ec60`. The active Rust
+Commands ran locally on implementation commit `eecd75e3`. The active Rust
 target is x86_64 while the default pkg-config paths select arm64 MacPorts
 libraries, so Rust checks used
 `PKG_CONFIG_LIBDIR=/usr/local/lib/pkgconfig CARGO_BUILD_JOBS=2`.

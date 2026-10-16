@@ -3,8 +3,8 @@
 Status: conditionally closed
 Source implementation plan: `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md`
 Source subsystem roadmap: `plans/subsystems/project-picker-rework-roadmap.md#7-milestones`
-Repository baseline reviewed: `45100903` (M004 closure)
-Implementation commits: `a699b56f` — enforce directory identity and client cwd
+Repository baseline reviewed: `7cafea9d` (M004 closure)
+Implementation commits: `6ef54531` — enforce directory identity and client cwd
 
 ## 1. Executive finding
 

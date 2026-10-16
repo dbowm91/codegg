@@ -3,8 +3,8 @@
 Status: closed
 Source implementation plan: `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md`
 Source subsystem roadmap: `plans/subsystems/project-picker-rework-roadmap.md#7-milestones`
-Repository baseline reviewed: `292e5f5b`
-Implementation commit: `8ae8d417` — help-style project picker, Normal-mode filtering/selection, and project context surfaces
+Repository baseline reviewed: `1f95c1f1`
+Implementation commit: `94300835` — help-style project picker, Normal-mode filtering/selection, and project context surfaces
 
 ## 1. Executive finding
 
@@ -43,7 +43,7 @@ verification passed locally.
 
 ## 4. Verification executed
 
-All commands ran locally on implementation commit `8ae8d417`. The
+All commands ran locally on implementation commit `94300835`. The
 machine's default pkg-config search selected arm64 MacPorts native
 libraries while the active Rust target was x86_64, so Rust build/test
 commands used `PKG_CONFIG_LIBDIR=/usr/local/lib/pkgconfig` and

@@ -3,8 +3,8 @@
 Status: closed
 Source implementation plan: `plans/implementation/project-picker-rework/001-remove-ctrl-backslash-opener.md`
 Source subsystem roadmap: `plans/subsystems/project-picker-rework-roadmap.md#7-milestones`
-Repository baseline reviewed: `292e5f5b`
-Implementation commits: `292e5f5b` — removed the Ctrl+\ project-picker binding and updated key help and documentation
+Repository baseline reviewed: `1f95c1f1`
+Implementation commits: `1f95c1f1` — removed the Ctrl+\ project-picker binding and updated key help and documentation
 
 ## 1. Executive finding
 

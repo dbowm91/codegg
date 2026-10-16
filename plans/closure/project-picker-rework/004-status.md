@@ -3,8 +3,8 @@
 Status: closed
 Source implementation plan: `plans/implementation/project-picker-rework/004-rename-and-repath.md`
 Source subsystem roadmap: `plans/subsystems/project-picker-rework-roadmap.md#7-milestones`
-Repository baseline reviewed: `533b4a34`
-Implementation commit: `5d60fabd` — project rename, validated workspace rebind, and picker edit form
+Repository baseline reviewed: `ce03dd7f`
+Implementation commit: `969713c4` — project rename, validated workspace rebind, and picker edit form
 
 ## 1. Executive finding
 
@@ -58,7 +58,7 @@ atomic session rebinding.
 
 ## 4. Verification executed
 
-Commands ran locally on implementation commit `5d60fabd`. Rust builds used
+Commands ran locally on implementation commit `969713c4`. Rust builds used
 `PKG_CONFIG_LIBDIR=/usr/local/lib/pkgconfig CARGO_BUILD_JOBS=2` because the
 default pkg-config paths select arm64 MacPorts libraries while the active
 Rust target is x86_64.
