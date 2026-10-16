@@ -2,10 +2,7 @@
 
 Status: implemented
 
-Repository baseline: `b4e9a92d` (plus uncommitted worktree TUI picker
-work: `Shift+F` Normal binding, `/projects` command, event-carried
-session titles — the agent must confirm that surface is present; see
-stop conditions)
+Repository baseline: `1ae0095a` (current branch head before M001).
 
 Source roadmap:
 

@@ -1,10 +1,8 @@
 # Project Picker Rework Milestone 002 — Help-style picker with Normal-mode filter/select plus cwd and project surfaces
 
-Status: blocked — hard dependency M1 strict closure
+Status: ready for handoff
 
-Repository baseline: `b4e9a92d` (plus uncommitted worktree TUI picker
-work; rebase onto the M1 closure head before handoff — see stop
-conditions)
+Repository baseline: `292e5f5b` (M001 implementation commit).
 
 Source roadmap:
 
