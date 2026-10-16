@@ -285,11 +285,21 @@ missing denied child is preserved relative to its nearest existing parent.
 On Seatbelt, credential read/write denials are emitted after workspace write
 re-allow rules because SBPL evaluation is order-sensitive.
 
-Persistent writes are restricted to approved workspace roots and stateless
-device nodes. Each constrained managed process receives a collision-resistant
-0700 `TMPDIR`, added as its own read/write root and removed after the process
-tree is reaped. Python's temporary script is held in its own private run
-directory. Shared `/tmp` and global HOME caches are not writable grants.
+Persistent writes are restricted to approved workspace roots, authorized
+session scratch roots, and stateless device nodes. A model process with a
+trusted session identity receives an owner-private directory under the
+per-user CodeGG cache root (`dirs::cache_dir()/codegg`) as
+`CODEGG_SCRATCH_DIR`, `TMPDIR`, `TMP`, and `TEMP`. This is kept outside the
+macOS credential-denied daemon data root; scratch contents are disposable and
+may be removed by host cache maintenance. The Required launch adds the exact
+path as a read/write root. Unix session roots use mode 0700; Windows inherits
+the per-user cache-root ACL and has no native isolation claim while Required
+launches remain unavailable. Constrained
+launches also retain a separate collision-resistant 0700 per-launch staging directory,
+which is reaped with the process tree. Python's temporary script is held in
+its own private run directory. Shared `/tmp` and global HOME caches are not
+writable grants. Scratch directories are not yet reclaimed automatically;
+lease-aware retention is a later qualification.
 Existing denied regular files with hardlink aliases cause the required launch
 to fail because path-based backends cannot distinguish the aliases. As before,
 paths are canonicalized so Seatbelt matches resolved paths such as

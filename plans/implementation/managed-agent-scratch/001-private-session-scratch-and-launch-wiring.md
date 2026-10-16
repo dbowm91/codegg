@@ -1,6 +1,6 @@
 # Managed Agent Scratch M001 — Private Session Scratch and Canonical Launch Wiring
 
-Status: ready for handoff
+Status: active
 Repository baseline: `c0d6ff2d324ee37005e828a5bf269feebfabff79`
 Source roadmap: `plans/subsystems/managed-agent-scratch-roadmap.md#7-milestones`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 9, 16–18, 26, 27, 29; `plans/001-terminology-and-domain-model.md` §§5–8; `plans/002-long-term-roadmap.md` Phases 9, 10, 19.
@@ -108,3 +108,19 @@ Stop and record a blocker if Required sandbox must be weakened, if session owner
 ## 16. Handoff notes
 
 Review current branch, `AGENTS.md`, `.opencode/skills/planning/SKILL.md`, existing `src/managed_process.rs` scratch, Python staging and Windows shell temps. Respect user changes and current CI failures; do not claim product or deployment readiness.
+
+Implementation decision: session ownership is the canonical `SessionId`
+already validated at turn entry. M001 uses the per-user CodeGG cache root
+(`dirs::cache_dir()/codegg/scratch/sessions/<sha256(session-id)>`), outside
+the macOS credential-denied daemon data root. A bounded versioned owner record
+inside the protected directory replaces a separate database or registry: the
+owner is presented on each broker invocation, the digest prevents session IDs
+from becoming path components, and the exact session identity deterministically
+recovers the same resource after daemon/process restart. Cache contents are
+disposable and may be purged by host maintenance. Unix directories are mode
+0700; Windows inherits the per-user cache-root ACL and receives no native
+containment claim. There is no storage migration.
+The permission boundary also avoids implicit default `Ask` for structured
+writes under the host-authenticated workspace root; explicit stored, tool,
+path, and hard-deny decisions remain in force, and paths outside workspace or
+session scratch retain existing behavior.

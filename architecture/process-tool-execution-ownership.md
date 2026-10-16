@@ -32,6 +32,23 @@ retaining a bounded final result. `EnvironmentPolicy::sanitized()` is the
 default for machine/tool execution; `inherited()` is reserved for human shell
 semantics and still strips known unsafe Git environment variables.
 
+Model-owned processes with a canonical session identity receive a persistent,
+private session scratch directory under the per-user CodeGG cache root
+(`dirs::cache_dir()/codegg`). It stays separate from the daemon data root,
+which is a credential-denied root under macOS Seatbelt. Cache contents are
+disposable and may be removed by host cache maintenance. Its directory
+name is a SHA-256 digest of the host session identity; allocation is lazy,
+idempotent across reconnect/restart, refuses symlinked path components, and
+uses mode 0700 on Unix. Windows inherits the per-user cache-root ACL and is
+not claimed as a native scratch-isolation guarantee. The broker-projected session identity is
+the authority; command arguments and ambient temp variables cannot select a
+scratch directory. `ManagedProcessService` applies `CODEGG_SCRATCH_DIR`,
+`TMPDIR`, `TMP`, and `TEMP` after rebuilding the child environment. Under a
+Required sandbox it adds session scratch alongside the separate per-launch
+staging directory. Human-shell launches have no model session identity and do
+not receive this resource. M001 cleanup is conservative: directories are
+retained pending the later lease and retention qualification.
+
 Durable or background work is admitted by `JobSubmissionService` and runs
 through a scheduler executor. The process service executes an accepted
 attempt; it is not a second scheduler or job authority.

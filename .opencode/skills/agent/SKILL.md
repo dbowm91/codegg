@@ -39,6 +39,9 @@ instructions into the candidate. See `architecture/agent.md`.
 1. **`ToolBroker` is the only production tool-call boundary.** Never call
    executors directly from the loop; heavy work goes
    `JobSubmissionService` → `JobScheduler`.
+   A top-level model session gets its trusted scratch prompt block from the
+   canonical `SessionId`; tool/process authorization is resolved from broker
+   context and never inferred from prompt text or a supplied path.
 2. **Never edit `src/agent/builtins/generated.rs`.** Edit
    `assets/agents/*.toml` or `assets/prompts/` then run
    `python3 scripts/generate_builtin_agents.py` (`--check` in CI).

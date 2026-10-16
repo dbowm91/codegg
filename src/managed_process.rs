@@ -312,6 +312,9 @@ impl BoundedOutput {
 pub struct ProcessProvenance {
     pub job_id: String,
     pub attempt_id: String,
+    /// Host-authenticated model session, when this process belongs to an
+    /// interactive or delegated model execution. Never populated from argv.
+    pub session_id: Option<String>,
 }
 
 /// Stdin behavior for a finite managed process.
@@ -336,7 +339,13 @@ impl ProcessProvenance {
         Self {
             job_id: job_id.into(),
             attempt_id: attempt_id.into(),
+            session_id: None,
         }
+    }
+
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     fn apply(&self, command: &mut Command) {
@@ -673,10 +682,27 @@ async fn run_inner(
         return Err(ManagedProcessError::CancelledBeforeSpawn);
     }
 
-    // Every constrained launch receives a collision-resistant 0700 scratch
-    // directory. It is the only generic writable temporary root exposed to
-    // the target and remains owned by this future until the process tree is
-    // reaped, including timeout and cancellation paths.
+    // Session identity is stamped by the model tool execution context. The
+    // child environment is rebuilt, then these trusted values are applied by
+    // the canonical process owner so ambient TMP overrides cannot win.
+    let session_scratch = provenance
+        .session_id
+        .as_deref()
+        .map(crate::scratch::session_scratch_dir)
+        .transpose()
+        .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+    if let Some(path) = session_scratch.as_ref() {
+        environment_policy = environment_policy
+            .with_var("CODEGG_SCRATCH_DIR", path.as_os_str())
+            .with_var("TMPDIR", path.as_os_str())
+            .with_var("TMP", path.as_os_str())
+            .with_var("TEMP", path.as_os_str());
+    }
+
+    // Every constrained launch receives a collision-resistant 0700 staging
+    // directory that remains owned by this future until the process tree is
+    // reaped. Model sessions additionally receive their durable private root
+    // above; both roots are explicit in the Required launch spec.
     let mut sandbox_scratch = None;
     let mut sandbox = sandbox;
     if let SandboxRequest::Required(spec) = &mut sandbox {
@@ -697,7 +723,16 @@ async fn run_inner(
         })?;
         spec.read_paths.push(scratch_path.clone());
         spec.write_paths.push(scratch_path.clone());
-        environment_policy = environment_policy.with_var("TMPDIR", scratch_path.as_os_str());
+        if let Some(session_scratch) = session_scratch.as_ref() {
+            spec.read_paths.push(session_scratch.clone());
+            spec.write_paths.push(session_scratch.clone());
+        } else {
+            environment_policy = environment_policy
+                .with_var("CODEGG_SCRATCH_DIR", scratch_path.as_os_str())
+                .with_var("TMPDIR", scratch_path.as_os_str())
+                .with_var("TMP", scratch_path.as_os_str())
+                .with_var("TEMP", scratch_path.as_os_str());
+        }
         sandbox_scratch = Some(scratch);
     }
 
