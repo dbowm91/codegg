@@ -1,9 +1,8 @@
 # Project Picker Rework Milestone 005 — Directory-tied 1:1 identity, auto-create/load, client cwd switch
 
-Status: blocked — hard dependencies M2–M4 strict closure
+Status: active
 
-Repository baseline: `b4e9a92d` (rebase onto the M4 closure head before
-handoff — see stop conditions)
+Repository baseline: `45100903` (M004 strict closure; sequential handoff)
 
 Source roadmap:
 

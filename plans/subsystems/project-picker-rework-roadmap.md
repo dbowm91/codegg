@@ -319,4 +319,4 @@ carries unresolved high/medium findings.
 | 2 | closed | `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md` | `plans/closure/project-picker-rework/002-status.md` | strict local evidence; M3 and M4 unblocked |
 | 3 | closed | `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` | `plans/closure/project-picker-rework/003-status.md` | none |
 | 4 | closed | `plans/implementation/project-picker-rework/004-rename-and-repath.md` | `plans/closure/project-picker-rework/004-status.md` | none |
-| 5 | ready | `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` | — | M2–M4 closed; ADR-0033 accepted; sequential handoff |
+| 5 | active | `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` | — | M2–M4 closed; ADR-0033 accepted; implementation underway |
