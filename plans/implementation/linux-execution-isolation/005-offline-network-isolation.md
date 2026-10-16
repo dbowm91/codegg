@@ -98,6 +98,20 @@ DNS rebinding, every production launch owner, supported-host admission, or a
 persisted `OfflineRequired` route. M005 remains unenforced and M004's PTY/LSP
 owner gates remain open.
 
+### Resolver endpoint probe corrective — awaiting exact-head native qualification
+
+The existing native fixture proves host DNS works and that the contained
+child's `getaddrinfo` call fails, but it did not directly attempt to contact
+the host's configured resolver. The fixture now records the configured
+nameserver, proves it answers the same bounded DNS query from the host, then
+sends that query from the private network namespace; receiving any child-side
+reply is a test failure. This proves the isolated child cannot receive a
+resolver response that could carry a rebinding answer. It does not simulate a
+resolver that changes answers, and it does not close the remaining
+production-owner or supported-host gates. The code change is pending exact-head
+hosted M004/M005 verification before this paragraph is treated as qualification
+evidence.
+
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
 
