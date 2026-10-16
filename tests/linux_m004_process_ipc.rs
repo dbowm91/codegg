@@ -11,8 +11,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use codegg::managed_process::{
-    EnvironmentPolicy, ManagedProcessRequest, ManagedProcessService, ProcessProvenance,
-    SandboxExecutionOutcome, SandboxRequest,
+    ManagedProcessRequest, ManagedProcessService, ProcessProvenance, SandboxExecutionOutcome,
+    SandboxRequest,
 };
 use codegg::security::sandbox::{SandboxConfig, SandboxMode};
 
@@ -136,7 +136,7 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
          except OSError: pass\n\
          external = socket.socket(); external.settimeout(1)\n\
          if external.connect_ex(('198.51.100.1', 443)) == 0: raise SystemExit(43)\n\
-         fd = int(os.environ['CODEGG_M005_INHERITED_FD'])\n\
+         fd = {}\n\
          try: os.fstat(fd)\n\
          except OSError: open({:?}, 'w').write('offline')\n\
          else:\n\
@@ -150,6 +150,7 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
         udp4_addr.port(),
         udp6_addr.ip().to_string(),
         udp6_addr.port(),
+        inherited_fd.as_raw_fd(),
         marker.to_string_lossy(),
     );
     let spec = SandboxConfig::new()
@@ -167,10 +168,6 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
         ProcessProvenance::new("linux-m005", "offline-loopback-probe"),
     );
     request.timeout = Some(Duration::from_secs(15));
-    request.environment_policy = EnvironmentPolicy::sanitized().with_var(
-        "CODEGG_M005_INHERITED_FD",
-        inherited_fd.as_raw_fd().to_string(),
-    );
     request.sandbox = SandboxRequest::Required(spec);
 
     let result = ManagedProcessService::run(request)
