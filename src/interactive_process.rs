@@ -1972,20 +1972,32 @@ mod tests {
         spawn.constrained_profile = Some(codegg_core::approval::SandboxProfile::WorkspaceWrite);
         let handle = service.spawn(&ctx, spawn).await.expect("M004 PTY spawn");
 
+        let mut observed_output = String::new();
         let ready = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let output = service
                     .read_output(&handle, 0, MAX_READ_BYTES)
                     .await
                     .expect("read PTY output");
-                if String::from_utf8_lossy(&output.bytes).contains("M004_PTY_READY") {
+                observed_output = String::from_utf8_lossy(&output.bytes).into_owned();
+                if observed_output.contains("M004_PTY_READY") {
                     break;
+                }
+                let snapshot = service.snapshot(&handle).await.expect("PTY snapshot");
+                if snapshot.state == SessionState::Exited {
+                    panic!(
+                        "M004 PTY target exited before setup marker: snapshot={snapshot:?}; output={observed_output:?}"
+                    );
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await
-        .expect("M004 PTY target reached setup marker");
+        .await;
+        assert!(
+            ready.is_ok(),
+            "M004 PTY target reached setup marker: output={observed_output:?}; snapshot={:?}",
+            service.snapshot(&handle).await.expect("PTY snapshot")
+        );
         let _ = ready;
         assert_eq!(
             std::fs::read_to_string(&marker).expect("workspace write"),
