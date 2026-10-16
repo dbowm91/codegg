@@ -6,6 +6,71 @@
 
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentScratchScope {
+    pub session_id: String,
+    pub run_id: codegg_core::identity::AgentRunId,
+    pub private_root: PathBuf,
+    pub shared: Vec<AuthorizedSharedScratchRoot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizedSharedScratchRoot {
+    pub scratch_id: codegg_core::identity::ScratchId,
+    pub alias: String,
+    pub path: PathBuf,
+}
+
+impl AgentScratchScope {
+    pub fn from_authorized_grants(
+        session_id: String,
+        run_id: codegg_core::identity::AgentRunId,
+        grants: &[codegg_core::agent_run::SharedScratchGrant],
+    ) -> Result<Self, ScratchError> {
+        let private_root = agent_run_scratch_dir(&session_id, &run_id)?;
+        let shared = grants
+            .iter()
+            .map(|grant| {
+                Ok(AuthorizedSharedScratchRoot {
+                    scratch_id: grant.scratch_id.clone(),
+                    alias: grant.alias.clone(),
+                    path: shared_scratch_dir(&session_id, &grant.scratch_id)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ScratchError>>()?;
+        Ok(Self {
+            session_id,
+            run_id,
+            private_root,
+            shared,
+        })
+    }
+
+    pub fn prompt_block(&self) -> String {
+        let mut text = format!(
+            "This delegated run has private scratch at {}. Temporary files belong there. ",
+            self.private_root.display()
+        );
+        if self.shared.is_empty() {
+            text.push_str("It has no shared scratch grants.");
+        } else {
+            text.push_str(
+                "Explicit shared scratch grants (write only when your task requires it):",
+            );
+            for shared in &self.shared {
+                let env_key = shared.alias.to_ascii_uppercase().replace('-', "_");
+                text.push_str(&format!(
+                    "\n- {} via CODEGG_SHARED_SCRATCH_{}: {}",
+                    shared.alias,
+                    env_key,
+                    shared.path.display()
+                ));
+            }
+        }
+        text
+    }
+}
+
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -70,6 +135,120 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     ensure_private_directory(&session_root, expected_uid)?;
     ensure_owner_record(&session_root, &digest)?;
     Ok(std::fs::canonicalize(session_root)?)
+}
+
+/// Resolve the private scratch root for one durable delegated agent run.
+/// The typed run identity is host-owned; callers never provide a path.
+pub fn agent_run_scratch_dir(
+    session_id: &str,
+    run_id: &codegg_core::identity::AgentRunId,
+) -> Result<PathBuf, ScratchError> {
+    let session_root = session_scratch_dir(session_id)?;
+    let runs_root = session_root.join("runs");
+    let owner = directory_owner(&session_root)?;
+    ensure_private_directory(&runs_root, owner)?;
+    scoped_resource_dir(&runs_root, "agent-run", run_id.as_str(), owner)
+}
+
+/// Resolve a shared resource locator. Authorization is deliberately checked
+/// by AgentRunStore before this host-only filesystem helper is called.
+pub fn shared_scratch_dir(
+    session_id: &str,
+    scratch_id: &codegg_core::identity::ScratchId,
+) -> Result<PathBuf, ScratchError> {
+    let session_root = session_scratch_dir(session_id)?;
+    let shared_root = session_root.join("shared");
+    let owner = directory_owner(&session_root)?;
+    ensure_private_directory(&shared_root, owner)?;
+    scoped_resource_dir(&shared_root, "shared-scratch", scratch_id.as_str(), owner)
+}
+
+/// Remove a shared cache directory after the durable store proves it has been
+/// revoked and has no admitted attempt leases. Unknown paths are never read
+/// from model input; the leaf is reconstructed from the typed resource ID.
+pub(crate) fn reclaim_shared_scratch_dir(
+    session_id: &str,
+    scratch_id: &codegg_core::identity::ScratchId,
+) -> Result<bool, ScratchError> {
+    let session_root = session_scratch_dir(session_id)?;
+    let shared_root = session_root.join("shared");
+    let owner = directory_owner(&session_root)?;
+    ensure_private_directory(&shared_root, owner)?;
+    let digest = resource_digest("shared-scratch", scratch_id.as_str());
+    let path = shared_root.join(hex_digest(&digest));
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(ScratchError::InvalidPath(path));
+        }
+        Ok(_) => {}
+    }
+    let expected = shared_root.join(hex_digest(&resource_digest(
+        "shared-scratch",
+        scratch_id.as_str(),
+    )));
+    if std::fs::canonicalize(&path)? != expected.canonicalize()? {
+        return Err(ScratchError::InvalidPath(path));
+    }
+    let owner_record = path.join(OWNER_RECORD_NAME);
+    let owner_metadata = std::fs::symlink_metadata(&owner_record)?;
+    if owner_metadata.file_type().is_symlink() || !owner_metadata.is_file() {
+        return Err(ScratchError::InvalidPath(owner_record));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if owner_metadata.uid() != owner.uid() || owner_metadata.mode() & 0o077 != 0 {
+            return Err(ScratchError::WrongOwner(owner_record));
+        }
+    }
+    let record = std::fs::read(&owner_record)?;
+    let mut expected_record = b"codegg-session-scratch-v1\n".to_vec();
+    expected_record.extend_from_slice(hex_digest(&digest).as_bytes());
+    expected_record.push(b'\n');
+    if record != expected_record {
+        return Err(ScratchError::InvalidPath(path));
+    }
+    std::fs::remove_dir_all(&path)?;
+    Ok(true)
+}
+
+fn resource_digest(scope: &str, id: &str) -> Vec<u8> {
+    Sha256::digest(format!("{scope}:{id}").as_bytes()).to_vec()
+}
+
+fn hex_digest(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn directory_owner(path: &Path) -> Result<impl OwnerCheck, ScratchError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(std::fs::metadata(path)
+            .map_err(|_| ScratchError::InvalidPath(path.to_path_buf()))?
+            .uid())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+fn scoped_resource_dir(
+    root: &Path,
+    scope: &str,
+    id: &str,
+    owner: impl OwnerCheck,
+) -> Result<PathBuf, ScratchError> {
+    let digest = resource_digest(scope, id);
+    let digest_hex = hex_digest(&digest);
+    let path = root.join(digest_hex);
+    ensure_private_directory(&path, owner)?;
+    ensure_owner_record(&path, &digest)?;
+    Ok(std::fs::canonicalize(path)?)
 }
 
 fn ensure_private_parent(path: &Path, expected_uid: impl OwnerCheck) -> Result<(), ScratchError> {
@@ -190,7 +369,7 @@ fn ensure_private_directory(
 }
 
 #[cfg(unix)]
-trait OwnerCheck {
+trait OwnerCheck: Copy {
     fn uid(self) -> u32;
 }
 
@@ -202,7 +381,7 @@ impl OwnerCheck for u32 {
 }
 
 #[cfg(not(unix))]
-trait OwnerCheck {}
+trait OwnerCheck: Copy {}
 
 #[cfg(not(unix))]
 impl OwnerCheck for () {}
@@ -289,6 +468,27 @@ mod tests {
         let actual = std::fs::read(&record_path).unwrap();
         assert!(actual.starts_with(b"codegg-session-scratch-v1\n"));
         assert_eq!(actual.len(), b"codegg-session-scratch-v1\n".len() + 65);
+    }
+
+    #[test]
+    fn delegated_private_and_shared_roots_are_distinct_and_stable() {
+        let session_id = format!("scratch-run-session-{}", uuid::Uuid::new_v4());
+        let first_run = codegg_core::identity::AgentRunId::new();
+        let second_run = codegg_core::identity::AgentRunId::new();
+        let shared = codegg_core::identity::ScratchId::new();
+        let first = agent_run_scratch_dir(&session_id, &first_run).unwrap();
+        let repeated = agent_run_scratch_dir(&session_id, &first_run).unwrap();
+        let second = agent_run_scratch_dir(&session_id, &second_run).unwrap();
+        let shared_root = shared_scratch_dir(&session_id, &shared).unwrap();
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert_ne!(first, shared_root);
+        assert_ne!(second, shared_root);
+        assert!(reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
+        assert!(!shared_root.exists());
+        assert!(!reclaim_shared_scratch_dir(&session_id, &shared).unwrap());
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
     }
 
     #[test]

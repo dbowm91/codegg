@@ -49,6 +49,20 @@ staging directory. Human-shell launches have no model session identity and do
 not receive this resource. M001 cleanup is conservative: directories are
 retained pending the later lease and retention qualification.
 
+Durable delegated runs use a distinct persistent private root keyed by the
+host-owned `AgentRunId`. An accepted run may also carry opaque shared scratch
+grants owned by its direct parent. The worker validates those grants against
+the durable run store before constructing the scope. `CODEGG_SCRATCH_DIR` and
+all standard temporary-directory variables point to the private run root;
+each explicitly granted shared root is exposed under a sanitized
+`CODEGG_SHARED_SCRATCH_<ALIAS>` variable. Required sandbox launches add only
+those validated roots alongside the private per-launch staging directory.
+The scheduler attempt holds leases for these resources until the child run
+returns; revocation blocks future child admission and leaves active attempts
+intact. A revoked shared directory is removed after the last admitted lease
+releases; run-private cache directories remain available for host cache
+maintenance.
+
 Durable or background work is admitted by `JobSubmissionService` and runs
 through a scheduler executor. The process service executes an accepted
 attempt; it is not a second scheduler or job authority.

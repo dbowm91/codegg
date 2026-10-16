@@ -1773,6 +1773,7 @@ mod tests {
                 ),
                 receipt: crate::permission::PermissionDecisionReceipt::allowed("yolo", None),
                 command_preflight: None,
+                scratch_scope: None,
             });
         assert!(!active_route_matches_authorization(Some(&context)));
 

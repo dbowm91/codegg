@@ -362,6 +362,7 @@ impl AgentLoop {
                     snapshot: snapshot.clone(),
                     receipt: receipt.clone(),
                     command_preflight,
+                    scratch_scope: self.scratch_scope.clone(),
                 },
             ),
             timeout_ms,
@@ -525,10 +526,17 @@ impl AgentLoop {
                 .await
         } else if &*tc.name == "write" {
             if let Some(path) = path.as_deref() {
-                let scratch_root = crate::scratch::session_scratch_dir(&self.session_id).ok();
+                let session_scratch = if self.scratch_scope.is_none() {
+                    crate::scratch::session_scratch_dir(&self.session_id).ok()
+                } else {
+                    None
+                };
                 let mut allowed_roots = vec![self.workspace_root.as_path()];
-                if let Some(scratch_root) = scratch_root.as_deref() {
-                    allowed_roots.push(scratch_root);
+                if let Some(scope) = &self.scratch_scope {
+                    allowed_roots.push(scope.private_root.as_path());
+                    allowed_roots.extend(scope.shared.iter().map(|root| root.path.as_path()));
+                } else if let Some(root) = session_scratch.as_deref() {
+                    allowed_roots.push(root);
                 }
                 self.services
                     .permission_checker
