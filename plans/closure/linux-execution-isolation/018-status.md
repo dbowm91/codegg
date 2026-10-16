@@ -287,3 +287,24 @@ no-production-admission decision, enable constrained PTY or LSP, or report
 M005 as enforced. Fresh full CI at this code head was independently red on the
 tool-advisor historical receipt test; its mainline integration correction is
 tracked in `plans/closure/tool-advisor-m003-receipt-ci-corrective/001-status.md`.
+
+## Reconciled-head integration CI follow-up (2026-10-16)
+
+After pinning the tool-registry tests that assert legacy LSP visibility to the
+FullHost profile, exact-head CI
+[38851206923](https://github.com/dbowm91/codegg/actions/runs/38851206923)
+passed the ADR identity, sandbox contract, execution ownership, other workflow
+guards, formatting, workspace Clippy, Eggwork fixture prebuild, and trusted
+sandbox helper build. The workspace test command compiled successfully and
+started 13,928 tests. It stopped after 6,324 tests because the timing-sensitive
+`causal_observe_replay::replay_p95_within_budget` benchmark measured 5.679 ms
+against its 5 ms budget; 6,323 tests passed and 7,604 were not run. This is the
+same external-load-sensitive benchmark failure seen on previous hosted runs,
+not a Linux isolation failure or an Eggwork fixture failure. No rerun or
+benchmark threshold change is claimed here.
+
+The fixture correction is test-only and does not change runtime sandbox
+behavior. Linux ADR-0033 remains accepted, C010's negative M003 production
+admission remains in force, M004 remains active pending PTY/LSP ownership and
+supported-host qualification, and M005 remains an internal candidate without
+persisted OfflineRequired authority or enforced network status.
