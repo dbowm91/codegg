@@ -32,7 +32,7 @@ Result: 1 passed. The test creates a local repository with a remote, registers i
 
 ## Limits and disposition
 
-This closes the discovered propagation defect. It does not establish that a provider-backed child completes or improves agent effectiveness. M008's S1 attempts using `spawn_many` created distinct child task/worktree records after this correction, but the children stayed at the pre-provider boundary without heartbeat, journal, or usage progress. They were cancelled through normal scheduler `JobCancel`; no child changes were integrated. Those trials are excluded from success and performance denominators.
+This closes the discovered propagation defect. It does not establish that a provider-backed child completes or improves agent effectiveness. M008's S1 attempts using `spawn_many` created distinct child task/worktree records after this correction, but the child journals ended at `safe_boundary: before_provider_turn` without provider usage or completion evidence; the records do not establish whether a request was submitted. They were cancelled through normal scheduler `JobCancel`; no child changes were integrated. Those trials are excluded from success and performance denominators.
 
 ## Downstream audit
 

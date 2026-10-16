@@ -214,7 +214,8 @@
           "assignment": "Python consumer"
         }
       ],
-      "outcome": "Both children remained before provider invocation with no heartbeat, journal, or usage progress. Parent headless turn returned before child completion. Both were cancelled through scheduler JobCancel; no child edits were integrated.",
+      "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
+      "outcome": "Both run journals ended at safe_boundary: before_provider_turn. No provider usage or completion evidence followed; records do not distinguish an unsubmitted request from a provider request stalled before completion. The parent headless turn returned before child completion. Both were cancelled through scheduler JobCancel. Their managed worktrees were clean after cancellation; no child edits were integrated.",
       "repository_id_resolved_for_children": true,
       "classification": "incomplete; excluded from success and comparative performance denominators"
     },
