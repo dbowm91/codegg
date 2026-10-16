@@ -4089,8 +4089,8 @@ impl CoreDaemon {
                 // PTY creation is a production execution owner. Resolve the
                 // requested profile from daemon-owned principal preferences;
                 // the request DTO cannot select FullHost or a constrained
-                // profile. Until PTY launches are owned by the qualified M004
-                // helper, constrained profiles refuse before target execution.
+                // profile. The protocol transfers this decision to the M004
+                // owner, which fails closed if required setup is unavailable.
                 let principal_id = audit_hook
                     .as_ref()
                     .map(|hook| hook.context.principal().principal_id().as_str().to_owned());
@@ -4126,15 +4126,6 @@ impl CoreDaemon {
                         });
                     }
                 };
-                if profile != codegg_core::approval::SandboxProfile::FullHost {
-                    return Ok(CoreResponse::Error {
-                        code: "interactive_constrained_backend_unavailable".into(),
-                        message: format!(
-                            "PTY launch for profile '{}' is unavailable until the M004 contained launch owner is qualified",
-                            profile.as_str()
-                        ),
-                    });
-                }
                 let ctx =
                     match Self::interactive_execution_context(&workspaces, &request.workspace_id)
                         .await

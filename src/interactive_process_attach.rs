@@ -603,19 +603,13 @@ impl InteractiveProcessProtocol {
         if let Err(error) = dto.validate() {
             return map_protocol_error(&error);
         }
-        if profile != codegg_core::approval::SandboxProfile::FullHost {
-            return CoreResponse::Error {
-                code: "interactive_constrained_backend_unavailable".into(),
-                message: format!(
-                    "PTY launch for profile '{}' is unavailable until the M004 contained launch owner is qualified",
-                    profile.as_str()
-                ),
-            };
-        }
-        let spec = match create_to_spec(dto) {
+        let mut spec = match create_to_spec(dto) {
             Ok(spec) => spec,
             Err(error) => return error.response(),
         };
+        if profile != codegg_core::approval::SandboxProfile::FullHost {
+            spec.constrained_profile = Some(profile);
+        }
         match self.service.spawn(ctx, spec).await {
             Ok(handle) => match self.service.snapshot(&handle).await {
                 Ok(snapshot) => {

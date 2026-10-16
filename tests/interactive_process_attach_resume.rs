@@ -994,6 +994,11 @@ async fn invalid_create_never_consumes_admission_or_handles() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn constrained_profile_refuses_before_pty_spawn() {
+    if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref() == Some(std::ffi::OsStr::new("1"))
+        || codegg::security::sandbox::landlock::probe_process_scopes().is_ok()
+    {
+        return;
+    }
     let dir = tempfile::tempdir().expect("workspace");
     let ctx = test_context(dir.path()).await;
     let request = create_cat(ctx.workspace_id.as_str());
@@ -1009,11 +1014,154 @@ async fn constrained_profile_refuses_before_pty_spawn() {
         )
         .await;
 
-    assert_eq!(
-        expect_error_code(response),
-        "interactive_constrained_backend_unavailable"
-    );
+    assert!(matches!(response, CoreResponse::Error { .. }));
     assert_eq!(protocol.service().session_count(), 0);
+}
+
+#[test]
+fn m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant() {
+    if std::env::var_os("CODEGG_RUN_M004_PTY_NATIVE").as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    if let Err(reason) = codegg::security::sandbox::landlock::probe_process_scopes() {
+        panic!("M004 daemon PTY route requires the qualified process scopes: {reason}");
+    }
+
+    interactive_test_runtime().block_on(async {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+
+        let dir = tempfile::tempdir().expect("workspace");
+        let url = format!(
+            "file:interactive_m004_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str(&url)
+                    .expect("sqlite URL")
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .expect("sqlite pool");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("schema");
+        let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
+        let workspace = daemon
+            .workspaces
+            .get_or_register(dir.path())
+            .await
+            .expect("workspace registration");
+        let client_id = "m004-pty-client";
+        let principal = codegg_core::transport_auth::AuthenticatedPrincipal::local_owner(client_id);
+        daemon.clients.register_with_principal(
+            client_id.to_string(),
+            "M004 PTY qualification".to_string(),
+            None,
+            principal.clone(),
+        );
+        codegg_core::approval::RuntimePreferenceStore::new(pool)
+            .set_sandbox_profile(
+                principal.principal_id().as_str(),
+                codegg_core::approval::SandboxProfile::WorkspaceWrite,
+                None,
+            )
+            .await
+            .expect("persist principal PTY profile");
+
+        let started = dir.path().join("m004-pty-descendant-started");
+        let survived = dir.path().join("m004-pty-descendant-survived");
+        let host_pid = std::process::id();
+        let child_script = format!(
+            "import pathlib,time; time.sleep(3); pathlib.Path({:?}).write_text('survived')",
+            survived.to_string_lossy()
+        );
+        let script = format!(
+            "import os,pathlib,subprocess,time; host={host_pid}; assert os.isatty(0) and os.isatty(1) and os.isatty(2); assert os.tcgetpgrp(0)>0; assert not os.path.exists(f'/proc/{{host}}/environ'), 'daemon PTY target can inspect host proc'; subprocess.Popen(['/usr/bin/python3','-c',{:?}]); pathlib.Path({:?}).write_text('started'); print('M004_DAEMON_PTY_READY',flush=True); time.sleep(30)",
+            child_script,
+            started.to_string_lossy()
+        );
+        let request = InteractiveProcessCreateRequest {
+            workspace_id: workspace.id.as_str().to_string(),
+            argv: vec![
+                "/usr/bin/python3".to_string(),
+                "-c".to_string(),
+                script,
+            ],
+            cwd: None,
+            env_overrides: Vec::new(),
+            cols: Some(80),
+            rows: Some(24),
+            scrollback_bytes: None,
+        };
+        let handle = match daemon_request(
+            &daemon,
+            client_id,
+            CoreRequest::InteractiveProcessCreate { request },
+        )
+        .await
+        {
+            CoreResponse::InteractiveProcessCreated { handle, .. } => handle,
+            other => panic!("principal-authorized constrained PTY should start: {other:?}"),
+        };
+        let attachment = match daemon_request(
+            &daemon,
+            client_id,
+            CoreRequest::InteractiveProcessAttach {
+                handle: handle.clone(),
+                from_seq: Some(0),
+                max_bytes: None,
+            },
+        )
+        .await
+        {
+            CoreResponse::InteractiveProcessAttached { attachment_id, .. } => attachment_id,
+            other => panic!("attach constrained PTY: {other:?}"),
+        };
+
+        tokio::time::timeout(POLL_TIMEOUT, async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("contained target and descendant started");
+        match daemon_request(
+            &daemon,
+            client_id,
+            CoreRequest::InteractiveProcessTerminate {
+                attachment_id: attachment.clone(),
+            },
+        )
+        .await
+        {
+            CoreResponse::InteractiveProcessTerminated { .. } => {}
+            other => panic!("terminate constrained PTY: {other:?}"),
+        }
+        let snapshot = wait_for_exit(daemon.interactive_processes.service(), &handle).await;
+        assert!(matches!(snapshot.state, SessionState::Exited));
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !survived.exists(),
+            "terminating the contained PTY left its descendant running"
+        );
+        match daemon_request(
+            &daemon,
+            client_id,
+            CoreRequest::InteractiveProcessRemove {
+                attachment_id: attachment,
+            },
+        )
+        .await
+        {
+            CoreResponse::InteractiveProcessRemoved { .. } => {}
+            other => panic!("remove completed constrained PTY: {other:?}"),
+        }
+    });
 }
 
 fn daemon_envelope(payload: CoreRequest) -> RequestEnvelope<CoreRequest> {

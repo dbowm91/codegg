@@ -222,11 +222,12 @@ malformed, or oversized entries; `HOME`, `TMPDIR`, and Git config roots remain
 helper-owned. When all three standard streams are terminals, the helper pins its
 own executable into the private mount view and uses it as an in-namespace
 bootstrap to establish a PID-namespace-visible foreground process group before
-execing the requested target in place. The daemon protocol still refuses
-constrained PTY creation while this path awaits exact-source hosted PTY
-qualification. This work does not admit M003 or claim offline networking.
-Constrained LSP remains disabled until its distinct duplex process owner is
-qualified.
+execing the requested target in place. After exact-host owner qualification,
+the daemon routes the principal-resolved constrained profile through this
+owner. Unsupported setup fails before target start, handle creation, or success
+audit; there is no direct-spawn fallback. This work does not admit M003 or
+claim offline networking. Constrained LSP remains disabled until its distinct
+duplex process owner is qualified.
 
 ADR-0035 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted

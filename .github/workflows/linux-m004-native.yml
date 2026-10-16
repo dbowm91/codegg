@@ -11,6 +11,7 @@ on:
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
+      - 'tests/interactive_process_attach_resume.rs'
   push:
     paths:
       - '.github/workflows/linux-m004-native.yml'
@@ -20,6 +21,7 @@ on:
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
+      - 'tests/interactive_process_attach_resume.rs'
 
 permissions:
   contents: read
@@ -82,6 +84,11 @@ jobs:
 
       - name: M004 constrained PTY live-owner qualification
         run: cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture
+
+      - name: M004 daemon-authorized PTY routing and descendant cleanup
+        env:
+          CODEGG_RUN_M004_PTY_NATIVE: '1'
+        run: cargo test --locked --test interactive_process_attach_resume m004_daemon_constrained_pty_uses_principal_profile_and_cancels_descendant -- --nocapture
 
       - name: Protected mount and Git regressions
         run: |

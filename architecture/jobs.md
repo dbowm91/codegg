@@ -585,7 +585,9 @@ dimensions remain unavailable until native enforcement is implemented and
 qualified. Probe results never establish a child's obtained status. The
 long-lived interactive PTY owner uses the same helper receipt/ack path for an
 internal M004 candidate; it retains PTY and child lifetime ownership and stays
-unavailable through the daemon protocol until exact-host qualification passes.
+available through the daemon protocol only when the daemon-resolved principal
+profile is constrained and the required M004 setup succeeds. Unsupported setup
+fails before target start; there is no direct-spawn fallback.
 When all three inherited standard streams are terminals, the helper pins its
 own executable into the private mount view and uses it as an in-namespace
 bootstrap. The bootstrap creates a PID-namespace-visible foreground process
