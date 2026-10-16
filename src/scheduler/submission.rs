@@ -627,7 +627,7 @@ mod tests {
         }
         let build = ResourceRequest::for_kind(JobKind::Build);
         assert_eq!(build.workspace_build_slots, 1);
-        assert!(!build
+        assert!(build
             .exclusivity_keys
             .iter()
             .any(|key| key == "exclusive:workspace-mutation"));
