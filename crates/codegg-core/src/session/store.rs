@@ -205,13 +205,14 @@ impl SessionStore {
             ));
         }
         if let Some(existing) = self.get(id).await? {
-            let requested_title = input.title.as_deref().unwrap_or("Untitled");
             if existing.project_id == project_id.as_str()
                 && existing.workspace_id.as_deref() == Some(workspace_id.as_str())
                 && existing.directory == input.directory
                 && existing.parent_id == input.parent_id
-                && existing.title == requested_title
             {
+                // The session may have been renamed after launch; a replay of
+                // the same stable identity returns the existing session and
+                // never resets its current title.
                 return Ok(existing);
             }
             return Err(StorageError::Database(

@@ -6,16 +6,17 @@
 //! owned here are the canonical authority introduced by Domain Identity
 //! Milestone 002.
 
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
+use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::identity::{ProjectId, RepositoryId, WorkspaceId};
 use crate::repository_lineage::{inspect_repository_lineage, RepositoryLineageEvidence};
 use crate::workspace::WorkspaceRecord;
+
+type ExistingWorkspaceBinding = (String, Option<String>, Option<String>, String, i64);
 
 pub const MAX_DISPLAY_NAME_LENGTH: usize = 256;
 pub const MAX_LINEAGE_VALUE_LENGTH: usize = 512;
@@ -606,7 +607,7 @@ impl ProjectStorage {
             ));
         }
 
-        let existing: Option<(String, Option<String>, Option<String>, String, i64)> = sqlx::query_as(
+        let existing: Option<ExistingWorkspaceBinding> = sqlx::query_as(
             "SELECT project_id, repository_id, worktree_id, status, revision FROM workspace_project_binding WHERE workspace_id = ?",
         )
         .bind(workspace.id.as_str())

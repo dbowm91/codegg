@@ -120,11 +120,57 @@ impl CoreDaemon {
             idempotency_key,
         );
         let store = crate::session::SessionStore::new(pool.clone());
-        let had_session = store
+        let existing_session = store
             .get(&session_id)
             .await
-            .map_err(|error| error.to_string())?
-            .is_some();
+            .map_err(|error| error.to_string())?;
+        let had_session = existing_session.is_some();
+        if let Some(existing_session) = existing_session.as_ref() {
+            let intent_matches = match &intent {
+                WorktreeSessionIntent::New { .. } => existing_session.parent_id.is_none(),
+                WorktreeSessionIntent::Fork { parent_session_id } => {
+                    existing_session.parent_id.as_deref() == Some(parent_session_id.as_str())
+                }
+            };
+            let expected_worktree_id = match &placement {
+                Placement::NewManaged { .. } => stable_launch_identity(
+                    &format!("worktree-{operation}"),
+                    principal_id,
+                    context.project_id.as_str(),
+                    context.workspace_id.as_str(),
+                    idempotency_key,
+                ),
+                Placement::ExistingManaged { worktree_id } => {
+                    codegg_core::identity::WorktreeId::parse(worktree_id)
+                        .map_err(|error| error.to_string())?
+                        .to_string()
+                }
+            };
+            let existing_workspace_binding =
+                existing_session
+                    .workspace_id
+                    .as_deref()
+                    .and_then(|workspace_id| {
+                        codegg_core::identity::WorkspaceId::parse(workspace_id).ok()
+                    });
+            let existing_worktree_id = if let Some(workspace_id) = existing_workspace_binding {
+                project_storage
+                    .workspace_binding(&workspace_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .and_then(|binding| binding.worktree_id)
+            } else {
+                None
+            };
+            if !intent_matches
+                || existing_worktree_id.as_deref() != Some(expected_worktree_id.as_str())
+            {
+                return Err(
+                    "idempotency key was already used for a different session/worktree launch"
+                        .into(),
+                );
+            }
+        }
 
         let (mut worktree, existed_before_request) = match placement {
             Placement::NewManaged { base_commit } => {
@@ -905,7 +951,7 @@ impl CoreDaemon {
                 placement,
             } => {
                 let context = match self
-                    .resolve_request_context(&String::new(), Some(&project_id), Some(&workspace_id))
+                    .resolve_request_context("", Some(&project_id), Some(&workspace_id))
                     .await
                 {
                     Ok(context) => context,
@@ -936,9 +982,11 @@ impl CoreDaemon {
                         .await;
                         let dto = Self::session_dto(session, Some(&target_context));
                         Ok(CoreResponse::SessionWorktreeLaunched {
-                            session: dto,
-                            worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
-                                &worktree,
+                            session: Box::new(dto),
+                            worktree: Box::new(
+                                codegg_core::protocol_conversions::managed_worktree_to_dto(
+                                    &worktree,
+                                ),
                             ),
                             workspace_id: target_context.workspace_id.as_str().to_owned(),
                             resumed,
@@ -1016,9 +1064,11 @@ impl CoreDaemon {
                         .await;
                         let dto = Self::session_dto(session, Some(&target_context));
                         Ok(CoreResponse::SessionWorktreeLaunched {
-                            session: dto,
-                            worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
-                                &worktree,
+                            session: Box::new(dto),
+                            worktree: Box::new(
+                                codegg_core::protocol_conversions::managed_worktree_to_dto(
+                                    &worktree,
+                                ),
                             ),
                             workspace_id: target_context.workspace_id.as_str().to_owned(),
                             resumed,

@@ -1296,8 +1296,12 @@ application-level deadlines remain the correctness bound for provider streams.
 - **ExternalCommand disabled**: Both `AuthResolver::resolve` and
   `ExternalCommandProvider::fetch` return `AuthError::Unsupported`.
 - **ContentPart::Reasoning is skip-serialized**: Never appears on the wire.
-- **ToolDefinition.defer_loading**: Annotated on each tool definition;
-  providers that support it (anthropic, openai) honor it; others ignore it.
+- **ToolDefinition.defer_loading**: Providers that support deferred tool
+  loading (currently Anthropic and OpenAI) receive deferred definitions and
+  the active tool-search surface. When deferral is disabled or the provider
+  lacks support, CodeGG sends every tool immediately and strips the
+  `defer_loading` metadata before encoding the request; unsupported providers
+  never receive a field their wire surface cannot accept.
 - **FallbackProvider creates one CircuitBreaker per provider** at
   construction time, not lazily.
 

@@ -607,7 +607,7 @@ pub(crate) fn start_fork_session_worktree(
                         .unwrap_or("source session")
                         .to_owned();
                     (
-                        Some(session),
+                        Some(*session),
                         None,
                         Some(format!(
                             "Forked from {} into managed worktree {} on branch {} ({}, {})",
@@ -682,7 +682,7 @@ pub(crate) fn start_new_session_worktree(
                 Ok(CoreResponse::SessionWorktreeLaunched {
                     session, worktree, ..
                 }) => (
-                    Some(session),
+                    Some(*session),
                     None,
                     Some(format!(
                         "Started in managed worktree {} on branch {} ({}, {})",

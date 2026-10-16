@@ -1186,8 +1186,8 @@ pub enum CoreResponse {
     },
     /// M006: result of a recoverable isolated session/worktree launch.
     SessionWorktreeLaunched {
-        session: crate::dto::Session,
-        worktree: crate::dto::ManagedWorktreeDto,
+        session: Box<crate::dto::Session>,
+        worktree: Box<crate::dto::ManagedWorktreeDto>,
         workspace_id: String,
         resumed: bool,
     },

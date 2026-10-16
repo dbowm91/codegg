@@ -12923,7 +12923,7 @@ impl App {
                     Ok(CoreResponse::SessionWorktreeLaunched {
                         session, worktree, ..
                     }) => {
-                        match crate::protocol_conversions::dto_to_session(session) {
+                        match crate::protocol_conversions::dto_to_session(*session) {
                             Ok(session) => {
                                 self.set_session(session);
                                 self.messages_state.toasts.info(&format!(
@@ -13029,7 +13029,7 @@ impl App {
                         session, worktree, ..
                     }) => {
                         let parent_id = session.parent_id.clone().unwrap_or_default();
-                        match crate::protocol_conversions::dto_to_session(session) {
+                        match crate::protocol_conversions::dto_to_session(*session) {
                             Ok(session) => {
                                 self.set_session(session);
                                 self.messages_state.toasts.info(&format!(

@@ -1343,7 +1343,7 @@ impl AgentLoop {
             // with provider_ids not matching "openai" or "anthropic", so they get default capabilities
             // (supports_defer_loading: false). All tools are sent in the single `tools` array.
             self.services.deferred_tool_definitions.clear();
-            (all_definitions, Vec::new())
+            (strip_defer_loading_metadata(all_definitions), Vec::new())
         };
 
         // Update tool_search with available tool names so search results
@@ -1394,6 +1394,15 @@ impl AgentLoop {
 
         result
     }
+}
+
+fn strip_defer_loading_metadata(
+    mut definitions: Vec<crate::provider::ToolDefinition>,
+) -> Vec<crate::provider::ToolDefinition> {
+    for definition in &mut definitions {
+        definition.defer_loading = None;
+    }
+    definitions
 }
 
 /// Test-only: expose `build_tool_definitions` so integration tests can
@@ -1620,6 +1629,18 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
             defer_loading: deferred.then_some(true),
         }
+    }
+
+    #[test]
+    fn unsupported_provider_surface_strips_defer_loading_metadata() {
+        let definitions = strip_defer_loading_metadata(vec![
+            tool_definition("read", "Read a file", false),
+            tool_definition("specialist", "Specialist tool", true),
+        ]);
+        assert_eq!(definitions.len(), 2);
+        assert!(definitions
+            .iter()
+            .all(|definition| definition.defer_loading.is_none()));
     }
 
     fn deferred_from_surface(
