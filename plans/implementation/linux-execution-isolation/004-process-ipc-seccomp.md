@@ -23,6 +23,35 @@ regressions 18/18. This qualifies the current internal process/IPC test tier;
 it does not qualify production PTY/LSP routing or change the no-admission
 decision for the protected-mount backend.
 
+### Exact-head post-reconciliation qualification (2026-10-16)
+
+After reconciling the branch with current `main`, hosted M004 run
+[38869606745](https://github.com/dbowm91/codegg/actions/runs/38869606745)
+on `7312acad74f4f6f10ee6b505a61fc9ce51f3f7ac` passed the native process/IPC
+target 9/9. This includes host-process/proc/IPC denial, cancellation and
+concurrency probes, offline-network denials with host positive controls, a
+contained offline `cargo metadata` plus full-workspace `cargo check`, and a
+contained workspace check plus managed-process regressions. The protected-
+mount and trusted-Git regression targets passed 11/11 and 18/18. The separate
+restricted-userns run passed the required refusal-before-target probe.
+
+Exact-head full CI
+[38869639397](https://github.com/dbowm91/codegg/actions/runs/38869639397)
+passed 14,020 tests with 7 skipped; all ADR identity, sandbox, execution
+ownership and other workflow guards, formatting, Clippy, Eggwork fixture
+prebuild, and trusted helper build passed. The offline workspace test's initial
+attempt used invalid `cargo metadata --workspace` syntax and failed; commit
+`7312acad` corrected the invocation. The final hosted result is for the
+corrected code.
+
+This qualifies the current internal process/IPC and offline-network test
+candidate on the recorded hosted runner. It does not close M004: constrained
+PTY creation still refuses before spawn, and constrained LSP turns remain
+unbound from the shared FullHost service because there is no supervised duplex
+LSP process owner carrying the M004 launch scope. Supported-host qualification
+and actual production-owner routing remain hard closure gates. M005 remains an
+internal candidate, and C010's M003 no-admission decision is unchanged.
+
 ## 3. Invariants
 
 User code is never launched before the requested PID/IPC/mount/proc/seccomp features are installed. No host procfs bind or leaking daemon socket from `/run`, `/tmp`, home or inherited environment is acceptable under process-isolated mode. Only explicitly documented device/pty I/O is exposed. Parent-facing stdin/stdout/stderr and the private status channel are the only narrowly inherited descriptors unless a typed operator-approved capability demands more. Signal behavior and child PID1 reaping do not break `ManagedProcessService` cancellation, timeout or worker accounting. No root privileges or daemon self-restriction.
