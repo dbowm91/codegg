@@ -8,8 +8,9 @@
 use crate::EgggitError;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Output as StdOutput, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 
@@ -205,12 +206,136 @@ impl DerefMut for GitSyncCommand {
 
 #[derive(Debug)]
 struct PrivateObjectView {
-    directory: tempfile::TempDir,
+    lease: Option<Arc<CachedObjectView>>,
+    ephemeral: Option<tempfile::TempDir>,
 }
 
 impl PrivateObjectView {
     fn path(&self) -> &Path {
-        self.directory.path()
+        self.lease
+            .as_ref()
+            .map(|view| view.directory.path())
+            .or_else(|| self.ephemeral.as_ref().map(tempfile::TempDir::path))
+            .expect("private object view always owns a directory")
+    }
+}
+
+#[derive(Debug)]
+struct CachedObjectView {
+    source: PathBuf,
+    fingerprint: [u8; 32],
+    directory: tempfile::TempDir,
+    _cache_root: Arc<tempfile::TempDir>,
+    bytes: u64,
+    last_used: std::sync::atomic::AtomicU64,
+    watcher: Option<ObjectStoreWatcher>,
+}
+
+#[derive(Debug)]
+struct ObjectStoreWatcher {
+    dirty: std::sync::atomic::AtomicBool,
+    #[cfg(target_os = "linux")]
+    fd: rustix::fd::OwnedFd,
+}
+
+#[derive(Debug)]
+struct ObjectViewCache {
+    root: Arc<tempfile::TempDir>,
+    entries: Vec<Arc<CachedObjectView>>,
+    bytes: u64,
+    clock: u64,
+}
+
+impl ObjectStoreWatcher {
+    fn new(root: &Path) -> std::io::Result<Option<Self>> {
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+
+            let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)
+                .map_err(rustix_io_error)?;
+            let flags = WatchFlags::ATTRIB
+                | WatchFlags::CLOSE_WRITE
+                | WatchFlags::CREATE
+                | WatchFlags::DELETE
+                | WatchFlags::DELETE_SELF
+                | WatchFlags::MODIFY
+                | WatchFlags::MOVE_SELF
+                | WatchFlags::MOVED_FROM
+                | WatchFlags::MOVED_TO;
+            inotify::add_watch(&fd, root, flags).map_err(rustix_io_error)?;
+            let mut children = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+            children.sort_by_key(|entry| entry.file_name());
+            for entry in children {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let is_fanout =
+                    name.len() == 2 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+                if name != "pack" && !is_fanout {
+                    continue;
+                }
+                let metadata = std::fs::symlink_metadata(entry.path())?;
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "unsupported Git object namespace directory",
+                    ));
+                }
+                inotify::add_watch(&fd, entry.path(), flags).map_err(rustix_io_error)?;
+            }
+            Ok(Some(Self {
+                dirty: std::sync::atomic::AtomicBool::new(false),
+                fd,
+            }))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = root;
+            Ok(None)
+        }
+    }
+
+    /// `Some(true)` means no mutation event is pending. Any event (including
+    /// queue overflow or watch loss) invalidates the cache generation.
+    fn is_clean(&self) -> std::io::Result<bool> {
+        if self.dirty.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(false);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::inotify;
+            use std::mem::MaybeUninit;
+
+            let mut buffer = [MaybeUninit::uninit(); 4096];
+            let mut reader = inotify::Reader::new(&self.fd, &mut buffer);
+            match reader.next() {
+                Err(rustix::io::Errno::AGAIN) => Ok(true),
+                Err(error) => Err(rustix_io_error(error)),
+                Ok(_) => {
+                    self.dirty.store(true, std::sync::atomic::Ordering::Release);
+                    Ok(false)
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(false)
+        }
+    }
+}
+
+const OBJECT_VIEW_CACHE_ENTRIES: usize = 4;
+const OBJECT_VIEW_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+static OBJECT_VIEW_CACHE: OnceLock<Mutex<Option<ObjectViewCache>>> = OnceLock::new();
+
+/// Release cached trusted-Git object snapshots during the owning daemon's
+/// shutdown. A running child retains its `Arc` lease until it exits; cache
+/// directories are then removed in child-before-root order.
+pub fn shutdown_object_view_cache() {
+    if let Some(cache) = OBJECT_VIEW_CACHE.get() {
+        if let Ok(mut cache) = cache.lock() {
+            *cache = None;
+        }
     }
 }
 
@@ -767,13 +892,243 @@ fn prepare_private_object_view(
     let unavailable = || GitExecutionPolicyOutcome::BackendUnavailable {
         capabilities: vec![GitExecutionCapability::RepositoryAlias],
     };
-    let parent = object_dir.parent().ok_or_else(unavailable)?;
+    let cache = OBJECT_VIEW_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cache = cache.lock().map_err(|_| unavailable())?;
+    if cache.is_none() {
+        let root = Arc::new(
+            tempfile::Builder::new()
+                .prefix("codegg-git-object-cache-")
+                .tempdir()
+                .map_err(|_| unavailable())?,
+        );
+        *cache = Some(ObjectViewCache {
+            root,
+            entries: Vec::new(),
+            bytes: 0,
+            clock: 0,
+        });
+    }
+    let cache = cache.as_mut().expect("initialized object-view cache");
+    cache.clock = cache.clock.wrapping_add(1);
+    let tick = cache.clock;
+    let mut fingerprint = None;
+    let mut stale = Vec::new();
+    for (index, view) in cache.entries.iter().enumerate() {
+        if view.source != object_dir {
+            continue;
+        }
+        let clean = if let Some(watcher) = &view.watcher {
+            watcher.is_clean().map_err(|_| unavailable())?
+        } else {
+            let current = object_store_fingerprint(&object_dir).map_err(|_| unavailable())?;
+            fingerprint = Some(current);
+            current == view.fingerprint
+        };
+        if clean {
+            view.last_used
+                .store(tick, std::sync::atomic::Ordering::Relaxed);
+            return Ok(Some(PrivateObjectView {
+                lease: Some(Arc::clone(view)),
+                ephemeral: None,
+            }));
+        }
+        stale.push(index);
+    }
+    for index in stale.into_iter().rev() {
+        if Arc::strong_count(&cache.entries[index]) == 1 {
+            let retired = cache.entries.remove(index);
+            cache.bytes = cache.bytes.saturating_sub(retired.bytes);
+        }
+    }
+
+    // The watcher is installed before fingerprinting/copying. Events during
+    // setup or snapshot construction reject caching rather than trusting an
+    // unstable source generation.
+    let watcher = ObjectStoreWatcher::new(&object_dir).ok().flatten();
+    let fingerprint = match fingerprint {
+        Some(fingerprint) => fingerprint,
+        None => object_store_fingerprint(&object_dir).map_err(|_| unavailable())?,
+    };
+
+    // Build inside the daemon-owned cache root. The resulting TempDir remains
+    // private and immutable for every child holding a lease. A cache miss is
+    // serialized under the cache mutex so concurrent callers cannot duplicate
+    // a whole-store copy for the same generation.
     let view = tempfile::Builder::new()
-        .prefix("codegg-git-object-view-")
-        .tempdir_in(parent)
+        .prefix("view-")
+        .tempdir_in(cache.root.path())
         .map_err(|_| unavailable())?;
-    copy_object_files(&object_dir, view.path()).map_err(|_| unavailable())?;
-    Ok(Some(PrivateObjectView { directory: view }))
+    let bytes = copy_object_files(&object_dir, view.path()).map_err(|_| unavailable())?;
+    let stable = if let Some(watcher) = &watcher {
+        watcher.is_clean().map_err(|_| unavailable())?
+    } else {
+        object_store_fingerprint(&object_dir).map_err(|_| unavailable())? == fingerprint
+    };
+    if !stable {
+        return Err(unavailable());
+    }
+    if bytes > OBJECT_VIEW_CACHE_MAX_BYTES {
+        return Ok(Some(PrivateObjectView {
+            lease: None,
+            ephemeral: Some(view),
+        }));
+    }
+
+    // Retire stale generations of this repository when possible. A child
+    // holding an Arc lease keeps its immutable directory alive until exit.
+    let mut index = 0;
+    while index < cache.entries.len() {
+        if cache.entries[index].source == object_dir
+            && Arc::strong_count(&cache.entries[index]) == 1
+        {
+            let retired = cache.entries.remove(index);
+            cache.bytes = cache.bytes.saturating_sub(retired.bytes);
+        } else {
+            index += 1;
+        }
+    }
+    while cache.entries.len() >= OBJECT_VIEW_CACHE_ENTRIES
+        || cache.bytes.saturating_add(bytes) > OBJECT_VIEW_CACHE_MAX_BYTES
+    {
+        let Some((index, _)) = cache
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| Arc::strong_count(entry) == 1)
+            .min_by_key(|(_, entry)| entry.last_used.load(std::sync::atomic::Ordering::Relaxed))
+        else {
+            // All cache slots are leased by running Git children. Keep this
+            // snapshot command-scoped rather than exceeding the cache bound.
+            return Ok(Some(PrivateObjectView {
+                lease: None,
+                ephemeral: Some(view),
+            }));
+        };
+        let retired = cache.entries.remove(index);
+        cache.bytes = cache.bytes.saturating_sub(retired.bytes);
+    }
+
+    let cached = Arc::new(CachedObjectView {
+        source: object_dir,
+        fingerprint,
+        directory: view,
+        _cache_root: Arc::clone(&cache.root),
+        bytes,
+        last_used: std::sync::atomic::AtomicU64::new(tick),
+        watcher,
+    });
+    cache.bytes = cache.bytes.saturating_add(bytes);
+    cache.entries.push(Arc::clone(&cached));
+    Ok(Some(PrivateObjectView {
+        lease: Some(cached),
+        ephemeral: None,
+    }))
+}
+
+/// Hash the admitted object namespace for cache invalidation. Only entries
+/// Git can address through loose fanout or packs participate. The selected
+/// names and metadata include inode identity, size, and change time so an
+/// observed add, replacement, in-place write, or pack rotation cannot reuse
+/// an older private view. Object contents are not read during a cache hit.
+fn object_store_fingerprint(root: &Path) -> std::io::Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let mut digest = Sha256::new();
+    let root_metadata = std::fs::symlink_metadata(root)?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git object directory changed type",
+        ));
+    }
+    fingerprint_metadata(&mut digest, b".", &root_metadata);
+    let mut directories = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+    directories.sort_by_key(|entry| entry.file_name());
+    for entry in directories {
+        let name = entry.file_name();
+        let name_bytes = name.to_string_lossy();
+        if name_bytes == "info" {
+            continue;
+        }
+        let is_fanout =
+            name_bytes.len() == 2 && name_bytes.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if name_bytes != "pack" && !is_fanout {
+            continue;
+        }
+        let directory = entry.path();
+        let metadata = std::fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported Git object namespace directory",
+            ));
+        }
+        fingerprint_metadata(&mut digest, name_bytes.as_bytes(), &metadata);
+        let mut objects = std::fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        objects.sort_by_key(|object| object.file_name());
+        for object in objects {
+            let object_name = object.file_name();
+            #[cfg(unix)]
+            let object_name_bytes = {
+                use std::os::unix::ffi::OsStrExt;
+                object_name.as_bytes().to_vec()
+            };
+            #[cfg(not(unix))]
+            let object_name_bytes = object_name.to_string_lossy().as_bytes().to_vec();
+            if is_fanout {
+                let suffix = std::str::from_utf8(&object_name_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-UTF-8 loose Git object name",
+                    )
+                })?;
+                if !((suffix.len() == 38 || suffix.len() == 62)
+                    && suffix.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                {
+                    continue;
+                }
+            }
+            let path = object.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported entry in Git object namespace",
+                ));
+            }
+            let mut relative = name_bytes.as_bytes().to_vec();
+            relative.push(b'/');
+            relative.extend_from_slice(&object_name_bytes);
+            fingerprint_metadata(&mut digest, &relative, &metadata);
+        }
+    }
+    Ok(digest.finalize().into())
+}
+
+fn fingerprint_metadata(digest: &mut sha2::Sha256, path: &[u8], metadata: &std::fs::Metadata) {
+    use sha2::Digest;
+
+    digest.update((path.len() as u64).to_le_bytes());
+    digest.update(path);
+    digest.update(metadata.len().to_le_bytes());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        digest.update(metadata.dev().to_le_bytes());
+        digest.update(metadata.ino().to_le_bytes());
+        digest.update(metadata.ctime().to_le_bytes());
+        digest.update(metadata.ctime_nsec().to_le_bytes());
+        digest.update(metadata.mtime().to_le_bytes());
+        digest.update(metadata.mtime_nsec().to_le_bytes());
+    }
+    #[cfg(not(unix))]
+    if let Ok(modified) = metadata.modified().and_then(|time| {
+        time.duration_since(std::time::UNIX_EPOCH)
+            .map_err(std::io::Error::other)
+    }) {
+        digest.update(modified.as_secs().to_le_bytes());
+        digest.update(modified.subsec_nanos().to_le_bytes());
+    }
 }
 
 /// The trusted read surface is deliberately an exact allowlist. Mutating and
@@ -829,7 +1184,7 @@ fn argv_reads_objects(argv: &[String]) -> bool {
 /// a hard link would let a concurrent workspace writer alter the command's
 /// supposedly private view in place. The guard removes it after the command
 /// exits or is cancelled.
-fn copy_object_files(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn copy_object_files(source: &Path, destination: &Path) -> std::io::Result<u64> {
     #[cfg(unix)]
     {
         copy_object_files_descriptor_relative(source, destination)
@@ -841,7 +1196,10 @@ fn copy_object_files(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn copy_object_files_descriptor_relative(
+    source: &Path,
+    destination: &Path,
+) -> std::io::Result<u64> {
     use rustix::fs::{open, openat, Dir, FileType, Mode, OFlags};
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
@@ -870,6 +1228,7 @@ fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> s
     }
 
     let mut copied = 0usize;
+    let mut bytes = 0u64;
     let mut directories = Dir::read_from(&source_file).map_err(rustix_io_error)?;
     for entry in &mut directories {
         let entry = entry.map_err(rustix_io_error)?;
@@ -932,17 +1291,21 @@ fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> s
             )
             .map_err(rustix_io_error)?;
             let object_file = std::fs::File::from(object_fd);
-            if FileType::from_raw_mode(
-                rustix::fs::fstat(&object_file)
-                    .map_err(rustix_io_error)?
-                    .st_mode,
-            ) != FileType::RegularFile
-            {
+            let object_metadata = rustix::fs::fstat(&object_file).map_err(rustix_io_error)?;
+            if FileType::from_raw_mode(object_metadata.st_mode) != FileType::RegularFile {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "unsupported entry in Git object fanout",
                 ));
             }
+            bytes = bytes
+                .checked_add(object_metadata.st_size.max(0) as u64)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "object byte count overflow",
+                    )
+                })?;
             copied = copied.checked_add(1).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
             })?;
@@ -960,7 +1323,7 @@ fn copy_object_files_descriptor_relative(source: &Path, destination: &Path) -> s
             copy_object_snapshot(&object_file, &mut snapshot)?;
         }
     }
-    Ok(())
+    Ok(bytes)
 }
 
 #[cfg(unix)]
@@ -986,8 +1349,9 @@ fn rustix_io_error(error: rustix::io::Errno) -> std::io::Error {
 }
 
 #[cfg(not(unix))]
-fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::Result<u64> {
     let mut copied = 0usize;
+    let mut bytes = 0u64;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -1027,6 +1391,12 @@ fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::R
                     "unsupported entry in Git object fanout",
                 ));
             }
+            bytes = bytes.checked_add(object_metadata.len()).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "object byte count overflow",
+                )
+            })?;
             copied = copied.checked_add(1).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "object count overflow")
             })?;
@@ -1040,7 +1410,7 @@ fn copy_object_files_path_based(source: &Path, destination: &Path) -> std::io::R
             std::fs::copy(object.path(), &target)?;
         }
     }
-    Ok(())
+    Ok(bytes)
 }
 
 #[cfg(windows)]
@@ -1399,14 +1769,20 @@ mod tests {
                 .expect("warm trusted git status");
             assert!(output.status.success());
         }
+        let mut preparation_samples = Vec::with_capacity(samples);
+        let mut protected_status_samples = Vec::with_capacity(samples);
+        let mut baseline_status_samples = Vec::with_capacity(samples);
         for sample in 1..=samples {
             if cache_mode == "cold" {
-                evict_object_file_cache(&trusted_object_directory(&repository).unwrap().unwrap());
+                let object_dir = trusted_object_directory(&repository).unwrap().unwrap();
+                clear_cached_object_view(&object_dir);
+                evict_object_file_cache(&object_dir);
             }
             let started = Instant::now();
             let view = prepare_private_object_view(&argv, &repository)
                 .expect("prepare trusted private object view");
             let preparation = started.elapsed();
+            preparation_samples.push(preparation.as_secs_f64() * 1000.0);
             drop(view);
 
             let started = Instant::now();
@@ -1417,6 +1793,7 @@ mod tests {
                 .expect("run trusted git status");
             assert!(output.status.success());
             let protected_status = started.elapsed();
+            protected_status_samples.push(protected_status.as_secs_f64() * 1000.0);
 
             let started = Instant::now();
             let baseline = StdCommand::new("git")
@@ -1426,6 +1803,7 @@ mod tests {
                 .expect("run paired baseline git status");
             assert!(baseline.status.success());
             let baseline_status = started.elapsed();
+            baseline_status_samples.push(baseline_status.as_secs_f64() * 1000.0);
             eprintln!(
                 "sample {sample}: preparation_ms={:.3} protected_status_ms={:.3} baseline_status_ms={:.3}",
                 preparation.as_secs_f64() * 1000.0,
@@ -1433,9 +1811,51 @@ mod tests {
                 baseline_status.as_secs_f64() * 1000.0,
             );
         }
+        for (name, mut values) in [
+            ("preparation", preparation_samples),
+            ("protected_status", protected_status_samples),
+            ("baseline_status", baseline_status_samples),
+        ] {
+            values.sort_by(f64::total_cmp);
+            let median = if values.len() % 2 == 0 {
+                (values[values.len() / 2 - 1] + values[values.len() / 2]) / 2.0
+            } else {
+                values[values.len() / 2]
+            };
+            let p95_index = ((values.len() * 95).div_ceil(100) - 1).min(values.len() - 1);
+            eprintln!(
+                "summary {name}: median_ms={median:.3} p95_ms={:.3} max_ms={:.3}",
+                values[p95_index],
+                values[values.len() - 1],
+            );
+        }
     }
 
-    #[cfg(unix)]
+    fn clear_cached_object_view(root: &Path) {
+        let Some(cache) = OBJECT_VIEW_CACHE.get() else {
+            return;
+        };
+        let mut cache = cache.lock().expect("object-view cache lock");
+        let Some(cache) = cache.as_mut() else {
+            return;
+        };
+        let mut index = 0;
+        while index < cache.entries.len() {
+            if cache.entries[index].source == root {
+                assert_eq!(
+                    Arc::strong_count(&cache.entries[index]),
+                    1,
+                    "cannot cold-qualify while a child leases this view"
+                );
+                let retired = cache.entries.remove(index);
+                cache.bytes = cache.bytes.saturating_sub(retired.bytes);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn evict_object_file_cache(root: &Path) {
         use std::os::fd::AsRawFd;
 
@@ -1461,9 +1881,9 @@ mod tests {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     fn evict_object_file_cache(_root: &Path) {
-        panic!("cold object-view measurement requires POSIX_FADV_DONTNEED");
+        panic!("cold object-view measurement requires Linux POSIX_FADV_DONTNEED");
     }
 
     #[test]
@@ -2124,9 +2544,127 @@ mod tests {
         );
         drop(command);
         assert!(
-            !view.exists(),
-            "private object view must be removed after command use"
+            view.is_dir(),
+            "the daemon cache retains the immutable view for later trusted reads"
         );
+    }
+
+    #[test]
+    fn trusted_git_object_view_cache_reuses_and_invalidates_repository_generations() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let selected = fixture.path().join("selected-repository");
+        std::fs::create_dir(&selected).expect("selected repository");
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&selected)
+            .output()
+            .expect("initialize repository");
+        assert!(init.status.success());
+        let argv = vec!["git".into(), "status".into()];
+
+        let first = prepare_private_object_view(&argv, &selected)
+            .expect("first private view")
+            .expect("repository view");
+        let first_path = first.path().to_path_buf();
+        let second = prepare_private_object_view(&argv, &selected)
+            .expect("cached private view")
+            .expect("repository view");
+        assert_eq!(
+            first_path,
+            second.path(),
+            "matching generation should reuse its view"
+        );
+
+        let loose = selected.join(".git/objects/ab");
+        std::fs::create_dir_all(&loose).expect("loose object fanout");
+        std::fs::write(loose.join("c".repeat(38)), b"new object generation")
+            .expect("new loose object");
+        let third = prepare_private_object_view(&argv, &selected)
+            .expect("view after object addition")
+            .expect("repository view");
+        assert_ne!(
+            first_path,
+            third.path(),
+            "an admitted namespace change must not reuse the old object generation"
+        );
+        assert!(
+            first.path().is_dir(),
+            "an active lease retains its old view"
+        );
+        assert!(!first.path().join("ab").join("c".repeat(38)).exists());
+        assert!(third.path().join("ab").join("c".repeat(38)).is_file());
+
+        let loose_path = loose.join("c".repeat(38));
+        std::fs::write(&loose_path, b"mutated object generation")
+            .expect("mutate loose object in place");
+        let fourth = prepare_private_object_view(&argv, &selected)
+            .expect("view after in-place object change")
+            .expect("repository view");
+        assert_ne!(third.path(), fourth.path());
+        assert_eq!(
+            std::fs::read(fourth.path().join("ab").join("c".repeat(38)))
+                .expect("mutated private object"),
+            b"mutated object generation"
+        );
+
+        let pack_dir = selected.join(".git/objects/pack");
+        std::fs::create_dir_all(&pack_dir).expect("pack directory");
+        let pack_path = pack_dir.join(format!("pack-{}.pack", "d".repeat(40)));
+        std::fs::write(&pack_path, b"packed object generation").expect("packed object fixture");
+        let fifth = prepare_private_object_view(&argv, &selected)
+            .expect("view after pack creation")
+            .expect("repository view");
+        assert!(fifth
+            .path()
+            .join("pack")
+            .join(pack_path.file_name().unwrap())
+            .is_file());
+        std::fs::write(&pack_path, b"replaced packed object generation")
+            .expect("replace pack contents");
+        let sixth = prepare_private_object_view(&argv, &selected)
+            .expect("view after pack replacement")
+            .expect("repository view");
+        assert_ne!(fifth.path(), sixth.path());
+        assert_eq!(
+            std::fs::read(
+                sixth
+                    .path()
+                    .join("pack")
+                    .join(pack_path.file_name().unwrap())
+            )
+            .expect("replaced private pack"),
+            b"replaced packed object generation"
+        );
+    }
+
+    #[test]
+    fn concurrent_trusted_git_view_misses_share_one_cached_snapshot() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let selected = fixture.path().join("selected-repository");
+        std::fs::create_dir(&selected).expect("selected repository");
+        let init = StdCommand::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&selected)
+            .output()
+            .expect("initialize repository");
+        assert!(init.status.success());
+        let selected = Arc::new(selected);
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let selected = Arc::clone(&selected);
+            workers.push(std::thread::spawn(move || {
+                let argv = vec!["git".into(), "status".into()];
+                let view = prepare_private_object_view(&argv, &selected)
+                    .expect("private view")
+                    .expect("repository view");
+                view.path().to_path_buf()
+            }));
+        }
+        let paths = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("cache worker"))
+            .collect::<Vec<_>>();
+        assert!(paths.iter().all(|path| path == &paths[0]));
     }
 
     #[test]

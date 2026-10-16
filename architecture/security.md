@@ -100,13 +100,19 @@ records for current evidence and open items.
 
 Trusted `egggit` preflight rejects a repository whose `.git/objects` or
 linked-worktree common object store already contains `objects/info/alternates`.
-For the exact trusted read allowlist, it also creates a command-scoped private
-object directory containing copies of regular loose and packed object files,
-then sets `GIT_OBJECT_DIRECTORY` to that directory. The private view omits
+For the exact trusted read allowlist, it creates a private object directory
+containing copies of regular loose and packed object files, then sets
+`GIT_OBJECT_DIRECTORY` to that directory. The private view omits
 `objects/info`; Git therefore cannot follow an alternate created in the
 repository after admission. Copying object bytes (rather than hard-linking
-them) also prevents later writes to a source object from changing the child's
-view. The temporary view is removed when the command exits or is cancelled.
+them) also prevents later writes to a source object from changing a child's
+view. C011 retains a bounded daemon-owned cache of these immutable views;
+Linux inotify events invalidate changed generations, and cache misses use a
+SHA-256 inventory fingerprint plus a post-copy stability check. Other hosts
+use the fingerprint on cache hits. The cache is limited to four views and 2
+GiB, children hold leases until exit, and daemon shutdown releases the cached
+views. Cache pressure uses a command-scoped private snapshot; it never falls
+back to source objects or alternates.
 Unsupported object-store entries and setup failures return typed
 `BackendUnavailable[RepositoryAlias]` before spawn. This contract applies only
 to the explicit trusted read allowlist; object-writing mutations such as
@@ -114,8 +120,10 @@ commit/tag creation remain on the separate C002 contained-Git path and are not
 qualified by this snapshot. A local measurement on a 105 MiB, 3,945-file
 object store on ext4 without reflink support took 2.95 seconds for view setup
 plus trusted `git status`; this is a material performance limit for fragmented
-repositories, and no production Git routing is enabled. The view does not make
-the repository's `.git` metadata immutable or establish network isolation.
+repositories. The C011 repeated-use qualification materially lowers cache-hit
+cost, but fragmented cold misses still exceed the existing latency threshold;
+no production Git routing is enabled. The view does not make the repository's
+`.git` metadata immutable or establish network isolation.
 
 **Architecture:**
 - Parent resolves helper as canonical regular-file sibling of the

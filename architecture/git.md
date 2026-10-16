@@ -91,6 +91,25 @@ Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
 tags, remotes, worktrees, stashes, show, etc.), raw stdout/stderr,
 exit code, and `ProjectionHints`.
 
+Object-reading trusted commands use a private object view without
+`objects/info`, so a repository alternate created after admission cannot
+redirect the command. The view contains copies, never hard links, and is held
+for the complete child lifetime. C011 caches up to four immutable views and 2
+GiB within the daemon process. Linux inotify invalidates a generation on
+loose or packed object changes, watch loss, or queue overflow; cache misses
+install watches before fingerprinting and copying, then reject a view if a
+change arrives during construction. Where inotify is unavailable, cache hits
+validate a SHA-256 inventory fingerprint. Active Git children retain a lease
+across eviction and daemon shutdown. Cache pressure uses a command-scoped
+snapshot and never falls back to mutable source objects. Static alternates
+remain typed unavailable. This read-only boundary does not admit object-
+writing Git mutations or remote operations.
+
+The cache lowers repeated Git-read preparation on ext4, but fragmented cold
+snapshots remain above the accepted M003 latency budget. C010 remains the
+governing no-production-admission decision until the complete performance and
+compatibility gates pass.
+
 ### Mutation path
 
 `GitMutationExecutor::execute` runs the full 8-step pipeline:
