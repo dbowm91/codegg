@@ -435,6 +435,20 @@ async fn seed_provider_selection(
     }
 }
 
+fn seed_loopback_openai_credential() {
+    codegg::provider::CredentialStore::at_default_location()
+        .expect("open isolated credential store")
+        .put(
+            "c006-provider",
+            Some("acct-c006"),
+            codegg::provider::CredentialKind::ApiKey,
+            "loopback-test",
+            None,
+            vec![],
+        )
+        .expect("seed connection-bound loopback credential");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn model_facing_ci_watch_reaches_authenticated_idle_resume_without_injected_terminal() {
     let _env_lock = PROCESS_ENV_LOCK.lock().await;
@@ -479,6 +493,7 @@ async fn model_facing_ci_watch_reaches_authenticated_idle_resume_without_injecte
         ("GITHUB_TOKEN", String::new()),
         ("GH_TOKEN", String::new()),
     ]);
+    seed_loopback_openai_credential();
 
     let (provider_tx, mut provider_rx) = tokio::sync::mpsc::unbounded_channel();
     let (release_origin_tx, release_origin_rx) = mpsc::channel();
@@ -780,17 +795,7 @@ async fn model_facing_background_bash_completes_via_scheduler_without_autonomous
         ),
         ("OPENAI_API_KEY", "loopback-test".to_string()),
     ]);
-    codegg::provider::CredentialStore::at_default_location()
-        .expect("open isolated credential store")
-        .put(
-            "c006-provider",
-            Some("acct-c006"),
-            codegg::provider::CredentialKind::ApiKey,
-            "loopback-test",
-            None,
-            vec![],
-        )
-        .expect("seed connection-bound loopback credential");
+    seed_loopback_openai_credential();
     let (provider_tx, mut provider_rx) = tokio::sync::mpsc::unbounded_channel();
     let provider_handle = spawn_scripted_job_model(
         provider_listener,
