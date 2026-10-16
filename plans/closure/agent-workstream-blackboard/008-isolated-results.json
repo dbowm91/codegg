@@ -262,20 +262,32 @@
           "worktree_id": "a3cf5436-4729-4787-9171-aa159f126d91",
           "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
           "assignment": "Rust producer",
-          "latest_status": "running"
+          "latest_status": "interrupted",
+          "terminal": "interrupted",
+          "worktree_state_after_recovery": "ready",
+          "worktree_health_after_recovery": "clean"
         },
         {
           "run_id": "aef40549-6c94-4d68-9d56-482e05048b84",
           "worktree_id": "5b476e4a-c30a-4aa0-86e1-e9c7a41e965f",
           "repository_id": "ee89d6ef-88e9-4059-a344-08db21f148a5",
           "assignment": "Python consumer",
-          "latest_status": "running"
+          "latest_status": "interrupted",
+          "terminal": "interrupted",
+          "worktree_state_after_recovery": "ready",
+          "worktree_health_after_recovery": "clean"
         }
       ],
-      "same_session_followup_turns": 2,
-      "continuation_result": "Both later turns invoked wait_group on the live group and returned normally without authorization errors; each observed both children running.",
-      "latest_observation": "Both children remain running with no terminal result. Session usage rows include parent follow-up turns and cannot be attributed to child progress. No effectiveness conclusion is supported.",
-      "classification": "pending/incomplete; excluded from success and performance denominators"
+      "same_session_followup_turns": 8,
+      "continuation_result": "Seven later turns invoked wait_group and returned normally without authorization errors. Six observed both children running; the final post-cancellation wait observed the group cancelled and both children cancelling.",
+      "cancellation": "task.cancel_group was called once. Both child runs remained cancelling; the isolated daemon was then stopped and restarted, and scheduler recovery marked both children interrupted. Both managed worktrees were restored to ready with clean health and no changes.",
+      "last_safe_boundaries": {
+        "rust": "before_provider_turn",
+        "python": "before_provider_turn"
+      },
+      "usage_attribution": "Session-level usage rows include parent follow-up turns and cannot be attributed to child progress.",
+      "latest_observation": "Neither child produced a terminal agent result or worktree edits. No effectiveness conclusion is supported.",
+      "classification": "incomplete; excluded from success and performance denominators"
     }
   }
 }
