@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::Read;
+use std::net::ToSocketAddrs;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -98,6 +99,44 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
     udp6.set_read_timeout(Some(Duration::from_secs(2)))
         .expect("set IPv6 UDP timeout");
     let udp6_addr = udp6.local_addr().expect("IPv6 UDP address");
+
+    // Establish that each host-local fixture is reachable before asking the
+    // contained child to prove the opposite. Without these controls a broken
+    // listener or an IPv6-disabled runner could look like successful network
+    // isolation.
+    for address in [tcp4_addr, tcp6_addr] {
+        let stream = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))
+            .unwrap_or_else(|error| panic!("host positive-control TCP {address} failed: {error}"));
+        drop(stream);
+        let listener = if address.is_ipv4() { &tcp4 } else { &tcp6 };
+        let (accepted, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("accept host positive-control TCP {address}: {error}"));
+        drop(accepted);
+    }
+    for (socket, address) in [(&udp4, udp4_addr), (&udp6, udp6_addr)] {
+        socket
+            .send_to(b"host-positive-control", address)
+            .unwrap_or_else(|error| panic!("host positive-control UDP {address} failed: {error}"));
+        let mut buffer = [0_u8; 64];
+        let (received, peer) = socket
+            .recv_from(&mut buffer)
+            .unwrap_or_else(|error| panic!("receive host positive-control UDP {address}: {error}"));
+        assert_eq!(&buffer[..received], b"host-positive-control");
+        assert_eq!(peer.ip(), address.ip());
+    }
+
+    // The negative DNS/external probes below are meaningful only when this
+    // runner has working resolver and outbound TCP access. GitHub is a stable
+    // external endpoint already required by hosted checkout and CI setup.
+    let external_address = ("github.com", 443)
+        .to_socket_addrs()
+        .expect("host positive-control DNS lookup for github.com")
+        .next()
+        .expect("host DNS returned no GitHub addresses");
+    let external = std::net::TcpStream::connect_timeout(&external_address, Duration::from_secs(5))
+        .expect("host positive-control outbound TCP to github.com:443");
+    drop(external);
 
     // Keep a host-connected TCP socket open across the launch. M004's
     // close-range handoff must remove this bridge before the helper execs.
