@@ -136,3 +136,15 @@ Clippy, then stopped after 6,324 tests at the timing-sensitive
 5 ms budget). The tool-advisor receipt correction did not fail; the suite
 stopped before reaching it. This does not replace the still-unverified status
 of the earlier run recorded above, nor does it establish a full-suite pass.
+
+### Reconciled-head CI completion (2026-10-16)
+
+After the Linux branch was merged with `main` at `68f9358d`, exact merged-head
+CI [38860500106](https://github.com/dbowm91/codegg/actions/runs/38860500106)
+passed the ADR identity guard, all other repository guards, formatting,
+workspace Clippy, Eggwork fixture prebuild, trusted sandbox-helper build, and
+the full workspace suite (14,019 passed, 7 skipped). The historical receipt
+coverage therefore passed in the completed suite; the previous benchmark
+interruption did not recur. This closes the recorded integration-CI evidence
+gap for this receipt correction without changing its negative disposition or
+M003's separate no-production-admission decision.
