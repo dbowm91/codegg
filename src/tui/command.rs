@@ -1403,6 +1403,8 @@ mod tests {
             B::ModelsRefresh,
             B::Variants,
             B::Fork,
+            B::NewWorktree,
+            B::ForkWorktree,
             B::Workspaces,
             B::Worktree,
             B::Editor,

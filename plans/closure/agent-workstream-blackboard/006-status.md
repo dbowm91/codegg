@@ -74,12 +74,12 @@ rustup run 1.89-aarch64-apple-darwin cargo test --target aarch64-apple-darwin \
   remote. The earlier hosted run `38866058427` failed this test because the
   source fixture had no repository lineage; 1,080 tests had passed before
   fail-fast stopped that run.
-- Exact-head hosted CI run `38868243512` passed its guards and workspace Clippy,
-  then stopped at `tui::command::tests::built_in_command_count_matches_release_docs`
-  (165 runtime commands vs. stale expected/documented count 163). This is an
-  unrelated count assertion exposed by the two M006 commands; the assertion
-  and command-count docs are corrected locally, and the next exact-head hosted
-  run is pending. Do not claim green hosted CI until it passes.
+- Exact-head hosted run `38868243512` passed guards and workspace Clippy but
+  failed the stale count assertion (165 runtime commands vs. expected 163).
+  Run `38869913826` passed that assertion and command-doc count check, but
+  failed the exhaustive action list because it omitted the two M006 actions.
+  Both assertions are now updated locally; another exact-head hosted run is
+  pending. Do not claim green hosted CI until it passes.
 
 ## 5. Invariant review
 

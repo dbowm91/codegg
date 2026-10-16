@@ -62,10 +62,12 @@ On the implementation branch, `bash scripts/verify.sh quick`, focused
 M006/M007 tests, formatting, `git diff --check`, execution-ownership and
 scheduler-bypass guards passed. Exact-head hosted run 38868243512 passed
 formatting, all configured repository guards, workspace Clippy and sandbox
-helper build, then stopped at the unrelated stale built-in slash-command count
-assertion (165 runtime commands vs. 163 documented). The source assertion and
-authoritative docs are corrected; the next exact-head run is pending. Do not
-use this record as a green hosted-CI claim until it passes.
+helper build, then stopped at stale slash-command invariants. Run 38868243512
+failed the count assertion (165 runtime commands vs. 163 expected); run
+38869913826 passed the corrected count and command-doc assertions but failed
+the exhaustive built-in action list, which omitted the two M006 actions. That
+list is corrected; the next exact-head run is pending. Do not use this record
+as a green hosted-CI claim until it passes.
 
 ## 5. Security and recovery review
 
