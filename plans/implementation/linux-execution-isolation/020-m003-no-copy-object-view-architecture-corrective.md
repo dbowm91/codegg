@@ -80,6 +80,17 @@ fixed namespace-start overhead, though its additive p95 cost is under 3 ms.
 The helper handshake may add further latency, and the all-operation impact
 still needs an explicit admission interpretation.
 
+Thirty cold-advised `git cat-file commit HEAD` pairs were also run per shape,
+evicting the loose commit file or its containing pack/index with
+`POSIX_FADV_DONTNEED` before each candidate and baseline operation. Packed
+overlay p95/max was 5.26/6.06 ms versus direct 2.62/2.67 ms; fragmented
+overlay p95/max was 3.91/4.84 ms versus direct 1.50/1.55 ms. This controls
+the requested commit object's file pages, not every index/tree page a broader
+status operation may access, and is still a best-effort cold-advised result
+rather than a global cache flush. It does show that the no-copy path's cold
+operation cost is bounded by namespace startup and the object actually read,
+instead of copying the entire object store.
+
 For comparison, the existing private-copy path's 20-sample warm preparation
 p95 was 0.049 ms packed / 0.048 ms fragmented. Warm end-to-end status p95 was
 14.90 ms packed versus 13.43 ms paired baseline, and 13.67 ms fragmented versus
