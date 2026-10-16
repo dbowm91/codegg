@@ -2176,13 +2176,37 @@ fn job_eligible(
 }
 
 fn build_permit_dimensions(job: &JobRecord) -> PermitDimensions {
+    let workspace_id = job.workspace_id.as_str().to_owned();
+    let exclusivity_keys = job
+        .resource_request
+        .exclusivity_keys
+        .iter()
+        .map(|key| match key.as_str() {
+            "exclusive:workspace-mutation" | "workspace-mutation" => {
+                format!("exclusive:workspace-mutation:{workspace_id}")
+            }
+            "exclusive:worktree-mutation" | "worktree-mutation" => {
+                format!("exclusive:worktree-mutation:{workspace_id}")
+            }
+            other => other.to_owned(),
+        })
+        .collect();
     PermitDimensions {
         cpu_weight: job.resource_request.cpu_weight,
         memory_mb_hint: job.resource_request.memory_mb_hint,
         process_slots: job.resource_request.process_slots,
         io_weight: job.resource_request.io_weight,
         network_slots: job.resource_request.network_slots,
-        exclusivity_keys: job.resource_request.exclusivity_keys.clone(),
+        exclusivity_keys,
+        workspace_id: Some(workspace_id),
+        // Derive the effective quota from durable typed job identity so
+        // pre-M007 queued Build records (whose serde-defaulted request has
+        // zero slots) enter the new admission policy after restart too.
+        workspace_build_slots: if job.kind == codegg_core::jobs::JobKind::Build {
+            1
+        } else {
+            0
+        },
     }
 }
 

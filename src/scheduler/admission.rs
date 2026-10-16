@@ -47,6 +47,7 @@ pub enum BlockReason {
     InsufficientMemory { requested: u64, available: u64 },
     InsufficientIoWeight { requested: u32, available: u32 },
     InsufficientNetworkSlots { requested: u16, available: u16 },
+    WorkspaceBuildSlots { requested: u16, available: u16 },
     KeyContended { key: String },
     QueueFull,
 }
@@ -60,6 +61,8 @@ pub enum UnschedulableReason {
     MemoryExceedsBudget { requested: u64, budget: u64 },
     IoWeightExceedsBudget { requested: u32, budget: u32 },
     NetworkSlotsExceedBudget { requested: u16, budget: u32 },
+    WorkspaceBuildSlotsExceedLimit { requested: u16, limit: u16 },
+    WorkspaceBuildMissingWorkspace,
 }
 
 /// Internal admission state. Held under a `Mutex`; the lock is held
@@ -76,6 +79,7 @@ struct InnerState {
     /// conflicting key like `workspace-mutation` must be exclusive
     /// (count > 0).
     held_keys: HashMap<String, u32>,
+    workspace_build_slots: HashMap<String, u32>,
     /// Total rejected (TemporarilyBlocked) requests since boot.
     rejected: u64,
     /// Total impossible (Unschedulable) requests since boot.
@@ -93,6 +97,7 @@ pub struct AdmissionState {
     pub used_io: u32,
     pub used_network: u32,
     pub held_keys: HashMap<String, u32>,
+    pub workspace_build_slots: HashMap<String, u32>,
 }
 
 #[derive(Debug)]
@@ -196,11 +201,45 @@ impl AdmissionController {
                 available: budget.max_network_slots.saturating_sub(g.used_network) as u16,
             });
         }
+        if dims.workspace_build_slots > 0 {
+            let workspace = dims.workspace_id.as_deref().expect(
+                "check_impossible rejects build quota requests without a canonical workspace",
+            );
+            let used = g.workspace_build_slots.get(workspace).copied().unwrap_or(0);
+            let requested = dims.workspace_build_slots as u32;
+            if used + requested > budget.max_builds_per_workspace as u32 {
+                g.rejected += 1;
+                return AdmissionDecision::TemporarilyBlocked(BlockReason::WorkspaceBuildSlots {
+                    requested: dims.workspace_build_slots,
+                    available: (budget.max_builds_per_workspace as u32 - used) as u16,
+                });
+            }
+            if g.held_keys
+                .get(&format!("workspace-mutation:{workspace}"))
+                .copied()
+                .unwrap_or(0)
+                > 0
+                || g.held_keys.get("workspace-mutation").copied().unwrap_or(0) > 0
+            {
+                g.rejected += 1;
+                return AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended {
+                    key: format!("workspace-mutation:{workspace}"),
+                });
+            }
+        }
         // Exclusivity keys: a key is "conflicting" if its name starts
         // with `exclusive:`. All other keys are read-only/no-conflict.
         for key in &dims.exclusivity_keys {
             if key.starts_with("exclusive:") {
                 let bare = key.trim_start_matches("exclusive:").to_string();
+                if let Some(workspace) = bare.strip_prefix("workspace-mutation:") {
+                    if g.workspace_build_slots.get(workspace).copied().unwrap_or(0) > 0 {
+                        g.rejected += 1;
+                        return AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended {
+                            key: format!("workspace-build:{workspace}"),
+                        });
+                    }
+                }
                 if g.held_keys.get(&bare).copied().unwrap_or(0) > 0 {
                     g.rejected += 1;
                     return AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended {
@@ -222,6 +261,12 @@ impl AdmissionController {
                 let bare = key.trim_start_matches("exclusive:").to_string();
                 *g.held_keys.entry(bare).or_insert(0) += 1;
             }
+        }
+        if dims.workspace_build_slots > 0 {
+            let workspace = dims.workspace_id.as_ref().expect("validated above");
+            *g.workspace_build_slots
+                .entry(workspace.clone())
+                .or_insert(0) += dims.workspace_build_slots as u32;
         }
         drop(g);
         self.admitted_total.fetch_add(1, Ordering::SeqCst);
@@ -265,6 +310,15 @@ impl AdmissionController {
                 budget: budget.max_network_slots,
             });
         }
+        if dims.workspace_build_slots > budget.max_builds_per_workspace {
+            return Some(UnschedulableReason::WorkspaceBuildSlotsExceedLimit {
+                requested: dims.workspace_build_slots,
+                limit: budget.max_builds_per_workspace,
+            });
+        }
+        if dims.workspace_build_slots > 0 && dims.workspace_id.is_none() {
+            return Some(UnschedulableReason::WorkspaceBuildMissingWorkspace);
+        }
         None
     }
 
@@ -276,6 +330,16 @@ impl AdmissionController {
         g.used_memory = g.used_memory.saturating_sub(dims.memory_mb_hint);
         g.used_io = g.used_io.saturating_sub(dims.io_weight);
         g.used_network = g.used_network.saturating_sub(dims.network_slots as u32);
+        if dims.workspace_build_slots > 0 {
+            if let Some(workspace) = dims.workspace_id.as_ref() {
+                if let Some(slots) = g.workspace_build_slots.get_mut(workspace) {
+                    *slots = slots.saturating_sub(dims.workspace_build_slots as u32);
+                    if *slots == 0 {
+                        g.workspace_build_slots.remove(workspace);
+                    }
+                }
+            }
+        }
         for key in &dims.exclusivity_keys {
             if key.starts_with("exclusive:") {
                 let bare = key.trim_start_matches("exclusive:").to_string();
@@ -300,6 +364,7 @@ impl AdmissionController {
             used_io: g.used_io,
             used_network: g.used_network,
             held_keys: g.held_keys.clone(),
+            workspace_build_slots: g.workspace_build_slots.clone(),
         }
     }
 }
@@ -383,6 +448,54 @@ mod tests {
             AdmissionDecision::Admitted(g) => g,
             other => panic!("expected admit after release, got {:?}", other),
         };
+    }
+
+    #[test]
+    fn build_slots_are_limited_per_workspace_and_release_with_permit() {
+        let c = Arc::new(make());
+        let build = |workspace: &str| PermitDimensions {
+            workspace_id: Some(workspace.to_owned()),
+            workspace_build_slots: 1,
+            ..PermitDimensions::default()
+        };
+        let first = match c.try_admit_arc(&build("ws-a")) {
+            AdmissionDecision::Admitted(permit) => permit,
+            other => panic!("expected first workspace build to admit, got {other:?}"),
+        };
+        let independent = match c.try_admit_arc(&build("ws-b")) {
+            AdmissionDecision::Admitted(permit) => permit,
+            other => panic!("different workspace should admit concurrently, got {other:?}"),
+        };
+        assert!(matches!(
+            c.try_admit_arc(&build("ws-a")),
+            AdmissionDecision::TemporarilyBlocked(BlockReason::WorkspaceBuildSlots { .. })
+        ));
+        drop(first);
+        let resumed = c.try_admit_arc(&build("ws-a"));
+        assert!(matches!(resumed, AdmissionDecision::Admitted(_)));
+        drop(independent);
+    }
+
+    #[test]
+    fn workspace_build_and_mutation_permits_exclude_each_other() {
+        let c = Arc::new(make());
+        let build = PermitDimensions {
+            workspace_id: Some("ws-a".to_owned()),
+            workspace_build_slots: 1,
+            ..PermitDimensions::default()
+        };
+        let mutation = PermitDimensions {
+            exclusivity_keys: vec!["exclusive:workspace-mutation:ws-a".to_owned()],
+            ..PermitDimensions::default()
+        };
+        let _build = match c.try_admit_arc(&build) {
+            AdmissionDecision::Admitted(permit) => permit,
+            other => panic!("expected build permit, got {other:?}"),
+        };
+        assert!(matches!(
+            c.try_admit_arc(&mutation),
+            AdmissionDecision::TemporarilyBlocked(BlockReason::KeyContended { .. })
+        ));
     }
 
     #[test]

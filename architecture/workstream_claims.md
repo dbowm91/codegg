@@ -71,6 +71,13 @@ summaries from the authorized group-scoped reader and filters them to the
 source session's project/workspace/group. Callers must preserve the source
 projection's event cursor for peer observation.
 
+Group workstream member projections may also include a linked scheduler-owned
+job's opaque ID, typed kind, and current durable phase/terminal state. The
+projector requires an exact workspace match and emits none of the job's
+summary, command arguments, environment, logs, or artifact paths. This is a
+point-in-time observation; it does not trigger another model turn or grant
+control over the job.
+
 ## Verification
 
 ```bash

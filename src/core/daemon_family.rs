@@ -111,6 +111,8 @@ impl DaemonRequestFamily {
             CoreRequest::SessionDelete { .. } => Self::Sessions,
             CoreRequest::SessionExport { .. } => Self::Sessions,
             CoreRequest::SessionFork { .. } => Self::Sessions,
+            CoreRequest::SessionLaunchInWorktree { .. }
+            | CoreRequest::SessionForkInWorktree { .. } => Self::Sessions,
             CoreRequest::SessionImportData { .. } => Self::Sessions,
             CoreRequest::SessionLifecycleGet { .. } => Self::Sessions,
             CoreRequest::SessionList { .. } => Self::Sessions,

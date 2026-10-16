@@ -565,6 +565,157 @@ pub(crate) fn start_fork_session(app: &mut App, session_id: String) {
     );
 }
 
+pub(crate) fn start_fork_session_worktree(
+    app: &mut App,
+    session_id: String,
+    placement: crate::protocol::core::SessionWorktreePlacement,
+    idempotency_key: String,
+) {
+    let request_id = app.dialog_state.new_session_request.begin();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let retry_key = idempotency_key.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "fork_session_worktree",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::NewSessionCreated {
+                    request_id,
+                    session: None,
+                    error: Some("Core unavailable — check daemon status with /doctor".into()),
+                    info: None,
+                });
+            };
+            let request = crate::core::new_request(
+                format!("session-worktree-fork-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionForkInWorktree {
+                    idempotency_key,
+                    session_id,
+                    placement,
+                },
+            );
+            let (session, error, info) = match core_client.request(request).await {
+                Ok(CoreResponse::SessionWorktreeLaunched {
+                    session, worktree, ..
+                }) => {
+                    let parent = session
+                        .parent_id
+                        .as_deref()
+                        .unwrap_or("source session")
+                        .to_owned();
+                    (
+                        Some(session),
+                        None,
+                        Some(format!(
+                            "Forked from {} into managed worktree {} on branch {} ({}, {})",
+                            parent,
+                            worktree.worktree_id,
+                            worktree.branch.as_deref().unwrap_or("(detached)"),
+                            worktree.state,
+                            worktree.health
+                        )),
+                    )
+                }
+                Ok(CoreResponse::Error { code, message }) => (
+                    None,
+                    Some(format!(
+                        "{code}: {message}; retry with /fork-worktree <placement> {retry_key}"
+                    )),
+                    None,
+                ),
+                Ok(other) => (
+                    None,
+                    Some(format!("unexpected core response: {other:?}")),
+                    None,
+                ),
+                Err(error) => (None, Some(error.to_string()), None),
+            };
+            Some(TuiCommand::NewSessionCreated {
+                request_id,
+                session,
+                error,
+                info,
+            })
+        },
+    );
+}
+
+pub(crate) fn start_new_session_worktree(
+    app: &mut App,
+    project_id: String,
+    workspace_id: String,
+    placement: crate::protocol::core::SessionWorktreePlacement,
+    idempotency_key: String,
+) {
+    let request_id = app.dialog_state.new_session_request.begin();
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let retry_key = idempotency_key.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "new_session_worktree",
+        async move {
+            let Some(core_client) = core_client else {
+                return Some(TuiCommand::NewSessionCreated {
+                    request_id,
+                    session: None,
+                    error: Some("Core unavailable — check daemon status with /doctor".into()),
+                    info: None,
+                });
+            };
+            let request = crate::core::new_request(
+                format!("session-worktree-new-{}", uuid::Uuid::new_v4()),
+                CoreRequest::SessionLaunchInWorktree {
+                    idempotency_key,
+                    project_id,
+                    workspace_id,
+                    title: None,
+                    placement,
+                },
+            );
+            let (session, error, info) = match core_client.request(request).await {
+                Ok(CoreResponse::SessionWorktreeLaunched {
+                    session, worktree, ..
+                }) => (
+                    Some(session),
+                    None,
+                    Some(format!(
+                        "Started in managed worktree {} on branch {} ({}, {})",
+                        worktree.worktree_id,
+                        worktree.branch.as_deref().unwrap_or("(detached)"),
+                        worktree.state,
+                        worktree.health
+                    )),
+                ),
+                Ok(CoreResponse::Error { code, message }) => (
+                    None,
+                    Some(format!(
+                        "{code}: {message}; retry with /new-worktree <placement> {retry_key}"
+                    )),
+                    None,
+                ),
+                Ok(other) => (
+                    None,
+                    Some(format!("unexpected core response: {other:?}")),
+                    None,
+                ),
+                Err(error) => (None, Some(error.to_string()), None),
+            };
+            Some(TuiCommand::NewSessionCreated {
+                request_id,
+                session,
+                error,
+                info,
+            })
+        },
+    );
+}
+
 pub(crate) fn start_bulk_delete(app: &mut App, session_ids: Vec<String>) {
     let request_id = next_session_mutation_id(app);
     let count = session_ids.len();
@@ -1858,6 +2009,7 @@ pub(crate) fn start_new_session(app: &mut App) {
                 request_id,
                 session,
                 error,
+                info: None,
             })
         },
     );
@@ -1870,6 +2022,7 @@ pub(crate) fn apply_new_session_created(
     request_id: u64,
     session: Option<crate::protocol::dto::Session>,
     error: Option<String>,
+    info: Option<String>,
 ) {
     if let Some(err) = error {
         if !app
@@ -1894,6 +2047,9 @@ pub(crate) fn apply_new_session_created(
     // into the active tab, which is exactly what a fresh session needs.
     if let Ok(session) = crate::protocol_conversions::dto_to_session(session) {
         app.set_session(session);
+        if let Some(info) = info {
+            app.messages_state.toasts.info(&info);
+        }
     } else {
         app.messages_state
             .toasts

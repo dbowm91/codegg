@@ -386,6 +386,21 @@ from where the session is now, so truncating from the old end would drop the
 turn it was branched from. Only parts belonging to a copied message come
 along, since `part.message_id` is a foreign key.
 
+The daemon's additive `SessionLaunchInWorktree` and `SessionForkInWorktree`
+requests create or fork directly into a managed isolated checkout. They
+return the concrete session, worktree, and workspace identities. Managed
+checkout reservation/creation is durable in `WorktreeService`; session
+creation and its project/workspace binding commit together. A bounded
+principal-scoped idempotency key gives exact retries the same identities.
+Existing managed checkouts must belong to the same project/repository and be
+idle and clean. Partial failures retain the checkout for retry or attention.
+The CLI accepts `--idempotency-key` for a restart-safe retry; TUI slash
+commands accept the same optional key and report the managed branch and
+checkout health after launch. Existing `--fork` and `/fork` retain their
+conversation-only behavior.
+This session capability does not depend on shared-checkout writer containment
+or enable shared mutation.
+
 ### PartStore (`session/store.rs:2347`)
 
 Methods: `new`, `create`, `get`, `list_by_message`, `list_by_session`,

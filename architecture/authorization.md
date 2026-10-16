@@ -536,6 +536,8 @@ not a Core operation):
 | `session_delete` | via_session | `session.create` |
 | `session_export` | via_session | `session.read` |
 | `session_fork` | via_session | `session.read` |
+| `session_fork_in_worktree` | via_session | `session.create` |
+| `session_launch_in_worktree` | direct_project | `session.create` |
 | `session_import_data` | opaque | `session.create` |
 | `session_lifecycle_get` | via_session | `session.read` |
 | `session_list` | direct_project | `session.read` |

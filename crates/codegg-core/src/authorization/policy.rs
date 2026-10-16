@@ -281,6 +281,11 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::SessionCreate),
         ),
+        R::SessionLaunchInWorktree { .. } => OperationDescriptor::new(
+            "session_launch_in_worktree",
+            ScopeKind::DirectProject,
+            Some(Capability::SessionCreate),
+        ),
         R::SessionAttach { .. } => OperationDescriptor::new(
             "session_attach",
             ScopeKind::ViaSession,
@@ -305,6 +310,11 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             "session_fork",
             ScopeKind::ViaSession,
             Some(Capability::SessionRead),
+        ),
+        R::SessionForkInWorktree { .. } => OperationDescriptor::new(
+            "session_fork_in_worktree",
+            ScopeKind::ViaSession,
+            Some(Capability::SessionCreate),
         ),
         R::SessionDelete { .. } => OperationDescriptor::new(
             "session_delete",

@@ -551,6 +551,132 @@ impl ProjectStorage {
         Ok(output)
     }
 
+    /// Associate a registered workspace root with its verified managed
+    /// worktree. Repeating the same association is idempotent; an unrelated
+    /// or unresolved binding is never overwritten.
+    pub async fn bind_managed_worktree_workspace(
+        &self,
+        workspace: &WorkspaceRecord,
+        project_id: &ProjectId,
+        repository_id: &RepositoryId,
+        worktree_id: &crate::identity::WorktreeId,
+        source: &str,
+    ) -> Result<WorkspaceBindingRecord, ProjectStorageError> {
+        if source.is_empty()
+            || source.len() > MAX_LINEAGE_VALUE_LENGTH
+            || source.chars().any(char::is_control)
+        {
+            return Err(ProjectStorageError::InvalidValue(
+                "invalid managed-worktree binding source".into(),
+            ));
+        }
+        if self.get_project(project_id).await?.is_none() {
+            return Err(ProjectStorageError::NotFound(format!(
+                "project {project_id}"
+            )));
+        }
+        if self.get_repository(repository_id).await?.is_none() {
+            return Err(ProjectStorageError::NotFound(format!(
+                "repository {repository_id}"
+            )));
+        }
+        let mut tx = self.pool.begin().await.map_err(db_error)?;
+        let now = Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO workspace (id, canonical_root, display_name, time_created, time_last_opened, time_archived) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(workspace.id.as_str())
+        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+        .bind(&workspace.display_name)
+        .bind(workspace.created_at.timestamp_millis())
+        .bind(workspace.last_opened_at.timestamp_millis())
+        .bind(workspace.archived_at.map(|value| value.timestamp_millis()))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        let persisted_root: Option<String> =
+            sqlx::query_scalar("SELECT canonical_root FROM workspace WHERE id = ?")
+                .bind(workspace.id.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_error)?;
+        if persisted_root.as_deref() != Some(workspace.canonical_root.to_string_lossy().as_ref()) {
+            return Err(ProjectStorageError::Conflict(
+                "workspace identity is already bound to a different canonical root".into(),
+            ));
+        }
+
+        let existing: Option<(String, Option<String>, Option<String>, String, i64)> = sqlx::query_as(
+            "SELECT project_id, repository_id, worktree_id, status, revision FROM workspace_project_binding WHERE workspace_id = ?",
+        )
+        .bind(workspace.id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_error)?;
+        match existing {
+            Some((project, Some(repository), Some(worktree), status, _))
+                if project == project_id.as_str()
+                    && repository == repository_id.as_str()
+                    && worktree == worktree_id.as_str()
+                    && status == "resolved" => {}
+            Some((project, repository, worktree, status, revision))
+                if project == project_id.as_str()
+                    && repository
+                        .as_deref()
+                        .is_none_or(|id| id == repository_id.as_str())
+                    && worktree
+                        .as_deref()
+                        .is_none_or(|id| id == worktree_id.as_str())
+                    && status == "resolved" =>
+            {
+                let result = sqlx::query(
+                            "UPDATE workspace_project_binding SET repository_id = ?, worktree_id = ?, locator = ?, source = ?, revision = revision + 1, time_updated = ? WHERE workspace_id = ? AND revision = ?",
+                        )
+                        .bind(repository_id.as_str())
+                        .bind(worktree_id.as_str())
+                        .bind(workspace.canonical_root.to_string_lossy().as_ref())
+                        .bind(source)
+                        .bind(now)
+                        .bind(workspace.id.as_str())
+                        .bind(revision)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(db_error)?;
+                if result.rows_affected() != 1 {
+                    return Err(ProjectStorageError::Conflict(
+                        "workspace binding changed during managed-worktree association".into(),
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(ProjectStorageError::Conflict(
+                    "workspace already has a different or unresolved project/worktree binding"
+                        .into(),
+                ));
+            }
+            None => {
+                sqlx::query(
+                    "INSERT INTO workspace_project_binding (workspace_id, project_id, repository_id, worktree_id, node_id, locator, status, source, revision, time_created, time_updated) VALUES (?, ?, ?, ?, NULL, ?, 'resolved', ?, 1, ?, ?)",
+                )
+                .bind(workspace.id.as_str())
+                .bind(project_id.as_str())
+                .bind(repository_id.as_str())
+                .bind(worktree_id.as_str())
+                .bind(workspace.canonical_root.to_string_lossy().as_ref())
+                .bind(source)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_error)?;
+            }
+        }
+        tx.commit().await.map_err(db_error)?;
+        self.workspace_binding(&workspace.id)
+            .await?
+            .ok_or_else(|| ProjectStorageError::NotFound(format!("workspace {}", workspace.id)))
+    }
+
     pub async fn rebind_workspace(
         &self,
         workspace_id: &WorkspaceId,

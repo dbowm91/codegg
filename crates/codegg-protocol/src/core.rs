@@ -1184,6 +1184,13 @@ pub enum CoreResponse {
     Session {
         session: crate::dto::Session,
     },
+    /// M006: result of a recoverable isolated session/worktree launch.
+    SessionWorktreeLaunched {
+        session: crate::dto::Session,
+        worktree: crate::dto::ManagedWorktreeDto,
+        workspace_id: String,
+        resumed: bool,
+    },
     SessionMessages {
         session_id: String,
         messages: Vec<crate::dto::Message>,
@@ -1965,6 +1972,15 @@ pub struct ClientSnapshot {
     pub attached_sessions: Vec<String>,
 }
 
+/// M006: requested session placement. An opaque path is never used as a
+/// substitute for an authorized managed-worktree identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SessionWorktreePlacement {
+    NewManaged { base_commit: Option<String> },
+    ExistingManaged { worktree_id: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CoreRequest {
@@ -2194,6 +2210,23 @@ pub enum CoreRequest {
     },
     SessionFork {
         session_id: String,
+    },
+    /// M006: create a fresh session in a new or existing authorized managed
+    /// isolated worktree. The idempotency key makes the daemon-owned
+    /// worktree/workspace/session saga safe to retry after a lost response.
+    SessionLaunchInWorktree {
+        idempotency_key: String,
+        project_id: String,
+        workspace_id: String,
+        title: Option<String>,
+        placement: SessionWorktreePlacement,
+    },
+    /// M006: fork conversation history into a new or existing authorized
+    /// managed isolated worktree. The legacy `SessionFork` remains unchanged.
+    SessionForkInWorktree {
+        idempotency_key: String,
+        session_id: String,
+        placement: SessionWorktreePlacement,
     },
     SessionDelete {
         session_id: String,

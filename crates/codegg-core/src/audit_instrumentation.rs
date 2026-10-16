@@ -553,6 +553,11 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("session_rename", "session_attach"),
     ("session_import_data", "session_create"),
     ("session_fork", "session_create"),
+    // M006 worktree placement creates/binds a session after a durable
+    // checkout saga. Attribute the user-visible session creation using
+    // the existing structural session action; worktree ids stay locators.
+    ("session_launch_in_worktree", "session_create"),
+    ("session_fork_in_worktree", "session_create"),
     ("turn_submit", "prompt_submit"),
     ("session_prompt_submit", "prompt_submit"),
     ("human_shell_promotion_stage", "prompt_submit"),

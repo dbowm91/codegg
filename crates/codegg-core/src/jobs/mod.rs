@@ -690,6 +690,10 @@ pub struct ResourceRequest {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// M007: build-class slots charged to the canonical job workspace.
+    /// Missing in historical job JSON and zero for non-build work.
+    #[serde(default)]
+    pub workspace_build_slots: u16,
 }
 
 impl Default for ResourceRequest {
@@ -705,6 +709,7 @@ impl Default for ResourceRequest {
             io_weight: 1,
             network_slots: 0,
             exclusivity_keys: Vec::new(),
+            workspace_build_slots: 0,
         }
     }
 }
@@ -719,6 +724,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 1,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::Build => Self {
                 cpu_weight: 3,
@@ -726,7 +732,8 @@ impl ResourceRequest {
                 process_slots: 1,
                 io_weight: 3,
                 network_slots: 0,
-                exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                exclusivity_keys: Vec::new(),
+                workspace_build_slots: 1,
             },
             JobKind::Lint => Self {
                 cpu_weight: 1,
@@ -735,6 +742,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::Format => Self {
                 cpu_weight: 1,
@@ -743,6 +751,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:workspace-mutation".to_string()],
+                workspace_build_slots: 0,
             },
             JobKind::Test => Self {
                 cpu_weight: 2,
@@ -751,6 +760,7 @@ impl ResourceRequest {
                 io_weight: 2,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::Shell | JobKind::ManagedProcess => Self {
                 cpu_weight: 1,
@@ -759,6 +769,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::Python => Self {
                 cpu_weight: 1,
@@ -767,6 +778,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::GitRead => Self {
                 cpu_weight: 1,
@@ -775,6 +787,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::GitMutation => Self {
                 cpu_weight: 1,
@@ -783,6 +796,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: vec!["exclusive:worktree-mutation".to_string()],
+                workspace_build_slots: 0,
             },
             JobKind::Maintenance => Self {
                 cpu_weight: 1,
@@ -791,6 +805,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::ToolProgram => Self {
                 cpu_weight: 1,
@@ -799,6 +814,7 @@ impl ResourceRequest {
                 io_weight: 1,
                 network_slots: 0,
                 exclusivity_keys: Vec::new(),
+                workspace_build_slots: 0,
             },
             JobKind::Unsupported => Self::default(),
         }
@@ -2078,12 +2094,30 @@ mod tests {
         assert_eq!(req.memory_mb_hint, 256);
         assert_eq!(req.process_slots, 1);
         assert_eq!(req.network_slots, 0);
+        assert_eq!(req.workspace_build_slots, 0);
+        let mut historical = serde_json::to_value(req).unwrap();
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_build_slots");
+        let decoded: ResourceRequest = serde_json::from_value(historical).unwrap();
+        assert_eq!(decoded.workspace_build_slots, 0);
     }
 
     #[test]
     fn resource_request_for_kind_is_conservative() {
         let agent = ResourceRequest::for_kind(JobKind::AgentTurn);
         assert!(agent.network_slots >= 1);
+        let build = ResourceRequest::for_kind(JobKind::Build);
+        assert_eq!(build.workspace_build_slots, 1);
+        assert!(!build
+            .exclusivity_keys
+            .iter()
+            .any(|key| key == "exclusive:workspace-mutation"));
+        assert_eq!(
+            ResourceRequest::for_kind(JobKind::Test).workspace_build_slots,
+            0
+        );
         let format = ResourceRequest::for_kind(JobKind::Format);
         assert!(format
             .exclusivity_keys

@@ -1117,6 +1117,7 @@ impl CoreDaemon {
                 project_id: Some(project_id),
                 ..
             }
+            | CoreRequest::SessionLaunchInWorktree { project_id, .. }
             | CoreRequest::SessionCreateFromTemplate {
                 project_id: Some(project_id),
                 ..
@@ -3045,6 +3046,7 @@ impl CoreDaemon {
             | CoreRequest::SessionLoad { session_id }
             | CoreRequest::SessionMessagesLoad { session_id }
             | CoreRequest::SessionFork { session_id }
+            | CoreRequest::SessionForkInWorktree { session_id, .. }
             | CoreRequest::SessionDelete { session_id, .. }
             | CoreRequest::SessionArchive { session_id, .. }
             | CoreRequest::SessionRestore { session_id }
@@ -4595,6 +4597,187 @@ mod tests {
             project.project_id.as_str().to_string(),
             workspace.id.as_str().to_string(),
         )
+    }
+
+    fn init_worktree_test_repository(root: &std::path::Path) {
+        use std::process::Command;
+        // execution-ownership: test_only
+        let init = Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(root)
+            .output()
+            .expect("run git init");
+        assert!(init.status.success(), "git init failed: {:?}", init);
+        for (key, value) in [
+            ("user.name", "CodeGG Test"),
+            ("user.email", "test@example.com"),
+        ] {
+            // execution-ownership: test_only
+            let configured = Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root)
+                .output()
+                .expect("run git config");
+            assert!(
+                configured.status.success(),
+                "git config failed: {:?}",
+                configured
+            );
+        }
+        std::fs::write(root.join("README.md"), "base\n").expect("write repository fixture");
+        // execution-ownership: test_only
+        let add = Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .output()
+            .expect("run git add");
+        assert!(add.status.success(), "git add failed: {:?}", add);
+        // execution-ownership: test_only
+        let commit = Command::new("git")
+            .args(["commit", "-m", "base"])
+            .current_dir(root)
+            .output()
+            .expect("run git commit");
+        assert!(commit.status.success(), "git commit failed: {:?}", commit);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_session_launch_and_fork_are_idempotent_and_bound() {
+        let repository = tempfile::tempdir().unwrap();
+        init_worktree_test_repository(repository.path());
+        let managed_root = tempfile::tempdir().unwrap();
+        let pool = in_memory_pool().await;
+        let mut deps = CoreRuntimeDeps::new(Some(pool.clone()), None, None);
+        deps.worktree_service = Some(codegg_core::worktree_service::WorktreeService::sqlite(
+            pool.clone(),
+            managed_root.path().to_path_buf(),
+            Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+        ));
+        let daemon = CoreDaemon::with_deps(deps);
+        let (project_id, workspace_id) = seed_test_context(&daemon, repository.path()).await;
+
+        let launch = || {
+            crate::core::new_request(
+                uuid::Uuid::new_v4().to_string(),
+                CoreRequest::SessionLaunchInWorktree {
+                    idempotency_key: "launch-replay-1".into(),
+                    project_id: project_id.clone(),
+                    workspace_id: workspace_id.clone(),
+                    title: Some("isolated launch".into()),
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            )
+        };
+        let (first_result, concurrent_result) = tokio::join!(
+            daemon.handle_request(launch()),
+            daemon.handle_request(launch()),
+        );
+        let first = match first_result.unwrap() {
+            CoreResponse::SessionWorktreeLaunched {
+                session,
+                worktree,
+                workspace_id,
+                ..
+            } => {
+                assert_eq!(session.workspace_id.as_deref(), Some(workspace_id.as_str()));
+                assert_eq!(session.directory, worktree.path);
+                (session, worktree, workspace_id)
+            }
+            other => panic!("expected isolated launch, got {other:?}"),
+        };
+        let concurrent = match concurrent_result.unwrap() {
+            CoreResponse::SessionWorktreeLaunched {
+                session,
+                worktree,
+                workspace_id,
+                ..
+            } => (session, worktree, workspace_id),
+            other => panic!("expected concurrent identical launch, got {other:?}"),
+        };
+        assert_eq!(first.0.id, concurrent.0.id);
+        assert_eq!(first.1.worktree_id, concurrent.1.worktree_id);
+        assert_eq!(first.2, concurrent.2);
+        let replay = match daemon.handle_request(launch()).await.unwrap() {
+            CoreResponse::SessionWorktreeLaunched {
+                session,
+                worktree,
+                workspace_id,
+                resumed,
+            } => {
+                assert!(resumed);
+                (session, worktree, workspace_id)
+            }
+            other => panic!("expected idempotent launch replay, got {other:?}"),
+        };
+        assert_eq!(first.0.id, replay.0.id);
+        assert_eq!(first.1.worktree_id, replay.1.worktree_id);
+        assert_eq!(first.2, replay.2);
+
+        let source = match daemon
+            .handle_request(crate::core::new_request(
+                "m006-source-session".into(),
+                CoreRequest::SessionCreate {
+                    directory: repository.path().to_string_lossy().into_owned(),
+                    title: Some("source".into()),
+                    project_id: Some(project_id),
+                    workspace_id: Some(workspace_id),
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::Session { session } => session,
+            other => panic!("expected source session, got {other:?}"),
+        };
+        let fork = match daemon
+            .handle_request(crate::core::new_request(
+                "m006-fork-session".into(),
+                CoreRequest::SessionForkInWorktree {
+                    idempotency_key: "fork-replay-1".into(),
+                    session_id: source.id.clone(),
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::SessionWorktreeLaunched {
+                session, worktree, ..
+            } => {
+                assert_eq!(session.parent_id.as_deref(), Some(source.id.as_str()));
+                assert_ne!(session.workspace_id, source.workspace_id);
+                assert_eq!(session.directory, worktree.path);
+                session
+            }
+            other => panic!("expected isolated fork, got {other:?}"),
+        };
+        let replay = match daemon
+            .handle_request(crate::core::new_request(
+                "m006-fork-session-retry".into(),
+                CoreRequest::SessionForkInWorktree {
+                    idempotency_key: "fork-replay-1".into(),
+                    session_id: source.id,
+                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    },
+                },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::SessionWorktreeLaunched {
+                session, resumed, ..
+            } => {
+                assert!(resumed);
+                session
+            }
+            other => panic!("expected idempotent fork replay, got {other:?}"),
+        };
+        assert_eq!(fork.id, replay.id);
     }
 
     #[tokio::test]

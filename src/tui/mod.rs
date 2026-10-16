@@ -1967,7 +1967,7 @@ mod async_cmd_tests {
 
         let mut session = empty_session_dto();
         session.id = "new-session-1".into();
-        apply_new_session_created(&mut app, id, Some(session), None);
+        apply_new_session_created(&mut app, id, Some(session), None, None);
 
         assert!(
             !app.dialog_state.new_session_request.is_loading(),
@@ -1993,7 +1993,7 @@ mod async_cmd_tests {
 
         let mut session_a = empty_session_dto();
         session_a.id = "session-a".into();
-        apply_new_session_created(&mut app, id_a, Some(session_a), None);
+        apply_new_session_created(&mut app, id_a, Some(session_a), None, None);
         assert!(
             app.session_state.session.is_none(),
             "stale completion must not attach a session"
@@ -2001,7 +2001,7 @@ mod async_cmd_tests {
 
         let mut session_b = empty_session_dto();
         session_b.id = "session-b".into();
-        apply_new_session_created(&mut app, id_b, Some(session_b), None);
+        apply_new_session_created(&mut app, id_b, Some(session_b), None, None);
         assert_eq!(
             app.session_state.session.as_ref().map(|s| s.id.clone()),
             Some("session-b".to_string())
@@ -2012,7 +2012,7 @@ mod async_cmd_tests {
     fn apply_new_session_created_failure_surfaces_error() {
         let mut app = make_test_app();
         let id = app.dialog_state.new_session_request.begin();
-        apply_new_session_created(&mut app, id, None, Some("daemon unavailable".into()));
+        apply_new_session_created(&mut app, id, None, Some("daemon unavailable".into()), None);
 
         assert!(!app.dialog_state.new_session_request.is_loading());
         let toasts: Vec<String> = app

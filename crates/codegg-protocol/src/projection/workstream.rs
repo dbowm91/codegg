@@ -82,8 +82,19 @@ pub struct AgentWorkstreamMember {
 #[serde(tag = "availability", rename_all = "snake_case")]
 pub enum WorkstreamJobFact {
     NotLinked,
-    Observed { job_id: String, status: String },
-    Unavailable { job_id: String },
+    Observed {
+        job_id: String,
+        /// Additive, coarse scheduler-owned classification. Missing in
+        /// snapshots serialized before M007.
+        #[serde(default)]
+        kind: String,
+        /// Durable scheduler phase or terminal outcome; no command, args,
+        /// environment, log or artifact path is projected here.
+        status: String,
+    },
+    Unavailable {
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,6 +263,7 @@ fn project_member(
         {
             Some(job) => WorkstreamJobFact::Observed {
                 job_id: bounded(job_id),
+                kind: bounded(&job.kind),
                 status: bounded(&job.state),
             },
             None => WorkstreamJobFact::Unavailable {
@@ -347,6 +359,7 @@ mod tests {
             view.members[0].job,
             WorkstreamJobFact::Observed {
                 job_id: "job-a".into(),
+                kind: "agent_turn".into(),
                 status: "running".into()
             }
         );
@@ -428,6 +441,24 @@ mod tests {
             view.members[0].job,
             WorkstreamJobFact::Unavailable {
                 job_id: "job-a".into()
+            }
+        );
+    }
+
+    #[test]
+    fn older_job_facts_decode_without_a_kind() {
+        let fact: WorkstreamJobFact = serde_json::from_value(serde_json::json!({
+            "availability": "observed",
+            "job_id": "job-old",
+            "status": "queued"
+        }))
+        .unwrap();
+        assert_eq!(
+            fact,
+            WorkstreamJobFact::Observed {
+                job_id: "job-old".into(),
+                kind: String::new(),
+                status: "queued".into(),
             }
         );
     }

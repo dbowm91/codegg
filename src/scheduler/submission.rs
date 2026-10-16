@@ -112,6 +112,16 @@ impl JobSubmissionService {
         })
     }
 
+    /// Read one scheduler-owned job record for a daemon projection. Callers
+    /// must apply their own group/workspace authorization before exposing the
+    /// bounded fields they need.
+    pub async fn get_job(
+        &self,
+        job_id: &JobId,
+    ) -> Result<Option<JobRecord>, codegg_core::jobs::JobStoreError> {
+        self.store.get_job(job_id).await
+    }
+
     /// Construct a submission boundary that can attach the active goal
     /// snapshot to supervised Test/Subagent jobs. The goal is read at the
     /// host submission boundary; callers cannot supply or override it.
@@ -452,6 +462,11 @@ fn apply_resource_policy(spec: &mut NewJob) {
     if spec.resource_request == ResourceRequest::default() {
         spec.resource_request = ResourceRequest::for_kind(spec.kind);
     }
+    // The build quota is scheduler-owned classification derived from the
+    // typed job kind. A caller-supplied ResourceRequest may tune scalar
+    // budgets, but it cannot opt a build out of the per-workspace limit or
+    // charge non-build work against that limit.
+    spec.resource_request.workspace_build_slots = if spec.kind == JobKind::Build { 1 } else { 0 };
     // Legacy callers may carry the old unscoped names. Normalize them at the
     // single submission boundary so admission sees the intended keys.
     for key in &mut spec.resource_request.exclusivity_keys {
@@ -610,7 +625,9 @@ mod tests {
             assert!(profile.io_weight > 0, "{kind:?} must reserve IO");
             assert!(profile.process_slots > 0, "{kind:?} must reserve a process");
         }
-        assert!(ResourceRequest::for_kind(JobKind::Build)
+        let build = ResourceRequest::for_kind(JobKind::Build);
+        assert_eq!(build.workspace_build_slots, 1);
+        assert!(!build
             .exclusivity_keys
             .iter()
             .any(|key| key == "exclusive:workspace-mutation"));
@@ -618,6 +635,20 @@ mod tests {
             .exclusivity_keys
             .iter()
             .any(|key| key == "exclusive:worktree-mutation"));
+    }
+
+    #[test]
+    fn build_quota_is_derived_from_typed_kind_even_for_custom_resources() {
+        let mut build = spec(WorkspaceId::new_unchecked("ws-build"));
+        build.kind = JobKind::Build;
+        build.resource_request.workspace_build_slots = 0;
+        apply_resource_policy(&mut build);
+        assert_eq!(build.resource_request.workspace_build_slots, 1);
+
+        let mut test = spec(WorkspaceId::new_unchecked("ws-test"));
+        test.resource_request.workspace_build_slots = 99;
+        apply_resource_policy(&mut test);
+        assert_eq!(test.resource_request.workspace_build_slots, 0);
     }
 
     #[tokio::test(flavor = "current_thread")]

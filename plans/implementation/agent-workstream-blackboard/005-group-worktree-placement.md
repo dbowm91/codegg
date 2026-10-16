@@ -54,6 +54,15 @@ execution remains unavailable. M006 isolated session/worktree UX and M007
 per-workspace build admission are separately eligible and do not wait for this
 writer-containment gate.
 
+### M007 boundary update (2026-10-16)
+
+M007 scopes scheduler-owned legacy workspace/worktree mutation keys by the
+job's canonical `WorkspaceId` and adds a fixed build-slot quota. This narrows
+unrelated workspace contention, but does not satisfy the M005 writer gate:
+inline `AgentTurn` tools, persistent PTYs, human shell and other long-lived
+writers do not all acquire these job permits. M005 remains independently
+active and shared-checkout execution remains unavailable.
+
 ### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
 
 This is the implementation design being qualified in M005; it is not
@@ -121,7 +130,7 @@ be qualified:
 | Mutation surface | Current owner / evidence | Required M005 disposition |
 |---|---|---|
 | Native model-facing file transactions | `ToolBatchExecutor` in `src/agent/tool_batch.rs`, reached through `ToolBroker`; checkpoints and overlap handling are batch-local. `BrokerInvocationContext` has session/workspace/job/attempt identity but no typed worktree generation. | Resolve daemon-owned worktree scope and acquire the common permit over the whole transaction. Reject the mutation before any filesystem effect when scope is missing or stale. |
-| Finite scheduled processes (shell, Python, tests, build, formatter, Tool Program) | Scheduler-owned executors receive `JobExecutionContext` and resource permits, but the context has no typed worktree identity. Existing `ResourceRequest` workspace/worktree keys are global capacity keys, not checkout-scoped writer authority. | Acquire in the final executor after admission; retain until the process tree is reaped. Explicitly delegate a held permit to nested child jobs rather than reacquiring it. |
+| Finite scheduled processes (shell, Python, tests, build, formatter, Tool Program) | Scheduler-owned executors receive `JobExecutionContext` and resource permits, but the context has no typed worktree identity. M007 scopes scheduler mutation keys by `WorkspaceId` and adds build quota; these remain capacity locks, not generation-fenced checkout writer authority. | Acquire in the final executor after admission; retain until the process tree is reaped. Explicitly delegate a held permit to nested child jobs rather than reacquiring it. |
 | Git mutation and recovery | Typed Git paths in `src/git_mutations.rs`, `src/git_recovery.rs`, and `src/git_network_ops.rs` retain deferred domain executors; repository locks and scheduler keys are not the worktree writer permit. | Carry the generation-fenced scope through the canonical Git mutation boundary or deny these operations in shared mode. Serialize index, branch, commit, recovery, and integration mutations together. |
 | Interactive PTY / terminal | `src/interactive_process.rs` owns a long-lived PTY; scheduler admission permits process capacity but the PTY can continue after its initiating tool request. | Hold the permit for the PTY lifetime with a supervised stop/reap path, or refuse PTY creation for shared-placement runs. |
 | LSP and MCP | `crates/egglsp/src/launch.rs` and `src/mcp/local.rs` own protocol-specialized persistent child lifetimes. A request-scoped broker permit would end while either process could still write. | Keep the permit for the complete service lifetime or deny edit-capable requests / service launch in shared mode. |

@@ -33,6 +33,8 @@ pub enum SchedulerConfigError {
     ZeroIoWeight,
     #[error("max_network_slots must be > 0 when scheduler enabled")]
     ZeroNetworkSlots,
+    #[error("max_builds_per_workspace must be > 0 when scheduler enabled")]
+    ZeroWorkspaceBuildSlots,
     #[error("max_total must be > 0 when scheduler enabled")]
     ZeroQueueTotal,
     #[error("max_per_workspace must be > 0 when scheduler enabled")]
@@ -67,6 +69,8 @@ pub struct ResourceBudget {
     pub max_memory_mb_hint: u64,
     pub max_io_weight: u32,
     pub max_network_slots: u32,
+    /// M007: concurrent admitted build jobs per canonical workspace.
+    pub max_builds_per_workspace: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +103,7 @@ impl Default for ResolvedSchedulerConfig {
                 max_memory_mb_hint: 8192,
                 max_io_weight: 8,
                 max_network_slots: 4,
+                max_builds_per_workspace: 1,
             },
             queue: QueueCaps {
                 max_total: 256,
@@ -148,6 +153,9 @@ impl ResolvedSchedulerConfig {
             }
             if let Some(v) = r.max_network_slots {
                 out.resources.max_network_slots = v;
+            }
+            if let Some(v) = r.max_builds_per_workspace {
+                out.resources.max_builds_per_workspace = v;
             }
         }
         if let Some(q) = &cfg.queue {
@@ -212,6 +220,9 @@ impl ResolvedSchedulerConfig {
         }
         if self.resources.max_network_slots == 0 {
             return Err(SchedulerConfigError::ZeroNetworkSlots);
+        }
+        if self.resources.max_builds_per_workspace == 0 {
+            return Err(SchedulerConfigError::ZeroWorkspaceBuildSlots);
         }
         if self.queue.max_total == 0 {
             return Err(SchedulerConfigError::ZeroQueueTotal);

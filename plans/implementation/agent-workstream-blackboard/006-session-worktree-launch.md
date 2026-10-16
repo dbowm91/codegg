@@ -1,8 +1,8 @@
 # Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: ready for handoff — shared-write placement is explicitly out of scope
+Status: active — shared-write placement is explicitly out of scope
 
-Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
+Planning baseline: 68f9358d92f0e501554dc6ebbc3f6f7ffd9180aa (PR #125 integrated into main; implementation branch started from this baseline)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006
 Accepted authorities: ADR-0002, ADR-0004, ADR-0005. ADR-0032 is not required for this isolated-worktree scope.
 Canonical: plans/000-long-term-specification.md §§6, 9, 13, 16, 25–29; plans/001-terminology-and-domain-model.md §§5–7.
@@ -20,7 +20,7 @@ SessionStore::fork in crates/codegg-core/src/session/store.rs copies recent mess
 
 ## Work packages
 
-A. Typed request and UX contract. Define new daemon request(s) with explicit intent: new|fork session, placement: existing worktree ID or managed new checkout, optional base commit/ref and target branch policy, caller authority, idempotency key. Avoid ambiguous overload of SessionFork or paths-as-IDs. CLI examples: 'codegg session new --worktree <ref|new>' and 'codegg session fork <session-id> --worktree new' are indicative; select exact spelling consistent with current CLI parser and document old CLI compatibility. TUI exposes create/select/fork actions via existing project/session screens.
+A. Typed request and UX contract. Define new daemon request(s) with explicit intent: new|fork session, placement: existing worktree ID or managed new checkout, optional base commit/ref and target branch policy, caller authority, idempotency key. Avoid ambiguous overload of SessionFork or paths-as-IDs. The implemented CLI spelling is `codegg --worktree new|<managed-worktree-id>` and it composes with the unchanged `--fork <session-id>`. The TUI exposes `/new-worktree new|<managed-worktree-id>` and `/fork-worktree new|<managed-worktree-id>`.
 
 B. Precondition/authorization. Canonical project/repository/workspace selection, allowed existing external vs managed checkout, branch ref validation, parent context and principal scope must be checked in daemon. Child session may not switch into another tenant's checkout or gain extra sandbox/Git/tool rights. Managed checkout discovery is not ownership transfer.
 

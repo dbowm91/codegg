@@ -200,6 +200,16 @@ struct Cli {
     #[arg(long, conflicts_with_all = ["continue_session", "session", "no_session"])]
     fork: Option<String>,
 
+    /// Create the startup session in a new managed worktree (`new`) or an
+    /// existing managed worktree ID. May be combined with `--fork`.
+    #[arg(long, conflicts_with_all = ["continue_session", "session", "no_session", "run"])]
+    worktree: Option<String>,
+
+    /// Reuse this key to resume the same isolated session/worktree launch
+    /// after a lost response or daemon restart. Requires `--worktree`.
+    #[arg(long, requires = "worktree")]
+    idempotency_key: Option<String>,
+
     /// Run a single prompt and exit
     #[arg(long, short = 'p')]
     run: Option<String>,
@@ -1131,6 +1141,15 @@ mod cli_surface_tests {
             vec!["codegg", "-c"],
             vec!["codegg", "-s", "abc"],
             vec!["codegg", "--fork", "abc"],
+            vec!["codegg", "--worktree", "new"],
+            vec![
+                "codegg",
+                "--worktree",
+                "new",
+                "--idempotency-key",
+                "resume-1",
+            ],
+            vec!["codegg", "--fork", "abc", "--worktree", "new"],
             vec!["codegg", "--no-session"],
             vec!["codegg"],
         ] {
@@ -1139,6 +1158,8 @@ mod cli_surface_tests {
                 "single launch mode must parse: {args:?}"
             );
         }
+        assert!(Cli::try_parse_from(["codegg", "--worktree", "new", "--run", "hello"]).is_err());
+        assert!(Cli::try_parse_from(["codegg", "--idempotency-key", "resume-1"]).is_err());
     }
 
     #[test]
@@ -3549,6 +3570,10 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         return Ok(());
     }
 
+    if cli.worktree.is_some() && session_store.is_some() {
+        return Err(anyhow::anyhow!("--worktree requires the durable daemon session service; it is unavailable in standalone mode").into());
+    }
+
     // Session loading. Inproc mode has a local `SessionStore` and
     // uses it directly; socket/RemoteCore mode has no local store
     // and must drive session loading through the `CoreClient` via
@@ -3585,9 +3610,46 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         }
     } else {
         use codegg::tui::app::InitialSessionRequest;
-        let request = if let Some(fork_id) = &cli.fork {
+        let placement = cli.worktree.as_ref().map(|value| {
+            if value == "new" {
+                codegg::protocol::core::SessionWorktreePlacement::NewManaged { base_commit: None }
+            } else {
+                codegg::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                    worktree_id: value.clone(),
+                }
+            }
+        });
+        let request = if let (Some(fork_id), Some(placement)) = (&cli.fork, placement.clone()) {
+            InitialSessionRequest::ForkInWorktree {
+                session_id: fork_id.clone(),
+                placement,
+                idempotency_key: cli
+                    .idempotency_key
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            }
+        } else if let Some(fork_id) = &cli.fork {
             InitialSessionRequest::Fork {
                 session_id: fork_id.clone(),
+            }
+        } else if let Some(placement) = placement {
+            let project_id = app.active_project_id().unwrap_or_default().to_owned();
+            let workspace_id = app.active_workspace_id().unwrap_or_default().to_owned();
+            if project_id.is_empty() || workspace_id.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "--worktree requires a resolved daemon project/workspace context"
+                )
+                .into());
+            }
+            InitialSessionRequest::NewInWorktree {
+                project_id,
+                workspace_id,
+                title: None,
+                placement,
+                idempotency_key: cli
+                    .idempotency_key
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             }
         } else if let Some(session_id) = &cli.session {
             InitialSessionRequest::Attach {
@@ -3619,7 +3681,9 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // the event loop with no session at all. This closes that gap for every
     // mode, and is a no-op whenever a session is already bound, which keeps
     // the explicit-id paths exactly as they were.
-    if !cli.no_session {
+    // An explicit managed-worktree launch must fail closed. Do not replace a
+    // rejected/failed placement request with an ordinary workspace session.
+    if !cli.no_session && cli.worktree.is_none() {
         app.ensure_launch_session();
     }
 

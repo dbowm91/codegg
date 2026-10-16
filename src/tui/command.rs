@@ -181,6 +181,8 @@ pub enum BuiltinSlashAction {
     ModelsRefresh,
     Variants,
     Fork,
+    NewWorktree,
+    ForkWorktree,
     Workspaces,
     Worktree,
     Editor,
@@ -555,6 +557,10 @@ impl CommandRegistry {
                 .with_description("Jump to message"),
             Command::new("/fork", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Fork))
                 .with_description("Fork from message"),
+            Command::new("/new-worktree", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::NewWorktree))
+                .with_description("Start a new session in a managed isolated worktree (new or worktree ID; optional retry key)"),
+            Command::new("/fork-worktree", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::ForkWorktree))
+                .with_description("Fork this session into a managed isolated worktree (new or worktree ID; optional retry key)"),
             Command::new("/undo", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Undo))
                 .with_description("Undo previous message"),
             Command::new("/redo", CommandCategory::Session, CommandAction::Builtin(BuiltinSlashAction::Redo)).with_description("Redo"),

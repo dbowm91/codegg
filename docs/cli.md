@@ -33,6 +33,10 @@ codegg                                  # start a new session
 codegg -c                               # resume the most recent session
 codegg -s <session-id>                  # open a specific session
 codegg --fork <session-id>              # fork a session
+codegg --worktree new                   # start a session in a managed isolated checkout
+codegg --fork <session-id> --worktree new  # fork history into a new isolated checkout
+codegg --fork <session-id> --worktree <worktree-id> # fork into an existing managed checkout
+codegg --worktree new --idempotency-key launch-42 # retry the same launch after a lost response
 codegg --no-session                     # ephemeral run, no persistence
 codegg -m anthropic/claude-sonnet-4-20250514   # pick a model
 codegg -a build                         # pick an agent
@@ -50,6 +54,8 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 | `-c`, `--continue-session` | Resume the most recent session. Conflicts with `--session`, `--fork`, `--no-session`. |
 | `-s`, `--session <SESSION>` | Open a specific session. |
 | `--fork <FORK>` | Fork the given session. |
+| `--worktree <new\|WORKTREE_ID>` | Start in a new managed isolated checkout, or use an existing idle, clean managed checkout. May be combined with `--fork`. Requires the daemon. |
+| `--idempotency-key <KEY>` | Optional 1–128 character launch key used to resume the same request after a lost response or daemon restart. Requires `--worktree`; reuse the same key only for that launch. |
 | `--no-session` | Ephemeral run; nothing is persisted. |
 | `-m`, `--model <MODEL>` | Override the model. |
 | `-a`, `--agent <AGENT>` | Override the agent. |
@@ -62,6 +68,14 @@ codegg -m anthropic/claude-sonnet-4-20250514 --run "Explain this project"   # on
 | `--sandbox <PROFILE>` | `read-only`, `workspace-write`, or `full-host`. |
 | `--yolo` | Exact alias for `--approval-mode yolo`. |
 | `--standalone` | Run the core in-process, without the singleton daemon. |
+
+The TUI provides `/new-worktree new [idempotency-key]` or
+`/new-worktree <worktree-id> [idempotency-key]` to start a session in a managed
+checkout, and `/fork-worktree new [idempotency-key]` or
+`/fork-worktree <worktree-id> [idempotency-key]` to fork the active session.
+New managed checkouts are never silently cleaned after a partial launch; a
+failed launch retains the checkout for retry or attention. Without an explicit
+key, each launch gets a fresh request identity.
 
 Approval mode and sandbox are orthogonal: an automatic approval mode never
 implies host-level filesystem access. A constrained Bash or Python command is

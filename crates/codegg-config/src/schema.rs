@@ -1868,6 +1868,8 @@ pub struct SchedulerResourceConfig {
     pub max_memory_mb_hint: Option<u64>,
     pub max_io_weight: Option<u32>,
     pub max_network_slots: Option<u32>,
+    /// M007: concurrent scheduler-owned build jobs admitted per canonical workspace.
+    pub max_builds_per_workspace: Option<u16>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq)]

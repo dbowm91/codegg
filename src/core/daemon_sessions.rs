@@ -6,10 +6,324 @@
 
 use crate::error::AppError;
 use crate::protocol::core::{CoreRequest, CoreResponse};
+use sha2::{Digest, Sha256};
 
 use super::daemon::CoreDaemon;
 
+enum WorktreeSessionIntent {
+    New { title: Option<String> },
+    Fork { parent_session_id: String },
+}
+
+fn stable_launch_identity(
+    kind: &str,
+    principal_id: &str,
+    project_id: &str,
+    workspace_id: &str,
+    idempotency_key: &str,
+) -> String {
+    let digest = Sha256::digest(
+        format!("codegg:m006:{kind}:{principal_id}:{project_id}:{workspace_id}:{idempotency_key}")
+            .as_bytes(),
+    );
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Use UUID's opaque lexical form while deriving stable, non-guessable
+    // identifiers. This is an idempotency locator, not an authorization token.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
+fn valid_launch_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 impl CoreDaemon {
+    async fn create_session_in_worktree(
+        &self,
+        context: &codegg_core::context::ProjectContext,
+        intent: WorktreeSessionIntent,
+        placement: codegg_protocol::core::SessionWorktreePlacement,
+        principal_id: &str,
+        idempotency_key: &str,
+    ) -> Result<
+        (
+            crate::session::Session,
+            codegg_core::worktree_service::WorktreeRecord,
+            codegg_core::context::ProjectContext,
+            bool,
+        ),
+        String,
+    > {
+        use codegg_core::worktree_service::CreateWorktreeRequest;
+        use codegg_protocol::core::SessionWorktreePlacement as Placement;
+
+        if !valid_launch_key(idempotency_key) {
+            return Err(
+                "invalid idempotency key; use 1-128 ASCII letters, digits, '.', '_' or '-'".into(),
+            );
+        }
+        let pool = self
+            .pool
+            .clone()
+            .ok_or_else(|| "session/worktree launch requires durable daemon storage".to_string())?;
+        let repository_id = context
+            .repository_id
+            .as_ref()
+            .ok_or_else(|| "workspace has no resolved repository binding".to_string())?;
+        let project_storage = codegg_core::project_storage::ProjectStorage::new(pool.clone());
+        // A fork may start from a session already bound to a managed
+        // checkout. Reuse that record's common repository root so the new
+        // checkout is a sibling worktree, while retaining the selected
+        // checkout's HEAD as its base.
+        let source_binding = project_storage
+            .workspace_binding(&context.workspace_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let repository_root = if let Some(worktree_id) = source_binding
+            .as_ref()
+            .and_then(|binding| binding.worktree_id.as_deref())
+        {
+            let worktree_id = codegg_core::identity::WorktreeId::parse(worktree_id)
+                .map_err(|error| error.to_string())?;
+            let source_worktree = self
+                .worktree_service
+                .get(&worktree_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if !source_worktree.managed
+                || source_worktree.project_id != context.project_id
+                || source_worktree.repository_id != *repository_id
+            {
+                return Err(
+                    "source worktree binding does not match the resolved project repository".into(),
+                );
+            }
+            source_worktree.repository_root
+        } else {
+            context.workspace_root.clone()
+        };
+        let operation = match &intent {
+            WorktreeSessionIntent::New { .. } => "launch",
+            WorktreeSessionIntent::Fork { .. } => "fork",
+        };
+        let session_id = stable_launch_identity(
+            &format!("session-{operation}"),
+            principal_id,
+            context.project_id.as_str(),
+            context.workspace_id.as_str(),
+            idempotency_key,
+        );
+        let store = crate::session::SessionStore::new(pool.clone());
+        let had_session = store
+            .get(&session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some();
+
+        let (mut worktree, existed_before_request) = match placement {
+            Placement::NewManaged { base_commit } => {
+                let worktree_id_raw = stable_launch_identity(
+                    &format!("worktree-{operation}"),
+                    principal_id,
+                    context.project_id.as_str(),
+                    context.workspace_id.as_str(),
+                    idempotency_key,
+                );
+                let worktree_id = codegg_core::identity::WorktreeId::parse(&worktree_id_raw)
+                    .map_err(|error| error.to_string())?;
+                let existed = self.worktree_service.get(&worktree_id).await.is_ok();
+                let request = CreateWorktreeRequest {
+                    project_id: context.project_id.clone(),
+                    repository_id: repository_id.clone(),
+                    workspace_id: context.workspace_id.clone(),
+                    node_id: None,
+                    repository_root,
+                    base_path: Some(context.workspace_root.clone()),
+                    base_commit,
+                    // Reservation itself does not create a run lease. The
+                    // lease owner is used only by WorktreeService::create,
+                    // which this user-session flow deliberately does not call.
+                    owner_run_id: codegg_core::identity::AgentRunId::new(),
+                };
+                let reserved = self
+                    .worktree_service
+                    .reserve_with_id(&request, worktree_id.clone())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let worktree = self
+                    .worktree_service
+                    .create_reserved(&reserved.worktree_id)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "worktree {} was retained for recovery: {error}",
+                            reserved.worktree_id
+                        )
+                    })?;
+                (worktree, existed)
+            }
+            Placement::ExistingManaged { worktree_id } => {
+                let worktree_id = codegg_core::identity::WorktreeId::parse(&worktree_id)
+                    .map_err(|error| error.to_string())?;
+                let worktree = self
+                    .worktree_service
+                    .refresh(&worktree_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if !worktree.managed
+                    || worktree.project_id != context.project_id
+                    || worktree.repository_id != *repository_id
+                    || worktree.owner_run_id.is_some()
+                    || worktree.state != codegg_core::worktree_service::ManagedWorktreeState::Ready
+                    || worktree.health != codegg_core::worktree_service::WorktreeHealth::Clean
+                {
+                    return Err("worktree is not an authorized, idle, clean managed checkout for this project".into());
+                }
+                (worktree, false)
+            }
+        };
+
+        worktree = self
+            .worktree_service
+            .refresh(&worktree.worktree_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if !worktree.managed
+            || worktree.project_id != context.project_id
+            || worktree.repository_id != *repository_id
+            || worktree.owner_run_id.is_some()
+            || worktree.state != codegg_core::worktree_service::ManagedWorktreeState::Ready
+            || worktree.health != codegg_core::worktree_service::WorktreeHealth::Clean
+        {
+            return Err(format!(
+                "worktree {} is not an idle clean managed checkout; it was retained for attention",
+                worktree.worktree_id
+            ));
+        }
+
+        let workspace = self
+            .workspaces
+            .get_or_register(&worktree.path)
+            .await
+            .map_err(|error| {
+                format!(
+                    "worktree {} exists but workspace registration needs recovery: {error}",
+                    worktree.worktree_id
+                )
+            })?;
+        let binding = project_storage
+            .bind_managed_worktree_workspace(
+                &workspace,
+                &context.project_id,
+                repository_id,
+                &worktree.worktree_id,
+                "session_worktree_launch",
+            )
+            .await
+            .map_err(|error| {
+                format!(
+                    "worktree {} exists but its workspace binding needs recovery: {error}",
+                    worktree.worktree_id
+                )
+            })?;
+        if binding.workspace_id != workspace.id {
+            return Err("managed-worktree workspace binding returned a different identity".into());
+        }
+        // The worktree record retains its origin workspace for listing and
+        // repository policy. The canonical project binding maps the target
+        // WorkspaceId to the managed WorktreeId.
+        worktree = self
+            .worktree_service
+            .get(&worktree.worktree_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let target_context = self
+            .resolve_request_context(
+                worktree.path.to_string_lossy().as_ref(),
+                Some(context.project_id.as_str()),
+                Some(workspace.id.as_str()),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let session = match intent {
+            WorktreeSessionIntent::New { title } => {
+                let title_for_check = title.as_deref().unwrap_or("Untitled");
+                let session = store
+                    .create_with_id_and_binding(
+                        &session_id,
+                        crate::session::CreateSession {
+                            project_id: context.project_id.as_str().to_owned(),
+                            directory: worktree.path.to_string_lossy().into_owned(),
+                            title: title.clone(),
+                            parent_id: None,
+                            workspace_id: Some(workspace.id.as_str().to_owned()),
+                            agent: None,
+                            model: None,
+                            tags: None,
+                            provider_connection_id: None,
+                            provider_connection_revision: None,
+                            model_catalog_revision: None,
+                            selected_model_id: None,
+                        },
+                        &context.project_id,
+                        &workspace.id,
+                        "session_worktree_launch",
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "worktree {} retained; session launch can be retried with the same idempotency key: {error}",
+                            worktree.worktree_id
+                        )
+                    })?;
+                if session.title != title_for_check {
+                    return Err("idempotency key was reused with a different session title".into());
+                }
+                session
+            }
+            WorktreeSessionIntent::Fork { parent_session_id } => {
+                store
+                    .fork_with_id_and_binding(
+                        &parent_session_id,
+                        &session_id,
+                        worktree.path.to_string_lossy().as_ref(),
+                        &context.project_id,
+                        &workspace.id,
+                        "session_worktree_fork",
+                    )
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "worktree {} retained; fork can be retried with the same idempotency key: {error}",
+                            worktree.worktree_id
+                        )
+                    })?
+            }
+        };
+        let principal = principal_id.to_owned();
+        self.apply_model_preference_best_effort(session.id.as_str(), &principal)
+            .await;
+        let session = store
+            .get(session.id.as_str())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(session);
+        Ok((
+            session,
+            worktree,
+            target_context,
+            had_session || existed_before_request,
+        ))
+    }
+
     pub(crate) async fn handle_sessions_request(
         &self,
         request: CoreRequest,
@@ -580,6 +894,144 @@ impl CoreDaemon {
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_list_failed".to_string(),
                         message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::SessionLaunchInWorktree {
+                idempotency_key,
+                project_id,
+                workspace_id,
+                title,
+                placement,
+            } => {
+                let context = match self
+                    .resolve_request_context(&String::new(), Some(&project_id), Some(&workspace_id))
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self
+                    .create_session_in_worktree(
+                        &context,
+                        WorktreeSessionIntent::New { title },
+                        placement,
+                        authority.principal_id().as_str(),
+                        &idempotency_key,
+                    )
+                    .await
+                {
+                    Ok((session, worktree, target_context, resumed)) => {
+                        self.record_origin_with_decision(
+                            &authority,
+                            &authz_decision,
+                            "session",
+                            session.id.as_str(),
+                        )
+                        .await;
+                        let dto = Self::session_dto(session, Some(&target_context));
+                        Ok(CoreResponse::SessionWorktreeLaunched {
+                            session: dto,
+                            worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
+                                &worktree,
+                            ),
+                            workspace_id: target_context.workspace_id.as_str().to_owned(),
+                            resumed,
+                        })
+                    }
+                    Err(message) => Ok(CoreResponse::Error {
+                        code: if message.contains("retained") || message.contains("recovery") {
+                            "session_worktree_recovery_required"
+                        } else {
+                            "session_worktree_launch_failed"
+                        }
+                        .into(),
+                        message,
+                    }),
+                }
+            }
+            CoreRequest::SessionForkInWorktree {
+                idempotency_key,
+                session_id,
+                placement,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "session/worktree launch requires durable daemon storage".into(),
+                    });
+                };
+                let store = crate::session::SessionStore::new(pool);
+                let parent = match store.get(&session_id).await {
+                    Ok(Some(parent)) => parent,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_not_found".into(),
+                            message: "session not found".into(),
+                        })
+                    }
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "session_worktree_fork_failed".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                let context = match self
+                    .resolve_session_context(&session_id, &parent.directory)
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "project_context_required".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self
+                    .create_session_in_worktree(
+                        &context,
+                        WorktreeSessionIntent::Fork {
+                            parent_session_id: session_id,
+                        },
+                        placement,
+                        authority.principal_id().as_str(),
+                        &idempotency_key,
+                    )
+                    .await
+                {
+                    Ok((session, worktree, target_context, resumed)) => {
+                        self.record_origin_with_decision(
+                            &authority,
+                            &authz_decision,
+                            "session",
+                            session.id.as_str(),
+                        )
+                        .await;
+                        let dto = Self::session_dto(session, Some(&target_context));
+                        Ok(CoreResponse::SessionWorktreeLaunched {
+                            session: dto,
+                            worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
+                                &worktree,
+                            ),
+                            workspace_id: target_context.workspace_id.as_str().to_owned(),
+                            resumed,
+                        })
+                    }
+                    Err(message) => Ok(CoreResponse::Error {
+                        code: if message.contains("retained") || message.contains("recovery") {
+                            "session_worktree_recovery_required"
+                        } else {
+                            "session_worktree_fork_failed"
+                        }
+                        .into(),
+                        message,
                     }),
                 }
             }
@@ -1155,5 +1607,62 @@ impl CoreDaemon {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod worktree_launch_identity_tests {
+    use super::stable_launch_identity;
+
+    #[test]
+    fn launch_identity_is_stable_principal_scoped_and_operation_scoped() {
+        let first = stable_launch_identity(
+            "session-launch",
+            "principal-a",
+            "project-a",
+            "workspace-a",
+            "retry-1",
+        );
+        assert_eq!(
+            first,
+            stable_launch_identity(
+                "session-launch",
+                "principal-a",
+                "project-a",
+                "workspace-a",
+                "retry-1"
+            )
+        );
+        assert_ne!(
+            first,
+            stable_launch_identity(
+                "session-launch",
+                "principal-b",
+                "project-a",
+                "workspace-a",
+                "retry-1"
+            )
+        );
+        assert_ne!(
+            first,
+            stable_launch_identity(
+                "session-fork",
+                "principal-a",
+                "project-a",
+                "workspace-a",
+                "retry-1"
+            )
+        );
+        assert_ne!(
+            first,
+            stable_launch_identity(
+                "session-launch",
+                "principal-a",
+                "project-b",
+                "workspace-b",
+                "retry-1"
+            )
+        );
+        assert!(uuid::Uuid::parse_str(&first).is_ok());
     }
 }

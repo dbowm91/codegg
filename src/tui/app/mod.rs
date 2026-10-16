@@ -682,6 +682,14 @@ pub enum InitialSessionRequest {
         directory: String,
         title: Option<String>,
     },
+    /// Create a fresh session inside a daemon-managed isolated worktree.
+    NewInWorktree {
+        project_id: String,
+        workspace_id: String,
+        title: Option<String>,
+        placement: crate::protocol::core::SessionWorktreePlacement,
+        idempotency_key: String,
+    },
     /// Fork the given session id and attach the resulting fork.
     ///
     /// The core client only returns an `Ack` from `SessionFork` today,
@@ -689,6 +697,12 @@ pub enum InitialSessionRequest {
     /// If the listing does not contain a brand-new session, we fall
     /// back to attaching the original id (best-effort).
     Fork { session_id: String },
+    /// Fork conversation history into a daemon-managed isolated worktree.
+    ForkInWorktree {
+        session_id: String,
+        placement: crate::protocol::core::SessionWorktreePlacement,
+        idempotency_key: String,
+    },
     /// No session to load — start with an empty TUI.
     None,
 }
@@ -5846,6 +5860,109 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("Select a message with arrow keys first, then use /fork");
+                }
+            }
+            B::NewWorktree => {
+                let target = raw_input
+                    .and_then(|input| input.strip_prefix("/new-worktree"))
+                    .unwrap_or("")
+                    .trim();
+                let Some((project_id, workspace_id)) = self
+                    .active_project_id()
+                    .zip(self.active_workspace_id())
+                    .map(|(project_id, workspace_id)| {
+                        (project_id.to_owned(), workspace_id.to_owned())
+                    })
+                else {
+                    self.messages_state
+                        .toasts
+                        .warning("Select a resolved project workspace before using /new-worktree");
+                    return;
+                };
+                let mut args = target.split_whitespace();
+                let Some(target) = args.next() else {
+                    self.messages_state.toasts.warning(
+                        "Usage: /new-worktree new|<managed-worktree-id> [idempotency-key]",
+                    );
+                    return;
+                };
+                let idempotency_key = args
+                    .next()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                if args.next().is_some() {
+                    self.messages_state.toasts.warning(
+                        "Usage: /new-worktree new|<managed-worktree-id> [idempotency-key]",
+                    );
+                    return;
+                }
+                let placement = if target == "new" {
+                    crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    }
+                } else {
+                    crate::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                        worktree_id: target.to_owned(),
+                    }
+                };
+                crate::tui::commands::sessions::start_new_session_worktree(
+                    self,
+                    project_id,
+                    workspace_id,
+                    placement,
+                    idempotency_key,
+                );
+            }
+            B::ForkWorktree => {
+                let target = raw_input
+                    .and_then(|input| input.strip_prefix("/fork-worktree"))
+                    .unwrap_or("")
+                    .trim();
+                let Some(session_id) = self.active_session_id().map(str::to_owned) else {
+                    self.messages_state
+                        .toasts
+                        .warning("Open a session before using /fork-worktree");
+                    return;
+                };
+                let mut args = target.split_whitespace();
+                let Some(target) = args.next() else {
+                    self.messages_state.toasts.warning(
+                        "Usage: /fork-worktree new|<managed-worktree-id> [idempotency-key]",
+                    );
+                    return;
+                };
+                let idempotency_key = args
+                    .next()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                if args.next().is_some() {
+                    self.messages_state.toasts.warning(
+                        "Usage: /fork-worktree new|<managed-worktree-id> [idempotency-key]",
+                    );
+                    return;
+                }
+                let placement = if target == "new" {
+                    crate::protocol::core::SessionWorktreePlacement::NewManaged {
+                        base_commit: None,
+                    }
+                } else {
+                    crate::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                        worktree_id: target.to_owned(),
+                    }
+                };
+                if let Some(tx) = self.tui_cmd_tx.as_ref() {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::ForkSessionWorktree {
+                            session_id,
+                            placement,
+                            idempotency_key,
+                        },
+                    );
+                } else {
+                    self.messages_state
+                        .toasts
+                        .error("Daemon session service is unavailable");
                 }
             }
             B::Workspaces => {
@@ -12784,6 +12901,56 @@ impl App {
                     }
                 }
             }
+            InitialSessionRequest::NewInWorktree {
+                project_id,
+                workspace_id,
+                title,
+                placement,
+                idempotency_key,
+            } => {
+                let retry_key = idempotency_key.clone();
+                let req = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionLaunchInWorktree {
+                        idempotency_key,
+                        project_id,
+                        workspace_id,
+                        title,
+                        placement,
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::SessionWorktreeLaunched {
+                        session, worktree, ..
+                    }) => {
+                        match crate::protocol_conversions::dto_to_session(session) {
+                            Ok(session) => {
+                                self.set_session(session);
+                                self.messages_state.toasts.info(&format!(
+                                    "Started in managed worktree on branch {} ({}, {})",
+                                    worktree.branch.as_deref().unwrap_or("(detached)"),
+                                    worktree.state,
+                                    worktree.health
+                                ));
+                            }
+                            Err(error) => tracing::warn!(
+                                "load_initial_session_via_core(NewInWorktree): invalid session response: {error}"
+                            ),
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        self.messages_state.toasts.error(&format!(
+                            "Isolated session launch failed ({code}): {message}; retry with --worktree <placement> --idempotency-key {retry_key}"
+                        ));
+                    }
+                    Ok(other) => tracing::warn!(
+                        "load_initial_session_via_core(NewInWorktree): unexpected response {other:?}"
+                    ),
+                    Err(error) => self.messages_state.toasts.error(&format!(
+                        "Isolated session launch failed: {error}; retry with --worktree <placement> --idempotency-key {retry_key}"
+                    )),
+                }
+            }
             InitialSessionRequest::Fork { session_id } => {
                 let fork_req = crate::core::new_request(
                     uuid::Uuid::new_v4().to_string(),
@@ -12840,6 +13007,59 @@ impl App {
                             e
                         );
                     }
+                }
+            }
+            InitialSessionRequest::ForkInWorktree {
+                session_id,
+                placement,
+                idempotency_key,
+            } => {
+                let retry_key = idempotency_key.clone();
+                let source_session_id = session_id.clone();
+                let request = crate::core::new_request(
+                    uuid::Uuid::new_v4().to_string(),
+                    CoreRequest::SessionForkInWorktree {
+                        idempotency_key,
+                        session_id,
+                        placement,
+                    },
+                );
+                match core_client.request(request).await {
+                    Ok(CoreResponse::SessionWorktreeLaunched {
+                        session, worktree, ..
+                    }) => {
+                        let parent_id = session.parent_id.clone().unwrap_or_default();
+                        match crate::protocol_conversions::dto_to_session(session) {
+                            Ok(session) => {
+                                self.set_session(session);
+                                self.messages_state.toasts.info(&format!(
+                                    "Forked from {} into managed worktree on branch {} ({}, {})",
+                                    if parent_id.is_empty() {
+                                        "the source session"
+                                    } else {
+                                        parent_id.as_str()
+                                    },
+                                    worktree.branch.as_deref().unwrap_or("(detached)"),
+                                    worktree.state,
+                                    worktree.health
+                                ));
+                            }
+                            Err(error) => tracing::warn!(
+                                "load_initial_session_via_core(ForkInWorktree): invalid session response: {error}"
+                            ),
+                        }
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        self.messages_state.toasts.error(&format!(
+                            "Isolated fork failed ({code}): {message}; retry with --fork {source_session_id} --worktree <placement> --idempotency-key {retry_key}"
+                        ));
+                    }
+                    Ok(other) => tracing::warn!(
+                        "load_initial_session_via_core(ForkInWorktree): unexpected response {other:?}"
+                    ),
+                    Err(error) => self.messages_state.toasts.error(&format!(
+                        "Isolated fork failed: {error}; retry with --fork {source_session_id} --worktree <placement> --idempotency-key {retry_key}"
+                    )),
                 }
             }
             InitialSessionRequest::None => {}

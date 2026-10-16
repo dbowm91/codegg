@@ -571,6 +571,46 @@ impl TaskTool {
                             ),
                         );
                     }
+                    if let (Some(job_id), Some(submission)) =
+                        (run.job_id.as_ref(), self.submission.as_ref())
+                    {
+                        let job = submission
+                            .get_job(job_id)
+                            .await
+                            .map_err(|error| ToolError::Execution(error.to_string()))?;
+                        if let Some(job) = job.filter(|job| {
+                            job.workspace_id == task.workspace_id
+                                && snapshot.as_ref().is_some_and(|snapshot| {
+                                    job.workspace_id.as_str() == snapshot.workspace_id
+                                })
+                        }) {
+                            let snapshot = snapshot.as_mut().expect("member initialized snapshot");
+                            if snapshot.jobs.len()
+                                < codegg_protocol::projection::MAX_PROJECTION_JOBS
+                            {
+                                snapshot.jobs.push_back(
+                                    codegg_protocol::projection::dto::JobProjection {
+                                        job_id: job.job_id.to_string(),
+                                        workspace_id: job.workspace_id.to_string(),
+                                        kind: job.kind.as_str().to_owned(),
+                                        state: job.state.as_str().to_owned(),
+                                        // Group members receive scheduler-owned
+                                        // phase only; never command, summary,
+                                        // environment, log or artifact data.
+                                        summary: String::new(),
+                                        session_id: None,
+                                        turn_id: None,
+                                        active_attempt_id: job
+                                            .current_attempt_id
+                                            .as_ref()
+                                            .map(ToString::to_string),
+                                        error_class: None,
+                                        updated_at: job.updated_at.timestamp_millis(),
+                                    },
+                                );
+                            }
+                        }
+                    }
                 }
                 let mut snapshot = snapshot.ok_or_else(|| {
                     ToolError::Execution("group has no observable member runs".into())

@@ -259,6 +259,7 @@ max_cpu_weight = 8
 max_memory_mb_hint = 8192
 max_io_weight = 8
 max_network_slots = 4
+max_builds_per_workspace = 1
 
 [scheduler.queue]
 max_total = 256
@@ -289,14 +290,20 @@ bypass execution.
 ### Resource profiles (`codegg-core/src/jobs/mod.rs:713`)
 
 Admission reserves soft CPU/memory/IO hints, process slots, network
-slots, and typed exclusivity keys. Hints are accounting inputs, not
-OS-enforced resource limits. Conservative defaults are centralized in
-`ResourceRequest::for_kind`:
+slots, keyed build slots, and typed exclusivity keys. Hints are accounting
+inputs, not OS-enforced resource limits. Build slots are a scheduler-owned
+concurrency cap charged to the canonical `WorkspaceId` for the full admitted
+attempt lifetime. The default limit is one per workspace; the optional
+`scheduler.resources.max_builds_per_workspace` setting changes that limit.
+Unrelated workspaces remain independent. Isolated worktrees retain their own
+build outputs and Cargo's native locking. This quota does not share targets,
+coalesce jobs, or admit non-build job kinds as builds. Conservative defaults
+are centralized in `ResourceRequest::for_kind`:
 
 | Kind | CPU | Memory hint | Processes | IO | Network | Default conflict |
 |---|---:|---:|---:|---:|---:|---|
 | Test | 2 | 1024 MB | 1 | 2 | 0 | — |
-| Build | 3 | 2048 MB | 1 | 3 | 0 | exclusive:workspace-mutation |
+| Build | 3 | 2048 MB | 1 | 3 | 0 | one keyed build slot per WorkspaceId |
 | Lint | 1 | 768 MB | 1 | 1 | 0 | — |
 | Format | 1 | 256 MB | 1 | 1 | 0 | exclusive:workspace-mutation |
 | Subagent | 1 | 512 MB | 1 | 1 | 1 | — |
@@ -312,11 +319,14 @@ Impossible requests fail before executor invocation. Temporarily blocked
 requests are requeued, and the bounded candidate window prevents one
 blocked workspace from stopping unrelated work.
 
-`exclusive:workspace-mutation` is a legacy global key on selected Build and
-Format job profiles. It is not checkout-scoped and is not acquired by every
-AgentTurn writer, so it does not serialize arbitrary workspace mutations.
-WorkOrder `shared`/`serialized` mutation therefore fails closed until all
-writers use a canonical checkout-scoped reservation.
+Legacy `exclusive:workspace-mutation` and `exclusive:worktree-mutation`
+requests are scoped by the scheduler to the job's canonical WorkspaceId.
+Build admission also blocks while a workspace-mutation key is held, and a
+workspace mutation waits for admitted build slots to drain. This only
+coordinates scheduler-owned typed jobs; it is not a universal writer
+containment mechanism. WorkOrder `shared`/`serialized` mutation therefore
+fails closed until all effective writers use a canonical checkout-scoped
+reservation.
 
 ## Canonical process policy
 

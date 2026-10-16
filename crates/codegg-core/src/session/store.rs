@@ -183,9 +183,39 @@ impl SessionStore {
         workspace_id: &crate::workspace::WorkspaceId,
         source: &str,
     ) -> Result<Session, StorageError> {
+        let id = Uuid::new_v4().to_string();
+        self.create_with_id_and_binding(&id, input, project_id, workspace_id, source)
+            .await
+    }
+
+    /// Create a bound session with a stable ID chosen by a daemon saga.
+    /// Replaying the same ID returns the existing session only when every
+    /// binding field matches; reuse for a different launch fails closed.
+    pub async fn create_with_id_and_binding(
+        &self,
+        id: &str,
+        input: CreateSession,
+        project_id: &crate::identity::ProjectId,
+        workspace_id: &crate::workspace::WorkspaceId,
+        source: &str,
+    ) -> Result<Session, StorageError> {
         if source.is_empty() || source.len() > 512 || source.chars().any(char::is_control) {
             return Err(StorageError::Database(
                 "invalid session binding source".to_string(),
+            ));
+        }
+        if let Some(existing) = self.get(id).await? {
+            let requested_title = input.title.as_deref().unwrap_or("Untitled");
+            if existing.project_id == project_id.as_str()
+                && existing.workspace_id.as_deref() == Some(workspace_id.as_str())
+                && existing.directory == input.directory
+                && existing.parent_id == input.parent_id
+                && existing.title == requested_title
+            {
+                return Ok(existing);
+            }
+            return Err(StorageError::Database(
+                "stable session identity already belongs to a different launch".to_string(),
             ));
         }
         let mut tx = self
@@ -218,7 +248,6 @@ impl SessionStore {
             }
         }
 
-        let id = Uuid::new_v4().to_string();
         let slug = generate_slug(&input.title);
         let title = input.title.unwrap_or_else(|| "Untitled".to_string());
         let version = "1".to_string();
@@ -237,7 +266,7 @@ impl SessionStore {
         .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
-        sqlx::query(
+        let result = sqlx::query(
             r#"INSERT INTO session (
                 id, project_id, workspace_id, parent_id, slug, directory,
                 title, version, tags, provider_connection_id,
@@ -245,7 +274,7 @@ impl SessionStore {
                 selected_model_id, agent, model, time_created, time_updated
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
-        .bind(&id)
+        .bind(id)
         .bind(project_id.as_str())
         .bind(workspace_id.as_str())
         .bind(&input.parent_id)
@@ -263,15 +292,35 @@ impl SessionStore {
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .await;
+        if let Err(insert_error) = result {
+            let _ = tx.rollback().await;
+            // Two identical launch requests can race after both miss the
+            // initial lookup. The unique session ID is the CAS: the loser
+            // reads the winner and returns it only if all launch bindings
+            // match.
+            if let Some(existing) = self.get(id).await? {
+                if existing.project_id == project_id.as_str()
+                    && existing.workspace_id.as_deref() == Some(workspace_id.as_str())
+                    && existing.directory == input.directory
+                    && existing.parent_id == input.parent_id
+                    && existing.title == title
+                {
+                    return Ok(existing);
+                }
+                return Err(StorageError::Database(
+                    "stable session identity already belongs to a different launch".to_string(),
+                ));
+            }
+            return Err(StorageError::Database(insert_error.to_string()));
+        }
         sqlx::query(
             r#"INSERT INTO session_project_binding
                (session_id, project_id, workspace_id, status, source, revision,
                 time_created, time_updated)
                VALUES (?, ?, ?, 'resolved', ?, 1, ?, ?)"#,
         )
-        .bind(&id)
+        .bind(id)
         .bind(project_id.as_str())
         .bind(workspace_id.as_str())
         .bind(source)
@@ -285,7 +334,7 @@ impl SessionStore {
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(Session {
-            id,
+            id: id.to_string(),
             project_id: project_id.as_str().to_string(),
             workspace_id: Some(workspace_id.as_str().to_string()),
             parent_id: input.parent_id,
@@ -1112,12 +1161,85 @@ impl SessionStore {
     /// references `message` by foreign key, so copying an orphan part would
     /// fail the constraint and lose the whole fork.
     pub async fn fork(&self, id: &str) -> Result<Session, StorageError> {
+        self.fork_inner(id, &Uuid::new_v4().to_string(), None).await
+    }
+
+    /// Fork into a caller-selected canonical workspace with a stable child
+    /// ID. Session rows and their binding commit atomically so retries after
+    /// a lost daemon response recover the exact same fork.
+    pub async fn fork_with_id_and_binding(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+        directory: &str,
+        project_id: &crate::identity::ProjectId,
+        workspace_id: &crate::workspace::WorkspaceId,
+        source: &str,
+    ) -> Result<Session, StorageError> {
+        if source.is_empty() || source.len() > 512 || source.chars().any(char::is_control) {
+            return Err(StorageError::Database(
+                "invalid session binding source".into(),
+            ));
+        }
+        self.fork_inner(
+            parent_id,
+            child_id,
+            Some((directory, project_id, workspace_id, source)),
+        )
+        .await
+    }
+
+    async fn fork_inner(
+        &self,
+        id: &str,
+        child_id: &str,
+        target: Option<(
+            &str,
+            &crate::identity::ProjectId,
+            &crate::workspace::WorkspaceId,
+            &str,
+        )>,
+    ) -> Result<Session, StorageError> {
         let parent = self
             .get(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(format!("session {id}")))?;
-
-        let child_id = Uuid::new_v4().to_string();
+        let target_project_id = target
+            .map(|(_, project_id, _, _)| project_id.as_str())
+            .unwrap_or(&parent.project_id);
+        let target_workspace_id = target
+            .map(|(_, _, workspace_id, _)| workspace_id.as_str())
+            .or(parent.workspace_id.as_deref());
+        let target_directory = target
+            .map(|(directory, _, _, _)| directory)
+            .unwrap_or(&parent.directory);
+        if target.is_some() {
+            let binding: Option<(String, String)> = sqlx::query_as(
+                "SELECT project_id, status FROM workspace_project_binding WHERE workspace_id = ?",
+            )
+            .bind(target_workspace_id.unwrap_or_default())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+            if !matches!(binding, Some((ref project, ref status)) if project == target_project_id && status == "resolved")
+            {
+                return Err(StorageError::Database(
+                    "target workspace context is not resolved for the parent project".into(),
+                ));
+            }
+        }
+        if let Some(existing) = self.get(child_id).await? {
+            if existing.parent_id.as_deref() == Some(id)
+                && existing.project_id == target_project_id
+                && existing.workspace_id.as_deref() == target_workspace_id
+                && existing.directory == target_directory
+            {
+                return Ok(existing);
+            }
+            return Err(StorageError::Database(
+                "stable fork identity already belongs to a different launch".into(),
+            ));
+        }
         let slug = generate_slug(&Some(format!("{} (fork)", parent.title)));
         let title = format!("{} (fork)", parent.title);
         let version = "1".to_string();
@@ -1129,7 +1251,7 @@ impl SessionStore {
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
             INSERT INTO session (
                 id, project_id, workspace_id, parent_id, slug, directory,
@@ -1137,20 +1259,50 @@ impl SessionStore {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
-        .bind(&child_id)
-        .bind(&parent.project_id)
-        .bind(&parent.workspace_id)
+        .bind(child_id)
+        .bind(target_project_id)
+        .bind(target_workspace_id)
         .bind(id)
         .bind(&slug)
-        .bind(&parent.directory)
+        .bind(target_directory)
         .bind(&title)
         .bind(&version)
         .bind(now)
         .bind(now)
         .bind(serde_json::to_string(&parent.tags).unwrap_or_else(|_| "[]".to_string()))
         .execute(&mut *tx)
-        .await
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        .await;
+        if let Err(insert_error) = result {
+            let _ = tx.rollback().await;
+            if let Some(existing) = self.get(child_id).await? {
+                if existing.parent_id.as_deref() == Some(id)
+                    && existing.project_id == target_project_id
+                    && existing.workspace_id.as_deref() == target_workspace_id
+                    && existing.directory == target_directory
+                {
+                    return Ok(existing);
+                }
+                return Err(StorageError::Database(
+                    "stable fork identity already belongs to a different launch".into(),
+                ));
+            }
+            return Err(StorageError::Database(insert_error.to_string()));
+        }
+
+        if let Some((_, project_id, workspace_id, source)) = target {
+            sqlx::query(
+                "INSERT INTO session_project_binding (session_id, project_id, workspace_id, status, source, revision, time_created, time_updated) VALUES (?, ?, ?, 'resolved', ?, 1, ?, ?)",
+            )
+            .bind(child_id)
+            .bind(project_id.as_str())
+            .bind(workspace_id.as_str())
+            .bind(source)
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| StorageError::Database(error.to_string()))?;
+        }
 
         let msgs = sqlx::query_as::<_, MessageRow>(
             r#"
@@ -1180,7 +1332,7 @@ impl SessionStore {
                     .unwrap_or_else(|_| msg.data.clone());
             msg_values.push((
                 new_msg_id,
-                child_id.clone(),
+                child_id.to_string(),
                 msg.time_created,
                 msg.time_updated,
                 redacted_data,
@@ -1231,7 +1383,7 @@ impl SessionStore {
             part_values.push((
                 new_part_id,
                 new_msg_id.clone(),
-                child_id.clone(),
+                child_id.to_string(),
                 part.time_created,
                 part.time_updated,
                 redacted_data,
@@ -1273,7 +1425,7 @@ impl SessionStore {
         let mut todo_values: Vec<(String, String, String, String, i64, i64, i64)> = Vec::new();
         for todo in &todos {
             todo_values.push((
-                child_id.clone(),
+                child_id.to_string(),
                 todo.content.clone(),
                 todo.status.clone(),
                 todo.priority.clone(),
@@ -1308,12 +1460,12 @@ impl SessionStore {
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
         Ok(Session {
-            id: child_id.clone(),
-            project_id: parent.project_id,
-            workspace_id: parent.workspace_id,
+            id: child_id.to_string(),
+            project_id: target_project_id.to_string(),
+            workspace_id: target_workspace_id.map(str::to_string),
             parent_id: Some(id.to_string()),
             slug,
-            directory: parent.directory,
+            directory: target_directory.to_string(),
             title,
             version,
             share_url: None,

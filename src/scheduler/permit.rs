@@ -23,6 +23,10 @@ pub struct PermitDimensions {
     pub io_weight: u32,
     pub network_slots: u16,
     pub exclusivity_keys: Vec<String>,
+    /// Canonical workspace identity for keyed admission dimensions.
+    pub workspace_id: Option<String>,
+    /// M007 fixed build-class quota request in that workspace.
+    pub workspace_build_slots: u16,
 }
 
 /// Token returned by the admission controller when a permit is taken.
@@ -144,6 +148,8 @@ pub fn permit_from_request(
         io_weight: io,
         network_slots: network,
         exclusivity_keys: keys,
+        workspace_id: None,
+        workspace_build_slots: 0,
     }
 }
 

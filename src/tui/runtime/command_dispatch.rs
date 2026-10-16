@@ -61,9 +61,9 @@ use super::super::commands::sessions::{
     apply_sessions_reloaded, apply_share_session_finished, apply_template_session_created,
     apply_tree_dialog_loaded, apply_unshare_session_finished, start_archive_session,
     start_bulk_archive, start_bulk_delete, start_bulk_export, start_create_from_template,
-    start_delete_session, start_export_session, start_fork_session, start_load_session_messages,
-    start_open_tree_dialog, start_reload_sessions, start_rename_session, start_share_session,
-    start_undo_delete, start_unshare_session,
+    start_delete_session, start_export_session, start_fork_session, start_fork_session_worktree,
+    start_load_session_messages, start_open_tree_dialog, start_reload_sessions,
+    start_rename_session, start_share_session, start_undo_delete, start_unshare_session,
 };
 use super::super::commands::shell::{
     handle_run_human_shell, handle_shell_ask, handle_shell_event, handle_shell_expand,
@@ -211,6 +211,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::ForkSession { session_id } => {
             start_fork_session(app, session_id);
+        }
+        TuiCommand::ForkSessionWorktree {
+            session_id,
+            placement,
+            idempotency_key,
+        } => {
+            start_fork_session_worktree(app, session_id, placement, idempotency_key);
         }
         TuiCommand::LspStatusRefreshRequested => {
             crate::tui::commands::diagnostics::refresh_lsp_status(app);
@@ -1375,9 +1382,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             request_id,
             session,
             error,
+            info,
         } => {
             super::super::commands::sessions::apply_new_session_created(
-                app, request_id, session, error,
+                app, request_id, session, error, info,
             );
         }
         TuiCommand::PromptSessionCreated {

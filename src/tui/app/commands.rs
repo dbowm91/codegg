@@ -38,6 +38,11 @@ pub enum TuiCommand {
     ForkSession {
         session_id: String,
     },
+    ForkSessionWorktree {
+        session_id: String,
+        placement: crate::protocol::core::SessionWorktreePlacement,
+        idempotency_key: String,
+    },
     ShareSession {
         session_id: String,
     },
@@ -791,6 +796,7 @@ pub enum TuiCommand {
         request_id: u64,
         session: Option<crate::protocol::dto::Session>,
         error: Option<String>,
+        info: Option<String>,
     },
     /// Completion of the nonblocking session creation required by a prompt
     /// submitted before a session existed.  The route and prompt are carried

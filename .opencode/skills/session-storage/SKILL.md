@@ -32,6 +32,7 @@ into a second source of truth.
 | Storage | `crates/codegg-core/src/storage/mod.rs`, `paths.rs`, `preferences.rs` | Canonical `STORAGE_LAYOUT_VERSION`, pool init, WAL, `DaemonPaths`, `UserPreferences` |
 | Events | `crates/codegg-core/src/session/events.rs` | Typed `SessionEvent` variants + `EventMeta`; the enum definition owns the current variant set |
 | Catalog | `crates/codegg-core/src/project_catalog.rs`, `project_storage.rs` | Daemon-owned project list/get/register/archive/restore; path-independent identity |
+| Isolated session launch | `src/core/daemon_sessions.rs`, `crates/codegg-core/src/worktree_service.rs` | Principal-scoped idempotent new/fork launch into an authorized managed checkout; resumable checkout lifecycle and transactional session binding |
 | Identity | `crates/codegg-core/src/identity.rs` | Opaque string newtypes (UUIDv4), validated parsing, lexical contract |
 | Run artifacts | `crates/codegg-core/src/run_store.rs`, `src/run_rerun.rs` | Persistent run index + artifact storage; rerun linkage |
 | Workstream claims | `crates/codegg-core/src/workstream_claim.rs`, schema migration v79 | Group-scoped intent claims, CAS lifecycle, bounded dependencies and append-only provenance; never grants filesystem/Git/scheduler authority |
@@ -63,7 +64,12 @@ into a second source of truth.
    with direct store access when a `CoreRequest` already exists.
 5. **Exports are redacted and bounded.** `validate_import_size` +
    `redact_for_export` in `session/import.rs` are load-bearing.
-6. **Working-file state is checksummed.** `compute_checksum` /
+6. **Isolated checkout launch is a daemon operation.** Preserve the same
+   principal-scoped idempotency key across exact retries and return the
+   concrete session/workspace/worktree identities. Partial failures retain
+   the managed checkout for retry or attention; this path does not authorize
+   shared checkout writes.
+7. **Working-file state is checksummed.** `compute_checksum` /
    `create_working_file` / `verify_file` in `session/checkpoint.rs` carry
    SHA-256 for `WorkingFile` entries on a `Checkpoint`. Note the boundary:
    `CheckpointStore::save`/`load` themselves do not verify checksums, and

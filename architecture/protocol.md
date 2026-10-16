@@ -135,9 +135,10 @@ provider-neutral create), `ProviderSetupList` (secret-free setup catalog),
 `ConnectionEnable`, `ConnectionDisable`, `ConnectionDelete`,
 `ConnectionRestore`, `ConnectionPurge`
 
-**Session Lifecycle (19)**: `Initialize`, `Subscribe`, `Resume`,
+**Session Lifecycle (21)**: `Initialize`, `Subscribe`, `Resume`,
 `SessionList`, `SessionCreate` (with optional `project_id`/`workspace_id`
-for identity-aware clients), `SessionAttach`, `SessionLoad`,
+for identity-aware clients), `SessionLaunchInWorktree`,
+`SessionForkInWorktree`, `SessionAttach`, `SessionLoad`,
 `SessionMessagesLoad`, `SessionMessageCounts`, `SessionFork`,
 `SessionDelete`, `SessionArchive`, `SessionRestore`, `SessionShare`,
 `SessionUnshare`, `SessionRename`, `SessionExport`, `SessionImportData`,

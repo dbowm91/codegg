@@ -148,9 +148,11 @@ operations, or replace `GitMutationExecutor` for ordinary Git mutations.
 Its deterministic branch/path names are validated by `BranchName` and
 `ObjectId`; cleanup refreshes structured status and operation state before
 removing and never force-removes dirty, conflicted, unknown, or unmanaged
-worktrees. Scheduler jobs that perform the lifecycle reserve
-`exclusive:worktree-mutation`, matching the existing Git mutation resource
-profile.
+worktrees. Scheduler jobs that perform the lifecycle reserve the
+workspace-scoped `exclusive:worktree-mutation` capacity key, matching the
+existing Git mutation resource profile. It is scheduler admission only and is
+not the checkout-scoped writer authority required for shared-worktree agent
+execution.
 Fetch with `--prune` uses `ManagedGitArgv` fallback (not modeled by typed
 parser).
 

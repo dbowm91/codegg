@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard, Peer Awareness, and Workspace Placement Roadmap
 
-Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Shared mutation remains unavailable until complete writer mediation and native lifecycle containment are proven. M006 isolated session/worktree UX and M007 per-workspace build admission are independently eligible; M008's broad comparison remains blocked on M006/M007.
+Status: active; M001–M004 and M010 closed (M004 strict closure through corrective M009); ADR-0032 accepted 2026-10-15; M005 active for checkout-scoped writer-containment feasibility and qualification. Shared mutation remains unavailable until complete writer mediation and native lifecycle containment are proven. M006 isolated session/worktree UX and M007 per-workspace build admission are active independently of M005; M008's broad comparison remains blocked on M006/M007 closure.
 
 Repository planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main inspected 2026-10-16). Re-inspect exact working branch before implementation.
 
@@ -66,8 +66,8 @@ existing durable AgentRun/Group/JobScheduler/WorktreeService (closed)
             +-- M004 peer observation and model-facing tools    [strictly closed via M009]
                  |
                  +-- M005 explicit group checkout placement     [active: design/qualification; shared-write capability blocked]
-            +-- M006 isolated session/worktree launch UX          [ready; M005 not required]
-            +-- M007 per-workspace build admission                [ready; M005 not required]
+            +-- M006 isolated session/worktree launch UX          [active; M005 not required]
+            +-- M007 per-workspace build admission                [active; M005 not required]
             +-- M010 isolated Rust/Python trajectory               [closed; deterministic functional evidence]
             +-- M008 broad trajectory and economics                [blocked: M006, M007]
 ~~~
@@ -127,13 +127,13 @@ Add separate checkout ownership and participating execution access; task spawn/g
 
 Plan: plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md
 
-### M006 — Isolated session/worktree fork-and-launch UX (ready)
+### M006 — Isolated session/worktree fork-and-launch UX (active)
 
 Native daemon operation for 'new session in new/existing isolated worktree' and 'fork session in new/existing isolated worktree', with idempotent allocation/bind/rollback/recovery, TUI/CLI affordances and authorization. Session fork alone retains old semantics. Shared checkout execution is excluded and M005 is not a dependency.
 
 Plan: plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md
 
-### M007 — Per-workspace build admission (ready; independent of M005)
+### M007 — Per-workspace build admission (active; independent of M005)
 
 Use the canonical scheduler to enforce a bounded per-workspace concurrent-build limit with correct waiting/cancellation/restart behavior and authorized coarse job status. No shared target, compiler cache, build coalescing, or shared checkout is introduced; those optimizations remain separate future work.
 

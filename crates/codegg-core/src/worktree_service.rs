@@ -239,7 +239,8 @@ fn transition_allowed(from: ManagedWorktreeState, to: ManagedWorktreeState) -> b
             ManagedWorktreeState::Removed | ManagedWorktreeState::Orphaned
         ) | (
             ManagedWorktreeState::Orphaned,
-            ManagedWorktreeState::Ready
+            ManagedWorktreeState::Preparing
+                | ManagedWorktreeState::Ready
                 | ManagedWorktreeState::Releasing
                 | ManagedWorktreeState::Removed
         )
@@ -803,7 +804,33 @@ impl WorktreeService {
         &self,
         request: &CreateWorktreeRequest,
     ) -> Result<WorktreeRecord, WorktreeServiceError> {
+        self.reserve_with_id(request, WorktreeId::new()).await
+    }
+
+    /// Idempotently reserve a caller-selected durable identity. This is used
+    /// by higher-level daemon sagas that persist a retry key before Git
+    /// materialization; a duplicate request must resolve to the same path and
+    /// must never mint an unrelated checkout.
+    pub async fn reserve_with_id(
+        &self,
+        request: &CreateWorktreeRequest,
+        worktree_id: WorktreeId,
+    ) -> Result<WorktreeRecord, WorktreeServiceError> {
         let root = canonical_repo_root(&request.repository_root)?;
+        if let Some(existing) = self.store.get(&worktree_id).await? {
+            let same_scope = existing.project_id == request.project_id
+                && existing.repository_id == request.repository_id
+                && existing.workspace_id == request.workspace_id
+                && canonical_or_self(&existing.repository_root) == root
+                && request
+                    .base_commit
+                    .as_ref()
+                    .is_none_or(|base| base == &existing.base_commit);
+            if !same_scope {
+                return Err(WorktreeServiceError::Collision(worktree_id.to_string()));
+            }
+            return Ok(existing);
+        }
         let base_path = request
             .base_path
             .as_deref()
@@ -818,7 +845,6 @@ impl WorktreeService {
         ObjectId::new(&base_commit).map_err(|e| {
             WorktreeServiceError::InvalidInput(format!("invalid base commit from Git: {e}"))
         })?;
-        let worktree_id = WorktreeId::new();
         let id_short = worktree_id.as_str().replace('-', "");
         let id_short = &id_short[..id_short.len().min(12)];
         let branch = format!("codegg/worktree/{id_short}");
@@ -859,7 +885,7 @@ impl WorktreeService {
             repository_id: request.repository_id.clone(),
             workspace_id: request.workspace_id.clone(),
             node_id: request.node_id.clone(),
-            repository_root: root,
+            repository_root: root.clone(),
 
             path,
             branch: Some(branch),
@@ -872,7 +898,22 @@ impl WorktreeService {
             created_at: now,
             updated_at: now,
         };
-        self.store.insert_reserved(record.clone()).await?;
+        if let Err(error) = self.store.insert_reserved(record.clone()).await {
+            if let Some(existing) = self.store.get(&record.worktree_id).await? {
+                let same_scope = existing.project_id == record.project_id
+                    && existing.repository_id == record.repository_id
+                    && existing.workspace_id == record.workspace_id
+                    && canonical_or_self(&existing.repository_root) == root
+                    && request
+                        .base_commit
+                        .as_ref()
+                        .is_none_or(|base| base == &existing.base_commit);
+                if same_scope {
+                    return Ok(existing);
+                }
+            }
+            return Err(error);
+        }
         Ok(record)
     }
 
@@ -893,10 +934,69 @@ impl WorktreeService {
         &self,
         id: &WorktreeId,
     ) -> Result<WorktreeRecord, WorktreeServiceError> {
+        let initial = self.get(id).await?;
+        let _guard = self
+            .locks
+            .acquire_repository(&initial.repository_root)
+            .await;
         let mut record = self.get(id).await?;
-        transition(&mut record, ManagedWorktreeState::Preparing)?;
-        self.store.save(record.clone()).await?;
-        let _guard = self.locks.acquire_repository(&record.repository_root).await;
+        match record.state {
+            ManagedWorktreeState::Ready => return Ok(record),
+            ManagedWorktreeState::InUse => {
+                return Err(WorktreeServiceError::LeaseConflict(id.to_string()))
+            }
+            ManagedWorktreeState::Reserved => {
+                transition(&mut record, ManagedWorktreeState::Preparing)?;
+                self.store.save(record.clone()).await?;
+            }
+            ManagedWorktreeState::Preparing | ManagedWorktreeState::Orphaned => {
+                if record.path.exists() || record.path.is_symlink() {
+                    let listed = crate::worktree::list_worktrees(&record.repository_root)
+                        .await
+                        .map_err(|error| WorktreeServiceError::Git(error.to_string()))?;
+                    let registered = listed.iter().any(|tree| {
+                        canonical_or_self(Path::new(&tree.path)) == canonical_or_self(&record.path)
+                            && tree.branch == record.branch.clone().unwrap_or_default()
+                    });
+                    if !registered || !crate::worktree::is_git_worktree(&record.path) {
+                        if record.state != ManagedWorktreeState::Orphaned {
+                            transition(&mut record, ManagedWorktreeState::Orphaned)?;
+                            record.health = WorktreeHealth::GitError;
+                            self.store.save(record).await?;
+                        }
+                        return Err(WorktreeServiceError::Git(
+                            "reserved worktree path exists without the expected Git registration"
+                                .into(),
+                        ));
+                    }
+                    let status = egggit::status_v2::rich_repo_status(&record.path)
+                        .await
+                        .map_err(|error| WorktreeServiceError::Git(error.to_string()))?;
+                    if !status.is_clean {
+                        if record.state != ManagedWorktreeState::Orphaned {
+                            transition(&mut record, ManagedWorktreeState::Orphaned)?;
+                        }
+                        record.health = WorktreeHealth::Dirty;
+                        self.store.save(record).await?;
+                        return Err(WorktreeServiceError::Git(
+                            "interrupted worktree creation left a non-clean checkout; retained for attention"
+                                .into(),
+                        ));
+                    }
+                    transition(&mut record, ManagedWorktreeState::Ready)?;
+                    record.health = WorktreeHealth::Clean;
+                    self.store.save(record.clone()).await?;
+                    return Ok(record);
+                }
+                transition(&mut record, ManagedWorktreeState::Preparing)?;
+                self.store.save(record.clone()).await?;
+            }
+            ManagedWorktreeState::Releasing
+            | ManagedWorktreeState::Archived
+            | ManagedWorktreeState::Removed => {
+                return Err(WorktreeServiceError::LeaseConflict(id.to_string()))
+            }
+        }
         let result = tokio::task::spawn_blocking({
             let root = record.repository_root.clone();
             let path = record.path.clone();

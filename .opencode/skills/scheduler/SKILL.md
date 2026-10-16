@@ -75,6 +75,8 @@ let dims = PermitDimensions {
     io_weight: 0,
     network_slots: 0,
     exclusivity_keys: vec!["exclusive:run-tests".into()],
+    workspace_id: None,
+    workspace_build_slots: 0,
 };
 match controller.try_admit_arc(&dims) {
     AdmissionDecision::Admitted(permit) => {
@@ -112,6 +114,11 @@ Two behaviours matter more than the numbers:
 in daemon mode `enabled = false` creates an explicit *rejecting* placeholder —
 it does not restore unscheduled execution. `observe`/`active` remain accepted
 staged labels that also do not restore bypass.
+
+`ResourceRequest::for_kind(Build)` charges one keyed build slot to the job's
+canonical workspace. `scheduler.resources.max_builds_per_workspace` defaults
+to one. The quota is held for the full attempt and released with its permit;
+it does not share build outputs or apply to arbitrary shell commands.
 
 ## Gotchas
 
