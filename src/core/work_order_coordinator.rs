@@ -33,7 +33,7 @@ use codegg_core::work_order::{
     resolve_model, resolve_workspace_action, sequence_holds, sequence_predecessors_terminal,
     session_id_for_occurrence, submission_key_for_occurrence, AttentionCode, GateKind,
     LaneFailurePolicy, OccurrenceState, WorkOrder, WorkOrderError, WorkOrderOccurrence,
-    WorkOrderService, WorkspaceAction, WorkspacePolicy,
+    WorkOrderService, WorkspaceAction,
 };
 
 // Production daemon wiring lives in the `impl CoreDaemon` block at the end
@@ -520,9 +520,10 @@ impl super::daemon::CoreDaemon {
         }
 
         // Workspace policy resolution (pure; never copies directories).
-        // Mutation detection is conservative: task-mode work is assumed
-        // mutation-capable unless the workspace policy explicitly shares.
-        let is_mutation = !matches!(work_order.workspace_policy, Some(WorkspacePolicy::Shared));
+        // WorkOrders currently materialize the build agent, whose effective
+        // tool surface is mutation-capable. Placement selection must never
+        // downgrade that authority signal (especially Shared).
+        let is_mutation = true;
         let is_git = self.project_has_git_repository(&project).await;
         let action = resolve_workspace_action(work_order.workspace_policy, is_git, is_mutation);
         // Eggplan M003 §18: a bound occurrence only supports shared
@@ -1001,16 +1002,8 @@ impl super::daemon::CoreDaemon {
         if let Ok(Some(existing)) = submission.reconcile_by_key(&key, &workspace_id, None).await {
             return Ok(existing.job_id.as_str().to_owned());
         }
-        // Serialized mutation contends on one writer via the scheduler
-        // exclusivity key; other work needs no exclusivity.
-        let mut resource_request =
+        let resource_request =
             codegg_core::jobs::ResourceRequest::for_kind(codegg_core::jobs::JobKind::AgentTurn);
-        if matches!(
-            work_order.workspace_policy,
-            Some(codegg_core::work_order::WorkspacePolicy::Serialized)
-        ) {
-            resource_request.exclusivity_keys = vec!["exclusive:workspace-mutation".to_owned()];
-        }
         let agent = "build".to_owned();
         let spec = codegg_core::jobs::NewJob {
             workspace_id,

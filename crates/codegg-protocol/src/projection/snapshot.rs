@@ -213,6 +213,11 @@ impl SessionProjectionSnapshot {
             .iter_mut()
             .find(|g| g.group_id == group.group_id)
         {
+            if group.workstream_claims_updated_at.is_none() {
+                group.workstream_claims = std::mem::take(&mut slot.workstream_claims);
+                group.workstream_dependencies = std::mem::take(&mut slot.workstream_dependencies);
+                group.workstream_claims_updated_at = slot.workstream_claims_updated_at;
+            }
             *slot = group;
             return;
         }
@@ -286,5 +291,42 @@ mod tests {
             snap.push_diagnostic(ProjectionDiagnostic::new("c", format!("{i}"), i as i64));
         }
         assert_eq!(snap.diagnostics.len(), MAX_PROJECTION_DIAGNOSTICS);
+    }
+
+    #[test]
+    fn group_lifecycle_refresh_preserves_board_until_complete_claim_refresh() {
+        let claim = crate::projection::workstream::WorkstreamClaimProjection {
+            claim_id: "claim-1".into(),
+            project_id: "p".into(),
+            workspace_id: "w".into(),
+            group_id: "g".into(),
+            kind: "path".into(),
+            target: "src/lib.rs".into(),
+            state: "claimed".into(),
+            owner_kind: "run".into(),
+            owner_id: "run-1".into(),
+            version: 1,
+            lease_generation: 1,
+            lease_expires_at: None,
+            updated_at: 10,
+        };
+        let mut snapshot = SessionProjectionSnapshot::empty("s", "p", "w");
+        let mut board = AgentRunGroupSummaryProjection {
+            group_id: "g".into(),
+            workstream_claims: vec![claim],
+            workstream_claims_updated_at: Some(10),
+            ..Default::default()
+        };
+        snapshot.upsert_run_group(board.clone());
+
+        board.status = "completed".into();
+        board.workstream_claims.clear();
+        board.workstream_claims_updated_at = None;
+        snapshot.upsert_run_group(board.clone());
+        assert_eq!(snapshot.run_groups[0].workstream_claims.len(), 1);
+
+        board.workstream_claims_updated_at = Some(11);
+        snapshot.upsert_run_group(board);
+        assert!(snapshot.run_groups[0].workstream_claims.is_empty());
     }
 }

@@ -1304,11 +1304,12 @@ async fn f_worktree_containment_gate_and_truthfulness() {
         }
         other => panic!("non-Git mutation must need attention, got {other:?}"),
     }
-    // Serialized sharing is truthfully labeled shared, never isolated.
-    assert_eq!(
+    // Explicit serialized sharing fails closed while ordinary AgentTurn
+    // writers can bypass the scheduler key.
+    assert!(matches!(
         resolve_workspace_action(Some(WorkspacePolicy::Serialized), false, true),
-        codegg_core::work_order::WorkspaceAction::ShareSerialized
-    );
+        codegg_core::work_order::WorkspaceAction::NeedsAttention { .. }
+    ));
 }
 
 // ── G — Model/provider and policy drift ──────────────────────────────────

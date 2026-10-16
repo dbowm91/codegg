@@ -312,6 +312,12 @@ Impossible requests fail before executor invocation. Temporarily blocked
 requests are requeued, and the bounded candidate window prevents one
 blocked workspace from stopping unrelated work.
 
+`exclusive:workspace-mutation` is a legacy global key on selected Build and
+Format job profiles. It is not checkout-scoped and is not acquired by every
+AgentTurn writer, so it does not serialize arbitrary workspace mutations.
+WorkOrder `shared`/`serialized` mutation therefore fails closed until all
+writers use a canonical checkout-scoped reservation.
+
 ## Canonical process policy
 
 `src/managed_process.rs` is the shared noninteractive argv service. It

@@ -15,7 +15,7 @@ pair a pending event with a oneshot response channel.
 | Path | Role |
 |------|------|
 | `crates/codegg-core/src/bus/global.rs` | `GlobalEventBus` singleton |
-| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (58 variants) |
+| `crates/codegg-core/src/bus/events.rs` | `AppEvent` enum (60 variants) |
 | `crates/codegg-core/src/bus/mod.rs` | `PermissionRegistry`, `QuestionRegistry`, `PermissionDecision`, pending-info types |
 
 ## How It Works
@@ -40,7 +40,7 @@ pub struct GlobalEventBus {
 
 ### AppEvent Enum
 
-58 variants across these categories:
+60 variants across these categories:
 
 | Category | Count | Variants |
 |----------|-------|----------|
@@ -53,7 +53,7 @@ pub struct GlobalEventBus {
 | Streaming | 3 | `TextDelta`, `ReasoningDelta`, `AgentFinished` |
 | Subagent | 4 | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
 | AgentRun | 4 | `AgentRunUpdated`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
-| Worktree/Group | 2 | `WorktreeUpdated`, `AgentRunGroupUpdated` |
+| Worktree/Group | 4 | `WorktreeUpdated`, `AgentRunGroupUpdated`, `WorkstreamClaimUpdated`, `AgentRunEvidenceObserved` |
 | Convergence | 1 | `ConvergenceUpdated` |
 | TestRun | 3 | `TestRunStarted`, `TestRunProgress`, `TestRunCompleted` |
 | Diff | 2 | `DiffPending`, `DiffResponded` |
@@ -66,6 +66,12 @@ pub struct GlobalEventBus {
 Each variant has an `event_type()` method returning a `&'static str`
 discriminator for SSE filtering (e.g. `"session:created"`,
 `"tool_call:started"`, `"permission:pending"`, `"provider_attempt:failed"`).
+
+`WorkstreamClaimUpdated` and `AgentRunEvidenceObserved` are internal hints;
+the Core projection adapter intentionally does not expose them as client
+events. Evidence hints are built from bounded durable run results and carry
+relative changed paths plus validation kind/status only. Peer loops apply
+same-group membership and claim-overlap filtering before user-message delivery.
 
 Events use `Arc<str>` for hot-path fields: `session_id` and `delta` on
 `TextDelta`, and `session_id` on `ReasoningDelta` (whose `delta` remains a
@@ -172,7 +178,7 @@ available from the socket.
 | Type | File:line | Purpose |
 |------|-----------|---------|
 | `GlobalEventBus` | `bus/global.rs:7` | Broadcast singleton |
-| `AppEvent` | `bus/events.rs:81` | 58-variant event enum |
+| `AppEvent` | `bus/events.rs:81` | 60-variant event enum |
 | `PermissionRegistry` | `bus/mod.rs:88` | Permission request/response |
 | `QuestionRegistry` | `bus/mod.rs:252` | Question request/response |
 | `PermissionDecision` | `bus/mod.rs:12` | Bus-owned permission DTO |
@@ -288,3 +294,8 @@ the `server` feature), and there is no `tests/server.rs`. All other refs
 the 300 s agent-loop wait in `src/permission/approval.rs:297` and
 `src/agent/tool_batch.rs:1839`, and the bidirectional `PermissionChoice`
 conversions at `src/permission/mod.rs:284,295`) verified accurate.
+
+M004 adds the internal `AgentRunEvidenceObserved` hint, bringing the current
+enum to 60 variants. It carries bounded relative paths and typed validation
+statuses from durable run results and is intentionally omitted from the Core
+client projection adapter.

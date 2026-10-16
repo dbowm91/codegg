@@ -282,6 +282,35 @@ the persisted turn owner or the owner run's originating task. Terminal live
 follow-up delivery is separately claim-gated by durable group notification
 state, so replay can refresh projections without duplicating user messages.
 
+### Bounded workstream view (agent-workstream-blackboard M002)
+
+`projection::workstream::project_workstream` derives an `AgentWorkstreamSnapshot`
+from one already authorized `SessionProjectionSnapshot`. Its revision is the
+source snapshot's `event_seq`, so reconnect and restart use the existing
+snapshot/replay cursor and do not introduce another journal or polling loop.
+The pure adapter joins a run group to at most 16 run, job, and worktree facts;
+missing or mismatched run facts are listed as unavailable, and linked jobs or
+worktrees distinguish unavailable records from observed state. The response
+omits task descriptions, job summaries, terminal prose, paths, prompts, and
+logs. It grants no control authority and performs no storage access.
+
+Agent Workstream Blackboard M003 adds `project_workstream_with_claims`, which
+accepts bounded claims and dependency summaries supplied by the authorized
+group reader. It filters them to the source project/workspace/group and caps
+claims at 128 and projected dependency edges at 512. This is a derived view;
+the daemon claim store remains authoritative for revisions and ownership.
+
+M004 adds claim/dependency summaries to authorized run-group projection
+updates for display. A complete refresh carries `workstream_claims_updated_at`;
+ordinary group lifecycle updates preserve the last complete board, while an
+explicit refresh with empty lists clears released claims. These fields confer
+no authority. Child loops receive same-group global-bus events only as
+push hints, reduced to an allowlist and injected as untrusted user data at a
+provider boundary. They restore membership from the durable group store after
+restart, filter by the originating session, and emit a continuity-gap notice
+when the bounded event stream has a gap. The task board remains the canonical
+read path and identifies itself as snapshot-only when no replay cursor exists.
+
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events
 and `task get` remain compatibility adapters for the migration window; new

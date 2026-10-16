@@ -366,6 +366,25 @@ pub enum AppEvent {
         session_id: String,
         group: codegg_protocol::projection::dto::AgentRunGroupSummaryProjection,
     },
+    /// Bounded durable claim hint for same-group agent loops. Consumers must
+    /// filter by their own run ID before forming model-visible context.
+    WorkstreamClaimUpdated {
+        session_id: String,
+        group_id: String,
+        member_run_ids: Vec<String>,
+        claim: codegg_protocol::projection::WorkstreamClaimProjection,
+        action: String,
+    },
+    /// Bounded Git/result evidence derived from the durable AgentRunResult.
+    /// Internal peer hint only; it is not a new client or authority surface.
+    AgentRunEvidenceObserved {
+        session_id: String,
+        run_id: String,
+        status: String,
+        result_commit: Option<String>,
+        changed_paths: Vec<String>,
+        validation: Vec<(String, String)>,
+    },
     /// Durable bounded convergence summary for session projections.
     ConvergenceUpdated {
         session_id: String,
@@ -465,6 +484,8 @@ impl AppEvent {
             AppEvent::AgentRunControlUpdated { .. } => "agent_run:control_updated",
             AppEvent::WorktreeUpdated { .. } => "worktree:updated",
             AppEvent::AgentRunGroupUpdated { .. } => "agent_run_group:updated",
+            AppEvent::WorkstreamClaimUpdated { .. } => "workstream_claim:updated",
+            AppEvent::AgentRunEvidenceObserved { .. } => "agent_run:evidence_observed",
             AppEvent::ConvergenceUpdated { .. } => "convergence:updated",
             AppEvent::TestRunStarted { .. } => "test_run:started",
             AppEvent::TestRunProgress { .. } => "test_run:progress",

@@ -63,6 +63,10 @@ pub fn agent_run_summary(
     let mut summary = AgentRunSummary {
         run_id: run.run_id.to_string(),
         task_id: run.task_id.to_string(),
+        project_id: task.project_id.to_string(),
+        repository_id: task.repository_id.as_ref().map(ToString::to_string),
+        workspace_id: task.workspace_id.to_string(),
+        job_id: run.job_id.as_ref().map(ToString::to_string),
         parent_run_id: run.parent_run_id.as_ref().map(ToString::to_string),
         agent: run.agent_name.clone(),
         status: run.status.as_str().into(),
@@ -89,11 +93,6 @@ pub fn agent_run_summary(
         failure_class: run.failure_class.clone(),
         updated_at: run.updated_at,
     };
-    // The task is deliberately read here to make it explicit that the
-    // projection adapter is fed by the task/run authority. Its description
-    // is not projected because prompts and full task bodies are disclosure-
-    // sensitive and can be unbounded.
-    let _ = task;
     summary.normalise();
     summary
 }
@@ -156,6 +155,9 @@ pub fn run_group_summary(
             .map(ToString::to_string),
         cancel_remaining_on_satisfaction: summary.group.cancel_remaining_on_satisfaction,
         updated_at,
+        workstream_claims: Vec::new(),
+        workstream_dependencies: Vec::new(),
+        workstream_claims_updated_at: None,
     };
     projection.normalise();
     projection
@@ -247,6 +249,13 @@ mod tests {
         };
         let summary = agent_run_summary(&task, &run, Some(&worktree), None, None);
         assert!(summary.attention_required);
+        assert_eq!(summary.project_id, task.project_id.to_string());
+        assert_eq!(
+            summary.repository_id,
+            task.repository_id.as_ref().map(ToString::to_string)
+        );
+        assert_eq!(summary.workspace_id, task.workspace_id.to_string());
+        assert_eq!(summary.job_id, None);
         assert_eq!(summary.depth, 1);
         assert_eq!(summary.result_commit, None);
         let encoded = serde_json::to_string(&summary).unwrap();

@@ -99,6 +99,10 @@ fn ok_model_body() -> (u16, String) {
     )
 }
 
+fn ok_completion() -> (u16, String) {
+    (200, String::new())
+}
+
 async fn migrated_pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -141,7 +145,12 @@ async fn reconnecting_a_provider_after_removal_succeeds() {
     let provisioner = provisioner(pool.clone(), &dir);
 
     // One endpoint serving both probes, so both attempts share an idempotency key.
-    let (endpoint, server) = fake_eggpool_serving(&[ok_model_body(), ok_model_body()]);
+    let (endpoint, server) = fake_eggpool_serving(&[
+        ok_model_body(),
+        ok_completion(),
+        ok_model_body(),
+        ok_completion(),
+    ]);
 
     // 1. First connect succeeds.
     let first = provisioner
@@ -176,11 +185,13 @@ async fn retry_after_a_rejected_attempt_succeeds() {
     let pool = migrated_pool().await;
     let provisioner = provisioner(pool.clone(), &dir);
 
-    // 403 first, then a well-formed response on the same endpoint, so the retry
-    // collides with the 'failed' journal row's idempotency key.
+    // Catalog discovery succeeds, the minimal completion rejects the key, then
+    // the retry succeeds on both requests using the same endpoint.
     let (endpoint, server) = fake_eggpool_serving(&[
+        ok_model_body(),
         (403, r#"{"error":"forbidden"}"#.to_string()),
         ok_model_body(),
+        ok_completion(),
     ]);
 
     let rejected = provisioner
@@ -218,6 +229,8 @@ async fn a_failed_replacement_leaves_the_previous_connection_intact() {
 
     // First connect succeeds; the second (replacement) is rejected.
     let (endpoint, server) = fake_eggpool_serving(&[
+        ok_model_body(),
+        ok_completion(),
         ok_model_body(),
         (403, r#"{"error":"forbidden"}"#.to_string()),
     ]);
@@ -260,7 +273,12 @@ async fn reconnecting_replaces_the_active_connection() {
     let provisioner = provisioner(pool.clone(), &dir);
 
     // One endpoint serving both probes so both attempts share an idempotency key.
-    let (endpoint, server) = fake_eggpool_serving(&[ok_model_body(), ok_model_body()]);
+    let (endpoint, server) = fake_eggpool_serving(&[
+        ok_model_body(),
+        ok_completion(),
+        ok_model_body(),
+        ok_completion(),
+    ]);
 
     let first = provisioner
         .create_connection(create_request(&endpoint, "prov-e2e-replace-1"))

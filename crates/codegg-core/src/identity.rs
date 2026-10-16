@@ -276,6 +276,11 @@ typed_identity!(
     "agent_run_message_id"
 );
 typed_identity!(
+    /// Stable identity for one durable workstream responsibility claim.
+    WorkstreamClaimId,
+    "workstream_claim_id"
+);
+typed_identity!(
     /// Stable identity for one durable project-chat message.
     ///
     /// Project Collaboration M001 owns the channel/message contract.

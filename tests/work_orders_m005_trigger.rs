@@ -1147,7 +1147,7 @@ async fn trigger_management_authorization_matrix() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn trigger_fire_reaches_coordinator_exactly_once() {
+async fn trigger_fire_wakes_coordinator_and_honors_closed_shared_mutation() {
     let pool = test_pool().await;
     let daemon = CoreDaemon::new(Some(pool.clone()), None, None);
     let project = catalog_project(&pool, "Fireland").await;
@@ -1227,9 +1227,10 @@ async fn trigger_fire_reaches_coordinator_exactly_once() {
         .expect("present");
     assert!(stored.gate_latches.contains(&GateKind::ExternalTrigger));
 
-    // The committed latch reaches the coordinator through the fire
-    // path's own wake: the occurrence is already running with exactly
-    // one canonical session and one initial job linked.
+    // The committed latch reaches the coordinator through the fire path's
+    // own wake. Explicit serialized mutation fails closed until a
+    // checkout-scoped writer guard exists, so the occurrence needs attention
+    // and must not create a session or submit a job.
     let materialized = service
         .get_occurrence(&project, &occurrence.id)
         .await
@@ -1237,16 +1238,17 @@ async fn trigger_fire_reaches_coordinator_exactly_once() {
         .expect("present");
     assert_eq!(
         materialized.state,
-        codegg_core::work_order::OccurrenceState::Running
+        codegg_core::work_order::OccurrenceState::NeedsAttention
     );
     assert!(
-        materialized.session_id.is_some(),
-        "materialization links one canonical session"
+        materialized
+            .diagnostic
+            .as_deref()
+            .is_some_and(|diagnostic| diagnostic.contains("shared_mutation_unavailable")),
+        "attention explains why shared mutation remains unavailable"
     );
-    assert!(
-        materialized.job_id.is_some(),
-        "materialization submits one initial job"
-    );
+    assert!(materialized.session_id.is_none());
+    assert!(materialized.job_id.is_none());
 
     // An explicit wake converges with no further work.
     let advanced = daemon
@@ -1255,7 +1257,8 @@ async fn trigger_fire_reaches_coordinator_exactly_once() {
         .expect("wake converges");
     assert_eq!(advanced, 0, "wake converges with no duplicate work");
 
-    // Duplicate fire plus wake cannot duplicate the session or job.
+    // Duplicate fire plus wake cannot bypass the closed policy or create
+    // duplicate session/job state.
     let replay = daemon
         .fire_work_order_trigger(&bearer, None, BASE_NOW + 7)
         .await
@@ -1271,8 +1274,8 @@ async fn trigger_fire_reaches_coordinator_exactly_once() {
         .await
         .expect("get")
         .expect("present");
-    assert_eq!(settled.session_id, materialized.session_id);
-    assert_eq!(settled.job_id, materialized.job_id);
+    assert_eq!(settled.session_id, None);
+    assert_eq!(settled.job_id, None);
 
     // Drain the observed events: trigger lifecycle is visible without
     // secrets, and the occurrence change is published.
@@ -1293,7 +1296,10 @@ async fn trigger_fire_reaches_coordinator_exactly_once() {
         }
     }
     assert!(saw_trigger_fired, "fire publishes trigger event");
-    assert!(saw_occurrence, "materialization publishes occurrence event");
+    assert!(
+        saw_occurrence,
+        "closed materialization publishes occurrence event"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

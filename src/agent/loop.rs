@@ -130,6 +130,16 @@ pub struct AgentLoop {
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    /// Push hints only; idle runs are never woken by peer observations.
+    pub(super) peer_observation_rx:
+        Option<tokio::sync::broadcast::Receiver<crate::bus::events::AppEvent>>,
+    /// Originating parent session used by durable group bus events. A child
+    /// loop's private transcript session ID is intentionally different.
+    pub(super) peer_observation_session_id: Option<String>,
+    pub(super) peer_group_members: HashMap<String, Vec<String>>,
+    pub(super) peer_claim_targets: HashMap<String, Vec<String>>,
+    pub(super) peer_observation_seen: std::collections::HashSet<String>,
+    pub(super) peer_observation_gap: bool,
     /// Host-owned habit observation state. Only allowlisted structural action
     /// metadata reaches this collector; raw calls/results remain in the
     /// ordinary model execution path and are never persisted here.
@@ -436,6 +446,12 @@ impl AgentLoop {
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             run_id: None,
+            peer_observation_rx: None,
+            peer_observation_session_id: None,
+            peer_group_members: HashMap::new(),
+            peer_claim_targets: HashMap::new(),
+            peer_observation_seen: std::collections::HashSet::new(),
+            peer_observation_gap: false,
             habit_project_namespace,
             habit_actions: Vec::new(),
             habit_had_failure: false,
@@ -826,6 +842,16 @@ impl AgentLoop {
     ) {
         self.services.run_control = Some(service);
         self.run_id = Some(run_id);
+        self.peer_observation_rx = Some(crate::bus::global::GlobalEventBus::subscribe());
+        self.peer_observation_gap = true;
+    }
+
+    pub fn set_peer_group_memberships(&mut self, groups: Vec<(String, Vec<String>)>) {
+        self.peer_group_members = groups.into_iter().take(16).collect();
+    }
+
+    pub fn set_peer_observation_session_id(&mut self, session_id: String) {
+        self.peer_observation_session_id = Some(session_id);
     }
 
     pub fn set_steer_receiver(&mut self, rx: mpsc::Receiver<String>) {
@@ -1052,6 +1078,8 @@ impl AgentLoop {
                     tracing::info!("Turn steer received: {}", text);
                 }
             }
+
+            self.inject_peer_observations(&mut request.messages);
 
             // Controls are consumed before the provider request is built.
             // This is a stable boundary: no in-flight provider transcript is
@@ -1615,9 +1643,21 @@ impl AgentLoop {
             }
             self.observe_tool_palette_starvation(&tool_calls);
             self.lifecycle.set_phase(TurnPhase::ToolExecution);
-            let tool_results = crate::agent::tool_batch::ToolBatchExecutor::new(self)
-                .execute(&tool_calls)
-                .await?;
+            // A peer event can arrive after the provider request was built
+            // and while the provider is returning this tool batch. Keep the
+            // in-flight request immutable, but drain once more before any
+            // action from that response is dispatched. If new group state or
+            // a continuity gap arrived, retain it after the assistant/tool
+            // result pair and require a fresh provider decision.
+            let (deferred_peer_observations, fenced_results) =
+                self.fence_tool_batch_on_peer_update(&tool_calls);
+            let tool_results = if let Some(results) = fenced_results {
+                results
+            } else {
+                crate::agent::tool_batch::ToolBatchExecutor::new(self)
+                    .execute(&tool_calls)
+                    .await?
+            };
             self.lifecycle.set_phase(TurnPhase::Recovery);
             just_executed_tools = !tool_results.is_empty();
             self.record_habit_tool_results(&tool_calls, &tool_results);
@@ -1904,6 +1944,14 @@ impl AgentLoop {
                 };
                 self.services.context_tracker.add_message(&msg);
                 request.messages.push(msg);
+            }
+
+            // Append the newly observed peer state only after the assistant's
+            // tool call and its refusal results, preserving provider transcript
+            // ordering while making the fact available on the next request.
+            for message in deferred_peer_observations {
+                self.services.context_tracker.add_message(&message);
+                request.messages.push(message);
             }
 
             // Track tool calls for todo reminder cadence

@@ -46,6 +46,7 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync
 tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
+unicode-normalization.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 # Restricted-Python parser for Tool Programs (M004). The parser's generic AST

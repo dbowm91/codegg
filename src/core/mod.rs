@@ -673,6 +673,8 @@ pub(crate) fn map_app_event_to_core_event(
         crate::bus::events::AppEvent::AgentRunGroupUpdated { session_id, group } => {
             Some(CoreEvent::AgentRunGroupUpserted { session_id, group })
         }
+        crate::bus::events::AppEvent::WorkstreamClaimUpdated { .. } => None,
+        crate::bus::events::AppEvent::AgentRunEvidenceObserved { .. } => None,
         crate::bus::events::AppEvent::ConvergenceUpdated {
             session_id,
             convergence,

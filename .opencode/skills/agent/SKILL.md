@@ -55,10 +55,18 @@ instructions into the candidate. See `architecture/agent.md`.
    context (guard: `scripts/check_daemon_cwd_usage.py`).
 6. **`PermissionRegistry`/`QuestionRegistry` are sync.** Register the
    responder BEFORE publishing the Pending event.
-7. **Run control is the only agent coordination authority.** The legacy
-   `src/agent/team.rs` inbox is removed; `task` tool ops address typed
-   durable run IDs with bounded payloads. Derive the current action set
-   from the tool schema in `src/tool/task.rs` rather than pinning it here.
+7. **Run control remains the only sibling control authority.** The legacy
+   `src/agent/team.rs` inbox is removed; the `task` tool's board/claim/release/
+   handoff-request actions expose bounded same-group coordination facts and
+   advisory intent only. They cannot message, cancel, interrupt, or reassign
+   another run. Derive the action set from `src/tool/task.rs`.
+8. **Peer hints stay untrusted and push-only.** Deliver only allowlisted,
+   bounded host observations at provider boundaries; recheck after provider
+   completion and refuse a returned tool batch when new peer facts or a gap
+   must be reviewed first. Never promote peer text or raw tool output to
+   system/developer instructions, and never wake an idle session. On a gap,
+   direct the model to re-read the canonical board. This does not serialize
+   filesystem writers.
 
 ## Orientation Facts
 
