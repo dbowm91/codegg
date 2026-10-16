@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 005 — Directory-tied 1:1 identity, auto-create/load, client cwd switch
 
-Status: active
+Status: implemented
 
 Repository baseline: `45100903` (M004 strict closure; sequential handoff)
 
@@ -31,21 +31,21 @@ working directory — with the daemon process cwd never moving.
 
 ## 2. Why this milestone is ready
 
-Blocked, not ready: ADR-0033 is accepted (satisfied), but M2 (picker +
-surfaces), M3 (lifecycle), and M4 (rename/repath) must all be closed —
-this milestone unifies their surfaces under the identity rule and
-switches execution context on selection.
+Ready at the sequential handoff: M2 (picker + surfaces), M3 (lifecycle),
+and M4 (rename/repath) are closed, and ADR-0033 is accepted. M5 unifies
+their surfaces under the identity rule and switches execution context on
+selection.
 
 ## 3. Current implementation evidence
 
-- Launch already auto-creates: `bootstrap_launch_project_context`
-  (`src/tui/app/mod.rs`) = idempotent `WorkspaceRegister` + idempotent
-  `ProjectRegister { display_name = dir file_name, source =
-  "tui-launch" }`, with existing `workspace_project_binding` returned
-  unchanged. This is the pattern to generalize to picker-driven opens.
-- Model permits N workspaces per project (`ProjectDetailsDto.workspaces`,
-  `workspace_project_binding`); ADR-0033 grandfathers existing
-  multi-bindings read-only and requires 1:1 for new bindings.
+- Startup and local picker opens share
+  `ensure_bound_project_context` (`src/tui/commands/project_picker.rs`):
+  canonicalize the frontend-owned root, register its workspace, then
+  idempotently register/load a project named for the directory.
+- Historical storage can contain multiple workspaces per project;
+  registration and reconciliation now create distinct projects for new
+  roots, while historical multi-bindings remain readable and require M4
+  rebind before they can gain a new root.
 - Tab state `ProjectTabState { project_id, workspace_id, workspace_root,
   … }` + `ExecutionContext { project_id, session_id, workspace_root }`
   (`src/tui/app/state/`) with `active_workspace_root()` /

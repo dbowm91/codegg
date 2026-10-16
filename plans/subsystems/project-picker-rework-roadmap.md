@@ -1,6 +1,6 @@
 # Project Picker Rework Roadmap
 
-Status: active
+Status: closing
 
 Long-term references:
 
@@ -32,8 +32,9 @@ directories are client-side `ExecutionContext`, never daemon chdir.
 
 ### Invariants
 
-- One root directory maps to exactly one project (1:1 identity once M5
-  lands; until then the existing N-workspaces-per-project model stands).
+- Each newly bound root directory maps to exactly one project. Historical
+  multi-root project bindings remain readable until an M4 rebind graduates
+  them to one root.
 - Selecting a project switches only the client's working directory
   (`ExecutionContext`); the daemon process cwd never moves.
 - Archiving never deletes sessions; destroying a project deletes its
@@ -71,8 +72,8 @@ directories are client-side `ExecutionContext`, never daemon chdir.
 - Multi-cwd split panels and rapid split switching (deferred long-term;
   `Shift+H/J/K/L` is owned by panel navigation and cannot be reused
   without a separate design).
-- Project discovery/scanning changes beyond the existing launch-time
-  auto-create path.
+- Project discovery/scanning changes beyond explicit launch and picker
+  directory opens.
 - Team presence, observer mode, remote workspaces.
 - Hard project deletion without confirmation or without naming affected
   sessions.
@@ -81,18 +82,13 @@ directories are client-side `ExecutionContext`, never daemon chdir.
 ## 4. Current state
 
 The closed `plans/subsystems/tui-project-sessions-roadmap.md` (M001–M004)
-delivered the bounded catalog cache, picker with workspace selection,
-tab routing, and manifest restore. Openers today are `Ctrl+\` (both
-modes), `\` (vim Normal), `Shift+F` (Normal-only), and `/projects`.
-The picker is a custom search layout with no mode badge and `j/k` only
-when the query is empty. `/help` renders title / filter row / rows /
-footer with an `INS`/`NOR` badge. The status line shows
-status/thinking/tokens but no cwd or project; sessions-panel rows are
-daemon `Session` records with no project name. The daemon supports
-`ProjectArchive`/`ProjectRestore` (row flip, sessions kept) and has no
-project destroy or rename/repath operation. Launch auto-creates a project
-named for the directory (`bootstrap_launch_project_context`), but picker
-selection does not switch any working directory.
+delivered the bounded catalog cache, tab routing, and manifest restore.
+M1–M5 now provide the help-style picker and project/session surfaces,
+lifecycle and confirmed destroy, rename/repath, directory-named
+auto-create/load, and client-owned per-tab working directories. Startup
+and local picker opens share `ensure_bound_project_context`; repository
+lineage remains metadata and does not merge distinct roots. The daemon cwd
+is unchanged.
 
 ## 5. Target architecture
 
@@ -247,10 +243,9 @@ Deferred work: multi-cwd splits (future design, new chord required).
 
 ### Storage and migration
 
-M5 constrains workspace↔project binding toward 1:1; existing
-N-workspace projects need a declared migration or grandfather rule in
-ADR-0033. `STORAGE_LAYOUT_VERSION` tracks the highest migration. No
-M1/M2 storage change.
+M5 enforces 1:1 for new workspace↔project bindings. Existing
+multi-workspace rows remain readable and require operator rebind under M4;
+no migration or `STORAGE_LAYOUT_VERSION` change was needed.
 
 ### Protocol and compatibility
 
@@ -295,7 +290,9 @@ daemon-cwd-guard evidence.
 
 ## 10. Risks and decision points
 
-- ADR-0033 is accepted (2026-10-16); M3–M5 remain gated on M2–M4 sequencing. If a successor ADR ever supersedes it, M3–M5 stop per their stop conditions.
+- ADR-0033 was accepted on 2026-10-16 and the M2–M4 sequencing gates are
+  satisfied. If a successor ADR supersedes it, any new work stops under the
+  individual plan stop conditions.
 - Destroy cascade semantics (sessions deleted) is the one irreversible
   step; confirm copy and authz scope need maintainer sign-off in the ADR.
 - Repath-to-bound-root refusal vs adoption (ADR-0033 recommends refusal).
@@ -305,11 +302,12 @@ daemon-cwd-guard evidence.
 
 ## 11. Completion definition
 
-The roadmap closes when M1–M5 are each closed with accepted closure
-records, ADR-0033 is accepted, the picker opens only via `Shift+F` /
-`/projects`, lifecycle/rename/repath work end-to-end against the daemon,
-1:1 directory identity holds with auto-create/load, and no milestone
-carries unresolved high/medium findings.
+The roadmap closes when M1–M5 have strict closure records, ADR-0033 is
+accepted, the picker opens only via `Shift+F` / `/projects`,
+lifecycle/rename/repath work end-to-end against the daemon, 1:1 directory
+identity holds with auto-create/load, and no milestone carries unresolved
+high/medium findings. M5 local acceptance is complete; its installed-binary
+daemon-restart walkthrough remains outstanding for strict closure.
 
 ## 12. Milestone status
 
@@ -319,4 +317,4 @@ carries unresolved high/medium findings.
 | 2 | closed | `plans/implementation/project-picker-rework/002-help-style-picker-and-surfaces.md` | `plans/closure/project-picker-rework/002-status.md` | strict local evidence; M3 and M4 unblocked |
 | 3 | closed | `plans/implementation/project-picker-rework/003-lifecycle-and-confirmed-destroy.md` | `plans/closure/project-picker-rework/003-status.md` | none |
 | 4 | closed | `plans/implementation/project-picker-rework/004-rename-and-repath.md` | `plans/closure/project-picker-rework/004-status.md` | none |
-| 5 | active | `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` | — | M2–M4 closed; ADR-0033 accepted; implementation underway |
+| 5 | conditionally closed | `plans/implementation/project-picker-rework/005-directory-identity-and-client-cwd.md` | `plans/closure/project-picker-rework/005-status.md` | Local acceptance and quick verification pass; installed-binary daemon-restart walkthrough remains outstanding |
