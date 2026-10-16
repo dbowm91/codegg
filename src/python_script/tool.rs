@@ -527,7 +527,7 @@ impl Tool for PythonScriptTool {
         input: serde_json::Value,
         ctx: Option<crate::tool::backend::ToolExecutionContext>,
     ) -> Result<crate::tool::backend::StructuredToolResult, ToolError> {
-        let request = build_python_request(&input)?;
+        let request = build_python_request(&input, self.workspace_root.as_deref())?;
         let snapshot = crate::tool::authorization::accepted_execution_snapshot(
             ctx.as_ref()
                 .and_then(|context| context.execution_authorization.as_ref()),
