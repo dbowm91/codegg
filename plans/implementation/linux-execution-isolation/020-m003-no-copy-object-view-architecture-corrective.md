@@ -1,6 +1,7 @@
 # Linux Execution Isolation — M003 No-Copy Git Object View Corrective
 
-Status: active; design and implementation work has not yet changed C010 admission
+Status: closed negative for strict C010 cold-preparation acceptance; live-object no-copy remains disallowed
+Closure: `plans/closure/linux-execution-isolation/020-status.md`
 
 Repository baseline: `f7935ad7` (reconciled with current `main`)
 
@@ -9,7 +10,7 @@ Related decisions: accepted ADR-0035 (Linux isolation), ADR-0034 (command author
 
 ## 1. Objective
 
-Replace or materially optimize the cold-miss path in the daemon-owned private Git object-view architecture. Preserve the current trusted Git guarantees while removing the multi-second fragmented-store preparation cost that keeps M003 unadmitted. This work is an architecture corrective; it cannot itself admit a host or enable object-writing or remote Git routes.
+Determine whether a safe immutable Git object view can meet C010's cold fragmented-store budget without multi-second preparation. Preserve the trusted Git boundary; do not admit a host or enable object-writing or remote Git routes through this corrective.
 
 ## 2. Current evidence and design constraint
 
@@ -83,16 +84,46 @@ ordinary repositories. No-copy live mounts remain disallowed for every profile
 that permits host-side writers, including FullHost. Protected child mounts and
 masked alternates do not change this decision.
 
-The current host is ext4 and has no mounted CoW filesystem or local `btrfs`
-utilities. Its existing `FICLONE` attempts fall back to byte copies, so local
-measurements do not qualify the CoW path. The bounded next experiment is to
-run the existing private immutable snapshot design on a hosted Linux runner
-with a disposable, explicitly identified CoW filesystem, using exact-content
-packed and fragmented fixtures. It must report clone success/fallback counts,
-snapshot preparation distributions, end-to-end trusted Git operation
-distributions, and source-mutation isolation. If the host cannot provide a
-supported CoW filesystem, record the experiment as unavailable and retain the
-private-copy path without relaxing the trust boundary.
+The current workstation is ext4 and its existing `FICLONE` calls fall back to
+byte copies. Hosted Btrfs evidence is recorded below. A four-worker copy
+experiment did not materially improve the fragmented cold p95, so the
+production copier remains serial and the bounded concurrency change was
+reverted.
+
+### Hosted Btrfs CoW qualification (2026-10-16)
+
+The exact-source workflow is
+`.github/workflows/linux-git-object-cow.yml`; final-source hosted run
+[`38951802613`](https://github.com/dbowm91/codegg/actions/runs/38951802613)
+ran on commit `c997586a9aba4df4f7acb8e30239a5e6bc8dc87b`. The Ubuntu 24.04
+runner used kernel `6.17.0-1022-azure`, Git `2.55.0`, btrfs-progs `6.6.3`,
+and an 8 GiB loopback Btrfs filesystem. The fixtures contained the same 44,671
+object IDs: one packed store (one pack; no loose objects) and one fragmented
+store (44,671 loose objects, 358.09 MiB). The workflow compared sorted
+`cat-file --batch-all-objects` ID sets before measurement.
+
+The Btrfs source-mutation test passed with
+`CODEGG_REQUIRE_OBJECT_VIEW_FICLONE=1`, proving at least one successful
+`FICLONE` and confirming a source object mutation after admission did not alter
+the private snapshot's returned payload. Across 30 cold-advised pairs per
+shape, the packed snapshot preparation median/p95/max was
+0.191/0.279/0.313 ms with three reflinked object-store files per sample and
+zero fallbacks. The fragmented snapshot preparation was
+969.317/1,109.391/1,202.083 ms, with all 44,671 object-store files reflinked
+and zero byte-copy fallbacks. Protected `git status` p95 was 10.100 ms packed
+versus 10.096 ms baseline, and 8.857 ms fragmented versus 7.972 ms baseline.
+The fragmented snapshot p95 narrowly misses C010's 1,000 ms preparation
+limit; the sample maximum remains below C010's 3 s single-sample limit. The
+loopback runner result proves the code path and CoW isolation on Btrfs but is
+not physical-device or general supported-host admission evidence.
+
+The four-worker experiment on commit `54dce1bf` and run
+[`38951277191`](https://github.com/dbowm91/codegg/actions/runs/38951277191)
+measured 1,890.487 ms fragmented preparation p95 versus 1,920.899 ms on the
+prior serial run `38950666067`. That small change is not material and did not
+meet the gate, so the extra production concurrency was reverted. A second
+serial exact-source run `38951802613` again missed the 1,000 ms p95 budget.
+No result authorizes a live read-only mount or weakens the mutation boundary.
 
 ### Exact-content local shape comparison (2026-10-16)
 
@@ -150,8 +181,8 @@ The no-copy path must use the existing trusted sandbox helper/status-ack ownersh
 ## 3. Work packages
 
 1. Keep private immutable snapshots as the correctness baseline. The ordinary-worktree no-writer lease candidate is rejected: daemon-local locks do not exclude external writers, and no enforced repository-ownership mechanism exists.
-2. Qualify filesystem-native copy-on-write file snapshots on a supported hosted Linux CoW filesystem. Exact-content packed and fragmented fixtures must be on the same filesystem as the private snapshot destination; record the filesystem and clone success/fallback counts. A live read-only mount is not a substitute for an immutable snapshot.
-3. Preserve the existing cached private-copy path and its fail-closed behavior. A CoW optimization may only create independent snapshot inodes whose contents stay fixed when the source changes; it may not hard-link source objects or fail open to host object discovery.
+2. Qualify filesystem-native copy-on-write file snapshots on an identified Linux CoW filesystem. Exact-content packed and fragmented fixtures must be on the same filesystem as the private snapshot destination; record the filesystem and clone success/fallback counts. A live read-only mount is not a substitute for an immutable snapshot.
+3. Preserve the existing cached private-snapshot path and its fail-closed behavior. A CoW optimization may only create independent snapshot inodes whose contents stay fixed when the source changes; it may not hard-link source objects or fail open to host object discovery.
 4. Preserve and extend adversarial tests for pre-existing and late alternates, nested repositories, linked worktrees/common directories, source mutation, races, packed and fragmented stores, and cleanup after timeout/cancellation.
 5. Measure controlled cold and warm snapshot preparation plus repeated trusted operations on exact-content-equivalent packed and fragmented stores. Record filesystem, kernel, Git version, repository shape, cache state, clone/fallback counts, sample distributions, and mutation-isolation results.
 6. Run exact-head native Linux trusted-Git and M004 regression workflows, cross-platform compile checks for changed shared code, ADR integrity, and full CI. Record whether the design meets the C010 thresholds; retain C010's no-admission disposition unless every production gate is met separately.
@@ -168,7 +199,7 @@ The no-copy path must use the existing trusted sandbox helper/status-ack ownersh
 ## 5. Acceptance criteria
 
 - The no-writer lease feasibility decision is documented against actual lock ownership and external writer behavior; no-copy live mounts remain disabled for ordinary worktrees.
-- A qualified filesystem-specific CoW snapshot is backed by executable source-mutation evidence and exact-content-equivalent packed/fragmented cold and warm measurements. It materially improves cold fragmented preparation without regressing repeated trusted operation latency beyond the C010 budget; otherwise the private-copy fallback and C010 no-admission decision remain.
+- A filesystem-specific CoW snapshot is backed by executable source-mutation evidence and exact-content-equivalent packed/fragmented cold measurements. If it misses the C010 budget, record a negative bounded result, retain private snapshots, and leave M003 unadmitted.
 - Existing trusted-Git behavior, object-view cache lease safety, M004 regression coverage, and Windows/macOS compilation remain intact.
 - The implementation and closure record state any filesystem/kernel capability requirements and fail-closed behavior. No C010 production admission is claimed by this corrective.
 
