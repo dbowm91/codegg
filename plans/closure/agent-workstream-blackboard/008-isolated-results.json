@@ -313,6 +313,7 @@
       "finding": "Child-run execution stalls are reproducible outside parallel sibling groups. Current journal evidence is too coarse to distinguish provider streaming, hooks, request preparation, or tool handling. Add phase-specific trace evidence before another expensive Rust/Python S1 attempt."
     },
     "approval_mode_propagation_corrective": {
+      "source_commit": "9725cc4bb817b713e40beb30e9c807cf6b8bad16",
       "source_changes": [
         "crates/codegg-core/src/jobs/mod.rs",
         "src/tool/task.rs",
@@ -326,6 +327,7 @@
       "verification": "Source-built isolated daemon passed a bounded child git_query status plus workspace read under explicit parent Yolo; the following S1 children recorded only succeeded provider attempts. Focused cargo check and scheduler-bypass, approval-router, sandbox-contract, and core-boundary guards passed."
     },
     "S1_completed_shared_interface_2026_10_16": {
+      "source_commit": "9725cc4bb817b713e40beb30e9c807cf6b8bad16",
       "fixture_digest": "b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1",
       "session_id": "e8d937ee-8b37-470d-966e-ba5e30166a0a",
       "group_id": "ecfc4e68-c4fc-4985-a1b0-d9063287858a",
