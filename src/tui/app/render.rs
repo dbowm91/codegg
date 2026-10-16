@@ -1972,6 +1972,8 @@ impl App {
                     })
                     .collect(),
             );
+            self.sidebar
+                .set_run_groups(snapshot.run_groups.iter().cloned().collect());
             self.sidebar.set_agent_tree(
                 snapshot
                     .active_turn

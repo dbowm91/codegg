@@ -11,7 +11,7 @@ Long-term requirements:
 - `plans/002-long-term-roadmap.md`
 
 Applicable ADRs:
-- `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` — accepted command authority
+- `plans/adrs/ADR-0034-command-syntax-and-execution-authority.md` — accepted command authority
 - `plans/adrs/ADR-0033-composable-linux-execution-isolation.md` — Linux backend selection and qualification dependency
 - `plans/adrs/ADR-0004-approval-routing-sandbox-and-runtime-preferences.md` — permission/sandbox separation
 

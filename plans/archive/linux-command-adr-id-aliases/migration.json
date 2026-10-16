@@ -1,11 +1,12 @@
 {
   "migration": "linux-command-adr-id-aliases",
   "source_ref": "planning/linux-sandbox-next-admission-and-adr-cleanup @ eb2ca664d8e8aebe51fddeed8ac06d63f15f555b",
-  "reason": "ADR-0029/0030 are reserved by the concurrent Windows ADR identity migration; allocate next free IDs without changing decision content.",
+  "reason": "Preserve the original identity-only Linux/command migration while tracking current-main ADR-0031/0032 collisions; final canonical IDs are unique and decision content is unchanged.",
   "mapping": [
     {
       "old_path": "plans/adrs/ADR-0027-composable-linux-execution-isolation.md",
-      "new_path": "plans/adrs/ADR-0031-composable-linux-execution-isolation.md",
+      "new_path": "plans/adrs/ADR-0033-composable-linux-execution-isolation.md",
+      "canonical_id_history": ["ADR-0031"],
       "archive_path": "plans/archive/linux-command-adr-id-aliases/ADR-0027-composable-linux-execution-isolation.md",
       "source_git_blob": "cd5ca05567f75e8a29fb57f42feb2a66f35f5628",
       "source_sha256": "380682d63c4c30950750e76f2555a39b363c3fb1ac878975b7224a4f93896ce7",
@@ -15,7 +16,8 @@
     },
     {
       "old_path": "plans/adrs/ADR-0028-command-syntax-and-execution-authority.md",
-      "new_path": "plans/adrs/ADR-0032-command-syntax-and-execution-authority.md",
+      "new_path": "plans/adrs/ADR-0034-command-syntax-and-execution-authority.md",
+      "canonical_id_history": ["ADR-0032"],
       "archive_path": "plans/archive/linux-command-adr-id-aliases/ADR-0028-command-syntax-and-execution-authority.md",
       "source_git_blob": "a94e757682ba2ca51939fea61a8545520037ffa6",
       "source_sha256": "7dfc6c2f5bce53d1561027737482e4a8c35a266d566fe94c027a9742e725050c",
@@ -23,5 +25,15 @@
       "status_preserved": true,
       "decision_content_changed": false
     }
-  ]
+  ],
+  "current_main_reconciliation": {
+    "date": "2026-10-16",
+    "active_ids": {
+      "authenticated_idle_continuation": "ADR-0031",
+      "agent_workstream_coordination": "ADR-0032",
+      "linux_execution_isolation": "ADR-0033",
+      "command_syntax_and_execution_authority": "ADR-0034"
+    },
+    "content_or_status_changed": false
+  }
 }

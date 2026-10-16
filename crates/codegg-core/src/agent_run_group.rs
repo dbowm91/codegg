@@ -730,6 +730,17 @@ impl AgentRunGroupService {
         self.recompute_group(group).await
     }
 
+    /// Return durable groups containing this run. The run ID is the
+    /// authorization scope: callers can only enumerate groups that already
+    /// include that exact member. Used to restore bounded peer visibility
+    /// after a child loop or daemon reconnects.
+    pub async fn groups_for_member(
+        &self,
+        member_run_id: &AgentRunId,
+    ) -> Result<Vec<AgentRunGroupRecord>, AgentRunGroupError> {
+        self.groups.list_by_member(member_run_id).await
+    }
+
     pub async fn wait(
         &self,
         actor: &GroupActor,

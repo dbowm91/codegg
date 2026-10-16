@@ -523,6 +523,68 @@ impl SubagentJobExecutor {
             _ => None,
         };
         let result = store.get_result(run_id).await.ok().flatten();
+        if let Some(result) = result.as_ref() {
+            use std::path::Component;
+            let changed_paths = result
+                .changed_paths
+                .iter()
+                .filter_map(|path| {
+                    let path = std::path::Path::new(path);
+                    if path.is_absolute()
+                        || path.components().any(|part| {
+                            matches!(
+                                part,
+                                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                            )
+                        })
+                    {
+                        return None;
+                    }
+                    let normalized = path
+                        .components()
+                        .filter_map(|part| match part {
+                            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    (!normalized.is_empty()).then(|| normalized.chars().take(256).collect())
+                })
+                .take(64)
+                .collect::<Vec<String>>();
+            let validation = result
+                .validation
+                .iter()
+                .take(16)
+                .map(|item| {
+                    let status = match item.status {
+                        codegg_core::run_result::ValidationStatus::Passed => "passed",
+                        codegg_core::run_result::ValidationStatus::Failed => "failed",
+                        codegg_core::run_result::ValidationStatus::Cancelled => "cancelled",
+                        codegg_core::run_result::ValidationStatus::TimedOut => "timed_out",
+                        codegg_core::run_result::ValidationStatus::Unknown => "unknown",
+                    };
+                    (item.kind.chars().take(64).collect(), status.to_owned())
+                })
+                .collect();
+            crate::bus::global::GlobalEventBus::publish(
+                crate::bus::events::AppEvent::AgentRunEvidenceObserved {
+                    session_id: task.originating_session_id.clone(),
+                    run_id: run_id.to_string(),
+                    status: match result.status {
+                        codegg_core::run_result::AgentRunResultStatus::Succeeded => "succeeded",
+                        codegg_core::run_result::AgentRunResultStatus::Failed => "failed",
+                        codegg_core::run_result::AgentRunResultStatus::Cancelled => "cancelled",
+                        codegg_core::run_result::AgentRunResultStatus::Interrupted => "interrupted",
+                        codegg_core::run_result::AgentRunResultStatus::Conflicted => "conflicted",
+                    }
+                    .to_owned(),
+                    result_commit: result.result_commit.clone(),
+                    changed_paths,
+                    validation,
+                },
+            );
+        }
         let summary = codegg_core::projection_replay::agent_run_summary(
             &task,
             &run,

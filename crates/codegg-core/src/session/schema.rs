@@ -256,6 +256,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 78 {
         migrate_and_record(pool, 78).await?;
     }
+    if current_version < 79 {
+        migrate_and_record(pool, 79).await?;
+    }
 
     Ok(())
 }
@@ -346,6 +349,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             76 => migrate_v76(&mut tx).await?,
             77 => migrate_v77(&mut tx).await?,
             78 => migrate_v78(&mut tx).await?,
+            79 => migrate_v79(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -3261,6 +3265,80 @@ async fn migrate_v78(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
             .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Agent Workstream Blackboard M003: durable responsibility claims and
+/// bounded dependency edges. These records describe intent only; they do not
+/// grant filesystem, Git, scheduler, or sandbox authority.
+async fn migrate_v79(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS workstream_claim (
+            claim_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            claim_kind TEXT NOT NULL CHECK (claim_kind IN ('task','path','interface')),
+            target TEXT NOT NULL CHECK (length(target) BETWEEN 1 AND 256),
+            state TEXT NOT NULL CHECK (state IN ('offered','claimed','released','blocked','completed')),
+            owner_kind TEXT NOT NULL CHECK (owner_kind IN ('principal','run')),
+            owner_id TEXT NOT NULL CHECK (length(owner_id) BETWEEN 1 AND 128),
+            version INTEGER NOT NULL CHECK (version >= 1),
+            lease_generation INTEGER NOT NULL CHECK (lease_generation >= 1),
+            lease_expires_at INTEGER,
+            idempotency_key TEXT NOT NULL CHECK (length(idempotency_key) BETWEEN 1 AND 128),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (group_id) REFERENCES agent_run_group(group_id) ON DELETE CASCADE,
+            UNIQUE (group_id, idempotency_key)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_workstream_claim_group_state ON workstream_claim(group_id, state, updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_workstream_claim_owner ON workstream_claim(owner_kind, owner_id, state)",
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workstream_claim_active_target
+        ON workstream_claim(group_id, claim_kind, target)
+        WHERE state IN ('offered','claimed','blocked')
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS workstream_claim_dependency (
+            claim_id TEXT NOT NULL,
+            prerequisite_claim_id TEXT,
+            prerequisite_run_id TEXT,
+            created_at INTEGER NOT NULL,
+            CHECK ((prerequisite_claim_id IS NOT NULL) != (prerequisite_run_id IS NOT NULL)),
+            PRIMARY KEY (claim_id, prerequisite_claim_id, prerequisite_run_id),
+            FOREIGN KEY (claim_id) REFERENCES workstream_claim(claim_id) ON DELETE CASCADE,
+            FOREIGN KEY (prerequisite_claim_id) REFERENCES workstream_claim(claim_id) ON DELETE CASCADE,
+            FOREIGN KEY (prerequisite_run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_workstream_claim_dependency_prerequisite ON workstream_claim_dependency(prerequisite_claim_id, prerequisite_run_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_workstream_claim_dependency_claim ON workstream_claim_dependency(claim_id, prerequisite_claim_id) WHERE prerequisite_claim_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_workstream_claim_dependency_run ON workstream_claim_dependency(claim_id, prerequisite_run_id) WHERE prerequisite_run_id IS NOT NULL",
+        r#"
+        CREATE TABLE IF NOT EXISTS workstream_claim_event (
+            event_id TEXT PRIMARY KEY,
+            claim_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            actor_kind TEXT NOT NULL CHECK (actor_kind IN ('principal','run')),
+            actor_id TEXT NOT NULL CHECK (length(actor_id) BETWEEN 1 AND 128),
+            action TEXT NOT NULL CHECK (action IN ('claimed','renewed','released','blocked','unblocked','completed','handed_off','offer_accepted','handoff_requested','expired','dependency_added')),
+            version INTEGER NOT NULL CHECK (version >= 1),
+            lease_generation INTEGER NOT NULL CHECK (lease_generation >= 1),
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (claim_id) REFERENCES workstream_claim(claim_id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES agent_run_group(group_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_workstream_claim_event_group ON workstream_claim_event(group_id, created_at, event_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|error| StorageError::Migration(error.to_string()))?;
     }
     Ok(())
 }

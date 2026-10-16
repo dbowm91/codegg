@@ -3,7 +3,7 @@
 Status: blocked (hard: C001, M005 native offline isolation, M006 brokered egress and remote-credential authorization contract; interface: C002 local state/transaction model)
 Primary class: capability
 Target closure: `plans/closure/linux-execution-isolation/011-status.md`
-Repository baseline: Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8` (M001 partial implementation), as compared with `main` on 2026-10-13. Source: `plans/subsystems/linux-execution-isolation-roadmap.md` and accepted ADR-0032; ADR-0033 was proposed at this baseline and accepted separately on 2026-10-14. Corrects M001 `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` and historical blocked `plans/closure/linux-execution-isolation/001-status.md` without revising its evidence. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. New corrective closure must be independent and preserve original historical M001 findings.
+Repository baseline: Linux branch `c7c18181862d67c9e2a649399bbda9665869edd8` (M001 partial implementation), as compared with `main` on 2026-10-13. Source: `plans/subsystems/linux-execution-isolation-roadmap.md` and accepted ADR-0034; ADR-0033 was proposed at this baseline and accepted separately on 2026-10-14. Corrects M001 `plans/implementation/linux-execution-isolation/001-trusted-git-execution-boundary.md` and historical blocked `plans/closure/linux-execution-isolation/001-status.md` without revising its evidence. Long-term: `plans/000-long-term-specification.md` §§4,17,27–29 and `plans/001-terminology-and-domain-model.md` §8. New corrective closure must be independent and preserve original historical M001 findings.
 
 ## 1. Objective
 

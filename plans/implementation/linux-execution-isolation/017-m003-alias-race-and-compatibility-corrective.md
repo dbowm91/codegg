@@ -8,7 +8,7 @@ Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 
 Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29; `plans/001-terminology-and-domain-model.md` §8.
 
-Applicable ADRs: accepted ADR-0033 (Linux mechanism); accepted ADR-0032 (command syntax and execution authority); ADR-0001/0002/0004/0016.
+Applicable ADRs: accepted ADR-0033 (Linux mechanism); accepted ADR-0034 (command syntax and execution authority); ADR-0001/0002/0004/0016.
 
 Primary class: capability / security invariant
 

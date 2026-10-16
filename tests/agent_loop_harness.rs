@@ -260,6 +260,135 @@ struct ScriptedProvider {
     response_index: Arc<Mutex<usize>>,
 }
 
+#[derive(Clone)]
+struct PeerEvidenceDuringStreamProvider {
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
+    calls: Arc<AtomicUsize>,
+    session_id: String,
+    peer_run_id: String,
+    changed_path: String,
+}
+
+#[async_trait]
+impl Provider for PeerEvidenceDuringStreamProvider {
+    fn id(&self) -> &str {
+        "peer-evidence-scripted"
+    }
+
+    fn name(&self) -> &str {
+        "Peer Evidence Scripted Provider"
+    }
+
+    fn clone_box(&self) -> Box<dyn Provider> {
+        Box::new(self.clone())
+    }
+
+    async fn stream(&self, request: &ChatRequest) -> Result<EventStream, ProviderError> {
+        self.requests.lock().await.push(request.clone());
+        let response = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            // This host-owned result event is emitted while the first provider
+            // request is still in flight, before it returns a mutation call.
+            GlobalEventBus::publish(AppEvent::AgentRunEvidenceObserved {
+                session_id: self.session_id.clone(),
+                run_id: self.peer_run_id.clone(),
+                status: "succeeded".into(),
+                result_commit: Some("fake-git-commit-a1b2c3".into()),
+                changed_paths: vec![self.changed_path.clone()],
+                validation: vec![("test".into(), "passed".into())],
+            });
+            // A same-run, same-group event under a different project/session
+            // must be discarded by the receiving loop's session boundary.
+            GlobalEventBus::publish(AppEvent::AgentRunEvidenceObserved {
+                session_id: format!("{}-other-project", self.session_id),
+                run_id: self.peer_run_id.clone(),
+                status: "succeeded".into(),
+                result_commit: Some("fake-other-project-commit".into()),
+                changed_paths: vec!["src/api.rs".into()],
+                validation: vec![("test".into(), "passed".into())],
+            });
+            vec![
+                ChatEvent::ToolCall(ToolCall {
+                    id: "peer-fenced-write".to_string().into(),
+                    name: "write".to_string().into(),
+                    arguments: serde_json::json!({
+                        "path": "src/api.rs",
+                        "content": "stale API implementation"
+                    }),
+                }),
+                ChatEvent::ToolCall(ToolCall {
+                    id: "peer-fenced-write-2".to_string().into(),
+                    name: "write".to_string().into(),
+                    arguments: serde_json::json!({
+                        "path": "src/api.rs",
+                        "content": "second stale API implementation"
+                    }),
+                }),
+                ChatEvent::Finish {
+                    stop_reason: "tool_calls".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ]
+        } else {
+            vec![
+                ChatEvent::TextDelta(
+                    "I reviewed the peer change and will stop."
+                        .to_string()
+                        .into(),
+                ),
+                ChatEvent::Finish {
+                    stop_reason: "stop".to_string().into(),
+                    usage: TokenUsage::default(),
+                },
+            ]
+        };
+        Ok(Box::pin(futures_util::stream::iter(
+            response.into_iter().map(Ok::<_, ProviderError>),
+        )))
+    }
+
+    async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![ModelInfo {
+            id: "test/model".into(),
+            name: "Test Model".into(),
+            provider: "test".into(),
+            context_window: 4096,
+            max_output_tokens: Some(2048),
+            supports_tools: true,
+            supports_vision: false,
+            variants: vec![],
+        }])
+    }
+}
+
+struct CountedWriteTool(Arc<AtomicUsize>);
+
+#[async_trait]
+impl Tool for CountedWriteTool {
+    fn name(&self) -> &str {
+        "write"
+    }
+
+    fn description(&self) -> &str {
+        "Test-only write counter"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"}
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok("write executed".into())
+    }
+}
+
 impl ScriptedProvider {
     fn new(responses: Vec<Vec<ChatEvent>>) -> Self {
         Self {
@@ -843,6 +972,209 @@ fn assert_no_orphan_tool_results(msgs: &[Message]) {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn peer_evidence_arriving_during_provider_stream_fences_returned_tool_batch() {
+    let session_id = format!("peer-fence-session-{}", uuid::Uuid::new_v4());
+    let run_id = codegg::identity::AgentRunId::new();
+    let peer_run_id = codegg::identity::AgentRunId::new();
+    let group_id = format!("peer-fence-group-{}", uuid::Uuid::new_v4());
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let provider = PeerEvidenceDuringStreamProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+        session_id: session_id.clone(),
+        peer_run_id: peer_run_id.to_string(),
+        changed_path: "src/api.rs".into(),
+    };
+    let provider_requests = Arc::clone(&provider.requests);
+    let mut registry = ToolRegistry::new();
+    registry.register(CountedWriteTool(Arc::clone(&write_count)));
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+    let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
+        Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
+    agent_loop.set_run_control(
+        codegg::agent::run_control::RunControlService::in_memory(run_store),
+        run_id.clone(),
+    );
+    agent_loop.set_peer_observation_session_id(session_id.clone());
+    agent_loop.set_peer_group_memberships(vec![(
+        group_id.clone(),
+        vec![run_id.to_string(), peer_run_id.to_string()],
+    )]);
+
+    // Seed a host-owned active path claim on peer A so the later fake Git
+    // result is relevant to this run. The claim observation is consumed at turn start;
+    // the result event is emitted from inside the provider stream.
+    GlobalEventBus::publish(AppEvent::WorkstreamClaimUpdated {
+        session_id,
+        group_id: group_id.clone(),
+        member_run_ids: vec![run_id.to_string(), peer_run_id.to_string()],
+        claim: codegg::protocol::projection::WorkstreamClaimProjection {
+            claim_id: "claim-api".into(),
+            project_id: "project-test".into(),
+            workspace_id: "workspace-test".into(),
+            group_id,
+            kind: "path".into(),
+            target: "src/api.rs".into(),
+            state: "claimed".into(),
+            owner_kind: "run".into(),
+            owner_id: peer_run_id.to_string(),
+            version: 1,
+            lease_generation: 1,
+            lease_expires_at: None,
+            updated_at: 1,
+        },
+        action: "claimed".into(),
+    });
+
+    agent_loop
+        .run(make_chat_request("Update the shared API"))
+        .await
+        .expect("peer update should fence the stale action and allow the loop to continue");
+
+    assert_eq!(
+        write_count.load(Ordering::SeqCst),
+        0,
+        "the provider-returned write must not execute after peer evidence arrives"
+    );
+    let requests = provider_requests.lock().await;
+    assert!(
+        requests.len() >= 2,
+        "the provider should get a reconsideration turn"
+    );
+    let evidence_request = requests
+        .iter()
+        .skip(1)
+        .find(|request| {
+            request.messages.iter().any(|message| match message {
+                Message::User { content } => content.iter().any(|part| match part {
+                    codegg::provider::ContentPart::Text { text } => {
+                        text.contains("peer_run_evidence")
+                            && text.contains("fake-git-commit-a1b2c3")
+                            && text.contains("src/api.rs")
+                    }
+                    _ => false,
+                }),
+                _ => false,
+            })
+        })
+        .expect("a subsequent provider request must contain the peer evidence");
+    let second_messages = &evidence_request.messages;
+    assert!(
+        second_messages.iter().all(|message| !matches!(message, Message::User { content } if content.iter().any(|part| matches!(part, codegg::provider::ContentPart::Text { text } if text.contains("fake-other-project-commit"))))),
+        "evidence from another session/project must not cross the observation boundary"
+    );
+    let tool_result_index = second_messages
+        .iter()
+        .position(|message| matches!(message, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "peer-fenced-write"))
+        .expect("the refused call must retain its matching tool result");
+    let second_tool_result_index = second_messages
+        .iter()
+        .position(|message| matches!(message, Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == "peer-fenced-write-2"))
+        .expect("every call in the refused batch must retain its matching tool result");
+    let observation_index = second_messages
+        .iter()
+        .position(|message| match message {
+            Message::User { content } => content.iter().any(|part| match part {
+                codegg::provider::ContentPart::Text { text } => {
+                    text.contains("peer_run_evidence")
+                        && text.contains("fake-git-commit-a1b2c3")
+                        && text.contains("src/api.rs")
+                }
+                _ => false,
+            }),
+            _ => false,
+        })
+        .expect("the evidence-backed peer observation must reach the next provider request");
+    assert!(
+        tool_result_index < observation_index,
+        "keep the refusal paired with the assistant call before appending the peer update"
+    );
+    assert!(
+        second_tool_result_index < observation_index,
+        "refuse every call before appending the peer update"
+    );
+}
+
+#[tokio::test]
+async fn unrelated_peer_change_does_not_fence_or_notify_member() {
+    let session_id = format!("peer-fence-unrelated-session-{}", uuid::Uuid::new_v4());
+    let run_id = codegg::identity::AgentRunId::new();
+    let peer_run_id = codegg::identity::AgentRunId::new();
+    let group_id = format!("peer-fence-unrelated-group-{}", uuid::Uuid::new_v4());
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let provider = PeerEvidenceDuringStreamProvider {
+        requests: Arc::new(Mutex::new(Vec::new())),
+        calls: Arc::new(AtomicUsize::new(0)),
+        session_id: session_id.clone(),
+        peer_run_id: peer_run_id.to_string(),
+        changed_path: "docs/unrelated.md".into(),
+    };
+    let provider_requests = Arc::clone(&provider.requests);
+    let mut registry = ToolRegistry::new();
+    registry.register(CountedWriteTool(Arc::clone(&write_count)));
+    let permissions = PermissionChecker::new(None, None).with_agent_rules(PermissionRuleset {
+        default: PermissionLevel::Allow,
+        tool_rules: vec![],
+        path_rules: vec![],
+    });
+    let mut agent_loop =
+        build_test_agent_loop_with_permissions(Box::new(provider), registry, permissions);
+    let run_store: Arc<dyn codegg::agent_run::AgentRunStore> =
+        Arc::new(codegg::agent_run::InMemoryAgentRunStore::new());
+    agent_loop.set_run_control(
+        codegg::agent::run_control::RunControlService::in_memory(run_store),
+        run_id.clone(),
+    );
+    agent_loop.set_peer_observation_session_id(session_id.clone());
+    agent_loop.set_peer_group_memberships(vec![(
+        group_id.clone(),
+        vec![run_id.to_string(), peer_run_id.to_string()],
+    )]);
+    GlobalEventBus::publish(AppEvent::WorkstreamClaimUpdated {
+        session_id,
+        group_id: group_id.clone(),
+        member_run_ids: vec![run_id.to_string(), peer_run_id.to_string()],
+        claim: codegg::protocol::projection::WorkstreamClaimProjection {
+            claim_id: "claim-api-unrelated".into(),
+            project_id: "project-test".into(),
+            workspace_id: "workspace-test".into(),
+            group_id,
+            kind: "path".into(),
+            target: "src/api.rs".into(),
+            state: "claimed".into(),
+            owner_kind: "run".into(),
+            owner_id: peer_run_id.to_string(),
+            version: 1,
+            lease_generation: 1,
+            lease_expires_at: None,
+            updated_at: 1,
+        },
+        action: "claimed".into(),
+    });
+
+    agent_loop
+        .run(make_chat_request("Update the shared API"))
+        .await
+        .expect("an unrelated peer change must not block this action");
+
+    assert_eq!(
+        write_count.load(Ordering::SeqCst),
+        2,
+        "unrelated evidence must leave every action in the batch enabled"
+    );
+    let requests = provider_requests.lock().await;
+    assert!(requests.iter().all(|request| request.messages.iter().all(|message| {
+        !matches!(message, Message::User { content } if content.iter().any(|part| matches!(part, codegg::provider::ContentPart::Text { text } if text.contains("peer_run_evidence"))))
+    })), "unrelated path evidence must not become model-visible");
 }
 
 #[tokio::test]

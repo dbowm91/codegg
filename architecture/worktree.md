@@ -126,6 +126,18 @@ and can be replayed after reconnect or restart; it does not grant ownership or
 perform cleanup. Full paths and Git details remain behind the existing
 authorized worktree inspection APIs.
 
+### WorkOrder workspace placement corrective (M001)
+
+WorkOrders currently materialize the mutation-capable `build` agent. Its
+mutation classification is independent of the requested placement: `shared`
+and `serialized` never make that job read-only. Auto-isolated Git work uses a
+managed worktree; read-only work may share the project checkout. Mutation in a
+shared or serialized checkout records `NeedsAttention` because the daemon does
+not yet have one checkout-scoped writer reservation covering every AgentTurn
+and other mutation surface. The older global scheduler key is not evidence of
+serialization and is not attached to WorkOrder AgentTurns. Select
+`auto_isolated` until a common reservation contract is implemented.
+
 ### Utility functions
 
 - `find_git_root(start)` — walks up the directory tree looking for `.git`

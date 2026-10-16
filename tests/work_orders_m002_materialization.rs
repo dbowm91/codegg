@@ -529,16 +529,17 @@ async fn non_git_mutation_and_sharing_follow_the_truthful_policy() {
         }
         other => panic!("non-Git mutation must need attention, got {other:?}"),
     }
-    // Read-only work shares safely; serialized mutation shares with
-    // scheduler contention ensuring one writer.
+    // Read-only work shares safely. Mutation-capable work cannot claim
+    // serialization until every AgentTurn writer takes the same scoped guard.
     assert_eq!(
         resolve_workspace_action(None, true, false),
         WorkspaceAction::ShareReadOnly
     );
-    assert_eq!(
+    assert!(matches!(
         resolve_workspace_action(Some(WorkspacePolicy::Serialized), true, true),
-        WorkspaceAction::ShareSerialized
-    );
+        WorkspaceAction::NeedsAttention { diagnostic, .. }
+            if diagnostic.contains("checkout-scoped writer reservation")
+    ));
     // Dirty/conflicted worktrees are never silently cleaned: only clean
     // trees are cleanup-safe (managed-worktree service owns retention).
     assert!(!codegg_core::worktree_service::WorktreeHealth::Dirty.cleanup_safe());

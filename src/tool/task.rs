@@ -21,7 +21,10 @@ use codegg_core::agent_run_group::{
     AgentRunGroupOwner, AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup,
     RunJoinPolicy, MAX_GROUP_MEMBERS,
 };
-use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId};
+use codegg_core::identity::{
+    AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorkspaceId,
+    WorkstreamClaimId,
+};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +401,8 @@ pub struct TaskTool {
     run_control: Option<Arc<RunControlService>>,
     parent_run_id: Option<AgentRunId>,
     run_groups: Option<Arc<AgentRunGroupService>>,
+    workstream_claims: Option<Arc<codegg_core::workstream_claim::WorkstreamClaimStore>>,
+    workspace_id: Option<WorkspaceId>,
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
@@ -456,6 +461,447 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
 }
 
 impl TaskTool {
+    fn workstream_actor(
+        &self,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<codegg_core::workstream_claim::ClaimActor, ToolError> {
+        if let Some(run_id) = &self.parent_run_id {
+            return Ok(codegg_core::workstream_claim::ClaimActor::Run(
+                run_id.clone(),
+            ));
+        }
+        let principal = ctx
+            .and_then(|ctx| ctx.origin_principal.as_deref())
+            .and_then(|value| codegg_core::identity::PrincipalId::parse(value).ok())
+            .ok_or_else(|| {
+                ToolError::Execution("workstream action requires a bound group actor".into())
+            })?;
+        Ok(codegg_core::workstream_claim::ClaimActor::Principal(
+            principal,
+        ))
+    }
+
+    async fn execute_workstream_action(
+        &self,
+        input: &serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        let groups = self
+            .run_groups
+            .as_ref()
+            .ok_or_else(|| ToolError::Execution("durable run groups are unavailable".into()))?;
+        let claims = self.workstream_claims.as_ref().ok_or_else(|| {
+            ToolError::Execution("durable workstream claims are unavailable".into())
+        })?;
+        let owner = self.orchestration_owner.as_ref().ok_or_else(|| {
+            ToolError::Execution("workstream actions require a bound group actor".into())
+        })?;
+        let group_actor = match owner {
+            AgentOrchestrationOwner::Run { run_id } => GroupActor {
+                run_id: Some(run_id.clone()),
+                session_id: None,
+                turn_id: None,
+            },
+            AgentOrchestrationOwner::Turn {
+                session_id,
+                turn_id,
+            } => GroupActor {
+                run_id: None,
+                session_id: Some(session_id.clone()),
+                turn_id: Some(turn_id.clone()),
+            },
+        };
+        let actor = self.workstream_actor(ctx)?;
+        let action = input["action"].as_str().unwrap_or_default();
+        let group_id =
+            AgentRunGroupId::parse(input["group_id"].as_str().ok_or_else(|| {
+                ToolError::Execution("workstream action requires group_id".into())
+            })?)
+            .map_err(|error| ToolError::Execution(format!("invalid group_id: {error}")))?;
+
+        match action {
+            "board" => {
+                let summary = groups
+                    .status(&group_actor, group_id.clone())
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let run_store = self.agent_runs.as_ref().ok_or_else(|| {
+                    ToolError::Execution("durable agent runs are unavailable".into())
+                })?;
+                let mut scope: Option<(ProjectId, WorkspaceId)> = None;
+                let mut snapshot = None;
+                let mut summaries = Vec::with_capacity(summary.members.len());
+                for member in &summary.members {
+                    let run = run_store
+                        .get_run(&member.run_id)
+                        .await
+                        .map_err(|error| ToolError::Execution(error.to_string()))?
+                        .ok_or_else(|| {
+                            ToolError::Execution("group member run is unavailable".into())
+                        })?;
+                    let task = run_store
+                        .get_task(&run.task_id)
+                        .await
+                        .map_err(|error| ToolError::Execution(error.to_string()))?
+                        .ok_or_else(|| {
+                            ToolError::Execution("group member task is unavailable".into())
+                        })?;
+                    if let Some((project_id, workspace_id)) = &scope {
+                        if project_id != &task.project_id || workspace_id != &task.workspace_id {
+                            return Err(ToolError::Execution(
+                                "group members span multiple project/workspace scopes".into(),
+                            ));
+                        }
+                    } else {
+                        scope = Some((task.project_id.clone(), task.workspace_id.clone()));
+                    }
+                    summaries.push(codegg_core::projection_replay::agent_run_summary(
+                        &task,
+                        &run,
+                        None,
+                        None,
+                        Some(group_id.as_str()),
+                    ));
+                    if snapshot.is_none() {
+                        snapshot = Some(
+                            codegg_protocol::projection::SessionProjectionSnapshot::empty(
+                                task.originating_session_id.as_str(),
+                                task.project_id.as_str(),
+                                task.workspace_id.as_str(),
+                            ),
+                        );
+                    }
+                }
+                let mut snapshot = snapshot.ok_or_else(|| {
+                    ToolError::Execution("group has no observable member runs".into())
+                })?;
+                snapshot
+                    .run_groups
+                    .push_back(codegg_core::projection_replay::run_group_summary(
+                        &summary,
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|duration| duration.as_millis() as i64)
+                            .unwrap_or_default(),
+                    ));
+                snapshot.agent_runs.extend(summaries);
+                let board = claims
+                    .project_group(&snapshot, &group_id, &actor)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let (project_id, workspace_id) = self.workstream_scope(&group_id).await?;
+                let events = claims
+                    .list_events(&group_id, &project_id, &workspace_id, &actor)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let handoff_requests = events
+                    .iter()
+                    .filter(|event| event.action == "handoff_requested")
+                    .rev()
+                    .take(16)
+                    .map(|event| {
+                        let (requester_kind, requester_id) = match &event.actor {
+                            codegg_core::workstream_claim::ClaimActor::Principal(id) => {
+                                ("principal", id.to_string())
+                            }
+                            codegg_core::workstream_claim::ClaimActor::Run(id) => {
+                                ("run", id.to_string())
+                            }
+                        };
+                        serde_json::json!({
+                            "claim_id": event.claim_id,
+                            "requester_kind": requester_kind,
+                            "requester_id": requester_id,
+                            "claim_version": event.version,
+                            "created_at": event.created_at
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut board = serde_json::to_value(&board)
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                if let Some(object) = board.as_object_mut() {
+                    object.remove("revision");
+                    object.insert(
+                        "continuity".into(),
+                        serde_json::Value::String("snapshot_only".into()),
+                    );
+                    object.insert(
+                        "source_revision_available".into(),
+                        serde_json::Value::Bool(false),
+                    );
+                    object.insert(
+                        "handoff_requests".into(),
+                        serde_json::Value::Array(handoff_requests),
+                    );
+                }
+                serde_json::to_string(&board)
+                    .map_err(|error| ToolError::Execution(error.to_string()))
+            }
+            "claim" => {
+                let (project_id, workspace_id) = self.workstream_scope(&group_id).await?;
+                let target_value = input["target"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::Execution("claim requires a target".into()))?;
+                let target = match input["target_kind"].as_str() {
+                    Some("task") => codegg_core::workstream_claim::ClaimTarget::Task(
+                        AgentTaskId::parse(target_value).map_err(|error| {
+                            ToolError::Execution(format!("invalid task target: {error}"))
+                        })?,
+                    ),
+                    Some("path") => {
+                        codegg_core::workstream_claim::ClaimTarget::Path(target_value.into())
+                    }
+                    Some("interface") => {
+                        codegg_core::workstream_claim::ClaimTarget::Interface(target_value.into())
+                    }
+                    _ => {
+                        return Err(ToolError::Execution(
+                            "target_kind must be task, path, or interface".into(),
+                        ))
+                    }
+                };
+                let idempotency_key = input["claim_idempotency_key"]
+                    .as_str()
+                    .filter(|value| !value.is_empty() && value.len() <= 128)
+                    .ok_or_else(|| {
+                        ToolError::Execution(
+                            "claim requires a bounded claim_idempotency_key".into(),
+                        )
+                    })?;
+                let claim_actor = actor.clone();
+                let claim = claims
+                    .claim(codegg_core::workstream_claim::NewWorkstreamClaim {
+                        project_id,
+                        workspace_id,
+                        group_id,
+                        actor,
+                        target,
+                        idempotency_key: idempotency_key.into(),
+                        lease_expires_at: None,
+                    })
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let group = groups
+                    .status(&group_actor, claim.group_id.clone())
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_board_projection(&group, &claim_actor)
+                    .await;
+                let projection = claim
+                    .to_projection()
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_claim_update(&group, projection.clone(), "claimed");
+                serde_json::to_string(&projection)
+                    .map_err(|error| ToolError::Execution(error.to_string()))
+            }
+            "release_claim" => {
+                let claim_id =
+                    WorkstreamClaimId::parse(input["claim_id"].as_str().unwrap_or_default())
+                        .map_err(|error| {
+                            ToolError::Execution(format!("invalid claim_id: {error}"))
+                        })?;
+                let expected_version = input["expected_version"].as_u64().ok_or_else(|| {
+                    ToolError::Execution("release_claim requires expected_version".into())
+                })?;
+                let expected_lease_generation =
+                    input["expected_lease_generation"].as_u64().ok_or_else(|| {
+                        ToolError::Execution(
+                            "release_claim requires expected_lease_generation".into(),
+                        )
+                    })?;
+                let claim_actor = actor.clone();
+                let claim = claims
+                    .transition(codegg_core::workstream_claim::ClaimCas {
+                        claim_id,
+                        actor,
+                        expected_version,
+                        expected_lease_generation,
+                        transition: codegg_core::workstream_claim::ClaimTransition::Release,
+                        new_owner: None,
+                        lease_expires_at: None,
+                    })
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let group = groups
+                    .status(&group_actor, claim.group_id.clone())
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_board_projection(&group, &claim_actor)
+                    .await;
+                let projection = claim
+                    .to_projection()
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_claim_update(&group, projection.clone(), "released");
+                serde_json::to_string(&projection)
+                    .map_err(|error| ToolError::Execution(error.to_string()))
+            }
+            "request_handoff" => {
+                let claim_id =
+                    WorkstreamClaimId::parse(input["claim_id"].as_str().unwrap_or_default())
+                        .map_err(|error| {
+                            ToolError::Execution(format!("invalid claim_id: {error}"))
+                        })?;
+                claims
+                    .request_handoff(&claim_id, &actor)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let (project_id, workspace_id) = self.workstream_scope(&group_id).await?;
+                let claim = claims
+                    .list_group(&group_id, &project_id, &workspace_id, &actor)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?
+                    .into_iter()
+                    .find(|claim| claim.claim_id == claim_id)
+                    .ok_or_else(|| ToolError::Execution("claim no longer exists".into()))?;
+                let group = groups
+                    .status(&group_actor, group_id)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_board_projection(&group, &actor)
+                    .await;
+                let projection = claim
+                    .to_projection()
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_workstream_claim_update(&group, projection, "handoff_requested");
+                Ok(format!(
+                    "Handoff requested for claim {claim_id}; ownership is unchanged."
+                ))
+            }
+            _ => Err(ToolError::Execution("unsupported workstream action".into())),
+        }
+    }
+
+    async fn workstream_scope(
+        &self,
+        group_id: &AgentRunGroupId,
+    ) -> Result<(ProjectId, WorkspaceId), ToolError> {
+        let groups = self
+            .run_groups
+            .as_ref()
+            .ok_or_else(|| ToolError::Execution("durable run groups are unavailable".into()))?;
+        let owner = self.orchestration_owner.as_ref().ok_or_else(|| {
+            ToolError::Execution("workstream actions require a bound group actor".into())
+        })?;
+        let group_actor = match owner {
+            AgentOrchestrationOwner::Run { run_id } => GroupActor {
+                run_id: Some(run_id.clone()),
+                session_id: None,
+                turn_id: None,
+            },
+            AgentOrchestrationOwner::Turn {
+                session_id,
+                turn_id,
+            } => GroupActor {
+                run_id: None,
+                session_id: Some(session_id.clone()),
+                turn_id: Some(turn_id.clone()),
+            },
+        };
+        let summary = groups
+            .status(&group_actor, group_id.clone())
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let run_id = summary
+            .members
+            .first()
+            .ok_or_else(|| ToolError::Execution("group has no members".into()))?
+            .run_id
+            .clone();
+        let run_store = self
+            .agent_runs
+            .as_ref()
+            .ok_or_else(|| ToolError::Execution("durable agent runs are unavailable".into()))?;
+        let run = run_store
+            .get_run(&run_id)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .ok_or_else(|| ToolError::Execution("group member run is unavailable".into()))?;
+        let task = run_store
+            .get_task(&run.task_id)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .ok_or_else(|| ToolError::Execution("group member task is unavailable".into()))?;
+        Ok((task.project_id, task.workspace_id))
+    }
+
+    fn publish_workstream_claim_update(
+        &self,
+        group: &AgentRunGroupSummary,
+        claim: codegg_protocol::projection::WorkstreamClaimProjection,
+        action: &str,
+    ) {
+        let Some(session_id) = self.parent_session_id.clone() else {
+            return;
+        };
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::WorkstreamClaimUpdated {
+                session_id,
+                group_id: group.group.group_id.to_string(),
+                member_run_ids: group
+                    .group
+                    .member_run_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                claim,
+                action: action.to_owned(),
+            },
+        );
+    }
+
+    async fn publish_workstream_board_projection(
+        &self,
+        group: &AgentRunGroupSummary,
+        actor: &codegg_core::workstream_claim::ClaimActor,
+    ) {
+        let (Some(session_id), Some(claim_store)) = (
+            self.parent_session_id.clone(),
+            self.workstream_claims.as_ref(),
+        ) else {
+            return;
+        };
+        let group_id = &group.group.group_id;
+        let Ok((project_id, workspace_id)) = self.workstream_scope(group_id).await else {
+            return;
+        };
+        let Ok(claims) = claim_store
+            .list_group(group_id, &project_id, &workspace_id, actor)
+            .await
+        else {
+            return;
+        };
+        let Ok(dependencies) = claim_store
+            .list_dependencies(group_id, &project_id, &workspace_id, actor)
+            .await
+        else {
+            return;
+        };
+        let mut projection = codegg_core::projection_replay::run_group_summary(
+            group,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis() as i64)
+                .unwrap_or_default(),
+        );
+        projection.workstream_claims = claims
+            .iter()
+            .filter_map(|claim| claim.to_projection().ok())
+            .take(codegg_protocol::projection::MAX_WORKSTREAM_CLAIMS)
+            .collect();
+        projection.workstream_dependencies = dependencies
+            .iter()
+            .map(codegg_core::workstream_claim::WorkstreamClaimDependency::to_projection)
+            .take(codegg_protocol::projection::MAX_WORKSTREAM_DEPENDENCIES)
+            .collect();
+        projection.workstream_claims_updated_at = Some(projection.updated_at);
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::AgentRunGroupUpdated {
+                session_id,
+                group: projection,
+            },
+        );
+    }
+
     fn publish_group_projection(&self, summary: &AgentRunGroupSummary) {
         let Some(session_id) = self.parent_session_id.clone() else {
             return;
@@ -531,6 +977,8 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            workstream_claims: None,
+            workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
@@ -561,6 +1009,8 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            workstream_claims: None,
+            workspace_id: None,
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
@@ -634,6 +1084,19 @@ impl TaskTool {
 
     pub fn with_run_group_service(mut self, service: Option<Arc<AgentRunGroupService>>) -> Self {
         self.run_groups = service;
+        self
+    }
+
+    pub fn with_workstream_claim_store(
+        mut self,
+        store: Option<Arc<codegg_core::workstream_claim::WorkstreamClaimStore>>,
+    ) -> Self {
+        self.workstream_claims = store;
+        self
+    }
+
+    pub fn with_workspace_id(mut self, workspace_id: Option<WorkspaceId>) -> Self {
+        self.workspace_id = workspace_id;
         self
     }
 
@@ -795,8 +1258,8 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group",
-                    "enum": ["spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group"]
+                    "description": "Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, cancel_group, board, claim, release_claim, or request_handoff",
+                    "enum": ["spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group", "board", "claim", "release_claim", "request_handoff"]
                 },
                 "objective": { "type": "string", "description": "Bounded convergence objective (action=converge)" },
                 "criteria": { "type": "array", "maxItems": 32, "items": { "type": "string" }, "description": "Bounded acceptance criteria (action=converge)" },
@@ -873,7 +1336,16 @@ impl Tool for TaskTool {
                 "cancel_remaining_on_satisfaction": {
                     "type": "boolean",
                     "description": "For any_successful or first_completed, persist whether active siblings are cancelled after satisfaction"
-                }
+                },
+                "claim_id": {
+                    "type": "string",
+                    "description": "Durable WorkstreamClaimId (action=release_claim or request_handoff)"
+                },
+                "expected_version": { "type": "integer", "minimum": 1 },
+                "expected_lease_generation": { "type": "integer", "minimum": 1 },
+                "target_kind": { "type": "string", "enum": ["task", "path", "interface"] },
+                "target": { "type": "string", "maxLength": 256 },
+                "claim_idempotency_key": { "type": "string", "maxLength": 128 }
             },
             "required": ["action"]
         })
@@ -910,6 +1382,13 @@ impl TaskTool {
         explicit_base_commit: Option<String>,
     ) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
+
+        if matches!(
+            action,
+            "board" | "claim" | "release_claim" | "request_handoff"
+        ) {
+            return self.execute_workstream_action(&input, ctx).await;
+        }
 
         if matches!(
             action,
@@ -1112,11 +1591,21 @@ impl TaskTool {
             };
             return match result {
                 Ok(summary) => {
-                    self.publish_group_projection(&summary);
+                    if let Ok(claim_actor) = self.workstream_actor(ctx) {
+                        self.publish_workstream_board_projection(&summary, &claim_actor)
+                            .await;
+                    } else {
+                        self.publish_group_projection(&summary);
+                    }
                     Ok(format_group_summary(&summary, false, &[]))
                 }
                 Err(codegg_core::agent_run_group::AgentRunGroupError::WaitTimedOut(summary)) => {
-                    self.publish_group_projection(&summary);
+                    if let Ok(claim_actor) = self.workstream_actor(ctx) {
+                        self.publish_workstream_board_projection(&summary, &claim_actor)
+                            .await;
+                    } else {
+                        self.publish_group_projection(&summary);
+                    }
                     Ok(format_group_summary(&summary, true, &[]))
                 }
                 Err(error) => Err(ToolError::Execution(error.to_string())),
@@ -1771,6 +2260,21 @@ mod tests {
         let first = resolve_call_identity(&without_explicit, None);
         let second = resolve_call_identity(&without_explicit, None);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn task_tool_exposes_bounded_coordination_actions_without_handoff_control() {
+        let parameters = TaskTool::default().parameters();
+        let actions = parameters["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        for action in ["board", "claim", "release_claim", "request_handoff"] {
+            assert!(actions.contains(&action));
+        }
+        assert!(!actions.contains(&"handoff"));
     }
 
     #[test]

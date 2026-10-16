@@ -186,6 +186,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Audit | Append-only structural audit store and instrumentation coverage | [audit.md](audit.md) |
 | Collaboration | Project-scoped channels, threads, mentions, edits, retention | [collaboration.md](collaboration.md) |
 | Presence | Ephemeral project-scoped presence — leases, heartbeat, expiry | [presence.md](presence.md) |
+| Workstream Claims | Durable group-scoped task/path/interface claims and prerequisite edges; intent only | [workstream_claims.md](workstream_claims.md) |
 | Server | Axum HTTP/WS server (feature `server`) — remote TUI, REST, SSE, token auth | [server.md](server.md) |
 | Client | Remote TUI WebSocket client with resume/replay | [client.md](client.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | [exec.md](exec.md) |
@@ -274,20 +275,20 @@ after reconciling the search-backend retirement with current `main`.
 | Distinct production tool names | 59 | `impl Tool for …` `name()` across `src/tool/`, `src/context/` (excludes 5 test-only mocks under `#[cfg(test)]`: 3 in `program_manifest.rs`, plus `catalog.rs` and `tool_search.rs`) |
 | Tool source files | 78 | `src/tool/**.rs` (incl. `bash/`) |
 | LSP server definitions | 39 | `crates/egglsp/src/server.rs::server_definitions()` |
-| `codegg-core` modules | 46 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
-| `AppEvent` variants | 58 | `crates/codegg-core/src/bus/events.rs` |
+| `codegg-core` modules | 47 | `crates/codegg-core/src/lib.rs` (`pub mod`) |
+| `AppEvent` variants | 60 | `crates/codegg-core/src/bus/events.rs` |
 | `CoreRequest` variants | 243 (219 struct + 24 unit) | `crates/codegg-protocol/src/core.rs` |
 | `CoreResponse` variants | 158 | `crates/codegg-protocol/src/core.rs` |
 | `CoreEvent` variants | 88 | `crates/codegg-protocol/src/core.rs` |
 | `ProjectionEvent` variants | 47 | `crates/codegg-protocol/src/projection/event.rs` |
 | Authorized operations | 237 | `operation_descriptor` (`crates/codegg-core/src/authorization/policy.rs`) |
-| Identity newtypes | 17 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
+| Identity newtypes | 18 | `typed_identity!` (`crates/codegg-core/src/identity.rs`) |
 | Built-in slash commands | 161 | asserted by `built_in_command_count_matches_release_docs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Bundled themes | 50 | `assets/themes/**/*.toml` |
 | TUI state modules | 29 (30 `.rs` files incl. `mod.rs`) | `src/tui/app/state/` |
-| Database tables (`CREATE TABLE`) | 76 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 72 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Database tables (`CREATE TABLE`) | 87 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 79 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
 | Workspace member crates | 11 (+ root) | root `Cargo.toml` |

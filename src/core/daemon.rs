@@ -6016,6 +6016,61 @@ mod tests {
         );
     }
 
+    /// Keep connection-bound credential tests away from the caller's
+    /// credential store. `CredentialStore::at_default_location` follows the
+    /// platform config directory, so point it at a per-test temporary home.
+    struct PromptSubmitCredentialHome {
+        _dir: tempfile::TempDir,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl PromptSubmitCredentialHome {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("temporary credential home");
+            let config_home = dir.path().join("config");
+            std::fs::create_dir_all(&config_home).expect("create temporary config home");
+            let names = ["HOME", "XDG_CONFIG_HOME", "APPDATA"];
+            let previous = names
+                .into_iter()
+                .map(|name| (name, std::env::var_os(name)))
+                .collect();
+            std::env::set_var("HOME", dir.path());
+            std::env::set_var("XDG_CONFIG_HOME", &config_home);
+            std::env::set_var("APPDATA", &config_home);
+            Self {
+                _dir: dir,
+                previous,
+            }
+        }
+
+        fn seed_openai_credential(&self) {
+            let store = crate::provider::CredentialStore::at_default_location()
+                .expect("temporary credential store");
+            store
+                .put(
+                    "test-provider",
+                    Some("acct-ps"),
+                    crate::provider::CredentialKind::ApiKey,
+                    "test-key-not-used",
+                    None,
+                    vec![],
+                )
+                .expect("seed connection-bound credential");
+        }
+    }
+
+    impl Drop for PromptSubmitCredentialHome {
+        fn drop(&mut self) {
+            for (name, value) in self.previous.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn session_prompt_submit_rejects_blank_and_overlong_text() {
         let daemon = test_daemon().await;
@@ -6187,6 +6242,8 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn session_prompt_submit_resolves_selection_and_submits() {
         let _env_guard = crate::auth::test_support::lock_env();
+        let _credential_home = PromptSubmitCredentialHome::new();
+        _credential_home.seed_openai_credential();
         let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
         std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
 
@@ -6238,6 +6295,8 @@ mod tests {
         // shared `TurnSubmit` body rejects it instead of spawning a
         // second turn.
         let _env_guard = crate::auth::test_support::lock_env();
+        let _credential_home = PromptSubmitCredentialHome::new();
+        _credential_home.seed_openai_credential();
         let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
         std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
 

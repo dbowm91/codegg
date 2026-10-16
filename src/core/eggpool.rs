@@ -2908,15 +2908,28 @@ mod tests {
     where
         F: Fn(&str) -> String + Send + 'static,
     {
+        spawn_fake_endpoint_with_idle(label, count, delay, EXTRA_REQUEST_IDLE, responder)
+    }
+
+    fn spawn_fake_endpoint_with_idle<F>(
+        label: &str,
+        count: usize,
+        delay: Duration,
+        extra_request_idle: Duration,
+        responder: F,
+    ) -> (String, thread::JoinHandle<String>)
+    where
+        F: Fn(&str) -> String + Send + 'static,
+    {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind fake endpoint");
         listener
             .set_nonblocking(true)
             .expect("configure fake endpoint listener");
         let address = listener.local_addr().expect("fake endpoint address");
-        let additional_request_idle = if count > PROBE_REQUEST_COUNT {
+        let request_idle = if count > PROBE_REQUEST_COUNT {
             REPEATED_PROBE_REQUEST_IDLE
         } else {
-            EXTRA_REQUEST_IDLE
+            extra_request_idle
         };
         let join = thread::spawn(move || {
             let mut log = String::new();
@@ -2925,7 +2938,7 @@ mod tests {
                     + if index == 0 {
                         Duration::from_secs(5)
                     } else {
-                        additional_request_idle
+                        request_idle
                     };
                 let Ok((mut stream, _)) = accept_until(&listener, deadline) else {
                     break;
@@ -3042,7 +3055,10 @@ mod tests {
         count: usize,
         delay: Duration,
     ) -> (String, thread::JoinHandle<String>) {
-        spawn_fake_endpoint("eggpool", count, delay, |_| {
+        // The replacement case performs SQLite assertions between probes, so
+        // its fake server must outlive that legitimate gap after serving the
+        // first catalog and verification requests.
+        spawn_fake_endpoint_with_idle("eggpool", count, delay, Duration::from_secs(5), |_| {
             http_response(200, FAKE_CATALOG_BODY)
         })
     }

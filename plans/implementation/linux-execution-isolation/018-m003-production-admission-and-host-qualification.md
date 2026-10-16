@@ -5,7 +5,7 @@ Repository baseline: merge commit `188edb371759f40b291052f25598bdb8ab57702d` (in
 
 Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`
 Long-term requirements: `plans/000-long-term-specification.md` §§4, 17, 27, 29; `plans/001-terminology-and-domain-model.md` §8.
-Applicable ADRs: accepted ADR-0033 and ADR-0032; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
+Applicable ADRs: accepted ADR-0033 and ADR-0034; ADR-0001, ADR-0002, ADR-0004, ADR-0016.
 Primary class: capability / security invariant
 
 ## 1. Objective

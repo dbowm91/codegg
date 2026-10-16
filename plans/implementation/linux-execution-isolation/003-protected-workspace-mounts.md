@@ -2,7 +2,7 @@
 
 Status: blocked (hard: M002 interface closed and ADR-0033 accepted for backend; C001 Git class is interface, M001 strict closure not required)
 Primary class: capability
-Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0032 defines representation-independent authority; C001 typed Git interface is required for integration but M001 Git closure is not. Production backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
+Repository baseline: `main` at `8535f6d7c2e68f5d134ba0c73bd146ca8bc0bd03` (2026-10-13). Source roadmap: `plans/subsystems/linux-execution-isolation-roadmap.md`. Long-term requirements: `plans/000-long-term-specification.md` §§4,17,27,29 and `plans/001-terminology-and-domain-model.md` §8. Applicable accepted ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0016, ADR-0033. Accepted ADR-0034 defines representation-independent authority; C001 typed Git interface is required for integration but M001 Git closure is not. Production backend promotion still requires native qualification and rollout gates. Target closure: `plans/closure/linux-execution-isolation/NNN-status.md` (use milestone number). No code or tests in this plan are represented as already implemented.
 
 ## 1. Objective
 

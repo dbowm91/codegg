@@ -28,11 +28,13 @@ C004 archived the exact pre-migration Linux and command ADR records under
 `plans/archive/linux-command-adr-id-aliases/` and recorded source Git blob IDs,
 SHA-256 digests, and the identity mapping in
 `plans/archive/linux-command-adr-id-aliases/migration.json`. Linux execution
-isolation was assigned ADR-0031 (accepted 2026-10-14); command syntax authority is
+isolation was assigned ADR-0031 (accepted 2026-10-14); command syntax authority was
 ADR-0032 (accepted, unchanged). On reconciliation with current main, ADR-0031 was
 already the accepted authenticated idle-continuation decision. The Linux decision
 therefore retains its substance and accepted status under canonical ADR-0033;
-idle continuation keeps ADR-0031, and command syntax keeps ADR-0032. No decision's
+idle continuation keeps ADR-0031, and command syntax then kept ADR-0032. A later
+mainline acceptance assigned ADR-0032 to agent-workstream coordination, so command
+syntax now keeps its substance and accepted status as ADR-0034. No decision's
 substance or disposition changed. ADR-0033 acceptance selects the Linux
 architecture but does not register or enable a production backend; native
 qualification and rollout gates remain in the Linux roadmap. The concurrent
@@ -163,6 +165,23 @@ references. Linux/command historical aliases and fingerprints are recorded in
 - ADR-0029 — accepted for **bounded research, test-only successor adapters, and internal capability contract** only. Neither the MXC nor dedicated-principal backend is selected for production; C029/C034/C038 no-admission remains authoritative.
 - ADR-0030 — **proposed**, not accepted: an expressly named broad-read, workspace-write compatibility profile would require independent maintainer authorization and migration/approval review. Existing ReadOnly/WorkspaceWrite contracts are not reinterpreted.
 - ADR-0031 — **accepted** authenticated idle continuation and delegated turn admission (current-main decision).
-- ADR-0032 — **accepted** command syntax is advisory and execution authority is enforced; identity migration did not reaccept or alter this decision.
+- ADR-0032 — **accepted** daemon-owned agent workstream coordination and explicit shared-checkout mutation; production shared writes remain gated on M005.
 - ADR-0033 — **accepted** composable Linux execution isolation; production backend registration and rollout remain gated by native qualification.
+- ADR-0034 — **accepted** command syntax is advisory and execution authority is enforced; both identity migrations preserved this decision's substance and accepted status.
 - New handoffs C041–C048 are registered in the Windows subsystem roadmap and active planning registry. Do not mark them implemented from the presence of documents.
+
+## ADR-0032 workstream coordination (2026-10-15)
+
+The agent-workstream-blackboard planning branch allocates
+`ADR-0032-agent-workstream-coordination-and-shared-checkout-ownership.md` as
+**accepted**. It does not modify accepted ADR-0002, admit shared-write child
+execution, or confer new capability by existing group membership. M005 remains
+blocked until real tool-path confinement and recovery evidence qualify the
+shared-write mode.
+
+## ADR-0034 command-authority identity correction (2026-10-16)
+
+Current main assigned ADR-0032 to the accepted agent-workstream decision. The
+accepted command-syntax decision therefore retains its substance and status as
+ADR-0034. ADR-0031 remains authenticated idle continuation and ADR-0033 remains
+composable Linux execution isolation. No active identifiers collide.

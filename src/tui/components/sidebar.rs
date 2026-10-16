@@ -140,6 +140,9 @@ pub struct SidebarWidget {
     /// Active and recently completed background tool programs.
     pub tool_programs: Vec<SidebarToolProgram>,
     pub agent_runs: Vec<SidebarAgentRun>,
+    /// Bounded group ownership/progress facts from the active session
+    /// projection. This is display-only and carries no control authority.
+    pub run_groups: Vec<codegg_protocol::projection::dto::AgentRunGroupSummaryProjection>,
     /// Canonical bounded agent hierarchy from the active session projection.
     pub agent_tree: Vec<AgentTreeNodeProjection>,
     pub convergences: Vec<SidebarConvergence>,
@@ -195,6 +198,7 @@ impl SidebarWidget {
             plan: None,
             tool_programs: Vec::new(),
             agent_runs: Vec::new(),
+            run_groups: Vec::new(),
             agent_tree: Vec::new(),
             convergences: Vec::new(),
             scroll_offset: 0,
@@ -281,6 +285,13 @@ impl SidebarWidget {
     pub fn set_agent_runs(&mut self, runs: Vec<SidebarAgentRun>) {
         self.agent_runs = runs;
         self.reconcile_focus();
+    }
+
+    pub fn set_run_groups(
+        &mut self,
+        groups: Vec<codegg_protocol::projection::dto::AgentRunGroupSummaryProjection>,
+    ) {
+        self.run_groups = groups.into_iter().take(16).collect();
     }
 
     pub fn set_agent_tree(&mut self, nodes: Vec<AgentTreeNodeProjection>) {
@@ -509,7 +520,8 @@ impl SidebarWidget {
                 );
             }
         }
-        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() || !self.run_groups.is_empty()
+        {
             targets.push(SidebarFocusTarget::Section(SidebarSection::AgentRuns));
             if !self.agent_runs_collapsed {
                 if !self.agent_tree.is_empty() {
@@ -901,7 +913,8 @@ impl SidebarWidget {
             }
         }
 
-        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() || !self.run_groups.is_empty()
+        {
             targets.push(HoveredElement::None);
             targets.push(HoveredElement::Section(SidebarSection::AgentRuns));
             if !self.agent_runs_collapsed {
@@ -1257,17 +1270,94 @@ impl SidebarWidget {
             }
         }
 
-        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() {
+        if !self.agent_tree.is_empty() || !self.agent_runs.is_empty() || !self.run_groups.is_empty()
+        {
             lines.push(Line::from(""));
             lines.push(self.collapsible_header_for(
                 &format!(
                     " Agent Runs ({}) ",
-                    self.agent_tree.len().max(self.agent_runs.len())
+                    self.agent_tree
+                        .len()
+                        .max(self.agent_runs.len())
+                        .max(self.run_groups.len())
                 ),
                 self.agent_runs_collapsed,
                 SidebarSection::AgentRuns,
             ));
             if !self.agent_runs_collapsed {
+                for group in &self.run_groups {
+                    let short_id = group.group_id.chars().take(8).collect::<String>();
+                    let owner = group.owner_run_id.chars().take(8).collect::<String>();
+                    lines.push(Line::from(vec![
+                        Span::styled("  Group ", Style::default().fg(self.theme.muted)),
+                        Span::styled(short_id, Style::default().fg(self.theme.primary)),
+                        Span::raw(format!(
+                            " {} · {} active · owner {}",
+                            clean_inline_text(&group.status, 24),
+                            group.active,
+                            owner
+                        )),
+                    ]));
+                    for claim in group.workstream_claims.iter().take(8) {
+                        let claim_id = claim.claim_id.chars().take(8).collect::<String>();
+                        let claim_owner = claim.owner_id.chars().take(8).collect::<String>();
+                        let blocked_dependencies = group
+                            .workstream_dependencies
+                            .iter()
+                            .filter(|dependency| dependency.claim_id == claim.claim_id)
+                            .count();
+                        lines.push(Line::from(vec![
+                            Span::styled("    Claim ", Style::default().fg(self.theme.muted)),
+                            Span::styled(claim_id, Style::default().fg(self.theme.primary)),
+                            Span::raw(format!(
+                                " {} {} → {}",
+                                clean_inline_text(&claim.kind, 16),
+                                clean_inline_text(&claim.target, 40),
+                                clean_inline_text(&claim.state, 16)
+                            )),
+                            Span::styled(
+                                format!(" · owner {claim_owner}"),
+                                Style::default().fg(self.theme.muted),
+                            ),
+                            if blocked_dependencies > 0 {
+                                Span::styled(
+                                    format!(" · {blocked_dependencies} dependencies"),
+                                    Style::default().fg(self.theme.warning),
+                                )
+                            } else {
+                                Span::raw("")
+                            },
+                        ]));
+                    }
+                    if group.workstream_claims.len() > 8 {
+                        lines.push(Line::from(Span::styled(
+                            format!("    … {} more claims", group.workstream_claims.len() - 8),
+                            Style::default().fg(self.theme.muted),
+                        )));
+                    }
+                    let dependency_count = group.workstream_dependencies.len();
+                    for dependency in group.workstream_dependencies.iter().take(8) {
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "    Blocked {} waits for {} {}",
+                                dependency.claim_id.chars().take(8).collect::<String>(),
+                                clean_inline_text(&dependency.prerequisite_kind, 12),
+                                dependency
+                                    .prerequisite_id
+                                    .chars()
+                                    .take(12)
+                                    .collect::<String>()
+                            ),
+                            Style::default().fg(self.theme.warning),
+                        )));
+                    }
+                    if dependency_count > 8 {
+                        lines.push(Line::from(Span::styled(
+                            format!("    … {} more dependencies", dependency_count - 8),
+                            Style::default().fg(self.theme.muted),
+                        )));
+                    }
+                }
                 if !self.agent_tree.is_empty() {
                     for row in self.visible_agent_tree_rows() {
                         let node = &row.node;

@@ -2,10 +2,10 @@
 
 Status: implemented
 Class: invariant / correctness
-Hard dependencies: accepted ADR-0032 (satisfied)
+Hard dependencies: accepted ADR-0034 (satisfied)
 Next: M001 C002 and C003; M001 closure must not claim complete until all three correctives pass.
 Closure: `plans/closure/command-authorization-and-execution-boundaries/004-status.md`.
-Authority: accepted `plans/adrs/ADR-0032-command-syntax-and-execution-authority.md` and `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Parent handoff: `plans/implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md`. Baseline inspected: `planning/linux-execution-isolation` @ `7b72582c4f01f8a53c7f20ed5dde1bc620f82965` (2026-10-13). No tests are represented as executed by this plan.
+Authority: accepted `plans/adrs/ADR-0034-command-syntax-and-execution-authority.md` and `plans/subsystems/command-authorization-and-execution-boundaries-roadmap.md`. Parent handoff: `plans/implementation/command-authorization-and-execution-boundaries/001-syntax-blocker-audit-and-classification.md`. Baseline inspected: `planning/linux-execution-isolation` @ `7b72582c4f01f8a53c7f20ed5dde1bc620f82965` (2026-10-13). No tests are represented as executed by this plan.
 
 ## 1. Objective and rationale
 

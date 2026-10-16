@@ -93,11 +93,15 @@ C004 is closed. C005 remains eligible and may proceed. At the C004 review date, 
 - Mark C004 closed in the Linux roadmap.
 - Unblock audit: no new plan became ready because of C004. C005/C007/C008 and command M004 were already ready; C006 remains blocked by its other hard gates.
 
-## Current identity correction (2026-10-15)
+## Current identity corrections (2026-10-15 and 2026-10-16)
 
 Current main had accepted authenticated idle continuation as ADR-0031. The
 Linux decision remains accepted with unchanged substance as ADR-0033; command
-authority remains ADR-0032. This later canonical-ID correction does not alter
-the historical C004 baseline or its evidence. See the migration note in
-`plans/adrs/README.md` and the current canonical ADR at
-`plans/adrs/ADR-0033-composable-linux-execution-isolation.md`.
+authority was ADR-0032 at that correction point. This later canonical-ID
+correction does not alter the historical C004 baseline or its evidence.
+
+On 2026-10-16, current main introduced the accepted agent-workstream ADR-0032.
+Command authority therefore keeps its accepted status and unchanged substance
+under ADR-0034; Linux remains ADR-0033 and idle continuation remains ADR-0031.
+See `plans/adrs/linux-command-adr-id-migration.md` and the current canonical
+command ADR at `plans/adrs/ADR-0034-command-syntax-and-execution-authority.md`.
