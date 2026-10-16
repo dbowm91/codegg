@@ -117,6 +117,12 @@ remains in scope. The older planning-registration run
 `36027583460` failed Workspace Clippy and is retained only as historical
 non-passing evidence.
 
+## Active implementation plans
+
+| Subsystem | Milestone | Status | Implementation plan | Current work / gate |
+|---|---|---|---|---|
+| Agent workstream blackboard | M005 checkout-scoped writer containment and group-owned placement | **active** | `plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md` | Design/source audit and Q1–Q5 qualification sequence. Q0 safe-default posture passes on source head `c19a6c3c` (hosted CI run `38833977755`); Q1–Q5 remain unqualified. Shared-write capability stays unavailable until every CodeGG-mediated writer is covered or denied and native process lifecycle evidence passes. M006/M007 production and M008 remain blocked; M007 design-only interface research remains ready. |
+
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies / handoff note |
@@ -388,7 +394,6 @@ Architecture convergence M009 and Runtime Safety C002 remain conditionally close
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Agent workstream blackboard | M005 group-owned worktree and serialized shared mutation | **Blocked:** M001/M004 and ADR-0032 gates are satisfied. The common writer permit is still absent: file checkpoints serialize only within a tool batch, AgentTurn has no checkout key, existing scheduler mutation keys are global, and persistent PTYs have no workspace mutation key. M005's writer-path inventory/design gate is recorded in `plans/implementation/agent-workstream-blackboard/005-group-worktree-placement.md`; do not mark ready or enable shared placement until every writer lifetime is mediated or denied. |
 | Agent workstream blackboard | M006 session/worktree launch UX | **Blocked:** M005 strict closure; plan plans/implementation/agent-workstream-blackboard/006-session-worktree-launch.md. |
 | Agent workstream blackboard | M007 coordinated build resources | **Blocked:** M005 strict closure; interface research can proceed without production shared-write; plan plans/implementation/agent-workstream-blackboard/007-build-resource-coordination.md. |
 | Agent workstream blackboard | M008 comparative trajectory qualification | **Blocked:** M004 + M006 + M007 strict closure, inheriting M005/ADR gates; plan plans/implementation/agent-workstream-blackboard/008-comparative-trajectory-qualification.md. |
