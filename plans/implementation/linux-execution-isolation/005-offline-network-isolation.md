@@ -128,6 +128,19 @@ Rust's lowercase `false` literal for its IPv6-family selector and exited with a
 failure, not a network-boundary result. The selector now receives numeric
 `0`/`1`; the corrected exact-head hosted result is recorded above.
 
+### Exact-head follow-up candidate run (2026-10-16)
+
+Linux workflow [`38944358636`](https://github.com/dbowm91/codegg/actions/runs/38944358636)
+on implementation head `0ddafd40609be6e57d09046584e3478d79c7ca63` passed the
+combined M004/M005 native target 9/9, including the host-configured resolver
+and changing-answer DNS fixtures, offline Cargo workspace checks, and process
+containment probes. Protected-mount tests passed 11/11, trusted-Git tests
+20/20, and restricted-userns refusal-before-target passed. This repeats the
+kernel-level candidate evidence; no normal shell, Test/Python, PTY, or LSP owner
+has yet demonstrated an authenticated `OfflineRequired` launch. Full CI on the
+same code head failed one `ChangedFiles` payload test on its first attempt; a
+same-SHA full-CI rerun remains in progress.
+
 ## 3. Non-regression and security invariants
 Offline is operator-only policy: the agent, nested child, supplied env, command text and provider connection cannot widen it. A required offline operation never falls back to legacy host networking or FullHost. Deny host TCP/UDP/IPv4/IPv6, localhost services, default DNS, raw and abstract UDS bridges, forwarded/connected network FDs and any exposed daemon/SSH/Docker socket. Own-namespace loopback can exist only if unable to reach host processes and is reported precisely. No privileged helper or global firewall mutation.
 

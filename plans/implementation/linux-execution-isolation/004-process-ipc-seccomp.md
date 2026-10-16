@@ -240,21 +240,23 @@ LSP instance while preserving duplex pipe ownership. No constrained adapter is
 currently installed, and the existing constrained refusal remains in force;
 the interface change is not execution containment evidence.
 
-The next exact-code-head hosted qualification was dispatched on
-`0ddafd40609be6e57d09046584e3478d79c7ca63`. Linux protected-mount run
-[`38944344509`](https://github.com/dbowm91/codegg/actions/runs/38944344509)
-passed 11/11 protected-mount tests and 20/20 trusted-Git tests; the separate
-macOS target compile [`38944358617`](https://github.com/dbowm91/codegg/actions/runs/38944358617)
-passed. The restricted-userns refusal job in Linux M004 workflow
+Exact-code-head hosted qualification ran on
+`0ddafd40609be6e57d09046584e3478d79c7ca63`. Linux M004 workflow
 [`38944358636`](https://github.com/dbowm91/codegg/actions/runs/38944358636)
-passed. The positive process/IPC job in `38944358636` remains in progress. Full CI
+passed the native process/IPC/offline candidate target 9/9, protected-mount
+regressions 11/11, trusted-Git regressions 20/20, and the separate
+restricted-userns refusal-before-target probe. The target includes host
+process/proc/signal/abstract-socket denial, cancellation, concurrent namespace
+separation, offline IPv4/IPv6 TCP/UDP/DNS and inherited-socket checks, plus the
+offline workspace metadata/check and managed-process workflows. Hosted macOS
+target compile [`38944358617`](https://github.com/dbowm91/codegg/actions/runs/38944358617)
+passed. This remains kernel-candidate evidence only: constrained PTY and LSP
+owners are still fail-closed. Full CI first attempt
 [`38944358683`](https://github.com/dbowm91/codegg/actions/runs/38944358683)
-failed at `git_service::tests::changed_files_returns_payload` (expected a
-structured `ChangedFiles` payload, received `None`) after 1,497 tests had
-passed. The focused test and all 25 Git-service tests pass locally; 100
-repeated focused executions also pass. A same-SHA full-CI rerun is underway.
-This hosted failure remains unresolved pending the rerun; no result is inferred
-from partial logs.
+failed at `git_service::tests::changed_files_returns_payload` after 1,497
+tests had passed. The focused test, all 25 Git-service tests, and 100 repeated
+focused executions passed locally. A same-SHA full-CI rerun remains in progress;
+the hosted failure is unresolved until it completes.
 
 ## 9. Acceptance criteria
 
