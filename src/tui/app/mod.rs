@@ -8724,6 +8724,14 @@ impl App {
                     crate::tui::components::sidebar::SidebarActivation::InspectRun(run_id) => {
                         self.process_msg(TuiMsg::OpenRunDetail { run_id });
                     }
+                    // The same tab the panel's `Enter` opens. Both routes
+                    // resolve to one `SidebarActivation` so a click and a
+                    // keystroke cannot open different tabs for the same row.
+                    crate::tui::components::sidebar::SidebarActivation::InspectSubagent(
+                        task_id,
+                    ) => {
+                        self.process_msg(TuiMsg::OpenSubagentTab { task_id });
+                    }
                     crate::tui::components::sidebar::SidebarActivation::None => {}
                 }
             }
@@ -8741,11 +8749,14 @@ impl App {
                         // open. Telling someone who just clicked a tab they
                         // already had open that it "opened" would be a lie
                         // about what happened.
-                        self.messages_state.toasts.info(&if was_open {
-                            format!("Subagent buffer: {label} · Shift+N / Shift+P to cycle")
-} else {
-    format!("Subagent buffer: {label} · Shift+N / Shift+P to cycle, Shift+X to close")
-});
+                        let hint = if was_open {
+                            "Shift+N / Shift+P to cycle"
+                        } else {
+                            "Shift+N / Shift+P to cycle, Shift+X to close"
+                        };
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Subagent buffer: {label} · {hint}"));
                     }
                 }
             }

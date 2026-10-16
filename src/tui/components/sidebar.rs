@@ -1,6 +1,7 @@
 use crate::session::events::AgentPlan;
 use crate::session::Session;
 use crate::tui::app::state::session::{DiffStatsState, GitSidebarInfo};
+use crate::tui::app::state::tasks::is_live_state;
 use codegg_protocol::projection::dto::{AgentTreeNodeProjection, AgentTreeStatus};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -20,6 +21,8 @@ pub enum SidebarSection {
     Goal,
     Plan,
     Todos,
+    Subagents,
+    Jobs,
     FileChanges,
     ToolPrograms,
     AgentRuns,
@@ -32,6 +35,17 @@ pub enum SidebarSection {
 pub enum SidebarFocusTarget {
     Section(SidebarSection),
     Todo(usize),
+    /// The projection's task identity — the same string the subagent tab set
+    /// keys on, so activating a panel row and activating an overlay row
+    /// address one subject rather than two lookalikes.
+    Subagent(String),
+    /// The job's durable id, not its position in the list.
+    ///
+    /// Index-based targets are used elsewhere in this widget for rows the
+    /// projection appends to, but jobs are *upserted*: a finished job is
+    /// filtered out, so indices shift under the cursor and a focused index
+    /// would silently move to a different job. The id is stable.
+    Job(String),
     McpServer(usize),
     FileChange(usize),
     ToolProgram(String),
@@ -46,12 +60,23 @@ pub enum SidebarActivation {
     ToggleSection,
     ToggleAgentNode(u64),
     InspectRun(String),
+    /// Open this task as a tab in the main buffer.
+    ///
+    /// Separate from [`SidebarActivation::InspectRun`] rather than folded
+    /// into it: the agent-tree rows keep resolving to the run-detail dialog,
+    /// which is a working surface, and repurposing it to open a tab would
+    /// trade one for the other. The two questions are genuinely different —
+    /// "what happened to this run" and "show me its transcript" — so they get
+    /// different answers on different rows.
+    InspectSubagent(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HoveredElement {
     Section(SidebarSection),
     Todo(usize),
+    Subagent(String),
+    Job(String),
     McpServer(usize),
     FileChange(usize),
     ToolProgram(String),
@@ -111,6 +136,48 @@ pub struct SidebarConvergence {
     pub last_finding_count: usize,
 }
 
+/// One subagent advertised by the `Subagents` section.
+///
+/// `task_id` is the projection's canonical task identity and the same string
+/// [`crate::tui::app::state::subagent_tabs::SubagentTabs`] keys on, so
+/// activating this row opens *the* tab rather than a second one that merely
+/// looks similar. `name` is the curated display name when the projection
+/// carried one and the agent type otherwise — the same fallback rule
+/// [`crate::tui::app::state::subagents::SubagentRow::label`] applies, so the
+/// panel, the `Shift+T` overlay, and the tab bar never disagree about what a
+/// subagent is called.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarSubagent {
+    pub task_id: String,
+    pub name: String,
+    pub agent: String,
+    pub status: String,
+}
+
+/// One in-flight job advertised by the `Jobs` section.
+///
+/// Only jobs the session is still waiting on reach here; the caller filters
+/// with [`crate::tui::app::state::tasks::is_live_state`] so the panel and the
+/// `Shift+T` overlay apply one rule rather than two that can drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarJob {
+    pub job_id: String,
+    pub kind: String,
+    pub summary: String,
+    pub state: String,
+    pub error_class: Option<String>,
+}
+
+/// Rows one section may contribute before it is truncated.
+///
+/// A sidebar is a fixed column on a shared terminal, so an unbounded section
+/// would push the sections below it off-screen — and the sections below it are
+/// the ones a user scrolls to find. The count in the header stays the true
+/// total, and truncation adds an explicit `… N more` line, so a truncated list
+/// never silently reads as a complete one.
+pub const MAX_SIDEBAR_SUBAGENT_ROWS: usize = 16;
+pub const MAX_SIDEBAR_JOB_ROWS: usize = 12;
+
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
@@ -118,6 +185,16 @@ pub struct SidebarWidget {
     pub provider: String,
     pub model: String,
     pub todos: Vec<TodoEntry>,
+    /// Subagent rows, derived from the same `SubagentRow` set the main
+    /// buffer's strip and the `Shift+T` overlay read.
+    pub subagents: Vec<SidebarSubagent>,
+    /// Live jobs the session is still waiting on.
+    pub jobs: Vec<SidebarJob>,
+    /// Total subagent count before [`MAX_SIDEBAR_SUBAGENT_ROWS`] truncation, so
+    /// the header can report the truth while the list stays bounded.
+    pub subagent_total: usize,
+    /// Total job count before [`MAX_SIDEBAR_JOB_ROWS`] truncation.
+    pub job_total: usize,
     pub mcp_servers: Vec<(String, String)>,
     pub file_changes: Vec<SidebarFileChange>,
     pub git_branch: Option<String>,
@@ -150,6 +227,8 @@ pub struct SidebarWidget {
     goal_collapsed: bool,
     plan_collapsed: bool,
     todos_collapsed: bool,
+    subagents_collapsed: bool,
+    jobs_collapsed: bool,
     file_changes_collapsed: bool,
     tool_programs_collapsed: bool,
     agent_runs_collapsed: bool,
@@ -181,6 +260,10 @@ impl SidebarWidget {
             provider: String::new(),
             model: String::new(),
             todos: Vec::new(),
+            subagents: Vec::new(),
+            jobs: Vec::new(),
+            subagent_total: 0,
+            job_total: 0,
             mcp_servers: Vec::new(),
             file_changes: Vec::new(),
             git_branch: None,
@@ -205,6 +288,8 @@ impl SidebarWidget {
             goal_collapsed: false,
             plan_collapsed: false,
             todos_collapsed: false,
+            subagents_collapsed: false,
+            jobs_collapsed: false,
             file_changes_collapsed: false,
             tool_programs_collapsed: false,
             agent_runs_collapsed: false,
@@ -240,6 +325,41 @@ impl SidebarWidget {
 
     pub fn set_todos(&mut self, todos: Vec<TodoEntry>) {
         self.todos = todos;
+    }
+
+    /// Replace the subagent rows.
+    ///
+    /// Only *called* with the rows an arriving snapshot reported. A missing
+    /// snapshot is not evidence that no subagents exist — it means the
+    /// projection has not spoken yet — so the caller keeps the rows rather than
+    /// handing in an empty list and blanking the section mid-turn.
+    ///
+    /// The truncated remainder is remembered in `subagent_total` rather than
+    /// dropped, so the header count and the `… N more` line both stay honest.
+    pub fn set_subagents(&mut self, subagents: Vec<SidebarSubagent>) {
+        self.subagent_total = subagents.len();
+        self.subagents = subagents
+            .into_iter()
+            .take(MAX_SIDEBAR_SUBAGENT_ROWS)
+            .collect();
+        self.reconcile_focus();
+    }
+
+    /// Replace the job rows. Bounded exactly like [`Self::set_subagents`].
+    pub fn set_jobs(&mut self, jobs: Vec<SidebarJob>) {
+        self.job_total = jobs.len();
+        self.jobs = jobs.into_iter().take(MAX_SIDEBAR_JOB_ROWS).collect();
+        self.reconcile_focus();
+    }
+
+    /// Subagent rows the bound truncated away.
+    pub fn truncated_subagents(&self) -> usize {
+        self.subagent_total.saturating_sub(self.subagents.len())
+    }
+
+    /// Job rows the bound truncated away.
+    pub fn truncated_jobs(&self) -> usize {
+        self.job_total.saturating_sub(self.jobs.len())
     }
 
     pub fn set_mcp_servers(&mut self, servers: Vec<(String, String)>) {
@@ -344,6 +464,8 @@ impl SidebarWidget {
         let target = match target {
             SidebarFocusTarget::Section(section) => HoveredElement::Section(*section),
             SidebarFocusTarget::Todo(index) => HoveredElement::Todo(*index),
+            SidebarFocusTarget::Subagent(task_id) => HoveredElement::Subagent(task_id.clone()),
+            SidebarFocusTarget::Job(job_id) => HoveredElement::Job(job_id.clone()),
             SidebarFocusTarget::McpServer(index) => HoveredElement::McpServer(*index),
             SidebarFocusTarget::FileChange(index) => HoveredElement::FileChange(*index),
             SidebarFocusTarget::ToolProgram(id) => HoveredElement::ToolProgram(id.clone()),
@@ -383,7 +505,9 @@ impl SidebarWidget {
                     self.collapsed_agent_nodes.remove(&task_id);
                 }
             }
-            SidebarActivation::None | SidebarActivation::InspectRun(_) => {}
+            SidebarActivation::None
+            | SidebarActivation::InspectRun(_)
+            | SidebarActivation::InspectSubagent(_) => {}
         }
         self.reconcile_focus();
     }
@@ -470,7 +594,19 @@ impl SidebarWidget {
                 }
             }
             Some(SidebarFocusTarget::AgentRun(run_id)) => SidebarActivation::InspectRun(run_id),
-            _ => SidebarActivation::None,
+            Some(SidebarFocusTarget::Subagent(task_id)) => {
+                SidebarActivation::InspectSubagent(task_id)
+            }
+            // A job row is a read-only status line. There is no transcript to
+            // open and no dialog to inspect, so activating it is a no-op
+            // rather than a fabricated destination.
+            Some(SidebarFocusTarget::Job(_))
+            | Some(SidebarFocusTarget::Todo(_))
+            | Some(SidebarFocusTarget::McpServer(_))
+            | Some(SidebarFocusTarget::FileChange(_))
+            | Some(SidebarFocusTarget::ToolProgram(_))
+            | Some(SidebarFocusTarget::Convergence(_)) => SidebarActivation::None,
+            None => SidebarActivation::None,
         }
     }
 
@@ -499,6 +635,26 @@ impl SidebarWidget {
             targets.push(SidebarFocusTarget::Section(SidebarSection::Todos));
             if !self.todos_collapsed {
                 targets.extend((0..self.todos.len()).map(SidebarFocusTarget::Todo));
+            }
+        }
+        if !self.subagents.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Subagents));
+            if !self.subagents_collapsed {
+                targets.extend(
+                    self.subagents
+                        .iter()
+                        .map(|row| SidebarFocusTarget::Subagent(row.task_id.clone())),
+                );
+            }
+        }
+        if !self.jobs.is_empty() {
+            targets.push(SidebarFocusTarget::Section(SidebarSection::Jobs));
+            if !self.jobs_collapsed {
+                targets.extend(
+                    self.jobs
+                        .iter()
+                        .map(|job| SidebarFocusTarget::Job(job.job_id.clone())),
+                );
             }
         }
         if !self.mcp_servers.is_empty() {
@@ -601,6 +757,10 @@ impl SidebarWidget {
         match hovered {
             HoveredElement::Section(section) => Some(SidebarFocusTarget::Section(*section)),
             HoveredElement::Todo(index) => Some(SidebarFocusTarget::Todo(*index)),
+            HoveredElement::Subagent(task_id) => {
+                Some(SidebarFocusTarget::Subagent(task_id.clone()))
+            }
+            HoveredElement::Job(job_id) => Some(SidebarFocusTarget::Job(job_id.clone())),
             HoveredElement::McpServer(index) => Some(SidebarFocusTarget::McpServer(*index)),
             HoveredElement::FileChange(index) => Some(SidebarFocusTarget::FileChange(*index)),
             HoveredElement::ToolProgram(id) => Some(SidebarFocusTarget::ToolProgram(id.clone())),
@@ -616,6 +776,8 @@ impl SidebarWidget {
             SidebarSection::Goal => self.goal_collapsed = !self.goal_collapsed,
             SidebarSection::Plan => self.plan_collapsed = !self.plan_collapsed,
             SidebarSection::Todos => self.todos_collapsed = !self.todos_collapsed,
+            SidebarSection::Subagents => self.subagents_collapsed = !self.subagents_collapsed,
+            SidebarSection::Jobs => self.jobs_collapsed = !self.jobs_collapsed,
             SidebarSection::FileChanges => {
                 self.file_changes_collapsed = !self.file_changes_collapsed
             }
@@ -634,6 +796,8 @@ impl SidebarWidget {
             SidebarSection::Goal => self.goal_collapsed = collapsed,
             SidebarSection::Plan => self.plan_collapsed = collapsed,
             SidebarSection::Todos => self.todos_collapsed = collapsed,
+            SidebarSection::Subagents => self.subagents_collapsed = collapsed,
+            SidebarSection::Jobs => self.jobs_collapsed = collapsed,
             SidebarSection::FileChanges => self.file_changes_collapsed = collapsed,
             SidebarSection::ToolPrograms => self.tool_programs_collapsed = collapsed,
             SidebarSection::AgentRuns => self.agent_runs_collapsed = collapsed,
@@ -879,6 +1043,32 @@ impl SidebarWidget {
             if !self.todos_collapsed {
                 for i in 0..self.todos.len() {
                     targets.push(HoveredElement::Todo(i));
+                }
+            }
+        }
+
+        if !self.subagents.is_empty() {
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::Subagents));
+            if !self.subagents_collapsed {
+                for row in &self.subagents {
+                    targets.push(HoveredElement::Subagent(row.task_id.clone()));
+                }
+                if self.truncated_subagents() > 0 {
+                    targets.push(HoveredElement::None);
+                }
+            }
+        }
+
+        if !self.jobs.is_empty() {
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::Jobs));
+            if !self.jobs_collapsed {
+                for job in &self.jobs {
+                    targets.push(HoveredElement::Job(job.job_id.clone()));
+                }
+                if self.truncated_jobs() > 0 {
+                    targets.push(HoveredElement::None);
                 }
             }
         }
@@ -1142,6 +1332,78 @@ impl SidebarWidget {
                         ),
                         Span::raw(clean_inline_text(&todo.content, width.saturating_sub(6))),
                     ]));
+                }
+            }
+        }
+
+        if !self.subagents.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(self.collapsible_header_for(
+                &format!(" Subagents ({}) ", self.subagent_total),
+                self.subagents_collapsed,
+                SidebarSection::Subagents,
+            ));
+            if !self.subagents_collapsed {
+                for row in &self.subagents {
+                    let (icon, style) = self.subagent_glyph(&row.status);
+                    let target = SidebarFocusTarget::Subagent(row.task_id.clone());
+                    let agent = clean_inline_text(&row.agent, 16);
+                    let status = clean_inline_text(&row.status, 12);
+                    lines.push(self.with_row_style(
+                        Line::from(vec![
+                            Span::styled(format!("  {icon} "), style),
+                            Span::styled(
+                                clean_inline_text(&row.name, 24),
+                                Style::default().fg(self.theme.primary),
+                            ),
+                            Span::raw(format!(" ({agent}) {status}")),
+                        ]),
+                        &target,
+                    ));
+                }
+                let hidden = self.truncated_subagents();
+                if hidden > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("    … {hidden} more"),
+                        Style::default().fg(self.theme.muted),
+                    )));
+                }
+            }
+        }
+
+        if !self.jobs.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(self.collapsible_header_for(
+                &format!(" Jobs ({}) ", self.job_total),
+                self.jobs_collapsed,
+                SidebarSection::Jobs,
+            ));
+            if !self.jobs_collapsed {
+                for job in &self.jobs {
+                    let (icon, style) = self.job_glyph(job);
+                    let target = SidebarFocusTarget::Job(job.job_id.clone());
+                    lines.push(self.with_row_style(
+                        Line::from(vec![
+                            Span::styled(format!("  {icon} "), style),
+                            Span::styled(
+                                clean_inline_text(&job.kind, 16),
+                                Style::default().fg(self.theme.primary),
+                            ),
+                            Span::raw(format!(
+                                " {} {}",
+                                clean_inline_text(&job.summary, width.saturating_sub(30)),
+                                clean_inline_text(&job.state, 12)
+                            )),
+                        ]),
+                        &target,
+                    ));
+                }
+                let hidden = self.truncated_jobs();
+                if hidden > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("    … {hidden} more"),
+                        Style::default().fg(self.theme.muted),
+                    )));
                 }
             }
         }
@@ -1521,6 +1783,8 @@ impl SidebarWidget {
                 SidebarSection::Goal => "Click to collapse/expand goal".to_string(),
                 SidebarSection::Plan => "Click to collapse/expand plan".to_string(),
                 SidebarSection::Todos => "Click to collapse/expand todos".to_string(),
+                SidebarSection::Subagents => "Click to collapse/expand subagents".to_string(),
+                SidebarSection::Jobs => "Click to collapse/expand jobs".to_string(),
                 SidebarSection::FileChanges => {
                     "Click to collapse/expand modified files".to_string()
                 }
@@ -1536,6 +1800,23 @@ impl SidebarWidget {
                 .todos
                 .get(*idx)
                 .map(|todo| format!("Todo: {} [{}]", todo.content, todo.status))
+                .unwrap_or_default(),
+            HoveredElement::Subagent(task_id) => self
+                .subagents
+                .iter()
+                .find(|row| &row.task_id == task_id)
+                .map(|row| {
+                    format!(
+                        "Subagent {} ({}) — {} — Enter to open its buffer",
+                        row.name, row.agent, row.status
+                    )
+                })
+                .unwrap_or_default(),
+            HoveredElement::Job(job_id) => self
+                .jobs
+                .iter()
+                .find(|job| &job.job_id == job_id)
+                .map(|job| format!("Job {} — {} ({})", job.kind, job.summary, job.state))
                 .unwrap_or_default(),
             HoveredElement::McpServer(idx) => self
                 .mcp_servers
@@ -1594,6 +1875,41 @@ impl SidebarWidget {
                 .map(|item| format!("Convergence: {} ({})", id, item.status))
                 .unwrap_or_default(),
             HoveredElement::None => String::new(),
+        }
+    }
+
+    /// Status glyph for a subagent row.
+    ///
+    /// Matches on the lowercase token rather than an exact string, because the
+    /// projection spells statuses inconsistently across producers — the same
+    /// tolerance [`crate::tui::app::state::subagents::SubagentRow::is_running`]
+    /// applies, so the glyph and the tab bar's running marker cannot disagree
+    /// about the same row. Anything not recognised as terminal draws as live: an
+    /// unrecognised or empty token means the producer has not reported a terminal
+    /// state, and claiming otherwise would hide work that is still running.
+    fn subagent_glyph(&self, status: &str) -> (&'static str, Style) {
+        let status = status.trim().to_ascii_lowercase();
+        if status.contains("fail") || status.contains("error") {
+            ("✗", Style::default().fg(self.theme.error))
+        } else if status.contains("complet") || status.contains("succeed") {
+            ("✓", Style::default().fg(self.theme.success))
+        } else {
+            ("●", Style::default().fg(self.theme.warning))
+        }
+    }
+
+    /// Status glyph for a job row.
+    ///
+    /// `error_class` is checked first because a job can report a failure class and
+    /// still be listed while its state string is something this build does not
+    /// recognize; the classification is the stronger signal.
+    fn job_glyph(&self, job: &SidebarJob) -> (&'static str, Style) {
+        if job.error_class.is_some() {
+            ("✗", Style::default().fg(self.theme.error))
+        } else if is_live_state(&job.state) {
+            ("●", Style::default().fg(self.theme.warning))
+        } else {
+            ("✓", Style::default().fg(self.theme.success))
         }
     }
 
@@ -1877,5 +2193,319 @@ mod tests {
             sidebar.activate_focused(),
             SidebarActivation::InspectRun("run-7".to_string())
         );
+    }
+
+    /// The agent tree keeps resolving to the run-detail dialog after M004.
+    ///
+    /// This is the boundary note from the roadmap made executable: the new
+    /// `Subagents` section sits beside `AgentRuns`, so the tempting shortcut
+    /// was to reuse the tree rows. They did not change.
+    #[test]
+    fn the_new_sections_do_not_take_over_the_agent_tree_activation() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_agent_runs(vec![run("run-7", "7")]);
+        sidebar.set_agent_tree(vec![node(7, None, AgentTreeStatus::Completed)]);
+        sidebar.set_subagents(vec![subagent("7", "Sally", "explore", "running")]);
+        sidebar.focus_sidebar();
+        // Section(Subagents) -> Subagent("7") -> Section(AgentRuns) ->
+        // AgentTreeNode(7); the new section was added above the tree and must
+        // not have changed what the tree rows resolve to.
+        sidebar.focus_next();
+        sidebar.focus_next();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::AgentTreeNode(7))
+        );
+        assert_eq!(
+            sidebar.activate_focused(),
+            SidebarActivation::InspectRun("run-7".to_string())
+        );
+    }
+
+    #[test]
+    fn focus_walks_todo_then_subagent_then_job_rows_without_collapsing() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("write the thing")]);
+        sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+        sidebar.set_jobs(vec![job("j1", "test", "cargo test", "running", None)]);
+        sidebar.focus_sidebar();
+
+        let walk: Vec<SidebarFocusTarget> = (0..6)
+            .map(|_| {
+                let target = sidebar.focused_target().cloned();
+                sidebar.focus_next();
+                target.unwrap()
+            })
+            .collect();
+
+        assert_eq!(
+            walk,
+            vec![
+                SidebarFocusTarget::Section(SidebarSection::Todos),
+                SidebarFocusTarget::Todo(0),
+                SidebarFocusTarget::Section(SidebarSection::Subagents),
+                SidebarFocusTarget::Subagent("t1".to_string()),
+                SidebarFocusTarget::Section(SidebarSection::Jobs),
+                SidebarFocusTarget::Job("j1".to_string()),
+            ]
+        );
+        // Walking is not collapsing: every body row is still reachable
+        // afterwards, which is what the exit condition asks for.
+        assert_eq!(sidebar.focus_targets().len(), 6);
+    }
+
+    #[test]
+    fn activating_a_subagent_row_addresses_the_projection_task_id() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![subagent("42", "Sally", "explore", "running")]);
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::Subagent("42".to_string()))
+        );
+        assert_eq!(
+            sidebar.activate_focused(),
+            SidebarActivation::InspectSubagent("42".to_string())
+        );
+    }
+
+    /// Click and `Enter` must resolve to the same activation.
+    ///
+    /// They arrive by different routes — the mouse through `focus_hovered`,
+    /// the keyboard through an already-focused row — so they are only
+    /// guaranteed to agree if both end at the same `SidebarFocusTarget`.
+    #[test]
+    fn click_and_enter_resolve_the_same_subagent_activation() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![subagent("42", "Sally", "explore", "running")]);
+
+        // Keyboard: focus the row directly.
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        sidebar.focus_next();
+        let from_key = sidebar.activate_focused();
+
+        // Mouse: hover the row the widget reports for its line, then let the
+        // click path take over focus.
+        let hovered = sidebar
+            .line_targets()
+            .into_iter()
+            .find(|element| matches!(element, HoveredElement::Subagent(id) if id == "42"))
+            .expect("the subagent row is addressable by hover");
+        sidebar.hovered_element = hovered;
+        sidebar.focus_hovered();
+        let from_click = sidebar.activate_focused();
+
+        assert_eq!(from_key, from_click);
+        assert_eq!(from_click, SidebarActivation::InspectSubagent("42".into()));
+    }
+
+    /// The panel never renders a row absent from the snapshot.
+    ///
+    /// An empty section contributes no header and no rows at all, so a
+    /// session with no delegated work shows no empty "Subagents (0)" block
+    /// that would cost a row and read as a failure to populate.
+    #[test]
+    fn empty_sections_contribute_no_header_and_no_rows() {
+        let sidebar = SidebarWidget::default();
+        let targets = sidebar.line_targets();
+        assert!(!targets
+            .iter()
+            .any(|target| matches!(target, HoveredElement::Section(section)
+                    if matches!(section, SidebarSection::Subagents | SidebarSection::Jobs))));
+        assert!(sidebar.focus_targets().iter().all(|target| !matches!(
+            target,
+            SidebarFocusTarget::Subagent(_) | SidebarFocusTarget::Job(_)
+        )));
+    }
+
+    #[test]
+    fn rendered_rows_are_exactly_the_rows_the_snapshot_reported() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![
+            subagent("t1", "Sally", "explore", "running"),
+            subagent("t2", "Bob", "worker", "completed"),
+        ]);
+        sidebar.set_jobs(vec![
+            job("j1", "test", "cargo test", "running", None),
+            job("j2", "build", "cargo build", "running", None),
+        ]);
+
+        let subagent_ids: Vec<String> = sidebar
+            .line_targets()
+            .into_iter()
+            .filter_map(|target| match target {
+                HoveredElement::Subagent(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let job_ids: Vec<String> = sidebar
+            .line_targets()
+            .into_iter()
+            .filter_map(|target| match target {
+                HoveredElement::Job(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(subagent_ids, ["t1", "t2"]);
+        assert_eq!(job_ids, ["j1", "j2"]);
+    }
+
+    /// A truncated section says so, and its header keeps counting truthfully.
+    ///
+    /// The failure this guards is a bounded list that reads as complete: the
+    /// user sees four subagents and concludes there are four.
+    #[test]
+    fn truncated_sections_report_the_true_total_in_the_header() {
+        let mut sidebar = SidebarWidget::default();
+        let rows: Vec<SidebarSubagent> = (0..MAX_SIDEBAR_SUBAGENT_ROWS + 5)
+            .map(|index| subagent(&format!("t{index}"), "Sally", "explore", "running"))
+            .collect();
+        sidebar.set_subagents(rows);
+        assert_eq!(sidebar.subagent_total, MAX_SIDEBAR_SUBAGENT_ROWS + 5);
+        assert_eq!(sidebar.truncated_subagents(), 5);
+
+        let text = sidebar_text(&sidebar, 60);
+        assert!(
+            text.contains(&format!("Subagents ({})", MAX_SIDEBAR_SUBAGENT_ROWS + 5)),
+            "header must count every row the snapshot reported: {text}"
+        );
+        assert!(
+            text.contains("… 5 more"),
+            "truncation must be visible: {text}"
+        );
+    }
+
+    /// Job focus is keyed on the job id, not the job's position.
+    ///
+    /// Jobs are upserted and filtered: the one before the focused row
+    /// finishing removes it and shifts every later index down by one. An
+    /// index-keyed target would silently move focus onto a *different* job
+    /// and then activate it.
+    #[test]
+    fn a_finished_job_does_not_rebind_focus_to_another_job() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_jobs(vec![
+            job("j1", "test", "first", "running", None),
+            job("j2", "build", "second", "running", None),
+        ]);
+        sidebar.focus_sidebar();
+        sidebar.focus_next();
+        sidebar.focus_next();
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::Job("j2".to_string()))
+        );
+
+        // `j1` reaches a terminal state and drops out of the live set.
+        sidebar.set_jobs(vec![job("j2", "build", "second", "running", None)]);
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::Job("j2".to_string()))
+        );
+        assert_eq!(sidebar.activate_focused(), SidebarActivation::None);
+    }
+
+    #[test]
+    fn collapsing_a_section_keeps_its_header_and_drops_its_rows() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_subagents(vec![subagent("t1", "Sally", "explore", "running")]);
+        sidebar.focus_sidebar();
+        // `focus_sidebar` lands on the section header itself; stepping down
+        // first would leave the cursor on a row that has nothing to fold.
+        assert_eq!(
+            sidebar.focused_target(),
+            Some(&SidebarFocusTarget::Section(SidebarSection::Subagents))
+        );
+        sidebar.toggle_focused();
+        assert_eq!(
+            sidebar.focus_targets(),
+            vec![SidebarFocusTarget::Section(SidebarSection::Subagents)]
+        );
+        // The header line still renders; only the body is gone.
+        assert!(sidebar_text(&sidebar, 60).contains("Subagents (1)"));
+    }
+
+    /// The hover map and the rendered lines must stay the same length.
+    ///
+    /// `element_at` maps a terminal `y` straight into `line_targets`, so a
+    /// section that renders a line without registering a hover target shifts
+    /// every row below it onto the wrong subject — clicking one subagent
+    /// opens another. The two functions are maintained separately, so their
+    /// agreement is an invariant to assert rather than assume.
+    #[test]
+    fn hover_targets_stay_aligned_with_rendered_lines() {
+        let mut sidebar = SidebarWidget::default();
+        sidebar.set_todos(vec![todo("write the thing")]);
+        sidebar.set_subagents(vec![
+            subagent("t1", "Sally", "explore", "running"),
+            subagent("t2", "Bob", "worker", "completed"),
+        ]);
+        sidebar.set_jobs(vec![
+            job("j1", "test", "cargo test", "running", None),
+            job("j2", "build", "cargo build", "running", None),
+        ]);
+        assert_eq!(
+            sidebar.line_targets().len(),
+            sidebar.content_lines(60).len()
+        );
+
+        // …and the same holds once a bound starts truncating, since the
+        // `… N more` line is the easiest one to forget to register.
+        let many: Vec<SidebarSubagent> = (0..MAX_SIDEBAR_SUBAGENT_ROWS + 3)
+            .map(|index| subagent(&format!("t{index}"), "Sally", "explore", "running"))
+            .collect();
+        sidebar.set_subagents(many);
+        assert_eq!(
+            sidebar.line_targets().len(),
+            sidebar.content_lines(60).len()
+        );
+    }
+
+    fn subagent(task_id: &str, name: &str, agent: &str, status: &str) -> SidebarSubagent {
+        SidebarSubagent {
+            task_id: task_id.to_string(),
+            name: name.to_string(),
+            agent: agent.to_string(),
+            status: status.to_string(),
+        }
+    }
+
+    fn job(
+        job_id: &str,
+        kind: &str,
+        summary: &str,
+        state: &str,
+        error: Option<&str>,
+    ) -> SidebarJob {
+        SidebarJob {
+            job_id: job_id.to_string(),
+            kind: kind.to_string(),
+            summary: summary.to_string(),
+            state: state.to_string(),
+            error_class: error.map(str::to_string),
+        }
+    }
+
+    fn todo(content: &str) -> TodoEntry {
+        TodoEntry {
+            content: content.to_string(),
+            status: "pending".to_string(),
+            priority: String::new(),
+        }
+    }
+
+    /// Flatten the rendered lines to plain text for substring assertions.
+    fn sidebar_text(sidebar: &SidebarWidget, width: u16) -> String {
+        sidebar
+            .content_lines(width)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

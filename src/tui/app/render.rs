@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::tui::app::state::subagents::SubagentRow;
-use crate::tui::app::state::tasks::{bounded as bounded_task_rows, TaskRow};
+use crate::tui::app::state::tasks::{bounded as bounded_task_rows, is_live_state, TaskRow};
 use crate::tui::panels::{PanelPlacement, SidePanelId};
 use ratatui::style::Color;
 
@@ -2345,7 +2345,7 @@ impl App {
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
             use crate::tui::components::sidebar::{
-                SidebarAgentRun, SidebarConvergence, SidebarToolProgram,
+                SidebarAgentRun, SidebarConvergence, SidebarJob, SidebarToolProgram,
             };
             self.sidebar.set_tool_programs(
                 snapshot
@@ -2413,11 +2413,30 @@ impl App {
                     })
                     .collect(),
             );
+            // Jobs are filtered with the *same* `is_live_state` the `Shift+T`
+            // overlay uses, so "jobs this session is waiting on" means one
+            // thing across both surfaces rather than two rules that drift the
+            // first time a producer invents a new state token.
+            self.sidebar.set_jobs(
+                snapshot
+                    .jobs
+                    .iter()
+                    .filter(|job| is_live_state(&job.state))
+                    .map(|job| SidebarJob {
+                        job_id: job.job_id.clone(),
+                        kind: job.kind.clone(),
+                        summary: job.summary.clone(),
+                        state: job.state.clone(),
+                        error_class: job.error_class.clone(),
+                    })
+                    .collect(),
+            );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
             self.sidebar.set_agent_runs(Vec::new());
             self.sidebar.set_agent_tree(Vec::new());
             self.sidebar.set_convergences(Vec::new());
+            self.sidebar.set_jobs(Vec::new());
         }
 
         // Only a snapshot that *arrives* replaces the rows. A missing
@@ -2427,6 +2446,22 @@ impl App {
         // is genuinely in flight. An arriving snapshot with no tree is
         // authoritative emptiness and does clear.
         if let Some(rows) = subagent_rows {
+            // The panel reads the *same* derived rows rather than re-projecting
+            // the agent tree a third time. That is what makes the panel, the
+            // `Shift+T` overlay, and the tab bar show one name per subagent:
+            // they are three renderings of one vector, not three independent
+            // reads that could disagree. `label()` supplies the same
+            // name-else-agent-type fallback the overlay uses.
+            self.sidebar.set_subagents(
+                rows.iter()
+                    .map(|row| crate::tui::components::sidebar::SidebarSubagent {
+                        task_id: row.task_id.clone(),
+                        name: row.label().to_string(),
+                        agent: row.agent.clone(),
+                        status: row.status.clone(),
+                    })
+                    .collect(),
+            );
             self.ui_state.subagents.set_rows(rows);
         }
     }

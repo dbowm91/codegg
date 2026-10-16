@@ -550,20 +550,93 @@ sides resolve against.
   jobs the session is waiting on, navigable with `j`/`k`/arrows, opening a
   subagent as a tab on Enter/click.
 - **Dependencies:** M003 (interface), M001.
-- **Deliverable boundary:**
-  - New collapsible sections in `src/tui/components/sidebar.rs` alongside the
-    existing `AgentRuns` tree. Adding a section touches the row enum, section
-    rendering, focus-identity, and the two `SidebarActivation` match sites.
-  - A new `SidebarActivation::InspectSubagent(..)` arm mapping to a new
-    `TuiMsg::OpenSubagentTab(..)`, dispatched through `src/tui/app/input.rs`
-    (I2). It must **not** call `process_msg` directly.
-  - Jobs filtered to those the session is waiting on; a section with nothing to
-    show collapses or hides rather than rendering an empty list.
-- **Exit conditions:**
+- **Status:** **landed** on `feat/auto-20261016-845b613f`.
+- **Delivered:**
+  - `SidebarSection::{Subagents, Jobs}` and `SidebarSubagent`/`SidebarJob` in
+    `src/tui/components/sidebar.rs`, with their own collapse state. Both sit
+    between `Todos` and `MCP Servers` so the three "what is this session
+    waiting on" surfaces read as one block, matching the `Shift+T` overlay's
+    todos → subagents → jobs order.
+  - `SidebarActivation::InspectSubagent(String)` carrying the projection's
+    `task_id`. The panel maps it to `PanelKey::Intent(TuiMsg::OpenSubagentTab
+    { task_id })`; the click path maps it to `process_msg` directly, which is
+    the pre-existing `InspectRun` shape for that site and not the same thing
+    as the panel calling into the app.
+  - `SubagentFocusTarget::Subagent(task_id)` and `Job(job_id)`. Jobs key on
+    `job_id` rather than a list index (see the decision below).
+  - The panel's subagent rows are derived from the *same* `SubagentRow`
+    vector the main buffer's strip and the overlay read — one derived value,
+    three renderings — so all three surfaces show one name per subagent.
+  - Jobs are filtered with `state::tasks::is_live_state`, the same predicate
+    the overlay uses, so "waiting on" is one rule rather than two.
+  - Bounded at `MAX_SIDEBAR_SUBAGENT_ROWS = 16` /
+    `MAX_SIDEBAR_JOB_ROWS = 12`, with the header count carrying the true total
+    and a `… N more` line marking the truncation.
+- **Exit conditions, each mapped to a named test:**
   - `j`/`k`/arrows move focus across todo, subagent, and job rows without
-    collapsing sections.
-  - Enter and click both open the same tab for the same subagent.
-  - The panel never renders a row absent from the snapshot.
+    collapsing sections → `focus_walks_todo_then_subagent_then_job_rows_without_collapsing`
+    (unit) and `a_job_row_is_read_only_and_never_reaches_the_composer`
+    (integration).
+  - Enter and click both open the same tab for the same subagent →
+    `click_and_enter_resolve_the_same_subagent_activation` (unit),
+    `enter_on_a_session_panel_subagent_row_opens_its_buffer_tab`, and
+    `a_clicked_subagent_row_opens_the_same_tab_as_enter` (integration).
+  - The panel never renders a row absent from the snapshot →
+    `empty_sections_contribute_no_header_and_no_rows` and
+    `rendered_rows_are_exactly_the_rows_the_snapshot_reported` (unit).
+
+#### Decisions M004 settled
+
+- **The agent tree still opens the run-detail dialog.** The roadmap's own
+  boundary note anticipated this and it is enforced by
+  `the_new_sections_do_not_take_over_the_agent_tree_activation`: adding a
+  second, adjacent subagent surface made reusing `Enter` on the tree rows
+  tempting, and refusing it is what keeps a working surface working. "What
+  happened to this run" and "show me its transcript" stay separate questions
+  on separate rows.
+- **Job rows are keyed on `job_id`, not an index.** Todo and file-change rows
+  use indices because the projection appends to them. Jobs are *upserted* and
+  then filtered to live states, so the row before the focused one reaching a
+  terminal state shifts every later index down by one; an index-keyed target
+  would silently move focus onto a different job and then activate it. See
+  `a_finished_job_does_not_rebind_focus_to_a_different_job`.
+- **The subagent section lists every row the tree reports, not only running
+  ones.** The `Shift+T` overlay filters to live because it is a transient
+  status block; the panel is a persistent index, and it is the surface a user
+  returns to. Filtering would make a finished subagent vanish the moment it
+  finished, and would leave an open tab whose subject the panel no longer
+  lists — the exact "panel outliving the tree" shape D3 asks to watch for.
+  Status is drawn per row instead. When the tree does drop the node, the row
+  goes and the tab shows its M003 detached terminal state: the two surfaces
+  agree on the same subject because they read the same rows.
+- **A job row activates to nothing.** There is no job transcript and no job
+  dialog, so `Enter` consumes the key rather than fabricating a destination —
+  and `a_job_row_is_read_only_and_never_reaches_the_composer` asserts the key
+  never leaks to the composer as a turn.
+- **A missing snapshot does not clear the subagent section.** `set_subagents`
+  is only called with rows an arriving snapshot reported, matching the rule
+  `SubagentState::set_rows` already follows: a projection that has not spoken
+  is not evidence that no subagents exist.
+
+#### Two defects this milestone tripped over
+
+- **`line_targets` and `content_lines` are maintained separately, and nothing
+  checked they agreed.** `element_at` maps a terminal `y` straight into the
+  hover map, so a section that renders a line without registering a target
+  shifts every row below it onto the wrong subject — clicking one subagent
+  opens another, silently. The new `… N more` truncation line was exactly the
+  kind of line that gets rendered and forgotten.
+  `hover_targets_stay_aligned_with_rendered_lines` now asserts the two
+  functions agree, both with and without truncation. (This is a latent risk
+  the new sections inherited from the old ones, not one they created; the
+  invariant test is what makes it safe to add a fourth section later.)
+- **A panel row alone cannot open a tab.** The first version of the
+  integration test seeded only `SidebarWidget.subagents` and the open was
+  refused, because `SubagentState::open_task` resolves the row behind the
+  `task_id` and returns `false` when there is none. That is correct — a tab
+  with nothing to render is not a tab — and it is why the panel and the
+  buffer are fed from one derived vector in `App::render_sidebar` rather than
+  projected twice. The test now seeds both, with a helper that says why.
 
 ### M005 — Cross-cutting guards, help, and documentation
 
@@ -675,6 +748,6 @@ Interaction with a subagent is **not** part of this definition.
 | M001 ephemeral display name | landed (pool, registry, event-carried name, dead join fixed) | — | — | none |
 | M002 unified tasks overlay | landed (Shift+T; global row budget + height clamp) | — | — | none |
 | M003 subagent buffer tabs | landed (tab set, Shift+N/P/X, detached terminal state, overlay keyboard path) | — | — | none |
-| M004 sessions panel sections | not started | — | — | M001, M003 |
+| M004 sessions panel sections | landed (subagent + job sections, `InspectSubagent`, id-keyed job focus) | — | — | none |
 | M005 guards, help, docs | not started | — | — | M002, M003, M004 |
 | M900 send-to-subagent | not approved for planning | — | — | design decision |
