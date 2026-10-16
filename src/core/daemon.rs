@@ -4641,6 +4641,93 @@ mod tests {
         assert!(commit.status.success(), "git commit failed: {:?}", commit);
     }
 
+    async fn prepare_existing_managed_worktree(
+        daemon: &CoreDaemon,
+        pool: &sqlx::SqlitePool,
+        repository_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        branch: &str,
+        project_id: &str,
+        source_workspace_id: &str,
+    ) -> codegg_core::identity::WorktreeId {
+        use codegg_core::worktree_service::WorktreeStore;
+        use std::process::Command;
+
+        let added = Command::new("git")
+            .args(["worktree", "add", "-b", branch])
+            .arg(worktree_path)
+            .arg("HEAD")
+            .current_dir(repository_root)
+            .output()
+            .expect("run test git worktree add");
+        assert!(added.status.success(), "git worktree add failed: {added:?}");
+        let revision = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(repository_root)
+            .output()
+            .expect("read fixture HEAD");
+        assert!(
+            revision.status.success(),
+            "git rev-parse failed: {revision:?}"
+        );
+        let base_commit = String::from_utf8(revision.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+
+        let workspace = daemon
+            .workspaces
+            .get_or_register(worktree_path)
+            .await
+            .expect("register linked worktree workspace");
+        let source_workspace_id = codegg_core::identity::WorkspaceId::parse(source_workspace_id)
+            .expect("source workspace ID");
+        let source_binding = codegg_core::project_storage::ProjectStorage::new(pool.clone())
+            .workspace_binding(&source_workspace_id)
+            .await
+            .expect("load source workspace binding")
+            .expect("source workspace binding exists");
+        let repository_id = source_binding
+            .repository_id
+            .expect("source workspace has a repository");
+        let project_id = codegg_core::identity::ProjectId::parse(project_id).expect("project ID");
+        let worktree_id = codegg_core::identity::WorktreeId::new();
+        let target = std::fs::canonicalize(worktree_path).expect("canonical worktree path");
+        let now = chrono::Utc::now().timestamp_millis();
+        codegg_core::worktree_service::SqliteWorktreeStore::new(pool.clone())
+            .insert_reserved(codegg_core::worktree_service::WorktreeRecord {
+                worktree_id: worktree_id.clone(),
+                project_id: project_id.clone(),
+                repository_id: repository_id.clone(),
+                workspace_id: source_workspace_id,
+                node_id: None,
+                repository_root: repository_root.to_path_buf(),
+                path: target,
+                branch: Some(branch.to_owned()),
+                base_commit,
+                managed: true,
+                state: codegg_core::worktree_service::ManagedWorktreeState::Ready,
+                health: codegg_core::worktree_service::WorktreeHealth::Clean,
+                lease_generation: 0,
+                owner_run_id: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("persist test managed worktree");
+        codegg_core::project_storage::ProjectStorage::new(pool.clone())
+            .bind_managed_worktree_workspace(
+                &workspace,
+                &project_id,
+                &repository_id,
+                &worktree_id,
+                "m006_test_fixture",
+            )
+            .await
+            .expect("bind test managed worktree workspace");
+        worktree_id
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn managed_session_launch_and_fork_are_idempotent_and_bound() {
         let repository = tempfile::tempdir().unwrap();
@@ -4655,6 +4742,26 @@ mod tests {
         ));
         let daemon = CoreDaemon::with_deps(deps);
         let (project_id, workspace_id) = seed_test_context(&daemon, repository.path()).await;
+        let launch_worktree_id = prepare_existing_managed_worktree(
+            &daemon,
+            &pool,
+            repository.path(),
+            &managed_root.path().join("launch"),
+            "codegg/worktree/launch-test",
+            &project_id,
+            &workspace_id,
+        )
+        .await;
+        let fork_worktree_id = prepare_existing_managed_worktree(
+            &daemon,
+            &pool,
+            repository.path(),
+            &managed_root.path().join("fork"),
+            "codegg/worktree/fork-test",
+            &project_id,
+            &workspace_id,
+        )
+        .await;
 
         let launch = || {
             crate::core::new_request(
@@ -4664,8 +4771,8 @@ mod tests {
                     project_id: project_id.clone(),
                     workspace_id: workspace_id.clone(),
                     title: Some("isolated launch".into()),
-                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
-                        base_commit: None,
+                    placement: crate::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                        worktree_id: launch_worktree_id.to_string(),
                     },
                 },
             )
@@ -4737,8 +4844,8 @@ mod tests {
                 CoreRequest::SessionForkInWorktree {
                     idempotency_key: "fork-replay-1".into(),
                     session_id: source.id.clone(),
-                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
-                        base_commit: None,
+                    placement: crate::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                        worktree_id: fork_worktree_id.to_string(),
                     },
                 },
             ))
@@ -4761,8 +4868,8 @@ mod tests {
                 CoreRequest::SessionForkInWorktree {
                     idempotency_key: "fork-replay-1".into(),
                     session_id: source.id,
-                    placement: crate::protocol::core::SessionWorktreePlacement::NewManaged {
-                        base_commit: None,
+                    placement: crate::protocol::core::SessionWorktreePlacement::ExistingManaged {
+                        worktree_id: fork_worktree_id.to_string(),
                     },
                 },
             ))
