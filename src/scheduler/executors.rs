@@ -341,9 +341,20 @@ impl JobExecutor for ManagedArgvExecutor {
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             argv.into_iter().map(OsString::from).collect(),
             cwd,
-            crate::managed_process::ProcessProvenance::new(
-                ctx.job.job_id.as_str(),
-                ctx.attempt_id.as_str(),
+            ctx.job.session_id.as_deref().map_or_else(
+                || {
+                    crate::managed_process::ProcessProvenance::new(
+                        ctx.job.job_id.as_str(),
+                        ctx.attempt_id.as_str(),
+                    )
+                },
+                |session_id| {
+                    crate::managed_process::ProcessProvenance::new(
+                        ctx.job.job_id.as_str(),
+                        ctx.attempt_id.as_str(),
+                    )
+                    .with_session(session_id.to_owned())
+                },
             ),
         );
         #[cfg(windows)]

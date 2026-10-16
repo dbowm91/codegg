@@ -343,7 +343,13 @@ impl BashTool {
         timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
         let (result, output, _, _) = self
-            .execute_via_raw_shell_with_authorization(command, canonical_workdir, timeout, None)
+            .execute_via_raw_shell_with_authorization(
+                command,
+                canonical_workdir,
+                timeout,
+                None,
+                None,
+            )
             .await?;
         Ok((result, output))
     }
@@ -354,6 +360,7 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
         authorization: Option<crate::tool::authorization::ExecutionAuthorizationContext>,
+        session_id: Option<&str>,
     ) -> Result<
         (
             String,
@@ -407,7 +414,13 @@ impl BashTool {
         let mut request = crate::managed_process::ManagedProcessRequest::new(
             managed_shell_argv.into_iter().map(OsString::from).collect(),
             cwd,
-            crate::managed_process::ProcessProvenance::default(),
+            session_id.map_or_else(
+                crate::managed_process::ProcessProvenance::default,
+                |session_id| {
+                    crate::managed_process::ProcessProvenance::default()
+                        .with_session(session_id.to_owned())
+                },
+            ),
         );
         request.execution_authorization = authorization;
         #[cfg(windows)]
@@ -548,6 +561,7 @@ impl BashTool {
         cwd: Option<&Path>,
         _validated_command: Option<&str>,
         timeout: Duration,
+        session_id: Option<String>,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests,
@@ -572,7 +586,7 @@ impl BashTool {
                 None,
                 codegg_core::jobs::NewJob {
                     workspace_id,
-                    session_id: None,
+                    session_id: session_id.clone(),
                     turn_id: None,
                     kind: codegg_core::jobs::JobKind::Test,
                     source: codegg_core::jobs::JobSource::Interactive,
@@ -719,6 +733,7 @@ impl BashTool {
         mode: &str,
         canonical_workdir: Option<&Path>,
         timeout: Duration,
+        session_id: Option<String>,
     ) -> Result<DispatchOutcome, ToolError> {
         use crate::python_script::PythonExecutionMode;
 
@@ -739,7 +754,7 @@ impl BashTool {
             cwd,
             workspace_root: None,
             timeout_secs: Some(timeout.as_secs()),
-            session_id: None,
+            session_id: session_id.clone(),
             intent: Some(format!("command-intent:{mode}")),
         };
 
@@ -1158,6 +1173,7 @@ impl BashTool {
         cwd: Option<&Path>,
         timeout: Duration,
         kind: codegg_core::jobs::JobKind,
+        session_id: Option<String>,
     ) -> Result<DispatchOutcome, ToolError> {
         if command.executable.is_empty() {
             return Err(ToolError::Execution("empty executable".to_string()));
@@ -1181,7 +1197,7 @@ impl BashTool {
                 None,
                 codegg_core::jobs::NewJob {
                     workspace_id,
-                    session_id: None,
+                    session_id: session_id.clone(),
                     turn_id: None,
                     kind,
                     source: codegg_core::jobs::JobSource::Interactive,
@@ -1250,6 +1266,7 @@ impl BashTool {
         command: &str,
         canonical_workdir: Option<&Path>,
         timeout: Duration,
+        session_id: Option<String>,
     ) -> Result<DispatchOutcome, ToolError> {
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::Tests, // generic
@@ -1274,7 +1291,7 @@ impl BashTool {
                 None,
                 codegg_core::jobs::NewJob {
                     workspace_id,
-                    session_id: None,
+                    session_id: session_id.clone(),
                     turn_id: None,
                     kind: codegg_core::jobs::JobKind::Shell,
                     source: codegg_core::jobs::JobSource::Interactive,
@@ -1347,6 +1364,7 @@ impl BashTool {
                     .into(),
             ));
         }
+        let session_id = audit_ctx.and_then(|ctx| ctx.session_id.clone());
         match decision {
             CommandDispatchTarget::RouteToTestRunner {
                 argv,
@@ -1358,6 +1376,7 @@ impl BashTool {
                     canonical_workdir,
                     validated_command.as_deref(),
                     timeout,
+                    session_id.clone(),
                 )
                 .await
             }
@@ -1372,8 +1391,14 @@ impl BashTool {
                     crate::command_intent::plan::PythonModeGuess::Verify => "verify",
                     crate::command_intent::plan::PythonModeGuess::Unknown => "analyze",
                 };
-                self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
-                    .await
+                self.dispatch_to_python_script(
+                    script,
+                    mode_str,
+                    canonical_workdir,
+                    timeout,
+                    session_id.clone(),
+                )
+                .await
             }
             CommandDispatchTarget::RouteToManagedProcess { command, cwd, .. } => {
                 let kind = match _plan.intent.kind {
@@ -1382,8 +1407,14 @@ impl BashTool {
                     CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
                     _ => codegg_core::jobs::JobKind::ManagedProcess,
                 };
-                self.dispatch_to_managed_process(command, Some(cwd), timeout, kind)
-                    .await
+                self.dispatch_to_managed_process(
+                    command,
+                    Some(cwd),
+                    timeout,
+                    kind,
+                    session_id.clone(),
+                )
+                .await
             }
             CommandDispatchTarget::RouteToGit { request, .. } => {
                 // Track U unified dispatch: route typed Git operations
@@ -1402,7 +1433,7 @@ impl BashTool {
                 .await
             }
             CommandDispatchTarget::RouteToShell { command, .. } => {
-                self.dispatch_to_shell(command, canonical_workdir, timeout)
+                self.dispatch_to_shell(command, canonical_workdir, timeout, session_id)
                     .await
             }
             CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(

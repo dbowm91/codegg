@@ -523,6 +523,23 @@ impl AgentLoop {
                     Some(&self.session_id),
                 )
                 .await
+        } else if &*tc.name == "write" {
+            if let Some(path) = path.as_deref() {
+                let scratch_root = crate::scratch::session_scratch_dir(&self.session_id).ok();
+                let mut allowed_roots = vec![self.workspace_root.as_path()];
+                if let Some(scratch_root) = scratch_root.as_deref() {
+                    allowed_roots.push(scratch_root);
+                }
+                self.services
+                    .permission_checker
+                    .check_trusted_root_write(path, &allowed_roots, Some(&self.session_id))
+                    .await
+            } else {
+                self.services
+                    .permission_checker
+                    .check(&tc.name, None, Some(&self.session_id))
+                    .await
+            }
         } else {
             self.services
                 .permission_checker

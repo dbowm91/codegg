@@ -194,6 +194,13 @@ class, and content hash. The compiler emits a versioned fingerprint used
 by `ContextPlan` for context identity. There is no production
 post-compaction system-string mutation.
 
+Turn construction adds one bounded required capability block for the
+canonical session's private scratch path. It is compiled with the normal
+runtime blocks and does not change on each tool call; other sessions receive
+their own path. The broker independently carries the authenticated session
+identity to the tool/process owners, so the prompt text itself never grants
+filesystem authority.
+
 Prompt-block precedence for overlapping work state (M002 §6.9, M004 §6.5):
 current turn user input outranks an active goal revision newer than the
 checkpoint, which outranks the installed continuation projection

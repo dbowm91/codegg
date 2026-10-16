@@ -129,6 +129,15 @@ its `session_id` did not match leaves the waiter with no sender to wake it.
 
 ### Bash Command Handling
 
+Structured model `read` and `write` calls may use an absolute path inside the
+authenticated workspace or the session's private scratch directory. Writes
+inside those host-validated roots do not trigger the implicit default `Ask`;
+stored decisions, explicit tool or path rules, and hard denials still apply.
+The broker supplies session identity; each tool resolves the CodeGG-managed
+directory and applies the same symlink-aware validator beneath that root.
+Relative paths continue to resolve from the workspace. Scratch access does not
+apply to another session, human shell, plugins, or arbitrary absolute paths.
+
 `check_with_args()` adds a destructive-pattern fallback for
 `ShellExec` tools. If the user's ruleset would allow the command but
 it matches a destructive pattern (`rm -rf /`, `mkfs`, `dd of=...`,

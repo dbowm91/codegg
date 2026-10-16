@@ -153,6 +153,34 @@ impl Tool for WriteTool {
             }
         ))
     }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<crate::tool::backend::ToolExecutionContext>,
+    ) -> Result<crate::tool::StructuredToolResult, ToolError> {
+        let scratch = ctx
+            .as_ref()
+            .and_then(|ctx| ctx.session_id.as_deref())
+            .filter(|session_id| !session_id.is_empty())
+            .map(crate::scratch::session_scratch_dir)
+            .transpose()
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let requested = input["path"].as_str().map(Path::new);
+        let output = if let (Some(path), Some(scratch)) = (requested, scratch) {
+            if path.is_absolute() && path.starts_with(&scratch) {
+                Self::new()
+                    .with_allowed_root(scratch)
+                    .execute(input)
+                    .await?
+            } else {
+                self.execute(input).await?
+            }
+        } else {
+            self.execute(input).await?
+        };
+        Ok(crate::tool::StructuredToolResult::legacy("write", output))
+    }
 }
 
 impl Default for WriteTool {

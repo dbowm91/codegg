@@ -239,6 +239,15 @@ If a sandbox profile is requested without a workspace root, bash runs without
 OS containment and that is reported as *unavailable*, never as full host
 access — the absence of a workspace never silently widens authority.
 
+Model-owned Bash and Python processes receive a private scratch directory for
+their session. Use the `CODEGG_SCRATCH_DIR` environment variable in shell
+commands, or its displayed path with the structured `read` and `write` tools,
+for temporary artifacts shared across tool calls in that session. `TMPDIR`,
+`TMP`, and `TEMP` point there for managed model processes. Writes inside the
+session workspace or scratch directory do not trigger the implicit default
+`Ask`; explicit rules still apply. Human shell commands do not receive the
+session scratch grant.
+
 ## Testing and the scheduler
 
 The `test` tool runs the project's suite through the daemon scheduler rather
