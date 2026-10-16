@@ -899,6 +899,7 @@ mod tests {
     fn policy_derives_from_a_launch_spec() {
         let dir = tempfile::tempdir().expect("workspace fixture");
         let spec = SandboxLaunchSpec {
+            env: Vec::new(),
             linux_protected_mount_view: false,
             linux_process_isolation: false,
             linux_offline_network: false,

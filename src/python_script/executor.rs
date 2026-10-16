@@ -321,6 +321,7 @@ pub async fn execute_python_script_with_profile(
                 request.mode == PythonExecutionMode::Transform,
             );
             let spec = SandboxLaunchSpec {
+                env: Vec::new(),
                 linux_protected_mount_view: false,
                 linux_process_isolation: false,
                 linux_offline_network: false,

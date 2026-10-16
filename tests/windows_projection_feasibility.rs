@@ -187,6 +187,7 @@ try {{
             (inherited_candidate.as_raw_handle() as usize).to_string(),
         );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+        env: Vec::new(),
         linux_protected_mount_view: false,
         linux_process_isolation: false,
         linux_offline_network: false,

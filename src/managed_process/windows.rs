@@ -1924,6 +1924,7 @@ mod tests {
         );
         request.sandbox = crate::managed_process::SandboxRequest::Required(
             crate::security::sandbox::SandboxLaunchSpec {
+                env: Vec::new(),
                 linux_protected_mount_view: false,
                 linux_process_isolation: false,
                 linux_offline_network: false,

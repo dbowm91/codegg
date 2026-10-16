@@ -99,6 +99,7 @@ fn opt_in_real_child_namespaces_and_fail_closed_setup() {
     let scratch = tempfile::tempdir().expect("private fixture scratch");
     let marker = scratch.path().join("target.marker");
     let spec = SandboxLaunchSpec {
+        env: Vec::new(),
         linux_protected_mount_view: false,
         linux_process_isolation: false,
         linux_offline_network: false,

@@ -587,6 +587,7 @@ impl SandboxConfig {
             path_identities,
             target,
             args: args.to_vec(),
+            env: Vec::new(),
             read_paths,
             write_paths,
             deny_paths,
@@ -603,6 +604,11 @@ impl SandboxConfig {
 pub struct SandboxLaunchSpec {
     pub target: PathBuf,
     pub args: Vec<String>,
+    /// Explicit environment for specialized long-lived child owners. Values
+    /// are copied into the Bubblewrap target environment only after helper
+    /// validation; callers must construct this list from a reviewed policy.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     /// Roots never readable or writable, regardless of profile. Redundant

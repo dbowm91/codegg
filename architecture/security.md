@@ -152,6 +152,7 @@ pub struct SandboxConfig {
 pub struct SandboxLaunchSpec {
     pub target: PathBuf,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>, // optional explicit, bounded target environment
     pub read_paths: Vec<PathBuf>,
     pub write_paths: Vec<PathBuf>,
     pub deny_paths: Vec<PathBuf>,  // never readable/writable, regardless of profile
@@ -212,11 +213,18 @@ sysctl. Broader Cargo/compiler support, cross-session isolation, PTY service
 routing, and other host configurations remain unqualified. The process tier is
 not production-admitted while those M004 and M003 gates remain open.
 
-<<<<<<< HEAD
-ADR-0031 accepts Bubblewrap-based Linux namespace/mount composition as the
-=======
-ADR-0035 accepts Bubblewrap-based Linux namespace/mount composition as the
->>>>>>> d8da9933 (fix(plans): reconcile Linux ADR identity on current main)
+The interactive PTY owner now has an internal long-lived M004 launch path:
+`ManagedProcessService` retains the helper setup receipt/ack protocol while
+`InteractiveProcessService` owns the PTY descriptors, child wait, status
+monitor, resize, cancellation, and scheduler permit. The helper receives a
+bounded explicit environment in the private launch spec and rejects duplicate,
+malformed, or oversized entries; `HOME`, `TMPDIR`, and Git config roots remain
+helper-owned. The daemon protocol still refuses constrained PTY creation while
+this path awaits exact-source hosted PTY qualification. This work does not
+admit M003 or claim offline networking. Constrained LSP remains disabled until
+its distinct duplex process owner is qualified.
+
+ADR-0043 accepts Bubblewrap-based Linux namespace/mount composition as the
 selected architecture. The existing Landlock-only default and unrestricted
 network behavior are unchanged. The opt-in mount path is implemented but
 remains unqualified until the native protected-mount, descriptor, race,

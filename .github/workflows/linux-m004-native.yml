@@ -7,6 +7,7 @@ on:
       - '.github/workflows/linux-m004-native.yml'
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'src/managed_process.rs'
+      - 'src/interactive_process.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
@@ -15,6 +16,7 @@ on:
       - '.github/workflows/linux-m004-native.yml'
       - 'src/bin/codegg-sandbox-helper.rs'
       - 'src/managed_process.rs'
+      - 'src/interactive_process.rs'
       - 'src/security/sandbox.rs'
       - 'src/security/sandbox/**'
       - 'tests/linux_m004_process_ipc.rs'
@@ -35,6 +37,7 @@ jobs:
       CODEGG_RUN_M004_BWRAP_NATIVE: '1'
       CODEGG_RUN_C009_BWRAP_NATIVE: '1'
       CODEGG_RUN_M004_CARGO_NATIVE: '1'
+      CODEGG_RUN_M004_PTY_NATIVE: '1'
       CODEGG_RUN_M005_OFFLINE_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +79,9 @@ jobs:
 
       - name: M004 managed-process host PID and IPC denial probes
         run: cargo test --locked --test linux_m004_process_ipc -- --nocapture
+
+      - name: M004 constrained PTY live-owner qualification
+        run: cargo test --locked -p codegg --lib interactive_process::tests::m004_live_owner_preserves_tty_and_private_process_view -- --test-threads=1 --nocapture
 
       - name: Protected mount and Git regressions
         run: |

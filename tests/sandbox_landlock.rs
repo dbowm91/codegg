@@ -91,6 +91,7 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
     let mut read_paths = vec![root.to_path_buf()];
     read_paths.extend(runtime_paths(&target));
     SandboxLaunchSpec {
+        env: Vec::new(),
         linux_protected_mount_view: false,
         linux_process_isolation: false,
         linux_offline_network: false,

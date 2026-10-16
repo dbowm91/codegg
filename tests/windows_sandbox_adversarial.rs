@@ -100,6 +100,7 @@ $written = [IO.File]::ReadAllText($newFile).Trim()
         ProcessProvenance::new("windows-sandbox-adversarial", "path-escape-matrix"),
     );
     request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+        env: Vec::new(),
         linux_protected_mount_view: false,
         linux_process_isolation: false,
         linux_offline_network: false,
