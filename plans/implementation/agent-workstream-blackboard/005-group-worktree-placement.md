@@ -48,11 +48,11 @@ restart/cancellation release, approval/lock ordering, platform-specific process
 containment, and denial of unmediated mutation surfaces. Do not call the
 existing scheduler keys a substitute: they are global and omit ordinary turns.
 
-Disposition: M005 is now `active` because its decision and strict M004
-prerequisites are satisfied. The shared-checkout capability itself remains
-blocked: this audit does not authorize a code path that places group members
-in a shared checkout. M006 and M007 production remain blocked; M007
-interface-only research is already recorded separately.
+Disposition: M005 is active for architecture and qualification because its
+decision and strict M004 prerequisites are satisfied. Shared-checkout
+execution remains unavailable. M006 isolated session/worktree UX and M007
+per-workspace build admission are separately eligible and do not wait for this
+writer-containment gate.
 
 ### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
 
@@ -185,9 +185,47 @@ permit, shared placement, or any Q1–Q5 capability.
 Existing M004 two-run fake-provider tests qualify peer-observation refusal,
 not writer locking; existing WorktreeService lease generations do not qualify
 the proposed writer permit. ADR-0002's isolated mutation default remains
-effective. The next implementation slice is Q1's daemon-owned durable CAS
-state owner, bound to authoritative group/run/worktree generations; it must
-not be exposed to execution paths until Q2/Q3 complete mediation is in place.
+effective. The next slice is the process-lifetime feasibility decision below,
+not a permit-store implementation. Q1 should begin only if that decision
+identifies a bounded capability profile whose effective writers can all be
+contained or denied.
+
+#### Persistent-process and universal-writer feasibility review (2026-10-16)
+
+This review narrows what a future shared-write implementation can claim. A
+short scheduler/tool request is not the lifetime of its effective writer.
+
+| Owner | Lifetime evidence | Feasibility result for a checkout permit |
+|---|---|---|
+| ManagedProcessService finite command | Unix starts a new session and signals its process group. Its own join_output comment records that a descendant calling setsid can escape the group and hold a pipe open indefinitely; the implementation bounds the join and reports an error. Windows Job Object ownership is stronger for descendants but remains process supervision, not filesystem containment. | A permit can be held through the direct job only if the process owner reports positively that the whole effective tree is quiescent. Current bounded output completion/error is not such proof. Arbitrary shell stays unavailable until escaped descendants are contained or detected and the permit remains quarantined. |
+| Interactive PTY | InteractiveProcessService retains an ephemeral live session and has TERM/KILL process-group teardown. A PTY can remain open and idle after its creating tool request returns; handles do not survive daemon restart. | Holding a writer permit for the PTY's full interactive lifetime serializes the group behind an arbitrarily long user session. Releasing on tool return is unsafe. Initial shared placement must refuse PTY creation/attachment or keep the run isolated. |
+| LSP process | egglsp owns a long-lived child with JSON-RPC framing and restart state. launch::terminate calls child.kill(); the service has no checkout writer-permit lifetime. Server-side behavior can outlive any individual request. | A request-scoped lock is insufficient. Shared mode must deny LSP server use unless a future service contract proves read-only/no-write behavior or supplies a supervised checkout-scoped process lifetime and restart reconciliation. |
+| Local MCP process | LocalClient retains a persistent process and protocol state. Shutdown kills and waits for the direct child; this is not the common process owner and does not attest descendant quiescence. An MCP server may execute arbitrary tools independently of a single broker call. | Shared mode must deny local MCP launch/use until capability and descendant lifetimes are bound to the checkout permit. |
+| Hooks, plugins and Tool Programs | Finite hooks/process plugins use managed execution in some routes; plugin protocol/lifecycle integration is deferred. Tool Programs may delegate through scheduler jobs. | Each final effect owner must inherit a typed permit for its whole effect. Unsupported or detached/delegated surfaces must be denied. |
+| TUI, IDE, HTTP and external same-user tools | Daemon/client file APIs can write through independent services; editors and shells outside CodeGG never acquire daemon permits. | Every CodeGG project-rooted sink must route through the permit or refuse while shared placement is reserved. A daemon lock cannot exclude an unrelated process under the same OS identity. If “universal” includes those processes, shared mode is infeasible without a separately qualified OS identity/filesystem boundary. |
+
+The central feasibility condition is stronger than adding a durable mutex:
+every mutation-capable capability must be either (a) attached to a typed
+checkout scope and held through verified effective-writer quiescence, or
+(b) unavailable to a run in shared placement. Current persistent-process
+owners do not provide that uniform contract. Indefinite PTY ownership is
+operationally unusable, and current LSP/MCP lifecycle adapters cannot prove
+checkout-wide process quiescence. This is a design gate, not an implementation
+task for a generic worktree lock.
+
+Before a permit service is exposed, the next architecture decision must state
+whether M005's product boundary excludes non-CodeGG same-user writers. If it
+does not, stop: the current daemon architecture cannot provide universal
+writer protection. If it does, define a shared-placement capability profile
+that denies PTY and persistent LSP/MCP/plugin paths until they have a
+checkout-scoped lifecycle contract; separately prove descendant containment
+for finite processes. Only then is Q1 useful, and Q1 storage must never imply
+that a caller has permission to use a capability excluded by its profile.
+
+This review does not qualify shared mutation and does not change ADR-0032 or
+ADR-0002. It records why scheduler exclusivity keys and request-scoped locks
+are insufficient and why persistent process ownership must be resolved before
+broad implementation.
 
 ## Work packages
 
@@ -215,7 +253,7 @@ E. Negative platform and remote behavior. Check Linux/macOS/Windows effective ba
 
 Run focused worktree, scheduler contention/restart, task/run control, session authorization, agent integration, Git security and process execution tests, scripts/verify.sh quick, Clippy, source guards for scheduler/exec and sandbox, and at least one production-shaped multi-run shared-mutation trajectory under supported native containment. Mark unsupported platforms explicitly; no 'supported' labels based only on mocked reservations.
 
-Stop this milestone if accepted ADR is missing, if any mutation surface can evade the reservation, if the implementation requires a second scheduler, or if arbitrary shell requires weakening a sandbox. In that case retain Auto isolated, report a corrective or rejected feasibility record; M006 and shared build policy remain blocked rather than pretending the feature works.
+Stop shared-placement enablement if accepted ADR is missing, if any enabled mutation surface can evade the reservation, if the implementation requires a second scheduler, or if arbitrary shell requires weakening a sandbox. Retain Auto isolated and report negative feasibility. M006 isolated session/worktree UX and M007 per-workspace build admission proceed independently; shared target/cache work remains out of scope.
 
 ## Closure
 

@@ -1,8 +1,8 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked — hard dependencies M004, M006, M007 closure (therefore M005 and ADR-0032 gates)
+Status: blocked — M006 and M007 closure required for the broad cross-capability comparison; shared-checkout experiment arms additionally require M005
 
-Planning baseline: de49884f3fdc6d528620f2a2645694b9b19fc087 (2026-10-15)
+Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
 ADRs: accepted ADR-0001/0002/0004/0005/0031 and formally accepted ADR-0032 if shared mutation is included.
 Canonical: plans/000-long-term-specification.md §§16–17, 26–29; plans/001-terminology-and-domain-model.md §§5, 7–8.

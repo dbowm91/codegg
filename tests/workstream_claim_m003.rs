@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::{path::Path, process::Command};
 
 use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, WorkspaceId};
 use codegg_core::workstream_claim::{
@@ -121,6 +122,180 @@ async fn scoped_input(
         workspace_id: WorkspaceId::parse(&row.get::<String, _>("workspace_id")).unwrap(),
         ..input(group, run, key, path)
     }
+}
+
+fn git(args: &[&str], cwd: &Path) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run git fixture command");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn isolated_rust_and_python_workers_claim_build_test_and_integrate_independent_changes() {
+    let (_db_dir, pool, group, members) = fixture().await;
+    let store = WorkstreamClaimStore::new(pool.clone());
+    let scope = scoped_input(&pool, &group, &members[0].0, "trajectory-scope", "unused").await;
+    let rust_claim = store
+        .claim(NewWorkstreamClaim {
+            project_id: scope.project_id.clone(),
+            workspace_id: scope.workspace_id.clone(),
+            group_id: group.clone(),
+            actor: ClaimActor::Run(members[0].0.clone()),
+            target: ClaimTarget::Task(members[0].1.clone()),
+            idempotency_key: "trajectory-rust-task".into(),
+            lease_expires_at: None,
+        })
+        .await
+        .expect("Rust worker claims its task");
+    let python_claim = store
+        .claim(NewWorkstreamClaim {
+            project_id: scope.project_id.clone(),
+            workspace_id: scope.workspace_id.clone(),
+            group_id: group.clone(),
+            actor: ClaimActor::Run(members[1].0.clone()),
+            target: ClaimTarget::Task(members[1].1.clone()),
+            idempotency_key: "trajectory-python-task".into(),
+            lease_expires_at: None,
+        })
+        .await
+        .expect("Python worker claims its task");
+
+    let root = tempfile::tempdir().expect("trajectory root");
+    let repo = root.path().join("repo");
+    let rust_tree = root.path().join("rust-agent");
+    let python_tree = root.path().join("python-agent");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("python_pkg")).unwrap();
+    std::fs::create_dir_all(repo.join("tests")).unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"trajectory_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "pub fn base() -> bool { true }\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "/target/\n__pycache__/\n").unwrap();
+    std::fs::write(repo.join("python_pkg/__init__.py"), "\n").unwrap();
+    std::fs::write(repo.join("tests/test_base.py"), "import unittest\n\nclass BaseTest(unittest.TestCase):\n    def test_base(self):\n        self.assertTrue(True)\n\nif __name__ == '__main__': unittest.main()\n").unwrap();
+    git(&["init", "-b", "main"], &repo);
+    git(&["config", "user.name", "Trajectory Test"], &repo);
+    git(&["config", "user.email", "trajectory@example.test"], &repo);
+    git(&["add", "."], &repo);
+    git(&["commit", "-m", "fixture base"], &repo);
+    git(
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "agent/rust",
+            rust_tree.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    git(
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "agent/python",
+            python_tree.to_str().unwrap(),
+            "HEAD",
+        ],
+        &repo,
+    );
+    assert_ne!(
+        std::fs::canonicalize(&rust_tree).unwrap(),
+        std::fs::canonicalize(&python_tree).unwrap(),
+        "each mutating worker receives a distinct checkout"
+    );
+
+    std::fs::write(
+        rust_tree.join("src/lib.rs"),
+        "pub fn base() -> bool { true }\npub fn rust_worker_value() -> u8 { 42 }\n\n#[cfg(test)]\nmod tests { #[test] fn worker_value_is_available() { assert_eq!(super::rust_worker_value(), 42); } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        python_tree.join("python_pkg/value.py"),
+        "def worker_value():\n    return 42\n",
+    )
+    .unwrap();
+    std::fs::write(
+        python_tree.join("tests/test_value.py"),
+        "import unittest\nfrom python_pkg.value import worker_value\n\nclass ValueTest(unittest.TestCase):\n    def test_worker_value(self):\n        self.assertEqual(worker_value(), 42)\n\nif __name__ == '__main__': unittest.main()\n",
+    )
+    .unwrap();
+    assert!(
+        !rust_tree.join("python_pkg/value.py").exists()
+            && !python_tree.join("src/lib.rs").exists()
+            && !std::fs::read_to_string(repo.join("src/lib.rs"))
+                .unwrap()
+                .contains("rust_worker_value"),
+        "worker edits remain in their own isolated roots before integration"
+    );
+
+    let cargo = Command::new("cargo")
+        .args(["test", "--quiet"])
+        .current_dir(&rust_tree)
+        .output()
+        .expect("run Rust worker tests");
+    assert!(
+        cargo.status.success(),
+        "Rust fixture tests failed: {}",
+        String::from_utf8_lossy(&cargo.stderr)
+    );
+    let python = Command::new("python3")
+        .args(["-m", "unittest", "discover", "-s", "tests"])
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .current_dir(&python_tree)
+        .output()
+        .expect("run Python worker tests");
+    assert!(
+        python.status.success(),
+        "Python fixture tests failed: {}",
+        String::from_utf8_lossy(&python.stderr)
+    );
+
+    for (tree, message) in [
+        (&rust_tree, "Rust worker result"),
+        (&python_tree, "Python worker result"),
+    ] {
+        git(&["add", "."], tree);
+        git(&["commit", "-m", message], tree);
+    }
+    git(&["merge", "--no-ff", "--no-edit", "agent/rust"], &repo);
+    git(&["merge", "--no-ff", "--no-edit", "agent/python"], &repo);
+    assert!(repo.join("src/lib.rs").exists());
+    assert!(repo.join("python_pkg/value.py").exists());
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .expect("check integrated parent status");
+    assert!(status.status.success());
+    assert!(
+        status.stdout.is_empty(),
+        "sequential integration leaves the parent clean"
+    );
+
+    let owner = ClaimActor::Run(members[0].0.clone());
+    let board = store
+        .list_group(&group, &scope.project_id, &scope.workspace_id, &owner)
+        .await
+        .expect("authorized worker reads same-group board");
+    assert_eq!(board.len(), 2);
+    assert!(board
+        .iter()
+        .any(|claim| claim.claim_id == rust_claim.claim_id));
+    assert!(board
+        .iter()
+        .any(|claim| claim.claim_id == python_claim.claim_id));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
