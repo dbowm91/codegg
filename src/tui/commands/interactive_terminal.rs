@@ -1891,13 +1891,10 @@ mod tests {
         assert!(!app.dialog_state.terminal_request.is_loading());
     }
 
-    /// A live, attached terminal is exactly the state `/terminal` leaves the
-    /// box in, and `i` is the only advertised route into INS mode. Every
-    /// failure this guards is silent in the field: the box opens, shows
-    /// output, docks, and simply never takes the keyboard.
+    /// A live attach opens the terminal for immediate interaction. The box
+    /// owns keyboard input from the same point where it becomes visible.
     #[test]
-    fn pressing_i_on_the_open_box_enters_focused_input() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    fn a_live_terminal_box_opens_with_process_focus() {
         let mut app = test_app();
         let request_id = app.dialog_state.terminal_request.begin();
         apply_terminal_attach_finished(
@@ -1915,15 +1912,8 @@ mod tests {
             "the box must be open before the keystroke is meaningful"
         );
         assert!(
-            !app.interactive_terminals.is_focused("h-test"),
-            "a freshly opened box starts viewing, never focused"
-        );
-
-        app.on_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-
-        assert!(
             app.interactive_terminals.is_focused("h-test"),
-            "`i` is the documented INS-mode entry; a live attached terminal must take the keyboard"
+            "a live terminal opened for interaction should immediately own keyboard input"
         );
     }
 
