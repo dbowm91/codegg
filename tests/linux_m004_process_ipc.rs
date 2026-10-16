@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::Read;
-use std::net::ToSocketAddrs;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -138,6 +138,42 @@ async fn offline_network_blocks_host_network_and_inherited_socket_access() {
         .expect("host positive-control outbound TCP to github.com:443");
     drop(external);
 
+    // Pin the resolver configured for this host. The child must be unable to
+    // reach it; this closes the resolver-endpoint gap for rebinding answers,
+    // though it does not exercise a DNS server that actually changes answers.
+    let host_resolver = std::fs::read_to_string("/etc/resolv.conf")
+        .expect("read host resolver configuration")
+        .lines()
+        .filter_map(|line| line.split_whitespace().collect::<Vec<_>>().get(1).copied())
+        .find_map(|address| address.parse::<IpAddr>().ok())
+        .expect("host resolver configuration must include a nameserver");
+    let dns_query = [
+        0x4d, 0x52, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, b'e', b'x',
+        b'a', b'm', b'p', b'l', b'e', 0x03, b'c', b'o', b'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+    ];
+    let host_dns_probe = match host_resolver {
+        IpAddr::V4(_) => UdpSocket::bind("0.0.0.0:0"),
+        IpAddr::V6(_) => UdpSocket::bind("[::]:0"),
+    }
+    .expect("bind host DNS positive-control socket");
+    host_dns_probe
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set host DNS positive-control timeout");
+    host_dns_probe
+        .send_to(&dns_query, SocketAddr::new(host_resolver, 53))
+        .expect("send host DNS positive-control query");
+    let mut dns_response = [0_u8; 512];
+    let (dns_response_len, dns_peer) = host_dns_probe
+        .recv_from(&mut dns_response)
+        .expect("configured host resolver positive-control response");
+    assert_eq!(dns_peer.ip(), host_resolver);
+    assert!(dns_response_len >= 12, "host DNS response is truncated");
+    assert_eq!(
+        &dns_response[..2],
+        &dns_query[..2],
+        "DNS response ID mismatch"
+    );
+
     // Keep a host-connected TCP socket open across the launch. M004's
     // close-range handoff must remove this bridge before the helper execs.
     let inherited_stream = std::net::TcpStream::connect(tcp4_addr).expect("inherited host socket");
@@ -178,6 +214,16 @@ try:
     raise SystemExit(42)
 except OSError:
     pass
+dns = socket.socket(socket.AF_INET6 if {:?} else socket.AF_INET, socket.SOCK_DGRAM)
+dns.settimeout(0.5)
+query = b'\x4d\x52\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00' + b'\x07example\x03com\x00\x00\x01\x00\x01'
+try:
+    dns.sendto(query, ({:?}, 53))
+    dns.recvfrom(512)
+except OSError:
+    pass
+else:
+    raise SystemExit(45)
 external = socket.socket()
 external.settimeout(1)
 if external.connect_ex(('198.51.100.1', 443)) == 0:
@@ -199,6 +245,8 @@ else:
         udp4_addr.port(),
         udp6_addr.ip().to_string(),
         udp6_addr.port(),
+        host_resolver.is_ipv6(),
+        host_resolver.to_string(),
         inherited_fd.as_raw_fd(),
         marker.to_string_lossy(),
     );
