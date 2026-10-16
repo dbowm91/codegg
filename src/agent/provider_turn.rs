@@ -143,8 +143,27 @@ async fn stream_with_retry_inner(
             attempt_index,
         });
 
+        loop_
+            .record_run_milestone(
+                "provider_attempt_started",
+                [
+                    ("attempt_id".into(), attempt_id.clone()),
+                    ("attempt_index".into(), attempt_index.to_string()),
+                ],
+            )
+            .await;
+
         match stream_once(loop_, request, &attempt_id).await {
             Ok((events, _visible)) => {
+                loop_
+                    .record_run_milestone(
+                        "provider_attempt_succeeded",
+                        [
+                            ("attempt_id".into(), attempt_id.clone()),
+                            ("attempt_index".into(), attempt_index.to_string()),
+                        ],
+                    )
+                    .await;
                 tracing::debug!(
                     session_id = %session_id,
                     chain_id = %chain_id,
@@ -161,6 +180,17 @@ async fn stream_with_retry_inner(
                 let disposition = provider_disposition(&error);
                 let error_class = provider_error_class(&error);
                 let retryable = matches!(disposition, RetryDisposition::Transient);
+                loop_
+                    .record_run_milestone(
+                        "provider_attempt_failed",
+                        [
+                            ("attempt_id".into(), attempt_id.clone()),
+                            ("attempt_index".into(), attempt_index.to_string()),
+                            ("error_class".into(), error_class.clone()),
+                            ("retryable".into(), retryable.to_string()),
+                        ],
+                    )
+                    .await;
 
                 if is_cancelled(loop_) {
                     publish_attempt_failed(

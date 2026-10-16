@@ -185,6 +185,7 @@ impl SubAgentResult {
 
 struct WorkerRequest {
     request: SubAgentRequest,
+    approval_mode: codegg_core::approval::ApprovalMode,
     response_tx: oneshot::Sender<SubAgentResult>,
     lease: Option<DescendantAdmissionLease>,
     lineage_token: CancellationToken,
@@ -478,7 +479,7 @@ impl SubAgentPool {
                         let mut handles = active_handles.lock().await;
                         handles.retain(|h| !h.is_finished());
                     }
-                    Some(WorkerRequest { request, response_tx, lease, lineage_token, scheduler_cancel, scheduled }) = request_rx.recv() => {
+                    Some(WorkerRequest { request, approval_mode, response_tx, lease, lineage_token, scheduler_cancel, scheduled }) = request_rx.recv() => {
                         if cancel_token.is_cancelled() {
                             drop(lease);
                             if response_tx
@@ -562,6 +563,7 @@ impl SubAgentPool {
                             let task_id = request.task_id;
                             let result = run_subagent_task_with_cancel(
                                 request,
+                                approval_mode,
                                 task_store,
                                 agents,
                                 provider_registry,
@@ -829,8 +831,13 @@ impl SubAgentSpawner {
         &self,
         request: SubAgentRequest,
     ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
-        self.enqueue_request_with_mode(request, CancellationToken::new(), false)
-            .await
+        self.enqueue_request_with_mode(
+            request,
+            CancellationToken::new(),
+            false,
+            codegg_core::approval::ApprovalMode::Interactive,
+        )
+        .await
     }
 
     async fn enqueue_request_with_mode(
@@ -838,6 +845,7 @@ impl SubAgentSpawner {
         request: SubAgentRequest,
         scheduler_cancel: CancellationToken,
         scheduled: bool,
+        approval_mode: codegg_core::approval::ApprovalMode,
     ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
         if self.pool.config.subagent.as_ref().and_then(|s| s.enabled) == Some(false) {
             return Err("subagent delegation is disabled".to_string());
@@ -885,6 +893,7 @@ impl SubAgentSpawner {
         let (response_tx, response_rx) = oneshot::channel();
         let worker_request = WorkerRequest {
             request,
+            approval_mode,
             response_tx,
             lease: Some(lease),
             lineage_token,
@@ -919,8 +928,13 @@ impl SubAgentSpawner {
     /// callers use this form so their durable attempt and admission permit
     /// remain active until the subagent actually finishes.
     pub async fn send_and_wait(&self, request: SubAgentRequest) -> Result<SubAgentResult, String> {
-        self.send_and_wait_with_mode(request, CancellationToken::new(), false)
-            .await
+        self.send_and_wait_with_mode(
+            request,
+            CancellationToken::new(),
+            false,
+            codegg_core::approval::ApprovalMode::Interactive,
+        )
+        .await
     }
 
     /// Scheduler-owned execution path. Semantic descendant limits remain
@@ -931,7 +945,24 @@ impl SubAgentSpawner {
         request: SubAgentRequest,
         scheduler_cancel: CancellationToken,
     ) -> Result<SubAgentResult, String> {
-        self.send_and_wait_with_mode(request, scheduler_cancel, true)
+        self.send_and_wait_scheduled_with_approval_mode(
+            request,
+            scheduler_cancel,
+            codegg_core::approval::ApprovalMode::Interactive,
+        )
+        .await
+    }
+
+    /// Scheduler-owned execution with the approval mode captured from the
+    /// authorized parent tool invocation. Sandbox and agent permission rules
+    /// remain independently bounded in the child loop.
+    pub async fn send_and_wait_scheduled_with_approval_mode(
+        &self,
+        request: SubAgentRequest,
+        scheduler_cancel: CancellationToken,
+        approval_mode: codegg_core::approval::ApprovalMode,
+    ) -> Result<SubAgentResult, String> {
+        self.send_and_wait_with_mode(request, scheduler_cancel, true, approval_mode)
             .await
     }
 
@@ -940,10 +971,11 @@ impl SubAgentSpawner {
         request: SubAgentRequest,
         scheduler_cancel: CancellationToken,
         scheduled: bool,
+        approval_mode: codegg_core::approval::ApprovalMode,
     ) -> Result<SubAgentResult, String> {
         let task_id = request.task_id;
         let response = self
-            .enqueue_request_with_mode(request, scheduler_cancel, scheduled)
+            .enqueue_request_with_mode(request, scheduler_cancel, scheduled, approval_mode)
             .await?
             .await;
         let result = response.map_err(|e| format!("worker response error: {e}"))?;
@@ -960,6 +992,7 @@ impl SubAgentSpawner {
 #[expect(clippy::too_many_arguments)]
 async fn run_subagent_task_with_cancel(
     request: SubAgentRequest,
+    approval_mode: codegg_core::approval::ApprovalMode,
     task_store: Arc<TokioMutex<TaskStore>>,
     agents: Arc<Vec<Agent>>,
     provider_registry: Arc<ProviderRegistry>,
@@ -1024,6 +1057,7 @@ async fn run_subagent_task_with_cancel(
         result = async {
             let execution = execute_agent_task(
                 &request,
+                approval_mode,
                 agents,
                 provider_registry,
                 Arc::clone(&config),
@@ -1086,6 +1120,7 @@ async fn run_subagent_task_with_cancel(
 
 async fn execute_agent_task(
     request: &SubAgentRequest,
+    approval_mode: codegg_core::approval::ApprovalMode,
     agents: Arc<Vec<Agent>>,
     provider_registry: Arc<ProviderRegistry>,
     config: Arc<Config>,
@@ -1482,10 +1517,11 @@ async fn execute_agent_task(
     if let Some(locks) = request.workspace_locks.clone() {
         agent_loop.set_workspace_locks(locks);
     }
-    // M005: child loop carries the narrowed sandbox ceiling; approval
-    // stays Interactive (never broader than the parent without explicit
-    // narrowing through the snapshot ceiling).
+    // M005: child loop carries the narrowed sandbox ceiling. Approval mode
+    // was captured from the authorized parent invocation and is independent
+    // of the sandbox; it never broadens the child agent's tool/path rules.
     agent_loop.set_sandbox_profile(effective_child);
+    agent_loop.set_approval_mode(approval_mode);
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
 
     // The durable control service feeds these existing loop channels.  The

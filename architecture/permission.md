@@ -157,6 +157,16 @@ still follow their normal review or denial paths. Interactive, Automatic, and
 Yolo change how an Ask is resolved; they do not widen the captured execution
 scope. A FullHost request has host authority and must not be described as
 protected by command-pattern review.
+
+For scheduled delegated runs, the TaskTool captures the approval mode from
+the accepted parent execution context into the durable `SubagentRun` payload.
+The child applies it to Ask resolution so a headless child does not publish an
+unanswerable interactive prompt into its synthetic session. Older payloads
+without the field use `Interactive`. Approval mode remains separate from
+authorization scope: child agent tool/path rules and the narrowed sandbox
+profile continue to constrain each action, and explicit Deny decisions remain
+effective under Yolo. The field is part of the eggplan verification policy
+digest.
 Operator-selected `bash_deny_patterns` are best-effort invocation filters; they
 are not kernel enforcement. Built-in command risk classification may request
 review, but ordinary wrappers, quotes, expansions, and pipelines do not prompt

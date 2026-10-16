@@ -44,6 +44,10 @@ skill covers the ordering and isolation invariants that are easy to break.
 - **Approval and sandbox are orthogonal axes.** `ApprovalMode` controls who
   answers an escalation; `SandboxRequest` controls what containment the
   process runs under. Never derive one from the other.
+- **Scheduled children carry the accepted approval mode.** TaskTool serializes
+  the parent's authorized mode for `SubagentRun`; old payloads default to
+  `Interactive`. This prevents unanswerable synthetic-session prompts without
+  widening child tool/path rules or the narrowed sandbox ceiling.
 - **Ceilings still apply in `Yolo`.** `yolo` auto-allows escalations *within
   the authority ceiling*; an explicit deterministic `Deny` still denies.
 - **Carry the accepted decision through execution.** Agent tool calls pass an

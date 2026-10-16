@@ -1065,6 +1065,10 @@ pub enum JobPayload {
         task_id: crate::identity::AgentTaskId,
         run_id: crate::identity::AgentRunId,
         delegation_key: String,
+        /// Approval mode captured from the authorized parent tool invocation.
+        /// Missing historical values fail closed to interactive approval.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_mode: Option<crate::approval::ApprovalMode>,
         /// Host-validated immutable Git base for a convergence child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_commit: Option<String>,
@@ -1996,6 +2000,35 @@ mod tests {
         assert_eq!(sched.as_str(), "sched-1");
         assert_eq!(dep.as_str(), "dep-1");
         assert!(!gen.as_str().is_empty());
+    }
+
+    #[test]
+    fn historical_subagent_run_payload_defaults_approval_to_interactive() {
+        let payload = JobPayload::SubagentRun {
+            prompt: "work".to_string(),
+            agent: "build".to_string(),
+            model: None,
+            parent_id: None,
+            denied_tools: Vec::new(),
+            allowed_paths: Vec::new(),
+            max_tool_calls: None,
+            task_id: crate::identity::AgentTaskId::parse("task-1").unwrap(),
+            run_id: crate::identity::AgentRunId::parse("run-1").unwrap(),
+            delegation_key: "delegation-1".to_string(),
+            approval_mode: Some(crate::approval::ApprovalMode::Yolo),
+            base_commit: None,
+        };
+        let mut encoded = serde_json::to_value(payload).unwrap();
+        encoded.as_object_mut().unwrap().remove("approval_mode");
+
+        let decoded: JobPayload = serde_json::from_value(encoded).unwrap();
+        assert!(matches!(
+            decoded,
+            JobPayload::SubagentRun {
+                approval_mode: None,
+                ..
+            }
+        ));
     }
 
     #[test]

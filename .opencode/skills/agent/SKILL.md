@@ -60,6 +60,10 @@ instructions into the candidate. See `architecture/agent.md`.
    handoff-request actions expose bounded same-group coordination facts and
    advisory intent only. They cannot message, cancel, interrupt, or reassign
    another run. Derive the action set from `src/tool/task.rs`.
+   Scheduled child runs inherit the approval mode captured from the authorized
+   parent TaskTool invocation; historical payloads default to Interactive.
+   This only controls Ask resolution. Child agent tool/path rules and the
+   narrowed sandbox remain independent limits.
 8. **Peer hints stay untrusted and push-only.** Deliver only allowlisted,
    bounded host observations at provider boundaries; recheck after provider
    completion and refuse a returned tool batch when new peer facts or a gap
@@ -119,6 +123,11 @@ session workspace binding. See `architecture/agent.md` for the boundary and
 Turn-owned group lifecycle operations are resumable by a later top-level turn
 in the same durable session. The creator turn remains provenance; child runs
 and other sessions cannot take over the group.
+
+Scheduled subagents apply the approval mode serialized from the accepted parent
+tool invocation. Never derive it from prompt or peer text; see
+`architecture/permission.md` for the independent sandbox and tool authority
+ceilings.
 
 - `architecture/agent.md` — authoritative contract
 - `.opencode/skills/context/SKILL.md` — packer observation, tool-palette policy, volatile-tail

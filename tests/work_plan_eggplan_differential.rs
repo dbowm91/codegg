@@ -148,6 +148,7 @@ fn subagent_payload() -> JobPayload {
         task_id: codegg_core::identity::AgentTaskId::new(),
         run_id: codegg_core::identity::AgentRunId::new(),
         delegation_key: "dk-1".into(),
+        approval_mode: None,
         base_commit: None,
     }
 }

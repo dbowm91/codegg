@@ -406,6 +406,7 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                 task_id,
                 run_id,
                 delegation_key,
+                approval_mode,
                 base_commit,
                 ..
             } => {
@@ -419,7 +420,15 @@ pub fn verification_digest_for_job(job: &JobRecord) -> Result<VerificationDigest
                 extra.insert("prompt_digest".to_string(), sha256_hex(prompt.as_bytes()));
                 extra.insert(
                     "policy_digest".to_string(),
-                    sha256_hex(format!("{denied:?}|{allowed:?}").as_bytes()),
+                    sha256_hex(
+                        format!(
+                            "{denied:?}|{allowed:?}|{}",
+                            approval_mode
+                                .map(codegg_core::approval::ApprovalMode::as_str)
+                                .unwrap_or("interactive")
+                        )
+                        .as_bytes(),
+                    ),
                 );
                 extra.insert("agent".to_string(), bounded_text(agent, MAX_ID_CHARS));
                 if let Some(model) = model {
@@ -1642,6 +1651,7 @@ mod tests {
             task_id: codegg_core::identity::AgentTaskId::parse("task-1").unwrap(),
             run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
             delegation_key: "dk".to_string(),
+            approval_mode: None,
             base_commit: None,
         };
         let mut first = test_job_record();
@@ -1657,6 +1667,34 @@ mod tests {
         assert_eq!(
             verification_digest_for_job(&first).unwrap(),
             verification_digest_for_job(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn subagent_run_approval_mode_participates_in_policy_digest() {
+        let payload = |approval_mode| JobPayload::SubagentRun {
+            prompt: "do the thing".to_string(),
+            agent: "worker".to_string(),
+            model: Some("m".to_string()),
+            parent_id: None,
+            denied_tools: vec!["shell".to_string()],
+            allowed_paths: vec!["src".to_string()],
+            max_tool_calls: Some(8),
+            task_id: codegg_core::identity::AgentTaskId::parse("task-1").unwrap(),
+            run_id: codegg_core::identity::AgentRunId::parse("run-1").unwrap(),
+            delegation_key: "dk".to_string(),
+            approval_mode,
+            base_commit: None,
+        };
+        let mut interactive = test_job_record();
+        interactive.payload = payload(None);
+        let interactive_digest = verification_digest_for_job(&interactive).unwrap();
+
+        let mut yolo = test_job_record();
+        yolo.payload = payload(Some(codegg_core::approval::ApprovalMode::Yolo));
+        assert_ne!(
+            verification_digest_for_job(&yolo).unwrap(),
+            interactive_digest
         );
     }
 

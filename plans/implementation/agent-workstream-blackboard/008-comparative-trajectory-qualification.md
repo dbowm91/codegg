@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: active — M006 and M007 are strictly closed and independent of M005; M011 corrected root-turn repository identity propagation after M008 exposed the gap. The frozen Rust/Python shared-interface S0 completed on 2026-10-16. Earlier S1 groups stalled and were cancelled; M012 corrected same-session continuation for live turn-owned groups. A fresh isolated-daemon S1 group resumed across later turns and was then cancelled after about ten minutes without child progress beyond `before_provider_turn`; scheduler recovery marked both children interrupted and returned their clean worktrees to ready. This is incomplete evidence, not a successful trial. Evidence is in `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and its JSON companion. Darwin terminal sandbox smoke passed for the tested path; complete sandbox-root evidence for every writer and S2/S3 remain open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
+Status: active — M006 and M007 are strictly closed and independent of M005; M011 corrected root-turn repository identity propagation and M012 corrected same-session group continuation after M008 exposed those gaps. The frozen Rust/Python shared-interface S0 completed, and one daemon-backed isolated S1 producer/consumer pair completed after the parent approval mode was propagated to scheduled children. Both child evaluators and the combined Rust/Python golden evaluator passed. Earlier S1 groups and diagnostics stalled; phase-level provider-attempt journal events localized a synthetic-session permission prompt caused by children defaulting to Interactive under an explicitly Yolo parent. Child-specific token/cost attribution remains unavailable because provider usage is not persisted per synthetic child. The completed S1 is a single descriptive pair, not evidence of repeatable effectiveness improvement. Evidence is in `plans/closure/agent-workstream-blackboard/008-isolated-results.md` and its JSON companion. Darwin terminal sandbox smoke passed for the tested path; complete sandbox-root evidence for every writer, S2/S3, broader task strata, and resource attribution remain open. S4 shared-checkout execution is unavailable until M005 independently qualifies it; do not emulate shared writes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -89,9 +89,10 @@ also completed. Full measurements and limitations are recorded in
 The headless `codegg exec` context did not expose `task.spawn_many` or
 `wait_group`, so no S2/S3 agent runs were started. It also reported that the
 requested workspace-write profile had no workspace root, so those runs do
-not establish sandbox containment. These results do not qualify M008 or
-support an effectiveness-improvement claim. M008 remains active; no
-downstream plan is unblocked by this partial evidence.
+not establish sandbox containment. A later provider-backed S1 pair completed
+after scheduled children inherited the parent approval mode; see the updated
+results record. M008 remains active and no effectiveness-improvement claim is
+supported. No downstream plan is unblocked by this partial evidence.
 
 ### Daemon-backed headless trajectory entry point (2026-10-16)
 
