@@ -29,8 +29,9 @@ every daemon-owned execution path.
 - `WorkspaceRecord` — persisted registry entry (`id`, `canonical_root`,
   `display_name`, `created_at`, `last_opened_at`, `archived_at`).
 - `WorkspaceRegistry` — daemon-owned registry. Deduplicates canonical roots
-  via `get_or_register`; rejects nonexistent paths, file paths, and
-  symlink-escaping paths. Hydrates from a `WorkspaceStore` and serves
+  via `get_or_register`; requires an absolute root path and rejects
+  nonexistent paths, file paths, and a symlink at the selected root.
+  Hydrates from a `WorkspaceStore` and serves
   subsequent reads from an in-memory `DashMap` index.
 - `WorkspaceStore` — persistence trait. Two implementations:
   `SqliteWorkspaceStore` (the production path) and
@@ -187,8 +188,9 @@ projections untouched. Its `--fixture` mode verifies the negative case.
   registry dedup, serde roundtrip, pool persistence, and unbound session
   rejection.
 - `crates/codegg-core/src/workspace.rs` inline tests — `get_or_register`
-  dedup, symlink alias dedup, nonexistent/file rejection, archive filter,
-  and `ExecutionContext` cwd resolution.
+  canonical-root dedup, relative and symlink-root rejection,
+  nonexistent/file rejection, archive filter, and `ExecutionContext`
+  cwd resolution.
 - `python3 scripts/check_daemon_cwd_usage.py` — static guard.
 
 Run the narrowest scope that covers your change:

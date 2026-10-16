@@ -1,6 +1,6 @@
 # Project Picker Rework Milestone 004 — Rename and repath (rebind) via `e`
 
-Status: implemented
+Status: closed
 
 Repository baseline: `533b4a34` (M3 strict closure; sequential handoff)
 
