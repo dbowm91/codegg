@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M005 — Explicit Group-Owned Worktree Placement and Serialized Shared Mutation
 
-Status: active — M001/M004 and ADR-0032 gates are satisfied; checkout-scoped writer-containment design, source audit, and qualification are in progress. Shared mutation remains unavailable until every enabled CodeGG writer is mediated or denied and the native lifecycle matrix passes.
+Status: active — user direction on 2026-10-16 prioritizes M006 then M007 ahead of M005 implementation. M005 is limited to resolving the restricted-capability architecture decision and its platform/process feasibility; do not implement a writer-permit service until that decision is resolved. Shared mutation remains unavailable until every enabled CodeGG writer is mediated or denied and the native lifecycle matrix passes.
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M005

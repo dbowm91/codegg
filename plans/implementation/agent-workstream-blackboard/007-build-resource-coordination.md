@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M007 — Per-Workspace Build Admission
 
-Status: conditionally closed — per-workspace scheduler admission is implemented independently of M005; manual realistic Rust workspace qualification remains
+Status: active — per-workspace scheduler admission is implemented independently of M005; complete the manual realistic Rust workspace qualification through the authorized daemon JobId consumer, then close strictly
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M007
