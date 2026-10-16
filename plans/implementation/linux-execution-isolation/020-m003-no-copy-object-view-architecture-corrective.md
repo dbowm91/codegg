@@ -66,6 +66,34 @@ path based only on a repository path or sandbox-profile string. FullHost cannot
 use the shared live-object fast path under the current threat model; it must
 keep the immutable snapshot or use another qualified snapshot mechanism.
 
+### No-writer lease feasibility decision (2026-10-16)
+
+The existing `WorkspaceLockTable` is a daemon-process-local async mutex keyed
+by canonical workspace path (`crates/codegg-core/src/workspace_services.rs`).
+It coordinates participating CodeGG services only. It is not an OS lock,
+external Git/editor/shell processes do not acquire it, and `GitExecutionService`
+does not receive or hold it across its trusted Git child lifetime. Extending
+that mutex to the read owner would serialize some in-daemon operations but
+would not prevent the demonstrated host-side mutation. An advisory file lock
+would have the same defect because unrelated writers can ignore it. A genuine
+lease would require an enforced exclusive repository ownership contract or an
+immutable filesystem snapshot; neither is available for ordinary user
+worktrees. Therefore C012 rejects the daemon-lock/no-writer-lease candidate for
+ordinary repositories. No-copy live mounts remain disallowed for every profile
+that permits host-side writers, including FullHost. Protected child mounts and
+masked alternates do not change this decision.
+
+The current host is ext4 and has no mounted CoW filesystem or local `btrfs`
+utilities. Its existing `FICLONE` attempts fall back to byte copies, so local
+measurements do not qualify the CoW path. The bounded next experiment is to
+run the existing private immutable snapshot design on a hosted Linux runner
+with a disposable, explicitly identified CoW filesystem, using exact-content
+packed and fragmented fixtures. It must report clone success/fallback counts,
+snapshot preparation distributions, end-to-end trusted Git operation
+distributions, and source-mutation isolation. If the host cannot provide a
+supported CoW filesystem, record the experiment as unavailable and retain the
+private-copy path without relaxing the trust boundary.
+
 ### Exact-content local shape comparison (2026-10-16)
 
 The implementation code under test is `0ddafd40609be6e57d09046584e3478d79c7ca63`; the dataset was created from the same repository object store at documentation-only head `aaed0d170a4e4d691811f43d235790812d1a62d6`. Two temporary worktrees were created from the same `.git` source and
@@ -121,26 +149,26 @@ The no-copy path must use the existing trusted sandbox helper/status-ack ownersh
 
 ## 3. Work packages
 
-1. Review the threat boundary for trusted Git under FullHost and constrained profiles. Treat source mutation as observable unless excluded by the owner. Establish whether M003's protected metadata/object mounts plus serialization of trusted Git writers can support a no-copy constrained-profile view; retain immutable snapshots for FullHost unless an immutable filesystem snapshot is qualified.
-2. Compare no-copy process-boundary candidates, including a trusted mount namespace that privately composes the object root without `objects/info`, filesystem-native copy-on-write snapshots where supported, and bounded selective snapshots. Reject environment-only alternates and hard-link designs unless adversarial probes prove the guarantees.
-3. Implement the selected design behind the existing internal opt-in. Keep the cached private-copy path available only as a temporary comparison/fallback where the chosen policy explicitly permits it; never fail open to host object discovery.
+1. Keep private immutable snapshots as the correctness baseline. The ordinary-worktree no-writer lease candidate is rejected: daemon-local locks do not exclude external writers, and no enforced repository-ownership mechanism exists.
+2. Qualify filesystem-native copy-on-write file snapshots on a supported hosted Linux CoW filesystem. Exact-content packed and fragmented fixtures must be on the same filesystem as the private snapshot destination; record the filesystem and clone success/fallback counts. A live read-only mount is not a substitute for an immutable snapshot.
+3. Preserve the existing cached private-copy path and its fail-closed behavior. A CoW optimization may only create independent snapshot inodes whose contents stay fixed when the source changes; it may not hard-link source objects or fail open to host object discovery.
 4. Preserve and extend adversarial tests for pre-existing and late alternates, nested repositories, linked worktrees/common directories, source mutation, races, packed and fragmented stores, and cleanup after timeout/cancellation.
-5. Measure controlled cold and warm preparation plus repeated trusted operations on exact-content-equivalent packed and fragmented stores. Record filesystem, kernel, Git version, repository shape, cache state, sample distributions, and any source-mutation assumptions.
+5. Measure controlled cold and warm snapshot preparation plus repeated trusted operations on exact-content-equivalent packed and fragmented stores. Record filesystem, kernel, Git version, repository shape, cache state, clone/fallback counts, sample distributions, and mutation-isolation results.
 6. Run exact-head native Linux trusted-Git and M004 regression workflows, cross-platform compile checks for changed shared code, ADR integrity, and full CI. Record whether the design meets the C010 thresholds; retain C010's no-admission disposition unless every production gate is met separately.
 
 ## 4. Invariants
 
 - A trusted Git child cannot discover a repository, object directory, alternate, worktree, or config outside the daemon-selected canonical repository context.
 - Creating nested `.git` metadata after admission cannot redirect an already-authorized daemon Git operation.
-- A concurrent object-store mutation cannot alter bytes consumed by a trusted read. A no-copy route therefore requires an enforced no-writer lease for its entire lifetime or an immutable filesystem snapshot; readonly child mounts alone are insufficient.
+- A concurrent object-store mutation cannot alter bytes consumed by a trusted read. Ordinary-worktree daemon locks are not a no-writer lease; use an independent private snapshot or a qualified immutable filesystem snapshot. Readonly child mounts alone are insufficient.
 - No hard links to mutable source object files, no host-Git fallback after required setup failure, and no weakening of typed command authorization.
 - Cache and snapshot state remain bounded and lease-safe; cleanup follows child completion, timeout, cancellation, and daemon shutdown.
 - No production backend registration, default change, persisted preference, Linux host admission, mutation route, or remote mediation is implied.
 
 ## 5. Acceptance criteria
 
-- A documented design decision is backed by executable adversarial evidence for both metadata races and source-object mutation.
-- Exact-content-equivalent packed and fragmented repositories are measured with a controlled cold/warm protocol. The selected implementation materially improves cold fragmented preparation and does not regress repeated trusted operation latency beyond the C010 budget.
+- The no-writer lease feasibility decision is documented against actual lock ownership and external writer behavior; no-copy live mounts remain disabled for ordinary worktrees.
+- A qualified filesystem-specific CoW snapshot is backed by executable source-mutation evidence and exact-content-equivalent packed/fragmented cold and warm measurements. It materially improves cold fragmented preparation without regressing repeated trusted operation latency beyond the C010 budget; otherwise the private-copy fallback and C010 no-admission decision remain.
 - Existing trusted-Git behavior, object-view cache lease safety, M004 regression coverage, and Windows/macOS compilation remain intact.
 - The implementation and closure record state any filesystem/kernel capability requirements and fail-closed behavior. No C010 production admission is claimed by this corrective.
 
