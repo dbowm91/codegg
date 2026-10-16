@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codegg.dev/schemas/project-summary-v1.schema.json",
+  "title": "CodeGG Project Summary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source_revision", "events", "totals", "by_kind"],
+  "properties": {
+    "schema": {"const": "codegg.project-summary.v1"},
+    "source_revision": {"type": "string", "minLength": 1},
+    "events": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/event"}
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events", "files_changed", "insertions", "deletions"],
+      "properties": {
+        "events": {"$ref": "#/$defs/count"},
+        "files_changed": {"$ref": "#/$defs/count"},
+        "insertions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"}
+      }
+    },
+    "by_kind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_changed", "test_passed", "test_failed"],
+      "properties": {
+        "file_changed": {"$ref": "#/$defs/count"},
+        "test_passed": {"$ref": "#/$defs/count"},
+        "test_failed": {"$ref": "#/$defs/count"}
+      }
+    }
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "occurred_at", "kind"],
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "file_changed"}}, "required": ["kind"]},
+          "then": {"required": ["path", "insertions", "deletions"]}
+        },
+        {
+          "if": {"properties": {"kind": {"enum": ["test_passed", "test_failed"]}}, "required": ["kind"]},
+          "then": {"not": {"anyOf": [{"required": ["path"]}, {"required": ["insertions"]}, {"required": ["deletions"]}]}}
+        }
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "occurred_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "kind": {"enum": ["file_changed", "test_passed", "test_failed"]},
+        "path": {"type": "string", "minLength": 1},
+        "insertions": {"$ref": "#/$defs/count"},
+        "deletions": {"$ref": "#/$defs/count"}
+      }
+    }
+  }
+}

@@ -122,3 +122,15 @@ No provider-backed comparative trial has yet started against this corrected
 source. S0 and a multi-agent isolated arm must still use the frozen
 Rust/Python shared-interface task. The pilot and earlier S0/S1 results remain
 separate and are not pooled.
+
+## 6. Frozen shared-interface workload v1 (2026-10-16)
+
+The new fixture at
+`plans/closure/agent-workstream-blackboard/008-shared-interface-fixture/`
+contains 17 frozen files. Its relative-path/content SHA-256 stream is
+`b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1`. The
+Rust starter baseline is 0/7 tests and the Python starter baseline is 0/7
+tests, with failures reaching the intentional TODO implementation points.
+These local evaluator baselines are not coding-agent trials. No provider-backed
+trial has started. Recompute the tree digest before each trial and reject any
+copy whose digest differs.

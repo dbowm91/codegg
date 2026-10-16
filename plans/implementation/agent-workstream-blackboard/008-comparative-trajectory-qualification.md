@@ -146,3 +146,20 @@ Next, freeze the substantial Rust and Python tasks around their shared
 interface, then run provider-backed S0 and multi-agent isolated trials with
 the same task, provider/model, tools, sandbox, approval, and budget. S2/S3
 remain open; S4 remains unavailable pending M005.
+
+### Frozen Rust/Python shared-interface workload (fixture v1)
+
+The provider-backed comparison workload is staged in
+`plans/closure/agent-workstream-blackboard/008-shared-interface-fixture/`.
+Its Rust producer emits `codegg.project-summary.v1`; the Python consumer
+strictly validates the same versioned JSON contract and renders a deterministic
+Markdown report. The frozen golden test runs Rust output directly through the
+Python consumer. S0 receives the complete task; S1/S2/S3 divide Rust producer
+and Python consumer ownership across two isolated child worktrees, with the
+same schema, prompt contract, acceptance tests, model, approval, sandbox, and
+wall-clock cap. Record the fixture tree digest before the first provider-backed
+trial. Fixture v1 tree digest (17 files, relative-path/content SHA-256 stream):
+`b0f0ff1b3939c95a2113934e3669d26fee403c37ca302d28759ab3b78d864bf1`. The
+starter evaluator is intentionally red: Rust baseline 0/7 and Python baseline
+0/7; these are harness checks, not agent-trial results. No provider-backed
+comparison has started.
