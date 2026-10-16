@@ -1,104 +1,86 @@
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::widgets::Widget;
-use std::cell::Cell;
-use std::time::{Duration, Instant};
+//! The one frame table and the one cadence every spinner in the TUI uses.
+//!
+//! There used to be two independent animations: a block-progress `SpinnerWidget`
+//! living on `App` as `busy_spinner`, and the braille `ActivityIndicator` that
+//! actually draws the working strip. They disagreed on glyph family *and* on
+//! speed — the widget stepped every 80ms while the indicator stepped once per
+//! whole elapsed second, so the throbber a user actually watches during a turn
+//! took ten seconds to complete one rotation. Two sources of truth for "is
+//! anything happening" is how the faster one stopped being the visible one.
+//!
+//! This module is now the only place a frame is chosen from a duration, so a
+//! fix to the cadence lands everywhere at once.
 
-pub struct SpinnerWidget {
-    frames: Vec<&'static str>,
-    current_frame: Cell<usize>,
-    speed_ms: u64,
-    last_update: Cell<Instant>,
-    color: Color,
-    active: bool,
-    label: String,
+use std::time::Duration;
+
+/// Braille dot cycle. Reversed braille reads as a single smooth rotation
+/// rather than the stutter of a mirrored cycle.
+pub const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// How long one frame is held.
+///
+/// 100ms puts a full rotation at one second — fast enough to read as alive
+/// without flickering, and slower than the 80ms render pump so a frame is
+/// drawn several times rather than being skipped between paints.
+pub const SPINNER_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The frame to draw for a given elapsed duration.
+///
+/// A pure function of elapsed time rather than of a mutable frame counter:
+/// two renders at the same instant produce the same glyph, which is what keeps
+/// the strip reproducible under a `TestBackend` no matter when the frame is
+/// captured. It also means a dropped or coalesced render tick cannot desync
+/// the animation — there is no counter to drift.
+pub fn spinner_frame(elapsed: Duration) -> &'static str {
+    let interval_ms = SPINNER_FRAME_INTERVAL.as_millis();
+    // `interval_ms` is a non-zero const, so this division cannot fail.
+    let ticks = (elapsed.as_millis() / interval_ms) as usize;
+    SPINNER_FRAMES[ticks % SPINNER_FRAMES.len()]
 }
 
-impl SpinnerWidget {
-    pub fn new() -> Self {
-        Self {
-            frames: vec!["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"],
-            current_frame: Cell::new(0),
-            speed_ms: 80,
-            last_update: Cell::new(Instant::now()),
-            color: Color::Reset,
-            active: false,
-            label: String::new(),
-        }
-    }
-
-    pub fn with_speed(self, speed_ms: u64) -> Self {
-        Self { speed_ms, ..self }
-    }
-
-    pub fn with_color(self, color: Color) -> Self {
-        Self { color, ..self }
-    }
-
-    pub fn with_label(self, label: &str) -> Self {
-        Self {
-            label: label.to_string(),
-            ..self
-        }
-    }
-
-    pub fn start(&mut self, label: Option<String>) {
-        self.active = true;
-        self.label = label.unwrap_or_default();
-        self.current_frame.set(0);
-        self.last_update.set(Instant::now());
-    }
-
-    pub fn stop(&mut self) {
-        self.active = false;
-        self.label = String::new();
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.active
-    }
-
-    pub fn tick(&self) {
-        if !self.active {
-            return;
-        }
-        let now = Instant::now();
-        let last_update = self.last_update.get();
-        if now.duration_since(last_update) >= Duration::from_millis(self.speed_ms) {
-            let next_frame = (self.current_frame.get() + 1) % self.frames.len();
-            self.current_frame.set(next_frame);
-            self.last_update.set(now);
-        }
-    }
-
-    pub fn frame(&self) -> &str {
-        if !self.active {
-            return "";
-        }
-        self.frames[self.current_frame.get()]
-    }
+/// The frame to draw right now for a start instant.
+pub fn spinner_frame_since(started: std::time::Instant) -> &'static str {
+    spinner_frame(started.elapsed())
 }
 
-impl Default for SpinnerWidget {
-    fn default() -> Self {
-        Self::new()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cadence_is_faster_than_one_frame_per_second() {
+        // The regression this module exists to prevent: a frame table indexed
+        // by whole seconds makes a ten-frame rotation take ten seconds.
+        let interval_ms = SPINNER_FRAME_INTERVAL.as_millis();
+        assert!(
+            interval_ms < 1000,
+            "a spinner that steps once per second reads as frozen"
+        );
+        let rotation_ms = interval_ms * SPINNER_FRAMES.len() as u128;
+        assert!(
+            rotation_ms <= 2000,
+            "a full rotation should be around a second, got {rotation_ms}ms"
+        );
     }
-}
 
-impl Widget for &SpinnerWidget {
-    fn render(self, area: Rect, buf: &mut ratatui::prelude::Buffer) {
-        use ratatui::text::{Line, Span};
-        use ratatui::widgets::Paragraph;
+    #[test]
+    fn frames_advance_within_one_second_and_wrap() {
+        // Distinct frames across a single second proves the animation actually
+        // moves; the wrap proves it never indexes out of bounds.
+        let mut seen = std::collections::BTreeSet::new();
+        for step in 0..10u64 {
+            let at = Duration::from_millis(step * 100);
+            seen.insert(spinner_frame(at));
+        }
+        assert_eq!(seen.len(), SPINNER_FRAMES.len(), "frames must differ");
 
-        let text = if !self.label.is_empty() {
-            format!("{} {}", self.frame(), self.label)
-        } else {
-            self.frame().to_string()
-        };
+        let wrapped = spinner_frame(Duration::from_secs(1_000));
+        assert!(SPINNER_FRAMES.contains(&wrapped));
+    }
 
-        let style = Style::default().fg(self.color);
-        let line = Line::from(vec![Span::styled(text, style)]);
-        let paragraph = Paragraph::new(line);
-        paragraph.render(area, buf);
+    #[test]
+    fn the_function_is_pure_so_renders_are_reproducible() {
+        let at = Duration::from_millis(1_234);
+        assert_eq!(spinner_frame(at), spinner_frame(at));
     }
 }

@@ -171,6 +171,21 @@ fn is_affirmatively_read_only_name(name: &str, input: &serde_json::Value) -> boo
     )
 }
 
+/// Whether a wired command preflight should force a human decision.
+///
+/// Preflight is advisory and carries authority only when it actually found
+/// something. Testing whether the preflight *ran* instead of whether it
+/// *found* anything escalated every `bash` call — the service is wired by
+/// default, so `command_preflight` is always `Some` — and because that arm is
+/// reached from `PermissionResult::Allow` as well as `Ask`, it also discarded
+/// a stored `AlwaysAllow` grant. An advisory with nothing to say must never
+/// outrank the operator.
+fn preflight_requires_escalation(
+    command_preflight: Option<&crate::tool::authorization::CommandPreflightResult>,
+) -> bool {
+    command_preflight.is_some_and(|result| result.summary.is_some())
+}
+
 pub(super) struct ToolBatchExecutor<'a> {
     loop_: &'a mut AgentLoop,
 }
@@ -604,7 +619,16 @@ impl AgentLoop {
                         self.turn_id.clone(),
                     );
                     DeterministicVerdict::Escalate { request }
-                } else if command_preflight.is_some()
+                // Escalate on preflight **findings**, not on preflight having
+                // run. `command_preflight` is `Some` whenever the preflight
+                // service is wired, which it is by default, so testing
+                // `.is_some()` escalated *every* `bash` call — including
+                // clean ones — and, because this arm is reached from
+                // `PermissionResult::Allow` as well as `Ask`, it discarded a
+                // stored `AlwaysAllow` grant entirely. The operator's prior
+                // approval was silently outranked by an advisory scan that had
+                // nothing to say.
+                } else if preflight_requires_escalation(command_preflight.as_ref())
                     || matches!(
                         security_hint.action,
                         crate::security::policy::SecurityAction::Ask
@@ -817,15 +841,18 @@ impl AgentLoop {
         if persist {
             // M007: narrow the remembered grant toward the deterministic
             // command family (for example `cmd:cargo`) where the tool
-            // call carries structured command/effect data. `None` keeps
-            // the legacy broad shape; legacy rows stay readable.
-            let scope =
-                crate::permission::decision_scope_for_tool_call(&tc.name, Some(&tc.arguments));
+            // call carries structured command/effect data. A compound command
+            // contributes one scope per segment, so remembering `a && b`
+            // remembers `a` and `b` separately and later variations of each
+            // stop re-prompting. `None` keeps the legacy broad shape; legacy
+            // rows stay readable.
+            let scopes =
+                crate::permission::decision_scopes_for_tool_call(&tc.name, Some(&tc.arguments));
             let persisted_source = self
                 .persist_always_choice(
                     &tc.name,
                     request.path.as_deref(),
-                    scope.as_deref(),
+                    &scopes,
                     &request.session_id,
                     allow,
                 )
@@ -1129,21 +1156,33 @@ impl AgentLoop {
         &self,
         tool: &str,
         path: Option<&str>,
-        scope: Option<&str>,
+        scopes: &[String],
         session_id: &str,
         allow: bool,
     ) -> &'static str {
-        let persisted = if allow {
-            self.services
-                .permission_checker
-                .always_allow_scoped(tool, path, scope, Some(session_id))
-                .await
+        // An empty scope list means the tool carries no scopeable structure;
+        // fall back to the legacy broad row so the operator's decision still
+        // sticks.
+        let scoped: Vec<Option<&str>> = if scopes.is_empty() {
+            vec![None]
         } else {
-            self.services
-                .permission_checker
-                .always_deny_scoped(tool, path, scope, Some(session_id))
-                .await
+            scopes.iter().map(|scope| Some(scope.as_str())).collect()
         };
+        let mut persisted = true;
+        for scope in scoped {
+            let applied = if allow {
+                self.services
+                    .permission_checker
+                    .always_allow_scoped(tool, path, scope, Some(session_id))
+                    .await
+            } else {
+                self.services
+                    .permission_checker
+                    .always_deny_scoped(tool, path, scope, Some(session_id))
+                    .await
+            };
+            persisted &= applied;
+        }
         if persisted {
             approval_source::USER_CHOICE
         } else {
@@ -2348,9 +2387,32 @@ fn truncate_for_audit(value: &str) -> String {
 
 #[cfg(test)]
 mod invocation_tests {
-    use super::{invocation_key_for, is_affirmatively_read_only_name};
+    use super::{
+        invocation_key_for, is_affirmatively_read_only_name, preflight_requires_escalation,
+    };
+    use crate::tool::authorization::CommandPreflightResult;
     use codegg_core::identity::AgentRunId;
     use serde_json::json;
+
+    #[test]
+    fn a_clean_command_preflight_does_not_force_a_human_decision() {
+        // Preflight ran and had nothing to report. It is advisory, so it must
+        // not escalate — this was the condition that made every `bash` call
+        // prompt and silently outrank a stored `AlwaysAllow` grant.
+        assert!(!preflight_requires_escalation(None));
+        assert!(!preflight_requires_escalation(Some(
+            &CommandPreflightResult { summary: None }
+        )));
+    }
+
+    #[test]
+    fn a_command_preflight_finding_still_forces_a_human_decision() {
+        assert!(preflight_requires_escalation(Some(
+            &CommandPreflightResult {
+                summary: Some("writes outside the workspace".to_string()),
+            }
+        )));
+    }
 
     #[test]
     fn invocation_identity_is_scoped_to_owner_and_provider_turn() {

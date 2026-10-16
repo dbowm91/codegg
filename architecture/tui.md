@@ -101,6 +101,17 @@ forever), and — after that was fixed — session creation disabled for the
 socket path, so a **brand-new repo could never submit anything**: the
 continuation was armed by `send_prompt` and never started by the event loop.
 
+The same rule governs **every** `remote_send_tx` send, not just prompts.
+`SubmitPermission` and `SubmitQuestionAnswers` had regressed to a mode-only
+gate: on the socket path the answer was handed to `send_remote_message`, whose
+`None` arm drops it after only a `tracing::warn!`. Because the dialog is torn
+down on submit, the daemon-side waiter was then left parked on an **unbounded**
+human wait with no dialog left to answer it — approving a tool silently hung the
+turn forever. `CommandAction::Template` had the identical defect on the prompt
+path. `scripts/check_tui_transport_authority.py` fails the build if a
+`send_remote_message` call is ever gated on the mode again; it is part of
+`verify.sh quick`.
+
 ### Project execution context
 
 Project-scoped TUI actions resolve `ProjectExecutionContext` from the active
@@ -560,37 +571,63 @@ contract in `architecture/authorization.md` (ADR-0007).
 Strips bracket the chat viewport and are owned by `App`, not by the sidebar
 widget.
 
-**Activity indicator** (`MessagesWidget::activity`). A one-line
-`⠋ thinking 12s` / `⠋ running bash 3s` row appended after the message loop, so
-it always trails the newest output. Its glyph and second count derive from
-`Instant::elapsed().as_secs()` rather than a per-frame counter, which keeps it
-frame-rate independent and reproducible under `TestBackend`. Completed
-reasoning blocks are recorded in `reasoning_durations` keyed by message index
-and render as `Thought for 3.2s`; clicking a message checks reasoning before
-tool output so that header is the expand affordance.
+**Spinner frames.** One table, one cadence, in `tui::components::spinner`.
+`spinner_frame(elapsed)` is a pure function of elapsed time — `SPINNER_FRAMES`
+indexed by `elapsed / SPINNER_FRAME_INTERVAL` (100ms) — so the animation is
+frame-rate independent, reproducible under `TestBackend`, and immune to a
+dropped render tick because there is no mutable counter to drift. It used to
+index a ten-frame table by **whole elapsed seconds**, so a full rotation took
+ten seconds while the 80ms pump repainted an unchanged glyph eleven times out
+of twelve. A second, unrelated `SpinnerWidget` lived on `App` as `busy_spinner`
+with a different glyph family and an 80ms cadence, rendering a duplicate
+indicator into the status prefix; both are gone. Never add a second frame table
+or a second cadence — one slow indicator and one fast one is how the fast one
+stops being the visible one.
 
-**Working strip** (`render_working_strip`). One throbber row plus one row per
-advertised subagent, reserved from the prompt allocation and carved back off
-like the hint line and the todo strip, so it sits *between the transcript and
-the composer* and reads as part of the buffer. It draws while
-`SessionStatus::Working` **or** while `SessionState::stopped_turn`; a buffer
-with nothing running and nothing stopped gets the rows back. A stopped turn
-keeps the strip deliberately: the user stopped it on purpose, and the very
-next question is whether it is still stopped and how to carry on, so an
-indicator that vanishes the instant work stops answers neither. Row 0 is the
-throbber (the activity line, or `⠋ working Ns` during the window before the
-first event names a phase), followed by the key that changes the situation —
-`x to stop`, `press x again to stop agent` while a confirmation is armed, or
-`■ stopped · press x or /start` once it is. A long pause with no way out is
-what reads as a dropped connection, so the row names the exit even while the
-agent is working. The rows below it are clickable and their hit
-rects are rebuilt every frame in `UiState::working_area` /
+**Activity phase** (`ActivityPhase`). A closed enum, not a free label:
+`Queued`, `WaitingForApproval`, `Thinking`, `Writing`, `RunningTool`,
+`Retrying { attempt, total, class }`, `WaitingOnSubagent`. It was a `String`,
+which meant the describable states were only the ones somebody remembered to
+pass in — and the two that matter most when a turn looks stuck were the missing
+ones: a turn parked on a permission prompt, and a provider backing off between
+retries. Both read as a silent screen. A closed set also means the renderer
+cannot be handed a phase it does not know how to draw.
+
+**Working strip** (`render_working_strip`). The main buffer's **single status
+surface**, and row 0 is **reserved unconditionally** — it reads `idle` when
+nothing is running. This height is subtracted from the transcript
+(`session_layout` splits `prompt_height` against `Min(10)`), so gating row 0 on
+"there is something to say" reflowed the transcript on every submit and again on
+every completion. Reserving it permanently turns that off for good: the strip's
+*content* can change freely — idle, working, stopped, failed — without the
+transcript viewport ever changing height. Subagent rows stay content-driven,
+because N subagents genuinely need N rows.
+
+Row 0 resolves in strict precedence order: a latched `last_error`, then
+`stopped_turn`, then the live phase, then `idle`. The error outranks everything
+because it is the one thing that explains why nothing is progressing, and by the
+time it is readable the toast that also said so has expired. Stopped and error
+both draw a **static** glyph — nothing is running, so an animated one would lie
+about it. The trailing half names the key that changes the situation (`x to
+stop`, `press x again to stop agent` while a confirmation is armed, `press x or
+/start` once stopped, a running subagent count), because a long pause with no
+way out is what reads as a dropped connection. The rows below it are clickable
+and their hit rects are rebuilt every frame in `UiState::working_area` /
 `SubagentState::hits`, so a click resolves against the geometry the user saw.
 `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt` — the
 strip is carved out of the prompt chunk, so the reverse order would resolve
 every subagent click to click-to-focus. Rows are bounded by
 `MAX_WORKING_STRIP_SUBAGENTS` and truncation is announced with a `… +N more`
 row, which `working_strip_rows` reserves space for.
+
+**Turn failures are latched, not toasted-and-forgotten.** `report_turn_error`
+writes `SessionState::last_error` *and* raises the toast; row 0 shows the
+latched text. It clears on exactly one event — `TurnStarted` — not on a timer,
+so a user reading the reason is never interrupted mid-sentence and a user who
+has resumed has already moved past it. Only genuine turn failures route through
+it; shell staging, clipboard, and `/theme` errors are transient command feedback
+and would otherwise report a turn failure that never happened. The full text
+stays in the toast, and `/logs` retains 50 of them via `ToastManager::history`.
 
 Rows come from `sync_subagents_from_snapshot`, which reads the same
 `active_turn` (falling back to the newest `recent_turns`) agent tree the
@@ -624,6 +661,45 @@ arm expands reasoning or tool output) while a release elsewhere is a *drag*
 that copies to the clipboard. Resolving on `Down` instead made every click a
 selection and left click-to-expand unreachable. All other surfaces keep
 immediate press behaviour via the shared `dispatch_click`.
+
+### Pending approvals are a queue, and the queued row is the way back
+
+A tool batch can raise several approvals at once. Exactly one may be on
+screen; the rest live in `DialogState::permission_queue` (a
+`VecDeque<PendingPermission>` of `perm_id` + `PermissionRequest`).
+
+- `App::show_permission_dialog` **queues** when a dialog is already mounted
+  and ignores a `perm_id` it is already tracking. It used to assign straight
+  into `permission_dialog`, so each new request destroyed the previous one
+  along with its `perm_id` — the daemon-side waiter stayed parked on a human
+  answer with no UI pointing at it, and the tool later timed out denied for a
+  reason the user never saw.
+- Every answer path (`SubmitPermission` in `input.rs`,
+  `submit_permission_response`, `on_permission_confirm`) clears the dialog
+  fields **before** `close_dialog()`, then calls `promote_next_permission()`.
+- `close_dialog`'s `Dialog::Permission` arm calls `requeue_open_permission()`:
+  anything still mounted at close time was dismissed *without* being answered
+  and goes back to the front of the queue. That arm did not exist, so a
+  `CloseDialog` from anywhere popped the dialog while `permission_perm_id`
+  stayed set — and the next approval then queued behind a dialog that no
+  longer existed. The answer paths clearing state first is what keeps an
+  answered request from being requeued.
+- `mount_permission_dialog` recovers `args` from the transcript
+  (`latest_pending_tool_arguments`) when the event carried none.
+  `CoreEvent::PermissionPending` has no `args` field, so an approval that
+  crossed the daemon used to render "No additional details" — you cannot
+  meaningfully approve a command you cannot read.
+- `sync_pending_permission_markers` pushes the set of tools with an open
+  approval into `MessagesWidget::pending_permission_tools`. A `Pending` tool
+  row in that set renders `queued — waiting on your approval · Enter to review`
+  in `theme.warning` instead of the generic admission text, and the row is
+  actionable: `App::open_pending_permission_for_message` runs from both the
+  click path and the keyboard twin of click-to-expand. If another request owns
+  the screen it moves to the queue front and warns rather than tearing the open
+  dialog down unanswerably.
+
+The marker is what keeps the affordance honest: without it the row would
+advertise an action that may have nothing behind it.
 
 ### Reasoning must reach `add_reasoning`
 
@@ -1866,7 +1942,9 @@ explicit routing locator (`selected_project_id`, generation + reconnect
 guarded); `workspace_focus` (`Composer`/`Chat`) owns input focus while
 `Route::Workspace` is active.
 
-Pending fields: `permission_perm_id`, `question_session_id`,
+Pending fields: `permission_perm_id`, `permission_queue` (approvals waiting
+behind the one on screen — see *Pending approvals are a queue*),
+`question_session_id`,
 `pending_delete_session`, `pending_archive_session`,
 `pending_bulk_delete`, `pending_bulk_delete_ids`,
 `pending_bulk_archive`, `pending_bulk_archive_ids`,

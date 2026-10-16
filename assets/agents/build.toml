@@ -3,3 +3,10 @@ name = "build"
 role = "executor"
 description = "Default agent with full permissions"
 mode = "Primary"
+
+[agent.permissions]
+# Dispatching a job, task, or subagent is part of this agent's own scope, not
+# an escalation: an executor that cannot delegate cannot finish the job it was
+# given. This mirrors `general`. It pre-authorizes *dispatch*, not the work the
+# dispatched run performs — that run's own tools remain permission-checked.
+task = "allow"

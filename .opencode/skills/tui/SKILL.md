@@ -473,20 +473,57 @@ model to the wrong connection.
   a message. All other surfaces keep immediate press behaviour through the
   shared `dispatch_click`.
 - **The working strip owns turn liveness, and it names the way out.**
-  `render_working_strip` draws one throbber row plus one row per advertised
+  `render_working_strip` draws one status row plus one row per advertised
   subagent between the transcript and the composer, reserved from the prompt
-  allocation and carved back off like the hint line and the todo strip. It
-  draws while `Working` **or** while `SessionState::stopped_turn` — a stopped
-  turn keeps the strip deliberately, because the user's next question is
-  whether it is still stopped and how to carry on, and an indicator that
-  vanishes the instant work stops answers neither. Row 0 pairs the phase with
-  the key that changes it (`x to stop`, `press x again to stop agent` while a
-  confirmation is armed, `■ stopped · press x or /start` once stopped): a
-  long pause with no way out is what reads as a dropped connection.
+  allocation and carved back off like the hint line and the todo strip.
+  **Row 0 is reserved unconditionally** — it reads `idle` when nothing runs —
+  because this height is subtracted from the transcript (`session_layout` splits
+  `prompt_height` against `Min(10)`). Gating it on turn state reflowed the
+  transcript on every submit and every completion; reserving it permanently
+  lets the content change freely with the viewport height fixed. Subagent rows
+  stay content-driven, since N subagents need N rows. Row 0 resolves in strict
+  precedence — latched `last_error`, then `stopped_turn`, then the live phase,
+  then `idle` — and pairs it with the key that changes it (`x to stop`, `press x
+  again to stop agent` while a confirmation is armed, `press x or /start` once
+  stopped): a long pause with no way out is what reads as a dropped connection.
+  Error and stopped both draw a **static** glyph; nothing is running, so an
+  animated one would lie about it.
   `ClickTarget::Working` is hit-tested **before** `ClickTarget::Prompt`,
   because the strip is carved out of the prompt chunk — the reverse order
   resolves every subagent click to click-to-focus. Hit rects live in
   `SubagentState::hits` and are rebuilt every frame.
+- **One spinner, one cadence, one phase enum.** Frames come from
+  `tui::components::spinner::spinner_frame(elapsed)` — a pure function over one
+  frame table at 100ms, so there is no counter to drift and renders stay
+  reproducible under a `TestBackend`. It once indexed a ten-frame table by
+  *whole elapsed seconds*, so a rotation took ten seconds while the 80ms pump
+  repainted an unchanged glyph eleven times in twelve, and a second
+  `SpinnerWidget` on `App` drew a competing indicator at a different speed.
+  Turn state is an `ActivityPhase`, never a free label: a `String` could only
+  name the phases somebody remembered to pass in, which is why a turn parked on
+  a permission prompt and a provider backing off between retries both read as a
+  silent screen. Turn failures are **latched** into `SessionState::last_error`
+  via `report_turn_error` (which also toasts) and clear on exactly one event,
+  `TurnStarted` — not on a timer, so a user reading the reason is never
+  interrupted mid-sentence. Route genuine turn failures through it only; shell,
+  clipboard, and `/theme` errors would otherwise claim a turn failure that never
+  happened. The full text stays in the toast and `/logs` keeps 50.
+- **One approval on screen; the rest queue, and the queued row is the way back.**
+  `show_permission_dialog` used to assign straight into `permission_dialog`, so
+  the second `PermissionPending` of a batch destroyed the first *along with its
+  `perm_id`*. Nothing could answer it; the daemon waiter sat on an unbounded human
+  wait and the tool timed out denied for a reason the user never saw. One dialog
+  is mounted, the rest live in `DialogState::permission_queue`, and every answer
+  path clears the dialog fields **before** `close_dialog()` and then promotes the
+  next. `close_dialog`'s `Dialog::Permission` arm requeues whatever was still
+  mounted — a dismissal is not an answer — which is also why the clearing order
+  matters. Because `CoreEvent::PermissionPending` has no `args`,
+  `mount_permission_dialog` recovers them from the transcript rather than showing
+  "No additional details". The transcript mirrors the open approvals into
+  `pending_permission_tools` so a `Pending` row can offer `queued — waiting on
+  your approval · Enter to review` and both the click path and its keyboard twin
+  reopen it. Make the marker honest: advertising the action where nothing is
+  waiting is its own dead end.
 - **A turn must be interruptible, and the id is what makes it so.**
   `TurnCancel` is addressed by `(session_id, turn_id)` and the daemon
   *rejects* a mismatch, so `SessionState::active_turn_id` — bound from

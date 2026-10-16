@@ -445,6 +445,7 @@ mod live_request_preparation_delta {
 
     fn agents() -> Vec<Agent> {
         vec![Agent {
+            git_read_only: false,
             name: "build".to_string(),
             role: None,
             description: "Test agent".to_string(),

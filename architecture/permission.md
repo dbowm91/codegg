@@ -167,12 +167,31 @@ Remembered shell approvals use `cmd:<executable>` only when the existing
 command. A simple `env NAME=value <command>` wrapper and an absolute
 executable path are canonicalized. Shells, interpreters, and command wrappers
 use exact-invocation scopes even when their argument text has simple argv
-shape. Compound or ambiguous commands use a
-`cmd:exact:<sha256>` scope over the complete command text, so a saved
-`cmd:cargo` family grant cannot cover `cargo test; ./other-script`. Explicit
-legacy unscoped grants remain broad and readable for compatibility; current
-effective Deny rules still win. The digest is a cache scope, not shell parsing
-or OS enforcement.
+shape.
+
+A compound command contributes **one scope per segment**
+(`decision_scopes_for_shell_command`). The command is split on control
+operators found outside quotes, and a segment is scoped independently, so
+approving `a && b` persists `cmd:a` and `cmd:b` rather than a single digest
+that matches neither variation later. This is what makes "Allow always"
+converge instead of re-prompting on every slightly different pipeline.
+
+Segments are combined with **intersection** semantics: the compound command is
+authorized only when *every* segment resolves to Allow, and an explicit Deny on
+any one segment denies the whole. Segmenting therefore cannot widen a grant
+beyond what the operator approved.
+
+A command is **not** segmented when it contains a construct whose interior the
+splitter cannot see — command substitution, variable expansion, heredoc, or
+unbalanced quotes — because a `;` or `|` inside such a construct could be cut as
+if it were a real separator and leave the tail looking like a clean
+`cmd:<argv0>` family grant. Those keep a single `cmd:exact:<sha256>` scope over
+the complete command text, as does a segment that is itself complex — so a
+redirection, glob, or interpreter invocation stays pinned to its literal text
+and a saved `cmd:cargo` family grant still cannot cover `cargo test; ./other-script`.
+Explicit legacy unscoped grants remain broad and readable for compatibility;
+current effective Deny rules still win. The digest is a cache scope, not shell
+parsing or OS enforcement.
 
 Escalation signals from the shell policy (`tool::bash::policy::find_ask_pattern`)
 are consulted on the same path, immediately after `destructive_match`: a hit
@@ -181,6 +200,21 @@ the tool. `bash_ask_patterns` adds operator-defined signals. These are review
 controls, not boundaries — see `architecture/tool.md` for why a pattern match
 constrains the invocation rather than the program, and why containment belongs
 to `SandboxProfile` plus Landlock.
+
+### Command preflight is advisory
+
+`PreflightService` runs on every `bash` call and reports findings. It carries
+authority over the command **only when it actually found something**
+(`preflight_requires_escalation`): the escalation arm must test for a finding,
+not for the preflight having run. The service is wired by default, so
+`CommandPreflightResult` is always present — testing presence escalated every
+`bash` call including clean ones.
+
+That arm is also reached from `PermissionResult::Allow`, not only `Ask`, so a
+presence test silently discarded a stored `AlwaysAllow` grant: the operator's
+prior approval was outranked by an advisory scan with nothing to say. An
+advisory may add a reason to a request that is already escalating; it may never
+create one on its own, and it may never override a stored operator decision.
 
 ## Key Types & APIs
 
@@ -279,6 +313,38 @@ Key methods:
 - `with_exec_mode()` — CI/CD mode, all destructive tools auto-allowed
 - `always_allow(tool, path, session_id)` / `always_deny(...)` — persist
 - `clear_decisions()` — wipe cached decisions
+
+### Agent declarations vs. operator config
+
+An agent's `[agent.permissions]` declaration is authoritative **when the
+operator has not spoken**. The distinction that matters is *operator-wrote-it*
+versus *built-in default*: `config_ruleset()` folds the `default_ruleset()`
+`Ask` entries in, so passing it as "the config's opinion" made a default look
+like a deliberate operator decision and clamped every agent `allow` back to
+`ask`. `explicit_config_ruleset()` reports only levels the operator actually
+wrote, and the safety envelope merges that.
+
+The envelope still takes the most restrictive level across agent, session, and
+config, so agent declarations never widen what narrows. Ordering is unchanged:
+policy/sandbox denial wins, a remembered user Deny/Ask wins over an agent
+allow, an operator-explicit level wins over the agent's default, and security
+escalation stays reachable from an `Allow` outcome. A tool **no** agent declares
+keeps the existing default prompt surface.
+
+Both the main loop (`agent_loop_factory`, the exec path in `main.rs`) and a
+subagent's own loop (`worker.rs`) must load the active agent's rules. The
+per-agent blocks used to be parsed, generated, and then ignored on the main
+loop, which silently disabled every one of them.
+
+`[agent.permissions]` is keyed by *tool*, which cannot express "this tool, but
+only to look". `git = "allow"` also authorises `git push`; `git = "deny"` costs a
+read-only agent the repository facts it needs. The `git_read_only = true`
+declaration is the middle, and it is enforced at the **tool** boundary rather
+than here — see [git.md](git.md) "Read-only Git". A permission level answers
+"may this run?"; the read-only gate answers "may this agent run *this* git
+invocation?", and only the tool sees the argv that separates `branch` from
+`branch -d`. It never widens anything: an agent must also be permitted to use
+`git` at all, and any `deny` on `git` still wins.
 
 ### PermissionStore (`src/permission/mod.rs:507`)
 
@@ -408,7 +474,7 @@ The dialog accepts direct codex-style keys in addition to `↑↓`/`j`/`k` +
 | `n` | Deny once (cancels out of the interstitial when it is open) |
 | `1`–`4` | Positional equivalents of the rows above; answer in one keypress |
 | `↑↓`/`j`/`k`, `Enter` | Navigate / commit the highlighted row |
-| `Esc` | Close, or back out of the interstitial |
+| `Esc` | Deny once — the same decision `n` commits; back out of the interstitial when it is open |
 
 Every answering key commits directly — no second `Enter` is required. The
 digits are guarded on no modifier, so `Ctrl`+digit stays available to the
@@ -418,6 +484,13 @@ host, and `0` is deliberately not a row so it can never underflow into
 Persistent grants (the `Always Allow` / `Always Deny` rows and `p`) always
 require the interstitial's second keypress, so no single keypress creates a
 standing permission.
+
+**Every dialog exit is an answer.** The human wait is unbounded unless
+`permission.approval_timeout_secs` is configured, so a path that tears the
+dialog down without answering strands the tool until the turn is cancelled.
+`Esc` therefore commits `DenyOnce` rather than emitting a bare close. This also
+covers indirect dismissal (parent dialog close, focus change), because the
+dialog no longer has a close-only branch to fall through.
 
 ### Registration-Before-Publish Pattern
 

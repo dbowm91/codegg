@@ -85,6 +85,16 @@ impl RiskSet {
         self.0.iter().any(|c| c.requires_network())
     }
 
+    /// Whether this operation has no side effects at all.
+    ///
+    /// The bar is "every class is [`GitRiskClass::ReadOnly`]", not "contains
+    /// ReadOnly": `Status` is `{ReadOnly}` while `Restore` is
+    /// `{WorktreeMutation}` and some reads carry an extra class. A set that
+    /// merely *mentions* ReadOnly alongside a mutation is still a mutation.
+    pub fn is_read_only(&self) -> bool {
+        !self.0.is_empty() && self.0.iter().all(|class| *class == GitRiskClass::ReadOnly)
+    }
+
     pub fn classes(&self) -> &[GitRiskClass] {
         &self.0
     }

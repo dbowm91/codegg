@@ -23,6 +23,16 @@ pub struct DialogState {
     pub question_session_id: Option<String>,
     pub permission_perm_id: Option<String>,
     pub permission_dialog: Option<crate::tui::components::dialogs::permission::PermissionDialog>,
+    /// Approvals that arrived while another one was on screen.
+    ///
+    /// A batch can ask for several approvals at once. `show_permission_dialog`
+    /// used to assign straight into `permission_dialog`, so each new request
+    /// silently destroyed the one the user was looking at: its `perm_id` went
+    /// with it, leaving a daemon-side waiter parked on a human answer that no
+    /// longer had any UI pointing at it. That is the "the box disappeared and
+    /// I can never approve it" symptom — the tool eventually timed out denied
+    /// for a reason the user never saw.
+    pub permission_queue: std::collections::VecDeque<PendingPermission>,
     pub keybind_dialog: Option<crate::tui::components::dialogs::keybind::KeybindDialog>,
     pub mcp_dialog: Option<crate::tui::components::dialogs::mcp::McpDialog>,
     pub share_dialog: Option<crate::tui::components::dialogs::share::ShareDialog>,
@@ -164,4 +174,12 @@ pub struct DialogState {
     /// this is a bounded display cache only. Entering/leaving never
     /// cancels daemon work.
     pub workspace_dashboard: Option<crate::tui::app::state::WorkspaceDashboardState>,
+}
+
+/// An approval the user has not answered yet, held so a later request cannot
+/// evict it.
+#[derive(Debug, Clone)]
+pub struct PendingPermission {
+    pub perm_id: String,
+    pub request: crate::permission::PermissionRequest,
 }

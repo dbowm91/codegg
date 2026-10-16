@@ -528,6 +528,7 @@ impl CoreDaemon {
                 ),
                 dedupe_key: Some(notice.notice_id.clone()),
                 created_at: chrono::Utc::now(),
+                session_title: None,
             })
             .await;
     }
@@ -5791,6 +5792,7 @@ mod tests {
 
         let daemon = test_daemon().await;
         let agent = crate::agent::Agent {
+            git_read_only: false,
             name: "test".into(),
             description: "test agent".into(),
             ..Default::default()
@@ -6619,6 +6621,7 @@ mod tests {
         daemon.hydrate_workspace_registry().await.unwrap();
 
         let agent = crate::agent::Agent {
+            git_read_only: false,
             name: "test".into(),
             description: "test agent".into(),
             ..Default::default()

@@ -2907,7 +2907,11 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     // Phase 3: Apply safety envelope to prevent custom files from escalating
     // permissions beyond session/config/hard policy bounds.
     let session_rules = codegg::permission::PermissionRuleset::default();
-    let config_rules = codegg::permission::config_ruleset(Some(&config));
+    // Operator-written levels only. The built-in `default_ruleset()` Ask list
+    // is a fallback for an unclaimed tool, not a decision the operator made,
+    // and clamping against it would discard the selected agent's own
+    // declarations.
+    let config_rules = codegg::permission::explicit_config_ruleset(Some(&config));
     let hard_deny = vec![
         "commit".to_string(),
         "todowrite".to_string(),
@@ -2920,6 +2924,10 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         Some(&config),
         codegg::permission::approval::canonical_permission_store_path(),
     )
+    // The selected agent's own declarations are live on the main loop. Wired
+    // before `with_active_mode` so an active built-in mode still narrows the
+    // same tool (`merge_rulesets` lets the later ruleset win a tie).
+    .with_agent_rules(safe_agent.permission_ruleset())
     .with_active_mode(&config);
     // Bootstraps the search backend (eggsearch by default) before the agent
     // loop starts. Idempotent if already bootstrapped. The explicit

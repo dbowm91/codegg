@@ -292,6 +292,46 @@ impl fmt::Display for ResetMode {
     }
 }
 
+/// Subcommand names that are read-only in **every** form this crate models.
+///
+/// Most of the read-only surface is decidable per invocation — [`GitOperation`]
+/// distinguishes `BranchList` from `BranchCreate`, `RemoteList` from
+/// `RemoteAdd`, `TagList` from `TagDelete` — so the tool and permission layers
+/// prefer [`GitOperation::is_read_only`] on a parsed argv.
+///
+/// This set exists for the one case argv cannot help with: a decision made on
+/// the subcommand **name** alone. Only names whose every modelled variant is
+/// read-only may appear, which is why `branch`, `remote`, `tag`, `stash`,
+/// `config`, and `worktree` are all absent despite each having a read-only
+/// form — naming them read-only is exactly how `git remote add` and
+/// `git stash` came to be auto-allowed.
+///
+/// `ls-files`, `cat-file`, `rev-parse`, and `for-each-ref` are read-only by
+/// git's own contract but are not modelled here, so they are not decidable
+/// from the typed risk set at all. They are listed explicitly, and
+/// `read_only_subcommands_stay_read_only` fails if any of them ever gains a
+/// mutating variant.
+pub const READ_ONLY_SUBCOMMANDS: &[&str] = &[
+    "status",
+    "diff",
+    "show",
+    "log",
+    "blame",
+    "ls-files",
+    "cat-file",
+    "rev-parse",
+    "for-each-ref",
+];
+
+/// Whether a subcommand *name* is read-only in every modelled form.
+///
+/// Name-only callers (a permission rule that has no argv, a coarse capability
+/// check) use this and accept that it is deliberately narrower than what
+/// [`GitOperation::is_read_only`] can decide.
+pub fn subcommand_is_read_only(name: &str) -> bool {
+    READ_ONLY_SUBCOMMANDS.contains(&name)
+}
+
 impl GitOperation {
     /// Derive the risk classes for this operation.
     pub fn risk_classes(&self) -> RiskSet {
@@ -494,6 +534,16 @@ impl GitOperation {
         }
     }
 
+    /// Whether this exact invocation has no side effects.
+    ///
+    /// The per-invocation authority for "is this git call read-only". Unlike a
+    /// subcommand-name check it separates `branch` (list) from `branch -d`
+    /// (delete) and `remote` (list) from `remote add`, because those share a
+    /// name but not a risk.
+    pub fn is_read_only(&self) -> bool {
+        self.risk_classes().is_read_only()
+    }
+
     /// Return the subcommand name for display purposes.
     pub fn subcommand_name(&self) -> &str {
         match self {
@@ -563,6 +613,84 @@ mod tests {
         assert!(risk.contains(&GitRiskClass::ReadOnly));
         assert!(!risk.is_destructive());
         assert_eq!(op.subcommand_name(), "status");
+    }
+
+    /// Every modelled variant of a name in `READ_ONLY_SUBCOMMANDS` must really
+    /// be read-only, or the name-level allow-list would authorise a mutation.
+    ///
+    /// This is the guard that makes the list self-checking: adding a mutating
+    /// `BranchList`-style variant, or renaming an operation into an allow-listed
+    /// name, fails here instead of silently widening an agent's git grant.
+    #[test]
+    fn read_only_subcommands_stay_read_only() {
+        // (subcommand_name, is_read_only) for one instance of every variant the
+        // parser produces. Kept explicit rather than derived so that a newly
+        // added variant forces a line here — that is the point of the test.
+        let instances: Vec<(GitOperation, &str)> = vec![
+            (GitOperation::Status { short: false }, "status"),
+            (
+                GitOperation::BranchList {
+                    remotes: false,
+                    all: false,
+                },
+                "branch",
+            ),
+            (GitOperation::RemoteList, "remote"),
+            (GitOperation::TagList, "tag"),
+            (GitOperation::WorktreeList, "worktree"),
+            (GitOperation::StashList, "stash"),
+        ];
+        for (op, name) in instances {
+            assert_eq!(op.subcommand_name(), name);
+            if READ_ONLY_SUBCOMMANDS.contains(&name) {
+                assert!(
+                    op.is_read_only(),
+                    "{name} is allow-listed but {name:?} is not read-only"
+                );
+            }
+        }
+
+        // The converse, stated as behaviour rather than as a list: every name
+        // the parser can emit that is NOT allow-listed must have at least one
+        // mutating form, so excluding it never costs a read-only capability.
+        for name in ["branch", "remote", "tag", "stash", "config"] {
+            assert!(
+                !subcommand_is_read_only(name),
+                "{name} has a mutating form and must not be name-allow-listed"
+            );
+        }
+        for name in READ_ONLY_SUBCOMMANDS {
+            assert!(
+                subcommand_is_read_only(name),
+                "{name} is in the allow-list but subcommand_is_read_only rejects it"
+            );
+        }
+    }
+
+    #[test]
+    fn list_and_mutate_forms_of_one_name_have_different_risk() {
+        // The whole reason the name-level list is narrower than the typed model:
+        // `branch` lists (read-only) and `branch -d` deletes (destructive), and
+        // only the per-invocation check can tell them apart.
+        assert!(GitOperation::BranchList {
+            remotes: false,
+            all: true
+        }
+        .is_read_only());
+        assert!(!GitOperation::BranchDelete {
+            name: BranchName::new("topic").unwrap(),
+            force: false,
+        }
+        .is_read_only());
+        assert!(!GitOperation::RemoteAdd {
+            name: RemoteName::new("origin").unwrap(),
+            url: RedactedUrl::new("https://example.invalid/x.git"),
+        }
+        .is_read_only());
+        assert!(GitOperation::RemoteGetUrl {
+            remote: RemoteName::new("origin").unwrap(),
+        }
+        .is_read_only());
     }
 
     #[test]

@@ -246,16 +246,77 @@ pub enum MessageRole {
     Assistant,
 }
 
+/// What the agent is doing right now, as a closed set.
+///
+/// This was a free `String` label, which meant the only states it could
+/// describe were the ones somebody remembered to pass in. The states that
+/// matter most were exactly the missing ones: a turn sitting on a permission
+/// prompt, and a provider backing off between retries. Both read as a silent
+/// screen, so "is this healthy or stuck" had no honest answer.
+///
+/// A closed set also means the renderer cannot be handed a phase it does not
+/// know how to draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActivityPhase {
+    /// Turn admitted, first event not yet arrived.
+    Queued,
+    /// Blocked on a human approving a tool call. Not the agent's fault and
+    /// not going to resolve on its own, so it must not look like a stall.
+    WaitingForApproval { tool: String },
+    /// Reasoning deltas arriving (or the model deciding what to do next).
+    Thinking,
+    /// Assistant text streaming out.
+    Writing,
+    /// A tool is executing.
+    RunningTool { name: String, summary: String },
+    /// The provider failed and the retry layer is backing off. `attempt`/`total`
+    /// make a long quiet stretch legible: it is a known wait with a known
+    /// length, not a hang.
+    Retrying {
+        attempt: usize,
+        total: usize,
+        class: String,
+    },
+    /// The agent is waiting on a dispatched subagent.
+    WaitingOnSubagent { name: String },
+}
+
+impl ActivityPhase {
+    /// The human phrase shown beside the spinner.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Queued => "queued".to_string(),
+            Self::WaitingForApproval { tool } => format!("awaiting your approval · {tool}"),
+            Self::Thinking => "thinking".to_string(),
+            Self::Writing => "writing".to_string(),
+            Self::RunningTool { name, summary } => {
+                if summary.is_empty() {
+                    format!("running {name}")
+                } else {
+                    format!("running {name} · {summary}")
+                }
+            }
+            Self::Retrying {
+                attempt,
+                total,
+                class,
+            } => format!("retrying {attempt}/{total} · {class}"),
+            Self::WaitingOnSubagent { name } => format!("waiting on subagent {name}"),
+        }
+    }
+}
+
 /// Live one-line indicator describing what the agent is doing right now.
 ///
-/// Rendered at the tail of the chat area while `MessagesWidget::activity`
-/// is `Some`. The spinner glyph is derived from elapsed whole seconds
-/// rather than a per-frame counter so the animation is frame-rate
-/// independent and reproducible under a `TestBackend`.
+/// Rendered as row 0 of the working strip while `MessagesWidget::activity`
+/// is `Some`. The spinner glyph comes from the shared frame table in
+/// [`crate::tui::components::spinner`], so there is one cadence across the
+/// TUI and it is reproducible under a `TestBackend` because the frame is a
+/// pure function of elapsed time.
 #[derive(Debug, Clone)]
 pub struct ActivityIndicator {
-    /// What the agent is doing, e.g. `"thinking"`, `"running bash"`.
-    pub label: String,
+    /// The current phase.
+    pub phase: ActivityPhase,
     /// Monotonic start of the current activity.
     pub started: std::time::Instant,
 }
@@ -268,10 +329,8 @@ impl ActivityIndicator {
 
     /// The rendered one-line form, e.g. `⠋ thinking 3s`.
     pub fn line(&self) -> String {
-        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-        let secs = self.elapsed_secs();
-        let glyph = FRAMES[(secs as usize) % FRAMES.len()];
-        format!("{glyph} {} {secs}s", self.label)
+        let glyph = crate::tui::components::spinner::spinner_frame_since(self.started);
+        format!("{glyph} {} {}s", self.phase.label(), self.elapsed_secs())
     }
 }
 
@@ -296,6 +355,10 @@ pub struct MessagesWidget {
     pub show_thinking: bool,
     pub show_timestamps: bool,
     pub sel_msg: Option<usize>,
+    /// Tools with an approval the user has not answered yet. Set by the app
+    /// on the permission lifecycle so a queued row can offer the action that
+    /// is actually available rather than a dead "waiting" label.
+    pending_permission_tools: std::collections::BTreeSet<String>,
     pub undo_stack: VecDeque<UIMessage>,
     pub streaming_tokens: String,
     pub assistant_is_thinking: bool,
@@ -533,6 +596,7 @@ impl MessagesWidget {
             show_thinking: true,
             show_timestamps: false,
             sel_msg: None,
+            pending_permission_tools: std::collections::BTreeSet::new(),
             undo_stack: VecDeque::new(),
             streaming_tokens: String::new(),
             assistant_is_thinking: false,
@@ -938,20 +1002,17 @@ impl MessagesWidget {
 
     /// Mark the start of (or a change to) the agent's current activity.
     ///
-    /// `label` is the human phrase shown next to the spinner, e.g.
-    /// `"thinking"` or `"running bash"`. Calling this again restarts the
-    /// timer, which is what a label change should do: the elapsed seconds
-    /// belong to the current activity, not the whole turn.
-    pub fn begin_activity(&mut self, label: impl Into<String>) {
-        let label = label.into();
+    /// A phase change restarts the timer, which is what a phase change should
+    /// do: the elapsed seconds belong to the current activity, not the whole
+    /// turn. Re-announcing the *same* phase keeps the original start, so the
+    /// counter reflects how long it has genuinely been running rather than
+    /// resetting on every streaming delta.
+    pub fn begin_activity(&mut self, phase: ActivityPhase) {
         match &self.activity {
-            Some(existing) if existing.label == label => {
-                // Same activity still running — keep the original start so the
-                // counter reflects how long it has genuinely been running.
-            }
+            Some(existing) if existing.phase == phase => {}
             _ => {
                 self.activity = Some(ActivityIndicator {
-                    label,
+                    phase,
                     started: std::time::Instant::now(),
                 });
             }
@@ -1033,6 +1094,57 @@ impl MessagesWidget {
                 .iter()
                 .any(|part| matches!(part, MsgPart::ToolCall { .. }))
         })
+    }
+
+    /// Record which tools currently have an unanswered approval, so a queued
+    /// row can advertise the action that is actually available. Owned here
+    /// rather than passed per frame because it changes on permission lifecycle
+    /// events, not on render.
+    pub fn set_pending_permission_tools(&mut self, tools: std::collections::BTreeSet<String>) {
+        if tools == self.pending_permission_tools {
+            return;
+        }
+        self.pending_permission_tools = tools;
+        self.invalidate_tail_rows();
+    }
+
+    /// Name of the queued tool call in `msg_idx` that has an open approval, if
+    /// any. This is what makes a "queued — not started yet" row activatable.
+    pub fn pending_permission_tool(&self, msg_idx: usize) -> Option<String> {
+        let msg = self.messages.get(msg_idx)?;
+        msg.parts.iter().find_map(|part| match part {
+            MsgPart::ToolCall { name, status, .. }
+                if matches!(status, ToolStatus::Pending)
+                    && self.pending_permission_tools.contains(name) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Most recent recorded arguments for an unresolved `tool` call.
+    pub fn latest_pending_tool_arguments(&self, tool: &str) -> Option<serde_json::Value> {
+        self.messages
+            .iter()
+            .rev()
+            .flat_map(|msg| msg.parts.iter())
+            .find_map(|part| match part {
+                MsgPart::ToolCall {
+                    name,
+                    input,
+                    status,
+                    ..
+                } if name == tool && matches!(status, ToolStatus::Pending) => {
+                    let trimmed = input.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        serde_json::from_str(trimmed).ok()
+                    }
+                }
+                _ => None,
+            })
     }
 
     pub fn clear(&mut self) {
@@ -1986,15 +2098,33 @@ impl MessagesWidget {
                         // job stuck in admission indistinguishable from one
                         // actually running, which is exactly the ambiguity
                         // that made these stalls hard to diagnose.
-                        let detail = match status {
-                            ToolStatus::Pending => {
+                        //
+                        // When this call is the one holding an unanswered
+                        // approval, say so and name the key. A row that says
+                        // only "waiting on approval" is a dead end when the
+                        // dialog has already been dismissed; this is the
+                        // backup way back into it.
+                        let awaiting_approval =
+                            self.pending_permission_tools.contains(name.as_str());
+                        let detail = match (status, awaiting_approval) {
+                            (ToolStatus::Pending, true) => {
+                                "queued — waiting on your approval · Enter to review"
+                            }
+                            (ToolStatus::Pending, false) => {
                                 "queued — not started yet (waiting on admission or approval)"
                             }
                             _ => "running — waiting for command/tool output...",
                         };
                         lines.push(Line::from(vec![
                             Span::raw("    "),
-                            Span::styled(detail, Style::default().fg(self.theme.muted)),
+                            Span::styled(
+                                detail,
+                                Style::default().fg(if awaiting_approval {
+                                    self.theme.warning
+                                } else {
+                                    self.theme.muted
+                                }),
+                            ),
                         ]));
                     } else if !output.is_empty() {
                         if *expanded && !input.is_empty() {

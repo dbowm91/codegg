@@ -64,6 +64,7 @@ mod tests {
 
     fn make_agent(name: &str, description: &str) -> Agent {
         Agent {
+            git_read_only: false,
             name: name.to_string(),
             role: None,
             description: description.to_string(),

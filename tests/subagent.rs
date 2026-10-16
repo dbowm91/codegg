@@ -145,6 +145,7 @@ mod tests {
     /// Create a test agent with the given name and model.
     fn create_test_agent(name: &str, model: &str, system_prompt: Option<&str>) -> Agent {
         Agent {
+            git_read_only: false,
             name: name.to_string(),
             role: None,
             description: format!("Test agent {}", name),

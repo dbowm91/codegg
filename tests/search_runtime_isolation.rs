@@ -191,11 +191,13 @@ async fn registries_with_different_contexts_are_independent() {
     ));
     let enabled_registry =
         codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+            git_read_only: None,
             search_runtime: Some(enabled),
             ..Default::default()
         });
     let disabled_registry =
         codegg::tool::ToolRegistry::with_options(codegg::tool::ToolRegistryOptions {
+            git_read_only: None,
             search_runtime: Some(SearchRuntimeContext::disabled()),
             ..Default::default()
         });

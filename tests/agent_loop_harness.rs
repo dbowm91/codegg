@@ -649,6 +649,7 @@ impl Tool for QuestionTool {
 
 fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistry) -> AgentLoop {
     let agents = vec![Agent {
+        git_read_only: false,
         name: "build".to_string(),
         role: None,
         description: "Test agent".to_string(),
@@ -711,6 +712,7 @@ fn build_test_agent_loop_with_permissions(
     permission_checker: PermissionChecker,
 ) -> AgentLoop {
     let agents = vec![Agent {
+        git_read_only: false,
         name: "build".to_string(),
         role: None,
         description: "Test agent".to_string(),
@@ -755,6 +757,7 @@ fn build_test_agent_loop_with_config(
     config: Config,
 ) -> AgentLoop {
     let agents = vec![Agent {
+        git_read_only: false,
         name: "build".to_string(),
         role: None,
         description: "Test agent".to_string(),
@@ -2391,6 +2394,7 @@ fn build_agent_loop_with_error_config(
     tool_registry: ToolRegistry,
 ) -> AgentLoop {
     let agents = vec![Agent {
+        git_read_only: false,
         name: "build".to_string(),
         role: None,
         description: "Test agent".to_string(),
@@ -3499,6 +3503,7 @@ async fn test_task_tool_integration_with_subagent() {
     // Create agents
     let agents = vec![
         Agent {
+            git_read_only: false,
             name: "build".to_string(),
             role: None,
             description: "Main agent".to_string(),
@@ -3519,6 +3524,7 @@ async fn test_task_tool_integration_with_subagent() {
             runtime_kind: None,
         },
         Agent {
+            git_read_only: false,
             name: "subagent".to_string(),
             role: None,
             description: "Subagent".to_string(),
@@ -3700,6 +3706,7 @@ async fn test_task_tool_denied_tools_passthrough() {
     // Create agents: main agent and subagent with model pointing to recording provider
     let agents = vec![
         Agent {
+            git_read_only: false,
             name: "main".to_string(),
             role: None,
             description: "Main agent".to_string(),
@@ -3720,6 +3727,7 @@ async fn test_task_tool_denied_tools_passthrough() {
             runtime_kind: None,
         },
         Agent {
+            git_read_only: false,
             name: "subagent".to_string(),
             role: None,
             description: "Subagent".to_string(),

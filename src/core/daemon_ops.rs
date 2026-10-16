@@ -307,6 +307,7 @@ impl CoreDaemon {
                     message: text,
                     dedupe_key: None,
                     created_at: Utc::now(),
+                    session_title: None,
                 };
                 self.notification_router.emit(event.clone()).await;
                 if let Some(ref pool) = self.pool {

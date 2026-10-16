@@ -1020,6 +1020,76 @@ pub async fn pool_connection_credential_locators(
     connection_credential_locators(&store).await
 }
 
+/// The credential locator a delegated child inherits from its originating
+/// session's durable provider connection.
+///
+/// A subagent is not a new user decision: it is the *same* turn's delegation.
+/// The parent turn already resolved its credential through this exact chain
+/// (`session.provider_connection_id` → connection → `secret_binding`,
+/// `daemon_turns.rs`), so the child must resolve the same row or it silently
+/// falls back to the ambient registry — where a provider with several stored
+/// accounts is permanently ambiguous and the turn dies at
+/// `AmbiguousCredential` before a request is ever built.
+///
+/// `parent_session_id` is the *originating* session (`agent_task.
+/// originating_session_id`), which stays stable across nesting depth, so a
+/// grandchild inherits the root user's connection rather than the child
+/// session's empty one.
+///
+/// Best-effort by design, like [`unbound_turn_credential_locator`]: every
+/// failure degrades to `None`, which leaves registration on the existing
+/// ambiguity-checked store fallback. That is the same authority an unbound
+/// parent turn gets, so a missing row can never be worse than not looking.
+pub async fn session_connection_credential_locator(
+    pool: &sqlx::SqlitePool,
+    parent_session_id: &str,
+) -> Option<crate::provider::TurnCredentialLocator> {
+    if parent_session_id.is_empty() {
+        return None;
+    }
+    let session_store = codegg_core::session::SessionStore::new(pool.clone());
+    let session = match session_store.get(parent_session_id).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::debug!(
+                target: "codegg::core::session_selection",
+                error = %error,
+                %parent_session_id,
+                "originating session unreadable; the delegated run resolves its credential without connection authority"
+            );
+            return None;
+        }
+    };
+    let connection_id = session.provider_connection_id.as_deref()?;
+    let connection_id = match codegg_core::identity::ProviderConnectionId::parse(connection_id) {
+        Ok(id) => id,
+        Err(_) => return None,
+    };
+    let connection_store =
+        codegg_core::provider_connections::ProviderConnectionStore::new(pool.clone());
+    match connection_store.get(&connection_id).await {
+        Ok(Some(connection)) => {
+            connection
+                .secret_binding
+                .map(|binding| crate::provider::TurnCredentialLocator {
+                    provider_ref: binding.provider_ref,
+                    account_ref: binding.account_ref,
+                })
+        }
+        Ok(None) => None,
+        Err(error) => {
+            tracing::debug!(
+                target: "codegg::core::session_selection",
+                error = %error,
+                %connection_id,
+                "originating session's provider connection binding unreadable; the delegated run resolves its credential without connection authority"
+            );
+            None
+        }
+    }
+}
+
 /// Read connection locators straight from the user-scoped daemon catalog.
 ///
 /// Process-wide paths — `codegg exec`, `/models`, `codegg models` — have no

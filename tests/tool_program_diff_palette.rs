@@ -23,6 +23,7 @@ use serde_json::json;
 fn workspace_registry() -> (tempfile::TempDir, ToolRegistry) {
     let dir = tempfile::tempdir().unwrap();
     let registry = ToolRegistry::with_options(ToolRegistryOptions {
+        git_read_only: None,
         workspace_root: Some(dir.path().to_path_buf()),
         ..Default::default()
     });

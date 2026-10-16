@@ -17,11 +17,19 @@
 //! the title task fires while the run is finishing, before
 //! [`crate::agent::transcript`] persists the turn.
 //!
-//! A truncated stream still names the session: this call is capped at a
-//! handful of tokens, so a length-cut terminator arrives as a stream error
-//! *after* the title text, and the provider wire layer escalates that
-//! terminator to a hard failure. `generate_title_via_provider` salvages the
-//! received prefix through the same sanitizer instead of discarding it.
+//! A truncated stream still names the session: this call is capped, so a
+//! length-cut terminator arrives as a stream error *after* the title text,
+//! and the provider wire layer escalates that terminator to a hard failure.
+//! `generate_title_via_provider` salvages the received prefix through the
+//! same sanitizer instead of discarding it.
+//!
+//! A reasoning model must also not be able to starve the answer: the output
+//! budget covers reasoning tokens as well as visible text, so the call asks
+//! for thinking to be disabled ([`title_request_context`]) and tolerates a
+//! reasoning-only preamble (`ReasoningDelta` is counted, never treated as an
+//! error or as title text). When no usable title emerges the error carries the
+//! bounded stop reason and the reasoning volume, so the daemon log — the only
+//! surface this has — explains itself.
 
 use std::sync::Arc;
 
@@ -51,11 +59,50 @@ const MAX_EXCERPT_SIDE_CHARS: usize = 1000;
 
 /// Bounded one-shot title call.
 const TITLE_TIMEOUT_SECS: u64 = 30;
-/// Headroom above the ~15-20 tokens a 60-char title needs: chatty models
-/// spend tokens on preamble the sanitizer strips, and hitting the cap
-/// mid-title ends the stream with an incomplete-response terminator.
-const TITLE_MAX_TOKENS: usize = 64;
+/// Output budget for the title call.
+///
+/// A 60-char title costs ~15-20 tokens, so the old 64-token cap left almost
+/// no headroom — and on a reasoning model the reasoning tokens are billed
+/// against the *same* output budget as the visible text. A model that thinks
+/// for 64 tokens never emits a text delta at all, the sanitizer rejects the
+/// empty string, and the session stays `"Untitled"` forever. 256 leaves ~4x
+/// the title's own cost as headroom for preamble the sanitizer strips while
+/// keeping the call bounded, one-shot, and far below a normal turn budget
+/// (the sanitizer truncates to 60 chars whatever arrives).
+const TITLE_MAX_TOKENS: usize = 256;
 const TITLE_TEMPERATURE: f64 = 0.7;
+
+/// Bound applied to a provider stop reason before it reaches an error
+/// message. Stop reasons are short protocol tokens (`stop`, `length`,
+/// `max_tokens`, `max_output_tokens`), but the field is provider-supplied.
+const MAX_STOP_REASON_CHARS: usize = 64;
+
+/// Build the wire context for this call.
+///
+/// Two reasoning-suppression rules are in play, and they are not the same
+/// field:
+///
+/// 1. `thinking_budget` / `reasoning_effort` stay **unset**. The wire bridge
+///    treats "neither set" as *thinking not requested* (`wire.rs`), and that
+///    is the only encoding the bridge supports for a disable (see
+///    `request_preparation.rs` "Off clears both fields"). Setting a budget
+///    here would *request* reasoning — and `Some(0)` is worse than that: the
+///    kernel encodes it as `thinking: {"type":"enabled","budget_tokens":0}`
+///    on the Anthropic surface, which the API rejects outright.
+/// 2. `wire_policy.enable_thinking = Some(false)` is the adapter-side toggle.
+///    Model adapters that declare a thinking parameter otherwise default it
+///    on (`chat_template_kwargs.enable_thinking` in the OpenAI-compatible
+///    encoder), and a server-side default cannot be turned off by omitting a
+///    field. Any adapter projection already present is preserved; only the
+///    thinking toggle is forced off.
+fn title_request_context(context: ProviderRequestContext) -> ProviderRequestContext {
+    let mut policy = context.wire_policy.as_deref().cloned().unwrap_or_default();
+    policy.enable_thinking = Some(false);
+    ProviderRequestContext {
+        wire_policy: Some(Arc::new(policy)),
+        ..context
+    }
+}
 
 /// System prompt implementing the `title` agent contract
 /// (`src/agent/prompt.rs` role contract + output contract).
@@ -153,7 +200,7 @@ pub(crate) fn build_title_user_prompt(user_excerpt: &str, assistant_excerpt: &st
 
 /// One-shot title generation through the turn's own provider/model.
 ///
-/// Short timeout, tiny `max_tokens`, no tools: this is the `title`
+/// Bounded output budget, short timeout, no tools: this is the `title`
 /// agent's contract executed inline rather than as a dispatched
 /// sub-agent loop (which would need scheduler admission and a result
 /// round-trip for a single short string).
@@ -183,9 +230,11 @@ pub(crate) async fn generate_title_via_provider(
         top_p: None,
         max_tokens: Some(TITLE_MAX_TOKENS),
         response_format: None,
+        // Reasoning suppression: see `title_request_context`. Both fields
+        // stay unset because the wire bridge reads that as "not requested".
         thinking_budget: None,
         reasoning_effort: None,
-        context,
+        context: title_request_context(context),
     };
     let events = tokio::time::timeout(
         std::time::Duration::from_secs(TITLE_TIMEOUT_SECS),
@@ -203,10 +252,27 @@ pub(crate) async fn generate_title_via_provider(
     // remember the failure, drain no further, and let the sanitizer decide.
     // A stream that produced nothing usable still reports the original error.
     let mut stream_error: Option<AppError> = None;
+    // Diagnostics for the "no usable title" path. Only counts and the
+    // bounded stop reason are reported — never reasoning content, which is
+    // private model output.
+    let mut stop_reason: Option<String> = None;
+    let mut reasoning_bytes: usize = 0;
     while let Some(event) = stream.next().await {
         match event {
             Ok(crate::provider::ChatEvent::TextDelta(delta)) => text.push_str(&delta),
-            Ok(crate::provider::ChatEvent::Finish { .. }) => break,
+            // A reasoning model may think before it answers. That is not an
+            // error and never becomes title text: count the bytes and keep
+            // waiting for a text delta.
+            Ok(crate::provider::ChatEvent::ReasoningDelta(delta)) => {
+                reasoning_bytes = reasoning_bytes.saturating_add(delta.len());
+            }
+            Ok(crate::provider::ChatEvent::Finish {
+                stop_reason: reason,
+                ..
+            }) => {
+                stop_reason = Some(truncate_chars(reason.trim(), MAX_STOP_REASON_CHARS));
+                break;
+            }
             Ok(crate::provider::ChatEvent::Error(message)) => {
                 stream_error = Some(AppError::Other(anyhow::anyhow!(
                     "title generation failed: {message}"
@@ -220,13 +286,27 @@ pub(crate) async fn generate_title_via_provider(
             }
         }
     }
+    // The stop reason is the piece the old message lacked: "no usable title
+    // from \"\"" is indistinguishable between a length-cut reasoning model
+    // and a refusal, and the daemon log is the only place this surfaces.
+    let finish = match stop_reason.as_deref() {
+        Some(reason) => format!("stop_reason={reason}"),
+        None => "stop_reason=<none>".to_string(),
+    };
+    tracing::debug!(
+        model = %model,
+        output_chars = text.chars().count(),
+        reasoning_bytes,
+        %finish,
+        "title generation stream finished"
+    );
     match sanitize_title(&text) {
         Some(title) => Ok(title),
         None => Err(stream_error.unwrap_or_else(|| {
-            // Carry the raw output so the daemon log tells us *what* the
-            // model returned next time, not just that it was unusable.
+            // Carry the raw output (bounded) plus the stop reason and the
+            // reasoning volume so the next failure names its own cause.
             AppError::Other(anyhow::anyhow!(
-                "title generation produced no usable title from {:?}",
+                "title generation produced no usable title from {:?} ({finish}, reasoning_bytes={reasoning_bytes})",
                 truncate_chars(text.trim(), 200)
             ))
         })),
@@ -689,6 +769,213 @@ mod tests {
         assert!(
             error.to_string().contains("no usable title"),
             "got: {error}"
+        );
+        assert!(
+            error.to_string().contains("stop_reason=stop"),
+            "the finish stop reason must survive into the log line, got: {error}"
+        );
+    }
+
+    /// A reasoning model opens with `ReasoningDelta` before any text. The
+    /// production failure was the opposite stream — reasoning consumed the
+    /// output budget and no text delta ever arrived — so this pins the two
+    /// halves of the fix: the reasoning prefix is neither an error nor title
+    /// text, and the text that follows it still becomes the session title.
+    #[derive(Clone)]
+    struct ReasoningThenTextProvider {
+        reasoning: Vec<String>,
+        texts: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ReasoningThenTextProvider {
+        fn id(&self) -> &str {
+            "reasoning-title"
+        }
+
+        fn name(&self) -> &str {
+            "reasoning-title"
+        }
+
+        fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+            Box::new(self.clone())
+        }
+
+        async fn stream(
+            &self,
+            _request: &crate::provider::ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            let mut events: Vec<
+                Result<crate::provider::ChatEvent, crate::provider::ProviderError>,
+            > = self
+                .reasoning
+                .iter()
+                .map(|text| {
+                    Ok(crate::provider::ChatEvent::ReasoningDelta(Arc::new(
+                        text.clone(),
+                    )))
+                })
+                .chain(self.texts.iter().map(|text| {
+                    Ok(crate::provider::ChatEvent::TextDelta(Arc::new(
+                        text.clone(),
+                    )))
+                }))
+                .collect();
+            events.push(Ok(crate::provider::ChatEvent::Finish {
+                stop_reason: Arc::new("stop".to_string()),
+                usage: Default::default(),
+            }));
+            Ok(Box::pin(futures_util::stream::iter(events)))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn reasoning_preamble_then_text_still_names_the_session() {
+        let provider = ReasoningThenTextProvider {
+            reasoning: vec!["First I should decide what this session is about.".to_string()],
+            texts: vec!["Fix login redirect loop".to_string()],
+        };
+        let title = generate_title_via_provider(
+            &provider,
+            "reasoning/model",
+            "fix login",
+            "done",
+            Default::default(),
+        )
+        .await
+        .expect("a reasoning preamble is not a failure");
+        assert_eq!(
+            title, "Fix login redirect loop",
+            "reasoning text must never be mistaken for the title"
+        );
+    }
+
+    /// A reasoning-only stream still fails, and the failure now names both
+    /// the stop reason and how much reasoning the model spent — the two
+    /// facts that make "the model returned an empty string" actionable.
+    #[tokio::test]
+    async fn reasoning_only_stream_reports_stop_reason_and_volume() {
+        let reasoning = "thinking about it".to_string();
+        let provider = ReasoningThenTextProvider {
+            reasoning: vec![reasoning.clone()],
+            texts: Vec::new(),
+        };
+        let error = generate_title_via_provider(
+            &provider,
+            "reasoning/model",
+            "fix login",
+            "done",
+            Default::default(),
+        )
+        .await
+        .expect_err("no text delta means no title");
+        let message = error.to_string();
+        assert!(message.contains("no usable title"), "got: {message}");
+        assert!(message.contains("stop_reason=stop"), "got: {message}");
+        assert!(
+            message.contains(&format!("reasoning_bytes={}", reasoning.len())),
+            "got: {message}"
+        );
+    }
+
+    /// The request must not invite a reasoning model to spend the title's
+    /// output budget on thinking: no budget/effort is *requested* (the wire
+    /// bridge reads "neither set" as thinking not requested), the adapter
+    /// toggle is explicitly off, and the budget is the documented ceiling.
+    #[tokio::test]
+    async fn title_request_suppresses_reasoning_and_bounds_output() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        #[derive(Clone)]
+        struct RecordingTitleProvider {
+            seen: std::sync::Arc<std::sync::Mutex<Option<ChatRequest>>>,
+        }
+        #[async_trait::async_trait]
+        impl crate::provider::Provider for RecordingTitleProvider {
+            fn id(&self) -> &str {
+                "recording-title"
+            }
+
+            fn name(&self) -> &str {
+                "recording-title"
+            }
+
+            fn clone_box(&self) -> Box<dyn crate::provider::Provider> {
+                Box::new(self.clone())
+            }
+
+            async fn stream(
+                &self,
+                request: &crate::provider::ChatRequest,
+            ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+                *self.seen.lock().expect("recording lock") = Some(request.clone());
+                Ok(Box::pin(futures_util::stream::iter(Vec::new())))
+            }
+
+            async fn models(
+                &self,
+            ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError>
+            {
+                Ok(Vec::new())
+            }
+        }
+        let provider = RecordingTitleProvider {
+            seen: std::sync::Arc::clone(&seen),
+        };
+        // An existing adapter projection must survive: only the thinking
+        // toggle is forced off.
+        let context = ProviderRequestContext {
+            session_id: Some(Arc::from("session-1")),
+            wire_policy: Some(Arc::new(crate::provider::ProviderWirePolicy {
+                tool_aliases: [("bash".to_string(), "shell".to_string())]
+                    .into_iter()
+                    .collect(),
+                enable_thinking: Some(true),
+                ..Default::default()
+            })),
+        };
+        let _ =
+            generate_title_via_provider(&provider, "reasoning/model", "fix login", "done", context)
+                .await;
+        let request = seen
+            .lock()
+            .expect("recording lock")
+            .clone()
+            .expect("provider saw the request");
+        assert_eq!(request.max_tokens, Some(TITLE_MAX_TOKENS));
+        // The old 64-token budget starved the title text entirely on a
+        // reasoning model: thinking is billed against it, so no text delta
+        // ever arrived. Asserted against the request, not the constant, so
+        // this fails if the budget is ever lowered again.
+        assert_eq!(
+            request.max_tokens,
+            Some(TITLE_MAX_TOKENS),
+            "the title request must actually carry the budget"
+        );
+        assert_eq!(
+            (request.thinking_budget, request.reasoning_effort),
+            (None, None),
+            "setting either field *requests* reasoning on the wire"
+        );
+        let policy = request
+            .context
+            .wire_policy
+            .expect("title call carries the thinking toggle");
+        assert_eq!(policy.enable_thinking, Some(false));
+        assert_eq!(
+            policy.tool_aliases.get("bash").map(String::as_str),
+            Some("shell"),
+            "the rest of the adapter projection must be preserved"
+        );
+        assert_eq!(
+            request.context.session_id.as_deref(),
+            Some("session-1"),
+            "the session identity must survive the request projection"
         );
     }
 }

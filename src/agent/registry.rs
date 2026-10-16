@@ -189,6 +189,7 @@ impl AgentSpec {
         let mode = self.mode.clone().unwrap_or_else(|| base.mode.clone());
 
         Ok(Agent {
+            git_read_only: false,
             name: name.clone(),
             role: self.role.clone().or_else(|| base.role.clone()),
             description: self
@@ -875,6 +876,7 @@ impl AgentRegistry {
                     } else {
                         // inherit=true but agent doesn't exist yet: create it
                         let mut agent = Agent {
+                            git_read_only: false,
                             name: key.clone(),
                             role: None,
                             description: mode_cfg.description.clone().unwrap_or_default(),
@@ -921,6 +923,7 @@ impl AgentRegistry {
                     });
                 } else {
                     let mut agent = Agent {
+                        git_read_only: false,
                         name: key.clone(),
                         role: None,
                         description: mode_cfg.description.clone().unwrap_or_default(),
@@ -1373,6 +1376,7 @@ mod tests {
     fn test_agent_spec_resolve_applies_spec_to_base() {
         // Proves that AgentSpec::resolve applies spec values on top of a base Agent.
         let base_agent = Agent {
+            git_read_only: false,
             name: "base".into(),
             description: "base desc".into(),
             hidden: true,
@@ -1429,6 +1433,7 @@ mod tests {
     fn test_agent_spec_from_agent_roundtrip() {
         // Proves that from_agent captures all fields from a concrete Agent.
         let agent = Agent {
+            git_read_only: false,
             name: "test".into(),
             role: Some("tester".into()),
             description: "a test agent".into(),
