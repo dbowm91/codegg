@@ -68,13 +68,17 @@ jobs:
           git -C "$packed" repack -a -d -f -F --window=0
           cp -a "$packed" "$fragmented"
           pack_dir="$fragmented/.git/objects/pack"
+          unpack_input="$cow/fragmented-pack-input"
+          mkdir -p "$unpack_input"
           shopt -s nullglob
           packs=("$pack_dir"/*.pack)
           test "${#packs[@]}" -gt 0
-          for pack in "${packs[@]}"; do
-            git --git-dir="$fragmented/.git" unpack-objects -r < "$pack"
+          cp "${packs[@]}" "$unpack_input/"
+          rm -f "$pack_dir"/*
+          for pack in "$unpack_input"/*.pack; do
+            git --git-dir="$fragmented/.git" unpack-objects < "$pack"
           done
-          rm -f "$pack_dir"/*.pack "$pack_dir"/*.idx "$pack_dir"/*.rev "$pack_dir"/*.bitmap
+          rm -rf "$unpack_input"
           packed_ids="$cow/packed-ids.txt"
           fragmented_ids="$cow/fragmented-ids.txt"
           git -C "$packed" cat-file --batch-all-objects --batch-check='%(objectname)' | LC_ALL=C sort > "$packed_ids"
