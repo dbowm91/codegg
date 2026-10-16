@@ -150,9 +150,9 @@ completed multi-agent arm.
 S1 orchestration attempts after the M011 repository-identity correction
 created children with separate managed worktree IDs and the resolved
 repository ID. The latest group (`7fa853fe-0c67-4fcd-968f-93ecb923d8db`)
-contained one Rust producer and one Python consumer. Both remained before the
-provider invocation boundary: no heartbeat, journal, or usage progress was
-observed after admission. The parent headless turn returned before the child
+contained one Rust producer and one Python consumer. Both journals ended at `safe_boundary: before_provider_turn`. No provider usage or
+completion evidence followed. The retained evidence cannot distinguish a request
+not submitted from a provider request that stalled before completion. The parent headless turn returned before the child
 group completed. Both child jobs were cancelled through normal scheduler
 `JobCancel`, and no changes were integrated. These are incomplete
 orchestration/provider attempts, excluded from success and performance
