@@ -171,7 +171,10 @@ callers must use the child launch path.
 `codegg-core/src/approval.rs`) is threaded through
 `ToolRegistryOptions`/`SessionToolContext`/`TurnRunInput` into
 `BashTool` via `sandbox_config_for_profile()` using the authoritative
-workspace root. `WorkspaceWrite`/`ReadOnly` build an enabled config;
+workspace root. The legacy one-shot `TerminalTool` adapter uses the same
+resolved profile, workspace root, managed-process sandbox request, and
+execution-authorization snapshot; it refuses constrained launches without
+that root/configuration. `WorkspaceWrite`/`ReadOnly` build an enabled config;
 `FullHost` intentionally builds no config (explicit no CodeGG
 filesystem containment, auditable). Obtained enforcement is reported
 separately as `SandboxEnforcement` (`FilesystemEnforcement` +

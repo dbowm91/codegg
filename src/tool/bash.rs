@@ -347,7 +347,7 @@ impl BashTool {
     }
 }
 
-fn sandbox_outcome_label(
+pub(crate) fn sandbox_outcome_label(
     outcome: &crate::managed_process::SandboxExecutionOutcome,
     authorization: Option<&crate::tool::authorization::ExecutionAuthorizationContext>,
 ) -> String {

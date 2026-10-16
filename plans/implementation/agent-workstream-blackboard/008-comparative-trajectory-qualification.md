@@ -107,26 +107,42 @@ cancel the durable turn. This removes the prior missing-TaskTool execution-conte
 blocker for isolated S2/S3, subject to a successful live smoke trajectory and
 explicit sandbox-root evidence.
 
-### Current live-run prerequisite (2026-10-16)
+### Live isolated headless and sandbox qualification (2026-10-16)
 
-The installed `codegg` on the current host predates `headless` and managed
-`--worktree` launch. A source build succeeded with the explicit arm64 Rust
-1.98.1 toolchain and isolated target directory; the default x86_64 Homebrew
-toolchain failed because `/opt/local/lib/libz` is arm64. Use the source-built
-executable. Keep the live trial isolated from the active user daemon and its
-catalog by setting both `CODEGG_DAEMON_HOME` and `CODEGG_DATA_HOME` to
-trial-owned temporary roots; a daemon-home override alone shares the catalog
-database and can conflict with the active daemon. A successful harmless smoke
-trajectory and verified daemon-resolved workspace/sandbox root are still
-required before any provider-backed benchmark. The source binary and its
-Seatbelt helper are now present in the isolated build; `doctor installation`
-reports Seatbelt available on this Darwin host. The smoke setup still failed
-its prerequisites: the temporary Git checkout had no daemon-resolved
-repository binding, so `--worktree new` failed before creating a durable
-session, and `headless` correctly rejected the resulting non-durable session
-ID. The TUI policy snapshot also reported Landlock while the installation
-probe reported Seatbelt. Treat this backend-report mismatch as unverified
-containment; do not use it as sandbox evidence. Next, register a repository
-workspace with resolved lineage through the supported project flow, reconcile
-the policy snapshot with the actual child enforcement receipt, and only then
-retry the harmless headless smoke. No provider-backed trial has started.
+The installed `codegg` predates `headless` and managed `--worktree` launch. A
+source build succeeded with the explicit arm64 Rust 1.98.1 toolchain and an
+isolated target directory; the default x86_64 Homebrew toolchain failed at
+link because `/opt/local/lib/libz` is arm64. The source-built executable and
+Seatbelt helper are used for this work. Keep trials isolated from the active
+user daemon and its catalog by setting both `CODEGG_DAEMON_HOME` and
+`CODEGG_DATA_HOME` to trial-owned roots; a daemon-home override alone shares
+the catalog database.
+
+The temporary project was given a resolved repository binding through the
+normal workspace/project registration requests, then launched with
+`--worktree new`. The launch produced a managed worktree and durable session;
+provider metadata was staged from the existing personal connection into the
+trial-only database without reading or copying credential material, and the
+session selection was set through the normal daemon selection request. A
+provider-backed headless turn completed against the session-resolved
+worktree.
+
+The first smoke exposed a real policy gap: the legacy `terminal` model tool
+used `ManagedProcessService` without the accepted sandbox profile or
+execution-authorization snapshot. A Python subprocess wrote to `/tmp` under
+the constrained session. The exact temporary file was removed. The terminal
+adapter was then wired to the session sandbox profile, workspace root, and
+authorization snapshot, with fail-closed behavior when a constrained root or
+backend is unavailable. Focused terminal tests passed (5/5), as did the
+sandbox-policy and execution-ownership guards. A fresh daemon-backed retry
+created, read, and removed a file inside the worktree, while Seatbelt denied
+the terminal subprocess write to `/tmp` with `Operation not permitted`; the
+outside probe was absent after the run. This qualifies the tested Darwin
+terminal path for this isolated root and profile. It does not qualify every
+writer surface, other platforms, or shared-checkout containment.
+
+No comparative provider-backed task trial has started after this correction.
+Next, freeze the substantial Rust and Python tasks around their shared
+interface, then run provider-backed S0 and multi-agent isolated trials with
+the same task, provider/model, tools, sandbox, approval, and budget. S2/S3
+remain open; S4 remains unavailable pending M005.

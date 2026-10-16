@@ -304,7 +304,7 @@ reason = "RTK discovery/projection adapter uses ManagedProcessService for blocki
 [[site]]
 path = "src/tool/terminal.rs"
 owner = "scheduler"
-reason = "Terminal tool execution uses ManagedProcessService; tool authorization remains local and scheduler admission is owned by its caller"
+reason = "Terminal adapter carries the accepted sandbox/authorization snapshot into ManagedProcessService; scheduler admission is owned by its caller"
 
 [[site]]
 path = "src/ide/"

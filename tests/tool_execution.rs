@@ -54,7 +54,12 @@ async fn test_bash_tool_simple_command() {
 #[tokio::test]
 async fn test_terminal_tool_simple_command() {
     let dir = setup_dir();
-    let tool = TerminalTool::new().with_workdir(dir.path().to_path_buf());
+    let tool = TerminalTool::new()
+        .with_workdir(dir.path().to_path_buf())
+        .with_sandbox_profile(
+            codegg::permission::approval::SandboxProfile::FullHost,
+            dir.path(),
+        );
     let result = tool
         .execute(serde_json::json!({
             "command": "printf",

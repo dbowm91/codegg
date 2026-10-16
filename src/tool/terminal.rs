@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::ToolError;
+use crate::security::sandbox::{sandbox_config_for_profile, SandboxConfig};
 use crate::tool::backend::{StructuredToolResult, ToolExecutionContext};
 use crate::tool::{Tool, ToolCategory};
 
@@ -46,6 +47,8 @@ pub struct TerminalTool {
     blocked_commands: HashSet<&'static str>,
     allowlist: Option<HashSet<&'static str>>,
     allowed_root: Option<PathBuf>,
+    sandbox: Option<SandboxConfig>,
+    configured_sandbox_profile: Option<codegg_core::approval::SandboxProfile>,
 }
 
 impl TerminalTool {
@@ -58,6 +61,8 @@ impl TerminalTool {
             blocked_commands: crate::tool::bash::policy::default_blocked_commands(),
             allowlist: None,
             allowed_root: None,
+            sandbox: None,
+            configured_sandbox_profile: Some(codegg_core::approval::SandboxProfile::WorkspaceWrite),
         }
     }
 
@@ -68,6 +73,28 @@ impl TerminalTool {
 
     pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
         self.allowed_root = Some(root);
+        self
+    }
+
+    /// Apply the daemon-resolved filesystem profile to this finite process
+    /// adapter. Constrained profiles require a workspace root and fail closed
+    /// when the host has no enforcing backend.
+    pub fn with_sandbox_profile(
+        mut self,
+        profile: codegg_core::approval::SandboxProfile,
+        workspace_root: &std::path::Path,
+    ) -> Self {
+        self.sandbox = sandbox_config_for_profile(profile, workspace_root);
+        self.configured_sandbox_profile = Some(profile);
+        self
+    }
+
+    pub(crate) fn with_sandbox_profile_without_root(
+        mut self,
+        profile: codegg_core::approval::SandboxProfile,
+    ) -> Self {
+        self.sandbox = None;
+        self.configured_sandbox_profile = Some(profile);
         self
     }
 
@@ -133,6 +160,7 @@ impl TerminalTool {
         audit_ctx: Option<&ToolExecutionContext>,
         digest_hex: &str,
         outcome: &str,
+        process: &crate::managed_process::ManagedProcessResult,
     ) {
         let Some(ctx) = audit_ctx else { return };
         let Some((audit, emitter)) = ctx.live_audit_hook() else {
@@ -143,18 +171,37 @@ impl TerminalTool {
             digest_hex,
             outcome,
         );
-        crate::live_execution_audit::emit_command_execute(
+        let filesystem = crate::tool::bash::sandbox_outcome_label(
+            &process.sandbox,
+            ctx.execution_authorization.as_ref(),
+        );
+        let metadata = crate::live_execution_audit::CommandExecutionResultMetadata {
+            exit_code: process.exit_status.code(),
+            output_truncated: process.stdout.is_truncated() || process.stderr.is_truncated(),
+            cleanup: if process.cleanup.errors.is_empty() {
+                "clean"
+            } else {
+                "error"
+            },
+            helper: if process.sandbox.is_contained() {
+                "codegg-sandbox-helper"
+            } else {
+                "none"
+            },
+        };
+        crate::live_execution_audit::emit_command_execute_with_result(
             emitter,
             audit,
             digest_hex,
             "process",
             outcome,
             &scope,
-            None,
+            ctx.execution_authorization.as_ref(),
             Some("terminal"),
+            Some(&filesystem),
+            ctx.execution_authorization.as_ref().map(|_| "unrestricted"),
             None,
-            None,
-            None,
+            Some(metadata),
         )
         .await;
     }
@@ -275,6 +322,52 @@ impl TerminalTool {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .ok_or_else(|| ToolError::Execution("terminal cwd could not be resolved".into()))?;
+        let execution_authorization = audit_ctx.and_then(|ctx| ctx.execution_authorization.clone());
+        if let (Some(profile), Some(authorization)) = (
+            self.configured_sandbox_profile,
+            execution_authorization.as_ref(),
+        ) {
+            if authorization.snapshot.sandbox_profile() != profile {
+                return Err(ToolError::Permission(
+                    "sandbox policy changed before terminal execution".to_string(),
+                ));
+            }
+        }
+        if self.configured_sandbox_profile.is_none()
+            && execution_authorization
+                .as_ref()
+                .is_some_and(|authorization| {
+                    authorization
+                        .snapshot
+                        .sandbox_profile()
+                        .requires_filesystem_containment()
+                })
+        {
+            return Err(ToolError::Permission(
+                "required terminal filesystem containment has no configured workspace root"
+                    .to_string(),
+            ));
+        }
+        let sandbox = match self.configured_sandbox_profile {
+            Some(profile) if profile.requires_filesystem_containment() => {
+                let config = self.sandbox.as_ref().ok_or_else(|| {
+                    ToolError::Permission(
+                        "required terminal filesystem containment is unavailable".to_string(),
+                    )
+                })?;
+                if !crate::security::sandbox::sandbox_execution_path(Some(config)).is_contained() {
+                    return Err(ToolError::Permission(
+                        "required terminal filesystem containment is unavailable".to_string(),
+                    ));
+                }
+                crate::managed_process::SandboxRequest::Required(config.launch_spec(
+                    "sh",
+                    &["-c".to_string(), full_command.clone()],
+                    Some(&cwd),
+                )?)
+            }
+            Some(_) | None => crate::managed_process::SandboxRequest::Disabled,
+        };
         let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
         for (key, value) in env_vars {
             environment_policy = environment_policy.with_var(key, value);
@@ -291,6 +384,8 @@ impl TerminalTool {
         request.environment_policy = environment_policy;
         request.timeout = Some(timeout);
         request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
+        request.sandbox = sandbox;
+        request.execution_authorization = execution_authorization;
         let output = crate::managed_process::ManagedProcessService::run(request)
             .await
             .map_err(|error| ToolError::Execution(error.to_string()))?;
@@ -304,6 +399,7 @@ impl TerminalTool {
                 audit_ctx,
                 &crate::live_execution_audit::command_digest_str(&full_command),
                 crate::live_execution_audit::OUTCOME_TIMEOUT,
+                &output,
             )
             .await;
             return Err(ToolError::Timeout(format!(
@@ -323,6 +419,7 @@ impl TerminalTool {
             audit_ctx,
             &crate::live_execution_audit::command_digest_str(&full_command),
             terminal,
+            &output,
         )
         .await;
 
@@ -506,7 +603,9 @@ mod tests {
     async fn hard_denied_script_does_not_spawn_a_side_effect() {
         let workspace = tempfile::tempdir().expect("temporary terminal workspace");
         let marker = workspace.path().join("marker");
-        let tool = TerminalTool::new().with_workdir(workspace.path().to_path_buf());
+        let tool = TerminalTool::new()
+            .with_workdir(workspace.path().to_path_buf())
+            .with_sandbox_profile_without_root(codegg_core::approval::SandboxProfile::FullHost);
         let result = tool
             .execute(json!({
                 "command": "printf",
@@ -522,5 +621,21 @@ mod tests {
             marker.exists(),
             "the harmless fixture should execute in this direct-tool test"
         );
+    }
+
+    #[tokio::test]
+    async fn constrained_terminal_without_a_workspace_root_fails_before_spawn() {
+        let workspace = tempfile::tempdir().expect("temporary terminal workspace");
+        let marker = workspace.path().join("marker");
+        let tool = TerminalTool::new().with_workdir(workspace.path().to_path_buf());
+        let error = tool
+            .execute(json!({
+                "command": "touch",
+                "args": [marker.to_string_lossy()]
+            }))
+            .await
+            .expect_err("unconfigured constrained terminal must fail closed");
+        assert!(error.to_string().contains("containment is unavailable"));
+        assert!(!marker.exists(), "the command must not have spawned");
     }
 }

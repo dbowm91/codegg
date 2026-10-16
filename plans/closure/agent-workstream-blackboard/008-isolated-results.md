@@ -97,3 +97,28 @@ its group-scoped peer/claim surfaces, plus a verified workspace root for the
 requested sandbox. Complete the remaining task strata and repeat S1 after the
 timeout before writing the M008 strict closure record. S4 remains unavailable
 pending M005. No downstream plan is unblocked by these partial results.
+
+## 5. Live headless and Darwin terminal sandbox smoke (2026-10-16)
+
+Using the source-built arm64 binary, an isolated daemon/data root, a resolved
+temporary project registration, and a managed worktree session, a harmless
+provider-backed `headless` turn completed. Provider metadata and the model
+catalog were staged into the trial database by opaque reference only; no
+credential material was read or copied.
+
+The first terminal-tool smoke wrote a unique probe under `/tmp` despite the
+session's `workspace_write` policy. Source tracing found that the legacy
+`terminal` tool did not propagate the tool execution authorization or build a
+required sandbox request. The file was removed. After the corrective change
+at source commit `TO_BE_REPLACED`, focused terminal tests passed 5/5 and the
+sandbox-policy and execution-ownership guards passed. A fresh daemon-backed
+terminal call then wrote/read/deleted a temporary file in the managed
+worktree and received `Operation not permitted` for the `/tmp` write; a host
+check confirmed the outside probe was absent. The observed limitation is
+Darwin Seatbelt plus the tested terminal path/session root only. It is not
+shared-checkout or all-writer evidence.
+
+No provider-backed comparative trial has yet started against this corrected
+source. S0 and a multi-agent isolated arm must still use the frozen
+Rust/Python shared-interface task. The pilot and earlier S0/S1 results remain
+separate and are not pooled.

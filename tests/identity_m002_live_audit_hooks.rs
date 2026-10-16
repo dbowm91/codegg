@@ -484,7 +484,13 @@ async fn bash_retry_with_same_invocation_key_does_not_duplicate() {
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_direct_native_process_path_emits_once() {
     let pool = test_pool().await;
-    let tool = codegg::tool::terminal::TerminalTool::new();
+    let workspace = tempfile::tempdir().expect("terminal workspace");
+    let tool = codegg::tool::terminal::TerminalTool::new()
+        .with_workdir(workspace.path().to_path_buf())
+        .with_sandbox_profile(
+            codegg::permission::approval::SandboxProfile::FullHost,
+            workspace.path(),
+        );
     let ctx = tool_ctx(&pool, "corr-terminal", "inv-terminal");
     let out = tool
         .execute_structured(
@@ -508,6 +514,13 @@ async fn terminal_direct_native_process_path_emits_once() {
     assert_eq!(
         rows[0].metadata.get("decision.outcome").map(String::as_str),
         Some("success")
+    );
+    assert_eq!(
+        rows[0]
+            .metadata
+            .get("execution.filesystem")
+            .map(String::as_str),
+        Some("disabled")
     );
     let blob = metadata_blob(&rows[0]);
     assert!(

@@ -780,13 +780,18 @@ impl ToolRegistry {
         });
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(match workspace_root.as_ref() {
-            Some(root) if options.child_git_policy.is_some() => {
-                crate::tool::terminal::TerminalTool::default()
+            Some(root) => {
+                let terminal = crate::tool::terminal::TerminalTool::default()
                     .with_workdir(root.clone())
-                    .with_allowed_root(root.clone())
+                    .with_sandbox_profile(sandbox_profile, root);
+                if options.child_git_policy.is_some() {
+                    terminal.with_allowed_root(root.clone())
+                } else {
+                    terminal
+                }
             }
-            Some(root) => crate::tool::terminal::TerminalTool::default().with_workdir(root.clone()),
-            None => crate::tool::terminal::TerminalTool::default(),
+            None => crate::tool::terminal::TerminalTool::default()
+                .with_sandbox_profile_without_root(sandbox_profile),
         });
         let test_tool = if let Some(ref store) = options.run_store {
             crate::tool::test::TestTool::with_run_store(store.clone())
