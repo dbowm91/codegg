@@ -12,7 +12,7 @@ use codegg_client::{DocumentControllerError, DocumentState};
 
 use super::async_request::AsyncUiRequestState;
 use crate::tui::document_session::TuiDocumentSession;
-use crate::tui::editor::{EditorFocus, EditorMode};
+use crate::tui::editor::EditorMode;
 
 /// Which lifecycle operation is in flight.
 ///
@@ -289,6 +289,11 @@ pub struct EditorState {
     /// Completion popup state bound to this document generation. Typed
     /// candidates and presentation identity only; never document text.
     pub completion: crate::tui::editor_completion::EditorCompletionState,
+    /// When the quiet-period syntax-highlight re-request is due.
+    ///
+    /// See [`EditorState::arm_semantic_refresh`]. `None` means nothing is
+    /// pending, so the render pump does no work at all in the common case.
+    pub semantic_refresh_due_at: Option<std::time::Instant>,
 }
 
 impl Default for EditorState {
@@ -301,6 +306,7 @@ impl Default for EditorState {
             generation: 0,
             operation: None,
             notice: None,
+            semantic_refresh_due_at: None,
             status: EditorStatus::Closed,
             wants_writer: false,
             close_after_save: false,
@@ -321,11 +327,16 @@ impl EditorState {
         self.operation.is_some()
     }
 
-    /// Whether the buffer region owns keyboard input.
-    pub fn buffer_focused(&self) -> bool {
-        self.session
-            .as_ref()
-            .is_some_and(|session| session.presentation().focus == EditorFocus::Buffer)
+    /// Whether the buffer owns keyboard input, given the route's mode.
+    ///
+    /// Takes the mode as a parameter rather than reading a second stored fact,
+    /// because there is only one axis: `Insert` hands the keyboard to the
+    /// document and `Normal` leaves it with the Helix verbs plus the bottom
+    /// input box. Asking the state where "focus" is — the question this used
+    /// to answer from a field that could disagree with the mode — is what made
+    /// the editor look dead while rendering a file.
+    pub fn buffer_focused(&self, mode: crate::tui::input::InputMode) -> bool {
+        mode == crate::tui::input::InputMode::Insert && self.is_open()
     }
 
     /// Whether the attachment currently holds the writer lease.
@@ -354,6 +365,37 @@ impl EditorState {
         self.notice = None;
     }
 
+    /// Arm a quiet-period re-request of this document's syntax highlighting.
+    ///
+    /// A local edit drops every semantic span, because they are bound to a
+    /// replica revision that the edit has just moved past. Refusing to paint
+    /// them is correct. Dropping them and *never asking again* is not: the
+    /// editor went permanently colourless on the first keystroke of every
+    /// session, and the only way back was reopening the file or pressing a key
+    /// nothing on screen named.
+    ///
+    /// So the re-request is deferred, not dropped: each edit re-arms this
+    /// timer, and the render pump issues **one** request once typing pauses.
+    /// Per-keystroke requests would storm the server; no request at all
+    /// strands the user with a monochrome file that looks broken.
+    pub fn arm_semantic_refresh(&mut self, at: std::time::Instant) {
+        self.semantic_refresh_due_at = Some(at);
+    }
+
+    /// Whether the quiet period has elapsed and the highlight is due.
+    ///
+    /// Pure over `now` so the timing rule is testable without a clock, and it
+    /// consumes the arming so the pump cannot re-fire it every frame.
+    pub fn take_semantic_refresh_due(&mut self, now: std::time::Instant) -> bool {
+        match self.semantic_refresh_due_at {
+            Some(due) if now >= due => {
+                self.semantic_refresh_due_at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Invalidate every in-flight completion and detach the session.
     ///
     /// Called when the editor closes or switches documents. Bumping the
@@ -363,6 +405,9 @@ impl EditorState {
         self.generation = self.generation.wrapping_add(1);
         self.request.cancel();
         self.operation = None;
+        // A pending refresh belongs to the document being closed. Firing it
+        // after the next open would highlight the wrong file.
+        self.semantic_refresh_due_at = None;
         self.session = None;
         self.path = None;
         self.scope = codegg_protocol::document::DocumentScope::default();
@@ -509,7 +554,8 @@ mod tests {
         let state = EditorState::default();
         assert!(!state.is_open());
         assert!(!state.is_busy());
-        assert!(!state.buffer_focused());
+        assert!(!state.buffer_focused(crate::tui::input::InputMode::Insert));
+        assert!(!state.buffer_focused(crate::tui::input::InputMode::Normal));
         assert!(!state.is_writer());
         assert_eq!(state.mode(), EditorMode::Normal);
     }

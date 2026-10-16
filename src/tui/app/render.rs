@@ -633,10 +633,13 @@ impl App {
             }
             Route::Editor => {
                 let path = self.editor_state.path.clone().unwrap_or_default();
-                let focus = if self.editor_state.buffer_focused() {
-                    "buffer"
+                // The same NOR/INS vocabulary the composer badge and every
+                // dockable box use. "focus:composer" named an axis that no
+                // longer exists, and read as a third mode.
+                let focus = if self.editor_state.buffer_focused(self.ui_state.input_mode) {
+                    "INS"
                 } else {
-                    "composer"
+                    "NOR"
                 };
                 Line::from(vec![
                     Span::styled(
@@ -646,7 +649,7 @@ impl App {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!(" {path}  focus:{focus}"),
+                        format!(" {path}  {focus}"),
                         Style::default().fg(self.ui_state.theme.muted),
                     ),
                 ])
@@ -827,7 +830,7 @@ impl App {
         let presentation = session.presentation();
         let cursor = presentation.cursor_byte;
         let mode = presentation.mode;
-        let focus = presentation.focus;
+        let focus = self.editor_state.buffer_focused(self.ui_state.input_mode);
         let pending = presentation
             .pending_command
             .get(..crate::tui::editor::MAX_EDITOR_PENDING_COMMAND)
@@ -857,7 +860,7 @@ impl App {
                 status: status.label(),
                 notice: notice.as_deref(),
                 mode,
-                focus,
+                buffer_focused: focus,
                 pending_command: &pending,
                 command_active,
                 command_line: &command_line,
@@ -880,18 +883,21 @@ impl App {
     ///
     /// Borrows only `file_tree_state` and the theme, and is a no-op when the
     /// pane is hidden or did not fit, so the M006-A render path is unchanged
-    /// in the default configuration.
-    fn render_file_tree_pane(&self, frame: &mut Frame, area: Option<Rect>) {
+    /// in the default configuration. The measured viewport is published back
+    /// into the state because `Ctrl+d`/`Ctrl+u` page by it and no other layer
+    /// knows how tall the pane ended up.
+    fn render_file_tree_pane(&mut self, frame: &mut Frame, area: Option<Rect>) {
         let Some(area) = area else { return };
         if !self.file_tree_state.visible {
             return;
         }
-        crate::tui::components::file_tree::FileTreeView::new(
+        let layout = crate::tui::components::file_tree::FileTreeView::new(
             &self.file_tree_state,
             self.ui_state.tree_focused,
             Arc::clone(&self.ui_state.theme),
         )
         .render(frame, area);
+        self.file_tree_state.viewport_rows = layout.viewport_rows;
     }
 
     /// M005: non-modal Workspace primary view. Reads the bounded

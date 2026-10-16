@@ -550,9 +550,20 @@ security signal pipeline that can escalate them, are described in
 
 ## Editor language features
 
+Opening a file puts the cursor in the document (`INS`). `Esc` returns to
+`NOR`, where `hjkl`/arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump by word,
+`v` selects by character, `x` selects the whole line (press again for one more),
+`d` deletes the selection, and `space y` copies it — the same Helix keys
+`/terminal` uses in its viewing mode. In `NOR` anything the buffer does not
+claim types into the input box at the bottom, so you can talk to the agent
+without leaving the file. `Esc` never closes the editor; `:q` does.
+
+Syntax highlighting arrives with the file and is refreshed shortly after you
+stop typing. Press `F9` to ask again if your language server was still starting.
+
 The editor can show current-file diagnostics and request hover, definition,
 references, document symbols, and workspace symbols from the daemon-owned
-language server. With the editor buffer focused, use F2 for diagnostics, F3
+language server. Use F2 for diagnostics, F3
 for hover, F4 for definition, F5 for references, F6 for document symbols,
 and F7 to search workspace symbols for the word at the cursor. The result
 panel shows unavailable and not-ready states explicitly. A failed refresh
@@ -565,8 +576,8 @@ updates.
 
 ### Completion
 
-With the editor buffer focused, press F8 — or type `:complete` in Normal
-mode — to ask the language server for completions at the cursor. A popup
+Press F8 — or type `:complete` in Normal mode — to ask the language server for
+completions at the cursor. A popup
 lists the suggestions with their kind and detail; `↑`/`↓` (or `j`/`k` in
 Normal mode) move the selection, `Enter` applies the selected item, and
 `Esc` dismisses the popup without touching anything. Typing anything else
@@ -614,6 +625,11 @@ at the end of the shown prefix; normal files are unaffected.
 The file tree (Ctrl+T pane and `/files`) shows the daemon's directory
 listing for the active workspace: the daemon walks at most 100,000
 directory entries and keeps at most 4096, saying which limit stopped it.
+`l` re-roots the listing at a directory, which is a fresh daemon walk of
+that subtree rather than a filter of what is already on screen, so the
+bounds above apply to the directory you are actually in. A completion
+answered for a different subtree than the one requested is discarded rather
+than painted.
 The complete listing response (entries plus workspace/prefix, status,
 and truncation reason) is capped at 512 KiB on the wire: oversized trees
 are trimmed from the trailing top-level entries with an explicit reason,
@@ -630,6 +646,33 @@ why. Listings unavailable from the daemon are explicit errors — the tree
 never falls back to reading the local machine's own files, so a
 same-spelled local directory can never masquerade as the workspace. A busy
 daemon asks for an explicit retry with `r`.
+
+## Browsing files
+
+`Ctrl+T` opens a tree pane beside the editor; `/files` opens the same
+navigator as a box you can dock into the side panel with `Shift+L`. Both run
+the same navigation, so the keys below mean the same thing in both.
+
+| Key | What it does |
+|---|---|
+| `j` / `k`, `↓` / `↑` | move the cursor |
+| `Ctrl+d` / `Ctrl+u` | page down / page up (two thirds of the pane) |
+| `Enter` on a directory | expand or collapse it in place — the cursor stays |
+| `l` / `→` | make that directory the **root** and list what's inside it |
+| `h` / `←` | go back one level (at the workspace root: collapse in place, otherwise jump to the parent) |
+| `Enter` on a file | open it in the editor |
+| `r` | re-list the current directory |
+| `Esc` | leave the pane / close the box |
+
+`l` re-roots rather than expanding, so the listing always has a top level:
+walking into a deeply nested tree is the same operation at every depth, and
+`h` puts the cursor back on the directory you just came out of. The title
+names the directory you are in.
+
+Rows show a per-type icon (folders, source files by language, docs, configs,
+media) using Nerd Font glyphs. If your terminal shows them as boxes, set
+`CODEGG_FILE_ICONS=plain` before starting CodeGG to fall back to the plain
+caret markers.
 
 ## Where to go next
 

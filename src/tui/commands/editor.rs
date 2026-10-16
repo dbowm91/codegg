@@ -39,7 +39,7 @@ use crate::tui::app::{App, TuiCommand};
 use crate::tui::async_cmd::{spawn_registered_tui_task, spawn_scoped_registered_tui_task};
 use crate::tui::document_session::TuiDocumentSession;
 use crate::tui::editor::{
-    self, EditorCommand, EditorCommandName, EditorFocus, EditorMode, MAX_EDITOR_PENDING_COMMAND,
+    self, EditorCommand, EditorCommandName, EditorMode, MAX_EDITOR_PENDING_COMMAND,
 };
 use crate::tui::task_lifecycle::TuiTaskKind;
 
@@ -51,6 +51,26 @@ pub const MAX_EDITOR_RELATIVE_PATH: usize = 512;
 
 /// Maximum number of path components accepted by the open command.
 const MAX_EDITOR_PATH_DEPTH: usize = 64;
+
+/// How long the editor waits for typing to pause before re-requesting syntax
+/// highlighting.
+///
+/// Long enough that a fast typist produces one request, not one per
+/// keystroke; short enough that the file is never colourless for long.
+const SEMANTIC_REFRESH_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_millis(600);
+
+/// Issue the pending syntax-highlight refresh if its quiet period has
+/// elapsed. Called from the render pump; a no-op unless an edit armed it.
+pub(crate) fn service_editor_semantic_refresh(app: &mut App, now: std::time::Instant) -> bool {
+    if !app
+        .editor_state
+        .take_semantic_refresh_due(std::time::Instant::now().max(now))
+    {
+        return false;
+    }
+    request_editor_semantic_tokens(app);
+    true
+}
 
 /// Whether the editor primary view is active.
 pub(crate) fn is_editor_view_active(app: &App) -> bool {
@@ -150,7 +170,7 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
         app.messages_state
             .toasts
             .info("Document is already open in the editor");
-        focus_editor_buffer(&mut app.editor_state);
+        enter_editor_insert(app);
         return;
     }
     let context = match app.project_execution_context() {
@@ -196,6 +216,14 @@ pub(crate) fn open_editor_in(app: &mut App, raw_path: &str, scope: DocumentScope
 
     let session = TuiDocumentSession::new(core_client);
     app.editor_state.session = Some(session);
+    // Opening a file puts the keyboard *in the document*. The alternative —
+    // arriving on the editor route with the keyboard nowhere useful — is what
+    // made opening a file read as "the editor does not work": the buffer
+    // rendered, every Helix verb moved a cursor nobody could see was live, and
+    // every printable character went to the input box instead. INS is the mode
+    // a user opens an editor to be in; `Esc` is one keystroke away, and Normal
+    // is where the Helix verbs and the input box are.
+    enter_editor_insert(app);
     if !matches!(
         app.ui_state.routes.current(),
         crate::tui::route::Route::Editor
@@ -387,9 +415,10 @@ pub(crate) fn open_editor_template_in(
             .routes
             .navigate_to(crate::tui::route::Route::Editor);
     }
-    // Focus the buffer immediately: the user asked for a new file to edit,
-    // and landing in the composer would make the template look unfocused.
-    focus_editor_buffer(&mut app.editor_state);
+    // Put the keyboard in the document immediately: the user asked for a new
+    // file to *edit*, and landing anywhere else makes the template look
+    // unfocused.
+    enter_editor_insert(app);
 
     let controller = app
         .editor_state
@@ -475,7 +504,7 @@ pub(crate) fn apply_editor_opened(
     }
     app.editor_state.clear_notice();
     refresh_editor_diagnostics(app);
-    start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+    request_editor_semantic_tokens(app);
 }
 
 fn current_lsp_scope(app: &App) -> Option<EditorLspScope> {
@@ -798,6 +827,36 @@ fn validate_semantic_tokens(
     Some(crate::tui::editor_lsp::validate_semantic_tokens(
         &snapshot, tokens,
     ))
+}
+
+/// Ask the language server for this document's semantic tokens.
+///
+/// The daemon, the protocol, the validation, and the widget's span builder all
+/// already existed; nothing ever *asked*. That is the whole reason the
+/// editor had no syntax highlighting despite carrying a token renderer and a
+/// `token_style` map — the pipeline was complete and unwired.
+///
+/// Two properties matter and are enforced here rather than at the call sites:
+///
+/// - It never opens the LSP result panel. Highlighting is ambient — it should
+///   arrive without stealing the surface the user is reading — so a failure
+///   leaves the document unhighlighted rather than throwing a modal over it.
+///   The explicit `F8` retry is the escape hatch for a server that was still
+///   booting and answered `NotReady`.
+/// - It shares `begin_read` with hover/definition, so a read already in flight
+///   makes this a no-op rather than a second concurrent round trip. That is
+///   acceptable: the next explicit request, or the next open, will pick it up.
+pub(crate) fn request_editor_semantic_tokens(app: &mut App) {
+    if current_lsp_scope(app).is_none() {
+        return;
+    }
+    start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+    // Clear the panel unconditionally, including on the two failure paths that
+    // set it. Highlighting is ambient: a server that is not up yet should
+    // leave the document unhighlighted, not throw a read-result box over the
+    // file the user opened. `F8` is the retry, and the previous highlight is
+    // still what is on screen until a validated response replaces it.
+    app.editor_state.lsp.panel = None;
 }
 
 // ── Completion (M004) ────────────────────────────────────────────────────────
@@ -1166,6 +1225,13 @@ fn leave_editor_view(app: &mut App) {
             .routes
             .navigate_to(crate::tui::route::Route::Home);
     }
+    // The route owned Insert while the document had the keyboard. Leaving it
+    // set would silently disable every focused side panel on the destination:
+    // a panel is consulted only in Normal mode, so "INS" carried over from a
+    // closed editor is a panel that looks focused and takes no keys. The
+    // composer is the only destination here, and it types regardless of mode.
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    app.editor_state.semantic_refresh_due_at = None;
 }
 
 // ── Save / reload / resync ───────────────────────────────────────────────────
@@ -1350,7 +1416,7 @@ pub(crate) fn apply_editor_operation_finished(
         app.editor_state.detach();
     } else if operation == EditorOperation::Save {
         refresh_editor_diagnostics(app);
-        start_editor_lsp_read(app, LspReadOperation::SemanticTokens, None);
+        request_editor_semantic_tokens(app);
         // A saved agent config must become visible in `/agents` without a
         // second command, or `:wq` would not do what the user asked. This is
         // the daemon-owned refresh every `/reload` already uses.
@@ -1430,10 +1496,7 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
         return;
     };
     let controller = session.controller();
-    let (cursor_before, anchor_before) = {
-        let presentation = session.presentation();
-        (presentation.cursor_byte, presentation.selection.clone())
-    };
+    let cursor_before = session.presentation().cursor_byte;
     match controller.apply_local(transaction) {
         Ok(_) => {
             // Clamp against the post-edit text, not the pre-edit snapshot.
@@ -1452,17 +1515,19 @@ fn submit_edit(state: &mut EditorState, edit: editor::EditorEdit) {
                 None => presentation.cursor_byte = cursor_after,
             }
             if stay_insert {
+                // Safe by construction, not by convention: `stay_insert` is
+                // only ever true for an edit resolved while the model was
+                // already inserting, and the route only enters Insert through
+                // `BufferKey::EnterInsert`. So this write agrees with
+                // `App::ui_state.input_mode` instead of racing it.
                 presentation.mode = EditorMode::Insert;
             }
-            editor::push_undo(
-                presentation,
-                forward,
-                inverse,
-                bytes,
-                cursor_before,
-                anchor_before,
-            );
+            editor::push_undo(presentation, forward, inverse, bytes, cursor_before);
+            // Spans are bound to a revision this edit has moved past, so
+            // they cannot paint any more. Re-asking is deferred to the pump's
+            // quiet period instead of happening per keystroke.
             state.lsp.clear_semantic();
+            state.arm_semantic_refresh(std::time::Instant::now() + SEMANTIC_REFRESH_QUIET_PERIOD);
             // Any local edit — including a completion accept — invalidates
             // the popup and its pending request: the text moved on.
             state.completion.clear();
@@ -1562,7 +1627,7 @@ pub(crate) fn editor_undo(state: &mut EditorState) {
     // The redo entry keeps the forward transaction and is rebased onto the
     // position the user is leaving, so redoing returns to where the edit
     // left the cursor rather than to the undo point.
-    editor::record_redo(presentation, entry.rebased(cursor_leaving, None));
+    editor::record_redo(presentation, entry.rebased(cursor_leaving));
     state.lsp.clear_semantic();
     state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
@@ -1605,7 +1670,7 @@ pub(crate) fn editor_redo(state: &mut EditorState) {
         }
         None => presentation.cursor_byte = entry.cursor_before,
     }
-    editor::restore_undo(presentation, entry.rebased(cursor_leaving, None));
+    editor::restore_undo(presentation, entry.rebased(cursor_leaving));
     state.lsp.clear_semantic();
     state.completion.clear();
     if !state.lsp.diagnostics.is_empty() {
@@ -1657,19 +1722,31 @@ pub(crate) fn editor_delete_backward(state: &mut EditorState) {
     submit_edit(state, edit);
 }
 
-// ── Focus ────────────────────────────────────────────────────────────────────
+// ── Mode ─────────────────────────────────────────────────────────────────────
 
-/// Give the buffer keyboard focus, leaving the composer untouched.
-pub(crate) fn focus_editor_buffer(state: &mut EditorState) {
-    if let Some(session) = state.session.as_mut() {
-        session.presentation_mut().focus = EditorFocus::Buffer;
+/// Put the keyboard in the document.
+///
+/// The whole of "focus the buffer" now: there is no second axis to keep in
+/// step, so there is nothing that can put the editor in a state where the
+/// buffer renders and no key reaches it.
+pub(crate) fn enter_editor_insert(app: &mut App) {
+    app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
+    if let Some(session) = app.editor_state.session.as_mut() {
+        session.presentation_mut().mode = EditorMode::Insert;
     }
 }
 
-/// Return keyboard focus to the ordinary Session/Task composer.
-pub(crate) fn focus_editor_composer(state: &mut EditorState) {
-    if let Some(session) = state.session.as_mut() {
-        session.presentation_mut().focus = EditorFocus::Composer;
+/// Return the keyboard to the Helix verbs and the bottom input box.
+///
+/// Also closes a held selection, because leaving Insert with text selected
+/// and then typing into the *composer* is the one combination where the
+/// highlighted region and the place the text will land disagree.
+pub(crate) fn enter_editor_normal(app: &mut App) {
+    app.ui_state.input_mode = crate::tui::input::InputMode::Normal;
+    if let Some(session) = app.editor_state.session.as_mut() {
+        let presentation = session.presentation_mut();
+        presentation.mode = EditorMode::Normal;
+        presentation.selection = None;
     }
 }
 
@@ -1686,7 +1763,25 @@ pub(crate) fn focus_editor_composer(state: &mut EditorState) {
 /// `false` so it falls through to the editor and composer unchanged — the
 /// non-modal contract depends on this being a strict subset.
 fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers};
+    // Paging is checked before the character arms below: `Ctrl+d`/`Ctrl+u`
+    // carry `Char('d')`/`Char('u')` codes, and a listing that does not fit
+    // the pane needs a verb that moves more than one row. The tree only
+    // claims them while focused, so the editor's own half-page motions are
+    // untouched.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('d') => {
+                super::file_tree::page_selection(app, 1);
+                return true;
+            }
+            KeyCode::Char('u') => {
+                super::file_tree::page_selection(app, -1);
+                return true;
+            }
+            _ => {}
+        }
+    }
     match key.code {
         // Leaving the tree returns focus to the editor buffer without
         // changing the route, so the composer stays reachable.
@@ -1702,15 +1797,24 @@ fn handle_file_tree_key(app: &mut App, key: KeyEvent) -> bool {
             super::file_tree::move_selection(app, -1);
             true
         }
-        // `l`/`h` walk in and out of a directory, matching the `/files` box.
-        // Left alone, `h` used to toggle the selection instead of leaving it,
-        // so backing out and collapsing were the same key.
+        // `l` re-roots the pane on the selected directory and `h` steps back
+        // out one level, matching the `/files` box. `h` at the workspace
+        // root falls back to the in-listing collapse verb inside the command,
+        // so it is never a dead key.
         KeyCode::Char('l') | KeyCode::Right => {
-            super::file_tree::enter_selected(app);
+            let Some(path) = app
+                .file_tree_state
+                .selected_row()
+                .filter(|row| row.kind == crate::tui::file_tree::TreeNodeKind::Directory)
+                .map(|row| row.path)
+            else {
+                return true;
+            };
+            super::file_tree::descend_to(app, &path);
             true
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            super::file_tree::leave_selected(app);
+            super::file_tree::ascend_one_level(app);
             true
         }
         // Enter opens a file, or expands a directory, through the existing
@@ -1743,31 +1847,60 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
         super::file_tree::toggle_tree(app);
         return true;
     }
-    // With the composer focused, Esc leaves the view. With the buffer
-    // focused, Esc is handled by the buffer key handler so the step from
-    // insert mode to focus stays explicit.
-    if key.code == KeyCode::Esc && !app.editor_state.buffer_focused() {
-        close_editor(app);
+    // Esc is modal *within* the route, and the popup and the LSP result panel
+    // outrank the mode step: while either is showing, Esc dismisses it and
+    // nothing else happens. Answering the route first left Esc unable to
+    // close a completion popup, which is the one dismissal the popup
+    // documents as side-effect-free.
+    if handle_lsp_panel_key(app, key) {
         return true;
     }
-    if !app.editor_state.buffer_focused() {
-        // While the composer owns input, only the buffer focus toggle is an
-        // editor concern. Everything else belongs to the prompt.
-        if key.code == KeyCode::Char('e') && key.modifiers == KeyModifiers::CONTROL {
-            focus_editor_buffer(&mut app.editor_state);
-            app.messages_state
-                .toasts
-                .info("Editor buffer focused — Esc returns to the composer, Esc again leaves");
+    if handle_completion_key(app, key) {
+        return true;
+    }
+    // `Esc` is a *mode* step on this route, never an exit. It used to call
+    // `close_editor`, which meant the only key that could get you out of
+    // Insert was also the key that threw the document away — and the way back
+    // from Insert was a chord (`Ctrl+E`) nothing on screen named. Now it is
+    // the same two-step every other surface uses: Insert leaves to Normal, and
+    // Normal says what actually closes it (`:q`).
+    //
+    // Answered ahead of every other editor key because it is modal over them:
+    // in Normal the `:` command line is closed first, and in Insert a document
+    // that is about to be typed into must not also be one keystroke from gone.
+    if key.code == KeyCode::Esc {
+        if app
+            .editor_state
+            .session
+            .as_ref()
+            .is_some_and(|session| session.presentation().command_active)
+        {
+            if let Some(session) = app.editor_state.session.as_mut() {
+                session.presentation_mut().close_command_line();
+            }
             return true;
         }
+        if app.ui_state.input_mode == crate::tui::input::InputMode::Insert {
+            enter_editor_normal(app);
+            app.editor_state.clear_notice();
+        } else {
+            app.messages_state
+                .toasts
+                .info("Normal mode — the input box takes typing; i edits the file, :q closes it");
+        }
+        return true;
+    }
+    // No document, no buffer verbs. Everything falls through to the composer
+    // so browsing the tree before choosing a file still types normally.
+    if !app.editor_state.is_open() {
         return false;
     }
-    // M006-F: with the buffer focused the editor has taken the place of the
-    // main buffer, so the directional pane gestures stay available here —
-    // `Shift+L` into the column, `Shift+H` back — and they are answered
-    // *before* the buffer keymap, which would otherwise read `L`/`H` as an
-    // unknown normal-mode verb. Normal mode only: in Insert those letters
-    // are document text.
+    // M006-F: with the editor on screen it has taken the place of the main
+    // buffer, so the directional pane gestures stay available here — `Shift+L`
+    // into the column, `Shift+H` back — and they are answered *before* the
+    // buffer keymap, which would otherwise read `L`/`H` as an unknown
+    // normal-mode verb. Normal mode only, which is where the gesture used to
+    // be answered from: in Insert those letters are document text.
     if app.ui_state.input_mode == crate::tui::input::InputMode::Normal {
         if let Some(action) = crate::tui::input::handle_key_with_bindings(
             key,
@@ -1780,12 +1913,6 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
                 return true;
             }
         }
-    }
-    if handle_lsp_panel_key(app, key) {
-        return true;
-    }
-    if handle_completion_key(app, key) {
-        return true;
     }
     match key.code {
         KeyCode::F(2) => {
@@ -1817,12 +1944,28 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             start_editor_lsp_read(app, LspReadOperation::WorkspaceSymbols, Some(query));
             return true;
         }
+        // F9 refreshes syntax highlighting. It is an explicit retry for a
+        // server that answered `NotReady` while booting, which is why the
+        // automatic request on open is not the only way in.
+        //
+        // F9, not F8: F8 is the completion trigger, and a highlight refresh
+        // silently stealing it would make `:complete`-less invocation open a
+        // popup instead. F2-F8 are already diagnostics/hover/def/refs/symbols/
+        // workspace-symbols/completion, so F9 is the next free key.
+        KeyCode::F(9) => {
+            request_editor_semantic_tokens(app);
+            return true;
+        }
         _ => {}
     }
     // Lifecycle round trips stay on the App layer, so the buffer handler
     // reports the request instead of performing it.
-    match editor_buffer_key(&mut app.editor_state, key) {
+    match editor_buffer_key(&mut app.editor_state, app.ui_state.input_mode, key) {
         BufferKey::Consumed => true,
+        // Normal mode deliberately returns `false` for a key it does not own.
+        // That is what hands typing to the bottom input box while the buffer
+        // keeps its Helix verbs: the editor claims navigation and editing, and
+        // everything it does not recognise stays a composer keystroke.
         BufferKey::Unhandled => false,
         BufferKey::RequestSave => {
             save_editor(app);
@@ -1836,8 +1979,26 @@ pub(crate) fn handle_editor_key(app: &mut App, key: KeyEvent) -> bool {
             reload_editor(app);
             true
         }
-        BufferKey::RequestLeaveBuffer => {
-            leave_editor_buffer(&mut app.editor_state);
+        BufferKey::DeleteRange(range) => {
+            let Some(session) = app.editor_state.session.as_ref() else {
+                return true;
+            };
+            let Some(snapshot) = session.try_snapshot() else {
+                return true;
+            };
+            if let Some(edit) = editor::delete_range(&snapshot, range) {
+                submit_edit(&mut app.editor_state, edit);
+            }
+            true
+        }
+        BufferKey::YankRange(range) => {
+            yank_editor_range(app, range);
+            true
+        }
+        // The document took the keyboard: adopt Insert mode so the badge, the
+        // cursor style, and the key routing all agree.
+        BufferKey::EnterInsert => {
+            app.ui_state.input_mode = crate::tui::input::InputMode::Insert;
             true
         }
         BufferKey::RunCommand(command, argument) => {
@@ -2066,24 +2227,15 @@ fn editor_word_at_cursor(state: &EditorState) -> Option<String> {
     (!word.is_empty()).then(|| word.chars().take(200).collect())
 }
 
-/// Leave the buffer, one step at a time: insert mode first, then focus.
-fn leave_editor_buffer(state: &mut EditorState) {
-    if state.mode() == EditorMode::Insert {
-        if let Some(session) = state.session.as_mut() {
-            session.presentation_mut().mode = EditorMode::Normal;
-        }
-        state.clear_notice();
-        return;
-    }
-    focus_editor_composer(state);
-}
-
-/// Outcome of one key while the editor buffer owns input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BufferKey {
     /// The editor handled the key; nothing else should see it.
     Consumed,
     /// The editor does not claim the key, so the composer may.
+    ///
+    /// This is what makes Normal mode usable rather than merely modal: the
+    /// buffer claims navigation and editing, and every letter it does not own
+    /// stays a keystroke for the bottom input box.
     Unhandled,
     /// The user asked to save; the App layer issues the round trip.
     RequestSave,
@@ -2091,10 +2243,16 @@ enum BufferKey {
     RequestResync,
     /// The user asked to reload from disk, discarding the local draft.
     RequestReload,
-    /// The user asked to leave the buffer. What that means depends on
-    /// state the App layer owns: insert mode becomes normal mode, and
-    /// normal mode returns focus to the composer.
-    RequestLeaveBuffer,
+    /// `d` asked for this range to be deleted. The App layer submits the
+    /// edit, because only it reaches the controller.
+    DeleteRange(std::ops::Range<usize>),
+    /// `space y` asked for this range to reach the system clipboard. The App
+    /// layer performs the copy, because the clipboard is not editor state.
+    YankRange(std::ops::Range<usize>),
+    /// An insertion entry (`i`/`a`/`I`/`A`/`o`/`O`) took the keyboard. The App
+    /// layer adopts Insert mode from this, because the route owns the mode
+    /// and the document owns the cursor.
+    EnterInsert,
     /// The user ran a `:` command. The App layer owns every round trip and
     /// every route change, so the buffer reports the parsed command rather
     /// than performing it.
@@ -2163,56 +2321,6 @@ fn handle_command_line_key(state: &mut EditorState, key: KeyEvent) -> BufferKey 
     }
 }
 
-/// Handle one key while the editor buffer owns input.
-///
-/// Pure presentation state, plus an explicit request for the two lifecycle
-/// round trips that belong to the App layer.
-fn editor_buffer_key(state: &mut EditorState, key: KeyEvent) -> BufferKey {
-    // Command mode is modal and outranks everything below it, including the
-    // mode-independent Ctrl chords: a half-typed `:q` must not be rewritten
-    // by `Ctrl+S` silently writing the file the user was about to close.
-    if state
-        .session
-        .as_ref()
-        .is_some_and(|session| session.presentation().command_active)
-    {
-        return handle_command_line_key(state, key);
-    }
-    // Save and resync are mode-independent and always available.
-    if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
-        return BufferKey::RequestSave;
-    }
-    if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
-        return BufferKey::RequestResync;
-    }
-    // `R` reloads from disk, discarding the local draft. It is
-    // destructive, so it is only reachable in normal mode; the App layer
-    // decides whether to issue the round trip.
-    if key.code == KeyCode::Char('R')
-        && key.modifiers == KeyModifiers::NONE
-        && state.mode() == EditorMode::Normal
-    {
-        return BufferKey::RequestReload;
-    }
-    // Esc always leaves the buffer. Leaving insert mode and returning
-    // focus are both pure state changes, but the App layer decides which
-    // one applies, so the request is reported rather than performed.
-    if key.code == KeyCode::Esc {
-        return BufferKey::RequestLeaveBuffer;
-    }
-    let visible_lines = visible_line_estimate();
-    let consumed = if state.mode() == EditorMode::Insert {
-        handle_insert_key(state, key, visible_lines)
-    } else {
-        handle_normal_key(state, key, visible_lines)
-    };
-    if consumed {
-        BufferKey::Consumed
-    } else {
-        BufferKey::Unhandled
-    }
-}
-
 /// Half-page motion needs a viewport height. The widget resolves the exact
 /// window at render time, so the key handler uses a nominal height: the
 /// motion is resolved by line, and the viewport follows the cursor on the
@@ -2268,138 +2376,6 @@ fn handle_insert_key(state: &mut EditorState, key: KeyEvent, visible_lines: usiz
     }
 }
 
-fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usize) -> bool {
-    // Multi-key prefixes resolve first.
-    let pending = state
-        .session
-        .as_ref()
-        .map(|session| session.presentation().pending_command.clone())
-        .unwrap_or_default();
-    if !pending.is_empty() {
-        if let Some(session) = state.session.as_mut() {
-            session.presentation_mut().pending_command.clear();
-        }
-        let KeyCode::Char(ch) = key.code else {
-            return true;
-        };
-        let resolved = match (pending.as_str(), ch) {
-            ("d", 'd') => Some(EditorCommand::DeleteLine),
-            ("d", 'w') => Some(EditorCommand::DeleteWord),
-            ("g", 'g') => Some(EditorCommand::BufferStart),
-            _ => None,
-        };
-        if let Some(command) = resolved {
-            editor_editing_command(state, command);
-        }
-        return true;
-    }
-
-    match key.code {
-        KeyCode::Char('h') | KeyCode::Left => {
-            editor_motion(state, EditorCommand::MoveLeft, visible_lines);
-            true
-        }
-        KeyCode::Char('l') | KeyCode::Right => {
-            editor_motion(state, EditorCommand::MoveRight, visible_lines);
-            true
-        }
-        KeyCode::Char('j') | KeyCode::Down => {
-            editor_motion(state, EditorCommand::MoveDown, visible_lines);
-            true
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            editor_motion(state, EditorCommand::MoveUp, visible_lines);
-            true
-        }
-        KeyCode::PageDown => {
-            editor_motion(state, EditorCommand::HalfPageDown, visible_lines);
-            true
-        }
-        KeyCode::PageUp => {
-            editor_motion(state, EditorCommand::HalfPageUp, visible_lines);
-            true
-        }
-        KeyCode::Char('0') if key.modifiers == KeyModifiers::NONE => {
-            editor_motion(state, EditorCommand::LineStart, visible_lines);
-            true
-        }
-        KeyCode::Char('$') => {
-            editor_motion(state, EditorCommand::LineEnd, visible_lines);
-            true
-        }
-        KeyCode::Char('G') => {
-            editor_motion(state, EditorCommand::BufferEnd, visible_lines);
-            true
-        }
-        KeyCode::Char('w') => {
-            editor_motion(state, EditorCommand::WordForward, visible_lines);
-            true
-        }
-        KeyCode::Char('b') => {
-            editor_motion(state, EditorCommand::WordBackward, visible_lines);
-            true
-        }
-        KeyCode::Char('d') => {
-            push_pending(state, 'd');
-            true
-        }
-        KeyCode::Char('g') => {
-            push_pending(state, 'g');
-            true
-        }
-        KeyCode::Char('i') => {
-            enter_insert(state, EditorCommand::InsertBefore);
-            true
-        }
-        KeyCode::Char('a') => {
-            enter_insert(state, EditorCommand::InsertAfter);
-            true
-        }
-        KeyCode::Char('I') => {
-            enter_insert(state, EditorCommand::InsertLineStart);
-            true
-        }
-        KeyCode::Char('A') => {
-            enter_insert(state, EditorCommand::InsertLineEnd);
-            true
-        }
-        KeyCode::Char('o') => {
-            enter_insert(state, EditorCommand::OpenLineBelow);
-            true
-        }
-        KeyCode::Char('O') => {
-            enter_insert(state, EditorCommand::OpenLineAbove);
-            true
-        }
-        KeyCode::Char('x') => {
-            editor_editing_command(state, EditorCommand::DeleteChar);
-            true
-        }
-        KeyCode::Char('D') => {
-            editor_editing_command(state, EditorCommand::DeleteToLineEnd);
-            true
-        }
-        KeyCode::Char('u') => {
-            editor_undo(state);
-            true
-        }
-        // `:` opens the command line. Normal mode only: in Insert the colon
-        // is document text, and silently swallowing it would make it
-        // impossible to type a URL into a file.
-        KeyCode::Char(':') if key.modifiers == KeyModifiers::NONE => {
-            if let Some(session) = state.session.as_mut() {
-                session.presentation_mut().open_command_line("");
-            }
-            true
-        }
-        KeyCode::Char('r') if key.modifiers == KeyModifiers::CONTROL => {
-            editor_redo(state);
-            true
-        }
-        _ => false,
-    }
-}
-
 fn push_pending(state: &mut EditorState, ch: char) {
     let Some(session) = state.session.as_mut() else {
         return;
@@ -2412,16 +2388,309 @@ fn push_pending(state: &mut EditorState, ch: char) {
     presentation.pending_command.push(ch);
 }
 
-/// Move the cursor for an insertion entry command and switch to insert mode.
-fn enter_insert(state: &mut EditorState, command: EditorCommand) {
-    let Some(session) = state.session.as_ref() else {
+/// Outcome of one key while the editor buffer owns input.
+/// Handle one key while the editor buffer owns input.
+///
+/// `mode` is the route's single keyboard axis, passed in rather than read
+/// from a second stored fact — see [`EditorFocus`][gone] in
+/// [`crate::tui::editor`]. Pure presentation state plus an explicit request
+/// for the effects that belong to the App layer; it never touches the
+/// clipboard or the controller itself.
+fn editor_buffer_key(
+    state: &mut EditorState,
+    mode: crate::tui::input::InputMode,
+    key: KeyEvent,
+) -> BufferKey {
+    // Command mode is modal and outranks everything below it, including the
+    // mode-independent Ctrl chords: a half-typed `:q` must not be rewritten
+    // by `Ctrl+S` silently writing the file the user was about to close.
+    if state
+        .session
+        .as_ref()
+        .is_some_and(|session| session.presentation().command_active)
+    {
+        return handle_command_line_key(state, key);
+    }
+    // Save and resync are mode-independent and always available.
+    if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
+        return BufferKey::RequestSave;
+    }
+    if key.code == KeyCode::Char('r') && key.modifiers == KeyModifiers::CONTROL {
+        return BufferKey::RequestResync;
+    }
+    // `R` reloads from disk, discarding the local draft. It is
+    // destructive, so it is only reachable in normal mode; the App layer
+    // decides whether to issue the round trip.
+    if key.code == KeyCode::Char('R')
+        && key.modifiers == KeyModifiers::NONE
+        && mode == crate::tui::input::InputMode::Normal
+    {
+        return BufferKey::RequestReload;
+    }
+    let visible_lines = visible_line_estimate();
+    if mode == crate::tui::input::InputMode::Insert {
+        return if handle_insert_key(state, key, visible_lines) {
+            BufferKey::Consumed
+        } else {
+            BufferKey::Unhandled
+        };
+    }
+    handle_normal_key(state, key, visible_lines)
+}
+
+/// Handle one Normal-mode key against the buffer.
+///
+/// Speaks Helix, deliberately the same dialect `/terminal` speaks in its
+/// viewing mode: `hjkl` and arrows move, `Ctrl+d`/`Ctrl+u` page, `e`/`b` jump
+/// by word, `v` selects by character, `x` selects the whole line and grows one
+/// line per press, `d` deletes the held selection, and `space y` yanks it. A
+/// user who learned one learned the other.
+///
+/// vi's `dd`/`dw` are gone, and `x` then `d` is the same gesture in this
+/// dialect. `D` stays as delete-to-end-of-line because it has no Helix meaning
+/// here and is the only way to trim a line without selecting it first.
+///
+/// Returns [`BufferKey::Unhandled`] for a key the buffer does not own, which
+/// is how the bottom input box keeps typing in this mode.
+fn handle_normal_key(state: &mut EditorState, key: KeyEvent, visible_lines: usize) -> BufferKey {
+    let Some(session) = state.session.as_mut() else {
+        return BufferKey::Unhandled;
+    };
+    // `space y` arrives as two events in legacy xterm encoding, so the prefix
+    // is remembered state rather than a chord — the same reasoning as the
+    // terminal panel's `prefix_pending`. Any second key other than `y`
+    // disarms it and is then resolved normally.
+    if session.presentation_mut().yank_prefix_pending {
+        session.presentation_mut().yank_prefix_pending = false;
+        if matches!(key.code, KeyCode::Char('y')) && key.modifiers == KeyModifiers::NONE {
+            return match yank_range(session) {
+                Some(range) => BufferKey::YankRange(range),
+                None => BufferKey::Consumed,
+            };
+        }
+    }
+    // Multi-key prefixes resolve first.
+    let pending = session.presentation().pending_command.clone();
+    if !pending.is_empty() {
+        session.presentation_mut().pending_command.clear();
+        let KeyCode::Char(ch) = key.code else {
+            return BufferKey::Consumed;
+        };
+        if pending.as_str() == "g" && ch == 'g' {
+            editor_motion(state, EditorCommand::BufferStart, visible_lines);
+        }
+        return BufferKey::Consumed;
+    }
+
+    let none = KeyModifiers::NONE;
+    let shift = KeyModifiers::SHIFT;
+    // Each arm is `(modifiers, code)` so a bare letter and its uppercase twin
+    // are one rule. Terminals disagree about how `D` is encoded, and both
+    // spellings have to work.
+    match (key.modifiers, key.code) {
+        // Paging resolves before the bare-char arms: `Ctrl+d`/`Ctrl+u` move a
+        // viewport at a time, while bare `d` deletes a selection. They are
+        // distinct events, not a shadowing pair.
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
+            helix_motion(state, EditorCommand::HalfPageDown, visible_lines);
+            BufferKey::Consumed
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+            helix_motion(state, EditorCommand::HalfPageUp, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('j')) | (m, KeyCode::Down) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::MoveDown, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('k')) | (m, KeyCode::Up) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::MoveUp, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('h')) | (m, KeyCode::Left) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::MoveLeft, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('l')) | (m, KeyCode::Right) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::MoveRight, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::PageDown) if m == none => {
+            helix_motion(state, EditorCommand::HalfPageDown, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::PageUp) if m == none => {
+            helix_motion(state, EditorCommand::HalfPageUp, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('0')) if m == none => {
+            helix_motion(state, EditorCommand::LineStart, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('$')) if m == none => {
+            helix_motion(state, EditorCommand::LineEnd, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('G')) if m == none || m == shift => {
+            helix_motion(state, EditorCommand::BufferEnd, visible_lines);
+            BufferKey::Consumed
+        }
+        // `gg` has no single-key spelling, so it stays the one multi-key
+        // prefix and the branch above owns it.
+        (m, KeyCode::Char('g')) if m == none => {
+            push_pending(state, 'g');
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('w')) if m == none => {
+            helix_motion(state, EditorCommand::WordForward, visible_lines);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('b')) if m == none => {
+            helix_motion(state, EditorCommand::WordBackward, visible_lines);
+            BufferKey::Consumed
+        }
+        // Helix `e`, matching the terminal panel's forward word jump.
+        (m, KeyCode::Char('e')) if m == none => {
+            helix_motion(state, EditorCommand::WordEnd, visible_lines);
+            BufferKey::Consumed
+        }
+        // Selection. `v` is a mode and `x` is an action; both delegate to the
+        // shared state machine, so they cannot drift from the terminal.
+        (m, KeyCode::Char('v')) if m == none => {
+            apply_helix(state, editor::HelixVerb::SelectChar);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('x')) if m == none => {
+            apply_helix(state, editor::HelixVerb::SelectLine);
+            BufferKey::Consumed
+        }
+        // Claimed even with nothing selected: an unclaimed `d` escapes to the
+        // global `OpenDiff` binding, so the reader never gets "delete this".
+        (m, KeyCode::Char('d')) if m == none => {
+            match apply_helix(state, editor::HelixVerb::DeleteSelection) {
+                editor::HelixVerbOutcome::DeleteRange(range) => BufferKey::DeleteRange(range),
+                editor::HelixVerbOutcome::Handled => BufferKey::Consumed,
+                _ => BufferKey::Consumed,
+            }
+        }
+        (m, KeyCode::Char('D')) | (m, KeyCode::Char('d')) // Terminals disagree on the encoding: some send `Char('D')` with
+        // SHIFT, others `Char('D')` with NONE. Accept both, the same
+        // rule the panel directionals and `/terminal`'s nav classifier
+        // already follow.
+        if m == shift || m == none => {
+            editor_editing_command(state, EditorCommand::DeleteToLineEnd);
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char(' ')) if m == none => {
+            session.presentation_mut().yank_prefix_pending = true;
+            BufferKey::Consumed
+        }
+        (m, KeyCode::Char('u')) if m == none => {
+            editor_undo(state);
+            BufferKey::Consumed
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('r')) => {
+            editor_redo(state);
+            BufferKey::Consumed
+        }
+        // Insertion entries. They move the cursor *and* hand the keyboard to
+        // the document, so they return the mode the App layer must adopt.
+        (m, KeyCode::Char('i')) if m == none => enter_insert(state, EditorCommand::InsertBefore),
+        (m, KeyCode::Char('a')) if m == none => enter_insert(state, EditorCommand::InsertAfter),
+        (m, KeyCode::Char('I')) if m == none || m == shift => enter_insert(state, EditorCommand::InsertLineStart),
+        (m, KeyCode::Char('A')) if m == none || m == shift => enter_insert(state, EditorCommand::InsertLineEnd),
+        (m, KeyCode::Char('o')) if m == none => enter_insert(state, EditorCommand::OpenLineBelow),
+        (m, KeyCode::Char('O')) if m == none || m == shift => enter_insert(state, EditorCommand::OpenLineAbove),
+        // `:` opens the command line. Normal mode only: in Insert the colon is
+        // document text, and swallowing it would make it impossible to type a
+        // URL into a file.
+        (m, KeyCode::Char(':')) if m == none => {
+            session.presentation_mut().open_command_line("");
+            BufferKey::Consumed
+        }
+        _ => BufferKey::Unhandled,
+    }
+}
+
+/// `enter_insert`'s return value: the route mode to adopt.
+///
+/// A read-only document deliberately refuses insertion, and this reports
+/// `None` for it — switching the route into Insert over a buffer that cannot
+/// be typed into is how a user ends up in a dead Insert mode with no
+/// explanation.
+/// Move the cursor through the Helix selection rules.
+fn helix_motion(state: &mut EditorState, command: EditorCommand, _visible_lines: usize) {
+    apply_helix(state, editor::HelixVerb::Moved(command));
+}
+
+/// Apply a Helix verb, returning a delete/yank effect when one is requested.
+fn apply_helix(state: &mut EditorState, verb: editor::HelixVerb) -> editor::HelixVerbOutcome {
+    let Some(session) = state.session.as_mut() else {
+        return editor::HelixVerbOutcome::Handled;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return editor::HelixVerbOutcome::Handled;
+    };
+    editor::apply_helix_verb(&snapshot, session.presentation_mut(), verb)
+}
+
+/// Resolve the held selection to a yankable range, without performing the
+/// copy. The App layer owns the clipboard, so the buffer only reports the
+/// range — the same division of labour as the delete effect.
+fn yank_range(session: &mut TuiDocumentSession) -> Option<std::ops::Range<usize>> {
+    let snapshot = session.try_snapshot()?;
+    let range = editor::selection_range(session.presentation(), &snapshot)?;
+    session.presentation_mut().selection = None;
+    Some(range)
+}
+
+/// Copy one byte range to the system clipboard.
+///
+/// A failed copy is reported rather than swallowed: the selection has already
+/// been dropped by the time this runs, so a silent failure would look exactly
+/// like `space y` doing nothing at all.
+fn yank_editor_range(app: &mut App, range: std::ops::Range<usize>) {
+    let Some(session) = app.editor_state.session.as_ref() else {
         return;
     };
     let Some(snapshot) = session.try_snapshot() else {
         return;
     };
-    let Some(session) = state.session.as_mut() else {
+    let Ok(text) = snapshot.read_bytes(range.start, range.end) else {
+        app.messages_state.toasts.warning("Nothing to yank");
         return;
+    };
+    match crate::util::clipboard::copy_to_clipboard(&text) {
+        Ok(()) => app
+            .messages_state
+            .toasts
+            .info(&format!("Copied {} bytes", range.end - range.start)),
+        Err(error) => app
+            .messages_state
+            .toasts
+            .warning(&format!("Clipboard unavailable: {error}")),
+    }
+}
+
+/// Move the cursor for an insertion entry command and switch to insert mode.
+///
+/// Returns [`BufferKey::EnterInsert`] when the document actually took the
+/// keyboard, and `Unhandled` when it refused. A read-only attachment refuses
+/// on purpose — and refusing *silently* would leave the user pressing `i` in
+/// what still looks like Normal mode with no way to tell why nothing happened,
+/// so the refusal is reported rather than swallowed.
+fn enter_insert(state: &mut EditorState, command: EditorCommand) -> BufferKey {
+    if !editable(state) {
+        return BufferKey::Unhandled;
+    }
+    let Some(session) = state.session.as_ref() else {
+        return BufferKey::Unhandled;
+    };
+    let Some(snapshot) = session.try_snapshot() else {
+        return BufferKey::Unhandled;
+    };
+    let Some(session) = state.session.as_mut() else {
+        return BufferKey::Unhandled;
     };
     let presentation = session.presentation_mut();
     let cursor = editor::clamp_offset(&snapshot, presentation.cursor_byte);
@@ -2441,6 +2710,7 @@ fn enter_insert(state: &mut EditorState, command: EditorCommand) {
     };
     presentation.cursor_byte = editor::clamp_offset(&snapshot, next);
     presentation.mode = EditorMode::Insert;
+    BufferKey::EnterInsert
 }
 
 #[cfg(test)]
@@ -2449,6 +2719,7 @@ mod tests {
     use crate::protocol::core::{CoreRequest, CoreResponse};
     use crate::tui::app::state::EditorNoticeSeverity;
     use crate::tui::app::state::EditorState;
+    use crate::tui::input::InputMode;
     use async_trait::async_trait;
     use codegg_client::DocumentTransport;
     use std::collections::VecDeque;
@@ -2728,6 +2999,26 @@ mod tests {
         let daemon = FakeDaemon::new(text, true);
         let state = open_state(&daemon, true).await;
         (state, daemon)
+    }
+
+    /// The same attachment without the writer lease, so every local edit is
+    /// refused by `editable`.
+    async fn opened_reader(text: &str) -> (EditorState, Arc<FakeDaemon>) {
+        let daemon = FakeDaemon::new(text, true);
+        let state = open_state(&daemon, false).await;
+        (state, daemon)
+    }
+
+    /// The controller's own snapshot — the only text the editor may read.
+    fn snapshot_of(state: &EditorState) -> codegg_document::DocumentSnapshot {
+        state
+            .session
+            .as_ref()
+            .expect("open")
+            .controller()
+            .try_snapshot()
+            .expect("attached")
+            .0
     }
 
     /// The only text the editor may have: the controller's own snapshot.
@@ -3285,160 +3576,227 @@ mod tests {
 
     // ── Key routing ─────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn insert_mode_keys_type_into_the_buffer_and_escape_leaves_insert() {
-        let (mut state, _daemon) = opened_writer("").await;
-        focus_editor_buffer(&mut state);
-        assert_eq!(state.mode(), EditorMode::Normal);
+    /// Dispatch one key in Normal mode.
+    fn normal(state: &mut EditorState, code: KeyCode) -> BufferKey {
+        editor_buffer_key(state, InputMode::Normal, key(code))
+    }
 
-        assert!(matches!(
-            editor_buffer_key(&mut state, key(KeyCode::Char('i'))),
-            BufferKey::Consumed
-        ));
+    /// Dispatch one key in Insert mode.
+    fn insert(state: &mut EditorState, code: KeyCode) -> BufferKey {
+        editor_buffer_key(state, InputMode::Insert, key(code))
+    }
+
+    #[tokio::test]
+    async fn insert_mode_types_into_the_buffer_and_esc_only_leaves_insert() {
+        let (mut state, _daemon) = opened_writer("").await;
+
+        // `i` is an insertion entry: the document takes the keyboard, and the
+        // buffer reports it so the App layer adopts Insert mode.
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
         assert_eq!(state.mode(), EditorMode::Insert);
+
         for ch in "hi".chars() {
-            editor_buffer_key(&mut state, key(KeyCode::Char(ch)));
+            insert(&mut state, KeyCode::Char(ch));
         }
         assert_eq!(editor_text(&state), "hi");
 
-        // Esc leaves the buffer one step at a time: insert mode first, then
-        // focus. The buffer handler reports the step; the App layer applies
-        // it, because only it knows the route.
-        assert!(matches!(
-            editor_buffer_key(&mut state, key(KeyCode::Esc)),
-            BufferKey::RequestLeaveBuffer
-        ));
-        leave_editor_buffer(&mut state);
-        assert_eq!(state.mode(), EditorMode::Normal);
-        assert!(state.buffer_focused(), "one Esc leaves insert mode only");
-
-        assert!(matches!(
-            editor_buffer_key(&mut state, key(KeyCode::Esc)),
-            BufferKey::RequestLeaveBuffer
-        ));
-        leave_editor_buffer(&mut state);
-        assert!(
-            !state.buffer_focused(),
-            "a second Esc returns focus to the composer"
+        // `Esc` is a mode step, and it is answered by the App layer *before*
+        // the buffer sees it — so the buffer handler no longer has an Esc arm
+        // at all. That is the point: `Esc` cannot reach anything that closes
+        // the editor, because there is nothing left here that it could.
+        assert_eq!(insert(&mut state, KeyCode::Esc), BufferKey::Unhandled);
+        assert_eq!(
+            state.mode(),
+            EditorMode::Insert,
+            "Esc never leaves Insert on its own"
         );
-
-        // With focus on the composer the buffer handler sees no keys, which
-        // is what lets the ordinary prompt keep them.
-        focus_editor_buffer(&mut state);
-        // Normal mode now interprets letters as commands, not text.
-        editor_motion(&mut state, EditorCommand::BufferStart, 10);
-        editor_buffer_key(&mut state, key(KeyCode::Char('x')));
-        assert_eq!(editor_text(&state), "i", "`x` deletes, it does not type");
     }
 
     #[tokio::test]
-    async fn save_and_resync_are_requested_rather_than_performed_in_the_buffer() {
+    async fn a_letter_the_buffer_does_not_own_falls_through_in_normal_mode() {
         let (mut state, _daemon) = opened_writer("base").await;
-        focus_editor_buffer(&mut state);
-        assert!(matches!(
-            editor_buffer_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)
-            ),
-            BufferKey::RequestSave
-        ));
-        assert!(matches!(
-            editor_buffer_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
-            ),
-            BufferKey::RequestResync
-        ));
-        assert!(matches!(
-            editor_buffer_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE)
-            ),
-            BufferKey::RequestReload
-        ));
-        // The buffer handler performs no transport work.
-        assert_eq!(editor_text(&state), "base");
-        assert!(!state.is_busy());
-    }
-
-    #[tokio::test]
-    async fn unclaimed_keys_fall_through_to_the_composer() {
-        let (mut state, _daemon) = opened_writer("base").await;
-        focus_editor_buffer(&mut state);
         for code in [
             KeyCode::Char('?'),
             KeyCode::F(5),
             KeyCode::Home,
             KeyCode::End,
         ] {
-            assert!(
-                matches!(
-                    editor_buffer_key(&mut state, key(code)),
-                    BufferKey::Unhandled
-                ),
-                "{code:?} must not be swallowed by the editor"
+            assert_eq!(
+                normal(&mut state, code),
+                BufferKey::Unhandled,
+                "{code:?} must reach the input box, not the buffer"
             );
         }
         assert_eq!(editor_text(&state), "base");
     }
 
     #[tokio::test]
+    async fn save_and_resync_are_requested_in_both_modes_and_reload_only_in_normal() {
+        let (mut state, _daemon) = opened_writer("base").await;
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+        for mode in [InputMode::Normal, InputMode::Insert] {
+            assert_eq!(
+                editor_buffer_key(&mut state, mode, ctrl_s),
+                BufferKey::RequestSave
+            );
+            assert_eq!(
+                editor_buffer_key(&mut state, mode, ctrl_r),
+                BufferKey::RequestResync
+            );
+        }
+
+        // `R` throws the local draft away, so it is normal-mode only — in
+        // Insert those two keystrokes are a capital `R`.
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('R')),
+            BufferKey::RequestReload
+        );
+        // In Insert those two keystrokes are the letter `R`, so the text
+        // grows by exactly one — which is the property that makes normal-only
+        // reachability safe.
+        assert_eq!(insert(&mut state, KeyCode::Char('R')), BufferKey::Consumed);
+        assert_eq!(editor_text(&state), "Rbase");
+
+        // The buffer handler performs no transport work.
+        assert!(!state.is_busy());
+    }
+
+    #[tokio::test]
+    async fn x_selects_a_line_and_d_deletes_it_in_the_helix_way() {
+        let (mut state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
+
+        // Helix: `x` selects the cursor's line, `d` deletes the selection.
+        // vi's `dd` is the same gesture spelled differently.
+        assert_eq!(normal(&mut state, KeyCode::Char('x')), BufferKey::Consumed);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('d')),
+            BufferKey::DeleteRange(0..4)
+        );
+        let edit = editor::delete_range(&snapshot_of(&state), 0..4).unwrap();
+        submit_edit(&mut state, edit);
+        assert_eq!(editor_text(&state), "two\nthree\n");
+
+        // A second `x` grows the line selection instead of re-anchoring.
+        normal(&mut state, KeyCode::Char('x'));
+        normal(&mut state, KeyCode::Char('x'));
+        // Lines 0..=1 of "two\nthree\n" — 0..10, both terminators included.
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('d')),
+            BufferKey::DeleteRange(0..10)
+        );
+    }
+
+    #[tokio::test]
+    async fn d_with_nothing_selected_is_claimed_so_it_cannot_reach_the_diff_binding() {
+        let (mut state, _daemon) = opened_writer("one\n").await;
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('d')),
+            BufferKey::Consumed,
+            "an unhandled `d` would fire the global OpenDiff instead"
+        );
+        assert_eq!(editor_text(&state), "one\n");
+    }
+
+    #[tokio::test]
+    async fn v_selects_by_character_and_movement_grows_it() {
+        let (mut state, _daemon) = opened_writer("abcdef\n").await;
+        normal(&mut state, KeyCode::Char('v'));
+        normal(&mut state, KeyCode::Char('l'));
+        normal(&mut state, KeyCode::Char('l'));
+        // `v` then two `l`s covers three characters — the head is inclusive,
+        // matching `/terminal`.
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('d')),
+            BufferKey::DeleteRange(0..3)
+        );
+    }
+
+    #[tokio::test]
+    async fn space_y_reports_a_yank_range_as_a_remembered_prefix() {
+        let (mut state, _daemon) = opened_writer("abcdef\n").await;
+        normal(&mut state, KeyCode::Char('x'));
+        assert_eq!(normal(&mut state, KeyCode::Char(' ')), BufferKey::Consumed);
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('y')),
+            BufferKey::YankRange(0..7),
+            "`space y` is two events, so it is prefix state rather than a chord"
+        );
+
+        // Any other second key disarms the prefix and is then resolved as an
+        // ordinary normal-mode key.
+        normal(&mut state, KeyCode::Char(' '));
+        assert_eq!(normal(&mut state, KeyCode::Char('w')), BufferKey::Consumed);
+    }
+
+    #[tokio::test]
+    async fn ctrl_d_and_ctrl_u_page_while_bare_d_deletes() {
+        let (mut state, _daemon) = opened_writer(&"line\n".repeat(200)).await;
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let ctrl_u = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(normal(&mut state, KeyCode::Char('d')), BufferKey::Consumed);
+        assert_eq!(
+            editor_buffer_key(&mut state, InputMode::Normal, ctrl_d),
+            BufferKey::Consumed
+        );
+        let after_down = cursor(&state);
+        editor_buffer_key(&mut state, InputMode::Normal, ctrl_d);
+        assert!(cursor(&state) > after_down, "Ctrl+d moves a page at a time");
+        editor_buffer_key(&mut state, InputMode::Normal, ctrl_u);
+        assert_eq!(cursor(&state), after_down);
+    }
+
+    #[tokio::test]
     async fn a_pending_prefix_swallows_the_next_key_and_resolves_only_known_pairs() {
         let (mut state, _daemon) = opened_writer("one\ntwo\nthree\n").await;
-        focus_editor_buffer(&mut state);
 
-        editor_buffer_key(&mut state, key(KeyCode::Char('d')));
-        assert_eq!(pending(&state), "d");
-        editor_buffer_key(&mut state, key(KeyCode::Char('d')));
-        assert_eq!(editor_text(&state), "two\nthree\n");
+        // `gg` is the one multi-key prefix left; it has no single-key spelling.
+        normal(&mut state, KeyCode::Char('g'));
+        assert_eq!(pending(&state), "g");
+        normal(&mut state, KeyCode::Char('g'));
         assert_eq!(pending(&state), "", "the prefix is consumed");
+        assert_eq!(cursor(&state), 0, "`gg` goes to the start of the buffer");
 
         // An unknown pair is discarded without touching the text.
-        editor_buffer_key(&mut state, key(KeyCode::Char('d')));
-        editor_buffer_key(&mut state, key(KeyCode::Char('z')));
-        assert_eq!(editor_text(&state), "two\nthree\n");
+        normal(&mut state, KeyCode::Char('g'));
+        normal(&mut state, KeyCode::Char('z'));
+        assert_eq!(pending(&state), "");
+        assert_eq!(editor_text(&state), "one\ntwo\nthree\n");
     }
 
     #[tokio::test]
     async fn the_pending_prefix_is_bounded() {
         let (mut state, _daemon) = opened_writer("base").await;
-        focus_editor_buffer(&mut state);
-        editor_buffer_key(&mut state, key(KeyCode::Char('d')));
-        assert_eq!(pending(&state), "d");
-        // The second `d` resolves the pair and consumes the prefix.
-        editor_buffer_key(&mut state, key(KeyCode::Char('d')));
-        assert_eq!(pending(&state), "");
-        // A third key starts a fresh prefix, which `gg` then resolves.
-        editor_buffer_key(&mut state, key(KeyCode::Char('g')));
+        normal(&mut state, KeyCode::Char('g'));
         assert_eq!(pending(&state), "g");
-        editor_buffer_key(&mut state, key(KeyCode::Char('g')));
+        normal(&mut state, KeyCode::Char('g'));
         assert_eq!(pending(&state), "");
     }
 
     #[tokio::test]
     async fn backspace_at_offset_zero_is_a_noop() {
         let (mut state, _daemon) = opened_writer("base").await;
-        focus_editor_buffer(&mut state);
-        editor_buffer_key(&mut state, key(KeyCode::Char('i')));
-        assert!(matches!(
-            editor_buffer_key(&mut state, key(KeyCode::Backspace)),
-            BufferKey::Consumed
-        ));
+        assert_eq!(
+            normal(&mut state, KeyCode::Char('i')),
+            BufferKey::EnterInsert
+        );
+        assert_eq!(insert(&mut state, KeyCode::Backspace), BufferKey::Consumed);
         assert_eq!(editor_text(&state), "base");
         assert_eq!(undo_depth(&state), 0, "a no-op edit records no history");
     }
 
-    // ── Focus ───────────────────────────────────────────────────────────
-
     #[tokio::test]
-    async fn focus_moves_between_the_buffer_and_the_composer_without_touching_text() {
-        let (mut state, _daemon) = opened_writer("base").await;
-        focus_editor_buffer(&mut state);
-        assert!(state.buffer_focused());
-        focus_editor_composer(&mut state);
-        assert!(!state.buffer_focused());
-        assert_eq!(editor_text(&state), "base");
-        assert_eq!(undo_depth(&state), 0);
+    async fn a_read_only_attachment_refuses_an_insertion_entry_visibly() {
+        let (mut state, _daemon) = opened_reader("base").await;
+        // Returning `Unhandled` lets the App layer explain the refusal. A
+        // silent no-op would leave the user pressing `i` in what still reads
+        // as Normal mode with no way to tell why nothing happened.
+        assert_eq!(normal(&mut state, KeyCode::Char('i')), BufferKey::Unhandled);
+        assert_ne!(state.mode(), EditorMode::Insert);
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -3462,8 +3820,11 @@ mod tests {
                 .command_active
         );
         assert!(
-            editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char(':')))
-                == BufferKey::Consumed
+            editor_buffer_key(
+                &mut state,
+                InputMode::Normal,
+                normal_key(crossterm::event::KeyCode::Char(':'))
+            ) == BufferKey::Consumed
         );
         assert!(
             state
@@ -3480,9 +3841,13 @@ mod tests {
         let (state, _daemon) = opened_writer("").await;
         let mut state = state;
         state.session.as_mut().unwrap().presentation_mut().mode = EditorMode::Insert;
-        assert!(
-            editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char(':')))
-                == BufferKey::Consumed
+        assert_eq!(
+            editor_buffer_key(
+                &mut state,
+                InputMode::Insert,
+                normal_key(crossterm::event::KeyCode::Char(':'))
+            ),
+            BufferKey::Consumed
         );
         // A URL must remain typeable; swallowing the colon would make one
         // impossible to write into a file.
@@ -3517,7 +3882,7 @@ mod tests {
             crossterm::event::KeyModifiers::CONTROL,
         );
         assert!(
-            editor_buffer_key(&mut state, ctrl_s) != BufferKey::RequestSave,
+            editor_buffer_key(&mut state, InputMode::Normal, ctrl_s) != BufferKey::RequestSave,
             "the save chord must not escape the command line"
         );
         assert!(
@@ -3551,9 +3916,12 @@ mod tests {
             .unwrap()
             .presentation_mut()
             .open_command_line("wq");
-        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Esc));
-        // Leave-buffer, never RunCommand: `Esc` must be the side-effect-free
-        // exit.
+        let result = editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            normal_key(crossterm::event::KeyCode::Esc),
+        );
+        // Close, never run: `Esc` must be the side-effect-free exit.
         assert!(result != BufferKey::RunCommand(EditorCommandName::WriteQuit, None));
         assert!(
             !state
@@ -3575,7 +3943,11 @@ mod tests {
             .unwrap()
             .presentation_mut()
             .open_command_line("wq");
-        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Enter));
+        let result = editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            normal_key(crossterm::event::KeyCode::Enter),
+        );
         assert!(result == BufferKey::RunCommand(EditorCommandName::WriteQuit, None));
         // The line closes on Enter, so an unknown command cannot leave the
         // user stuck retyping it.
@@ -3599,7 +3971,11 @@ mod tests {
             .unwrap()
             .presentation_mut()
             .open_command_line("wqq");
-        let result = editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Enter));
+        let result = editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            normal_key(crossterm::event::KeyCode::Enter),
+        );
         assert!(result == BufferKey::Consumed);
         assert!(
             state.notice.is_some(),
@@ -3627,7 +4003,11 @@ mod tests {
                 .len(),
             crate::tui::editor::EditorCommandName::ALL.len()
         );
-        editor_buffer_key(&mut state, normal_key(crossterm::event::KeyCode::Char('q')));
+        editor_buffer_key(
+            &mut state,
+            InputMode::Normal,
+            normal_key(crossterm::event::KeyCode::Char('q')),
+        );
         let matches = state
             .session
             .as_ref()
@@ -3649,7 +4029,9 @@ mod tests {
             .open_command_line("");
         let backspace = normal_key(crossterm::event::KeyCode::Backspace);
         for _ in 0..5 {
-            assert!(editor_buffer_key(&mut state, backspace) == BufferKey::Consumed);
+            assert!(
+                editor_buffer_key(&mut state, InputMode::Normal, backspace) == BufferKey::Consumed
+            );
         }
         assert!(state
             .session
@@ -3658,5 +4040,74 @@ mod tests {
             .presentation()
             .command_line
             .is_empty());
+    }
+    /// An `App` whose file tree is populated with `count` flat files, so the
+    /// tree verbs have rows to move between.
+    fn app_with_a_populated_tree(count: usize) -> (App, tempfile::TempDir) {
+        let root = tempfile::tempdir().expect("tempdir");
+        for index in 0..count {
+            std::fs::write(root.path().join(format!("file{index:03}.txt")), b"x").expect("write");
+        }
+        let mut app = App::new_for_testing(root.path().display().to_string());
+        let (generation, request_id) = app.file_tree_state.begin_rebuild(root.path().to_path_buf());
+        app.file_tree_state.apply_listing(
+            generation,
+            request_id,
+            root.path().to_path_buf(),
+            crate::tui::file_tree::build_tree(root.path()),
+        );
+        app.ui_state.tree_focused = true;
+        (app, root)
+    }
+
+    #[test]
+    fn the_tree_claims_paging_only_with_control() {
+        use crossterm::event::KeyModifiers;
+
+        let (mut app, _root) = app_with_a_populated_tree(40);
+        app.file_tree_state.viewport_rows = 10;
+        let first = app.file_tree_state.selected.clone();
+        assert_eq!(first.as_deref(), Some("file000.txt"));
+
+        // A bare `d` is not a page: the editor's own verbs are reached by
+        // falling through, and the tree must not have taken the letter.
+        assert!(!handle_file_tree_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)
+        ));
+        assert_eq!(app.file_tree_state.selected.clone(), first);
+
+        assert!(handle_file_tree_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)
+        ));
+        assert_ne!(
+            app.file_tree_state.selected.clone(),
+            first,
+            "Ctrl+d must move further than the `j` beside it"
+        );
+
+        let paged = app.file_tree_state.selected.clone();
+        assert!(handle_file_tree_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ));
+        assert_eq!(app.file_tree_state.selected.clone(), first);
+        assert_ne!(paged, first);
+    }
+
+    #[test]
+    fn the_tree_only_re_roots_on_a_directory() {
+        let (mut app, _root) = app_with_a_populated_tree(3);
+        // A file has no directory to make the root; the key is still claimed
+        // so it cannot leak a character into the document underneath.
+        assert!(handle_file_tree_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)
+        ));
+        assert!(
+            app.file_tree_state.at_workspace_root(),
+            "a file is not a directory the pane can be rooted at"
+        );
     }
 }

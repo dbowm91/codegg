@@ -13,6 +13,24 @@
 //!
 //! `scripts/check_tui_editor_text_authority.py` enforces that statically.
 //!
+//! ## One keyboard axis
+//!
+//! Which region of the editor route owns keyboard input is **not** a question
+//! this module answers, and that is the fix.
+//!
+//! This used to be a second axis beside [`EditorMode`], and the two could
+//! disagree: opening a file defaulted to `Composer`, which made
+//! `handle_editor_key` claim nothing except `Ctrl+E` while the bare-text gate
+//! swallowed every printable character. The file rendered and no key reached
+//! it, which read as "the editor does not work" rather than as two
+//! independent toggles.
+//!
+//! One axis now answers it, and it is the one every other surface already
+//! shows as `NOR`/`INS`: [`crate::tui::input::InputMode`]. Insert puts the
+//! keyboard in the document; Normal leaves the Helix verbs the buffer and
+//! hands everything else to the bottom input box — the same contract
+//! `/terminal` already runs on. See `commands::editor::handle_editor_key`.
+//!
 //! ## Hard wrap
 //!
 //! M006-A ships hard wrap with horizontal scrolling. One logical line maps
@@ -319,8 +337,6 @@ pub struct EditorUndoEntry {
     pub inverse: TextTransaction,
     /// Cursor byte offset observed before the transaction was applied.
     pub cursor_before: usize,
-    /// Selection range observed before the transaction was applied.
-    pub anchor_before: Option<std::ops::Range<usize>>,
     /// Retained payload bytes across both directions, for the memory bound.
     pub bytes: usize,
 }
@@ -334,29 +350,12 @@ impl EditorUndoEntry {
     /// undo applies and `forward` is always what redo applies, so an entry
     /// moves between stacks unchanged apart from its cursor. Swapping
     /// them would make redo re-apply the undo.
-    pub fn rebased(
-        self,
-        cursor_before: usize,
-        anchor_before: Option<std::ops::Range<usize>>,
-    ) -> Self {
+    pub fn rebased(self, cursor_before: usize) -> Self {
         Self {
             cursor_before,
-            anchor_before,
             ..self
         }
     }
-}
-
-/// Which region of the editor route owns keyboard input.
-///
-/// `Composer` is the default and keeps the ordinary Session/Task prompt
-/// editable while the editor is open, matching the `Route::Workspace`
-/// precedent. The user focuses the buffer explicitly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EditorFocus {
-    #[default]
-    Composer,
-    Buffer,
 }
 
 /// A resolved, document-relative edit intent from a normal-mode key.
@@ -372,6 +371,8 @@ pub enum EditorCommand {
     BufferEnd,
     WordForward,
     WordBackward,
+    /// Helix `e` — the last byte of the word at or after the cursor.
+    WordEnd,
     HalfPageDown,
     HalfPageUp,
     InsertBefore,
@@ -566,6 +567,33 @@ pub fn word_backward(snapshot: &DocumentSnapshot, offset: usize) -> usize {
     cursor
 }
 
+/// Byte offset of the last byte of the word at or after `offset`.
+///
+/// Helix `e`, and the terminal panel's forward word jump, so both surfaces
+/// agree on where "end of word" is. When the cursor is not already on word
+/// bytes it first steps to the next word, so `e` from whitespace lands on a
+/// word rather than standing still.
+///
+/// The byte-at-a-time scan is deliberate: `is_word_byte` treats any byte
+/// `>= 0x80` as word content, so walking `offset + 1` can cross the interior
+/// of a multi-byte character and still classify it correctly, exactly as
+/// [`word_forward`] does.
+pub fn word_end(snapshot: &DocumentSnapshot, offset: usize) -> usize {
+    let end = snapshot.len_bytes();
+    let mut cursor = clamp_offset(snapshot, offset);
+    if !is_word_byte(byte_at(snapshot, cursor).unwrap_or(0)) {
+        cursor = word_forward(snapshot, cursor);
+        if cursor >= end || !is_word_byte(byte_at(snapshot, cursor).unwrap_or(0)) {
+            return buffer_content_end(snapshot);
+        }
+    }
+    while cursor < end.saturating_sub(1) && is_word_byte(byte_at(snapshot, cursor + 1).unwrap_or(0))
+    {
+        cursor = next_char_boundary(snapshot, cursor).unwrap_or(cursor);
+    }
+    cursor
+}
+
 /// Move `offset` by `delta` lines, preserving the display column as closely
 /// as the target line allows.
 pub fn move_vertical(snapshot: &DocumentSnapshot, offset: usize, delta: isize) -> usize {
@@ -583,19 +611,213 @@ pub fn move_vertical(snapshot: &DocumentSnapshot, offset: usize, delta: isize) -
     clamp_offset(snapshot, (start + column).min(end))
 }
 
-/// Normalized selection range, with inverted anchors resolved.
+/// A position in the document as a Helix selection point.
 ///
-/// Both endpoints are clamped to the document and to character boundaries,
-/// so a stale selection recorded against older text can never panic or
-/// slice mid-codepoint during rendering.
-pub fn normalized_selection(
+/// The editor's counterpart to the terminal's viewport cell: a byte offset
+/// paired with the line it sits on, because [`SelectionPoint`] separates the
+/// line from the point so whole-line selection can answer "which lines does
+/// this span" without knowing how wide a line is. The line is redundant with
+/// the offset for every *motion*, but it is not derivable at selection time —
+/// `x` growth walks to the next line's content start, and resolving that
+/// needs the line anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EditorPoint {
+    /// UTF-8 byte offset into the local replica.
+    pub byte: usize,
+    /// Zero-based line containing `byte`.
+    pub line: usize,
+}
+
+impl crate::tui::helix_selection::SelectionPoint for EditorPoint {
+    type Line = usize;
+
+    fn line(&self) -> usize {
+        self.line
+    }
+}
+
+/// Resolve a byte offset into a [`SelectionPoint`].
+///
+/// Clamped and boundary-aligned first, so a stale offset recorded against
+/// older text can never produce a point the renderer would slice
+/// mid-codepoint.
+pub fn editor_point(snapshot: &DocumentSnapshot, byte: usize) -> EditorPoint {
+    let byte = clamp_offset(snapshot, byte);
+    EditorPoint {
+        byte,
+        line: cursor_line(snapshot, byte),
+    }
+}
+
+/// One Helix selection verb, resolved against a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelixVerb {
+    /// `v` — toggle character selection at the cursor.
+    SelectChar,
+    /// `x` — select the cursor's line, or grow the held line selection by one.
+    SelectLine,
+    /// `d` — delete the held selection. Claims the key even with nothing
+    /// selected, because an unclaimed `d` escapes to the global `OpenDiff`
+    /// binding.
+    DeleteSelection,
+    /// `y` — yank the held selection to the system clipboard.
+    YankSelection,
+    /// Any deliberate motion: extends a character selection, leaves a line
+    /// selection alone, and disarms line growth.
+    Moved(EditorCommand),
+}
+
+/// The held selection resolved to a byte range.
+///
+/// Character mode is **inclusive of the head character**, matching
+/// [`helix_selection::SelectionMode::Char`] and the terminal: `v` then `l`
+/// selects two characters, not one-and-a-bit. Line mode spans whole lines
+/// including their terminators, so deleting the selection removes the lines
+/// rather than leaving blank ones behind.
+///
+/// Both endpoints are clamped to the document and to character boundaries, so
+/// a stale selection recorded against older text can never panic or slice
+/// mid-codepoint during rendering.
+pub fn selection_range(
     presentation: &TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
 ) -> Option<std::ops::Range<usize>> {
     let selection = presentation.selection.as_ref()?;
-    let start = clamp_offset(snapshot, selection.start.min(selection.end));
-    let end = clamp_offset(snapshot, selection.start.max(selection.end));
+    let (first, last) = selection.bounds();
+    let (start, end) = match selection.mode {
+        crate::tui::helix_selection::SelectionMode::Char => {
+            let start = clamp_offset(snapshot, first.byte);
+            let end = next_char_boundary(snapshot, last.byte).unwrap_or(last.byte);
+            (start, end)
+        }
+        crate::tui::helix_selection::SelectionMode::Line => {
+            let last_line = snapshot.len_lines().saturating_sub(1);
+            let first_line = first.line.min(last_line);
+            let final_line = last.line.min(last_line);
+            let start = line_start(snapshot, first_line).unwrap_or(0);
+            // `final_line + 1` is the start of the following line, which for
+            // the last line is the end of the buffer. That is what makes a
+            // whole-line delete leave no trailing blank line.
+            let end = line_start(snapshot, final_line + 1)
+                .unwrap_or_else(|| snapshot.len_bytes())
+                .min(snapshot.len_bytes());
+            (start, end)
+        }
+    };
     (start < end).then_some(start..end)
+}
+
+/// Apply one Helix selection verb.
+///
+/// The **rules** live in [`crate::tui::helix_selection`]; this owns the
+/// geometry only, which is what the shared module deliberately does not know:
+/// which byte starts the next line, and which offset a motion resolved to.
+/// Restoring the state machine per verb rather than re-deriving `v`/`x` here
+/// is what keeps the editor and `/terminal` agreeing about what `x` does.
+pub fn apply_helix_verb(
+    snapshot: &DocumentSnapshot,
+    presentation: &mut TuiDocumentPresentation,
+    verb: HelixVerb,
+) -> HelixVerbOutcome {
+    use crate::tui::helix_selection::SelectionState;
+    let mut state = SelectionState::restore(
+        editor_point(snapshot, presentation.cursor_byte),
+        presentation.selection,
+    );
+    let mut outcome = HelixVerbOutcome::Handled;
+    let mut scrolled_to = presentation.viewport_line;
+    match verb {
+        HelixVerb::SelectChar => state.toggle_char(),
+        HelixVerb::SelectLine => {
+            // `x` is an action, not a mode: the second press grows the
+            // selection by exactly one line, and only while nothing has moved
+            // since. That condition belongs to the shared machine because it
+            // is the same one the terminal uses.
+            if state.line_select_extends() {
+                if let Some(selection) = state.selection() {
+                    let next = next_line_content_start(snapshot, selection.head.line);
+                    state.grow_to(editor_point(snapshot, next));
+                }
+            } else {
+                state.select_line();
+            }
+        }
+        // Delete and yank are *effects* over a range the machine describes,
+        // not transitions of the selection, so they read the range and drop
+        // the selection outright. Both still claim the key with nothing held:
+        // an unclaimed `d` escapes to the global `OpenDiff` binding, and an
+        // unclaimed `y` reads as a dead key.
+        HelixVerb::DeleteSelection => {
+            return match selection_range(presentation, snapshot) {
+                Some(range) => {
+                    presentation.selection = None;
+                    HelixVerbOutcome::DeleteRange(range)
+                }
+                None => HelixVerbOutcome::Handled,
+            };
+        }
+        HelixVerb::YankSelection => {
+            return match selection_range(presentation, snapshot) {
+                Some(range) => {
+                    presentation.selection = None;
+                    HelixVerbOutcome::YankRange(range)
+                }
+                None => HelixVerbOutcome::Handled,
+            };
+        }
+        HelixVerb::Moved(command) => {
+            // Resolved against a throwaway presentation so the real one is
+            // written exactly once, below, through the shared machine — which
+            // is what decides whether this move extends a character selection
+            // or only disarms line growth.
+            let mut probe = TuiDocumentPresentation {
+                viewport_line: presentation.viewport_line,
+                cursor_byte: presentation.cursor_byte,
+                ..TuiDocumentPresentation::default()
+            };
+            let next = apply_motion(&mut probe, snapshot, command, NOMINAL_HELIX_PAGES);
+            // The scroll has to come back with the cursor: it was resolved on
+            // the probe, and dropping it is what made a second `Ctrl+d` land on
+            // the same line as the first.
+            scrolled_to = probe.viewport_line;
+            state.move_to(editor_point(snapshot, next));
+            outcome = HelixVerbOutcome::Moved(next);
+        }
+    }
+    presentation.cursor_byte = state.cursor().byte;
+    presentation.selection = state.selection();
+    presentation.viewport_line = scrolled_to;
+    outcome
+}
+
+/// Nominal viewport height used to resolve a motion driven by a Helix verb.
+///
+/// The widget resolves the exact window at render time; a motion only needs
+/// *a* height to turn a page into a line count, and the viewport follows the
+/// cursor on the next frame.
+const NOMINAL_HELIX_PAGES: usize = 20;
+
+/// Byte offset of the first content byte on the line after `line`.
+///
+/// Clamped to the end of the buffer, so `x` on the last line grows into the
+/// terminator rather than past the document.
+fn next_line_content_start(snapshot: &DocumentSnapshot, line: usize) -> usize {
+    let last = snapshot.len_lines().saturating_sub(1);
+    line_start(snapshot, (line + 1).min(last))
+        .unwrap_or_else(|| line_content_end(snapshot, last).unwrap_or_else(|| snapshot.len_bytes()))
+}
+
+/// What a Helix verb asked the caller to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HelixVerbOutcome {
+    /// Pure navigation or selection; presentation state was updated.
+    Handled,
+    /// The cursor moved to this byte offset.
+    Moved(usize),
+    /// Delete or yank this range, then clear the selection.
+    DeleteRange(std::ops::Range<usize>),
+    /// Copy this range to the clipboard, then clear the selection.
+    YankRange(std::ops::Range<usize>),
 }
 
 /// Line reached by a half-page motion, from the current viewport height.
@@ -749,12 +971,35 @@ pub fn resolve_completion_edit(
 // ── Resolution against a presentation record ────────────────────────────────
 
 /// Apply a motion command to the presentation. Never touches text.
+///
+/// Deliberate movement that arrived through the Helix verbs goes through
+/// [`apply_helix_verb`], which owns the selection rules. This is the
+/// *raw* motion: it always drops a held selection, so an Insert-mode arrow or
+/// an LSP jump leaves nothing highlighted rather than dragging an old anchor
+/// onto wherever the cursor landed.
 pub fn apply_motion(
     presentation: &mut TuiDocumentPresentation,
     snapshot: &DocumentSnapshot,
     command: EditorCommand,
     visible_lines: usize,
-) {
+) -> usize {
+    let resolved = apply_motion_inner(presentation, snapshot, command, visible_lines);
+    presentation.cursor_byte = resolved;
+    presentation.viewport_line =
+        viewport_after_motion(presentation, snapshot, command, resolved, visible_lines);
+    resolved
+}
+
+/// The geometry half of [`apply_motion`]: resolve the offset a motion lands
+/// on, without writing anything. Split out so the Helix driver can resolve a
+/// motion against a throwaway presentation and then commit the result exactly
+/// once through the shared selection state machine.
+fn apply_motion_inner(
+    presentation: &TuiDocumentPresentation,
+    snapshot: &DocumentSnapshot,
+    command: EditorCommand,
+    visible_lines: usize,
+) -> usize {
     let cursor = clamp_offset(snapshot, presentation.cursor_byte);
     let next = match command {
         EditorCommand::MoveLeft => prev_char_boundary(snapshot, cursor),
@@ -772,6 +1017,7 @@ pub fn apply_motion(
         EditorCommand::BufferEnd => buffer_content_end(snapshot),
         EditorCommand::WordForward => word_forward(snapshot, cursor),
         EditorCommand::WordBackward => word_backward(snapshot, cursor),
+        EditorCommand::WordEnd => word_end(snapshot, cursor),
         EditorCommand::HalfPageDown => {
             let target = half_page_target(presentation.viewport_line, visible_lines, true);
             let column = cursor
@@ -784,10 +1030,57 @@ pub fn apply_motion(
                 .saturating_sub(line_start(snapshot, cursor_line(snapshot, cursor)).unwrap_or(0));
             offset_on_line(snapshot, target, column)
         }
-        _ => return,
+        // A command this surface does not own (`DeleteChar`, `DeleteWord`, …)
+        // is an *editing* intent, not a motion. Returning the cursor
+        // unchanged keeps it out of `resolve_edit`, which has its own arm for
+        // it.
+        _ => return clamp_offset(snapshot, cursor),
     };
-    presentation.cursor_byte = clamp_offset(snapshot, next);
-    presentation.selection = None;
+    clamp_offset(snapshot, next)
+}
+
+/// Where `viewport_line` ends up after a motion.
+///
+/// Two different questions, deliberately split:
+///
+/// - A **page** (`Ctrl+d`/`Ctrl+u`) advances the view by half a window each
+///   press, exactly as Helix does, and the cursor lands relative to the *new*
+///   viewport. Merely keeping the cursor visible is not enough here: after the
+///   first `Ctrl+d` the cursor is still inside the window, so the view would
+///   not move and a second press would resolve against the same anchor and
+///   visibly do nothing.
+/// - Every **other** motion scrolls the minimum amount needed to reveal the
+///   cursor, so `j` does not reframe the document under the reader.
+///
+/// The widget still resolves the exact window at render time; this keeps the
+/// motion arithmetic independent of render cadence, which is what made
+/// paging behave differently depending on whether a frame happened to land
+/// between two presses.
+fn viewport_after_motion(
+    presentation: &TuiDocumentPresentation,
+    snapshot: &DocumentSnapshot,
+    command: EditorCommand,
+    cursor: usize,
+    visible_lines: usize,
+) -> usize {
+    let last_line = snapshot.len_lines().saturating_sub(1);
+    let window = visible_lines.max(1);
+    let viewport = match command {
+        EditorCommand::HalfPageDown => presentation.viewport_line + (window / 2).max(1),
+        EditorCommand::HalfPageUp => presentation
+            .viewport_line
+            .saturating_sub((window / 2).max(1)),
+        _ => presentation.viewport_line,
+    }
+    .min(last_line);
+    let cursor_line = cursor_line(snapshot, clamp_offset(snapshot, cursor));
+    if cursor_line < viewport {
+        cursor_line
+    } else if cursor_line >= viewport + window {
+        (cursor_line + 1 - window).min(last_line)
+    } else {
+        viewport
+    }
 }
 
 /// Resolve an editing command into a local transaction plus the cursor and
@@ -902,13 +1195,12 @@ pub fn record_undo(presentation: &mut TuiDocumentPresentation, edit: &EditorEdit
         edit.inverse.clone(),
         edit.bytes,
         presentation.cursor_byte,
-        presentation.selection.clone(),
     );
 }
 
 /// Push one accepted edit onto the undo history and clear the redo history.
 ///
-/// `cursor_before` and `anchor_before` are the positions observed *before*
+/// `cursor_before` is the position observed *before*
 /// the forward transaction, so undo restores where the user actually was.
 pub fn push_undo(
     presentation: &mut TuiDocumentPresentation,
@@ -916,13 +1208,11 @@ pub fn push_undo(
     inverse: TextTransaction,
     bytes: usize,
     cursor_before: usize,
-    anchor_before: Option<std::ops::Range<usize>>,
 ) {
     presentation.undo.push(EditorUndoEntry {
         forward,
         inverse,
         cursor_before,
-        anchor_before,
         bytes,
     });
     presentation.undo_bytes = presentation.undo_bytes.saturating_add(bytes);
@@ -1290,6 +1580,7 @@ pub fn offset_for_position(snapshot: &DocumentSnapshot, position: BytePosition) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::helix_selection::{Selection, SelectionMode};
     use codegg_document::{DocumentBuffer, DocumentLimits};
 
     fn snapshot_of(text: &str) -> DocumentSnapshot {
@@ -1428,15 +1719,120 @@ mod tests {
     }
 
     #[test]
-    fn selection_inversion_resolves_to_an_ordered_range() {
+    fn a_char_selection_reads_back_as_an_ordered_inclusive_range() {
         let snapshot = snapshot_of("abcdef");
+        let mut presentation = presentation_at(2);
+        // A backwards anchor is the point: `v` then `h` leaves the head left
+        // of the anchor, and the resolved range must still read left-to-right.
+        let (anchor, head) = (4usize, 2usize);
+        presentation.selection = Some(Selection {
+            anchor: editor_point(&snapshot, anchor),
+            head: editor_point(&snapshot, head),
+            mode: SelectionMode::Char,
+            growing: false,
+        });
+        // Helix selections are inclusive at both ends, so `v` at `d` then `h`
+        // back to `c` covers `c`, `d`, and `e`: bytes 2..5.
+        assert_eq!(selection_range(&presentation, &snapshot), Some(2..5));
+    }
+
+    #[test]
+    fn a_line_selection_spans_whole_lines_including_their_terminators() {
+        let snapshot = snapshot_of("one\ntwo\nthree\n");
+        let mut presentation = presentation_at(4);
+        // Byte 7 is the newline that *ends* line 1; line 2 starts at byte 8.
+        // Anchoring on the terminator is the whole hazard here — resolve it
+        // as line 1 and the "span two lines" assertion would pass on a
+        // one-line selection.
+        assert_eq!(editor_point(&snapshot, 7).line, 1);
+        assert_eq!(editor_point(&snapshot, 8).line, 2);
+        presentation.selection = Some(Selection {
+            anchor: editor_point(&snapshot, 4),
+            head: editor_point(&snapshot, 8),
+            mode: SelectionMode::Line,
+            growing: true,
+        });
+        // Lines 1..=2, i.e. "two\nthree\n". "one\ntwo\nthree\n" is 14
+        // bytes and line_start(3) is the end of the buffer, so the span runs
+        // to 14 — deleting it must not leave the trailing blank line that a
+        // content-only span would.
+        assert_eq!(selection_range(&presentation, &snapshot), Some(4..14));
+    }
+
+    #[test]
+    fn selecting_a_line_then_pressing_x_grows_it_by_exactly_one_line() {
+        let snapshot = snapshot_of("one\ntwo\nthree\nfour\n");
         let mut presentation = presentation_at(1);
-        // Built from variables so the literal reversed range does not trip
-        // `clippy::reversed_empty_ranges`; an inverted anchor is the point.
-        let (anchor, cursor) = (4usize, 2usize);
-        presentation.selection = Some(anchor..cursor);
-        let range = normalized_selection(&presentation, &snapshot);
-        assert_eq!(range, Some(2..4));
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(presentation.selection.unwrap().line_range(), (0, 0));
+
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(presentation.selection.unwrap().line_range(), (0, 1));
+
+        // Any deliberate movement disarms growth, so the next `x` re-anchors
+        // instead of swallowing everything walked past.
+        apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::Moved(EditorCommand::MoveDown),
+        );
+        assert_eq!(presentation.selection.unwrap().line_range(), (0, 1));
+        // The cursor is on line 1 now, so the next `x` re-anchors there
+        // rather than swallowing everything walked past.
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(presentation.selection.unwrap().line_range(), (1, 1));
+    }
+
+    #[test]
+    fn movement_extends_a_char_selection_but_not_a_line_selection() {
+        let snapshot = snapshot_of("one\ntwo\nthree\n");
+        let mut presentation = presentation_at(1);
+
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectChar);
+        apply_helix_verb(
+            &snapshot,
+            &mut presentation,
+            HelixVerb::Moved(EditorCommand::MoveRight),
+        );
+        let (first, last) = presentation.selection.unwrap().bounds();
+        assert_eq!((first.byte, last.byte), (1, 2));
+
+        // Same movement, but the selection was anchored by `x`.
+        let mut line_selection = presentation_at(1);
+        apply_helix_verb(&snapshot, &mut line_selection, HelixVerb::SelectLine);
+        apply_helix_verb(
+            &snapshot,
+            &mut line_selection,
+            HelixVerb::Moved(EditorCommand::MoveDown),
+        );
+        assert_eq!(
+            line_selection.selection.unwrap().line_range(),
+            (0, 0),
+            "a bare movement must not add lines to a line selection"
+        );
+    }
+
+    #[test]
+    fn deleting_with_nothing_selected_is_a_claimed_no_op() {
+        let snapshot = snapshot_of("one\ntwo\n");
+        let mut presentation = presentation_at(1);
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::DeleteSelection),
+            HelixVerbOutcome::Handled
+        );
+        assert_eq!(presentation.cursor_byte, 1);
+    }
+
+    #[test]
+    fn deleting_a_line_selection_returns_the_whole_line_range() {
+        let snapshot = snapshot_of("one\ntwo\nthree\n");
+        let mut presentation = presentation_at(4);
+        apply_helix_verb(&snapshot, &mut presentation, HelixVerb::SelectLine);
+        assert_eq!(
+            apply_helix_verb(&snapshot, &mut presentation, HelixVerb::DeleteSelection),
+            HelixVerbOutcome::DeleteRange(4..8)
+        );
+        assert!(presentation.selection.is_none());
     }
 
     #[test]
@@ -1775,7 +2171,6 @@ mod tests {
         assert_eq!(presentation.viewport_line, 0);
         assert_eq!(presentation.viewport_column, 0);
         assert_eq!(presentation.mode, EditorMode::Normal);
-        assert_eq!(presentation.focus, EditorFocus::Composer);
     }
 
     // ── Display helpers ───────────────────────────────────────────────

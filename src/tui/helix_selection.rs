@@ -159,6 +159,22 @@ impl<P: SelectionPoint> SelectionState<P> {
         }
     }
 
+    /// Rebuild from a surface that stores the cursor and the selection
+    /// separately.
+    ///
+    /// The terminal keeps its navigation on the controller and never needs
+    /// this; the editor keeps a byte-offset cursor because its viewport, LSP
+    /// reads, and undo entries all address that offset directly, so it cannot
+    /// move wholesale into this type. Driving the rules through a restored
+    /// value rather than re-deriving them is the point: `v` must stay a mode
+    /// and `x` an action on both surfaces, and a second implementation is how
+    /// those two drifted the first time.
+    ///
+    /// Cost is one move of two copies; call it per verb, not per frame.
+    pub fn restore(cursor: P, selection: Option<Selection<P>>) -> Self {
+        Self { cursor, selection }
+    }
+
     /// Current cursor position.
     pub fn cursor(&self) -> P {
         self.cursor
