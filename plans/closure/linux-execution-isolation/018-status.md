@@ -246,3 +246,28 @@ measurements still breach the agreed performance thresholds. M004 remains
 active because constrained PTY creation refuses before spawn and constrained
 LSP has no supervised duplex process owner. The passing native candidate
 matrix does not close those production-owner gates or certify a Linux host.
+
+## M005 network fixture positive controls (2026-10-16)
+
+Commit `454e7a0f9abfb83cd39ee589fd13fd597a0ff3f1` added host-side positive
+controls to `offline_network_blocks_host_network_and_inherited_socket_access`
+before launching its offline candidate. The fixture now proves IPv4 and IPv6
+loopback TCP listeners accept host connections, IPv4 and IPv6 UDP listeners
+receive a host datagram, host DNS resolves `github.com`, and the host can
+establish outbound TCP to `github.com:443`. This prevents a disconnected host,
+broken fixture, or unavailable IPv6 loopback from being counted as a successful
+offline denial.
+
+At this exact code head, Linux M004 workflow
+[38839130216](https://github.com/dbowm91/codegg/actions/runs/38839130216)
+passed its `M004 managed-process host PID and IPC denial probes` step, which
+also runs the M005 candidate denial probe. The separate restricted-userns job
+passed its refusal-before-target check. Protected-mount/Git regressions and
+full CI were still running when this record was written; their outcomes are
+not inferred here.
+
+This closes the host-reachability false-pass gap for the current IPv4/IPv6
+TCP/UDP, DNS, external TCP, and inherited-descriptor observations. It does not
+test DNS rebinding, exercise every production launch owner, or grant
+`OfflineRequired` authority. M005 remains an internal candidate, and M004's
+constrained PTY and supervised duplex LSP production-owner gates remain open.
