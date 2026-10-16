@@ -41,11 +41,6 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     // on macOS, which the Required sandbox correctly denies as a credential
     // root. Cache storage remains per-user and stable across normal daemon and
     // process restarts; the artifacts are explicitly disposable.
-    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
-    std::fs::create_dir_all(&cache_root)?;
-    let vendor_root = cache_root.join(SCRATCH_VENDOR_NAME);
-    let scratch_root = vendor_root.join(SCRATCH_ROOT_NAME);
-    let sessions_root = scratch_root.join("sessions");
     #[cfg(unix)]
     let expected_uid = {
         use std::os::unix::fs::MetadataExt;
@@ -56,6 +51,12 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     };
     #[cfg(not(unix))]
     let expected_uid = ();
+    let cache_root = dirs::cache_dir().ok_or(ScratchError::CacheUnavailable)?;
+    std::fs::create_dir_all(&cache_root)?;
+    ensure_private_parent(&cache_root, expected_uid)?;
+    let vendor_root = cache_root.join(SCRATCH_VENDOR_NAME);
+    let scratch_root = vendor_root.join(SCRATCH_ROOT_NAME);
+    let sessions_root = scratch_root.join("sessions");
     ensure_private_directory(&vendor_root, expected_uid)?;
     ensure_private_directory(&scratch_root, expected_uid)?;
     ensure_private_directory(&sessions_root, expected_uid)?;
@@ -69,6 +70,24 @@ pub fn session_scratch_dir(session_id: &str) -> Result<PathBuf, ScratchError> {
     ensure_private_directory(&session_root, expected_uid)?;
     ensure_owner_record(&session_root, &digest)?;
     Ok(std::fs::canonicalize(session_root)?)
+}
+
+fn ensure_private_parent(path: &Path, expected_uid: impl OwnerCheck) -> Result<(), ScratchError> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| ScratchError::InvalidPath(path.to_path_buf()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(ScratchError::InvalidPath(path.to_path_buf()));
+    }
+    path.canonicalize_parent_and_self()
+        .map_err(|_| ScratchError::InvalidPath(path.to_path_buf()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != expected_uid.uid() || metadata.mode() & 0o022 != 0 {
+            return Err(ScratchError::WrongOwner(path.to_path_buf()));
+        }
+    }
+    Ok(())
 }
 
 fn ensure_owner_record(session_root: &Path, digest: &[u8]) -> Result<(), ScratchError> {
