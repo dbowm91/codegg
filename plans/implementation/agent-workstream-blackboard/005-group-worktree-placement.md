@@ -63,6 +63,19 @@ inline `AgentTurn` tools, persistent PTYs, human shell and other long-lived
 writers do not all acquire these job permits. M005 remains independently
 active and shared-checkout execution remains unavailable.
 
+### Isolated session allocation boundary evidence (2026-10-16)
+
+M006's already-managed-worktree launch/fork path is independent of shared
+writer containment. Its `NewManaged` path still reaches the durable
+`WorktreeService::create_reserved` state machine, whose `worktree add` call
+uses the canonical Git process policy. `egggit::process` classifies
+`worktree add` as requiring `CleanSmudgeFilter` containment; the current
+backend does not provide that containment, so allocation retains its durable
+reservation and fails closed. This is evidence for a per-operation isolated
+checkout materializer gate, not permission to bypass the Git policy and not a
+checkout-wide shared-write permit. It does not make M006 a dependency of the
+M005 shared-mutation decision, and it does not qualify any M005 writer path.
+
 ### Checkout-scoped writer-containment design (qualification candidate, 2026-10-16)
 
 This is the implementation design being qualified in M005; it is not

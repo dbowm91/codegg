@@ -1,0 +1,156 @@
+{
+  "source_sha": "ed065038c8c51e39005eec8df3783ad83ec05865",
+  "fixture_baseline": "5f0c82703085da1e7b4cf80cd884260ef1c6a0a2",
+  "binary": "CodeGG 0.1.0, Rust 1.89, aarch64-apple-darwin",
+  "provider_model": "opencode_go/gpt-6-luna",
+  "agent_profile": "build",
+  "conditions": {
+    "S0": "one CodeGG agent implements Rust and Python in one isolated checkout",
+    "S1": "two concurrent CodeGG agents implement Rust/Python independently in linked worktrees; sequential Git integration"
+  },
+  "trials": [
+    {
+      "rep": "A",
+      "condition": "S0",
+      "tokens": 9895,
+      "agent_wall_s": 20.29,
+      "peak_rss_bytes": 123355136,
+      "success": true,
+      "rust_test": "passed",
+      "python_test": "passed",
+      "tools_used": [
+        "read",
+        "list",
+        "edit",
+        "command_preflight",
+        "terminal"
+      ],
+      "trial_commit": "673353a75bac073bf6f5e375ba7b4a1e93a5a862"
+    },
+    {
+      "rep": "A",
+      "condition": "S1",
+      "tokens": 18472,
+      "children": {
+        "rust": {
+          "tokens": 9486,
+          "wall_s": 24.13,
+          "peak_rss_bytes": 123748352,
+          "success": true,
+          "test": "passed",
+          "tools_used": [
+            "read",
+            "list",
+            "glob",
+            "write",
+            "command_preflight",
+            "terminal"
+          ],
+          "commit": "bad6cfcf62ad6a0a3edf51984905487cd4c9e7d0"
+        },
+        "python": {
+          "tokens": 8986,
+          "wall_s": 17.54,
+          "peak_rss_bytes": 124354560,
+          "success": true,
+          "test": "passed",
+          "tools_used": [
+            "read",
+            "glob",
+            "apply_patch",
+            "terminal"
+          ],
+          "commit": "6e0e92542463ea9db697f2df6d1d7025876d6d05"
+        }
+      },
+      "integration_verify_wall_s": 2.298,
+      "total_wall_s": 26.428,
+      "integrated_tests": "passed",
+      "merge_commits": [
+        "ed50607",
+        "7564198"
+      ]
+    },
+    {
+      "rep": "B",
+      "condition": "S0",
+      "tokens": 13592,
+      "agent_wall_s": 51.66,
+      "peak_rss_bytes": 116424704,
+      "success": true,
+      "rust_test": "passed",
+      "python_test": "passed",
+      "tools_used": [
+        "read",
+        "git_query",
+        "glob",
+        "apply_patch",
+        "test",
+        "command_preflight",
+        "bash",
+        "terminal",
+        "git",
+        "python_script"
+      ],
+      "trial_commit": "dfcfd9de3b8e56889a221c48f1f4fa2d972c7bf7"
+    },
+    {
+      "rep": "B",
+      "condition": "S1",
+      "tokens": 19159,
+      "children": {
+        "rust": {
+          "tokens": 9328,
+          "wall_s": 17.49,
+          "peak_rss_bytes": 116752384,
+          "success": true,
+          "test": "passed",
+          "tools_used": [
+            "command_preflight",
+            "read",
+            "glob",
+            "list",
+            "write",
+            "terminal"
+          ],
+          "commit": "b235747915c71194d6189c7e0031880a7bf4cb9a"
+        },
+        "python": {
+          "tokens": 9831,
+          "wall_s": 23.45,
+          "peak_rss_bytes": 116146176,
+          "success": true,
+          "test": "passed",
+          "tools_used": [
+            "read",
+            "glob",
+            "apply_patch",
+            "write",
+            "command_preflight",
+            "bash",
+            "terminal"
+          ],
+          "commit": "5e835eccbdccfb086414c98f2484be054e031763"
+        }
+      },
+      "integration_verify_wall_s": 2.339,
+      "total_wall_s": 25.789,
+      "integrated_tests": "passed",
+      "merge_commits": [
+        "c379e95",
+        "25fb260"
+      ]
+    }
+  ],
+  "limits": {
+    "replicates_per_condition": 2,
+    "provider_seed": null,
+    "wall_timeout_s": 300,
+    "aggregate_token_cap": null,
+    "exact_tool_call_counts_available": false,
+    "peer_observations_enabled": false,
+    "task_claims_enabled": false,
+    "shared_write_enabled": false
+  },
+  "outcome": "All tasks and integrated tests passed. S1 used more tokens in both repetitions; latency direction differed by repetition. Descriptive pilot only; no efficacy claim."
+}

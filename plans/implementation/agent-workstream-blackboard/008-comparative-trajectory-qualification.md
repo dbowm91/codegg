@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M008 — Comparative Multi-Agent Trajectory and Economics Qualification
 
-Status: blocked — M006 and M007 closure required for the broad cross-capability comparison; shared-checkout experiment arms additionally require M005
+Status: blocked for broad qualification; the authorized S0/S1 isolated pilot is complete, and shared-checkout arms additionally require M005 closure
 
 Planning baseline: 171ef93b6ba67d50b0412ae23b7697eb02d072eb (main, inspected 2026-10-16)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M008
@@ -61,3 +61,13 @@ Use existing tests as starting points: tests/worktree.rs; tests/subagent.rs; tes
 ## Closure record
 
 Write plans/closure/agent-workstream-blackboard/008-status.md with requirement→evidence table, exact source SHAs, experimental matrix and raw per-task data pointers, tests/guard outcomes, unsupported surfaces, observed improvements AND regressions, security findings by severity, follow-on recommendations and registry unblock audit.
+
+### Partial S0/S1 pilot evidence
+
+The user authorized an isolated S0-versus-S1 pilot before M006/M007 closure.
+Its two repetitions and limitations are recorded in
+`plans/closure/agent-workstream-blackboard/008-pilot-results.md`, with
+sanitized per-trial measurements in the adjacent `008-pilot-data.json`.
+This advances only the isolated pilot scope. It does not qualify peer/task
+claims, the M007 daemon scheduler path, the broad M008 task strata, or shared
+checkout execution, and it does not close or generally unblock M008.

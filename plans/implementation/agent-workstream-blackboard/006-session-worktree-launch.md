@@ -1,6 +1,6 @@
 # Agent Workstream Blackboard M006 — Isolated Session/Worktree Fork-and-Launch
 
-Status: active — shared-write placement is explicitly out of scope
+Status: active — ExistingManaged launch/fork is implemented; NewManaged allocation remains blocked on a contained Git materializer and fails closed. Shared-write placement is explicitly out of scope.
 
 Planning baseline: 68f9358d92f0e501554dc6ebbc3f6f7ffd9180aa (PR #125 integrated into main; implementation branch started from this baseline)
 Source: plans/subsystems/agent-workstream-blackboard-roadmap.md M006
